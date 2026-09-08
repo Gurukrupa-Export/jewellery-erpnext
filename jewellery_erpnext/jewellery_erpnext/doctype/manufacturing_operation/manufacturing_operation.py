@@ -26,7 +26,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_employee_ir_loss_map,
 	get_last_mop_index,
 	get_mop_transfer_pcs_rows,
-	get_mwo_balance_rows,
+	get_mwo_held_batch_map,
 )
 from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
 from jewellery_erpnext.utils import (
@@ -1264,6 +1264,15 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_product_type", pmo_det.get("product_type")
 	)
+	# NOTE: this does not decide what the tag carries. ``Serial No.custom_gross_wt``
+	# is a Custom Field with ``fetch_from = custom_bom_no.gross_weight``, and
+	# ``update_new_serial_no`` runs an unconditional ``new_sn_doc.save()`` moments
+	# later, at which point frappe re-fetches the value from the FG BOM and overwrites
+	# whatever is written here. The tag is therefore always BOM-derived -- which is
+	# why three SNCs carrying a typed-over ``total_weight`` of 40.99 / 10.48 / 11.14
+	# still minted correct 19.18 / 3.20 / 3.45 tags (see tabVersion:
+	# ``["custom_gross_wt","40.99","19.18"]``). Kept so the field is populated before
+	# that save, but do not read it as the line that sets the tag weight.
 	frappe.db.set_value("Serial No", sr_no, "custom_gross_wt", doc.total_weight)
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_repair_type", pmo_det.get("repair_type")
@@ -4160,10 +4169,11 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	# source operation is zeroed and the destination carries the balance
 	# forward, while the SRE keeps pointing at the operation it was created
 	# against. ``create_mr_wo_stock_entry`` MUST build this map the same way.
-	mop_log_balance_map: dict[tuple, dict] = {
-		(row.get("item_code"), row.get("batch_no")): row
-		for row in get_mwo_balance_rows(mo.manufacturing_work_order, keys=all_keys)
-	}
+	# Keyed by get_mwo_held_batch_map so this popup, create_mr_wo_stock_entry and the
+	# Stock Entry receive guard all read ONE definition of "what this work order holds".
+	mop_log_balance_map: dict[tuple, dict] = get_mwo_held_batch_map(
+		mo.manufacturing_work_order, keys=all_keys
+	)
 
 	# Per-(item, batch) incoming-transfer PCS rows. Each reserved batch line
 	# maps 1:1 to a Material Transfer row, so we surface that row's OWN pcs
@@ -4309,9 +4319,27 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 				warning = None
 				available_to_receive_qty = flt(ctx["available_qty"])
 				if not ctx["mop_data_present"]:
-					# No MOP Log row for (item, batch). SRE is the only signal
-					# we have; surface the row so the operator can act.
-					# create_mr_wo_stock_entry's MOP-balance cap silently
+					if any(code == sre.item_code for code, _b in mop_log_balance_map):
+						# The ledger tracks this item on this work order and has
+						# never seen this batch, so the batch belongs to another
+						# job sharing the department WIP warehouse. Offering it
+						# is how a receive lands on someone else's metal.
+						skipped.append(
+							{
+								"sre": sre.name,
+								"sb": sb.name,
+								"item_code": sre.item_code,
+								"batch_no": sb.batch_no,
+								"sre_remaining": sre_remaining,
+								"mop_available_qty": 0.0,
+								"reason": "batch_not_held_by_work_order",
+							}
+						)
+						continue
+					# The ledger has no opinion about this item on this work order
+					# at all (legacy MWO, fresh site, unwritten transfer leg). SRE
+					# is the only signal we have; surface the row so the operator
+					# can act. create_mr_wo_stock_entry's MOP-balance cap silently
 					# falls back to SRE-only when mop_data_present is False.
 					warning = "MOP balance unknown — falling back to SRE remaining"
 					available_to_receive_qty = sre_remaining
@@ -4686,10 +4714,7 @@ def create_mr_wo_stock_entry(
 	def _mwo_balance_map():
 		if not _balance_map_holder:
 			_balance_map_holder.append(
-				{
-					(brow.get("item_code"), brow.get("batch_no")): brow
-					for brow in get_mwo_balance_rows(mo.manufacturing_work_order)
-				}
+				get_mwo_held_batch_map(mo.manufacturing_work_order)
 			)
 		return _balance_map_holder[0]
 
@@ -4818,6 +4843,29 @@ def create_mr_wo_stock_entry(
 		)
 		mop_available_qty = flt(ctx["mop_log_balance_qty"])
 		available_to_receive_qty = flt(ctx["available_qty"])
+
+		# 1b) Batch ownership. Same predicate the popup skips on and the Stock
+		#     Entry receive guard throws on, applied here so a hand-crafted API
+		#     payload cannot bypass the popup. Only bites when the ledger tracks
+		#     this ITEM on this work order but has never seen this batch.
+		if batch_no and not ctx["mop_data_present"]:
+			balance_map = _mwo_balance_map()
+			if any(code == sre.item_code for code, _b in balance_map):
+				frappe.throw(
+					_(
+						"Row {0} item {1} batch {2}: work order {3} has never been "
+						"issued this batch — MOP Log has no row for it. A department "
+						"WIP warehouse is shared across jobs, so an automatic batch "
+						"pick can land on another work order's metal. Use the "
+						"Make Receive Entry list, which offers only batches this "
+						"work order holds."
+					).format(
+						row.get("idx") or "?",
+						sre.item_code,
+						batch_no,
+						sre.manufacturing_work_order,
+					)
+				)
 
 		# 2) MOP-balance cap — protects against receiving material that has
 		#    been lost or consumed via Employee IR loss / MOP loss deltas

@@ -49,20 +49,40 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Inventory Tests..."
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Log"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Serial Number Creator"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Subcontracting Log"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Diamond Conversion"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Settings"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Subcontracting Settings"
 
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_rate
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sample_goods_guard
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_receipt
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
+          # Each suite runs inside its own log group, and a failure is reported as a
+          # GitHub annotation naming the exact command. Without this the step is one
+          # opaque `bash -e` block: the first non-zero `bench` aborts it and the only
+          # annotation is "Process completed with exit code 1", so identifying which
+          # suite broke means reading the whole raw log -- which needs repo admin.
+          run() {
+            echo "::group::$*"
+            if bench --site test_site run-tests "$@"; then
+              echo "::endgroup::"
+            else
+              status=$?
+              echo "::endgroup::"
+              echo "::error::FAILED: bench --site test_site run-tests $*"
+              exit $status
+            fi
+          }
+
+          run --app jewellery_erpnext --doctype "MOP Log"
+          run --app jewellery_erpnext --doctype "Serial Number Creator"
+          run --app jewellery_erpnext --doctype "Subcontracting Log"
+          run --app jewellery_erpnext --doctype "Diamond Conversion"
+          run --app jewellery_erpnext --doctype "MOP Settings"
+          run --app jewellery_erpnext --doctype "Subcontracting Settings"
+
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_rate
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_sample_goods_guard
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_receipt
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_receive_batch_ownership
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_ledger_vs_scale

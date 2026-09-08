@@ -49,17 +49,34 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Refining & Advanced Tests..."
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Refining Entry"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Refinery Price List"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Setting"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Product Certification"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Tree Number"
 
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_queue_dedup
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_casting
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_material_balance
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_employee_ir_receive
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bounded_retry
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_db_isolation
+          # Each suite runs inside its own log group, and a failure is reported as a
+          # GitHub annotation naming the exact command. Without this the step is one
+          # opaque `bash -e` block: the first non-zero `bench` aborts it and the only
+          # annotation is "Process completed with exit code 1", so identifying which
+          # suite broke means reading the whole raw log -- which needs repo admin.
+          run() {
+            echo "::group::$*"
+            if bench --site test_site run-tests "$@"; then
+              echo "::endgroup::"
+            else
+              status=$?
+              echo "::endgroup::"
+              echo "::error::FAILED: bench --site test_site run-tests $*"
+              exit $status
+            fi
+          }
+          run --app jewellery_erpnext --doctype "Refining Entry"
+          run --app jewellery_erpnext --doctype "Refinery Price List"
+          run --app jewellery_erpnext --doctype "Manufacturing Setting"
+          run --app jewellery_erpnext --doctype "Product Certification"
+          run --app jewellery_erpnext --doctype "Tree Number"
+
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_queue_dedup
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_casting
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_material_balance
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_employee_ir_receive
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_bounded_retry
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_db_isolation

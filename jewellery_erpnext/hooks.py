@@ -103,6 +103,7 @@ doc_events = {
 			_EOD_LOCK_VALIDATOR,
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils.validate_no_sample_issue",
+			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils.warn_empty_operation_balance",
 		],
 		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 	},
@@ -185,6 +186,11 @@ doc_events = {
 			# the Stock Entry itself, never on the dozen cascades that mint one from
 			# another doctype's lifecycle -- see the module docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.validate_stock_entry_type_permission",
+			# A Material Receive (WORK ORDER) may only debit batches its work order
+			# actually holds. At `validate`, not `before_submit`: it must fail before
+			# create_mr_wo_stock_entry's save() cascades into cancelling reservations,
+			# and before prelock_bins takes Bin locks. See the function docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_receive_batches_are_held",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [

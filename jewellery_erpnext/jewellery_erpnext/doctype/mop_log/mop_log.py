@@ -14,6 +14,12 @@ from jewellery_erpnext.utils import (
 )
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
+
+# Stock Entry types that post a NEGATIVE MOP Log delta -- the only ones that can drive a
+# balance below zero, and therefore the only ones the receive-batch-ownership guard needs
+# to inspect. Defined here, next to the writer that negates the qty, so the guard and the
+# writer cannot drift apart about which types debit the ledger.
+MOP_DEBIT_STOCK_ENTRY_TYPES = frozenset({"Material Receive (WORK ORDER)"})
 select_fields = [
 	"item_code",
 	"pcs_after_transaction",
@@ -411,7 +417,7 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 			pcs = row.get("pcs_change") or 0
 		qty = row.get("qty_change") or 0
 	else:
-		if doc.stock_entry_type == "Material Receive (WORK ORDER)":
+		if doc.stock_entry_type in MOP_DEBIT_STOCK_ENTRY_TYPES:
 			if first_char not in ("D", "G"):
 				pcs = 0
 			else:
@@ -488,6 +494,50 @@ def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=No
 	return result[0][0] if result and result[0] else None
 
 
+def get_ledgered_operations(manufacturing_operations):
+	"""Subset of ``manufacturing_operations`` that already carry a non-cancelled MOP Log row.
+
+	The batched form of ``get_last_mop_index(mop) is not None`` -- the test
+	``update_new_mop_wtg`` already uses (manufacturing_operation.py) to decide whether an
+	operation is still waiting to inherit its opening balance. Membership means the ledger
+	has been written for this operation, so
+	``recalculate_manufacturing_operation_weights`` owns its weight buckets and a 0 there
+	is a MEASUREMENT, not "not yet known".
+
+	Deliberately a PRESENCE test, not a balance sum. The header is already
+	``sum(clamped ledger)``; re-deriving it here would have to reproduce the carat->gram
+	split, the negative clamp and the refining cutoff byte-for-byte, and a raw sum would
+	add carats to grams. Two definitions of "current balance" is how a repair script
+	corrupts data -- see ``get_mwo_held_batch_map``.
+
+	Deliberately NOT filtered by ``drop_pre_refining_rows``: a pre-refining row is still
+	proof that material once arrived, which is exactly the question asked here. Dropping it
+	would re-enable a previous-MOP fallback on the operation refining zeroed.
+
+	COUNT/GROUP BY rather than MAX(flow_index) so a NULL flow_index cannot change the
+	answer, and ONE query rather than one per operation: a Department IR carries up to 300
+	child rows and ``mop_balance_idx`` is missing on ``kg-gk`` (see
+	``get_current_mop_balance_rows``), where a per-row call is a full scan each time.
+	"""
+	names = sorted({n for n in (manufacturing_operations or []) if n})
+	if not names:
+		return set()
+
+	return {
+		row[0]
+		for row in frappe.db.sql(
+			"""
+			SELECT manufacturing_operation
+			FROM `tabMOP Log`
+			WHERE manufacturing_operation IN %(names)s
+			  AND is_cancelled = 0
+			GROUP BY manufacturing_operation
+			""",
+			{"names": tuple(names)},
+		)
+	}
+
+
 def get_current_mop_balance_rows(
 	manufacturing_operation, include_fields=None, keys=None, exclude_voucher_no=None
 ):
@@ -503,7 +553,9 @@ def get_current_mop_balance_rows(
 	``item_code`` set so popups never scan unrelated items. The composite
 	index ``mop_balance_idx`` (added by ``add_make_receive_entry_indexes``)
 	covers ``(manufacturing_operation, is_cancelled, item_code, batch_no,
-	creation)`` so the narrowed filter is index-served. The Python-side
+	creation)`` so the narrowed filter is index-served **where the index
+	exists** — as of 2026-09-04 it is present on ``gk`` but MISSING on
+	``kg-gk`` despite the patch being logged as run. The Python-side
 	dedup picks the latest row per ``(item_code, batch_no)``.
 	"""
 	fields = list(
@@ -537,25 +589,28 @@ def get_current_mop_balance_rows(
 	return list(reversed(list(latest_by_key.values())))
 
 
-def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=None):
+def get_mwo_balance_rows(
+	manufacturing_work_order, include_fields=None, keys=None, exclude_voucher_no=None
+):
 	"""Return the latest non-cancelled MOP Log row per item/batch for a whole MWO.
 
 	:func:`get_current_mop_balance_rows` answers "what did operation X last
 	record?". This answers "what does this Manufacturing Work Order hold right
 	now?" — and for availability checks the second question is the correct one.
 
-	The distinction is forced by how the number is written.
-	:func:`create_mop_log_for_stock_transfer_to_mo` computes
-	``qty_after_transaction_batch_based`` as an MWO-wide running sum
-	(``WHERE manufacturing_work_order = %s AND is_cancelled = 0``; the per-MOP
-	narrowing right below it is commented out) and only then stamps the row with
-	a single operation. **A per-MOP balance does not exist in this field.** A
-	MOP-scoped read returns the MWO-wide total frozen at whenever THAT operation
-	last wrote, and goes stale the moment any other operation under the same MWO
-	posts a row — a Department/Employee IR handoff clone, a loss attribution, a
-	receive.
+	The distinction is about reader SCOPE, not about the field being unusable
+	per operation. ``qty_after_transaction_batch_based`` IS a per-operation
+	running balance: :func:`create_mop_log_for_stock_transfer_to_mo` derives its
+	opening from :func:`get_mop_opening_balances`, which reads the operation's
+	OWN latest row per ``(item_code, batch_no)``. (It used to be an MWO-wide
+	``SUM(qty_change)``, which folded residue stranded on a finished operation
+	into the next one's opening balance; that was fixed, and
+	``TestMwoBalanceRows`` records the correction. Earlier revisions of this
+	docstring claimed a per-MOP balance "does not exist in this field" — that is
+	no longer true, and :func:`get_mop_opening_balances` is the authority.)
 
-	That staleness is not hypothetical: on handoff the source operation is
+	What makes MWO scope the right one for an availability check is the handoff,
+	not the writer. On handoff the source operation is
 	explicitly zeroed and the destination carries the balance forward, while
 	``Stock Reservation Entry.manufacturing_operation`` keeps pointing at the
 	operation the reservation was created against. Reading the SRE's stamp
@@ -571,8 +626,11 @@ def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=Non
 	across the MWO" is a well-defined current state and not a merge of
 	concurrent branches.
 
-	Index-served by ``mop_mwo_idx`` (manufacturing_work_order, is_cancelled,
-	item_code, batch_no) from ``add_make_receive_entry_indexes``.
+	Intended to be index-served by ``mop_mwo_idx`` (manufacturing_work_order,
+	is_cancelled, item_code, batch_no) from ``add_make_receive_entry_indexes``.
+	**Verify before relying on that:** as of 2026-09-04 the index is present on
+	``gk`` but MISSING on ``kg-gk``, even though the patch is logged as run and
+	suppresses no errors. On that site this is a full scan.
 
 	Dedup rule, ordering and return shape are deliberately identical to
 	:func:`get_current_mop_balance_rows` so the two stay drop-in
@@ -586,6 +644,8 @@ def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=Non
 		"manufacturing_work_order": manufacturing_work_order,
 		"is_cancelled": 0,
 	}
+	if exclude_voucher_no:
+		filters["voucher_no"] = ["!=", exclude_voucher_no]
 	if keys:
 		item_codes = sorted({k[0] for k in keys if k and k[0]})
 		if not item_codes:
@@ -606,6 +666,31 @@ def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=Non
 		if key not in latest_by_key:
 			latest_by_key[key] = log
 	return list(reversed(list(latest_by_key.values())))
+
+
+def get_mwo_held_batch_map(
+	manufacturing_work_order, keys=None, exclude_voucher_no=None
+):
+	"""``{(item_code, batch_no): latest MOP Log row}`` for a whole work order.
+
+	NOT a new balance definition -- a thin keying of :func:`get_mwo_balance_rows`, which
+	stays the only place "current balance" is computed. It exists so the Make Receive
+	Entry popup, its server-side validator and the Stock Entry receive guard cannot drift
+	apart about which batches a work order actually holds. Two definitions of current
+	balance is how a repair script corrupts data.
+
+	The question it answers is presence, not sufficiency: a key in this map is one the
+	ledger has seen on this work order. Callers decide separately whether the balance is
+	large enough, via :func:`get_available_qty_pcs_for_mop_item`.
+	"""
+	return {
+		(row.get("item_code"), row.get("batch_no")): row
+		for row in get_mwo_balance_rows(
+			manufacturing_work_order,
+			keys=keys,
+			exclude_voucher_no=exclude_voucher_no,
+		)
+	}
 
 
 def get_mop_transfer_pcs_rows(manufacturing_work_order, keys=None):

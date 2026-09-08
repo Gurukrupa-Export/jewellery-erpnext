@@ -368,13 +368,22 @@ function open_wo_transfer_dialog(frm, opts) {
 					);
 				} else {
 					const lines = (skipped || []).map((s) =>
-						__("• SRE {0} — Item {1}{2}: SRE remaining {3}, MOP available {4}", [
-							s.sre,
-							s.item_code,
-							s.batch_no ? ` / Batch ${s.batch_no}` : "",
-							s.sre_remaining,
-							s.mop_available_qty,
-						])
+						// A batch the work order never held has no MOP Log row at
+						// all, so "MOP available 0" would read as "consumed" and
+						// send the operator hunting through a ledger that has
+						// nothing to find. Name the real cause instead.
+						s.reason === "batch_not_held_by_work_order"
+							? __(
+									"• SRE {0} — Item {1} / Batch {2}: not issued to this work order (no MOP Log row). It belongs to another job sharing the department warehouse.",
+									[s.sre, s.item_code, s.batch_no]
+							  )
+							: __("• SRE {0} — Item {1}{2}: SRE remaining {3}, MOP available {4}", [
+									s.sre,
+									s.item_code,
+									s.batch_no ? ` / Batch ${s.batch_no}` : "",
+									s.sre_remaining,
+									s.mop_available_qty,
+							  ])
 					);
 					frappe.msgprint({
 						title: opts.no_sre_title,

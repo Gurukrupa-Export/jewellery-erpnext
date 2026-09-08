@@ -46,6 +46,21 @@ from jewellery_erpnext.utils import carat_to_gram, clamp_negative_balance
 # re-runs are no-ops.
 REPAIR_ROW_TAG = "repair-mwo-wide-balance"
 
+# patches/repair_phantom_batch_swap_mop_log.py re-attributes a return booked against a
+# batch the work order never held. Its rows restate a balance exactly like
+# REPAIR_ROW_TAG's do, so every reader that special-cases one must special-case both --
+# use REPAIR_ROW_TAGS, never a bare equality against a single tag.
+REPAIR_ROW_TAG_BATCH_SWAP = "repair-phantom-batch-swap"
+
+REPAIR_ROW_TAGS = frozenset({REPAIR_ROW_TAG, REPAIR_ROW_TAG_BATCH_SWAP})
+
+# Arithmetic floor for "these two weights differ". Every operand is a precision-3 field
+# (qty_after_transaction_batch_based, loss_wt, received_gross_wt, gross_wt), so anything
+# finer compares rounding artefacts. Same value the header repair patches use -- one
+# definition, deliberately not a third constant. The OPERATIONAL floor (how big a
+# difference is worth an operator's time) is a caller-supplied filter, not this.
+TOLERANCE_G = 0.0005
+
 
 def _app_root() -> Path:
 	return Path(__file__).resolve().parent
@@ -737,6 +752,20 @@ def audit_mop_balance_drift(
 	if rows is None:
 		rows = _latest_mop_log_balance_rows(mwos)
 
+	ledger = _ledger_gross_by_operation(rows)
+	if not ledger:
+		return []
+	return _drift_findings(ledger, limit)
+
+
+def _ledger_gross_by_operation(rows: list[dict]) -> dict[str, dict]:
+	"""``{mop: {"mwo": ..., "ledger_gross": grams}}`` from latest-balance rows.
+
+	The one definition of "what this operation's ledger weighs", shared by
+	:func:`audit_mop_balance_drift` and :func:`ledger_vs_scale_findings`. Duplicating
+	it is precisely the failure this module warns about elsewhere -- two auditors
+	disagreeing about the current balance is how a repair script corrupts data.
+	"""
 	ledger: dict[str, dict] = {}
 	for r in rows:
 		bucket = ledger.setdefault(
@@ -775,10 +804,10 @@ def audit_mop_balance_drift(
 		bucket["ledger_gross"] += carat_to_gram(
 			bucket.pop("diamond_ct")
 		) + carat_to_gram(bucket.pop("gemstone_ct"))
+	return ledger
 
-	if not ledger:
-		return []
 
+def _drift_findings(ledger: dict[str, dict], limit: int) -> list[dict]:
 	stored = frappe.get_all(
 		"Manufacturing Operation",
 		filters={"name": ["in", list(ledger)]},
@@ -824,6 +853,247 @@ def audit_mop_balance_drift(
 
 	out.sort(key=lambda r: abs(r["ledger_minus_received"]), reverse=True)
 	return out[:limit]
+
+
+def ledger_vs_scale_findings(
+	mwos: list[str] | None = None,
+	mops: list[str] | None = None,
+	min_divergence_g: float = 0.002,
+	rows: list[dict] | None = None,
+	limit: int = 200,
+) -> dict:
+	"""Operations whose ledger holds MORE metal than the operator actually weighed.
+
+	Read-only. The complement of :func:`negative_balance_findings`, and the detector
+	that would have caught MOP-3DP57's chain on 2026-08-24 instead of at tagging two
+	weeks later.
+
+	Negative-hunting only finds a job whose OWN key went negative. When a return is
+	booked against a batch belonging to a different job -- which is what warehouse FIFO
+	does in a shared department WIP warehouse -- this job's own batches are simply left
+	overstated, with nothing negative anywhere in its own ledger to detect. That is a
+	POSITIVE divergence, and this is what sees it.
+
+	The invariant::
+
+	    divergence_g = clamped_ledger_gross + min(loss_wt, 0) - received_gross_wt
+
+	``min(loss_wt, 0)`` is load-bearing, not cosmetic. ``loss_wt`` is written as
+	``received_gross_wt - gross_wt`` (``employee_ir.py``), so it is negative for a loss
+	and must be added back before comparing. A POSITIVE ``loss_wt`` is a gain -- a Main
+	Slip repack injection, or simply the first operation in a chain, where ``gross_wt``
+	was still 0 when the receive computed it -- and that gain is already inside the
+	ledger figure, so subtracting it again double-counts. Measured over 20,465 non-FG
+	operations on kg-gk: the raw ``ledger - received`` form reports 7,436 hits (36% of
+	the table, i.e. every operation that ever booked a loss), adding ``loss_wt``
+	unconditionally leaves 2,179 (2,031 of them the Waxing gain case), and this form
+	leaves 31 out of 24,180 scanned -- 99.87% clean, with NINE of the ten MOP-3DP57
+	chain operations among them at exactly +0.280.
+
+	Nine, not ten: MOP-A463A is a Tagging operation, and Tagging never books a receive
+	weight, so it is skipped by the ``received_gross_wt > 0`` gate along with 2,302
+	other not-yet-received operations. That is not a miss to be patched around -- there
+	is genuinely no scale reading there to compare against. It is precisely why
+	:func:`snc_vs_header_findings` exists: the tagging end of a chain is caught by
+	comparing the Serial Number Creator against its header instead.
+
+	Gated on ``received_gross_wt > 0`` and ``for_fg = 0``:
+
+	* ``received_gross_wt = 0`` means no receive has been booked, so there is no scale
+	  reading to compare against. Tagging operations never book one, which excludes
+	  MOP-A463A and MOP-3DP57 by construction rather than by a skip list.
+	* an ``for_fg`` header is force-written MWO-wide by ``sync_mwo_weights``, so a
+	  per-operation invariant does not apply to it.
+
+	``Finished`` operations are deliberately NOT skipped. The sibling repair patches skip
+	them, but that is a WRITE-safety rule ("the weights have left the floor"), not a
+	detection rule -- all eleven operations in the incident are Finished, and skipping
+	them would blind this detector to the entire class of defect it exists to find.
+
+	Gate on ``received_gross_wt`` only. ``received_net_wt`` looks like a second scale
+	reading but is derived server-side from the very header being audited
+	(``received_net_wt = net_wt - net_loss_wt``), so comparing the ledger to it is
+	partly comparing the ledger to itself; measured, it yields 45% hits and is unusable.
+	It is carried as an informational column, never as the gate.
+	"""
+	if rows is None:
+		rows = _latest_mop_log_balance_rows(mwos, list(mops) if mops else None)
+
+	ledger = _ledger_gross_by_operation(rows)
+	if not ledger:
+		return {"findings": [], "totals": _empty_scale_totals()}
+
+	headers = frappe.get_all(
+		"Manufacturing Operation",
+		filters={"name": ["in", list(ledger)]},
+		fields=[
+			"name",
+			"manufacturing_work_order",
+			"manufacturing_order",
+			"department",
+			"status",
+			"for_fg",
+			"gross_wt",
+			"received_gross_wt",
+			"received_net_wt",
+			"loss_wt",
+		],
+		limit_page_length=0,
+	)
+
+	findings: list[dict] = []
+	not_received = 0
+	floor = max(flt(min_divergence_g), TOLERANCE_G)
+	for mop in headers:
+		if cint(mop.get("for_fg")):
+			continue
+		received = flt(mop.get("received_gross_wt"), 3)
+		if received <= 0:
+			not_received += 1
+			continue
+
+		led = flt(ledger[mop["name"]]["ledger_gross"], 3)
+		loss = flt(mop.get("loss_wt"), 3)
+		divergence = flt(led + min(loss, 0.0) - received, 3)
+		if abs(divergence) < floor:
+			continue
+
+		findings.append(
+			{
+				"manufacturing_operation": mop["name"],
+				"manufacturing_work_order": mop.get("manufacturing_work_order"),
+				"parent_manufacturing_order": mop.get("manufacturing_order"),
+				"department": mop.get("department"),
+				"status": mop.get("status"),
+				"ledger_gross_g": led,
+				"loss_wt": loss,
+				"received_gross_wt": received,
+				"received_net_wt": flt(mop.get("received_net_wt"), 3),
+				"gross_wt": flt(mop.get("gross_wt"), 3),
+				"divergence_g": divergence,
+			}
+		)
+
+	findings.sort(key=lambda r: -abs(r["divergence_g"]))
+	findings = findings[:limit]
+	return {
+		"findings": findings,
+		"totals": {
+			"operations": len(findings),
+			"overstated": sum(1 for f in findings if f["divergence_g"] > 0),
+			"understated": sum(1 for f in findings if f["divergence_g"] < 0),
+			"divergence_g": flt(sum(f["divergence_g"] for f in findings), 3),
+			"not_yet_received": not_received,
+			"scanned": len(headers),
+		},
+	}
+
+
+def _empty_scale_totals() -> dict:
+	return {
+		"operations": 0,
+		"overstated": 0,
+		"understated": 0,
+		"divergence_g": 0.0,
+		"not_yet_received": 0,
+		"scanned": 0,
+	}
+
+
+def snc_vs_header_findings(limit: int = 200, rows: list[dict] | None = None) -> dict:
+	"""Serial Number Creators whose weights disagree with their operation or their BOM.
+
+	Read-only, and the cheapest high-value check in this module: over the whole
+	1,413-row Serial Number Creator population on kg-gk it returns four rows.
+
+	It reports TWO divergences per row, because they mean very different things and
+	only one of them is urgent:
+
+	``divergence_g`` -- ``total_weight`` against the operation header. This catches the
+	MOP-3DP57 shape: ``_get_source_raw_materials`` drops non-positive rows while an FG
+	header is copied by ``sync_mwo_weights`` from a sibling written from the raw sum, so
+	the two disagree whenever a negative balance is in play.
+
+	``tag_divergence_g`` -- the FG BOM's ``gross_weight`` against the same header. **This
+	is the one that says a physical tag is wrong**, because ``Serial No.custom_gross_wt``
+	is a Custom Field with ``fetch_from = custom_bom_no.gross_weight``: the tag is always
+	BOM-derived, and the BOM is built from ``fg_details``. ``total_weight`` never reaches
+	it -- ``manufacturing_operation.py`` writes it there with ``db.set_value`` but the
+	next save of that Serial No re-fetches from the BOM and overwrites it.
+
+	So a row with a large ``divergence_g`` and a zero ``tag_divergence_g`` is cosmetic:
+	somebody typed over the editable ``total_weight`` field and the tag came out right
+	anyway. That is exactly the three kg-gk rows from 2026-08-26/29, whose Version
+	history records ``["custom_gross_wt","40.99","19.18"]`` and friends. A row with a
+	non-zero ``tag_divergence_g`` is a real, shipped-wrong weight.
+
+	``field_only`` marks the cosmetic case so a report can sort or filter on it.
+
+	``rows`` is the injection seam every other findings function in this module carries.
+	It exists so a caller -- in practice a test -- can supply the row set WITHOUT patching
+	``frappe.db.sql``. Patching that is not a local override: ``frappe.db`` is a global
+	proxy, so it also feeds frappe's own lazy loads, and the first ``flt(x, 3)`` below
+	resolves the rounding method through ``get_system_settings`` -> System Settings ->
+	``db.sql``. Handed a caller's fake rows, that raises, and ``flt`` swallows everything
+	but ``InvalidRoundingMethod`` and returns 0.0 -- so every number here silently becomes
+	zero. Unlike the sibling functions, this one is NOT fed by ``run_all_audits``'s shared
+	``balance_rows``: it reads Serial Number Creator, not MOP Log.
+	"""
+	if rows is None:
+		rows = frappe.db.sql(
+			"""
+		SELECT snc.name AS serial_number_creator, snc.docstatus, snc.total_weight,
+		       snc.manufacturing_operation, snc.manufacturing_work_order,
+		       snc.fg_bom, snc.fg_serial_no,
+		       mop.gross_wt, mop.department, mop.status,
+		       bom.gross_weight AS fg_bom_gross_wt
+		FROM `tabSerial Number Creator` snc
+		JOIN `tabManufacturing Operation` mop ON mop.name = snc.manufacturing_operation
+		LEFT JOIN `tabBOM` bom ON bom.name = snc.fg_bom
+		WHERE snc.docstatus < 2 AND snc.total_weight > 0
+		  AND (
+		        ABS(snc.total_weight - mop.gross_wt) > %(tol)s
+		     OR (bom.name IS NOT NULL
+		         AND ABS(bom.gross_weight - mop.gross_wt) > %(tol)s)
+		  )
+		ORDER BY ABS(snc.total_weight - mop.gross_wt) DESC
+		""",
+			{"tol": TOLERANCE_G},
+			as_dict=True,
+		)
+
+	findings = []
+	for r in rows[:limit]:
+		divergence = flt(flt(r["total_weight"]) - flt(r["gross_wt"]), 3)
+		# No FG BOM yet (an unsubmitted draft) means no tag has been minted, so there is
+		# nothing to call wrong -- reported as None rather than as a spurious zero.
+		tag_divergence = (
+			flt(flt(r["fg_bom_gross_wt"]) - flt(r["gross_wt"]), 3)
+			if r.get("fg_bom")
+			else None
+		)
+		findings.append(
+			{
+				**r,
+				"divergence_g": divergence,
+				"tag_divergence_g": tag_divergence,
+				"field_only": bool(
+					divergence and tag_divergence is not None and not tag_divergence
+				),
+			}
+		)
+
+	return {
+		"findings": findings,
+		"totals": {
+			"serial_number_creators": len(findings),
+			"submitted": sum(1 for f in findings if cint(f["docstatus"]) == 1),
+			"divergence_g": flt(sum(f["divergence_g"] for f in findings), 3),
+			# The number an operator should act on.
+			"tags_wrong": sum(1 for f in findings if f["tag_divergence_g"]),
+			"field_only": sum(1 for f in findings if f["field_only"]),
+		},
+	}
 
 
 def audit_negative_batch_balances(
@@ -1220,7 +1490,7 @@ def audit_post_refining_contamination(
 			if key not in own_change:
 				order.append(key)
 				own_change[key] = 0.0
-			if r["row_name"] == REPAIR_ROW_TAG:
+			if r["row_name"] in REPAIR_ROW_TAGS:
 				# A correcting row is not a movement -- it restates the balance. Its
 				# effect is visible through `actual` only, so a repaired key reports
 				# delta 0 and drops out of the findings instead of re-reporting its
@@ -1334,5 +1604,10 @@ def run_all_audits(receive_doc: str | None = None) -> dict:
 	balance_rows = _latest_mop_log_balance_rows()
 	out["mop_balance_drift"] = audit_mop_balance_drift(rows=balance_rows)
 	out["negative_batch_balances"] = audit_negative_batch_balances(rows=balance_rows)
+	# The positive counterpart: a job whose OWN batches are overstated because a return
+	# was booked against someone else's batch has nothing negative to find.
+	out["ledger_vs_scale"] = ledger_vs_scale_findings(rows=balance_rows)
+	# Catches the tagging end, which ledger_vs_scale cannot see (no receive weight).
+	out["snc_vs_header"] = snc_vs_header_findings()
 	out["post_refining_contamination"] = audit_post_refining_contamination()
 	return out

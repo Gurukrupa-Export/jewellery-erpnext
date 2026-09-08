@@ -8,6 +8,10 @@ from frappe.tests import IntegrationTestCase
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
 	DepartmentIR,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
+	apply_department_ir_weights,
+	resolve_weights_for_operation,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	ManufacturingOperation,
 	get_material_wt,
@@ -696,62 +700,27 @@ def scan_mwo_dir(doc):
 		"Manufacturing Operation", filters={"manufacturing_work_order": doc.scan_mwo}
 	)
 
-	prev = frappe.get_value(
-		"Manufacturing Operation",
-		values.previous_mop,
-		[
-			"gross_wt",
-			"diamond_wt",
-			"net_wt",
-			"finding_wt",
-			"diamond_pcs",
-			"gemstone_pcs",
-			"gemstone_wt",
-			"other_wt",
-			"received_gross_wt",
-		],
-		as_dict=True,
-	)
-
-	gr_wt = 0
-	if values.gross_wt and values.gross_wt > 0:
-		gr_wt = values.gross_wt
-	elif prev:
-		if prev.received_gross_wt and prev.received_gross_wt > 0:
-			gr_wt = prev.received_gross_wt
-		elif prev.gross_wt and prev.gross_wt > 0:
-			gr_wt = prev.gross_wt
-
-	doc.append(
+	# Resolved through the production code instead of a fourth hand-written copy of the
+	# rule. The copy this replaces had already drifted: no is_mwo_refined branch, and it
+	# read `values.previous_mop` unguarded.
+	#
+	# The find above is deliberately NOT DepartmentIR.find_operation_to_scan -- the
+	# fixtures this helper serves do not satisfy the production scan filters
+	# (dir_for_issue never sets `type`, and mo_creation sets neither `company` nor
+	# `status`), so routing it there would break ~15 call sites across 7 test modules.
+	# Fixing those fixtures and collapsing this into doc.scan_manufacturing_operation()
+	# is a follow-up. The weight resolution -- what these tests are actually about -- is
+	# the real code either way.
+	resolved = resolve_weights_for_operation(values.name)
+	row = doc.append(
 		"department_ir_operation",
 		{
-			"manufacturing_work_order": values.manufacturing_work_order,
-			"manufacturing_operation": values.name,
-			"status": values.status,
-			"gross_wt": gr_wt,
-			"diamond_wt": values.diamond_wt
-			if values.diamond_wt > 0
-			else (prev.diamond_wt if prev else 0),
-			"net_wt": values.net_wt
-			if values.net_wt > 0
-			else (prev.net_wt if prev else 0),
-			"finding_wt": values.finding_wt
-			if values.finding_wt > 0
-			else (prev.finding_wt if prev else 0),
-			"gemstone_wt": values.gemstone_wt
-			if values.gemstone_wt > 0
-			else (prev.gemstone_wt if prev else 0),
-			"other_wt": values.other_wt
-			if values.other_wt > 0
-			else (prev.other_wt if prev else 0),
-			"diamond_pcs": values.diamond_pcs
-			if values.diamond_pcs > 0
-			else (prev.diamond_pcs if prev else 0),
-			"gemstone_pcs": values.gemstone_pcs
-			if values.gemstone_pcs > 0
-			else (prev.gemstone_pcs if prev else 0),
+			"manufacturing_work_order": resolved.manufacturing_work_order,
+			"manufacturing_operation": resolved.manufacturing_operation,
+			"status": resolved.status,
 		},
 	)
+	apply_department_ir_weights(row, resolved)
 
 	doc.scan_mwo = ""
 

@@ -114,117 +114,25 @@ frappe.ui.form.on("Department IR", {
 					])
 				);
 			}
-			var query_filters = {
-				company: frm.doc.company,
-				manufacturing_work_order: frm.doc.scan_mwo,
-				department: frm.doc.current_department,
-			};
-			if (frm.doc.type == "Issue") {
-				query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
-				query_filters["status"] = ["in", ["Not Started"]];
-				query_filters["employee"] = ["is", "not set"];
-				query_filters["subcontractor"] = ["is", "not set"];
-			} else {
-				query_filters["department_ir_status"] = ["in", ["In-Transit", "Received"]];
-			}
-			if (frm.doc.next_department && frm.doc.is_finding == 0) {
-				query_filters["is_finding"] = 0;
-			}
-			frappe.db
-				.get_value("Manufacturing Operation", query_filters, [
-					"name",
-					"manufacturing_work_order",
-					"status",
-					"gross_wt",
-					"diamond_wt",
-					"net_wt",
-					"finding_wt",
-					"diamond_pcs",
-					"gemstone_pcs",
-					"gemstone_wt",
-					"other_wt",
-					"previous_mop",
-					"is_finding",
-				])
-				.then((r) => {
-					let values = r.message;
-					frappe.db
-						.get_value("Manufacturing Operation", values.previous_mop, [
-							"gross_wt",
-							"diamond_wt",
-							"net_wt",
-							"finding_wt",
-							"diamond_pcs",
-							"gemstone_pcs",
-							"gemstone_wt",
-							"other_wt",
-							"received_gross_wt",
-						])
-						.then((v) => {
-							if (values.manufacturing_work_order) {
-								let row;
-								if (values.is_finding) {
-									// Finding: mirror the current operation exactly — no
-									// previous-MOP fallback. A finding's "receive from work
-									// order" legitimately empties the operation balance, so the
-									// previous MOP's weights would be phantom values here.
-									row = frm.add_child("department_ir_operation", {
-										manufacturing_work_order: values.manufacturing_work_order,
-										manufacturing_operation: values.name,
-										status: values.status,
-										gross_wt: values.gross_wt || 0,
-										diamond_wt: values.diamond_wt || 0,
-										net_wt: values.net_wt || 0,
-										finding_wt: values.finding_wt || 0,
-										gemstone_wt: values.gemstone_wt || 0,
-										other_wt: values.other_wt || 0,
-										diamond_pcs: values.diamond_pcs || 0,
-										gemstone_pcs: values.gemstone_pcs || 0,
-									});
-								} else {
-									let gr_wt = 0;
-									if (values.gross_wt > 0) {
-										gr_wt = values.gross_wt;
-									} else if (v.message.received_gross_wt > 0 || v.message.gross_wt) {
-										if (v.message.received_gross_wt > 0) {
-											gr_wt = v.message.received_gross_wt;
-										} else if (v.message.gross_wt > 0) {
-											gr_wt = v.message.gross_wt;
-										}
-									}
-
-									row = frm.add_child("department_ir_operation", {
-										manufacturing_work_order: values.manufacturing_work_order,
-										manufacturing_operation: values.name,
-										status: values.status,
-										gross_wt: gr_wt,
-										diamond_wt:
-											values.diamond_wt > 0 ? values.diamond_wt : v.message.diamond_wt,
-										net_wt: values.net_wt > 0 ? values.net_wt : v.message.net_wt,
-										finding_wt:
-											values.finding_wt > 0 ? values.finding_wt : v.message.finding_wt,
-										gemstone_wt:
-											values.gemstone_wt > 0
-												? values.gemstone_wt
-												: v.message.gemstone_wt,
-										other_wt: values.other_wt > 0 ? values.other_wt : v.message.other_wt,
-										diamond_pcs:
-											values.diamond_pcs > 0
-												? values.diamond_pcs
-												: v.message.diamond_pcs,
-										gemstone_pcs:
-											values.gemstone_pcs > 0
-												? values.gemstone_pcs
-												: v.message.gemstone_pcs,
-									});
-								}
-								frm.refresh_field("department_ir_operation");
-							} else {
-								frappe.throw(__("No Manufacturing Operation Found"));
-							}
-						});
+			// One server call. `scan_manufacturing_operation` finds the operation under the
+			// same filters this form used to apply here, and fills the row through the same
+			// resolver `before_validate` runs on save -- so the grid can no longer show numbers
+			// the next save silently replaces. The is_finding / is_mwo_refined branch and the
+			// previous-MOP fallback live there now, in one implementation instead of two.
+			frappe.call({
+				method: "scan_manufacturing_operation",
+				doc: frm.doc,
+				args: { barcode: frm.doc.scan_mwo },
+				callback() {
+					frm.dirty();
+					frm.refresh_field("department_ir_operation");
+				},
+				always() {
+					// Cleared even when the lookup throws, as before -- the field must be empty
+					// for a rescan of the same barcode to fire its change event.
 					frm.set_value("scan_mwo", "");
-				});
+				},
+			});
 		}
 	},
 	get_operations(frm) {

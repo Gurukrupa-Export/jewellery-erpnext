@@ -395,6 +395,35 @@ def update_existing(doctype, name, field, value=None, debug=False):
 	query.run(debug=debug)
 
 
+def get_refined_mwos(manufacturing_work_orders):
+	"""Subset of ``manufacturing_work_orders`` consumed by a submitted Work Order Refining Entry.
+
+	Batched sibling of :func:`is_mwo_refined`, which delegates here so the criteria
+	(docstatus 1, refining_type, child parenttype) live in exactly one place. Callers that
+	test a whole child table -- Department IR carries up to 300 rows -- should use this and
+	do set membership instead of one joined query per row.
+	"""
+	names = sorted({n for n in (manufacturing_work_orders or []) if n})
+	if not names:
+		return set()
+
+	return {
+		row[0]
+		for row in frappe.db.sql(
+			"""
+			SELECT DISTINCT d.manufacturing_work_order
+			FROM `tabManufacturing Work Order Refining Details` d
+			INNER JOIN `tabRefining Entry` re ON re.name = d.parent
+			WHERE d.manufacturing_work_order IN %(names)s
+			  AND d.parenttype = 'Refining Entry'
+			  AND re.docstatus = 1
+			  AND re.refining_type = 'Work Order Refining'
+			""",
+			{"names": tuple(names)},
+		)
+	}
+
+
 def is_mwo_refined(manufacturing_work_order):
 	"""True when a submitted Work Order Refining Entry has consumed this MWO's metal.
 
@@ -405,21 +434,7 @@ def is_mwo_refined(manufacturing_work_order):
 	un-marks the MWO — no flag field to keep in sync."""
 	if not manufacturing_work_order:
 		return False
-	return bool(
-		frappe.db.sql(
-			"""
-			SELECT 1
-			FROM `tabManufacturing Work Order Refining Details` d
-			INNER JOIN `tabRefining Entry` re ON re.name = d.parent
-			WHERE d.manufacturing_work_order = %s
-			  AND d.parenttype = 'Refining Entry'
-			  AND re.docstatus = 1
-			  AND re.refining_type = 'Work Order Refining'
-			LIMIT 1
-			""",
-			(manufacturing_work_order,),
-		)
-	)
+	return manufacturing_work_order in get_refined_mwos([manufacturing_work_order])
 
 
 def get_mwo_refining_cutoff(manufacturing_work_order):

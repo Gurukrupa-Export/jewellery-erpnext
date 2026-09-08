@@ -104,6 +104,56 @@ class CustomStockEntry(StockEntry):
 	# 	if self.meta.autoname == "hash":
 	# 		self.to_rename = 0
 
+	def _set_allowed_batches_for_receive(self):
+		"""Restrict FIFO to batches this work order holds, on MOP-debiting receives.
+
+		``get_fifo_batches`` resolves an empty ``batch_no`` with
+		``get_auto_batch_nos(item_code, warehouse)`` -- plain warehouse FIFO. Department
+		WIP warehouses are shared by every job in the department, so on a
+		``Material Receive (WORK ORDER)`` that can allocate another work order's metal,
+		which then writes a negative MOP Log balance and silently debits the other job.
+
+		Sets ``flags.allowed_batches_by_item`` to ``{item_code: {batch, ...}}`` for items
+		the MOP Log tracks on this work order. An item the ledger has never seen is
+		deliberately OMITTED rather than mapped to an empty set, so FIFO keeps its
+		current behaviour where there is no signal -- the same "ledger has no opinion"
+		fallback ``validate_receive_batches_are_held`` uses. The two must agree; this is
+		the soft half of that guard.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+			MOP_DEBIT_STOCK_ENTRY_TYPES,
+			get_mwo_held_batch_map,
+		)
+
+		# Return before touching ``flags`` so a non-debiting entry costs nothing and
+		# needs no attribute that a bare/partially-built document might not carry.
+		if self.get("stock_entry_type") not in MOP_DEBIT_STOCK_ENTRY_TYPES:
+			return
+
+		by_mwo: dict = {}
+		for row in self.items:
+			mwo = self.get("manufacturing_work_order") or row.get(
+				"custom_manufacturing_work_order"
+			)
+			if not mwo and row.get("manufacturing_operation"):
+				mwo = frappe.db.get_value(
+					"Manufacturing Operation",
+					row.manufacturing_operation,
+					"manufacturing_work_order",
+				)
+			if mwo and row.get("item_code"):
+				by_mwo.setdefault(mwo, set()).add(row.item_code)
+
+		allowed: dict = {}
+		for mwo, item_codes in by_mwo.items():
+			held = get_mwo_held_batch_map(
+				mwo, keys=[(code, None) for code in sorted(item_codes)]
+			)
+			for code, batch in held:
+				if code in item_codes and batch:
+					allowed.setdefault(code, set()).add(batch)
+		self.flags.allowed_batches_by_item = allowed
+
 	@frappe.whitelist()
 	def update_batches(self):
 		if not self.auto_created:
@@ -127,6 +177,19 @@ class CustomStockEntry(StockEntry):
 				[row.get("department") for row in self.items],
 				["custom_can_not_make_dg_entry"],
 			)
+			# Sits INSIDE `not self.auto_created` on purpose, and must stay paired with
+			# the FIFO loop below rather than hoisted out of it. This is the SOFT half of
+			# the guard whose hard half, validate_receive_batches_are_held, is wired
+			# unconditionally on Stock Entry `validate` -- so the two only agree while no
+			# auto-created entry is a MOP-debiting receive. That holds today: every
+			# auto_created writer mints "Manufacture"/repack/transfer types and stamps its
+			# own batches, and create_mr_wo_stock_entry (the one receive writer) leaves
+			# auto_created unset, so it runs this narrowing. Hoisting the call would not
+			# buy safety for a future auto-created receive either -- FIFO never runs for
+			# those, so there is nothing to narrow; such a writer must pick MOP-aware
+			# batches itself, exactly as create_mr_wo_stock_entry does, or the hard guard
+			# will reject the document it just built.
+			self._set_allowed_batches_for_receive()
 			for row in self.items:
 				if (
 					row.get("department")
