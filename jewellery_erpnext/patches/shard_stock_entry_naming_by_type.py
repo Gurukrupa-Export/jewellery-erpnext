@@ -62,6 +62,11 @@ _DOCTYPE = "Stock Entry"
 #: ``rollback()`` operates only on these — never on a prefix match, which would sweep up
 #: pre-existing rules that merely share the company prefix.
 _CREATED_KEY = "shard_se_naming_created"
+#: ``tabDefaultValue`` key holding the explicit lifecycle state, per company.
+_STATE_KEY = "shard_se_naming_state"
+_NOT_APPLIED = "NOT_APPLIED"
+_ACTIVE = "ACTIVE"
+_ROLLED_BACK = "ROLLED_BACK"
 _PREFIX_DIGITS = 5
 _PRIORITY = 0
 #: Abbreviations that cannot be harvested from an existing rule for the same type.
@@ -72,6 +77,25 @@ _ABBR_OVERRIDES = {
 
 def _created_key(company):
 	return f"{_CREATED_KEY}::{company}"
+
+
+def _state_key(company):
+	return f"{_STATE_KEY}::{company}"
+
+
+def _get_state(company):
+	"""Lifecycle state for ``company``: NOT_APPLIED / ACTIVE / ROLLED_BACK.
+
+	Kept EXPLICIT rather than inferred from "a creation record exists", because the record
+	survives a rollback by design (it is what makes rollback exact). Inferring from it left a
+	rolled-back site still reporting as sharded, so the new-type hook kept creating active
+	rules on it.
+	"""
+	return frappe.db.get_default(_state_key(company)) or _NOT_APPLIED
+
+
+def _set_state(company, state):
+	frappe.db.set_default(_state_key(company), state)
 
 
 def _get_created(company):
@@ -102,22 +126,84 @@ def _default_company():
 	)
 
 
-def _rule_map():
-	"""Return ``{(company, stock_entry_type): rule_name}`` for every Stock Entry rule."""
-	rows = frappe.db.sql(
-		"""
-		SELECT r.name,
+def _rule_rows(active_only=False):
+	"""Every Stock Entry naming rule, with its company/type conditions and a total condition
+	count so a rule carrying EXTRA restrictions can be told apart from a plain one.
+
+	``active_only`` filters out disabled rules. Coverage decisions MUST pass it: a disabled
+	rule names nothing, so treating it as coverage silently leaves that type on the shared
+	``MAT-STE-`` row — and, after a rollback, makes the whole shard un-reappliable.
+	"""
+	return frappe.db.sql(
+		f"""
+		SELECT r.name, r.disabled,
+		       COUNT(*)                                                    AS n_conditions,
 		       MAX(CASE WHEN c.field = 'company'           THEN c.value END) AS company,
 		       MAX(CASE WHEN c.field = 'stock_entry_type'  THEN c.value END) AS setype
 		FROM `tabDocument Naming Rule` r
 		JOIN `tabDocument Naming Rule Condition` c ON c.parent = r.name
-		WHERE r.document_type = %s
+		WHERE r.document_type = %s {"AND r.disabled = 0" if active_only else ""}
 		GROUP BY r.name
 		""",
 		(_DOCTYPE,),
 		as_dict=True,
 	)
+
+
+def _rule_map(active_only=False):
+	"""``{(company, stock_entry_type): rule_name}``. See :func:`_rule_rows` for ``active_only``."""
+	rows = _rule_rows(active_only=active_only)
 	return {(r.company, r.setype): r.name for r in rows if r.company and r.setype}
+
+
+def _coverage(company, reenablable=()):
+	"""Classify each ``stock_entry_type`` for ``company`` as covered or conflicting.
+
+	``reenablable`` names rules THIS patch created that a previous ``rollback()`` disabled.
+	They are the expected rolled-back state, not a conflict a human must adjudicate — the
+	caller re-enables them — so they are excluded from the conflict report. Without this,
+	restoring a rolled-back shard reports every restored type as broken.
+
+	Returns ``(covered, conflicts)`` where ``covered`` maps type -> rule name for rules that
+	FULLY cover the pair — active, and conditioned on exactly ``company`` + ``stock_entry_type``
+	and nothing else — and ``conflicts`` lists ``(type, reason, rule)`` for everything the
+	planner must NOT silently skip:
+
+	* a rule exists but is **disabled** (names nothing today; the post-rollback state);
+	* a rule carries **extra conditions**, so it covers only a subset of that type;
+	* **several** rules claim the same pair.
+
+	A conflict is reported to the operator rather than treated as coverage or overwritten,
+	because either answer could be wrong and only a human knows which.
+	"""
+	reenablable = set(reenablable or ())
+	covered, conflicts, seen = {}, [], {}
+	for r in _rule_rows():
+		if r.company != company or not r.setype:
+			continue
+		if r.disabled:
+			if r.name in reenablable:
+				# Ours, and about to be re-enabled — it IS the coverage for this type. It
+				# must not be reported as a conflict (it is the expected rolled-back state)
+				# NOR left uncovered, which would make _plan mint a duplicate rule beside it.
+				seen[r.setype] = r.name
+				covered[r.setype] = r.name
+			else:
+				conflicts.append((r.setype, "rule exists but is DISABLED", r.name))
+			continue
+		if r.n_conditions != 2:
+			conflicts.append(
+				(r.setype, f"rule has {r.n_conditions} conditions (expected 2)", r.name)
+			)
+			continue
+		if r.setype in seen:
+			conflicts.append(
+				(r.setype, "multiple active rules claim this type", r.name)
+			)
+			continue
+		seen[r.setype] = r.name
+		covered[r.setype] = r.name
+	return covered, conflicts
 
 
 def _harvest_abbreviations():
@@ -170,22 +256,37 @@ def _max_existing_suffix(stem):
 	return int(row[0][0] or 0)
 
 
-def _plan(company, all_types=False):
-	"""Build the list of rules to create. Never touches the database."""
-	existing = _rule_map()
+def _historical_counts():
+	"""``{stock_entry_type: document count}``, always computed.
+
+	Fetched independently of the type list so an ``all_types`` run still reports the true
+	blast radius. Reporting 0 for every type would tell the operator that nothing is on the
+	shared row, which is the opposite of the truth and defeats the point of the dry run.
+	"""
+	rows = frappe.db.sql(
+		"SELECT stock_entry_type t, COUNT(*) c FROM `tabStock Entry` GROUP BY 1 ORDER BY c DESC",
+		as_dict=True,
+	)
+	return {r.t: r.c for r in rows if r.t}
+
+
+def _plan(company, all_types=False, reenablable=()):
+	"""Build the list of rules to create, plus the conflicts a human must resolve.
+
+	Returns ``(plan, skipped, conflicts)``. Never touches the database.
+	``reenablable`` — see :func:`_coverage`.
+	"""
+	covered, conflicts = _coverage(company, reenablable=reenablable)
 	abbrs = _harvest_abbreviations()
 	abbrs.update(_ABBR_OVERRIDES)
 
+	counts = _historical_counts()
 	if all_types:
 		types = frappe.get_all("Stock Entry Type", pluck="name")
-		counts = {}
+		# Keep the busiest types first so the dry-run report leads with what matters.
+		types = sorted(types, key=lambda t: -counts.get(t, 0))
 	else:
-		rows = frappe.db.sql(
-			"SELECT stock_entry_type t, COUNT(*) c FROM `tabStock Entry` GROUP BY 1 ORDER BY c DESC",
-			as_dict=True,
-		)
-		types = [r.t for r in rows if r.t]
-		counts = {r.t: r.c for r in rows if r.t}
+		types = [t for t, _c in sorted(counts.items(), key=lambda kv: -kv[1])]
 
 	company_abbr = frappe.db.get_value("Company", company, "abbr") or "CO"
 	# Prefixes already in use anywhere — a new rule must never reuse one.
@@ -195,10 +296,14 @@ def _plan(company, all_types=False):
 		)
 	)
 
+	conflicted = {t for t, _reason, _rule in conflicts}
 	plan, skipped = [], []
 	for setype in types:
-		if (company, setype) in existing:
-			skipped.append((setype, "rule already exists"))
+		if setype in covered:
+			skipped.append((setype, "active rule already covers it"))
+			continue
+		if setype in conflicted:
+			# Neither covered nor safe to create alongside — a human must resolve it.
 			continue
 		abbr = abbrs.get(setype) or _derive_abbr(setype)
 		prefix = f"{company_abbr}-SE-{abbr}-.YY.-"
@@ -218,7 +323,7 @@ def _plan(company, all_types=False):
 				"docs": counts.get(setype, 0),
 			}
 		)
-	return plan, skipped
+	return plan, skipped, conflicts
 
 
 def shard(company=None, confirm=False, all_types=True):
@@ -234,33 +339,77 @@ def shard(company=None, confirm=False, all_types=True):
 	                   has historical documents.
 	"""
 	company = company or _default_company()
-	plan, skipped = _plan(company, all_types=all_types)
+	state = _get_state(company)
+
+	# Rules this patch created and a previous rollback() disabled. Re-enabling them is what
+	# makes shard -> rollback -> shard restore the earlier state instead of dead-ending: they
+	# already hold the right prefixes and counters, so recreating them is neither possible
+	# (prefix taken) nor desirable (the counter would restart). Resolved BEFORE planning so
+	# they are not also reported as conflicts.
+	recorded = _get_created(company) or []
+	to_reenable = [
+		r
+		for r in recorded
+		if frappe.db.exists("Document Naming Rule", r)
+		and frappe.db.get_value("Document Naming Rule", r, "disabled")
+	]
+
+	plan, skipped, conflicts = _plan(
+		company, all_types=all_types, reenablable=to_reenable
+	)
 
 	print(f"[shard] company={company!r}  confirm={confirm}  all_types={all_types}")
+	print(f"[shard] current state: {state}")
 	if skipped:
-		print(f"[shard] {len(skipped)} type(s) already covered — untouched.")
-	if not plan:
-		print("[shard] Nothing to do: every stock_entry_type already has a rule.")
+		print(
+			f"[shard] {len(skipped)} type(s) already covered by an active rule — untouched."
+		)
+	if to_reenable:
+		print(
+			f"[shard] {len(to_reenable)} previously created rule(s) are DISABLED and will be re-enabled."
+		)
+	if conflicts:
+		print(
+			f"\n[shard] {len(conflicts)} CONFLICT(S) — these types are NOT covered and NOT safe to\n"
+			f"[shard] auto-create alongside. Resolve by hand, then re-run:"
+		)
+		for setype, reason, rule in conflicts:
+			print(f"    {setype[:44]:<45} {reason:<42} ({rule})")
+
+	if not plan and not to_reenable:
+		print(
+			"\n[shard] Nothing to do: every stock_entry_type already has an active rule."
+		)
 		return
 
-	print(f"[shard] {len(plan)} rule(s) to create:\n")
-	print(f"{'stock_entry_type':<45} {'prefix':<28} {'docs':>7} {'seed':>6}")
-	for p in plan:
-		print(
-			f"{p['setype'][:44]:<45} {p['prefix']:<28} {p['docs']:>7} {p['seed_to']:>6}"
-		)
+	if not plan:
+		print("\n[shard] No new rules needed — only re-enabling.")
 
-	moved = sum(p["docs"] for p in plan)
-	print(
-		f"\n[shard] {moved} historical Stock Entries are on the shared MAT-STE- row today;"
-	)
-	print(f"[shard] new ones of these types would spread across {len(plan)} counters.")
+	if plan:
+		print(f"\n[shard] {len(plan)} rule(s) to create:\n")
+		print(f"{'stock_entry_type':<45} {'prefix':<28} {'docs':>7} {'seed':>6}")
+		for p in plan:
+			print(
+				f"{p['setype'][:44]:<45} {p['prefix']:<28} {p['docs']:>7} {p['seed_to']:>6}"
+			)
+
+		moved = sum(p["docs"] for p in plan)
+		print(
+			f"\n[shard] {moved} historical Stock Entries of these types are on the shared "
+			f"MAT-STE- row today;"
+		)
+		print(f"[shard] new ones would spread across {len(plan)} counters.")
 
 	if not confirm:
 		print(
 			"\n[shard] DRY-RUN only — nothing changed. Re-run with confirm=True to apply."
 		)
 		return
+
+	for rule in to_reenable:
+		frappe.db.set_value(
+			"Document Naming Rule", rule, "disabled", 0, update_modified=False
+		)
 
 	created_names = []
 	for p in plan:
@@ -287,15 +436,22 @@ def shard(company=None, confirm=False, all_types=True):
 		created_names.append(doc.name)
 
 	# Record the EXACT names before committing, so rollback() never has to guess.
-	recorded = _record_created(company, created_names)
+	all_recorded = _record_created(company, created_names)
+	_set_state(company, _ACTIVE)
 	frappe.clear_cache(doctype=_DOCTYPE)
 	frappe.cache_manager.clear_doctype_map("Document Naming Rule", _DOCTYPE)
 	frappe.db.commit()
 	print(
-		f"\n[shard] APPLIED: created {len(created_names)} rule(s). New Stock Entries will "
-		f"name off {frappe.db.get_value('Company', company, 'abbr')}-SE-<type>-<yy>-#####."
+		f"\n[shard] APPLIED: created {len(created_names)} rule(s), re-enabled "
+		f"{len(to_reenable)}. New Stock Entries will name off "
+		f"{frappe.db.get_value('Company', company, 'abbr')}-SE-<type>-<yy>-#####."
 	)
-	print(f"[shard] Recorded {len(recorded)} rule name(s) for exact rollback.")
+	print(f"[shard] Recorded {len(all_recorded)} rule name(s); state -> {_ACTIVE}.")
+	if conflicts:
+		print(
+			f"[shard] {len(conflicts)} conflicting type(s) were NOT covered — see above; "
+			f"they still fall back to MAT-STE-."
+		)
 
 
 def rollback(company=None):
@@ -340,6 +496,10 @@ def rollback(company=None):
 		)
 		disabled += 1
 
+	# The recorded names are deliberately KEPT — they are what lets shard() re-enable exactly
+	# these rules later. The lifecycle state, not the record's existence, is what marks the
+	# company as no longer sharded.
+	_set_state(company, _ROLLED_BACK)
 	frappe.clear_cache(doctype=_DOCTYPE)
 	frappe.cache_manager.clear_doctype_map("Document Naming Rule", _DOCTYPE)
 	frappe.db.commit()
@@ -348,15 +508,66 @@ def rollback(company=None):
 		print(f"[shard] {missing} recorded rule(s) no longer exist — skipped.")
 	untouched = sum(1 for (co, _t) in _rule_map() if co == company) - disabled
 	print(f"[shard] Left {untouched} pre-existing rule(s) for this company untouched.")
+	print(f"[shard] State -> {_ROLLED_BACK}. Re-run shard(confirm=True) to restore.")
 
 
 def sharded_companies():
-	"""Companies whose Stock Entry naming this patch has already sharded."""
-	out = []
-	for company in frappe.get_all("Company", pluck="name"):
-		if _get_created(company):
-			out.append(company)
-	return out
+	"""Companies whose Stock Entry naming is CURRENTLY sharded (state ``ACTIVE``).
+
+	Keyed off the explicit lifecycle state, not the creation record — the record outlives a
+	rollback on purpose, so using it here left the new-type hook armed on a rolled-back site.
+	"""
+	return [
+		company
+		for company in frappe.get_all("Company", pluck="name")
+		if _get_state(company) == _ACTIVE
+	]
+
+
+def verify_shard(company=None, verbose=True):
+	"""Report every Stock Entry Type without an active, full-coverage naming rule.
+
+	The new-type hook is best-effort by design (a naming gap must never block creating a
+	type), so a failure there is silent. This turns that into something checkable — run it
+	from the scheduler or by hand. Returns ``{"state", "uncovered", "conflicts"}``.
+	"""
+	company = company or _default_company()
+	covered, conflicts = _coverage(company)
+	counts = _historical_counts()
+	uncovered = sorted(
+		(
+			t
+			for t in frappe.get_all("Stock Entry Type", pluck="name")
+			if t not in covered
+		),
+		key=lambda t: -counts.get(t, 0),
+	)
+	state = _get_state(company)
+	if verbose:
+		print(f"[verify] company={company!r}  state={state}")
+		print(f"[verify] covered by an active rule : {len(covered)}")
+		print(f"[verify] NOT covered               : {len(uncovered)}")
+		for t in uncovered:
+			why = next((r for s, r, _ in conflicts if s == t), "no rule")
+			print(f"    {t[:44]:<45} {why:<42} docs={counts.get(t, 0)}")
+		if state == _ACTIVE and uncovered:
+			print(
+				"[verify] State is ACTIVE but some types fall back to MAT-STE- — "
+				"run repair_missing_rules()."
+			)
+	return {"state": state, "uncovered": uncovered, "conflicts": conflicts}
+
+
+def repair_missing_rules(company=None, confirm=False):
+	"""Create the naming rules ``verify_shard`` reports as missing. Dry-run by default."""
+	company = company or _default_company()
+	if _get_state(company) != _ACTIVE:
+		print(
+			f"[repair] state is {_get_state(company)}, not {_ACTIVE} — refusing. "
+			f"Run shard(confirm=True) first."
+		)
+		return
+	return shard(company=company, confirm=confirm, all_types=True)
 
 
 def ensure_rules_for_type(setype, company=None):
@@ -372,7 +583,7 @@ def ensure_rules_for_type(setype, company=None):
 	companies = [company] if company else sharded_companies()
 	created = []
 	for co in companies:
-		plan, _skipped = _plan(co, all_types=True)
+		plan, _skipped, _conflicts = _plan(co, all_types=True)
 		for p in plan:
 			if p["setype"] != setype:
 				continue
