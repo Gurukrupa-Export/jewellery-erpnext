@@ -11,6 +11,7 @@
   "item_code",
   "manufacturing_bom",
   "bom",
+  "copy_bom",
   "mould_no",
   "delivery_date",
   "estimated_delivery_date",
@@ -172,6 +173,13 @@
    "fieldname": "bom",
    "fieldtype": "Link",
    "label": "BOM",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "copy_bom",
+   "fieldtype": "Link",
+   "label": "Copy BOM",
    "options": "BOM",
    "read_only": 1
   },
