@@ -28,6 +28,17 @@ class SerialNumberCreator(Document):
 		# Runs on draft save AND on submit (_submit -> save), so a document created
 		# before this existed repairs itself the next time it is saved or submitted.
 		split_source_rows_by_reservation(self)
+		# total_weight is DERIVED from fg_details, so recompute it here rather than only
+		# in before_insert. It used to be computed once at insert on a field that is
+		# writable in the form, with nothing at submit reconciling the two --
+		# calulate_id_wise_sum_up checks fg_details against source_table and ignores
+		# total_weight entirely. A typed-over value therefore survived onto a submitted
+		# document: three SNCs on kg-gk carry 40.99 / 10.48 / 11.14 against FG BOMs of
+		# 19.18 / 3.20 / 3.45. Those tags came out right only because
+		# ``Serial No.custom_gross_wt`` has ``fetch_from = custom_bom_no.gross_weight``
+		# and the BOM is built from fg_details -- i.e. the field was saved by a
+		# safety net, not by design. Recomputing makes it honest.
+		self._compute_total_weight()
 
 	def before_insert(self):
 		validate_not_metal_only(self)

@@ -8,10 +8,10 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
 	assert_no_sample_in_operations,
 )
-from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
-	update_mop_balance,
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	get_ledgered_operations,
 )
-from jewellery_erpnext.utils import is_mwo_refined
+from jewellery_erpnext.utils import get_refined_mwos, is_mwo_refined
 
 
 def validate_no_sample_issue(doc, method=None):
@@ -119,125 +119,319 @@ def get_summary_data(doc):
 	return data
 
 
+#: The eight weight columns a Department IR Operation row carries, in the order the grid
+#: shows them. Shared by the resolver, the single-row fetcher and the batched reads so a
+#: field cannot be added to one and forgotten in the others.
+MOP_WT_FIELDS = (
+	"gross_wt",
+	"diamond_wt",
+	"net_wt",
+	"finding_wt",
+	"diamond_pcs",
+	"gemstone_pcs",
+	"gemstone_wt",
+	"other_wt",
+)
+
+#: Every weight field except gross_wt, which has its own two-step previous-MOP fallback.
+_FALLBACK_FIELDS = tuple(f for f in MOP_WT_FIELDS if f != "gross_wt")
+
+
+def resolve_department_ir_row_weights(
+	mop_data, previous_mop_data, is_ledgered, is_refined
+):
+	"""Resolve the eight weights a Department IR Operation row should carry.
+
+	THE single definition of that rule. ``validate_and_update_gross_wt_from_mop`` calls it
+	per row on every draft save (batching its reads across the child table), and
+	``resolve_weights_for_operation`` feeds the single-row callers --
+	``DepartmentIR.scan_manufacturing_operation`` and the "Get Manufacturing Operations"
+	mapper. So the grid preview and the saved document cannot disagree: they used to be two
+	hand-written implementations and had already drifted (the client never got the refining
+	guard, and it compared ``x > 0`` where the server used ``x or y``).
+
+	Mirror the operation exactly -- no previous-MOP fallback -- in three cases:
+
+	* ``is_finding``: a finding's "receive from work order" legitimately empties the
+	  operation balance.
+	* ``is_refined``: the Refining Entry zeroed the weights because the metal physically
+	  left for the refinery, so a 0 here is real (the "gross wt reappears after refining"
+	  bug).
+	* ``is_ledgered``: MOP Log has been written for this operation, so
+	  ``recalculate_manufacturing_operation_weights`` owns every bucket below and a 0 is a
+	  MEASUREMENT. This is the case a full "Make Receive Entry" produces -- a
+	  ``Material Receive (WORK ORDER)`` debits the ledger to nothing, and the ``or``-chain
+	  then resurrected the PREVIOUS operation's figures, mixing that op's post-loss
+	  ``received_gross_wt`` with its pre-loss ``net_wt`` and printing gross < net, which
+	  ``gross = net + finding + diamond_g + gemstone_g + other`` forbids. It also covers a
+	  stone-only operation, whose ``net_wt`` is a real 0 while ``gross_wt`` is positive.
+
+	The three are complementary, not redundant: a refined MWO that is recast has a positive
+	post-refining ledger balance, and an operation can be a finding before anything is
+	ledgered.
+
+	The fallback is kept for an operation with NO ledger rows: nothing has arrived yet,
+	``update_new_mop_wtg`` has not seeded it, and the previous MOP is the only estimate
+	available. That is the normal state of a freshly minted operation and what the grid
+	shows the operator as the weight expected to arrive.
+
+	Values are written as ``mop_data.get(field) or 0``, never a literal 0: diamond and
+	gemstone buckets can be authored outside MOP Log (see the ``prefixes`` narrowing in
+	``recalculate_manufacturing_operation_weights``, which exists so the MWO->MOP seed
+	survives), and forcing zeros would wipe a legitimately seeded stone weight.
+	"""
+	mop_data = mop_data or frappe._dict()
+	previous_mop_data = previous_mop_data or frappe._dict()
+	resolved = frappe._dict()
+
+	if mop_data.get("is_finding") or is_refined or is_ledgered:
+		for field in MOP_WT_FIELDS:
+			resolved[field] = mop_data.get(field) or 0
+		return resolved
+
+	resolved.gross_wt = (
+		mop_data.get("gross_wt")
+		or previous_mop_data.get("received_gross_wt")
+		or previous_mop_data.get("gross_wt")
+	)
+	for field in _FALLBACK_FIELDS:
+		resolved[field] = mop_data.get(field) or previous_mop_data.get(field)
+
+	return resolved
+
+
 def validate_and_update_gross_wt_from_mop(self):
 	if not self.department_ir_operation:
 		return
 
 	validate_duplicate(self)
-	for row in self.department_ir_operation:
-		mwo_list = []
-		validate_allowed_operation(row.manufacturing_work_order, self.next_department)
-		doc = update_mop_balance(row.manufacturing_operation)
-		update_previous_mop_data(doc)
 
-		mop_data = frappe.db.get_value(
-			"Manufacturing Operation",
-			row.manufacturing_operation,
-			[
-				"gross_wt",
-				"diamond_wt",
-				"net_wt",
-				"finding_wt",
-				"diamond_pcs",
-				"gemstone_pcs",
-				"gemstone_wt",
-				"other_wt",
-				"is_finding",
-			],
-			as_dict=1,
-		)
-		previous_mop = frappe.db.get_value(
-			"Manufacturing Operation", row.manufacturing_operation, "previous_mop"
-		)
+	# A cancelled Issue leg nulls manufacturing_operation on its rows
+	# (on_submit_issue_new), and frappe.db.get_value with a blank name has no WHERE clause
+	# and would hand back an arbitrary operation's weights.
+	live_rows = [
+		row for row in self.department_ir_operation if row.manufacturing_operation
+	]
+	mop_names = {row.manufacturing_operation for row in live_rows}
 
-		previous_mop_data = frappe._dict()
-
-		if previous_mop:
-			previous_mop_data = frappe.db.get_value(
+	# Batched. This loop used to run one frappe.get_doc (a full document load), four
+	# get_values and one joined refining query PER ROW, and a Department IR carries up to
+	# 300 rows -- roughly 2,400 round trips plus 300 document loads for one draft save.
+	mop_map = {}
+	if mop_names:
+		mop_map = {
+			d.name: d
+			for d in frappe.get_all(
 				"Manufacturing Operation",
-				previous_mop,
-				[
-					"received_gross_wt",
-					"gross_wt",
-					"diamond_wt",
-					"net_wt",
-					"finding_wt",
-					"diamond_pcs",
-					"gemstone_pcs",
-					"gemstone_wt",
-					"other_wt",
-				],
-				as_dict=1,
+				filters={"name": ["in", sorted(mop_names)]},
+				fields=["name", "previous_mop", "is_finding", *MOP_WT_FIELDS],
+				limit_page_length=0,
 			)
+		}
 
-		if mop_data.get("is_finding") or is_mwo_refined(row.manufacturing_work_order):
-			# Finding: mirror the current operation exactly — no previous-MOP fallback.
-			# A finding's "receive from work order" legitimately empties the operation
-			# balance, so resurrecting the previous MOP's weights would show phantom values.
-			# Refined MWO: same rule — the Refining Entry zeroed the operation weights
-			# because the metal physically left for the refinery, so a 0 here is real;
-			# the `or`-fallback below would resurrect the pre-refining weight from the
-			# previous MOP (the "gross wt reappears after refining" bug).
-			row.gross_wt = mop_data.get("gross_wt") or 0
-			row.net_wt = mop_data.get("net_wt") or 0
-			row.diamond_wt = mop_data.get("diamond_wt") or 0
-			row.finding_wt = mop_data.get("finding_wt") or 0
-			row.diamond_pcs = mop_data.get("diamond_pcs") or 0
-			row.gemstone_pcs = mop_data.get("gemstone_pcs") or 0
-			row.gemstone_wt = mop_data.get("gemstone_wt") or 0
-			row.other_wt = mop_data.get("other_wt") or 0
-		else:
-			row.gross_wt = (
-				mop_data.get("gross_wt")
-				or previous_mop_data.get("received_gross_wt")
-				or previous_mop_data.get("gross_wt")
+	previous_names = {d.previous_mop for d in mop_map.values() if d.previous_mop}
+	previous_map = {}
+	if previous_names:
+		previous_map = {
+			d.name: d
+			for d in frappe.get_all(
+				"Manufacturing Operation",
+				filters={"name": ["in", sorted(previous_names)]},
+				fields=["name", "received_gross_wt", "received_net_wt", *MOP_WT_FIELDS],
+				limit_page_length=0,
 			)
-			row.net_wt = mop_data.get("net_wt") or previous_mop_data.get("net_wt")
-			row.diamond_wt = mop_data.get("diamond_wt") or previous_mop_data.get(
-				"diamond_wt"
-			)
-			row.finding_wt = mop_data.get("finding_wt") or previous_mop_data.get(
-				"finding_wt"
-			)
-			row.diamond_pcs = mop_data.get("diamond_pcs") or previous_mop_data.get(
-				"diamond_pcs"
-			)
-			row.gemstone_pcs = mop_data.get("gemstone_pcs") or previous_mop_data.get(
-				"gemstone_pcs"
-			)
-			row.gemstone_wt = mop_data.get("gemstone_wt") or previous_mop_data.get(
-				"gemstone_wt"
-			)
-			row.other_wt = mop_data.get("other_wt") or previous_mop_data.get("other_wt")
+		}
+
+	ledgered = get_ledgered_operations(mop_names)
+	refined = get_refined_mwos({row.manufacturing_work_order for row in live_rows})
+
+	# Was reset INSIDE the loop, so only the last row's MWO ever escaped -- the "Repairing"
+	# detection in valid_reparing_or_next_operation has been judging a whole document by
+	# one work order.
+	mwo_list = []
+	for row in self.department_ir_operation:
+		validate_allowed_operation(row.manufacturing_work_order, self.next_department)
+
+		if not row.manufacturing_operation:
+			continue
+
+		mop_data = mop_map.get(row.manufacturing_operation) or frappe._dict()
+		previous_mop_data = (
+			previous_map.get(mop_data.get("previous_mop")) or frappe._dict()
+		)
+		update_previous_mop_data(mop_data, previous_mop_data)
+
+		resolved = resolve_department_ir_row_weights(
+			mop_data,
+			previous_mop_data,
+			is_ledgered=row.manufacturing_operation in ledgered,
+			is_refined=row.manufacturing_work_order in refined,
+		)
+		apply_department_ir_weights(row, resolved)
+
 		mwo_list.append(row.manufacturing_work_order)
 
 	return mwo_list
 
 
-def update_previous_mop_data(doc):
-	previous_data = frappe.db.get_value(
+def resolve_weights_for_operation(
+	manufacturing_operation, manufacturing_work_order=None
+):
+	"""Fetch-and-resolve for callers holding ONE operation -- the scan and the mapper.
+
+	``validate_and_update_gross_wt_from_mop`` does not use this: it batches its reads
+	across the whole child table and calls :func:`resolve_department_ir_row_weights`
+	directly. Both end at the same decision function, so a row built here is the row the
+	next save would compute.
+
+	``manufacturing_work_order`` is an override for callers that already hold the child
+	row's value; it feeds the refining test only. The child's ``fetch_from`` carries
+	``fetch_if_empty``, so a caller-supplied MWO is not refreshed from the link and the two
+	can legitimately differ.
+
+	Returns the eight weights plus the context needed to build a row.
+	"""
+	if not manufacturing_operation:
+		frappe.throw(_("Manufacturing Operation is required to resolve weights"))
+
+	mop_data = frappe.db.get_value(
 		"Manufacturing Operation",
-		doc.previous_mop,
-		["received_gross_wt", "received_net_wt"],
+		manufacturing_operation,
+		[
+			"name",
+			"manufacturing_work_order",
+			"status",
+			"previous_mop",
+			"is_finding",
+			*MOP_WT_FIELDS,
+		],
 		as_dict=1,
 	)
+	if not mop_data:
+		frappe.throw(_("No Manufacturing Operation Found"))
 
-	if previous_data:
-		if not previous_data.get("received_net_wt"):
-			frappe.db.set_value(
-				"Manufacturing Operation",
-				doc.previous_mop,
-				"received_net_wt",
-				doc.net_wt,
-			)
+	mwo = manufacturing_work_order or mop_data.manufacturing_work_order
 
-		if not previous_data.get("received_gross_wt"):
-			frappe.db.set_value(
+	# Guarded on purpose. frappe.db.get_value(dt, None, ...) degrades into an unfiltered
+	# read of the first row by the doctype's default sort, which for Manufacturing
+	# Operation is `modified DESC` -- the most recently touched operation in the system,
+	# whose weights would then feed the fallback.
+	previous_mop_data = frappe._dict()
+	if mop_data.previous_mop:
+		previous_mop_data = (
+			frappe.db.get_value(
 				"Manufacturing Operation",
-				doc.previous_mop,
-				"received_gross_wt",
-				doc.gross_wt,
+				mop_data.previous_mop,
+				["received_gross_wt", "received_net_wt", *MOP_WT_FIELDS],
+				as_dict=1,
 			)
+			or frappe._dict()
+		)
+
+	resolved = resolve_department_ir_row_weights(
+		mop_data,
+		previous_mop_data,
+		is_ledgered=bool(get_ledgered_operations([mop_data.name])),
+		is_refined=is_mwo_refined(mwo),
+	)
+	resolved.update(
+		{
+			"manufacturing_operation": mop_data.name,
+			"manufacturing_work_order": mwo,
+			"status": mop_data.status,
+		}
+	)
+	return resolved
+
+
+def apply_department_ir_weights(row, values):
+	"""Copy the eight resolved weights onto a Department IR Operation row.
+
+	Only the weight columns are touched -- the caller owns manufacturing_operation /
+	manufacturing_work_order / status.
+	"""
+	for field in MOP_WT_FIELDS:
+		row.set(field, values.get(field))
+
+
+def warn_empty_operation_balance(doc, method=None):
+	"""Flag an Issue whose operations hold nothing, without blocking it.
+
+	After a full "Make Receive Entry" the operation's ledger is empty, so the transfer moves
+	no material -- ``create_mop_log_for_department_ir`` clones
+	``get_current_mop_balance_rows``, and an Issue to an ordinary department creates no
+	Stock Entry at all. The submit is therefore harmless but almost certainly not what the
+	operator intended, so warn rather than throw: this bench has precedent against blocking
+	movements (a refined MWO still gets recast).
+
+	Wired on before_submit because before_validate skips the weight refresh once
+	docstatus == 1, so the child rows cannot be trusted to still reflect the ledger here --
+	this re-reads it.
+	"""
+	if getattr(doc, "type", None) != "Issue":
+		return
+
+	rows = [
+		r
+		for r in (doc.get("department_ir_operation") or [])
+		if r.manufacturing_operation
+	]
+	if not rows:
+		return
+
+	mop_names = {r.manufacturing_operation for r in rows}
+	ledgered = get_ledgered_operations(mop_names)
+	if not ledgered:
+		return
+
+	balances = frappe.get_all(
+		"Manufacturing Operation",
+		filters={"name": ["in", sorted(ledgered)]},
+		fields=["name", "gross_wt"],
+		limit_page_length=0,
+	)
+	empty = sorted(d.name for d in balances if not flt(d.gross_wt))
+	if not empty:
+		return
+
+	frappe.msgprint(
+		_("These operations hold no material and will transfer nothing: {0}").format(
+			", ".join(f"<b>{name}</b>" for name in empty)
+		),
+		title=_("Empty Operation Balance"),
+		indicator="orange",
+	)
+
+
+def update_previous_mop_data(mop_data, previous_mop_data):
+	"""Stamp the previous operation's received_* the first time this one has weights.
+
+	Takes the already-fetched dicts because the caller batches those reads, and MIRRORS each
+	write back into ``previous_mop_data``. The mirroring is load-bearing: the previous-MOP
+	fallback reads ``received_gross_wt`` in the same iteration and, before batching, saw the
+	value this function had just written.
+	"""
+	previous_mop = mop_data.get("previous_mop")
+	if not (previous_mop and previous_mop_data):
+		return
+
+	if not previous_mop_data.get("received_net_wt"):
+		frappe.db.set_value(
+			"Manufacturing Operation",
+			previous_mop,
+			"received_net_wt",
+			mop_data.get("net_wt"),
+		)
+		previous_mop_data.received_net_wt = mop_data.get("net_wt")
+
+	if not previous_mop_data.get("received_gross_wt"):
+		frappe.db.set_value(
+			"Manufacturing Operation",
+			previous_mop,
+			"received_gross_wt",
+			mop_data.get("gross_wt"),
+		)
+		previous_mop_data.received_gross_wt = mop_data.get("gross_wt")
 
 
 def validate_allowed_operation(manufacturing_work_order, next_department):

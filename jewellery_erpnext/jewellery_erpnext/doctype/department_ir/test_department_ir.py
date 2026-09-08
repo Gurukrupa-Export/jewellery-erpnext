@@ -13,6 +13,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir imp
 	fetch_and_update,
 	get_manufacturing_operations,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
+	MOP_WT_FIELDS,
+	resolve_department_ir_row_weights,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance import (
 	get_tolerance_failures,
 	validate_product_tolerance,
@@ -23,6 +27,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_ma
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.test_manufacturing_work_order import (
 	create_pmo,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	get_ledgered_operations,
 )
 
 
@@ -903,3 +910,161 @@ class TestScopedStoneBandsAreNotEnforced(UnitTestCase):
 			},
 		)
 		self.assertEqual(failures, [])
+
+
+class TestDepartmentIRWeightResolution(UnitTestCase):
+	"""The Department IR row must show what the operation actually holds.
+
+	Regression cover for the phantom-weight bug: after a full "Make Receive Entry" the
+	operation's ledger is empty and its gross_wt/net_wt are a legitimate 0, but the
+	previous-MOP `or`-fallback resurrected the PREVIOUS operation's figures -- mixing that
+	op's post-loss received_gross_wt into gross_wt and its pre-loss net_wt into net_wt, so
+	the row printed gross < net.
+	"""
+
+	# A previous operation carrying weights the fallback could wrongly borrow. The two
+	# gross figures differ on purpose: received_gross_wt is the post-loss scale weight and
+	# is what gross_wt used to be filled from, while net_wt is the pre-loss ledger weight.
+	PREVIOUS = dict(
+		received_gross_wt=15.35,
+		gross_wt=16.11,
+		net_wt=15.97,
+		diamond_wt=1.5,
+		finding_wt=2.5,
+		gemstone_wt=3.5,
+		other_wt=4.5,
+		diamond_pcs=6,
+		gemstone_pcs=7,
+	)
+
+	def _resolve(self, mop, is_ledgered=False, is_refined=False, previous=None):
+		return resolve_department_ir_row_weights(
+			frappe._dict(mop),
+			frappe._dict(self.PREVIOUS if previous is None else previous),
+			is_ledgered=is_ledgered,
+			is_refined=is_refined,
+		)
+
+	def _assert_mirrors_zero(self, resolved):
+		for field in MOP_WT_FIELDS:
+			self.assertEqual(
+				resolved.get(field), 0, f"{field} should mirror the operation's 0"
+			)
+
+	# ---- the fallback must survive, it is the common case ----
+
+	def test_unledgered_operation_still_borrows_from_previous(self):
+		"""A freshly minted operation has no ledger rows: nothing has arrived yet, so its
+		zeros are a placeholder and the grid should still forecast the incoming weight.
+		This is ~2729 of the 2761 zero-weight Not Started operations on kg-gk -- by far
+		the common path, and the one the fix must not disturb."""
+		resolved = self._resolve(dict.fromkeys(MOP_WT_FIELDS, 0))
+
+		self.assertEqual(resolved.gross_wt, 15.35)  # previous received_gross_wt wins
+		self.assertEqual(resolved.net_wt, 15.97)
+		self.assertEqual(resolved.diamond_wt, 1.5)
+		self.assertEqual(resolved.gemstone_pcs, 7)
+
+	def test_gross_wt_prefers_received_gross_wt_over_gross_wt(self):
+		resolved = self._resolve(dict.fromkeys(MOP_WT_FIELDS, 0))
+		self.assertEqual(resolved.gross_wt, self.PREVIOUS["received_gross_wt"])
+
+	def test_gross_wt_falls_through_to_previous_gross_wt(self):
+		previous = dict(self.PREVIOUS, received_gross_wt=0)
+		resolved = self._resolve(dict.fromkeys(MOP_WT_FIELDS, 0), previous=previous)
+		self.assertEqual(resolved.gross_wt, self.PREVIOUS["gross_wt"])
+
+	def test_operation_with_its_own_weights_never_borrows(self):
+		mop = dict(dict.fromkeys(MOP_WT_FIELDS, 0), gross_wt=9.0, net_wt=8.0)
+		resolved = self._resolve(mop)
+		self.assertEqual(resolved.gross_wt, 9.0)
+		self.assertEqual(resolved.net_wt, 8.0)
+
+	# ---- the fix: a ledgered operation's 0 is a measurement ----
+
+	def test_emptied_operation_shows_zero(self):
+		"""MOP-EW506: a full Material Receive (WORK ORDER) debited the ledger to nothing."""
+		resolved = self._resolve(dict.fromkeys(MOP_WT_FIELDS, 0), is_ledgered=True)
+		self._assert_mirrors_zero(resolved)
+
+	def test_emptied_operation_does_not_print_gross_below_net(self):
+		"""The invariant the phantom broke. gross = net + finding + stones + other, so a
+		row can never show gross < net; the old fallback produced 15.35 < 15.97 by taking
+		the two figures from different vintages of the previous operation."""
+		resolved = self._resolve(dict.fromkeys(MOP_WT_FIELDS, 0), is_ledgered=True)
+		self.assertGreaterEqual(resolved.gross_wt, resolved.net_wt)
+
+		# and the pre-fix behaviour is what would have violated it
+		unfixed = self._resolve(dict.fromkeys(MOP_WT_FIELDS, 0))
+		self.assertLess(unfixed.gross_wt, unfixed.net_wt)
+
+	def test_stone_only_operation_does_not_leak_previous_net_wt(self):
+		"""A ledgered operation holding only stones has a real net_wt of 0 while gross_wt
+		is positive. A balance-sum gate would call it "not empty" and let net_wt fall
+		through to the previous operation; ledger presence catches it. On kg-gk this case
+		outnumbers the reported one roughly 6 to 1."""
+		mop = dict(dict.fromkeys(MOP_WT_FIELDS, 0), gross_wt=0.4, diamond_wt=2.0)
+		resolved = self._resolve(mop, is_ledgered=True)
+
+		self.assertEqual(resolved.net_wt, 0)
+		self.assertEqual(resolved.gross_wt, 0.4)
+		self.assertEqual(resolved.diamond_wt, 2.0)
+		self.assertGreaterEqual(resolved.gross_wt, resolved.net_wt)
+
+	def test_seeded_stone_weight_is_not_forced_to_zero(self):
+		"""Mirroring writes `mop_data.get(f) or 0`, never a literal 0: diamond/gemstone
+		buckets can be authored outside MOP Log and must survive."""
+		mop = dict(dict.fromkeys(MOP_WT_FIELDS, 0), diamond_wt=3.3, gemstone_pcs=4)
+		resolved = self._resolve(mop, is_ledgered=True)
+		self.assertEqual(resolved.diamond_wt, 3.3)
+		self.assertEqual(resolved.gemstone_pcs, 4)
+
+	# ---- the two pre-existing guards keep working ----
+
+	def test_finding_mirrors_the_operation(self):
+		mop = dict(dict.fromkeys(MOP_WT_FIELDS, 0), is_finding=1)
+		self._assert_mirrors_zero(self._resolve(mop))
+
+	def test_refined_mwo_mirrors_the_operation(self):
+		"""The guard the client never had at all."""
+		resolved = self._resolve(dict.fromkeys(MOP_WT_FIELDS, 0), is_refined=True)
+		self._assert_mirrors_zero(resolved)
+
+	def test_refined_recast_keeps_its_own_positive_weights(self):
+		"""Why is_refined and is_ledgered are complementary rather than redundant: a
+		recast after refining leaves a positive post-refining ledger balance."""
+		mop = dict(dict.fromkeys(MOP_WT_FIELDS, 0), gross_wt=5.0, net_wt=5.0)
+		resolved = self._resolve(mop, is_refined=True, is_ledgered=False)
+		self.assertEqual(resolved.gross_wt, 5.0)
+		self.assertEqual(resolved.net_wt, 5.0)
+
+	# ---- no previous operation at all ----
+
+	def test_missing_previous_mop_does_not_borrow(self):
+		"""The client used to read the previous operation without checking previous_mop was
+		set, which frappe.client.get_value degrades into an unfiltered read of the most
+		recently modified operation in the system."""
+		mop = dict(dict.fromkeys(MOP_WT_FIELDS, 0), gross_wt=2.0)
+		resolved = self._resolve(mop, previous={})
+		self.assertEqual(resolved.gross_wt, 2.0)
+		self.assertIsNone(resolved.net_wt)
+
+
+class TestLedgeredOperations(UnitTestCase):
+	"""get_ledgered_operations answers "has material ever arrived here?"."""
+
+	def test_empty_input_short_circuits_without_a_query(self):
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.sql"
+		) as sql:
+			self.assertEqual(get_ledgered_operations([]), set())
+			self.assertEqual(get_ledgered_operations(None), set())
+			self.assertEqual(get_ledgered_operations([None, ""]), set())
+		sql.assert_not_called()
+
+	def test_returns_only_operations_with_rows(self):
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.sql",
+			return_value=(("MOP-A",),),
+		):
+			self.assertEqual(get_ledgered_operations(["MOP-A", "MOP-B"]), {"MOP-A"})

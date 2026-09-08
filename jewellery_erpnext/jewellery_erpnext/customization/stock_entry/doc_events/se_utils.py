@@ -220,6 +220,21 @@ def get_fifo_batches(self, row, consumed=None):
 		batch.qty = flt(batch.qty - consumed.get(batch_key, 0), 4)
 		if batch.qty <= 0:
 			continue
+		# Batch ownership. A department WIP warehouse is shared by every job in the
+		# department, so plain warehouse FIFO can hand this row another work order's
+		# metal -- which is how a 0.280 g return came to be booked against a batch its
+		# work order was never issued. ``allowed_batches_by_item`` is set by
+		# ``CustomStockEntry.update_batches`` only for MOP-debiting entry types, and
+		# only for items the MOP Log actually tracks on that work order; when the flag
+		# or the item is absent this is a no-op, so every other flow is byte-identical.
+		# Containing FIFO here is what keeps validate_receive_batches_are_held from
+		# handing the operator an unsavable form it cannot fix from the UI.
+		allowed = (getattr(self, "flags", None) or {}).get(
+			"allowed_batches_by_item"
+		) or {}
+		allowed = allowed.get(row.item_code)
+		if allowed is not None and batch.batch_no not in allowed:
+			continue
 		# Never auto-allocate Customer Sample Goods stock into a Work-Order use /
 		# issue-to-floor / manufacturing consumption row. Samples stay FIFO-eligible only
 		# for the Customer Goods movements (Received / Issue / Transfer). The

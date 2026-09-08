@@ -391,14 +391,34 @@ def validate_pcs(self):
 
 
 def get_receive_work_order_batch(self):
+	"""Fill a still-empty ``batch_no`` on a receive row from the operation's MOP Log.
+
+	Rarely reached: ``before_validate`` runs ``CustomStockEntry.update_batches`` first,
+	which fills every empty ``batch_no`` by warehouse FIFO, so by the time this executes
+	the row usually already carries a batch. It survives for rows that arrive here
+	batch-less, and it is deliberately the WEAKER of the two safeguards -- the binding
+	one is :func:`validate_receive_batches_are_held`, which rejects a batch the work
+	order never held rather than quietly rewriting it.
+
+	It never overwrites a batch the caller supplied. An earlier revision tried to, via
+	``if entry.batch_no not in batch_data.get(key, [])``, which raised ``TypeError:
+	argument of type 'NoneType' is not iterable`` whenever the MOP Log lookup missed
+	(the key is present with value ``None``, so the ``[]`` default never applies).
+	"""
 	batch_data = {}
+	# First pass: a batch already present on one row is the answer for its siblings
+	# sharing the same (operation, item) -- that was the point of keying a dict.
 	for entry in self.items:
-		key = (entry.manufacturing_operation, entry.item_code)
-
 		if entry.batch_no:
-			batch_data[key] = entry.batch_no
+			batch_data.setdefault(
+				(entry.manufacturing_operation, entry.item_code), entry.batch_no
+			)
 
-		if not batch_data.get(key):
+	for entry in self.items:
+		if entry.batch_no or not (entry.manufacturing_operation and entry.item_code):
+			continue
+		key = (entry.manufacturing_operation, entry.item_code)
+		if key not in batch_data:
 			batch_data[key] = frappe.db.get_value(
 				"MOP Log",
 				{
@@ -409,9 +429,268 @@ def get_receive_work_order_batch(self):
 				"batch_no",
 				order_by="flow_index desc, creation desc",
 			)
-
-		if entry.batch_no not in batch_data.get(key, []):
+		if batch_data[key]:
 			entry.batch_no = batch_data[key]
+
+
+def _format_holdings(holdings, limit=5):
+	"""``"B-12L9U: 15.920, B-1U6V7: 0.128 (total 16.236)"`` -- biggest first.
+
+	Shared by the work-order and operation summaries so that when the two describe the
+	same holdings they render the SAME string, and the caller can drop the duplicate
+	line instead of printing a 216-batch list twice.
+	"""
+	holdings = sorted(holdings, key=lambda pair: -pair[1])
+	if not holdings:
+		return "nothing"
+	total = flt(sum(qty for _batch, qty in holdings), 3)
+	shown = ", ".join(
+		f"{batch or 'no-batch'}: {qty}" for batch, qty in holdings[:limit]
+	)
+	rest = len(holdings) - limit
+	tail = f" (+{rest} more batches)" if rest > 0 else ""
+	return f"{shown}{tail} (total {total})"
+
+
+def _held_summary_text(held_map, item_code, limit=5):
+	"""What the whole work order holds of one item."""
+	return _format_holdings(
+		[
+			(batch, flt(row.get("qty_after_transaction_batch_based"), 3))
+			for (code, batch), row in held_map.items()
+			if code == item_code
+		],
+		limit=limit,
+	)
+
+
+def _other_work_orders_text(item_code, batch_no, exclude_mwo, limit=3):
+	"""Which OTHER work orders hold this batch -- the sentence that names the cause.
+
+	A shared casting batch is held by dozens of jobs at once; that is exactly why
+	warehouse FIFO can hand one job another job's metal. The tail is counted, not
+	printed.
+	"""
+	rows = frappe.db.get_all(
+		"MOP Log",
+		filters={
+			"item_code": item_code,
+			"batch_no": batch_no,
+			"is_cancelled": 0,
+			"manufacturing_work_order": ["!=", exclude_mwo or ""],
+		},
+		fields=["manufacturing_work_order"],
+		group_by="manufacturing_work_order",
+		limit_page_length=0,
+	)
+	names = sorted(
+		{r.manufacturing_work_order for r in rows if r.manufacturing_work_order}
+	)
+	if not names:
+		return "no other work order"
+	shown = ", ".join(names[:limit])
+	rest = len(names) - limit
+	return f"{shown} (+{rest} more work orders)" if rest > 0 else shown
+
+
+def _mop_summary_text(mop, item_code, limit=5):
+	"""What THIS operation last recorded -- the MOP-scoped diagnostic, not the gate."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_current_mop_balance_rows,
+	)
+
+	return _format_holdings(
+		[
+			(row.get("batch_no"), flt(row.get("qty_after_transaction_batch_based"), 3))
+			for row in get_current_mop_balance_rows(
+				mop,
+				include_fields=[
+					"item_code",
+					"batch_no",
+					"qty_after_transaction_batch_based",
+				],
+			)
+			if row.get("item_code") == item_code
+		],
+		limit=limit,
+	)
+
+
+def _resolve_receive_mwo(doc, row):
+	"""Work order for a receive row: header, then row, then the operation's own link.
+
+	``manufacturing_work_order`` is only client-side mandatory
+	(``mandatory_depends_on``), so a server-built document can genuinely lack it. When
+	none of the three resolve, the guard stays silent rather than inventing a scope.
+	"""
+	return (
+		doc.get("manufacturing_work_order")
+		or row.get("custom_manufacturing_work_order")
+		or frappe.db.get_value(
+			"Manufacturing Operation",
+			row.get("manufacturing_operation"),
+			"manufacturing_work_order",
+		)
+	)
+
+
+def validate_receive_batches_are_held(self, method=None):
+	"""A receive may only debit batches its work order actually holds.
+
+	``CustomStockEntry.update_batches`` fills an empty ``batch_no`` through
+	``get_fifo_batches`` -> ``get_auto_batch_nos``, which is plain WAREHOUSE FIFO with no
+	work-order awareness. Department WIP warehouses are shared by every job in the
+	department, so FIFO can hand this job another job's metal. Receiving it writes a
+	negative ``(item, batch)`` balance that is cloned onto every downstream operation and
+	silently takes the weight off the other job's batch.
+
+	Lives at ``validate`` rather than ``before_submit`` for three reasons: it runs on
+	save AND submit, so a bad draft is caught while the operator is still looking at it;
+	it fails before ``create_mr_wo_stock_entry`` cancels and recreates reservations
+	(``se_doc.save()`` precedes that cascade), so nothing is mutated and rolled back; and
+	it fails before ``prelock_bins``, so a doomed entry never takes Bin locks. MOP Log
+	rows are written at ``on_submit``, so the guard always reads a ledger that does not
+	yet contain its own entry -- no self-exclusion needed. On an amend, the original's
+	rows carry ``is_cancelled = 1`` and are already filtered out.
+
+	**The predicate is presence, scoped to the work order.** A key the ledger has never
+	seen on this work order is rejected -- but only when the ledger has an opinion about
+	the ITEM at all. If the item appears nowhere on this work order the guard stays
+	silent, which preserves the existing "MOP balance unknown" fallback for legacy work
+	orders, freshly-seeded test sites, and transfer legs whose MOP Log row failed to
+	write. That silence is what this guard narrows, not what it removes.
+
+	**The row filter mirrors the MOP Log writer exactly**, because a row the writer
+	ignores cannot drive a balance negative. In particular it never filters on
+	``s_warehouse`` (``stock_reservation_entry_for_mwo`` short-circuits for this type
+	*before* the ``t_warehouse`` check, so every row writes a MOP Log row regardless of
+	leg) and never on ``flow_index``, ``qty_change`` or ``voucher_type`` (immediately
+	after a Department/Employee IR handoff the receiving operation's holding is described
+	ONLY by its ``flow_index = 0`` clone rows; filtering those would block every
+	post-handoff receive).
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		MOP_DEBIT_STOCK_ENTRY_TYPES,
+		get_mwo_held_batch_map,
+	)
+
+	if cint(self.docstatus) > 1:
+		return
+	if self.stock_entry_type not in MOP_DEBIT_STOCK_ENTRY_TYPES:
+		return
+	# Fire Assy / XRF certification receives hard-return in `onsubmit` before
+	# sync_mop_log_for_stock_entry, so they write no MOP Log rows at all and cannot
+	# corrupt the ledger this guard protects.
+	if self.get("department") == "Product Certification" and self.get(
+		"service_type"
+	) in (
+		"Fire Assy Service",
+		"XRF Services",
+	):
+		return
+
+	candidates = [
+		row
+		for row in self.items
+		if row.get("manufacturing_operation")
+		and row.get("item_code")
+		and row.get("batch_no")
+	]
+	if not candidates:
+		return
+
+	by_mwo: dict = {}
+	for row in candidates:
+		mwo = _resolve_receive_mwo(self, row)
+		if mwo:
+			by_mwo.setdefault(mwo, []).append(row)
+
+	for mwo, rows in by_mwo.items():
+		held = get_mwo_held_batch_map(
+			mwo, keys=[(row.item_code, row.batch_no) for row in rows]
+		)
+		items_known = {code for code, _batch in held}
+		for row in rows:
+			if (row.item_code, row.batch_no) in held:
+				continue
+			if row.item_code not in items_known:
+				# The ledger has no opinion about this item on this work order.
+				continue
+			frappe.throw(
+				_build_not_held_message(row, mwo, held),
+				title=_("Batch not issued to this work order"),
+			)
+
+
+def _build_not_held_message(row, mwo, held):
+	"""The rejection text. Built only on the throw path -- never on the hot path.
+
+	Two shapes, because the cause differs. A batch that OTHER work orders hold is a
+	FIFO mis-pick out of the shared department warehouse, and naming those holders is
+	what makes that legible. A batch nobody holds is far more likely a typo, and
+	blaming FIFO there sends the operator hunting for a problem that does not exist.
+	"""
+	held_text = _held_summary_text(held, row.item_code)
+	mop_text = _mop_summary_text(row.manufacturing_operation, row.item_code)
+	others = _other_work_orders_text(row.item_code, row.batch_no, mwo)
+
+	lines = [
+		_(
+			"Row {idx}: item {item}, batch {batch} cannot be received against "
+			"Manufacturing Operation {mop}. Work order {mwo} has never been issued "
+			"this batch — MOP Log has no row for it."
+		).format(
+			idx=row.idx,
+			item=row.item_code,
+			batch=row.batch_no,
+			mop=row.manufacturing_operation,
+			mwo=mwo,
+		),
+		"",
+		_("<b>{mwo} holds of {item}</b> — {held}.").format(
+			mwo=mwo, item=row.item_code, held=held_text
+		),
+	]
+	# On a single-operation work order the MOP-scoped and MWO-scoped views are the same
+	# list; printing it twice doubles an already-long message for no information.
+	if mop_text != held_text:
+		lines.append(
+			_("<b>{mop}'s own balance</b> — {mop_bal}.").format(
+				mop=row.manufacturing_operation, mop_bal=mop_text
+			)
+		)
+
+	if others == "no other work order":
+		lines += [
+			"",
+			_(
+				"No work order holds this batch, so it is most likely a typo or a "
+				"batch that does not exist. Check the batch number, or use the "
+				"<b>Make Receive Entry</b> button on {mop} — it lists only the "
+				"batches this work order was issued."
+			).format(mop=row.manufacturing_operation),
+		]
+	else:
+		lines += [
+			_("<b>{batch} is held by other work orders</b> — {others}.").format(
+				batch=row.batch_no, others=others
+			),
+			"",
+			_(
+				"{source} is a department WIP warehouse shared by every job in that "
+				"department, so an automatic (FIFO) batch pick can land on another "
+				"work order's metal. Receiving it writes a negative balance that is "
+				"cloned onto every downstream operation and silently takes {qty} off "
+				"that other job. Use the <b>Make Receive Entry</b> button on {mop} — "
+				"it lists only the batches this work order was issued — or pick one "
+				"of the batches above."
+			).format(
+				source=row.get("s_warehouse") or "The source warehouse",
+				qty=flt(row.qty, 3),
+				mop=row.manufacturing_operation,
+			),
+		]
+	return "<br>".join(lines)
 
 
 # Warehouse fields are immutable once the entry is submitted -- the Stock Ledger Entries were

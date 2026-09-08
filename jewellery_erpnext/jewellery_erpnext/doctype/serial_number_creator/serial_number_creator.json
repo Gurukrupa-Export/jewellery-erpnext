@@ -163,7 +163,9 @@
   {
    "fieldname": "total_weight",
    "fieldtype": "Float",
-   "label": "Total Weight"
+   "label": "Total Weight",
+   "precision": "3",
+   "read_only": 1
   },
   {
    "fieldname": "section_break_a8aud",

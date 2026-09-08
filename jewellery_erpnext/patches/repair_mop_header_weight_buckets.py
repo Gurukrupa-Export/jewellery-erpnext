@@ -66,6 +66,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
 	recalculate_manufacturing_operation_weights,
 )
+from jewellery_erpnext.mop_lineage_audit import negative_balance_findings
 from jewellery_erpnext.utils import clamp_negative_balance
 
 TOLERANCE = 0.0005
@@ -158,6 +159,29 @@ def _post_cutoff_totals(mop_name, mwo):
 	return totals
 
 
+def _negative_keys_by_operation(mops):
+	"""``{mop: "item/batch qty, ..."}`` for operations still carrying a negative key.
+
+	A negative ``(item, batch)`` balance means the ledger consumed more of a batch than
+	it ever held, and ``_raw_ledger_totals`` clamps it away with ``GREATEST(.., 0)``.
+	The stored header may legitimately hold the UNCLAMPED figure -- written before
+	``clamp_negative_balance`` landed -- in which case the "drift" this patch measures is
+	the negative itself, and correcting it moves the header AWAY from the truth.
+
+	MOP-3DP57's chain is the worked example: ten operations whose headers match both the
+	raw ledger and the operator's scale, where a clamped rewrite would add back 0.280 g
+	of metal that physically left the job. Repair the ledger first
+	(``repair_phantom_batch_swap_mop_log``), then the header needs no repair at all.
+	"""
+	payload = negative_balance_findings(mops=sorted(mops))
+	by_mop: dict = {}
+	for f in payload["findings"]:
+		by_mop.setdefault(f["manufacturing_operation"], []).append(
+			f"{f['item_code']}/{f['batch_no'] or 'no-batch'} {flt(f['qty'], 3)}"
+		)
+	return {mop: ", ".join(keys) for mop, keys in by_mop.items()}
+
+
 def detect(mops=None):
 	"""Operations whose header buckets disagree with the ledger.
 
@@ -167,6 +191,8 @@ def detect(mops=None):
 	raw = _raw_ledger_totals(mops)
 	if not raw:
 		return [], []
+
+	negatives = _negative_keys_by_operation(list(raw))
 
 	headers = {
 		d.name: d
@@ -198,6 +224,19 @@ def detect(mops=None):
 				{
 					"mop": mop_name,
 					"reason": "FG operation -- header authored by sync_mwo_weights",
+					"drift": drifted,
+				}
+			)
+			continue
+
+		if mop_name in negatives:
+			review.append(
+				{
+					"mop": mop_name,
+					"reason": (
+						"ledger carries a negative key ({keys}); the header may hold the "
+						"correct unclamped figure. Repair the ledger first."
+					).format(keys=negatives[mop_name]),
 					"drift": drifted,
 				}
 			)

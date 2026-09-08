@@ -12,7 +12,9 @@ from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
+	apply_department_ir_weights,
 	get_summary_data,
+	resolve_weights_for_operation,
 	valid_reparing_or_next_operation,
 	validate_and_update_gross_wt_from_mop,
 	validate_mwo,
@@ -95,6 +97,96 @@ class DepartmentIR(Document):
 				self.append(
 					"department_ir_operation", {"manufacturing_operation": row.name}
 				)
+
+	@frappe.whitelist()
+	def scan_manufacturing_operation(self, barcode=None):
+		"""Resolve a scanned MWO barcode into a Department IR Operation row.
+
+		The client used to do this itself, with two frappe.db.get_value calls and its own
+		copy of the finding / previous-MOP branching. That copy had drifted from the
+		server's: it never checked is_mwo_refined, it compared `x > 0` where the server
+		used `x or y`, and it read the previous operation without checking previous_mop
+		was set -- which frappe.client.get_value turns into an unfiltered read of the most
+		recently modified operation in the system. Doing the whole scan here leaves one
+		implementation, so what the operator sees after a scan is what before_validate
+		computes on save.
+
+		Reached via frm.call, so run_doc_method has already enforced read permission on
+		this Department IR, and find_operation_to_scan goes through frappe.get_list so
+		Manufacturing Operation permissions, permission query conditions and user
+		permissions all still apply. The caller passes a BARCODE -- never a doctype, a
+		docname or a field list.
+		"""
+		barcode = barcode or self.scan_mwo
+		if not barcode:
+			return
+
+		if not self.current_department:
+			frappe.throw(_("Please select current department first"))
+
+		for row in self.department_ir_operation:
+			if row.manufacturing_work_order == barcode:
+				frappe.throw(
+					_("{0} Manufacturing Work Order already exists").format(barcode)
+				)
+
+		values = resolve_weights_for_operation(self.find_operation_to_scan(barcode))
+		row = self.append(
+			"department_ir_operation",
+			{
+				"manufacturing_operation": values.manufacturing_operation,
+				"manufacturing_work_order": values.manufacturing_work_order,
+				"status": values.status,
+			},
+		)
+		apply_department_ir_weights(row, values)
+		self.scan_mwo = None
+		return row.as_dict()
+
+	def find_operation_to_scan(self, manufacturing_work_order):
+		"""The operation a barcode resolves to, under the filters the form already applied.
+
+		frappe.get_list, not frappe.db.get_all: the client call this replaces went through
+		frappe.client.get_value, which applies the doctype permission, permission query
+		conditions and user permissions. get_all would silently drop all three, and these
+		filters -- company and department in particular -- are the access-control decision
+		that stops an operator pulling another department's operation.
+
+		order_by is pinned to Manufacturing Operation's own default sort.
+		frappe.client.get_value passes order_by=None, which resolves to the doctype's
+		`modified DESC`, so a barcode matching several operations keeps picking the one it
+		picked before this refactor. Do not "fix" this to `creation asc` without deciding
+		that the scan should start choosing a different operation.
+		"""
+		filters = {
+			"company": self.company,
+			"manufacturing_work_order": manufacturing_work_order,
+			"department": self.current_department,
+		}
+		# `type` has no default in department_ir.json, so a type-less doc must keep taking
+		# the else branch -- test `type == "Issue"`, not `!= "Receive"`.
+		if self.type == "Issue":
+			filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]]
+			filters["status"] = ["in", ["Not Started"]]
+			filters["employee"] = ["is", "not set"]
+			filters["subcontractor"] = ["is", "not set"]
+		else:
+			filters["department_ir_status"] = ["in", ["In-Transit", "Received"]]
+
+		if self.next_department and not cint(self.is_finding):
+			filters["is_finding"] = 0
+
+		names = frappe.get_list(
+			"Manufacturing Operation",
+			filters=filters,
+			pluck="name",
+			order_by="modified desc",
+			limit_page_length=1,
+		)
+		if not names:
+			frappe.throw(_("No Manufacturing Operation Found"))
+
+		return names[0]
 
 	def before_submit(self):
 		if not self.department_ir_operation:
@@ -851,25 +943,23 @@ def get_manufacturing_operations(source_name, target_doc=None):
 	elif isinstance(target_doc, str):
 		target_doc = frappe.get_doc(json.loads(target_doc))
 
-	operation = frappe.db.get_value(
-		"Manufacturing Operation",
-		source_name,
-		["gross_wt", "manufacturing_work_order", "diamond_wt"],
-		as_dict=1,
-	)
+	# Resolved through the same function before_validate uses, so the mapper preview stops
+	# showing a bare gross_wt/diamond_wt pair that the next save replaces with eight
+	# fallback-resolved values.
+	values = resolve_weights_for_operation(source_name)
 	if not target_doc.get(
 		"department_ir_operation",
-		{"manufacturing_work_order": operation["manufacturing_work_order"]},
+		{"manufacturing_work_order": values.manufacturing_work_order},
 	):
-		target_doc.append(
+		row = target_doc.append(
 			"department_ir_operation",
 			{
 				"manufacturing_operation": source_name,
-				"manufacturing_work_order": operation["manufacturing_work_order"],
-				"gross_wt": operation["gross_wt"],
-				"diamond_wt": operation["diamond_wt"],
+				"manufacturing_work_order": values.manufacturing_work_order,
+				"status": values.status,
 			},
 		)
+		apply_department_ir_weights(row, values)
 	return target_doc
 
 

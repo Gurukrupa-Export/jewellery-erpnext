@@ -105,6 +105,56 @@ class CustomStockEntry(StockEntry):
 	# 		self.to_rename = 0
 
 	@frappe.whitelist()
+	def _set_allowed_batches_for_receive(self):
+		"""Restrict FIFO to batches this work order holds, on MOP-debiting receives.
+
+		``get_fifo_batches`` resolves an empty ``batch_no`` with
+		``get_auto_batch_nos(item_code, warehouse)`` -- plain warehouse FIFO. Department
+		WIP warehouses are shared by every job in the department, so on a
+		``Material Receive (WORK ORDER)`` that can allocate another work order's metal,
+		which then writes a negative MOP Log balance and silently debits the other job.
+
+		Sets ``flags.allowed_batches_by_item`` to ``{item_code: {batch, ...}}`` for items
+		the MOP Log tracks on this work order. An item the ledger has never seen is
+		deliberately OMITTED rather than mapped to an empty set, so FIFO keeps its
+		current behaviour where there is no signal -- the same "ledger has no opinion"
+		fallback ``validate_receive_batches_are_held`` uses. The two must agree; this is
+		the soft half of that guard.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+			MOP_DEBIT_STOCK_ENTRY_TYPES,
+			get_mwo_held_batch_map,
+		)
+
+		# Return before touching ``flags`` so a non-debiting entry costs nothing and
+		# needs no attribute that a bare/partially-built document might not carry.
+		if self.get("stock_entry_type") not in MOP_DEBIT_STOCK_ENTRY_TYPES:
+			return
+
+		by_mwo: dict = {}
+		for row in self.items:
+			mwo = self.get("manufacturing_work_order") or row.get(
+				"custom_manufacturing_work_order"
+			)
+			if not mwo and row.get("manufacturing_operation"):
+				mwo = frappe.db.get_value(
+					"Manufacturing Operation",
+					row.manufacturing_operation,
+					"manufacturing_work_order",
+				)
+			if mwo and row.get("item_code"):
+				by_mwo.setdefault(mwo, set()).add(row.item_code)
+
+		allowed: dict = {}
+		for mwo, item_codes in by_mwo.items():
+			held = get_mwo_held_batch_map(
+				mwo, keys=[(code, None) for code in sorted(item_codes)]
+			)
+			for code, batch in held:
+				if code in item_codes and batch:
+					allowed.setdefault(code, set()).add(batch)
+		self.flags.allowed_batches_by_item = allowed
+
 	def update_batches(self):
 		if not self.auto_created:
 			rows_to_append = []
@@ -127,6 +177,7 @@ class CustomStockEntry(StockEntry):
 				[row.get("department") for row in self.items],
 				["custom_can_not_make_dg_entry"],
 			)
+			self._set_allowed_batches_for_receive()
 			for row in self.items:
 				if (
 					row.get("department")
