@@ -2942,3 +2942,31 @@ class TestSetTargetInventoryDimensions(_StockEntryTestCase):
 			[r.to_inventory_type for r in rows],
 			["Regular Stock", "Customer Goods", None],
 		)
+
+
+# ------------------------------------------------- whitelist surface
+class TestCustomStockEntryWhitelisting(_StockEntryTestCase):
+	"""``update_batches`` is the API; the FIFO-narrowing helper is not.
+
+	Regression guard for a decorator that silently migrated. A new
+	``_set_allowed_batches_for_receive`` was inserted directly BENEATH the existing
+	``@frappe.whitelist()``, which left ``update_batches`` bare and published a private
+	``_``-prefixed helper over ``run_doc_method``. Nothing caught it: no test asserted
+	either way, and the only server caller invokes ``update_batches`` directly.
+
+	The identical mistake is already recorded for ``manufacturing_operation.py`` in
+	``test_make_receive_entry_mop_cap.TestMakeReceiveEntryWhitelisting`` -- this is the
+	second occurrence of the same decorator-adjacency trap, so each module now carries
+	its own guard rather than relying on review to spot the next one.
+	"""
+
+	def test_update_batches_is_whitelisted(self):
+		self.assertIn(cse_mod.CustomStockEntry.update_batches, frappe.whitelisted)
+
+	def test_private_fifo_helper_is_not_whitelisted(self):
+		"""A ``_``-prefixed helper is not an API. It only mutates ``self.flags``, but
+		whitelisting it still hands a caller a work-order batch-map lookup."""
+		self.assertNotIn(
+			cse_mod.CustomStockEntry._set_allowed_batches_for_receive,
+			frappe.whitelisted,
+		)

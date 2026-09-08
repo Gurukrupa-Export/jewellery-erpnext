@@ -182,6 +182,14 @@ class TestSncVsHeaderClassification(IntegrationTestCase):
 	``divergence_g`` with a zero ``tag_divergence_g`` therefore means somebody typed over
 	an editable field and the tag came out right anyway -- cosmetic. A non-zero
 	``tag_divergence_g`` means a piece shipped with the wrong weight.
+
+	Rows go in through the ``rows`` parameter. Do NOT go back to
+	``patch.object(audit.frappe.db, "sql", ...)``: ``frappe.db`` is a global proxy, so that
+	patches the database for the whole process, not just for this call. The first
+	``flt(x, 3)`` inside then resolves the rounding method through ``get_system_settings``,
+	which on a cold process lazily loads System Settings via ``db.sql`` and gets these fake
+	rows instead. It raises, ``flt`` swallows it and returns 0.0, and every assertion below
+	reads 0.0 -- passing under a mocked-db harness and failing only on a live site.
 	"""
 
 	@classmethod
@@ -189,8 +197,7 @@ class TestSncVsHeaderClassification(IntegrationTestCase):
 		pass
 
 	def _run(self, rows):
-		with patch.object(audit.frappe.db, "sql", return_value=rows):
-			return audit.snc_vs_header_findings()
+		return audit.snc_vs_header_findings(rows=rows)
 
 	def _row(self, **attrs):
 		base = {
@@ -246,3 +253,42 @@ class TestSncVsHeaderClassification(IntegrationTestCase):
 		self.assertFalse(f["field_only"])
 		self.assertEqual(res["totals"]["tags_wrong"], 0)
 		self.assertEqual(res["totals"]["field_only"], 0)
+
+
+class TestSncVsHeaderQueryContract(IntegrationTestCase):
+	"""The SQL must actually run against the site's schema.
+
+	Every test in ``TestSncVsHeaderClassification`` injects its rows through the ``rows``
+	parameter, so the query string itself is never executed there -- a column that does not
+	exist is invisible to them. That matters here because ``bom.gross_weight`` is a
+	**Custom Field** (``custom_fields/bom.json``), not a stock ERPNext BOM column: on a
+	site where the custom-field bootstrap has not run, ``snc_vs_header_findings`` dies with
+	``Unknown column 'bom.gross_weight'`` the first time a report calls it, and no test
+	would have caught it.
+
+	This one calls the function with no ``rows``, taking the real query branch, so MariaDB
+	validates every column, join and placeholder in the statement. It asserts the contract,
+	not the contents -- a fresh site returns nothing and that is a pass.
+
+	``setUpClass`` is neutralised like the rest of this module -- no fixtures are needed.
+	The live connection this test relies on comes from the test runner, not from
+	``IntegrationTestCase.setUpClass``.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_query_executes_against_the_real_schema(self):
+		res = audit.snc_vs_header_findings()
+
+		self.assertIn("findings", res)
+		self.assertIn("totals", res)
+		self.assertIsInstance(res["findings"], list)
+		for key in (
+			"serial_number_creators",
+			"submitted",
+			"divergence_g",
+			"tags_wrong",
+		):
+			self.assertIn(key, res["totals"])

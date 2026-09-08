@@ -619,21 +619,34 @@ class DepartmentIR(Document):
 			order_by="creation asc",
 		):
 			self.current_department = row.department
-			mop_details = frappe.db.get_value(
-				"Manufacturing Operation",
-				row.previous_mop,
-				[
-					"diamond_wt",
-					"net_wt",
-					"finding_wt",
-					"diamond_pcs",
-					"gemstone_pcs",
-					"gemstone_wt",
-					"other_wt",
-					"department",
-				],
-				as_dict=1,
-			)
+			# Guarded on purpose, for the same reason resolve_weights_for_operation is:
+			# frappe.db.get_value(dt, None, ...) degrades into an UNFILTERED read of the
+			# first row by the doctype's default sort -- `modified DESC` for Manufacturing
+			# Operation -- so an operation with no previous_mop would silently borrow the
+			# weights AND the department of whatever operation was touched last. The
+			# weights are recomputed by before_validate, but `previous_department` is not:
+			# it would stick. A missing row also returns None, so the `or` keeps the
+			# `.get()` calls below from raising AttributeError.
+			mop_details = frappe._dict()
+			if row.previous_mop:
+				mop_details = (
+					frappe.db.get_value(
+						"Manufacturing Operation",
+						row.previous_mop,
+						[
+							"diamond_wt",
+							"net_wt",
+							"finding_wt",
+							"diamond_pcs",
+							"gemstone_pcs",
+							"gemstone_wt",
+							"other_wt",
+							"department",
+						],
+						as_dict=1,
+					)
+					or frappe._dict()
+				)
 			self.previous_department = mop_details.get("department")
 			self.append(
 				"department_ir_operation",

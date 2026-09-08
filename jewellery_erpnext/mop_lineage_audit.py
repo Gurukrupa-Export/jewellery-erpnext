@@ -1000,7 +1000,7 @@ def _empty_scale_totals() -> dict:
 	}
 
 
-def snc_vs_header_findings(limit: int = 200) -> dict:
+def snc_vs_header_findings(limit: int = 200, rows: list[dict] | None = None) -> dict:
 	"""Serial Number Creators whose weights disagree with their operation or their BOM.
 
 	Read-only, and the cheapest high-value check in this module: over the whole
@@ -1028,9 +1028,20 @@ def snc_vs_header_findings(limit: int = 200) -> dict:
 	non-zero ``tag_divergence_g`` is a real, shipped-wrong weight.
 
 	``field_only`` marks the cosmetic case so a report can sort or filter on it.
+
+	``rows`` is the injection seam every other findings function in this module carries.
+	It exists so a caller -- in practice a test -- can supply the row set WITHOUT patching
+	``frappe.db.sql``. Patching that is not a local override: ``frappe.db`` is a global
+	proxy, so it also feeds frappe's own lazy loads, and the first ``flt(x, 3)`` below
+	resolves the rounding method through ``get_system_settings`` -> System Settings ->
+	``db.sql``. Handed a caller's fake rows, that raises, and ``flt`` swallows everything
+	but ``InvalidRoundingMethod`` and returns 0.0 -- so every number here silently becomes
+	zero. Unlike the sibling functions, this one is NOT fed by ``run_all_audits``'s shared
+	``balance_rows``: it reads Serial Number Creator, not MOP Log.
 	"""
-	rows = frappe.db.sql(
-		"""
+	if rows is None:
+		rows = frappe.db.sql(
+			"""
 		SELECT snc.name AS serial_number_creator, snc.docstatus, snc.total_weight,
 		       snc.manufacturing_operation, snc.manufacturing_work_order,
 		       snc.fg_bom, snc.fg_serial_no,
@@ -1047,9 +1058,9 @@ def snc_vs_header_findings(limit: int = 200) -> dict:
 		  )
 		ORDER BY ABS(snc.total_weight - mop.gross_wt) DESC
 		""",
-		{"tol": TOLERANCE_G},
-		as_dict=True,
-	)
+			{"tol": TOLERANCE_G},
+			as_dict=True,
+		)
 
 	findings = []
 	for r in rows[:limit]:

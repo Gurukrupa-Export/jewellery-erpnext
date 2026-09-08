@@ -49,24 +49,41 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Core Tests..."
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Sketch Order Form"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Department IR"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Employee IR"
 
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_warehouse_stock_entry
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_ownership_priority
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_bom_field_configuration
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repair_and_fg_bom
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_filters
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_row_ownership
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_allowed_items
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_invoice
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_invoice
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item
+          # Each suite runs inside its own log group, and a failure is reported as a
+          # GitHub annotation naming the exact command. Without this the step is one
+          # opaque `bash -e` block: the first non-zero `bench` aborts it and the only
+          # annotation is "Process completed with exit code 1", so identifying which
+          # suite broke means reading the whole raw log -- which needs repo admin.
+          run() {
+            echo "::group::$*"
+            if bench --site test_site run-tests "$@"; then
+              echo "::endgroup::"
+            else
+              status=$?
+              echo "::endgroup::"
+              echo "::error::FAILED: bench --site test_site run-tests $*"
+              exit $status
+            fi
+          }
+          run --app jewellery_erpnext --doctype "Sketch Order Form"
+          run --app jewellery_erpnext --doctype "Department IR"
+          run --app jewellery_erpnext --doctype "Employee IR"
+
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_bom
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_warehouse_stock_entry
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_ownership_priority
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_bom_field_configuration
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_repair_and_fg_bom
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_filters
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_row_ownership
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_allowed_items
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_invoice
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_invoice
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_item

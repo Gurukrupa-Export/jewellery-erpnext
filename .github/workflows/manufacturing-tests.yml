@@ -49,23 +49,40 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Manufacturing Tests..."
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Plan"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Parent Manufacturing Order"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Work Order"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Operation"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Metal Conversions"
 
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_transfer_se
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_mop_department
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_customizations
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_receive_batch_ownership
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_unpack_repair_bom
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_conversion_lane_downstream
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_manufacturing_operation_balance_details_report
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_loss_valuation
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_photoshop_images
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_log
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_lineage_stock_entry_bridge
+          # Each suite runs inside its own log group, and a failure is reported as a
+          # GitHub annotation naming the exact command. Without this the step is one
+          # opaque `bash -e` block: the first non-zero `bench` aborts it and the only
+          # annotation is "Process completed with exit code 1", so identifying which
+          # suite broke means reading the whole raw log -- which needs repo admin.
+          run() {
+            echo "::group::$*"
+            if bench --site test_site run-tests "$@"; then
+              echo "::endgroup::"
+            else
+              status=$?
+              echo "::endgroup::"
+              echo "::error::FAILED: bench --site test_site run-tests $*"
+              exit $status
+            fi
+          }
+          run --app jewellery_erpnext --doctype "Manufacturing Plan"
+          run --app jewellery_erpnext --doctype "Parent Manufacturing Order"
+          run --app jewellery_erpnext --doctype "Manufacturing Work Order"
+          run --app jewellery_erpnext --doctype "Manufacturing Operation"
+          run --app jewellery_erpnext --doctype "Metal Conversions"
+
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_transfer_se
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_mop_department
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_customizations
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_receive_batch_ownership
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_unpack_repair_bom
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_conversion_lane_downstream
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_manufacturing_operation_balance_details_report
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_process_loss_valuation
+          run --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_photoshop_images
+          run --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_log
+          run --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_lineage_stock_entry_bridge

@@ -104,7 +104,6 @@ class CustomStockEntry(StockEntry):
 	# 	if self.meta.autoname == "hash":
 	# 		self.to_rename = 0
 
-	@frappe.whitelist()
 	def _set_allowed_batches_for_receive(self):
 		"""Restrict FIFO to batches this work order holds, on MOP-debiting receives.
 
@@ -155,6 +154,7 @@ class CustomStockEntry(StockEntry):
 					allowed.setdefault(code, set()).add(batch)
 		self.flags.allowed_batches_by_item = allowed
 
+	@frappe.whitelist()
 	def update_batches(self):
 		if not self.auto_created:
 			rows_to_append = []
@@ -177,6 +177,18 @@ class CustomStockEntry(StockEntry):
 				[row.get("department") for row in self.items],
 				["custom_can_not_make_dg_entry"],
 			)
+			# Sits INSIDE `not self.auto_created` on purpose, and must stay paired with
+			# the FIFO loop below rather than hoisted out of it. This is the SOFT half of
+			# the guard whose hard half, validate_receive_batches_are_held, is wired
+			# unconditionally on Stock Entry `validate` -- so the two only agree while no
+			# auto-created entry is a MOP-debiting receive. That holds today: every
+			# auto_created writer mints "Manufacture"/repack/transfer types and stamps its
+			# own batches, and create_mr_wo_stock_entry (the one receive writer) leaves
+			# auto_created unset, so it runs this narrowing. Hoisting the call would not
+			# buy safety for a future auto-created receive either -- FIFO never runs for
+			# those, so there is nothing to narrow; such a writer must pick MOP-aware
+			# batches itself, exactly as create_mr_wo_stock_entry does, or the hard guard
+			# will reject the document it just built.
 			self._set_allowed_batches_for_receive()
 			for row in self.items:
 				if (
