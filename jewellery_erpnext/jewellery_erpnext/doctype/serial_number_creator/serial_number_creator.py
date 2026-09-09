@@ -18,6 +18,8 @@ from frappe.utils import (
 	nowdate,
 )
 
+from jewellery_erpnext.utils import carat_to_gram
+
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
 )
@@ -104,18 +106,36 @@ class SerialNumberCreator(Document):
 		_append_fg_rows_aggregated(self, source_rows, mnf_qty)
 
 	def _compute_total_weight(self):
-		"""Auto-compute total_weight (product weight / gross weight) from fg_details."""
-		total = 0
+		"""Auto-compute total_weight (product weight / gross weight) from fg_details.
+
+		Carat families (D / G) are aggregated by family FIRST, then converted to
+		grams ONCE via carat_to_gram, then the final total is rounded once -- the
+		same round-of-sum as sync_mwo_weights, create_finished_goods_bom and
+		mop_log.update_wt_detail. Converting each D/G row independently could
+		round siblings at a boundary (0.501 + 0.351 = 0.852 g) where the family
+		converts to 0.851 g, recreating the +0.001 drift this fix eliminates.
+		"""
+		non_carat_grams = 0.0
+		diamond_carats = 0.0
+		gemstone_carats = 0.0
+
 		for row in self.fg_details or []:
 			if not row.row_material:
 				continue
 			first_char = row.row_material[0] if row.row_material else ""
-			if first_char in ("D", "G"):
-				# Carat items → convert to grams
-				total += flt(row.qty) * 0.2
+			if first_char == "D":
+				diamond_carats += flt(row.qty)
+			elif first_char == "G":
+				gemstone_carats += flt(row.qty)
 			else:
-				total += flt(row.qty)
-		self.total_weight = flt(total, 3)
+				non_carat_grams += flt(row.qty)
+
+		self.total_weight = flt(
+			non_carat_grams
+			+ carat_to_gram(diamond_carats)
+			+ carat_to_gram(gemstone_carats),
+			3,
+		)
 
 	@frappe.whitelist()
 	def get_serial_summary(self):
