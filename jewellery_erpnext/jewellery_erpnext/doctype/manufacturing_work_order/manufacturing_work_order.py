@@ -184,6 +184,25 @@ class ManufacturingWorkOrder(Document):
 		self.diamond_wt_in_gram = carat_to_gram(self.diamond_wt)
 		gemstone_wt_in_gram = carat_to_gram(self.gemstone_wt)
 
+		# gross_wt is re-derived from the corrected components exactly like
+		# mop_log.update_wt_detail does one tier down. The SQL SUM(gross_wt) above adds
+		# sibling MOP headers that were each already rounded to 3 dp -- and each converted
+		# its own carat slice independently -- so it can drift +0.001 from
+		# flt(net + finding + carat_to_gram(diamond) + carat_to_gram(gemstone) + other, 3)
+		# when a piece's carat total sits at a rounding boundary (MWO-KGJPL-NE05395-003-1-01
+		# stored 31.200 against its own buckets' 31.199, and the Serial Number Creator it
+		# feeds read 31.199). Deriving gross_wt here -- after the gram twins are corrected
+		# and outside the ``if sibling_mwos:`` block -- keeps the FG MWO, the FG MOP and the
+		# SNC on exactly the same round-of-sum formula for every path.
+		self.gross_wt = flt(
+			flt(self.net_wt)
+			+ flt(self.finding_wt)
+			+ flt(self.diamond_wt_in_gram)
+			+ flt(gemstone_wt_in_gram)
+			+ flt(self.other_wt),
+			3,
+		)
+
 		frappe.db.set_value(
 			"Manufacturing Work Order",
 			self.name,
