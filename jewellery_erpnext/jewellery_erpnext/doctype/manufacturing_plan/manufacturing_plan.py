@@ -162,6 +162,7 @@ class ManufacturingPlan(Document):
 					SalesOrderItem.parent.as_("sales_order"),
 					SalesOrderItem.item_code,
 					SalesOrderItem.bom,
+					SalesOrderItem.copy_bom,
 					Item.mould.as_("mould_no"),
 					SalesOrderItem.diamond_quality,
 					SalesOrderItem.custom_customer_sample.as_("customer_sample"),
