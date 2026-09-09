@@ -708,6 +708,12 @@ class TestProductCertification(IntegrationTestCase):
 			pure_row.gross_weight = 30.0
 			loss_row.gross_weight = 0.0
 
+			# The assay report belongs to the Touch row and is demanded at submit by
+			# validate_fire_assy_report.
+			main_row.certification = "CERT-001"
+			main_row.report_no = "FA-RPT-001"
+			main_row.report_result = 91.85
+
 			with patch(PURITY_PATH, side_effect=_purity):
 				certification.save()
 
@@ -715,6 +721,16 @@ class TestProductCertification(IntegrationTestCase):
 				# and the three rows still sum back to the 100 issued.
 				self.assertEqual(pure_row.conversion_quantity, 32.612)
 				self.assertEqual(loss_row.gross_weight, 7.388)
+
+				# set_assay_row_types labels the trio in append order.
+				self.assertEqual(
+					[
+						main_row.assay_row_type,
+						pure_row.assay_row_type,
+						loss_row.assay_row_type,
+					],
+					["Touch", "Pure", "Loss"],
+				)
 
 				certification.submit()
 			mock_process.assert_called_once()
@@ -2179,3 +2195,847 @@ class TestFireAssyWeightRequired(IntegrationTestCase):
 			[{"serial_no": "SN1", "total_weight": 0}],
 			service_type="Hall Marking Service",
 		)
+
+
+class TestAssayRowTypes(IntegrationTestCase):
+	"""set_assay_row_types is what lets the grid tell a Touch row from a Pure or Loss row.
+
+	depends_on on a child field only ever sees the row and the parent, so the classification
+	has to be stamped onto the row; everything here is pure in-memory bookkeeping over the two
+	child tables, so an unsaved document is enough.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _doc(self, service_type, pd_rows, exploded_items, txn_type="Receive"):
+		doc = frappe.new_doc("Product Certification")
+		doc.type = txn_type
+		doc.service_type = service_type
+		for row in pd_rows:
+			doc.append("product_details", row)
+		for item_code, key in exploded_items:
+			doc.append(
+				"exploded_product_details",
+				{
+					"item_code": item_code,
+					"tree_no": key.get("tree_no"),
+					"sample_name": key.get("sample_name"),
+				},
+			)
+		return doc
+
+	def test_fire_assy_labels_touch_pure_loss(self):
+		key = {"tree_no": "TREE-A"}
+		doc = self._doc(
+			"Fire Assy Service",
+			[dict(item_code="M22", pure_item="M24", loss_item="ML22", **key)],
+			[("M22", key), ("M24", key), ("ML22", key)],
+		)
+		doc.set_assay_row_types()
+		self.assertEqual(
+			[r.assay_row_type for r in doc.exploded_product_details],
+			["Touch", "Pure", "Loss"],
+		)
+
+	def test_xrf_has_no_pure_slot(self):
+		key = {"tree_no": "TREE-A"}
+		doc = self._doc(
+			"XRF Services",
+			[dict(item_code="M22", pure_item="M24", loss_item="ML22", **key)],
+			[("M22", key), ("ML22", key)],
+		)
+		doc.set_assay_row_types()
+		self.assertEqual(
+			[r.assay_row_type for r in doc.exploded_product_details], ["Touch", "Loss"]
+		)
+
+	def test_xrf_does_not_label_a_pure_row(self):
+		"""get_exploded_table never emits one, so a stray pure row is unclassified, not Pure."""
+		key = {"tree_no": "TREE-A"}
+		doc = self._doc(
+			"XRF Services",
+			[dict(item_code="M22", pure_item="M24", loss_item="ML22", **key)],
+			[("M22", key), ("M24", key), ("ML22", key)],
+		)
+		doc.set_assay_row_types()
+		self.assertIsNone(doc.exploded_product_details[1].assay_row_type)
+
+	def test_each_sample_group_is_labelled_independently(self):
+		a = {"tree_no": "TREE-A", "sample_name": "S1"}
+		b = {"tree_no": "TREE-A", "sample_name": "S2"}
+		doc = self._doc(
+			"Fire Assy Service",
+			[
+				dict(item_code="M22", pure_item="M24", loss_item="ML22", **a),
+				dict(item_code="M22", pure_item="M24", loss_item="ML22", **b),
+			],
+			[
+				("M22", a),
+				("M24", a),
+				("ML22", a),
+				("M22", b),
+				("M24", b),
+				("ML22", b),
+			],
+		)
+		doc.set_assay_row_types()
+		self.assertEqual(
+			[r.assay_row_type for r in doc.exploded_product_details],
+			["Touch", "Pure", "Loss"] * 2,
+		)
+
+	def test_slot_is_consumed_when_main_item_is_also_the_pure_item(self):
+		"""A tree of 24KT: the first row is the Touch row, the second the Pure row."""
+		key = {"tree_no": "TREE-A"}
+		doc = self._doc(
+			"Fire Assy Service",
+			[dict(item_code="M24", pure_item="M24", loss_item="ML24", **key)],
+			[("M24", key), ("M24", key), ("ML24", key)],
+		)
+		doc.set_assay_row_types()
+		self.assertEqual(
+			[r.assay_row_type for r in doc.exploded_product_details],
+			["Touch", "Pure", "Loss"],
+		)
+
+	def test_row_matching_no_slot_stays_blank(self):
+		key = {"tree_no": "TREE-A"}
+		doc = self._doc(
+			"Fire Assy Service",
+			[dict(item_code="M22", pure_item="M24", loss_item="ML22", **key)],
+			[("M22", key), ("SOMETHING-ELSE", key)],
+		)
+		doc.set_assay_row_types()
+		self.assertEqual(doc.exploded_product_details[0].assay_row_type, "Touch")
+		self.assertIsNone(doc.exploded_product_details[1].assay_row_type)
+
+	def test_other_services_are_untouched(self):
+		key = {}
+		doc = self._doc(
+			"Hall Marking Service",
+			[dict(item_code="M22", **key)],
+			[("M22", key)],
+		)
+		doc.set_assay_row_types()
+		self.assertIsNone(doc.exploded_product_details[0].assay_row_type)
+
+
+def _check_report(rows, txn_type="Receive", service_type="Fire Assy Service"):
+	"""Run validate_fire_assy_report over plain exploded-row dicts."""
+	fake_self = SimpleNamespace(
+		type=txn_type,
+		service_type=service_type,
+		exploded_product_details=[
+			frappe._dict(idx=i + 1, **row) for i, row in enumerate(rows)
+		],
+	)
+	ProductCertification.validate_fire_assy_report(fake_self)
+
+
+_FULL_TOUCH = {
+	"assay_row_type": "Touch",
+	"item_code": "M22",
+	"tree_no": "TREE-A",
+	"certification": "CERT-1",
+	"report_no": "RPT-1",
+	"report_result": 91.85,
+}
+
+
+class TestFireAssyReport(IntegrationTestCase):
+	"""Certification / Report No / Report Result are demanded on the Touch row alone.
+
+	The JSON mandatory_depends_on is client-side only, and on a Float it never blocks a save
+	at all (is_null(0) is false), so this is the gate that actually holds.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def test_complete_touch_row_passes(self):
+		_check_report([dict(_FULL_TOUCH)])
+
+	def test_missing_certification_throws_naming_the_tree(self):
+		row = dict(_FULL_TOUCH, certification=None)
+		with self.assertRaises(ValidationError) as cm:
+			_check_report([row])
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("Row #1", msg)
+		self.assertIn("TREE-A", msg)
+
+	def test_missing_report_no_throws(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_report([dict(_FULL_TOUCH, report_no=None)])
+		self.assertIn("Report No", frappe.utils.strip_html(str(cm.exception)))
+
+	def test_zero_report_result_throws(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_report([dict(_FULL_TOUCH, report_result=0)])
+		self.assertIn("Report Result", frappe.utils.strip_html(str(cm.exception)))
+
+	def test_sample_name_names_the_row_when_there_is_no_tree(self):
+		row = dict(_FULL_TOUCH, tree_no=None, sample_name="S1", report_no=None)
+		with self.assertRaises(ValidationError) as cm:
+			_check_report([row])
+		self.assertIn("S1", frappe.utils.strip_html(str(cm.exception)))
+
+	def test_pure_and_loss_rows_are_never_demanded(self):
+		_check_report(
+			[
+				dict(_FULL_TOUCH),
+				{"assay_row_type": "Pure", "item_code": "M24"},
+				{"assay_row_type": "Loss", "item_code": "ML22"},
+			]
+		)
+
+	def test_blank_marker_is_skipped(self):
+		"""A legacy row is unclassified, and "no opinion" must not become a new demand."""
+		_check_report([{"item_code": "M22", "tree_no": "TREE-A"}])
+
+	def test_no_op_on_xrf_and_on_an_issue(self):
+		bare = [{"assay_row_type": "Touch", "item_code": "M22"}]
+		_check_report(bare, service_type="XRF Services")
+		_check_report(bare, txn_type="Issue")
+
+
+def _check_tree_or_sample(rows, txn_type="Issue", service_type="Fire Assy Service"):
+	fake_self = SimpleNamespace(
+		type=txn_type,
+		service_type=service_type,
+		product_details=[frappe._dict(idx=i + 1, **row) for i, row in enumerate(rows)],
+	)
+	ProductCertification.validate_tree_or_sample_name(fake_self)
+
+
+class TestTreeOrSampleName(IntegrationTestCase):
+	"""A Fire Assy Issue row must say which sample it is.
+
+	A row carrying neither identity lands in the ("", "", "") bucket, where
+	validate_exploded_qty compares it against a grand total instead of its own trio.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def test_tree_alone_passes(self):
+		_check_tree_or_sample([{"tree_no": "TREE-A"}])
+
+	def test_sample_alone_passes(self):
+		_check_tree_or_sample([{"sample_name": "S1"}])
+
+	def test_both_pass(self):
+		_check_tree_or_sample([{"tree_no": "TREE-A", "sample_name": "S1"}])
+
+	def test_neither_throws_listing_every_offending_row(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_tree_or_sample(
+				[{"tree_no": "TREE-A"}, {}, {"sample_name": "S1"}, {}]
+			)
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn(
+			"Enter either Tree Number or Sample Name before submitting the "
+			"Fire Assy Certification.",
+			msg,
+		)
+		self.assertIn("2, 4", msg)
+
+	def test_receive_is_not_checked(self):
+		"""Legacy Issues with neither identity are already submitted and cannot be edited;
+		enforcing here would strand their metal at the supplier."""
+		_check_tree_or_sample([{}], txn_type="Receive")
+
+	def test_xrf_is_not_checked(self):
+		_check_tree_or_sample([{}], service_type="XRF Services")
+
+
+def _check_sample_names(rows):
+	"""Run the in-document half of validate_unique_sample_name.
+
+	The cross-document half needs saved parents; the collision it guards is the one an
+	operator hits first, so it is pinned here on its own.
+	"""
+	fake_self = SimpleNamespace(
+		name="new-pc-1",
+		receive_against=None,
+		amended_from=None,
+		product_details=[frappe._dict(idx=i + 1, **row) for i, row in enumerate(rows)],
+	)
+	with patch.object(frappe, "get_all", return_value=[]):
+		ProductCertification.validate_unique_sample_name(fake_self)
+
+
+class TestUniqueSampleName(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def test_distinct_names_pass(self):
+		_check_sample_names([{"sample_name": "S1"}, {"sample_name": "S2"}])
+
+	def test_blank_names_are_ignored(self):
+		_check_sample_names([{}, {}, {"sample_name": None}])
+
+	def test_duplicate_within_the_document_throws(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_sample_names(
+				[{"sample_name": "S1"}, {"sample_name": "S2"}, {"sample_name": "S1"}]
+			)
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("Row #3", msg)
+		self.assertIn("Row #1", msg)
+		self.assertIn("S1", msg)
+
+	def test_duplicate_is_case_insensitive(self):
+		"""MariaDB's collation is case-insensitive, so the cross-document lookup is too --
+		the in-document rule must not be the looser of the pair."""
+		with self.assertRaises(ValidationError):
+			_check_sample_names([{"sample_name": "S1"}, {"sample_name": "s1"}])
+
+
+class TestNormaliseSampleNames(IntegrationTestCase):
+	"""A blank Sample Name is stored as NULL, never as "".
+
+	stored_identity reads the column raw while match_identity normalises a blank to None, so
+	a cleared cell arriving as "" would stop a Receive row resolving to its Issue row.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _run(self, pd_rows, exploded_rows=()):
+		fake_self = SimpleNamespace(
+			product_details=[frappe._dict(row) for row in pd_rows],
+			exploded_product_details=[frappe._dict(row) for row in exploded_rows],
+		)
+		ProductCertification._normalise_sample_names(fake_self)
+		return fake_self
+
+	def test_blank_becomes_none(self):
+		doc = self._run([{"sample_name": ""}, {"sample_name": "   "}, {}])
+		self.assertEqual(
+			[r.sample_name for r in doc.product_details], [None, None, None]
+		)
+
+	def test_surrounding_whitespace_is_stripped(self):
+		doc = self._run([{"sample_name": " S1 "}])
+		self.assertEqual(doc.product_details[0].sample_name, "S1")
+
+	def test_exploded_rows_are_normalised_too(self):
+		doc = self._run([], [{"sample_name": " S1 "}, {"sample_name": ""}])
+		self.assertEqual(
+			[r.sample_name for r in doc.exploded_product_details], ["S1", None]
+		)
+
+
+class TestSlipKey(IntegrationTestCase):
+	"""_slip_key gained a third element; blank must leave every existing document alone."""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def test_blank_sample_name_appends_an_empty_third_element(self):
+		self.assertEqual(
+			pc._slip_key(frappe._dict(main_slip="MS-1", tree_no="TREE-A")),
+			("MS-1", "TREE-A", ""),
+		)
+
+	def test_none_and_empty_string_land_in_one_group(self):
+		self.assertEqual(
+			pc._slip_key(frappe._dict(tree_no="TREE-A", sample_name=None)),
+			pc._slip_key(frappe._dict(main_slip="", tree_no="TREE-A", sample_name="")),
+		)
+
+	def test_samples_off_one_tree_are_separate_groups(self):
+		self.assertNotEqual(
+			pc._slip_key(frappe._dict(tree_no="TREE-A", sample_name="S1")),
+			pc._slip_key(frappe._dict(tree_no="TREE-A", sample_name="S2")),
+		)
+
+
+class _FakeStockEntry:
+	"""Just enough Stock Entry to capture the rows create_material_receipt_for_certification
+	appends, without going near the ledger."""
+
+	def __init__(self):
+		self.items = []
+		self.flags = frappe._dict()
+		self.submitted = False
+
+	def append(self, _table, row):
+		self.items.append(frappe._dict(row))
+		return self.items[-1]
+
+	def save(self, *args, **kwargs):
+		pass
+
+	def submit(self):
+		self.submitted = True
+
+
+class TestFireAssyRepackQty(IntegrationTestCase):
+	"""The Repack must consume the main metal at the purity-converted weight and produce the
+	pure item at its OWN weight.
+
+	conversion_quantity is written only on the pure row and holds the weight converted to the
+	MAIN item's purity. Feeding that single number to both legs booked the 24KT pure item at
+	the converted weight, over-receiving fine gold by pure_purity / main_purity on every
+	receipt. validate_exploded_qty asserts the document balance in main-purity grams, so it
+	balanced and the error never surfaced at submit.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _doc(self, exploded, product_details=None):
+		return frappe._dict(
+			name="PC-RECEIVE-1",
+			type="Receive",
+			service_type="Fire Assy Service",
+			company="Test_Company",
+			department="Dept",
+			supplier="Supp",
+			receive_against="PC-ISSUE-1",
+			product_details=[
+				frappe._dict(idx=i + 1, **row)
+				for i, row in enumerate(
+					product_details
+					if product_details is not None
+					else [
+						{
+							"item_code": "M22",
+							"tree_no": "TREE-A",
+							"total_weight": 100.0,
+							"pure_item": "M24",
+							"loss_item": "ML22",
+						}
+					]
+				)
+			],
+			exploded_product_details=[
+				frappe._dict(idx=i + 1, **row) for i, row in enumerate(exploded)
+			],
+		)
+
+	def _run(self, doc):
+		"""Drive the builder with every warehouse / ledger lookup stubbed out."""
+		from jewellery_erpnext.jewellery_erpnext import lock_order
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
+			utils as pc_utils,
+		)
+
+		created = []
+
+		def _new_doc(doctype, *args, **kwargs):
+			self.assertEqual(doctype, "Stock Entry")
+			se = _FakeStockEntry()
+			created.append(se)
+			return se
+
+		with (
+			patch.object(
+				pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"
+			),
+			patch.object(
+				pc_utils, "_get_department_scrap_warehouse", return_value="SCRAP-WH"
+			),
+			patch.object(
+				pc_utils, "_get_supplier_certification_warehouse", return_value="SUP-WH"
+			),
+			patch.object(
+				pc_utils, "_get_issue_stock_entry_details", return_value=({}, {})
+			),
+			patch.object(frappe.db, "get_value", return_value="SE-ISSUE-1"),
+			patch.object(frappe, "get_cached_value", return_value=(0, 0, 0)),
+			patch.object(frappe, "new_doc", side_effect=_new_doc),
+			patch.object(lock_order, "lock_bins"),
+			patch.object(lock_order, "preallocate_series_for_docs"),
+			patch.object(lock_order, "series_stubs", return_value=()),
+		):
+			pc_utils.create_material_receipt_for_certification(doc)
+
+		by_type = {se.stock_entry_type: se for se in created}
+		return by_type
+
+	def test_pure_item_is_produced_at_its_own_weight(self):
+		# Issue 100 g of 22KT, receive 60, recover 30 of 24KT. 30 x 99.9 / 91.9 = 32.612 at
+		# 22KT, so 100 - 60 - 32.612 = 7.388 is lost.
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 60.0},
+				{
+					"item_code": "M24",
+					"tree_no": "TREE-A",
+					"gross_weight": 30.0,
+					"conversion_quantity": 32.612,
+				},
+				{"item_code": "ML22", "tree_no": "TREE-A", "gross_weight": 7.388},
+			]
+		)
+		entries = self._run(doc)
+
+		receipt = entries["Material Receipt for Certification"]
+		self.assertEqual([(r.item_code, r.qty) for r in receipt.items], [("M22", 60.0)])
+
+		repack = entries["Repack"]
+		consumed = [
+			(r.item_code, r.qty) for r in repack.items if not r.get("is_finished_item")
+		]
+		produced = [
+			(r.item_code, r.qty) for r in repack.items if r.get("is_finished_item")
+		]
+
+		# The consume leg is the purity-converted weight -- that much 22KT really is used up.
+		self.assertEqual(consumed, [("M22", 32.612), ("M22", 7.388)])
+		# The produce leg is each item's own weight. 32.612 here was the bug.
+		self.assertEqual(produced, [("M24", 30.0), ("ML22", 7.388)])
+
+		# Total 22KT consumed is exactly what did not come back as 22KT.
+		self.assertAlmostEqual(sum(q for _i, q in consumed), 40.0, places=3)
+
+	def test_gross_weight_follows_each_leg(self):
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 60.0},
+				{
+					"item_code": "M24",
+					"tree_no": "TREE-A",
+					"gross_weight": 30.0,
+					"conversion_quantity": 32.612,
+				},
+			]
+		)
+		repack = self._run(doc)["Repack"]
+		for row in repack.items:
+			self.assertEqual(row.gross_weight, row.qty)
+
+	def test_rows_without_a_pure_conversion_are_unchanged(self):
+		"""XRF has no pure row, so both quantities collapse to gross_weight."""
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 60.0},
+				{"item_code": "ML22", "tree_no": "TREE-A", "gross_weight": 40.0},
+			]
+		)
+		doc.service_type = "XRF Services"
+		entries = self._run(doc)
+		self.assertEqual(
+			[(r.item_code, r.qty) for r in entries["Repack"].items],
+			[("M22", 40.0), ("ML22", 40.0)],
+		)
+
+	def test_unresolvable_main_item_throws_instead_of_minting_stock(self):
+		"""Mixing a tree row with a no-tree row leaves the ("", "", "") group with no main
+		item, and the produce row used to be appended without its consume row."""
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 10.0},
+				{"item_code": "ML22", "gross_weight": 5.0},
+			],
+			product_details=[
+				{
+					"item_code": "M22",
+					"tree_no": "TREE-A",
+					"total_weight": 10.0,
+					"pure_item": "M24",
+					"loss_item": "ML22",
+				},
+				{
+					"item_code": "M18",
+					"total_weight": 5.0,
+					"pure_item": "M24",
+					"loss_item": "ML22",
+				},
+			],
+		)
+		with self.assertRaises(ValidationError) as cm:
+			self._run(doc)
+		self.assertIn("no main item", frappe.utils.strip_html(str(cm.exception)))
+
+
+_BOM_WEIGHTS = frappe._dict(
+	metal_colour="Yellow",
+	gross_weight=10.0,
+	metal_and_finding_weight=8.0,
+	finding_weight_=1.0,
+	other_weight=0.5,
+	gemstone_weight=0.25,
+	diamond_weight=0.25,
+	total_diamond_pcs=3,
+	total_gemstone_pcs=5,
+)
+
+
+class TestExplodedRowPerProductRow(IntegrationTestCase):
+	"""One exploded row per Product Details row, earrings included.
+
+	Earrings used to fan out into two rows carrying half the weight each, which also pushed
+	an odd diamond count through cint(x) / 2 into an Int column.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _doc(self, category, exploded=()):
+		doc = frappe.new_doc("Product Certification")
+		doc.service_type = "Hall Marking Service"
+		doc.type = "Issue"
+		doc.append(
+			"product_details",
+			{
+				"item_code": "ITEM-1",
+				"serial_no": "SN-1",
+				"bom": "BOM-1",
+				"category": category,
+			},
+		)
+		for row in exploded:
+			doc.append("exploded_product_details", row)
+		return doc
+
+	def _explode(self, doc):
+		sources = frappe._dict(
+			bom={"BOM-1": _BOM_WEIGHTS},
+			bom_metal={},
+			mwo={},
+			mop={},
+			latest_mop={},
+			pmo={},
+			pmo_departments={},
+		)
+		with patch.object(
+			ProductCertification, "_exploded_source_data", return_value=sources
+		):
+			doc.get_exploded_table()
+		return doc.exploded_product_details
+
+	def test_earring_yields_one_row_at_full_weight(self):
+		rows = self._explode(self._doc("Earrings"))
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].gross_weight, 10.0)
+		self.assertEqual(rows[0].gold_weight, 8.0)
+
+	def test_earring_pcs_are_not_halved_into_an_int_column(self):
+		rows = self._explode(self._doc("Earrings"))
+		self.assertEqual(rows[0].diamond_pcs, 3)
+		self.assertEqual(rows[0].stone_pcs, 5)
+
+	def test_non_earring_is_unchanged(self):
+		rows = self._explode(self._doc("Ring"))
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].gross_weight, 10.0)
+
+	def test_a_legacy_pair_is_left_alone(self):
+		"""Submitted documents keep their two rows and stay consistent with the Stock Entry /
+		PO / BOM amounts already booked; drafts keep theirs until someone deletes one."""
+		legacy = [
+			{"item_code": "ITEM-1", "serial_no": "SN-1", "gross_weight": 5.0},
+			{"item_code": "ITEM-1", "serial_no": "SN-1", "gross_weight": 5.0},
+		]
+		doc = self._doc("Earrings", exploded=legacy)
+		rows = self._explode(doc)
+		self.assertEqual(len(rows), 2)
+		self.assertEqual([r.gross_weight for r in rows], [5.0, 5.0])
+
+	def test_re_explode_is_a_no_op(self):
+		doc = self._doc("Earrings")
+		self._explode(doc)
+		rows = self._explode(doc)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].gross_weight, 10.0)
+
+
+class TestFireAssyExplodedGroups(IntegrationTestCase):
+	"""One receive / pure / loss trio per (main_slip, tree_no, sample_name) group.
+
+	A tree legitimately goes for assay as several samples. Before sample_name joined the
+	grouping key they shared one trio and their weights were summed onto a single main row.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _doc(self, pd_rows, exploded=(), service_type="Fire Assy Service"):
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.service_type = service_type
+		doc.company = "Test_Company"
+		doc.manufacturer = "Test_Manufacturer"
+		for row in pd_rows:
+			doc.append("product_details", row)
+		for row in exploded:
+			doc.append("exploded_product_details", row)
+		return doc
+
+	def _explode(self, doc):
+		with (
+			patch.object(pc, "get_item_loss_item", return_value="ML22"),
+			patch.object(frappe.db, "get_value", return_value="M24"),
+		):
+			doc.get_exploded_table()
+		return doc.exploded_product_details
+
+	def test_trio_carries_the_sample_name(self):
+		doc = self._doc(
+			[{"item_code": "M22", "tree_no": "TREE-A", "sample_name": "S1"}]
+		)
+		rows = self._explode(doc)
+		self.assertEqual([r.item_code for r in rows], ["M22", "M24", "ML22"])
+		self.assertEqual([r.sample_name for r in rows], ["S1"] * 3)
+
+	def test_two_samples_off_one_tree_get_their_own_trio(self):
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A", "sample_name": "S1"},
+				{"item_code": "M22", "tree_no": "TREE-A", "sample_name": "S2"},
+			]
+		)
+		rows = self._explode(doc)
+		self.assertEqual(len(rows), 6)
+		self.assertEqual([r.sample_name for r in rows], ["S1"] * 3 + ["S2"] * 3)
+
+	def test_same_tree_without_sample_names_still_shares_one_trio(self):
+		"""The documented pre-existing behaviour, and every document written so far."""
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A"},
+				{"item_code": "M22", "tree_no": "TREE-A"},
+			]
+		)
+		self.assertEqual(len(self._explode(doc)), 3)
+
+	def test_xrf_still_emits_main_and_loss_only(self):
+		doc = self._doc(
+			[{"item_code": "M22", "tree_no": "TREE-A"}], service_type="XRF Services"
+		)
+		self.assertEqual([r.item_code for r in self._explode(doc)], ["M22", "ML22"])
+
+	def test_untouched_orphan_group_is_pruned_and_rebuilt(self):
+		"""Naming a sample moves the group's key; the old, empty trio is dropped."""
+		doc = self._doc(
+			[{"item_code": "M22", "tree_no": "TREE-A", "sample_name": "S1"}],
+			exploded=[
+				{"item_code": "M22", "tree_no": "TREE-A"},
+				{"item_code": "M24", "tree_no": "TREE-A"},
+				{"item_code": "ML22", "tree_no": "TREE-A"},
+			],
+		)
+		rows = self._explode(doc)
+		self.assertEqual(len(rows), 3)
+		self.assertEqual([r.sample_name for r in rows], ["S1"] * 3)
+
+	def test_orphan_carrying_weight_throws_rather_than_deleting_it(self):
+		"""Silently dropping entered weights would reset the grid to zeros and leave
+		validate_exploded_qty rejecting the submit with no explanation."""
+		doc = self._doc(
+			[{"item_code": "M22", "tree_no": "TREE-A", "sample_name": "S1"}],
+			exploded=[
+				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 60.0},
+				{"item_code": "M24", "tree_no": "TREE-A"},
+				{"item_code": "ML22", "tree_no": "TREE-A"},
+			],
+		)
+		with self.assertRaises(ValidationError) as cm:
+			self._explode(doc)
+		self.assertIn(
+			"no longer in Product Details", frappe.utils.strip_html(str(cm.exception))
+		)
+
+	def test_a_live_group_keeps_its_entered_weights(self):
+		doc = self._doc(
+			[{"item_code": "M22", "tree_no": "TREE-A", "sample_name": "S1"}],
+			exploded=[
+				{
+					"item_code": "M22",
+					"tree_no": "TREE-A",
+					"sample_name": "S1",
+					"gross_weight": 60.0,
+				},
+				{"item_code": "M24", "tree_no": "TREE-A", "sample_name": "S1"},
+				{"item_code": "ML22", "tree_no": "TREE-A", "sample_name": "S1"},
+			],
+		)
+		rows = self._explode(doc)
+		self.assertEqual(len(rows), 3)
+		self.assertEqual(rows[0].gross_weight, 60.0)
+
+	def test_legacy_document_with_no_sample_names_is_untouched(self):
+		doc = self._doc(
+			[{"item_code": "M22", "tree_no": "TREE-A"}],
+			exploded=[
+				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 60.0},
+				{"item_code": "M24", "tree_no": "TREE-A", "gross_weight": 30.0},
+				{"item_code": "ML22", "tree_no": "TREE-A", "gross_weight": 7.388},
+			],
+		)
+		rows = self._explode(doc)
+		self.assertEqual([r.gross_weight for r in rows], [60.0, 30.0, 7.388])
+
+
+class TestPerSampleLossWeight(IntegrationTestCase):
+	"""Each sample's loss is computed against its own issued weight, not the tree's total."""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def test_each_sample_gets_its_own_conversion_and_loss(self):
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.service_type = "Fire Assy Service"
+		for sample, issued in (("S1", 100.0), ("S2", 50.0)):
+			doc.append(
+				"product_details",
+				{
+					"item_code": "TEST-ITEM-001",
+					"tree_no": "TREE-A",
+					"sample_name": sample,
+					"total_weight": issued,
+					"pure_item": "PURE-ITEM-001",
+					"loss_item": "LOSS-ITEM-001",
+				},
+			)
+		for sample, main_wt, pure_wt in (("S1", 60.0, 30.0), ("S2", 30.0, 15.0)):
+			for item_code, weight in (
+				("TEST-ITEM-001", main_wt),
+				("PURE-ITEM-001", pure_wt),
+				("LOSS-ITEM-001", 0.0),
+			):
+				doc.append(
+					"exploded_product_details",
+					{
+						"item_code": item_code,
+						"tree_no": "TREE-A",
+						"sample_name": sample,
+						"gross_weight": weight,
+					},
+				)
+
+		with patch(PURITY_PATH, side_effect=_purity):
+			doc.calculate_fire_assy_loss_weight()
+
+		rows = doc.exploded_product_details
+		# S1: 30 x 99.9 / 91.9 = 32.612 at 22KT, so 100 - 60 - 32.612 = 7.388 is lost.
+		self.assertEqual(rows[1].conversion_quantity, 32.612)
+		self.assertEqual(rows[2].gross_weight, 7.388)
+		# S2: half of everything, and independent of S1.
+		self.assertEqual(rows[4].conversion_quantity, 16.306)
+		self.assertEqual(rows[5].gross_weight, 3.694)

@@ -1,4 +1,5 @@
 import frappe
+from frappe.utils import flt
 
 
 def get_item_for_certification(department, service_type):
@@ -503,8 +504,23 @@ def create_material_receipt_for_certification(self):
 	serial_cache = {}
 
 	for row in self.exploded_product_details:
-		qty = row.get("conversion_quantity") or row.get("gross_weight") or 0
-		if qty <= 0:
+		# Two quantities, not one. ``conversion_quantity`` is written ONLY on the pure row,
+		# by ``calculate_fire_assy_loss_weight``, and it holds the pure weight converted to
+		# the MAIN item's purity -- i.e. how much main metal the repack consumes to yield it.
+		# That is the right number for the CONSUME leg alone; the PRODUCE leg books the item's
+		# own weight. Reusing one value for both booked the 24KT pure item at the converted
+		# weight, over-receiving fine gold by pure_purity / main_purity on every receipt.
+		#
+		# For the main and loss rows ``conversion_quantity`` is 0, so both quantities collapse
+		# to ``gross_weight`` and nothing about those rows changes. A row carrying only a
+		# conversion quantity keeps producing at that quantity rather than being skipped --
+		# ``validate_exploded_qty`` has already counted it, so dropping it would leave the
+		# repack short of the weight the document asserts.
+		consume_qty = flt(row.get("conversion_quantity")) or flt(
+			row.get("gross_weight")
+		)
+		produce_qty = flt(row.get("gross_weight")) or consume_qty
+		if consume_qty <= 0:
 			continue
 
 		row_key = _slip_key(row)
@@ -562,10 +578,12 @@ def create_material_receipt_for_certification(self):
 			if sle_batch:
 				batch_no = sle_batch
 
-		# Serial fallback
+		# Serial fallback. Sized on produce_qty: the serials are for THIS row's item, which
+		# is what the produce leg books. They only ever differ on the pure row, and only a
+		# whole number reaches the query at all.
 		if has_serial_no and not serial_no:
 			try:
-				qty_int = int(qty) if float(qty).is_integer() else 0
+				qty_int = int(produce_qty) if float(produce_qty).is_integer() else 0
 			except Exception:
 				qty_int = 0
 			if qty_int > 0:
@@ -597,7 +615,7 @@ def create_material_receipt_for_certification(self):
 
 		row_dict = {
 			"item_code": row.item_code,
-			"qty": qty,
+			"qty": produce_qty,
 			"s_warehouse": s_wh,
 			"t_warehouse": t_wh,
 			"batch_no": batch_no,
@@ -606,34 +624,57 @@ def create_material_receipt_for_certification(self):
 			"use_serial_batch_fields": True,
 			"serial_and_batch_bundle": None,
 			"Inventory_type": row.get("inventory_type") or "Regular Stock",
-			"gross_weight": qty,
+			"gross_weight": produce_qty,
 		}
 
 		if is_main_item and not is_loss_row:
 			main_rows.append(row_dict)
 		else:
 			# Source row for repack (consume the main item)
-			if main_item:
-				main_s_wh = (
-					main_defaults.get("s_warehouse")
-					or issue_item_wh_map.get(main_item)
-					or default_supplier_wh
+			if not main_item:
+				# No main item means nothing to consume, and the produce row below would
+				# then be appended on its own -- a Repack that mints metal out of nothing.
+				# Reachable whenever the document mixes a row that carries a tree / slip
+				# with one that carries neither: ``all_main_items`` holds two items, so
+				# ``sole_main_item`` is None and the ("", "") group resolves to no main item
+				# at all. Every _slip_key group still balances on its own, so
+				# ``validate_exploded_qty`` passes and nothing else catches it.
+				frappe.throw(
+					frappe._(
+						"Row #{0}: no main item could be resolved for {1}, so {2} cannot be "
+						"repacked. Set the Tree No / Main Slip on every Product Details row."
+					).format(
+						row.idx,
+						frappe.bold(
+							row.get("tree_no")
+							or row.get("main_slip")
+							or frappe._("this group")
+						),
+						frappe.bold(row.item_code),
+					),
+					title=frappe._("Main Item Not Found"),
 				)
-				repack_rows.append(
-					{
-						"item_code": main_item,
-						"qty": qty,
-						"s_warehouse": main_s_wh,
-						"t_warehouse": "",
-						"batch_no": main_defaults.get("batch_no"),
-						"serial_no": main_defaults.get("serial_no"),
-						"is_scrap_item": 0,
-						"use_serial_batch_fields": True,
-						"serial_and_batch_bundle": None,
-						"Inventory_type": row.get("inventory_type") or "Regular Stock",
-						"gross_weight": qty,
-					}
-				)
+
+			main_s_wh = (
+				main_defaults.get("s_warehouse")
+				or issue_item_wh_map.get(main_item)
+				or default_supplier_wh
+			)
+			repack_rows.append(
+				{
+					"item_code": main_item,
+					"qty": consume_qty,
+					"s_warehouse": main_s_wh,
+					"t_warehouse": "",
+					"batch_no": main_defaults.get("batch_no"),
+					"serial_no": main_defaults.get("serial_no"),
+					"is_scrap_item": 0,
+					"use_serial_batch_fields": True,
+					"serial_and_batch_bundle": None,
+					"Inventory_type": row.get("inventory_type") or "Regular Stock",
+					"gross_weight": consume_qty,
+				}
+			)
 
 			# Target row for repack
 			row_dict["s_warehouse"] = ""

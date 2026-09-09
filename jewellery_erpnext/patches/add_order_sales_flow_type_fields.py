@@ -129,8 +129,7 @@ CUSTOM_FIELDS = {
 			"in_standard_filter": 1,
 			"description": (
 				"Sales Type of the Sales Order this piece was manufactured against, stamped from "
-				"the Serial Number Creator at submit. Distinct from Ownership Tag, which is only "
-				"seeded from Sales Type and is meant to be overwritten by the ledger-derived value."
+				"the Serial Number Creator at submit."
 			),
 		},
 		{

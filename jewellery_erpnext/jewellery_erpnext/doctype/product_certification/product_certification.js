@@ -67,11 +67,19 @@ frappe.ui.form.on("Product Certification", {
 
 				// One tree is legitimately scanned more than once -- a tree can go for assay in
 				// several samples -- so a repeat scan adds another row rather than being
-				// refused. Only the WEIGHT needs care: set_fire_assy_issue_weight sums
-				// same-tree rows onto one exploded main row, so auto-filling the tree's full
-				// weight again would issue twice the metal. Repeats therefore open at 0 for
-				// the operator to type, and validate_fire_assy_weight still blocks a submit
-				// that leaves one at 0.
+				// refused. The Sample Name is what tells those rows apart: it is part of the
+				// server-side grouping key, so two named rows off one tree get their own
+				// receive / pure / loss trio and their own weight.
+				//
+				// Either way the WEIGHT opens at 0 on a repeat. Named rows split the tree's
+				// metal between them, so the tree total is the wrong prefill for either; and
+				// unnamed rows are still summed onto one exploded main row by
+				// set_fire_assy_issue_weight, where prefilling again would issue twice the
+				// metal. validate_fire_assy_weight still blocks a submit that leaves one at 0.
+				//
+				// Keyed on tree_no ALONE, deliberately: at scan time the new row has no sample
+				// name yet, so a composite key would never match and every repeat scan would
+				// re-prefill the tree's full weight.
 				let already_scanned = find_existing_row(frm, "tree_no", scanned_value);
 
 				return (
@@ -93,10 +101,10 @@ frappe.ui.form.on("Product Certification", {
 
 							frappe.show_alert({
 								message: already_scanned
-									? __("Added Tree No: {0} again (row {1}) — enter its weight", [
-											scanned_value,
-											already_scanned.idx,
-									  ])
+									? __(
+											"Added Tree No: {0} again (row {1}) — enter its Sample Name and weight",
+											[scanned_value, already_scanned.idx]
+									  )
 									: __("Added Tree No: {0}", [scanned_value]),
 								indicator: already_scanned ? "orange" : "green",
 							});
