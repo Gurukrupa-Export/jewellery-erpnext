@@ -1177,6 +1177,16 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 	new_mr.workflow_state = "Draft"
 	new_mr.title = new_mr.title[:-1] + str(int(total_mr_count) + 1)
 	new_mr.custom_manufacturing_work_order = docname
+	new_mr.custom_manufacturing_operation = frappe.db.get_value(
+		"Manufacturing Work Order", docname, "manufacturing_operation"
+	)
+	# copy_doc carries these stage stamps over from old_mr verbatim. Left as-is, the new
+	# split MR thinks it already has a Reserve/MOP/Department Transfer Stock Entry -- the
+	# old_mr's -- and later re-copies that stale entry instead of making its own, which
+	# fails once old_mr is cancelled (its rows still link to old_mr, now a cancelled doc).
+	new_mr.custom_reserve_se = None
+	new_mr.custom_mop_se = None
+	new_mr.custom_department_transfer_se = None
 	new_mr_items = []
 	for i in new_mr.items:
 		i.qty = 0

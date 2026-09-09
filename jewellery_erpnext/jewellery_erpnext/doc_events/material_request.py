@@ -119,6 +119,13 @@ def before_validate(self, method):
 	validate_target_item(self)
 	validate_warehouse(self)
 
+	if not self.custom_manufacturing_operation and self.custom_manufacturing_work_order:
+		self.custom_manufacturing_operation = frappe.db.get_value(
+			"Manufacturing Work Order",
+			self.custom_manufacturing_work_order,
+			"manufacturing_operation",
+		)
+
 	if self.custom_manufacturing_operation:
 		linked_mo = frappe.db.get_value(
 			"Manufacturing Operation",
