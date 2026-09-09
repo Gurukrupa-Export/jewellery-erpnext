@@ -1684,6 +1684,12 @@ def _snc_se_detail_maps(se_name):
 	- ``rate_map``: qty-weighted Batch Rate — the maintained ``custom_metal_rate``
 	  (fetched onto the SE detail from the batch), falling back to ``basic_rate``
 	  when unset. Covers metal/findings (Batch Rate) and diamond/gemstone (basic_rate).
+
+	CONSUMED rows only (``s_warehouse`` set). A Manufacture entry also carries the
+	produced finished-good row and any scrap row, and those have no source warehouse.
+	Including them blended the finished good's own valuation into the raw material it
+	was made from, so an item appearing on both sides came out at a rate that was
+	neither its consumption rate nor its production rate.
 	- ``inv_map``: inventory type. The aggregated SNC ``fg_details`` rows do NOT carry
 	  inventory_type, so the FG BOM's ``is_customer_item`` was always 0. Re-derive it
 	  here from the SE — the same batch-master-corrected value the user sees as
@@ -1699,6 +1705,7 @@ def _snc_se_detail_maps(se_name):
 			MAX(inventory_type = 'Customer Goods') AS is_customer_goods
 		FROM `tabStock Entry Detail`
 		WHERE parent = %s
+			AND IFNULL(s_warehouse, '') != ''
 		GROUP BY item_code
 		""",
 		(se_name,),
@@ -1723,29 +1730,45 @@ def _stone_se_rate(consumed_rate, item_valuation_rate):
 	return flt(consumed_rate) or flt(item_valuation_rate)
 
 
+def _snc_bom_data(snc_doc, se_name):
+	"""The FG BOM item rows for a Serial Number Creator, shaped like get_stock_entry_data.
+
+	``fg_details`` carries the aggregated item / qty / pcs, but not the money or the
+	provenance: rate and inventory type are re-derived from the Manufacture Stock Entry
+	(``_snc_se_detail_maps``), and ``parent`` is that Stock Entry.
+
+	``parent`` is load-bearing and was missing. The diamond branch of
+	``create_finished_goods_bom`` resolves ``weight_per_pcs`` with a subquery keyed on it
+	(``WHERE parent = %s``); ``get_stock_entry_data`` supplies it on the non-SNC path as
+	``Max(parent)``, but the SNC dict did not, so the subquery matched no rows,
+	``weight_per_pcs`` resolved to 0, and every SNC-created FG BOM booked
+	``diamond_rate_for_specified_quantity = total_diamond_rate * 0`` -- a zero diamond
+	amount. That is the FG BOM amount mismatch specific to the SNC path.
+	"""
+	se_rate_map, se_inv_map = _snc_se_detail_maps(se_name)
+
+	return [
+		{
+			"item_code": d.row_material,
+			"qty": d.qty,
+			"pcs": d.pcs,
+			"uom": d.uom,
+			"rate": getattr(d, "rate", None) or se_rate_map.get(d.row_material, 0),
+			"custom_sub_setting_type": getattr(d, "sub_setting_type", None),
+			"inventory_type": se_inv_map.get(d.row_material),
+			"parent": se_name,
+		}
+		for d in snc_doc.fg_details
+	]
+
+
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	# frappe.throw("create_finished_goods_bom")
 	# If called from Serial Number Creator, use its prepared table as source of truth
 	if getattr(self, "doctype", None) == "Serial Number Creator" and self.get(
 		"fg_details"
 	):
-		# se_rate_map: per-item Batch Rate, qty-weighted across the consumed batches.
-		# se_inv_map: per-item inventory type re-derived from the Manufacture SE (see
-		# _snc_se_detail_maps) — the fg_details rows don't carry it.
-		se_rate_map, se_inv_map = _snc_se_detail_maps(se_name)
-
-		data = [
-			{
-				"item_code": d.row_material,
-				"qty": d.qty,
-				"pcs": d.pcs,
-				"uom": d.uom,
-				"rate": getattr(d, "rate", None) or se_rate_map.get(d.row_material, 0),
-				"custom_sub_setting_type": getattr(d, "sub_setting_type", None),
-				"inventory_type": se_inv_map.get(d.row_material),
-			}
-			for d in self.fg_details
-		]
+		data = _snc_bom_data(self, se_name)
 	else:
 		data = get_stock_entry_data(self)
 
