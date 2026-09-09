@@ -119,10 +119,15 @@ def before_validate(self, method):
 	validate_target_item(self)
 	validate_warehouse(self)
 
-	if not self.custom_manufacturing_operation and self.custom_manufacturing_work_order:
+	# self.get(...), not attribute access: custom_manufacturing_work_order is a custom field
+	# that may not exist in every site's DocType meta (e.g. a fresh test site before its
+	# patch has run), and plain attribute access raises AttributeError for those, unlike
+	# self.get() which returns None.
+	manufacturing_work_order = self.get("custom_manufacturing_work_order")
+	if not self.custom_manufacturing_operation and manufacturing_work_order:
 		self.custom_manufacturing_operation = frappe.db.get_value(
 			"Manufacturing Work Order",
-			self.custom_manufacturing_work_order,
+			manufacturing_work_order,
 			"manufacturing_operation",
 		)
 
