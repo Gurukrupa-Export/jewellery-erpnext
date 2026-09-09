@@ -25,9 +25,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_nu
 	_active_sres_for,
 	_allocate_pcs_across_rows,
 	_allocate_qty_across_warehouses,
+	_get_source_raw_materials,
 	_physical_batch_qty,
 	_pick_source_warehouse,
+	_reserved_source_rows,
 	_reserved_warehouse_caps,
+	_sed_attributes_for,
 	_sre_reserves_batch,
 	_warehouse_has_batch_stock,
 	calulate_id_wise_sum_up,
@@ -1324,3 +1327,407 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 		with patch(f"{_SNC_MODULE}._active_sres_for", side_effect=_ReachedPriorityOne):
 			with self.assertRaises(_ReachedPriorityOne):
 				to_prepare_data_for_make_mnf_stock_entry(self._doc(3.186))
+
+
+# ── Reservation-sourced raw materials ──────────────────────────────────────────
+#
+# Serial Number Creator used to read its rows from MOP Log. That is an append-only
+# ledger of everything that ever flowed through an operation, so it kept material that
+# had since been handed off, written off as loss, or zeroed by refining — measured on
+# production, 50% of operations carried more items in MOP Log than were actually
+# reserved, and 93% carried a different quantity (``qty_after_transaction_batch_based``
+# is an MWO-wide running sum stamped onto one operation, which the old code then read
+# MOP-scoped). Reservations are now the source for the row set, quantity, batch and
+# warehouse; the Batch master supplies inventory type; and the Stock Entry Detail
+# supplies pcs and sub setting type, which no reservation carries.
+
+_D_ITEM = "D-NT-RO-6B-+7-7.5"
+_D_BATCH = "KG2F081-DNTROX6G00G05-7P57M"
+
+
+def _sre(name, item, warehouse, reserved, delivered=0.0, sed=None):
+	return {
+		"name": name,
+		"item_code": item,
+		"warehouse": warehouse,
+		"reserved_qty": reserved,
+		"delivered_qty": delivered,
+		"from_voucher_no": "SE-1" if sed else None,
+		"from_voucher_detail_no": sed,
+	}
+
+
+def _sb(parent, batch, qty, delivered=0.0):
+	return {"parent": parent, "batch_no": batch, "qty": qty, "delivered_qty": delivered}
+
+
+class TestReservedSourceRows(IntegrationTestCase):
+	"""The row set, quantity, batch and warehouse come from live reservations only."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _mock(sres, children):
+		def _inner(doctype, **kwargs):
+			if doctype == "Stock Reservation Entry":
+				return sres
+			return children
+
+		return _inner
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_one_row_per_item_batch_warehouse(self, mock_get_all):
+		mock_get_all.side_effect = self._mock(
+			[_sre("sre1", _LIVE_ITEM, _WAXING, 3.557)],
+			[_sb("sre1", _LIVE_BATCH, 3.557)],
+		)
+		rows = _reserved_source_rows(["MWO-1"])
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["item_code"], _LIVE_ITEM)
+		self.assertEqual(rows[0]["batch_no"], _LIVE_BATCH)
+		self.assertEqual(rows[0]["qty"], 3.557)
+		self.assertEqual(rows[0]["warehouse"], _WAXING)
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_quantity_is_reserved_minus_delivered(self, mock_get_all):
+		mock_get_all.side_effect = self._mock(
+			[_sre("sre1", _LIVE_ITEM, _WAXING, 5.0, delivered=1.5)],
+			[_sb("sre1", _LIVE_BATCH, 5.0, delivered=1.5)],
+		)
+		self.assertEqual(_reserved_source_rows(["MWO-1"])[0]["qty"], 3.5)
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_fully_delivered_reservation_contributes_nothing(self, mock_get_all):
+		# The "extra rows" symptom: a consumed reservation is not material any more.
+		mock_get_all.side_effect = self._mock(
+			[_sre("sre1", _LIVE_ITEM, _WAXING, 5.0, delivered=5.0)],
+			[_sb("sre1", _LIVE_BATCH, 5.0, delivered=5.0)],
+		)
+		self.assertEqual(_reserved_source_rows(["MWO-1"]), [])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_one_batch_across_two_warehouses_stays_two_rows(self, mock_get_all):
+		# split_source_rows_by_reservation exists to represent exactly this; the fetch
+		# must not collapse it.
+		mock_get_all.side_effect = self._mock(
+			[
+				_sre("sre1", _LIVE_ITEM, _WAXING, 3.557),
+				_sre("sre2", _LIVE_ITEM, _MODEL_MAKING, 0.02),
+			],
+			[_sb("sre1", _LIVE_BATCH, 3.557), _sb("sre2", _LIVE_BATCH, 0.02)],
+		)
+		rows = _reserved_source_rows(["MWO-1"])
+		self.assertEqual(len(rows), 2)
+		self.assertEqual(
+			sorted(r["warehouse"] for r in rows), sorted([_MODEL_MAKING, _WAXING])
+		)
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_two_reservations_same_batch_and_warehouse_are_summed(self, mock_get_all):
+		mock_get_all.side_effect = self._mock(
+			[
+				_sre("sre1", _LIVE_ITEM, _WAXING, 1.0),
+				_sre("sre2", _LIVE_ITEM, _WAXING, 2.5),
+			],
+			[_sb("sre1", _LIVE_BATCH, 1.0), _sb("sre2", _LIVE_BATCH, 2.5)],
+		)
+		rows = _reserved_source_rows(["MWO-1"])
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["qty"], 3.5)
+		self.assertEqual(sorted(rows[0]["sres"]), ["sre1", "sre2"])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_qty_based_reservation_yields_a_batchless_row(self, mock_get_all):
+		# No Serial and Batch children: reserves at item level, keeps the header remainder.
+		mock_get_all.side_effect = self._mock(
+			[_sre("sre1", _LIVE_ITEM, _WAXING, 4.0)], []
+		)
+		rows = _reserved_source_rows(["MWO-1"])
+		self.assertEqual(len(rows), 1)
+		self.assertIsNone(rows[0]["batch_no"])
+		self.assertEqual(rows[0]["qty"], 4.0)
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_child_cannot_lend_more_than_the_header_holds(self, mock_get_all):
+		mock_get_all.side_effect = self._mock(
+			[_sre("sre1", _LIVE_ITEM, _WAXING, 2.0)],
+			[_sb("sre1", _LIVE_BATCH, 9.0)],
+		)
+		self.assertEqual(_reserved_source_rows(["MWO-1"])[0]["qty"], 2.0)
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_reservation_with_no_warehouse_is_skipped(self, mock_get_all):
+		mock_get_all.side_effect = self._mock(
+			[_sre("sre1", _LIVE_ITEM, None, 3.0)], [_sb("sre1", _LIVE_BATCH, 3.0)]
+		)
+		self.assertEqual(_reserved_source_rows(["MWO-1"]), [])
+
+	# A remainder that rounds away at 3dp is not capacity.
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_sub_precision_remainder_is_not_a_row(self, mock_get_all):
+		mock_get_all.side_effect = self._mock(
+			[_sre("sre1", _LIVE_ITEM, _WAXING, 5.00004, delivered=5.0)],
+			[_sb("sre1", _LIVE_BATCH, 5.00004, delivered=5.0)],
+		)
+		self.assertEqual(_reserved_source_rows(["MWO-1"]), [])
+
+	def test_no_work_orders_means_no_rows(self):
+		self.assertEqual(_reserved_source_rows([]), [])
+
+
+class TestSedAttributes(IntegrationTestCase):
+	"""pcs / sub setting type / inventory type come from the Stock Entry Detail."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_linked_sed_is_used_without_a_fallback_scan(self, mock_get_all):
+		rows = [
+			{
+				"item_code": _D_ITEM,
+				"batch_no": _D_BATCH,
+				"warehouse": _WAXING,
+				"qty": 1.421,
+				"sres": ["sre1"],
+				"seds": ["sed1"],
+			}
+		]
+		seen = []
+
+		def _inner(doctype, **kwargs):
+			seen.append(doctype)
+			if doctype == "Stock Entry Detail":
+				return [
+					frappe._dict(
+						name="sed1",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=96,
+						custom_sub_setting_type="Prong",
+						inventory_type="Regular Stock",
+						customer=None,
+					)
+				]
+			return []
+
+		mock_get_all.side_effect = _inner
+		attrs = _sed_attributes_for(rows, ["MWO-1"])
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH)]["pcs"], 96)
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH)]["sub_setting_type"], "Prong")
+		# The (operation, item, batch) fallback must not run when the link resolved.
+		self.assertNotIn("Manufacturing Operation", seen)
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_falls_back_to_operation_item_batch_when_unlinked(self, mock_get_all):
+		# Every reservation created before from_voucher_detail_no existed lands here.
+		rows = [
+			{
+				"item_code": _D_ITEM,
+				"batch_no": _D_BATCH,
+				"warehouse": _WAXING,
+				"qty": 1.421,
+				"sres": ["sre1"],
+				"seds": [],
+			}
+		]
+
+		def _inner(doctype, **kwargs):
+			if doctype == "Manufacturing Operation":
+				return ["MOP-1"]
+			if doctype == "Stock Entry Detail":
+				return [
+					frappe._dict(
+						name="sed9",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=48,
+						custom_sub_setting_type=None,
+						inventory_type="Regular Stock",
+						customer=None,
+					)
+				]
+			return []
+
+		mock_get_all.side_effect = _inner
+		attrs = _sed_attributes_for(rows, ["MWO-1"])
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH)]["pcs"], 48)
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH)]["sed_item"], "sed9")
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_pcs_is_summed_across_several_stock_entries(self, mock_get_all):
+		# One item+batch can be issued to a job over more than one Stock Entry.
+		rows = [
+			{
+				"item_code": _D_ITEM,
+				"batch_no": _D_BATCH,
+				"warehouse": _WAXING,
+				"qty": 2.0,
+				"sres": ["sre1", "sre2"],
+				"seds": ["sed1", "sed2"],
+			}
+		]
+
+		def _inner(doctype, **kwargs):
+			if doctype == "Stock Entry Detail":
+				return [
+					frappe._dict(
+						name="sed1",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=40,
+						custom_sub_setting_type="Prong",
+						inventory_type="Regular Stock",
+						customer=None,
+					),
+					frappe._dict(
+						name="sed2",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=8,
+						custom_sub_setting_type="Prong",
+						inventory_type="Regular Stock",
+						customer=None,
+					),
+				]
+			return []
+
+		mock_get_all.side_effect = _inner
+		self.assertEqual(
+			_sed_attributes_for(rows, ["MWO-1"])[(_D_ITEM, _D_BATCH)]["pcs"], 48
+		)
+
+	def test_no_rows_needs_no_query(self):
+		self.assertEqual(_sed_attributes_for([], ["MWO-1"]), {})
+
+
+class TestGetSourceRawMaterials(IntegrationTestCase):
+	"""The composed fetch: reservations + Batch master + Stock Entry Detail."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _patched(rows, attrs, batches):
+		"""Patch the three sources the fetch composes."""
+		return (
+			patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-1"])),
+			patch(f"{_SNC_MODULE}._reserved_source_rows", return_value=rows),
+			patch(f"{_SNC_MODULE}._sed_attributes_for", return_value=attrs),
+			patch(f"{_SNC_MODULE}.frappe.get_all", return_value=batches),
+			patch(f"{_SNC_MODULE}.frappe.db.get_value", return_value="Gram"),
+		)
+
+	def _run(self, rows, attrs, batches=()):
+		patches = self._patched(rows, attrs, list(batches))
+		for p in patches:
+			p.start()
+		try:
+			return _get_source_raw_materials(None, frappe._dict())
+		finally:
+			for p in patches:
+				p.stop()
+
+	@staticmethod
+	def _row(item, batch, qty=1.0, warehouse=_WAXING):
+		return {
+			"item_code": item,
+			"batch_no": batch,
+			"warehouse": warehouse,
+			"qty": qty,
+			"sres": ["sre1"],
+			"seds": ["sed1"],
+		}
+
+	@staticmethod
+	def _attr(pcs=0.0, sst=None, inv=None, customer=None):
+		return {
+			"pcs": pcs,
+			"sub_setting_type": sst,
+			"inventory_type": inv,
+			"customer": customer,
+			"sed_item": "sed1",
+		}
+
+	def test_pcs_carries_for_diamond_items(self):
+		out = self._run(
+			[self._row(_D_ITEM, _D_BATCH)],
+			{(_D_ITEM, _D_BATCH): self._attr(pcs=96.0)},
+		)
+		self.assertEqual(out[0]["pcs"], 96.0)
+
+	def test_pcs_is_dropped_for_metal_items(self):
+		# The Stock Entry Detail transfer branch has no D/G gate, so a metal row can carry
+		# a stray pcs. Counting it would invent a piece count for a weight-tracked item.
+		out = self._run(
+			[self._row(_LIVE_ITEM, _LIVE_BATCH)],
+			{(_LIVE_ITEM, _LIVE_BATCH): self._attr(pcs=1.0)},
+		)
+		self.assertEqual(out[0]["pcs"], 0.0)
+
+	def test_batch_master_overrides_the_stock_entry_inventory_type(self):
+		# A Customer Goods batch can be stamped "Regular Stock" on the entry that moved it;
+		# the batch is authoritative, as it already is at submit.
+		out = self._run(
+			[self._row(_LIVE_ITEM, _LIVE_BATCH)],
+			{(_LIVE_ITEM, _LIVE_BATCH): self._attr(inv="Regular Stock")},
+			batches=[
+				frappe._dict(
+					name=_LIVE_BATCH,
+					custom_inventory_type="Customer Goods",
+					custom_customer="CUST-1",
+				)
+			],
+		)
+		self.assertEqual(out[0]["inventory_type"], "Customer Goods")
+		self.assertEqual(out[0]["customer"], "CUST-1")
+
+	def test_customer_is_cleared_for_a_regular_stock_batch(self):
+		out = self._run(
+			[self._row(_LIVE_ITEM, _LIVE_BATCH)],
+			{
+				(_LIVE_ITEM, _LIVE_BATCH): self._attr(
+					inv="Customer Goods", customer="CUST-1"
+				)
+			},
+			batches=[
+				frappe._dict(
+					name=_LIVE_BATCH,
+					custom_inventory_type="Regular Stock",
+					custom_customer="CUST-1",
+				)
+			],
+		)
+		self.assertEqual(out[0]["inventory_type"], "Regular Stock")
+		self.assertIsNone(out[0]["customer"])
+
+	def test_batch_without_an_inventory_type_keeps_the_stock_entry_value(self):
+		out = self._run(
+			[self._row(_LIVE_ITEM, _LIVE_BATCH)],
+			{
+				(_LIVE_ITEM, _LIVE_BATCH): self._attr(
+					inv="Customer Goods", customer="CUST-1"
+				)
+			},
+			batches=[
+				frappe._dict(
+					name=_LIVE_BATCH, custom_inventory_type=None, custom_customer=None
+				)
+			],
+		)
+		self.assertEqual(out[0]["inventory_type"], "Customer Goods")
+
+	def test_warehouse_and_qty_come_straight_from_the_reservation(self):
+		out = self._run(
+			[self._row(_LIVE_ITEM, _LIVE_BATCH, qty=3.557, warehouse=_MODEL_MAKING)],
+			{(_LIVE_ITEM, _LIVE_BATCH): self._attr()},
+		)
+		self.assertEqual(out[0]["s_warehouse"], _MODEL_MAKING)
+		self.assertEqual(out[0]["qty"], 3.557)
+
+	def test_no_reservation_yields_no_rows(self):
+		self.assertEqual(self._run([], {}), [])

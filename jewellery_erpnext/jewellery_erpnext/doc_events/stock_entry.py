@@ -1140,6 +1140,17 @@ def stock_reservation_entry_for_mwo(self):
 			row.manufacturing_operation
 		)
 		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
+		# The Stock Entry row this reservation was created from. ``voucher_*`` points at
+		# the Sales Order (that is what ERPNext reserves against), so without these three
+		# there is NO link back to the Stock Entry Detail — and that row is the only
+		# carrier of custom_sub_setting_type, which Serial Number Creator needs. Standard
+		# ERPNext fields, unused by this app until now. Every path that cancels and
+		# recreates an SRE must carry them forward or the link is lost on the first
+		# relocation; see _build_sre_from_context / _build_and_submit_mwo_sre /
+		# _build_replacement_sre.
+		new_stock_reservation_entries_mwo.from_voucher_type = "Stock Entry"
+		new_stock_reservation_entries_mwo.from_voucher_no = self.name
+		new_stock_reservation_entries_mwo.from_voucher_detail_no = row.name
 		new_stock_reservation_entries_mwo.available_qty = max(
 			available_qty_to_reserve, qty_to_be_reserved
 		)
