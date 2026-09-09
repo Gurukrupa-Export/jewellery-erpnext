@@ -44,10 +44,25 @@ def _slip_key(row):
 	"""Fire Assy / XRF grouping key, shared by every routine that pairs a Product Details
 	row with its generated Exploded Product Details rows.
 
-	It is the same ``[main_slip, tree_no]`` pair ``get_exploded_table`` dedupes on, with
-	blanks normalised so ``None`` and ``""`` land in one group instead of two.
+	It is the same ``[main_slip, tree_no, sample_name]`` triple ``get_exploded_table``
+	dedupes on, with blanks normalised so ``None`` and ``""`` land in one group instead of two.
+
+	``sample_name`` is in the key because one tree legitimately goes for assay in more than one
+	sample -- the case ``validate_duplicate_product_rows`` already documents as the reason tree
+	rows are exempt from its duplicate check. Without it, two samples off one tree share a
+	single receive / pure / loss trio and their weights are silently summed onto one main row.
+
+	It is last and blank-normalised, so a document carrying no sample name -- every document
+	written before the field existed -- yields exactly its old key with a third ``""`` appended.
+	That relabelling is injective, and no consumer does anything with the key but hash it,
+	compare it to another key from this same function, test it with ``any()``, or destructure
+	it (once, in ``validate_exploded_qty``), so grouping on those documents is unchanged.
 	"""
-	return (row.get("main_slip") or "", row.get("tree_no") or "")
+	return (
+		row.get("main_slip") or "",
+		row.get("tree_no") or "",
+		row.get("sample_name") or "",
+	)
 
 
 @frappe.request_cache
@@ -125,19 +140,26 @@ class ProductCertification(Document):
 		):
 			frappe.throw(_("Please set warehouse for selected supplier"))
 
+		self._normalise_sample_names()
 		self.validate_duplicate_product_rows()
+		self.validate_unique_sample_name()
 		self.validate_serial_warehouse_department()
 		self.validate_items()
 		validate_over_receipt(self)
 		self.update_bom()
 		self.get_exploded_table()
+		self.set_assay_row_types()
 		self.calculate_fire_assy_loss_weight()
 		self.set_fire_assy_issue_weight()
 		self.distribute_amount()
 
 	def before_submit(self):
+		# Identity before weight: validate_fire_assy_weight names the offending row by its
+		# tree / slip / item, so a row that has an identity produces the better message.
+		self.validate_tree_or_sample_name()
 		self.validate_fire_assy_weight()
 		self.validate_exploded_qty()
+		self.validate_fire_assy_report()
 		# Refuse the submit unless the service PO can actually be created. Checked here,
 		# where the operator can fix the master data, rather than in the deferred job —
 		# which runs after commit and would leave a submitted certification with no PO.
@@ -179,6 +201,162 @@ class ProductCertification(Document):
 				title=_("Total Weight Missing"),
 			)
 
+	def _normalise_sample_names(self):
+		"""A blank Sample Name is stored as NULL, never as "".
+
+		``receive_status.stored_identity`` reads the column raw while ``match_identity``
+		normalises a blank to ``None`` -- an asymmetry that is deliberate and documented
+		there. ``sample_name`` is the first field in that tuple an operator routinely types
+		into and clears, and a cleared cell arrives as ``""``; the grid's own CSV round trip
+		is worse, writing ``value || ""`` into every row. Pinning every blank to NULL keeps
+		the stored side on one value, so probe and stored agree on legacy rows (NULL from the
+		ALTER TABLE) and on new ones alike.
+
+		Stripping is not cosmetic either -- ``_slip_key`` is an exact match, so " S1" and
+		"S1" would otherwise be two groups and two exploded trios.
+		"""
+		for row in self.product_details:
+			row.sample_name = (row.get("sample_name") or "").strip() or None
+		for row in self.exploded_product_details:
+			row.sample_name = (row.get("sample_name") or "").strip() or None
+
+	def validate_unique_sample_name(self):
+		"""A Sample Name identifies one physical assay sample, so it may appear on exactly
+		one certification family.
+
+		"Family", not "document": a Receive is mapped from its Issue by
+		``create_product_certification_receive`` and copies ``sample_name`` verbatim, and one
+		Issue can be answered by several partial Receives. Two documents are family when their
+		roots -- ``receive_against`` else ``name``, plus ``amended_from`` -- intersect, which
+		covers Issue<->Receive both ways, Receive<->sibling Receive, and the draft Receive left
+		pointing at an Issue that has since been cancelled and amended.
+
+		Cancelled documents never block, the same guard ``Department IR`` uses for its own
+		``receive_against`` check.
+
+		Compared case-insensitively because the cross-document lookup inherits MariaDB's
+		``utf8mb4_*_ci`` collation; matching that here keeps the in-document rule from being
+		the looser of the two.
+
+		One query for the whole table, not one per row -- the idiom
+		``validate_serial_warehouse_department`` already uses.
+		"""
+		samples = {}
+		for row in self.product_details:
+			sample = row.get("sample_name")
+			if not sample:
+				continue
+			# Within one document too: two rows sharing a name collapse into one _slip_key
+			# group, so their weights are summed onto a single main exploded row and the
+			# operator gets one receive / pure / loss trio where they expect two.
+			folded = sample.casefold()
+			if folded in samples:
+				frappe.throw(
+					_(
+						"Row #{0}: Sample Name {1} is already entered in Row #{2}."
+					).format(row.idx, frappe.bold(sample), samples[folded][0]),
+					title=_("Duplicate Sample Name"),
+				)
+			samples[folded] = (row.idx, sample)
+
+		if not samples:
+			return
+
+		rows = frappe.get_all(
+			"Product Details",
+			filters={
+				"parenttype": "Product Certification",
+				"sample_name": ["in", [sample for _idx, sample in samples.values()]],
+			},
+			fields=["parent", "sample_name"],
+		)
+		others = {row.parent for row in rows} - {self.name}
+		if not others:
+			return
+
+		# docstatus here rather than in the child filter: the guard belongs to the PARENT's
+		# lifecycle, and a cancelled certification's rows are still on the table.
+		parents = {
+			parent.name: parent
+			for parent in frappe.get_all(
+				"Product Certification",
+				filters={"name": ["in", list(others)], "docstatus": ["!=", 2]},
+				fields=["name", "receive_against", "amended_from"],
+			)
+		}
+
+		my_roots = {self.name, self.receive_against or self.name}
+		if self.amended_from:
+			my_roots.add(self.amended_from)
+
+		offender = None
+		for row in rows:
+			parent = parents.get(row.parent)
+			if not parent:  # this document, or a cancelled one
+				continue
+			their_roots = {parent.name, parent.receive_against or parent.name}
+			if parent.amended_from:
+				their_roots.add(parent.amended_from)
+			if my_roots & their_roots:
+				continue  # the Issue we answer, a sibling Receive, or our own amendment
+			mine = samples.get((row.sample_name or "").casefold())
+			if not mine:
+				continue
+			if offender is None or mine[0] < offender[0]:
+				offender = (mine[0], mine[1], parent.name)
+
+		if offender:
+			idx, sample, conflict = offender
+			frappe.throw(
+				_(
+					"This Sample Name is already associated with another Certification. "
+					"Please use a different Sample Name."
+				)
+				+ "<br><br>"
+				+ _("Row #{0}: {1} is on {2}.").format(
+					idx, frappe.bold(sample), frappe.bold(conflict)
+				),
+				title=_("Duplicate Sample Name"),
+			)
+
+	def validate_tree_or_sample_name(self):
+		"""A Fire Assy Issue row must say WHICH sample it is.
+
+		``_slip_key`` groups on (main_slip, tree_no, sample_name), and a row carrying none of
+		them lands in the ("", "", "") bucket -- which ``validate_exploded_qty`` then compares
+		against a grand total rather than against that sample's own trio. Requiring one of the
+		two identities is what keeps every group a real, nameable sample.
+
+		Issue only, and for the same reason ``validate_fire_assy_weight`` is Issue only: a
+		Receive inherits its rows from the Issue, and legacy Issues carrying neither tree nor
+		slip are already submitted and cannot be edited -- enforcing on the Receive would
+		strand their metal at the supplier with no remedy. Anything issued from now on
+		satisfies the rule through its Issue.
+
+		Reported as one throw listing every offending row: the operator fixes a scanned grid
+		in one pass.
+		"""
+		if self.type != "Issue" or self.service_type != "Fire Assy Service":
+			return
+
+		missing = [
+			str(row.idx)
+			for row in self.product_details
+			if not (row.get("tree_no") or row.get("sample_name"))
+		]
+		if not missing:
+			return
+
+		frappe.throw(
+			_(
+				"Enter either Tree Number or Sample Name before submitting the "
+				"Fire Assy Certification."
+			)
+			+ "<br><br>"
+			+ _("Rows: {0}").format(frappe.bold(", ".join(missing))),
+			title=_("Tree Number or Sample Name Required"),
+		)
+
 	def validate_duplicate_product_rows(self):
 		"""One Product Details row per serial / per work order.
 
@@ -188,8 +366,11 @@ class ProductCertification(Document):
 		dialog can produce the same duplicates the barcode gun does.
 
 		Tree rows are deliberately NOT covered: one tree is legitimately scanned several times
-		(a tree goes for assay in more than one sample), and ``set_fire_assy_issue_weight``
-		sums same-tree rows onto a single exploded main row, which is the intended behaviour.
+		(a tree goes for assay in more than one sample). The *sample* is what discriminates
+		those rows, and ``validate_unique_sample_name`` refuses two rows sharing one -- which
+		is stricter than a (tree, sample) key here would be. Two same-tree rows carrying no
+		sample name at all remain legal, and ``set_fire_assy_issue_weight`` still sums them
+		onto a single exploded main row, which is the intended behaviour for them.
 		The weight is what needs care, not the row count -- so the scan handler auto-fills the
 		tree's weight only on the FIRST row for that tree and leaves repeats at 0 for the
 		operator to type, and ``validate_fire_assy_weight`` still refuses a submit that leaves
@@ -316,11 +497,14 @@ class ProductCertification(Document):
 
 		for row in self.product_details:
 			if match_identity(row) not in issued:
-				# frappe.throw(_(f"Row #{row.idx}: item not found in {self.receive_against}"))
+				# The Sample Name clause: sample identity is authored on the Issue and copied
+				# down by the Receive mapper, so a name typed fresh onto a Receive row matches
+				# no issued row. That is correct, but the bare message does not say why.
 				frappe.throw(
-					_("Row #{0}: item not found in {1}").format(
-						row.idx, self.receive_against
-					)
+					_(
+						"Row #{0}: item not found in {1}. If you entered a Sample Name, it "
+						"must match the one on the Issue."
+					).format(row.idx, self.receive_against)
 				)
 
 	def validate_exploded_qty(self):
@@ -350,16 +534,16 @@ class ProductCertification(Document):
 			if abs(total_weight - exploded_weight) <= 0.001:
 				continue
 
-			main_slip, tree_no = key
-			if main_slip or tree_no:
+			main_slip, tree_no, sample_name = key
+			if main_slip or tree_no or sample_name:
 				frappe.throw(
 					_(
-						"Row #{0}: Total Gross Weight in Exploded Product Details ({1}) does not match Total Weight in Product Details ({2}) for Main Slip {3}"
+						"Row #{0}: Total Gross Weight in Exploded Product Details ({1}) does not match Total Weight in Product Details ({2}) for {3}"
 					).format(
 						first_idx.get(key),
 						exploded_weight,
 						total_weight,
-						main_slip or tree_no,
+						main_slip or tree_no or sample_name,
 					)
 				)
 			frappe.throw(
@@ -550,6 +734,126 @@ class ProductCertification(Document):
 			)
 			if main_row is not None:
 				main_row.gross_weight = sd["issue_weight"]
+
+	def set_assay_row_types(self):
+		"""Label each Fire Assy / XRF exploded row as its group's Touch, Pure or Loss row.
+
+		``get_exploded_table`` appends the rows -- main ("Touch") item, pure item (Fire Assy
+		only) and loss item -- per ``_slip_key`` group and then forgets which was which.
+		Everything downstream re-derives that classification from item codes, and the grid
+		cannot derive it at all: ``depends_on`` on a child field only ever sees ``doc`` (the
+		row) and ``parent``. Stamping the answer onto the row is what lets Certification,
+		Report No and Report Result be shown and demanded on the Touch row alone.
+
+		One writer, run on every save straight after ``get_exploded_table``, rather than a
+		stamp inside the append: an append-time stamp only reaches rows it creates, and
+		``get_exploded_table`` skips a ``_slip_key`` that already has rows -- so every
+		document that exists today would stay unlabelled forever.
+
+		Blank is a real state and means "unclassified": a row of a document submitted before
+		this field existed, or one added by hand whose item matches no slot in its group.
+		Consumers read it as "no opinion", never as "not the Touch row".
+		"""
+		if self.service_type not in ["Fire Assy Service", "XRF Services"]:
+			return
+		if not self.exploded_product_details or not self.product_details:
+			return
+
+		# (main_slip, tree_no, sample_name) -> the item codes that group was built from.
+		# get_exploded_table writes loss_item / pure_item back onto EVERY Product Details row
+		# on every save, not only the save that created the exploded rows, so this map is
+		# complete by the time this runs.
+		items_by_key = {}
+		for pd in self.product_details:
+			group = items_by_key.setdefault(_slip_key(pd), {})
+			group.setdefault("main", pd.item_code)
+			if pd.get("pure_item"):
+				group.setdefault("pure", pd.pure_item)
+			if pd.get("loss_item"):
+				group.setdefault("loss", pd.loss_item)
+
+		rows_by_key = defaultdict(list)
+		for row in self.exploded_product_details:
+			rows_by_key[_slip_key(row)].append(row)
+
+		for key, rows in rows_by_key.items():
+			group = items_by_key.get(key)
+			if not group:
+				continue
+
+			# Slots in append order, each consumed once. A tree whose own metal IS the pure
+			# item would otherwise match "main" twice and label two rows Touch; consuming the
+			# slot gives the first row Touch and the second Pure, which is the order
+			# get_exploded_table appended them in. XRF emits no pure row, so it is not
+			# offered the slot.
+			slots = [("main", "Touch")]
+			if self.service_type == "Fire Assy Service":
+				slots.append(("pure", "Pure"))
+			slots.append(("loss", "Loss"))
+
+			for row in rows:
+				for index, (slot, row_type) in enumerate(slots):
+					if row.item_code and row.item_code == group.get(slot):
+						row.assay_row_type = row_type
+						slots.pop(index)
+						break
+
+	def validate_fire_assy_report(self):
+		"""A submitted Fire Assy Receive must carry the lab's answer on the row it belongs to.
+
+		The assay report is issued against the metal that went out, so Certification, Report No
+		and Report Result belong on each group's Touch row -- not on the pure recovered from it,
+		and not on the loss written off. ``set_assay_row_types`` has already labelled the rows
+		in ``validate``, which Frappe runs immediately before ``before_submit``, so this reads
+		the label instead of re-deriving it from item codes.
+
+		Checked at submit, beside ``validate_fire_assy_weight`` and ``validate_exploded_qty``,
+		for the same reason those are: the exploded rows are machine-generated blank on the
+		first save and the report lands days after the metal does, so a draft has to survive
+		without it.
+
+		``report_result`` is a Float, and the client-side mandatory check passes on 0
+		(``is_null(0)`` is false), so this is the only gate that actually holds it.
+
+		XRF is excluded: it has no pure row and no assay report -- its Touch row keeps the
+		plain Certification requirement and nothing more.
+		"""
+		if self.type != "Receive" or self.service_type != "Fire Assy Service":
+			return
+
+		for row in self.exploded_product_details:
+			# Blank means unclassified -- a legacy row, or one added by hand whose item
+			# matches no slot in its group. "No opinion" must not become "not the Touch row"
+			# for anything that ADDS a demand, so those rows are skipped.
+			if row.get("assay_row_type") != "Touch":
+				continue
+
+			subject = (
+				row.get("sample_name")
+				or row.get("tree_no")
+				or row.get("main_slip")
+				or row.item_code
+			)
+
+			for fieldname, label in (
+				("certification", _("Certification No")),
+				("report_no", _("Report No")),
+			):
+				if not row.get(fieldname):
+					frappe.throw(
+						_("Row #{0}: {1} is required for {2}.").format(
+							row.idx, label, frappe.bold(subject)
+						),
+						title=_("Assay Report Missing"),
+					)
+
+			if flt(row.report_result) <= 0:
+				frappe.throw(
+					_("Row #{0}: Report Result is required for {1}.").format(
+						row.idx, frappe.bold(subject)
+					),
+					title=_("Assay Report Missing"),
+				)
 
 	def update_bom(self):
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
@@ -954,16 +1258,17 @@ class ProductCertification(Document):
 	def get_exploded_table(self):
 		exploded_product_details = []
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
-			# cat_det = frappe.get_all(
-			# 	"Certification Settings",
-			# 	{"parent": "Jewellery Settings"},
-			# 	["category", "count"],
-			# )
-			# custom_cat = {row.category: row.count for row in cat_det}
+			# Exploded rows are 1:1 with Product Details rows. Jewellery Settings ->
+			# Certification Settings (category -> "Count per Unit") is deliberately not
+			# consulted: the per-category fan-out it configured is what this table no
+			# longer does.
 			sources = self._exploded_source_data()
 			exploded_index = self._exploded_row_index()
-			metal_det = None
 			for row in self.product_details:
+				# Per row, not per table: only the `else` branch below assigns it, so a
+				# module-level init leaked the previous serial-only row's BOM metal details
+				# onto the next MWO / PMO row and clobbered the metal_touch resolved for it.
+				metal_det = None
 				metal_touch = ""
 				bom_weights = sources.bom.get(row.bom)
 				metal_colour = bom_weights.metal_colour if bom_weights else None
@@ -1003,13 +1308,6 @@ class ProductCertification(Document):
 				else:
 					metal_det = sources.bom_metal.get(row.bom, [])
 
-				# Count comes from the category alone: 2 for earrings, 1 for everything
-				# else. The qty / metal-detail arithmetic that used to run above fed a
-				# `count` this line then overwrote unconditionally, so it was dead.
-				count = (
-					2 if row.category and "earring" in str(row.category).lower() else 1
-				)
-
 				common_order = (
 					row.parent_manufacturing_order or row.manufacturing_work_order
 				)
@@ -1034,7 +1332,19 @@ class ProductCertification(Document):
 							)
 						)
 					]
-				if existing and len(existing) == count:
+				# One exploded row per Product Details row, so any existing row means this
+				# row is already done. That is what the old `len(existing) == count` test
+				# did for every non-earring item, count being 1 -- the refresh path it
+				# guarded was only ever reachable through the earring fan-out.
+				#
+				# A group still holding MORE than one row is therefore left exactly as it
+				# is. Earrings used to explode into two rows carrying half the weight each;
+				# rewriting one of that pair to the full weight would inflate the group to
+				# 1.5x, and a metal_touch miss would append a third row beside them.
+				# Submitted documents keep their two rows and stay consistent with the
+				# Stock Entry / PO / BOM amounts already booked against them; drafts keep
+				# theirs until someone deletes one by hand.
+				if existing:
 					continue
 
 				pmo_weights = frappe._dict()
@@ -1108,131 +1418,61 @@ class ProductCertification(Document):
 				):
 					stone_pcs = bom_weights.get("total_gemstone_pcs")
 
-				for i in range(0, count):
-					if metal_det:
-						if count == 2 and len(metal_det) < count:
-							metal_touch = metal_det[0].get("metal_touch")
-						else:
-							metal_touch = metal_det[i].get("metal_touch")
+				if metal_det:
+					# One row now, so one metal touch: the first of the BOM's distinct
+					# touches. This is the value the old per-piece loop resolved on its
+					# first (and, for every non-earring item, only) iteration.
+					metal_touch = metal_det[0].get("metal_touch")
 
-					matching_existing = None
-					if existing:
-						for a in existing:
-							if a.get("metal_touch") == metal_touch:
-								matching_existing = a
-								break
-
-					if matching_existing:
-						matching_existing.gross_weight = (
-							pmo_weights.get("gross_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["gross_weight"] / count
-							if bom_weights
-							else 0
-						)
-						matching_existing.gold_weight = (
-							pmo_weights.get("net_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["metal_and_finding_weight"] / count
-							if bom_weights
-							else 0
-						)
-						matching_existing.chain_weight = (
-							pmo_weights.get("finding_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["finding_weight_"] / count
-							if bom_weights
-							else 0
-						)
-						matching_existing.other_weight = (
-							pmo_weights.get("other_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["other_weight"] / count
-							if bom_weights
-							else 0
-						)
-						matching_existing.stone_weight = (
-							pmo_weights.get("gemstone_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["gemstone_weight"] / count
-							if bom_weights
-							else 0
-						)
-						matching_existing.diamond_weight = (
-							pmo_weights.get("diamond_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["diamond_weight"] / count
-							if bom_weights
-							else 0
-						)
-						matching_existing.diamond_pcs = (
-							cint(diamond_pcs) / count
-							if count > 1
-							else cint(diamond_pcs)
-						)
-						matching_existing.stone_pcs = (
-							cint(stone_pcs) / count if count > 1 else cint(stone_pcs)
-						)
-						matching_existing.bom = row.bom
-						matching_existing.category = row.category
-						matching_existing.sub_category = row.sub_category
-						matching_existing.metal_touch = metal_touch
-						matching_existing.metal_colour = metal_colour
-						continue
-
-					exploded_product_details.append(
-						{
-							"item_code": row.item_code,
-							"serial_no": row.serial_no,
-							"bom": row.bom,
-							"gross_weight": pmo_weights.get("gross_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["gross_weight"] / count
-							if bom_weights
-							else 0,
-							"gold_weight": pmo_weights.get("net_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["metal_and_finding_weight"] / count
-							if bom_weights
-							else 0,
-							"chain_weight": pmo_weights.get("finding_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["finding_weight_"] / count
-							if bom_weights
-							else 0,
-							"other_weight": pmo_weights.get("other_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["other_weight"] / count
-							if bom_weights
-							else 0,
-							"stone_weight": pmo_weights.get("gemstone_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["gemstone_weight"] / count
-							if bom_weights
-							else 0,
-							"diamond_weight": pmo_weights.get("diamond_weight") / count
-							if row.parent_manufacturing_order
-							else bom_weights["diamond_weight"] / count
-							if bom_weights
-							else 0,
-							"diamond_pcs": cint(diamond_pcs) / count
-							if count > 1
-							else cint(diamond_pcs),
-							"stone_pcs": cint(stone_pcs) / count
-							if count > 1
-							else cint(stone_pcs),
-							"parent_manufacturing_order": row.parent_manufacturing_order,
-							"manufacturing_work_order": row.manufacturing_work_order,
-							"supply_raw_material": bool(
-								row.parent_manufacturing_order
-								or row.manufacturing_work_order
-							),
-							"metal_touch": metal_touch,
-							"metal_colour": metal_colour,
-							"category": row.category,
-							"sub_category": row.sub_category,
-						}
-					)
+				exploded_product_details.append(
+					{
+						"item_code": row.item_code,
+						"serial_no": row.serial_no,
+						"bom": row.bom,
+						"gross_weight": pmo_weights.get("gross_weight")
+						if row.parent_manufacturing_order
+						else bom_weights["gross_weight"]
+						if bom_weights
+						else 0,
+						"gold_weight": pmo_weights.get("net_weight")
+						if row.parent_manufacturing_order
+						else bom_weights["metal_and_finding_weight"]
+						if bom_weights
+						else 0,
+						"chain_weight": pmo_weights.get("finding_weight")
+						if row.parent_manufacturing_order
+						else bom_weights["finding_weight_"]
+						if bom_weights
+						else 0,
+						"other_weight": pmo_weights.get("other_weight")
+						if row.parent_manufacturing_order
+						else bom_weights["other_weight"]
+						if bom_weights
+						else 0,
+						"stone_weight": pmo_weights.get("gemstone_weight")
+						if row.parent_manufacturing_order
+						else bom_weights["gemstone_weight"]
+						if bom_weights
+						else 0,
+						"diamond_weight": pmo_weights.get("diamond_weight")
+						if row.parent_manufacturing_order
+						else bom_weights["diamond_weight"]
+						if bom_weights
+						else 0,
+						"diamond_pcs": cint(diamond_pcs),
+						"stone_pcs": cint(stone_pcs),
+						"parent_manufacturing_order": row.parent_manufacturing_order,
+						"manufacturing_work_order": row.manufacturing_work_order,
+						"supply_raw_material": bool(
+							row.parent_manufacturing_order
+							or row.manufacturing_work_order
+						),
+						"metal_touch": metal_touch,
+						"metal_colour": metal_colour,
+						"category": row.category,
+						"sub_category": row.sub_category,
+					}
+				)
 
 		elif self.service_type in ["Fire Assy Service", "XRF Services"]:
 			if self.manufacturer:
@@ -1250,6 +1490,48 @@ class ProductCertification(Document):
 			if not pure_item:
 				# frappe.throw(_("Please mention Pure Item in Manufacturing Setting"))
 				frappe.throw(_("Select Manufacturer in session defaults or in Filed"))
+
+			# Exploded rows whose group no longer exists in product_details are orphans:
+			# changing a row's tree, or naming a sample on a row that had none, moves the
+			# group's key and leaves the old trio behind. get_exploded_table only ever
+			# appends, so the orphan survives carrying its weights and create_stock_entry
+			# issues BOTH trios.
+			#
+			# An orphan the operator has not touched is simply dropped. One carrying data is
+			# NOT dropped: silently deleting entered receive / pure weights would reset the
+			# grid to zeros and leave validate_exploded_qty rejecting the submit with no
+			# explanation. That case is surfaced instead. It is also the containment for the
+			# grid's CSV upload, which writes any column with no read-only check and would
+			# otherwise orphan every group by omitting sample_name.
+			live_keys = {_slip_key(row) for row in self.product_details}
+			orphans = [
+				row
+				for row in self.exploded_product_details
+				if _slip_key(row) not in live_keys
+			]
+			for orphan in orphans:
+				if (
+					flt(orphan.gross_weight)
+					or flt(orphan.conversion_quantity)
+					or orphan.get("certification")
+					or orphan.get("report_no")
+				):
+					subject = (
+						orphan.get("sample_name")
+						or orphan.get("tree_no")
+						or orphan.get("main_slip")
+						or orphan.item_code
+					)
+					frappe.throw(
+						_(
+							"Row #{0} of Exploded Product Details belongs to {1}, which is no "
+							"longer in Product Details. Clear the row, or restore its Tree No "
+							"/ Sample Name."
+						).format(orphan.idx, frappe.bold(subject)),
+						title=_("Orphaned Exploded Row"),
+					)
+			for orphan in orphans:
+				self.remove(orphan)
 
 			# Normalised through _slip_key: current trees carry no Main Slip at all, so a raw
 			# [main_slip, tree_no] comparison mixes None and "" and appends the same group twice.
@@ -1278,6 +1560,7 @@ class ProductCertification(Document):
 							"item_code": row.item_code,
 							"main_slip": row.main_slip,
 							"tree_no": row.tree_no,
+							"sample_name": row.sample_name,
 						}
 					)
 					if self.service_type == "Fire Assy Service":
@@ -1286,6 +1569,7 @@ class ProductCertification(Document):
 								"item_code": pure_item,
 								"main_slip": row.main_slip,
 								"tree_no": row.tree_no,
+								"sample_name": row.sample_name,
 							}
 						)
 					exploded_product_details.append(
@@ -1293,6 +1577,7 @@ class ProductCertification(Document):
 							"item_code": loss_item,
 							"main_slip": row.main_slip,
 							"tree_no": row.tree_no,
+							"sample_name": row.sample_name,
 						}
 					)
 				row.loss_item = loss_item
