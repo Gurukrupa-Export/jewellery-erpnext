@@ -172,14 +172,25 @@ def _detect(batch_size=BATCH):
 					["gross_wt", "diamond_wt_in_gram", "gemstone_wt_in_gram"],
 					as_dict=True,
 				)
-				for field, delta in _field_deltas(mop, corrections_map).items():
-					clamped = flt(delta, 3)
-					if abs(clamped) > ROUNDING_DRIFT_CEILING:
-						reviews.append(f"MOP {field} {clamped} g exceeds the ceiling")
-					elif field == "gross_wt" and gross_suspect:
-						reviews.append("MOP gross_wt left for review with MWO")
-					else:
-						mop_issues[field] = delta
+				if not mop:
+					review.append(
+						{
+							"mwo": mwo.name,
+							"reason": (
+								f"linked Manufacturing Operation {fg_mop} is missing"
+							),
+						}
+					)
+					fg_mop = None
+				else:
+					for field, delta in _field_deltas(mop, corrections_map).items():
+						clamped = flt(delta, 3)
+						if abs(clamped) > ROUNDING_DRIFT_CEILING:
+							reviews.append(f"MOP {field} {clamped} g exceeds the ceiling")
+						elif field == "gross_wt" and gross_suspect:
+							reviews.append("MOP gross_wt left for review with MWO")
+						else:
+							mop_issues[field] = delta
 
 			for reason in reviews:
 				review.append({"mwo": mwo.name, "reason": reason})

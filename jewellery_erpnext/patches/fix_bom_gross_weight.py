@@ -46,6 +46,7 @@ ROUNDING_DRIFT_CEILING = 0.001
 BATCH = 500
 
 _BOM_WEIGHT_FIELDS = [
+	"name",
 	"diamond_weight",
 	"gemstone_weight",
 	"metal_weight",
