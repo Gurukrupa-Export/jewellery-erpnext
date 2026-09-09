@@ -12,6 +12,7 @@ from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
+	WEIGHT_FIELDS,
 	get_summary_data,
 	valid_reparing_or_next_operation,
 	validate_and_update_gross_wt_from_mop,
@@ -514,48 +515,35 @@ class DepartmentIR(Document):
 		# child-row order, so "creation asc" reproduces that order exactly. Without it
 		# Manufacturing Operation's default "modified DESC" sort had the Receive leg
 		# process rows in a different order than the Issue did.
+		#
+		# Every weight is read from the in-transit operation itself. This used to take
+		# gross_wt from that operation's prev_gross_wt and the other seven buckets from
+		# previous_mop, so a single row could mix two operations' readings -- and
+		# validate_and_update_gross_wt_from_mop rewrites all eight from the operation on
+		# the very next save, so the grid changed under the operator. previous_mop is
+		# still read, but only to name the department the goods came from.
 		for row in frappe.get_all(
 			"Manufacturing Operation",
 			{"department_issue_id": docname, "department_ir_status": "In-Transit"},
 			[
 				"name as manufacturing_operation",
 				"manufacturing_work_order",
-				"prev_gross_wt as gross_wt",
 				"previous_mop",
 				"department",
-			],
+			]
+			+ list(WEIGHT_FIELDS),
 			order_by="creation asc",
 		):
 			self.current_department = row.department
-			mop_details = frappe.db.get_value(
-				"Manufacturing Operation",
-				row.previous_mop,
-				[
-					"diamond_wt",
-					"net_wt",
-					"finding_wt",
-					"diamond_pcs",
-					"gemstone_pcs",
-					"gemstone_wt",
-					"other_wt",
-					"department",
-				],
-				as_dict=1,
+			self.previous_department = frappe.db.get_value(
+				"Manufacturing Operation", row.previous_mop, "department"
 			)
-			self.previous_department = mop_details.get("department")
 			self.append(
 				"department_ir_operation",
 				{
 					"manufacturing_operation": row.manufacturing_operation,
 					"manufacturing_work_order": row.manufacturing_work_order,
-					"gross_wt": row.gross_wt,
-					"net_wt": mop_details.get("net_wt"),
-					"diamond_wt": mop_details.get("diamond_wt"),
-					"finding_wt": mop_details.get("finding_wt"),
-					"diamond_pcs": mop_details.get("diamond_pcs"),
-					"gemstone_pcs": mop_details.get("gemstone_pcs"),
-					"gemstone_wt": mop_details.get("gemstone_wt"),
-					"other_wt": mop_details.get("other_wt"),
+					**{field: row.get(field) for field in WEIGHT_FIELDS},
 				},
 			)
 
@@ -851,10 +839,14 @@ def get_manufacturing_operations(source_name, target_doc=None):
 	elif isinstance(target_doc, str):
 		target_doc = frappe.get_doc(json.loads(target_doc))
 
+	# All eight buckets, not just gross_wt and diamond_wt: the grid used to sit on a
+	# half-populated row until the first save, when validate_and_update_gross_wt_from_mop
+	# filled the rest in from the same operation. Reading them here makes what the
+	# operator picks and what the save writes the same numbers.
 	operation = frappe.db.get_value(
 		"Manufacturing Operation",
 		source_name,
-		["gross_wt", "manufacturing_work_order", "diamond_wt"],
+		["manufacturing_work_order", "status"] + list(WEIGHT_FIELDS),
 		as_dict=1,
 	)
 	if not target_doc.get(
@@ -866,8 +858,8 @@ def get_manufacturing_operations(source_name, target_doc=None):
 			{
 				"manufacturing_operation": source_name,
 				"manufacturing_work_order": operation["manufacturing_work_order"],
-				"gross_wt": operation["gross_wt"],
-				"diamond_wt": operation["diamond_wt"],
+				"status": operation["status"],
+				**{field: operation.get(field) for field in WEIGHT_FIELDS},
 			},
 		)
 	return target_doc
