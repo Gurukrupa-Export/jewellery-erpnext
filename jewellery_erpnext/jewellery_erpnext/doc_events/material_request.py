@@ -119,12 +119,16 @@ def before_validate(self, method):
 	validate_target_item(self)
 	validate_warehouse(self)
 
-	# self.get(...), not attribute access: custom_manufacturing_work_order is a custom field
-	# that may not exist in every site's DocType meta (e.g. a fresh test site before its
-	# patch has run), and plain attribute access raises AttributeError for those, unlike
-	# self.get() which returns None.
-	manufacturing_work_order = self.get("custom_manufacturing_work_order")
-	if not self.custom_manufacturing_operation and manufacturing_work_order:
+	# getattr with a default, not plain attribute access: custom_manufacturing_work_order is a
+	# custom field that may not exist in every site's DocType meta (e.g. a fresh test site
+	# before its patch has run), where attribute access raises AttributeError. Also mirrors
+	# _current_material_warehouse below -- the tests drive this path with SimpleNamespace-like
+	# mocks that carry no .get(), so getattr is the one accessor that works for both.
+	manufacturing_work_order = getattr(self, "custom_manufacturing_work_order", None)
+	if (
+		not getattr(self, "custom_manufacturing_operation", None)
+		and manufacturing_work_order
+	):
 		self.custom_manufacturing_operation = frappe.db.get_value(
 			"Manufacturing Work Order",
 			manufacturing_work_order,
