@@ -147,6 +147,84 @@ def before_validate(self, method):
 			)
 
 
+# Fields worth guarding once a request has left Draft: what a user could change to alter
+# what's actually being requested. Deliberately NOT a blanket diff against every field --
+# set_reservation_warehouse legitimately back-fills a still-blank row.warehouse on any save
+# (see its docstring), and update_pure_qty recomputes custom_total_quantity / per-row pure
+# qty on every save regardless of workflow state; workflow transitions themselves legitimately
+# set custom_manufacturing_operation / custom_reserve_se / custom_mop_se /
+# custom_department_transfer_se as each one runs. None of that should trip this guard --
+# warehouse is deliberately excluded from the item fields for the same reason.
+GUARDED_MR_HEADER_FIELDS = ("company", "material_request_type")
+GUARDED_MR_ITEM_FIELDS = ("item_code", "qty", "pcs")
+
+
+def guard_non_system_manager_field_edits(self, method=None):
+	"""Server-side backstop for the System-Manager-only edit restriction.
+
+	``Workflow.allow_edit`` (set by the ``lock_material_request_edit_to_system_manager``
+	patch) only disables the desk form's inputs client-side -- it has no effect on a direct
+	API/RPC save, so without this a non-System-Manager user could still change these fields on
+	a non-Draft request by calling the save endpoint directly instead of using the form.
+
+	Keyed on the state *before* this save (``get_doc_before_save``), not the current one: the
+	save that moves a request out of Draft is itself the legitimate transition and must not be
+	blocked by the restriction it is about to put in place.
+
+	``getattr`` throughout, not ``self.get``/``row.get``: mirrors ``_current_material_warehouse``
+	below -- the tests drive this path with lightweight mocks (``SimpleNamespace`` and similar)
+	that carry no ``.get()``, so ``getattr`` is the one accessor that works uniformly for a real
+	Document (in production, including ``get_doc_before_save``'s result) and for a test mock.
+	"""
+	if self.is_new():
+		return
+
+	before = (
+		self.get_doc_before_save() if hasattr(self, "get_doc_before_save") else None
+	)
+	if not before:
+		return
+
+	prior_state = getattr(before, "workflow_state", None)
+	if not prior_state or prior_state == "Draft":
+		return
+
+	if "System Manager" in frappe.get_roles():
+		return
+
+	changed = []
+	for fieldname in GUARDED_MR_HEADER_FIELDS:
+		if getattr(self, fieldname, None) != getattr(before, fieldname, None):
+			changed.append(fieldname)
+
+	before_items = {
+		getattr(row, "name", None): row for row in getattr(before, "items", None) or []
+	}
+	current_names = set()
+	for row in self.items:
+		row_name = getattr(row, "name", None)
+		current_names.add(row_name)
+		prior_row = before_items.get(row_name)
+		if prior_row is None:
+			changed.append(f"Row #{getattr(row, 'idx', '?')}: new item")
+			continue
+		for fieldname in GUARDED_MR_ITEM_FIELDS:
+			if getattr(row, fieldname, None) != getattr(prior_row, fieldname, None):
+				changed.append(f"Row #{getattr(row, 'idx', '?')}: {fieldname}")
+
+	for name in before_items:
+		if name not in current_names:
+			changed.append(f"Row {name}: deleted")
+
+	if changed:
+		frappe.throw(
+			_(
+				"Only System Manager can edit {0} once a Material Request has left Draft."
+			).format(", ".join(changed)),
+			frappe.PermissionError,
+		)
+
+
 def _current_material_warehouse(self):
 	"""Where this request's material physically sits right now.
 

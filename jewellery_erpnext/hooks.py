@@ -283,7 +283,10 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table",
 	},
 	"Material Request": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.guard_non_system_manager_field_edits",
+		],
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_update_after_submit",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.create_stock_entry",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.on_submit",
