@@ -494,7 +494,6 @@ def set_sepecifications(self):
 		"chain_size",
 		"kadi_to_mugappu",
 		"space_between_mugappu",
-		"breadth",
 		"width",
 		"back_belt_length",
 	]
