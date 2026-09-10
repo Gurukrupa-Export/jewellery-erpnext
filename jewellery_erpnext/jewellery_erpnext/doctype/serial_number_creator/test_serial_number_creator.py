@@ -213,6 +213,29 @@ class TestSerialNumberCreator(IntegrationTestCase):
 		except frappe.exceptions.ValidationError:
 			self.fail("validate_qty() should not fail with empty fg_details")
 
+	def test_validate_qty_empty_source_table_with_work_order(self):
+		self.doc.manufacturing_work_order = "MWO-001"
+		self.assertEqual(len(self.doc.source_table), 0)
+
+		with self.assertRaises(frappe.exceptions.ValidationError):
+			validate_qty(self.doc)
+
+	def test_validate_qty_with_work_order_and_source_table(self):
+		self.doc.manufacturing_work_order = "MWO-001"
+		self.doc.append(
+			"source_table", {"row_material": "ITEM-001", "qty": 5.0, "uom": "kg"}
+		)
+		self.doc.append(
+			"fg_details", {"row_material": "ITEM-001", "qty": 5.0, "uom": "kg"}
+		)
+
+		try:
+			validate_qty(self.doc)
+		except frappe.exceptions.ValidationError:
+			self.fail(
+				"validate_qty() should not fail with valid source_table and fg_details"
+			)
+
 	def test_decimal_quantity_handling(self):
 		quantities = [0.5, 1.25, 2.333, 5.9999]
 
@@ -1516,8 +1539,10 @@ class TestSedAttributes(IntegrationTestCase):
 
 		mock_get_all.side_effect = _inner
 		attrs = _sed_attributes_for(rows, ["MWO-1"])
-		self.assertEqual(attrs[(_D_ITEM, _D_BATCH)]["pcs"], 96)
-		self.assertEqual(attrs[(_D_ITEM, _D_BATCH)]["sub_setting_type"], "Prong")
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH, _WAXING)]["pcs"], 96)
+		self.assertEqual(
+			attrs[(_D_ITEM, _D_BATCH, _WAXING)]["sub_setting_type"], "Prong"
+		)
 		# The (operation, item, batch) fallback must not run when the link resolved.
 		self.assertNotIn("Manufacturing Operation", seen)
 
@@ -1554,8 +1579,8 @@ class TestSedAttributes(IntegrationTestCase):
 
 		mock_get_all.side_effect = _inner
 		attrs = _sed_attributes_for(rows, ["MWO-1"])
-		self.assertEqual(attrs[(_D_ITEM, _D_BATCH)]["pcs"], 48)
-		self.assertEqual(attrs[(_D_ITEM, _D_BATCH)]["sed_item"], "sed9")
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH, _WAXING)]["pcs"], 48)
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH, _WAXING)]["sed_item"], "sed9")
 
 	@patch(f"{_SNC_MODULE}.frappe.get_all")
 	def test_pcs_is_summed_across_several_stock_entries(self, mock_get_all):
@@ -1597,7 +1622,8 @@ class TestSedAttributes(IntegrationTestCase):
 
 		mock_get_all.side_effect = _inner
 		self.assertEqual(
-			_sed_attributes_for(rows, ["MWO-1"])[(_D_ITEM, _D_BATCH)]["pcs"], 48
+			_sed_attributes_for(rows, ["MWO-1"])[(_D_ITEM, _D_BATCH, _WAXING)]["pcs"],
+			48,
 		)
 
 	def test_no_rows_needs_no_query(self):
@@ -1656,7 +1682,7 @@ class TestGetSourceRawMaterials(IntegrationTestCase):
 	def test_pcs_carries_for_diamond_items(self):
 		out = self._run(
 			[self._row(_D_ITEM, _D_BATCH)],
-			{(_D_ITEM, _D_BATCH): self._attr(pcs=96.0)},
+			{(_D_ITEM, _D_BATCH, _WAXING): self._attr(pcs=96.0)},
 		)
 		self.assertEqual(out[0]["pcs"], 96.0)
 
@@ -1665,7 +1691,7 @@ class TestGetSourceRawMaterials(IntegrationTestCase):
 		# a stray pcs. Counting it would invent a piece count for a weight-tracked item.
 		out = self._run(
 			[self._row(_LIVE_ITEM, _LIVE_BATCH)],
-			{(_LIVE_ITEM, _LIVE_BATCH): self._attr(pcs=1.0)},
+			{(_LIVE_ITEM, _LIVE_BATCH, _WAXING): self._attr(pcs=1.0)},
 		)
 		self.assertEqual(out[0]["pcs"], 0.0)
 
@@ -1674,7 +1700,7 @@ class TestGetSourceRawMaterials(IntegrationTestCase):
 		# the batch is authoritative, as it already is at submit.
 		out = self._run(
 			[self._row(_LIVE_ITEM, _LIVE_BATCH)],
-			{(_LIVE_ITEM, _LIVE_BATCH): self._attr(inv="Regular Stock")},
+			{(_LIVE_ITEM, _LIVE_BATCH, _WAXING): self._attr(inv="Regular Stock")},
 			batches=[
 				frappe._dict(
 					name=_LIVE_BATCH,
@@ -1690,7 +1716,7 @@ class TestGetSourceRawMaterials(IntegrationTestCase):
 		out = self._run(
 			[self._row(_LIVE_ITEM, _LIVE_BATCH)],
 			{
-				(_LIVE_ITEM, _LIVE_BATCH): self._attr(
+				(_LIVE_ITEM, _LIVE_BATCH, _WAXING): self._attr(
 					inv="Customer Goods", customer="CUST-1"
 				)
 			},
@@ -1709,7 +1735,7 @@ class TestGetSourceRawMaterials(IntegrationTestCase):
 		out = self._run(
 			[self._row(_LIVE_ITEM, _LIVE_BATCH)],
 			{
-				(_LIVE_ITEM, _LIVE_BATCH): self._attr(
+				(_LIVE_ITEM, _LIVE_BATCH, _WAXING): self._attr(
 					inv="Customer Goods", customer="CUST-1"
 				)
 			},
@@ -1724,10 +1750,203 @@ class TestGetSourceRawMaterials(IntegrationTestCase):
 	def test_warehouse_and_qty_come_straight_from_the_reservation(self):
 		out = self._run(
 			[self._row(_LIVE_ITEM, _LIVE_BATCH, qty=3.557, warehouse=_MODEL_MAKING)],
-			{(_LIVE_ITEM, _LIVE_BATCH): self._attr()},
+			{(_LIVE_ITEM, _LIVE_BATCH, _WAXING): self._attr()},
 		)
 		self.assertEqual(out[0]["s_warehouse"], _MODEL_MAKING)
 		self.assertEqual(out[0]["qty"], 3.557)
 
 	def test_no_reservation_yields_no_rows(self):
 		self.assertEqual(self._run([], {}), [])
+
+
+class TestSedAttributesGranularity(IntegrationTestCase):
+	"""pcs must be resolved per reservation row, not per (item, batch).
+
+	One batch is routinely reserved for the same job in two warehouses -- the case
+	``split_source_rows_by_reservation`` exists for -- and those are two source rows with
+	two different stone counts. Keying attributes on (item, batch) alone gave each
+	warehouse row the batch's WHOLE count, and ``_append_fg_rows_aggregated`` sums pcs
+	across rows for D/G items, so 40 + 8 became 48 on both rows and 96 in the finished
+	goods. pcs is a physical stone count, so that is a real over-declaration.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _row(warehouse, qty, seds, sres=None):
+		return {
+			"item_code": _D_ITEM,
+			"batch_no": _D_BATCH,
+			"warehouse": warehouse,
+			"qty": qty,
+			"sres": sres or ["sre-%s" % warehouse],
+			"seds": seds,
+		}
+
+	def test_one_batch_two_warehouses_keeps_each_warehouses_own_pcs(self):
+		rows = [
+			self._row(_WAXING, 0.600, ["sedA"]),
+			self._row(_MODEL_MAKING, 0.200, ["sedB"]),
+		]
+
+		def _inner(doctype, **kwargs):
+			if doctype == "Stock Entry Detail":
+				return [
+					frappe._dict(
+						name="sedA",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=40,
+						custom_sub_setting_type=None,
+						inventory_type="Regular Stock",
+						customer=None,
+					),
+					frappe._dict(
+						name="sedB",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=8,
+						custom_sub_setting_type=None,
+						inventory_type="Regular Stock",
+						customer=None,
+					),
+				]
+			return []
+
+		with patch(f"{_SNC_MODULE}.frappe.get_all", side_effect=_inner):
+			attrs = _sed_attributes_for(rows, ["MWO-1"])
+
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH, _WAXING)]["pcs"], 40)
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH, _MODEL_MAKING)]["pcs"], 8)
+		# The whole point: the batch total is counted once, not once per warehouse.
+		self.assertEqual(sum(a["pcs"] for a in attrs.values()), 48)
+
+	def test_legacy_rows_do_not_multiply_history(self):
+		# 48 stones that passed through three operations must not read as 144. A
+		# reservation is created from exactly one movement, so a row takes at most as
+		# many movements as it has reservations.
+		rows = [self._row(_WAXING, 0.800, [])]
+
+		def _inner(doctype, **kwargs):
+			if doctype == "Manufacturing Operation":
+				return ["MOP-1", "MOP-2", "MOP-3"]
+			if doctype == "Stock Entry Detail":
+				return [
+					frappe._dict(
+						name="sed%d" % i,
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=48,
+						custom_sub_setting_type=None,
+						inventory_type="Regular Stock",
+						customer=None,
+					)
+					for i in range(3)
+				]
+			return []
+
+		with patch(f"{_SNC_MODULE}.frappe.get_all", side_effect=_inner):
+			attrs = _sed_attributes_for(rows, ["MWO-1"])
+
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH, _WAXING)]["pcs"], 48)
+
+	def test_legacy_movements_are_never_given_to_two_rows(self):
+		# Two unlinked reservations of one batch in two warehouses consume distinct
+		# movements; neither may claim the other's.
+		rows = [
+			self._row(_WAXING, 0.600, []),
+			self._row(_MODEL_MAKING, 0.200, []),
+		]
+
+		def _inner(doctype, **kwargs):
+			if doctype == "Manufacturing Operation":
+				return ["MOP-1"]
+			if doctype == "Stock Entry Detail":
+				return [
+					frappe._dict(
+						name="sedA",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=40,
+						custom_sub_setting_type=None,
+						inventory_type="Regular Stock",
+						customer=None,
+					),
+					frappe._dict(
+						name="sedB",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=8,
+						custom_sub_setting_type=None,
+						inventory_type="Regular Stock",
+						customer=None,
+					),
+				]
+			return []
+
+		with patch(f"{_SNC_MODULE}.frappe.get_all", side_effect=_inner):
+			attrs = _sed_attributes_for(rows, ["MWO-1"])
+
+		self.assertEqual(sum(a["pcs"] for a in attrs.values()), 48)
+
+	def test_merged_reservations_in_one_warehouse_take_both_movements(self):
+		# Two reservations that collapse into ONE source row are backed by two movements,
+		# and summing them is correct -- that is not the duplication case.
+		rows = [self._row(_WAXING, 0.800, [], sres=["sre1", "sre2"])]
+
+		def _inner(doctype, **kwargs):
+			if doctype == "Manufacturing Operation":
+				return ["MOP-1"]
+			if doctype == "Stock Entry Detail":
+				return [
+					frappe._dict(
+						name="sedA",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=40,
+						custom_sub_setting_type=None,
+						inventory_type="Regular Stock",
+						customer=None,
+					),
+					frappe._dict(
+						name="sedB",
+						item_code=_D_ITEM,
+						batch_no=_D_BATCH,
+						pcs=8,
+						custom_sub_setting_type=None,
+						inventory_type="Regular Stock",
+						customer=None,
+					),
+				]
+			return []
+
+		with patch(f"{_SNC_MODULE}.frappe.get_all", side_effect=_inner):
+			attrs = _sed_attributes_for(rows, ["MWO-1"])
+
+		self.assertEqual(attrs[(_D_ITEM, _D_BATCH, _WAXING)]["pcs"], 48)
+
+
+class TestReservedRowsHeaderBudget(IntegrationTestCase):
+	"""A reservation may never lend out more than its header still holds."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_children_share_one_header_budget(self, mock_get_all):
+		# Drifted SRE: header says 2 remain, but two children claim 2 each. Capping each
+		# child independently produced 4 -- more metal than the reservation owns.
+		def _inner(doctype, **kwargs):
+			if doctype == "Stock Reservation Entry":
+				return [_sre("sre1", _LIVE_ITEM, _WAXING, 2.0)]
+			return [
+				_sb("sre1", "BATCH-A", 2.0),
+				_sb("sre1", "BATCH-B", 2.0),
+			]
+
+		mock_get_all.side_effect = _inner
+		rows = _reserved_source_rows(["MWO-1"])
+		self.assertEqual(sum(r["qty"] for r in rows), 2.0)

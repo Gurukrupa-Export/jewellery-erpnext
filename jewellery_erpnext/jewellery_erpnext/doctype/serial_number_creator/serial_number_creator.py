@@ -23,6 +23,7 @@ class SerialNumberCreator(Document):
 	def validate(self):
 		# Runs on draft save AND on submit (_submit -> save), so a document created
 		# before this existed repairs itself the next time it is saved or submitted.
+		self._render_pending_source_rows()
 		split_source_rows_by_reservation(self)
 
 	def before_insert(self):
@@ -46,6 +47,30 @@ class SerialNumberCreator(Document):
 		# retry kept in the codebase is bounded_retry on idempotent *background* jobs.
 		to_prepare_data_for_make_mnf_stock_entry(self)
 		update_new_serial_no(self)
+
+	def _render_pending_source_rows(self):
+		"""Fill a draft that was created before its material was reserved.
+
+		``_render_fg_details`` runs only in ``before_insert``, and
+		``create_snc_from_mwo_submit`` returns the existing document rather than rebuilding
+		it -- so a Serial Number Creator auto-created at Work Order submit BEFORE anything
+		was reserved would keep both tables empty for good, and ``validate_qty`` would
+		refuse every submit. There was no way back.
+
+		Only a draft with BOTH tables empty is touched: that shape is never something an
+		operator meant, because clearing one table leaves the other populated. A draft the
+		operator has actually edited is left alone.
+		"""
+		if self.docstatus != 0:
+			return
+		if self.fg_details or self.source_table:
+			return
+		if not self.manufacturing_operation:
+			return
+
+		self._render_fg_details()
+		if self.source_table:
+			self._compute_total_weight()
 
 	def _render_fg_details(self):
 		"""Build source_table (batch-wise) and fg_details (aggregated) from reservations."""
@@ -1328,16 +1353,13 @@ def validate_qty(self):
 	# material that had since been handed off — so nothing guarded against it. Reservations
 	# are the truth now, and submitting an empty document would create a Manufacture entry
 	# that consumes nothing.
-	if not self.source_table:
+	job = self.parent_manufacturing_order or self.manufacturing_work_order
+	if not self.source_table and job:
 		frappe.throw(
 			_(
 				"No reserved material found for {0}. Nothing is reserved against this "
 				"job's work orders, so there is nothing to manufacture from."
-			).format(
-				frappe.bold(
-					self.parent_manufacturing_order or self.manufacturing_work_order
-				)
-			),
+			).format(frappe.bold(job)),
 			title=_("No Reserved Material"),
 		)
 
@@ -1739,12 +1761,18 @@ def _reserved_source_rows(mwo_names):
 			if kids
 			else [(None, header_remaining)]
 		)
+		# One shared budget across all of this reservation's children, not a per-child
+		# min(). Capping each child independently lets an SRE whose children have drifted
+		# out of step with its header lend out MORE than the header holds -- a header with
+		# 2 remaining and two children of 2 each yielded 4. The app cancels and rebuilds
+		# reservations in several places, so that drift is reachable, and a reader must
+		# never turn it into extra material.
+		budget = max(header_remaining, 0.0)
 		for batch_no, child_remaining in pairs:
-			# Capped by the header: a reservation cannot lend more than it holds, however
-			# its children are split.
-			qty = flt(min(header_remaining, child_remaining), 3)
+			qty = flt(min(budget, child_remaining), 3)
 			if qty <= TOLERANCE:
 				continue
+			budget -= qty
 			key = (sre["item_code"], batch_no, sre["warehouse"])
 			entry = grouped.setdefault(key, {"qty": 0.0, "sres": [], "seds": []})
 			entry["qty"] += qty
@@ -1773,37 +1801,91 @@ def _reserved_source_rows(mwo_names):
 	return out
 
 
+def _fold_sed_rows(seds):
+	"""Collapse the Stock Entry Detail rows behind ONE reservation row into its attributes.
+
+	``pcs`` sums, because a single reservation row can legitimately be backed by more than
+	one Stock Entry Detail — two reservations of the same batch in the same warehouse merge
+	into one source row, and each was created from its own movement.
+
+	The descriptive fields take the first row (newest first). A genuine disagreement is
+	logged rather than silently resolved: two movements of the same batch into the same
+	warehouse should not carry different sub setting types, and if they do that is data to
+	look at, not a coin toss.
+	"""
+	folded = {
+		"pcs": 0.0,
+		"sub_setting_type": None,
+		"inventory_type": None,
+		"customer": None,
+		"sed_item": None,
+	}
+	for sed in seds:
+		folded["pcs"] += flt(sed.pcs)
+		if folded["sed_item"] is None:
+			folded["sed_item"] = sed.name
+			folded["sub_setting_type"] = sed.custom_sub_setting_type
+			folded["inventory_type"] = sed.inventory_type
+			folded["customer"] = sed.customer
+		elif (
+			sed.custom_sub_setting_type
+			and folded["sub_setting_type"]
+			and sed.custom_sub_setting_type != folded["sub_setting_type"]
+		):
+			frappe.logger().warning(
+				"serial_number_creator: conflicting sub setting type for %s / %s -- "
+				"kept %s, ignored %s"
+				% (
+					sed.item_code,
+					sed.batch_no,
+					folded["sub_setting_type"],
+					sed.custom_sub_setting_type,
+				)
+			)
+	return folded
+
+
 def _sed_attributes_for(rows, mwo_names):
-	"""``{(item_code, batch_no): {...}}`` — the Stock Entry Detail attributes a reservation
-	cannot carry.
+	"""``{(item_code, batch_no, warehouse): {...}}`` — the Stock Entry Detail attributes a
+	reservation cannot carry, resolved PER RESERVATION ROW.
 
 	``pcs``, ``custom_sub_setting_type``, ``inventory_type`` and ``customer`` live on the
 	Stock Entry Detail row that moved the material; a Stock Reservation Entry has none of
 	them, and neither does the Batch or the Serial and Batch Entry.
 
-	Resolution is by the ``from_voucher_detail_no`` link stamped at reservation time. For
-	reservations created before that link existed — and for the EOD heal paths that rebuild
-	a reservation with no Stock Entry row to point at — it falls back to matching the Stock
-	Entry Detail on ``(operation of one of this job's work orders, item, batch)``, newest
-	submitted row first. The fallback is logged so the un-linked backlog stays visible.
+	KEYED LIKE THE ROWS, deliberately. One batch can be reserved for the same job in two
+	warehouses -- that is the case ``split_source_rows_by_reservation`` exists for -- and
+	those are two source rows carrying two different piece counts. Keying the attributes on
+	``(item, batch)`` alone handed the batch's WHOLE piece count to each warehouse row, and
+	``_append_fg_rows_aggregated`` then sums pcs across rows for D/G items: 40 pcs in one
+	warehouse and 8 in another became 48 on both rows and 96 in the finished goods. pcs is
+	a physical stone count, so that is a real over-declaration, not a display quirk.
 
-	``pcs`` is summed per ``(item, batch)`` rather than taken from the newest row, because a
-	single item+batch can be issued to the job over several Stock Entries.
+	Resolution is by the ``from_voucher_detail_no`` link stamped at reservation time, using
+	each row's OWN reservations. Rows created before that link existed fall back to matching
+	the Stock Entry Detail on ``(operation of one of this job's work orders, item, batch)``
+	-- but BOUNDED: a reservation is created from exactly one Stock Entry row, so a row
+	takes at most as many movements as it has reservations, newest first, and each movement
+	is handed to at most one row. An unbounded sum over the job's history would count the
+	same physical stones once per operation they passed through: 48 stones moved through
+	three operations would read as 144.
 	"""
 	if not rows:
 		return {}
 
-	linked_seds = {sed for r in rows for sed in r["seds"]}
-	sed_rows = []
-	if linked_seds:
-		sed_rows = frappe.get_all(
+	linked_names = {sed for r in rows for sed in r["seds"]}
+	by_name = {}
+	if linked_names:
+		for sed in frappe.get_all(
 			"Stock Entry Detail",
-			filters={"name": ["in", list(linked_seds)]},
+			filters={"name": ["in", list(linked_names)]},
 			fields=_SED_ATTRIBUTE_FIELDS,
-		)
+		):
+			by_name[sed.name] = sed
 
-	linked_keys = {(r["item_code"], r["batch_no"]) for r in sed_rows}
-	unlinked = [r for r in rows if (r["item_code"], r["batch_no"]) not in linked_keys]
+	# Candidate movements for rows with no provenance link, newest first per (item, batch).
+	unlinked = [r for r in rows if not r["seds"]]
+	pool = {}
 	if unlinked:
 		operations = frappe.get_all(
 			"Manufacturing Operation",
@@ -1811,43 +1893,40 @@ def _sed_attributes_for(rows, mwo_names):
 			pluck="name",
 		)
 		if operations:
-			sed_rows += frappe.get_all(
+			for sed in frappe.get_all(
 				"Stock Entry Detail",
 				filters={
 					"docstatus": 1,
 					"manufacturing_operation": ["in", operations],
 					"item_code": ["in", sorted({r["item_code"] for r in unlinked})],
+					"batch_no": ["in", sorted({r["batch_no"] or "" for r in unlinked})],
 				},
 				fields=_SED_ATTRIBUTE_FIELDS,
 				order_by="creation desc",
-			)
+			):
+				pool.setdefault((sed.item_code, sed.batch_no), []).append(sed)
 		frappe.logger().info(
 			"serial_number_creator: %s reserved row(s) had no from_voucher_detail_no; "
-			"resolved Stock Entry Detail attributes by (operation, item, batch)"
-			% len(unlinked)
+			"resolved Stock Entry Detail attributes by (operation, item, batch), bounded "
+			"to one movement per reservation" % len(unlinked)
 		)
 
+	# How far into each (item, batch) candidate list we have already consumed, so no
+	# movement is attributed to two warehouse rows.
+	taken = {}
 	attrs = {}
-	for sed in sed_rows:
-		key = (sed.item_code, sed.batch_no)
-		entry = attrs.setdefault(
-			key,
-			{
-				"pcs": 0.0,
-				"sub_setting_type": None,
-				"inventory_type": None,
-				"customer": None,
-				"sed_item": None,
-			},
+	for row in rows:
+		seds = [by_name[name] for name in row["seds"] if name in by_name]
+		if not seds:
+			pool_key = (row["item_code"], row["batch_no"])
+			candidates = pool.get(pool_key, [])
+			start = taken.get(pool_key, 0)
+			want = max(len(row["sres"]), 1)
+			seds = candidates[start : start + want]
+			taken[pool_key] = start + len(seds)
+		attrs[(row["item_code"], row["batch_no"], row["warehouse"])] = _fold_sed_rows(
+			seds
 		)
-		entry["pcs"] += flt(sed.pcs)
-		# First row wins for the descriptive attributes: rows are newest-first, and the
-		# linked rows are added before any fallback rows.
-		if entry["sed_item"] is None:
-			entry["sed_item"] = sed.name
-			entry["sub_setting_type"] = sed.custom_sub_setting_type
-			entry["inventory_type"] = sed.inventory_type
-			entry["customer"] = sed.customer
 	return attrs
 
 
@@ -1893,7 +1972,7 @@ def _get_source_raw_materials(mop_name, snc_doc):
 	for row in rows:
 		item_code = row["item_code"]
 		batch_no = row["batch_no"]
-		attr = attrs.get((item_code, batch_no), {})
+		attr = attrs.get((item_code, batch_no, row["warehouse"]), {})
 
 		inventory_type = attr.get("inventory_type")
 		customer = attr.get("customer")
