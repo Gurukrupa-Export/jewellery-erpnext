@@ -176,13 +176,31 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 			side_effect=lambda doc: mapping.get(doc.stock_entry_type),
 		)
 
-	def _rows(self, *specs):
+	def _rows(self, *specs, prefix=None):
+		"""Rule rows. Each carries a UNIQUE prefix unless one is forced, so the namespace
+		check passes by default and only the behaviour under test varies."""
 		return [
 			frappe._dict(
-				name=n, disabled=d, n_conditions=nc, company=_COMPANY, setype=t
+				name=n,
+				disabled=d,
+				n_conditions=nc,
+				company=_COMPANY,
+				setype=t,
+				prefix=prefix or f"KGJPL-SE-{n}-.YY.-",
+				prefix_digits=5,
+				counter=0,
 			)
 			for n, t, d, nc in specs
 		]
+
+	def _clean_namespace(self):
+		"""No historical documents and no equal-priority rivals — pins the two site-reading
+		collaborators so these tests do not depend on what the bench happens to contain."""
+		return patch.multiple(
+			shard_mod,
+			_max_existing_suffix=MagicMock(return_value=0),
+			ambiguous_at_same_priority=MagicMock(return_value=[]),
+		)
 
 	def test_disabled_rule_is_a_conflict_not_coverage(self):
 		with patch.object(
@@ -222,10 +240,72 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 	def test_plain_active_rule_frappe_resolves_is_coverage(self):
 		with patch.object(
 			shard_mod, "_rule_rows", return_value=self._rows(("R1", "Repack", 0, 2))
-		), self._effective({"Repack": "R1"}):
+		), self._effective({"Repack": "R1"}), self._clean_namespace():
 			covered, conflicts = shard_mod._coverage(_COMPANY)
 		self.assertEqual(covered, {"Repack": "R1"})
 		self.assertEqual(conflicts, [])
+
+	def test_existing_rule_sharing_a_prefix_is_NOT_coverage(self):
+		# Round-5 P0a. Each Document Naming Rule owns an INDEPENDENT counter, so two rules on
+		# the same prefix march through the same names and eventually collide on the Stock
+		# Entry primary key. Resolving correctly does not make the namespace safe.
+		with patch.object(
+			shard_mod,
+			"_rule_rows",
+			return_value=self._rows(
+				("R1", "Repack", 0, 2),
+				("R2", "Manufacture", 0, 2),
+				prefix="KGJPL-SE-SAME-.YY.-",
+			),
+		), self._effective(
+			{"Repack": "R1", "Manufacture": "R2"}
+		), self._clean_namespace():
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {})
+		self.assertTrue(any("shared with" in why for _t, why, _r in conflicts))
+
+	def test_existing_rule_with_a_stale_counter_is_NOT_coverage(self):
+		# Round-5 P0b: counter behind the highest name already issued under this prefix would
+		# re-issue used names.
+		with patch.object(
+			shard_mod, "_rule_rows", return_value=self._rows(("R1", "Repack", 0, 2))
+		), self._effective({"Repack": "R1"}), patch.multiple(
+			shard_mod,
+			_max_existing_suffix=MagicMock(return_value=42),
+			ambiguous_at_same_priority=MagicMock(return_value=[]),
+		):
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {})
+		self.assertTrue(
+			any("behind the highest existing name" in why for _t, why, _r in conflicts)
+		)
+
+	def test_existing_rule_with_an_empty_prefix_is_NOT_coverage(self):
+		with patch.object(
+			shard_mod,
+			"_rule_rows",
+			return_value=self._rows(("R1", "Repack", 0, 2), prefix="  "),
+		), self._effective({"Repack": "R1"}), self._clean_namespace():
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {})
+		self.assertIn("empty prefix", conflicts[0][1])
+
+	def test_equal_priority_rival_makes_the_match_ambiguous(self):
+		# Round-5: frappe orders by `priority desc` with no tie-breaker, so an equal-priority
+		# rival means the winner is whatever the DB returns first — not a stable answer.
+		with patch.object(
+			shard_mod, "_rule_rows", return_value=self._rows(("R1", "Repack", 0, 2))
+		), self._effective({"Repack": "R1"}), patch.multiple(
+			shard_mod,
+			_max_existing_suffix=MagicMock(return_value=0),
+			ambiguous_at_same_priority=MagicMock(
+				return_value=[frappe._dict(name="R1"), frappe._dict(name="RIVAL")]
+			),
+			rule_priority=MagicMock(return_value=0),
+		):
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {})
+		self.assertIn("ambiguous", conflicts[0][1])
 
 	def test_rule_frappe_does_not_resolve_is_NOT_coverage(self):
 		# The operator blind spot: a rule conditioned `company != X` reduces to the same
@@ -483,6 +563,8 @@ class TestShardLifecycle(IntegrationTestCase):
 			shard_mod, "_default_company", return_value=_COMPANY
 		), patch.object(shard_mod, "_rule_map", return_value={}), patch.object(
 			shard_mod.frappe.db, "exists", return_value=True
+		), patch.object(
+			shard_mod, "_validate_recorded_rule", return_value=None
 		), patch.object(shard_mod.frappe.db, "set_value"), patch.object(
 			shard_mod.frappe.db, "commit"
 		), patch.object(shard_mod.frappe, "clear_cache"), patch.object(
@@ -501,6 +583,8 @@ class TestShardLifecycle(IntegrationTestCase):
 			shard_mod, "_default_company", return_value=_COMPANY
 		), patch.object(shard_mod, "_rule_map", return_value={}), patch.object(
 			shard_mod.frappe.db, "exists", return_value=True
+		), patch.object(
+			shard_mod, "_validate_recorded_rule", return_value=None
 		), patch.object(shard_mod.frappe.db, "set_value"), patch.object(
 			shard_mod.frappe.db, "commit"
 		), patch.object(shard_mod.frappe, "clear_cache"), patch.object(
@@ -730,10 +814,10 @@ class TestShardRollback(IntegrationTestCase):
 				(_COMPANY, "C"): "PRE-EXISTING",
 			},
 		), patch.object(shard_mod.frappe.db, "exists", return_value=True), patch.object(
-			shard_mod.frappe.db, "set_value"
-		) as mock_set, patch.object(shard_mod.frappe.db, "commit"), patch.object(
-			shard_mod.frappe, "clear_cache"
-		):
+			shard_mod, "_validate_recorded_rule", return_value=None
+		), patch.object(shard_mod.frappe.db, "set_value") as mock_set, patch.object(
+			shard_mod.frappe.db, "commit"
+		), patch.object(shard_mod.frappe, "clear_cache"):
 			shard_mod.rollback()
 		touched = [c.args[1] for c in mock_set.call_args_list]
 		self.assertEqual(sorted(touched), recorded)
@@ -797,8 +881,9 @@ class TestEnsureRulesForNewType(IntegrationTestCase):
 		with patch.object(
 			shard_mod, "sharded_companies", return_value=[]
 		), patch.object(shard_mod.frappe, "get_doc") as mock_get_doc:
-			created = shard_mod.ensure_rules_for_type("Anything")
+			created, unresolved = shard_mod.ensure_rules_for_type("Anything")
 		self.assertEqual(created, [])
+		self.assertEqual(unresolved, [])  # no sharded company -> nothing to report
 		mock_get_doc.assert_not_called()
 
 	def test_creates_the_rule_for_a_sharded_company(self):
@@ -820,9 +905,64 @@ class TestEnsureRulesForNewType(IntegrationTestCase):
 		), patch.object(shard_mod, "_record_created") as mock_record, patch.object(
 			shard_mod.frappe, "cache_manager"
 		):
-			created = shard_mod.ensure_rules_for_type("Brand New Type")
+			created, unresolved = shard_mod.ensure_rules_for_type("Brand New Type")
 		self.assertEqual(created, ["NEW-RULE"])  # only the matching type, not "Other"
-		mock_record.assert_called_once_with(_COMPANY, ["NEW-RULE"])
+		self.assertEqual(unresolved, [])
+		# Round 5: the FULL identity must be recorded, exactly as shard() does. A bare name
+		# leaves the rule in _validate_recorded_rule's legacy branch, unable to prove drift.
+		mock_record.assert_called_once_with(
+			_COMPANY,
+			[
+				{
+					"name": "NEW-RULE",
+					"company": _COMPANY,
+					"stock_entry_type": "Brand New Type",
+					"prefix": "KGJPL-SE-BNT-.YY.-",
+				}
+			],
+		)
+
+	def test_conflicted_new_type_is_reported_not_swallowed(self):
+		# Round 5: a conflicted type is excluded from `plan`, so the old code created nothing,
+		# raised nothing and logged nothing while the company still reported ACTIVE.
+		conflicts = [("Brand New Type", "multiple active rules claim this type", "R2")]
+		with patch.object(
+			shard_mod, "sharded_companies", return_value=[_COMPANY]
+		), patch.object(
+			shard_mod, "_plan", return_value=([], [], conflicts)
+		), patch.object(shard_mod.frappe, "get_doc") as mock_get_doc:
+			created, unresolved = shard_mod.ensure_rules_for_type("Brand New Type")
+		self.assertEqual(created, [])
+		self.assertEqual(len(unresolved), 1)
+		self.assertIn("multiple active rules", unresolved[0][1])
+		mock_get_doc.assert_not_called()
+
+	def test_planner_silence_is_also_reported(self):
+		# No conflict, but no plan row either — still uncovered, still must be surfaced.
+		with patch.object(
+			shard_mod, "sharded_companies", return_value=[_COMPANY]
+		), patch.object(shard_mod, "_plan", return_value=([], [], [])):
+			created, unresolved = shard_mod.ensure_rules_for_type("Brand New Type")
+		self.assertEqual(created, [])
+		self.assertEqual(len(unresolved), 1)
+		self.assertIn("no rule", unresolved[0][1])
+
+	def test_hook_logs_when_a_type_is_left_uncovered(self):
+		with patch.object(
+			shard_mod,
+			"ensure_rules_for_type",
+			return_value=([], [(_COMPANY, "conflict blah (R2)")]),
+		), patch.object(shard_mod.frappe, "log_error") as mock_log:
+			shard_mod.on_stock_entry_type_insert(frappe._dict(name="X"))
+		mock_log.assert_called_once()
+		self.assertIn("uncovered", mock_log.call_args.kwargs["title"])
+
+	def test_hook_stays_quiet_on_full_success(self):
+		with patch.object(
+			shard_mod, "ensure_rules_for_type", return_value=(["R1"], [])
+		), patch.object(shard_mod.frappe, "log_error") as mock_log:
+			shard_mod.on_stock_entry_type_insert(frappe._dict(name="X"))
+		mock_log.assert_not_called()
 
 	def test_hook_never_raises(self):
 		# A naming-rule gap must never block creating a Stock Entry Type.
@@ -945,6 +1085,38 @@ class TestRealDocumentNamingRule(IntegrationTestCase):
 		)
 		self.assertEqual(after, before + 1)
 		self.assertFalse(doc.name.startswith("MAT-STE-"))
+
+	def test_real_duplicate_prefix_is_not_coverage(self):
+		# Round-5 P0a against REAL records: two rules, two types, ONE prefix. Frappe resolves
+		# each correctly, so the resolver check alone passes — only the namespace check
+		# catches that their independent counters walk the same names.
+		shared = "ZZDUP-SE-SAME-.YY.-"
+		self._rule(self.TYPE_A, shared)
+		self._rule(self.TYPE_B, shared)
+		covered, conflicts = shard_mod._coverage(self.company)
+		self.assertNotIn(self.TYPE_A, covered)
+		self.assertNotIn(self.TYPE_B, covered)
+		self.assertTrue(
+			any("shared with" in why for _t, why, _r in conflicts),
+			f"expected a shared-prefix conflict, got {conflicts}",
+		)
+
+	def test_real_stale_counter_is_not_coverage(self):
+		# Round-5 P0b against REAL records: the rule resolves, but its counter sits below a
+		# name already issued under its prefix, so it would re-issue used names.
+		rule = self._rule(self.TYPE_A, "ZZSTALE-SE-P-.YY.-")
+		with patch.object(shard_mod, "_max_existing_suffix", return_value=99):
+			covered, conflicts = shard_mod._coverage(self.company)
+		self.assertNotIn(self.TYPE_A, covered)
+		self.assertTrue(
+			any("behind the highest existing name" in why for _t, why, _r in conflicts),
+			f"expected a stale-counter conflict, got {conflicts}",
+		)
+		self.assertEqual(
+			frappe.db.get_value("Document Naming Rule", rule.name, "counter"),
+			0,
+			"a conflicting rule must never be auto-repaired",
+		)
 
 	def test_apply_refuses_when_a_generic_rule_shadows_the_new_exact_rule(self):
 		# Round-4 blocker 1, the case mocks cannot prove. A company-ONLY rule carries no

@@ -217,7 +217,7 @@ def _rule_rows(active_only=False):
 	"""
 	return frappe.db.sql(
 		f"""
-		SELECT r.name, r.disabled,
+		SELECT r.name, r.disabled, r.prefix, r.prefix_digits, r.counter,
 		       COUNT(*)                                                    AS n_conditions,
 		       MAX(CASE WHEN c.field = 'company'           THEN c.value END) AS company,
 		       MAX(CASE WHEN c.field = 'stock_entry_type'  THEN c.value END) AS setype
@@ -229,6 +229,93 @@ def _rule_rows(active_only=False):
 		(_DOCTYPE,),
 		as_dict=True,
 	)
+
+
+def rule_priority(rule_name):
+	"""Priority of a Document Naming Rule, 0 when unreadable."""
+	return frappe.utils.cint(
+		frappe.db.get_value("Document Naming Rule", rule_name, "priority")
+	)
+
+
+def ambiguous_at_same_priority(stub, rule, company):
+	"""Active Stock Entry rules that ALSO match ``stub`` at the same priority as ``rule``.
+
+	``document_naming_rule_for_doc`` returns the first candidate frappe would pick, but the
+	underlying ordering is ``priority desc`` with no tie-breaker, so among equal-priority
+	matches the winner is whatever the database happens to return first. Enumerating every
+	matching rule at that priority is the only way to tell "this rule wins" from "this rule
+	won the coin flip this time".
+	"""
+	try:
+		from frappe.utils import evaluate_filters
+
+		target = rule_priority(rule.name)
+		out = []
+		for r in frappe.get_all(
+			"Document Naming Rule",
+			filters={"document_type": _DOCTYPE, "disabled": 0, "priority": target},
+			fields=["name"],
+		):
+			doc = frappe.get_cached_doc("Document Naming Rule", r.name)
+			if doc.conditions and not evaluate_filters(
+				stub,
+				[
+					(doc.document_type, c.field, c.condition, c.value)
+					for c in doc.conditions
+				],
+			):
+				continue
+			out.append(r)
+		return out
+	except Exception:
+		# Ambiguity detection must never break a dry run; a failure degrades to "no rivals".
+		return []
+
+
+def _namespace_problem(rule, all_rows):
+	"""Return why ``rule``'s OUTPUT NAMESPACE is unsafe to accept as coverage, else ``None``.
+
+	Rules this patch CREATES are protected twice: :func:`_plan` avoids every prefix already in
+	use, and seeds ``counter`` to the historical maximum suffix. A PRE-EXISTING rule accepted
+	as coverage got neither check — ``_rule_rows`` did not even select ``prefix``/``counter``,
+	so it could not have.
+
+	That matters because each Document Naming Rule owns an INDEPENDENT counter. Two rules
+	sharing a prefix therefore march through the same names, and a rule whose counter sits
+	below the highest name already issued under its prefix re-issues names that exist. Either
+	way ``DocumentNamingRule.apply()`` mints the name with no existence check and ``db_insert``
+	raises ``DuplicateEntryError``. Worse, the counter bump is rolled back with the failed
+	request, so every retry re-mints the SAME colliding name — the pair stays wedged until a
+	human intervenes. Report it; never auto-repair someone else's rule.
+	"""
+	prefix = (rule.get("prefix") or "").strip()
+	if not prefix:
+		return "rule has an empty prefix"
+
+	digits = frappe.utils.cint(rule.get("prefix_digits"))
+	if digits < 1:
+		return f"rule has prefix_digits={rule.get('prefix_digits')!r} (expected >= 1)"
+
+	sharers = [
+		r.name
+		for r in all_rows
+		if r.name != rule.name and not r.disabled and (r.prefix or "").strip() == prefix
+	]
+	if sharers:
+		return (
+			f"prefix {prefix!r} is shared with {sharers[0]}"
+			f"{f' (+{len(sharers) - 1} more)' if len(sharers) > 1 else ''} — "
+			f"independent counters can mint the same name"
+		)
+
+	floor = _max_existing_suffix(prefix.split(".")[0])
+	if frappe.utils.cint(rule.get("counter")) < floor:
+		return (
+			f"counter={rule.get('counter')} is behind the highest existing name "
+			f"({floor}) for prefix {prefix!r} — would re-issue used names"
+		)
+	return None
 
 
 def _rule_map(active_only=False):
@@ -352,6 +439,33 @@ def _coverage(company, reenablable=()):
 				(
 					setype,
 					f"frappe resolves {effective or 'no rule'}, not this one",
+					rule.name,
+				)
+			)
+			continue
+
+		# Resolving to this rule proves WHICH rule wins, not that its output namespace is
+		# safe. A pre-existing rule reaches here without ever having been through _plan's
+		# prefix-avoidance and counter seeding, so validate that separately.
+		problem = _namespace_problem(rule, rows)
+		if problem:
+			conflicts.append((setype, problem, rule.name))
+			continue
+
+		# Frappe orders candidates by `priority desc` with NO secondary key, so a tie between
+		# two matching rules is resolved by whatever order the DB returns — stable within a
+		# cached process, not stable across cache rebuilds. Accepting a coin-flip winner would
+		# let the effective prefix change under us later, so require an unambiguous match.
+		rivals = [
+			r.name
+			for r in ambiguous_at_same_priority(stub, rule, company)
+			if r.name != rule.name
+		]
+		if rivals:
+			conflicts.append(
+				(
+					setype,
+					f"ambiguous: {rivals[0]} matches at the same priority ({rule_priority(rule.name)})",
 					rule.name,
 				)
 			)
@@ -789,11 +903,22 @@ def rollback(company=None):
 			print(f"    {rule:<14} {prefix:<26} created {str(created)[:19]}")
 		return
 
-	disabled, missing = 0, 0
+	disabled, missing, repurposed = 0, 0, []
 	for rule in recorded:
 		if not frappe.db.exists("Document Naming Rule", rule):
 			missing += 1
 			continue
+		# Disabling is the conservative action and is reversible, so a repurposed rule is
+		# still disabled — but say so. Silently switching off a rule that no longer describes
+		# what this patch created is exactly the kind of surprise an operator should see.
+		setype = frappe.db.get_value(
+			"Document Naming Rule Condition",
+			{"parent": rule, "field": "stock_entry_type"},
+			"value",
+		)
+		problem = _validate_recorded_rule(rule, company, setype)
+		if problem:
+			repurposed.append((rule, problem))
 		frappe.db.set_value(
 			"Document Naming Rule", rule, "disabled", 1, update_modified=False
 		)
@@ -809,6 +934,13 @@ def rollback(company=None):
 	print(f"[shard] Rolled back: disabled {disabled} rule(s) for {company!r}.")
 	if missing:
 		print(f"[shard] {missing} recorded rule(s) no longer exist — skipped.")
+	if repurposed:
+		print(
+			f"[shard] WARNING: {len(repurposed)} rule(s) were disabled but no longer match "
+			f"what this patch created — review before re-applying:"
+		)
+		for rule, problem in repurposed:
+			print(f"    {rule:<16} {problem}")
 	# Clamped: _rule_map() only sees rules carrying BOTH company and stock_entry_type
 	# conditions, so a recorded rule shaped otherwise can make the subtraction go negative
 	# and print a nonsense count.
@@ -900,12 +1032,27 @@ def ensure_rules_for_type(setype, company=None):
 	contention. Only touches companies that were sharded, so a site that never ran this
 	patch is unaffected. Does NOT commit: it runs inside the caller's transaction.
 
-	Returns the created rule names.
+	Returns ``(created_rule_names, unresolved)`` where ``unresolved`` lists
+	``(company, reason)`` for a company where this type could NOT be covered — either a
+	conflict blocks it or the planner produced no row. Callers MUST surface that: silently
+	returning an empty list left the type on the shared ``MAT-STE-`` row while the company
+	still reported ``ACTIVE``.
 	"""
 	companies = [company] if company else sharded_companies()
-	created = []
+	created, unresolved = [], []
 	for co in companies:
-		plan, _skipped, _conflicts = _plan(co, all_types=True)
+		plan, _skipped, conflicts = _plan(co, all_types=True)
+
+		# A conflicted type is deliberately excluded from `plan`, so an empty plan row is
+		# NOT "nothing to do" — it means a human must resolve something first.
+		blocking = [c for c in conflicts if c[0] == setype]
+		if blocking:
+			unresolved.append((co, f"{blocking[0][1]} ({blocking[0][2]})"))
+			continue
+		if not any(p["setype"] == setype for p in plan):
+			unresolved.append((co, "planner produced no rule for this type"))
+			continue
+
 		for p in plan:
 			if p["setype"] != setype:
 				continue
@@ -929,20 +1076,49 @@ def ensure_rules_for_type(setype, company=None):
 				}
 			)
 			doc.insert(ignore_permissions=True)
-			_record_created(co, [doc.name])
+			# Record the FULL identity, exactly as shard() does. Recording a bare name here
+			# gave hook-created rules strictly weaker drift protection than shard-created
+			# ones: _validate_recorded_rule falls into its legacy branch and cannot prove the
+			# rule still represents this pair. `p` already carries both fields.
+			_record_created(
+				co,
+				[
+					{
+						"name": doc.name,
+						"company": co,
+						"stock_entry_type": setype,
+						"prefix": p["prefix"],
+					}
+				],
+			)
 			created.append(doc.name)
 	if created:
 		frappe.cache_manager.clear_doctype_map("Document Naming Rule", _DOCTYPE)
-	return created
+	return created, unresolved
 
 
 def on_stock_entry_type_insert(doc, method=None):
 	"""``Stock Entry Type`` ``after_insert`` hook — keep the naming shard complete.
 
-	Best-effort: a naming-rule gap must never block creating a Stock Entry Type.
+	Best-effort by design: a naming-rule gap must never block creating a Stock Entry Type.
+	But "best-effort" must not mean "silent" — an unresolved type falls back to the shared
+	``MAT-STE-`` row while the company still reports ACTIVE, so anything short of full
+	success is written to the Error Log where ``verify_shard()`` findings can be matched
+	against it.
 	"""
 	try:
-		ensure_rules_for_type(doc.name)
+		_created, unresolved = ensure_rules_for_type(doc.name)
+		if unresolved:
+			detail = "; ".join(f"{co}: {why}" for co, why in unresolved)
+			frappe.log_error(
+				message=(
+					f"Stock Entry Type {doc.name!r} was created but could NOT be given a "
+					f"naming rule: {detail}. It will fall back to the shared MAT-STE- "
+					f"counter. Resolve the conflict, then run "
+					f"shard_stock_entry_naming_by_type.repair_missing_rules()."
+				),
+				title="shard_stock_entry_naming: new type left uncovered",
+			)
 	except Exception:
 		frappe.log_error(
 			title="shard_stock_entry_naming: could not create rule for new type"
