@@ -174,14 +174,15 @@
    "label": "Is Finding MWO"
   },
   {
+   "columns": 1,
    "fieldname": "tree_number",
    "fieldtype": "Link",
-   "hidden": 1,
+   "in_list_view": 1,
    "label": "Tree Number",
    "no_copy": 1,
    "options": "Tree Number",
    "read_only": 1,
-   "description": "Casting tree this receive drew metal from. Pinned at submit so a cancel reverses the same tree even if the work order has since been re-issued onto a new one."
+   "description": "Casting tree this row is attached to - stamped on the Issue that creates the tree, and again on the Receive that draws from it. Pinned at submit so a cancel reverses the same tree even if the work order has since been re-issued onto a new one. The grid column is shown only for tree (casting) operations."
   }
  ],
  "index_web_pages_for_search": 1,

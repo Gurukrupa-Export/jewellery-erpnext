@@ -13,6 +13,7 @@ frappe.ui.form.on("Employee IR", {
 			});
 		}
 		add_load_full_casting_tree_button(frm);
+		toggle_tree_number_column(frm);
 		// Auto-load subcategory-driven FG BOM fields for a Receive (only if empty,
 		// so user-entered values are never wiped on a refresh).
 		if (frm.doc.docstatus == 0 && frm.doc.type == "Receive") {
@@ -110,6 +111,8 @@ frappe.ui.form.on("Employee IR", {
 		// Repeat-ness is per (work order, operation), so re-pointing the operation
 		// can flip the answer even with the same rows loaded.
 		load_repeat_flag(frm);
+		// Whether this is a casting (tree) operation changes with it.
+		toggle_tree_number_column(frm);
 	},
 	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
@@ -553,6 +556,21 @@ function set_child_table_item_filter(frm) {
 			},
 		};
 	};
+}
+
+// The Tree Number column is only ever filled for a tree (casting) operation -- see
+// doc_events/tree_casting.py. Showing it everywhere would put a permanently blank
+// column in every other department's grid, so reveal it off the same
+// Department Operation.tree_no_reqd flag the server keys on.
+function toggle_tree_number_column(frm) {
+	const grid = frm.fields_dict.employee_ir_operations.grid;
+	if (!frm.doc.operation) {
+		grid.toggle_display("tree_number", false);
+		return;
+	}
+	frappe.db.get_value("Department Operation", frm.doc.operation, "tree_no_reqd").then((r) => {
+		grid.toggle_display("tree_number", !!(r.message && r.message.tree_no_reqd));
+	});
 }
 
 // Casting re-issue is all-or-nothing (see doc_events/tree_casting.py). This button pulls in the
