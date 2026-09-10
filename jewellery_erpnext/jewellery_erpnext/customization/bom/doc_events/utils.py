@@ -41,7 +41,5 @@ def update_specifications(self):
 	for idx, row in enumerate(self.other_detail):
 		if idx >= 2:
 			continue
-		if not self.get(f"custom_other_item_{idx + 1}"):
-			self.db_set(f"custom_other_item_{idx + 1}", row.item_code)
 		if not self.get(f"custom_other_wt_{idx + 1}"):
 			self.db_set(f"custom_other_wt_{idx + 1}", row.quantity)
