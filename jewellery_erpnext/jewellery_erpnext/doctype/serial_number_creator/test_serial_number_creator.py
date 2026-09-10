@@ -31,6 +31,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_nu
 	_reserved_warehouse_caps,
 	_sed_attributes_for,
 	_sre_reserves_batch,
+	_validate_stone_pcs_conserved,
 	_warehouse_has_batch_stock,
 	calulate_id_wise_sum_up,
 	split_source_rows_by_reservation,
@@ -1896,3 +1897,109 @@ class TestReservedRowsHeaderBudget(IntegrationTestCase):
 		mock_get_all.side_effect = _inner
 		rows = _reserved_source_rows(["MWO-1"])
 		self.assertEqual(sum(r["qty"] for r in rows), 2.0)
+
+
+class TestStonePcsConserved(IntegrationTestCase):
+	"""Diamond and gemstone counts must survive the trip from source to finished goods.
+
+	Weight was already reconciled per item; pcs was not. For D/G items pcs is a count of
+	physical stones, so a bug that inflates it -- as keying attributes on (item, batch)
+	while rows are keyed on (item, batch, warehouse) did -- declares stones that do not
+	exist, and the weight check sees nothing wrong.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _doc(source, fg):
+		return frappe._dict(
+			source_table=[frappe._dict(r) for r in source],
+			fg_details=[frappe._dict(r) for r in fg],
+		)
+
+	def test_matching_counts_pass(self):
+		doc = self._doc(
+			[
+				{"row_material": _D_ITEM, "pcs": 40},
+				{"row_material": _D_ITEM, "pcs": 8},
+			],
+			[{"row_material": _D_ITEM, "pcs": 48}],
+		)
+		_validate_stone_pcs_conserved(doc)
+
+	def test_finished_goods_declaring_more_than_the_source_is_refused(self):
+		doc = self._doc(
+			[{"row_material": _D_ITEM, "pcs": 48}],
+			[{"row_material": _D_ITEM, "pcs": 96}],
+		)
+		with self.assertRaises(frappe.exceptions.ValidationError) as cm:
+			_validate_stone_pcs_conserved(doc)
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn(_D_ITEM, msg)
+		self.assertIn("96", msg)
+
+	def test_finished_goods_declaring_fewer_than_the_source_is_refused(self):
+		doc = self._doc(
+			[{"row_material": _D_ITEM, "pcs": 48}],
+			[{"row_material": _D_ITEM, "pcs": 24}],
+		)
+		with self.assertRaises(frappe.exceptions.ValidationError):
+			_validate_stone_pcs_conserved(doc)
+
+	def test_it_does_not_catch_an_inflated_SOURCE(self):
+		# Worth pinning, so nobody mistakes this guard for protection it does not give.
+		# When the source table itself over-counts -- the warehouse-split duplication,
+		# where one batch's whole count was handed to each warehouse row -- the finished
+		# goods are derived from that same inflated source, so the two agree and this
+		# invariant sees nothing. Source-side attribution is what prevents that; see
+		# TestSedAttributesGranularity.
+		doc = self._doc(
+			[
+				{"row_material": _D_ITEM, "pcs": 48},
+				{"row_material": _D_ITEM, "pcs": 48},
+			],
+			[{"row_material": _D_ITEM, "pcs": 96}],
+		)
+		_validate_stone_pcs_conserved(doc)
+
+	def test_counts_split_across_manufacturing_ids_still_sum(self):
+		doc = self._doc(
+			[{"row_material": _D_ITEM, "pcs": 48}],
+			[
+				{"row_material": _D_ITEM, "pcs": 24},
+				{"row_material": _D_ITEM, "pcs": 24},
+			],
+		)
+		_validate_stone_pcs_conserved(doc)
+
+	def test_metal_pcs_is_not_conserved(self):
+		# A metal row's pcs means "one physical piece", not a count to reconcile.
+		doc = self._doc(
+			[
+				{"row_material": _LIVE_ITEM, "pcs": 1},
+				{"row_material": _LIVE_ITEM, "pcs": 1},
+			],
+			[{"row_material": _LIVE_ITEM, "pcs": 1}],
+		)
+		_validate_stone_pcs_conserved(doc)
+
+	def test_gemstones_are_covered_too(self):
+		doc = self._doc(
+			[{"row_material": "G-RUBY-3MM", "pcs": 4}],
+			[{"row_material": "G-RUBY-3MM", "pcs": 8}],
+		)
+		with self.assertRaises(frappe.exceptions.ValidationError):
+			_validate_stone_pcs_conserved(doc)
+
+	def test_item_missing_from_the_source_is_left_to_the_weight_check(self):
+		doc = self._doc([], [{"row_material": _D_ITEM, "pcs": 12}])
+		_validate_stone_pcs_conserved(doc)
+
+	def test_zero_counts_on_both_sides_pass(self):
+		doc = self._doc(
+			[{"row_material": _D_ITEM, "pcs": 0}],
+			[{"row_material": _D_ITEM, "pcs": 0}],
+		)
+		_validate_stone_pcs_conserved(doc)
