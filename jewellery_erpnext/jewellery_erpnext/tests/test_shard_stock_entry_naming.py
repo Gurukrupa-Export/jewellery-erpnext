@@ -200,6 +200,7 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 			shard_mod,
 			_max_existing_suffix=MagicMock(return_value=0),
 			ambiguous_at_same_priority=MagicMock(return_value=[]),
+			_namespace_rows=MagicMock(return_value=[]),
 		)
 
 	def test_disabled_rule_is_a_conflict_not_coverage(self):
@@ -249,20 +250,51 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 		# Round-5 P0a. Each Document Naming Rule owns an INDEPENDENT counter, so two rules on
 		# the same prefix march through the same names and eventually collide on the Stock
 		# Entry primary key. Resolving correctly does not make the namespace safe.
+		shared = self._rows(
+			("R1", "Repack", 0, 2),
+			("R2", "Manufacture", 0, 2),
+			prefix="KGJPL-SE-SAME-.YY.-",
+		)
 		with patch.object(
+			shard_mod, "_rule_rows", return_value=shared
+		), self._effective({"Repack": "R1", "Manufacture": "R2"}), patch.multiple(
 			shard_mod,
-			"_rule_rows",
-			return_value=self._rows(
-				("R1", "Repack", 0, 2),
-				("R2", "Manufacture", 0, 2),
-				prefix="KGJPL-SE-SAME-.YY.-",
-			),
-		), self._effective(
-			{"Repack": "R1", "Manufacture": "R2"}
-		), self._clean_namespace():
+			_max_existing_suffix=MagicMock(return_value=0),
+			ambiguous_at_same_priority=MagicMock(return_value=[]),
+			_namespace_rows=MagicMock(return_value=shared),
+		):
 			covered, conflicts = shard_mod._coverage(_COMPANY)
 		self.assertEqual(covered, {})
 		self.assertTrue(any("shared with" in why for _t, why, _r in conflicts))
+
+	def test_CROSS_COMPANY_shared_prefix_is_NOT_coverage(self):
+		# Round-6 issue 1: tabStock Entry.name is ONE global namespace, so a same-prefix rule
+		# under ANOTHER company can mint the same names. It never appears among this company's
+		# candidate rows, so only the global namespace source can see it.
+		mine = self._rows(("R1", "Repack", 0, 2), prefix="SHARED-SE-X-.YY.-")
+		theirs = [
+			frappe._dict(
+				name="OTHER-CO-RULE",
+				disabled=0,
+				prefix="SHARED-SE-X-.YY.-",
+				prefix_digits=5,
+				counter=0,
+			)
+		]
+		with patch.object(
+			shard_mod, "_rule_rows", return_value=mine
+		), self._effective({"Repack": "R1"}), patch.multiple(
+			shard_mod,
+			_max_existing_suffix=MagicMock(return_value=0),
+			ambiguous_at_same_priority=MagicMock(return_value=[]),
+			_namespace_rows=MagicMock(return_value=mine + theirs),
+		):
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {}, "a cross-company prefix clash is not coverage")
+		self.assertTrue(
+			any("OTHER-CO-RULE" in why for _t, why, _r in conflicts),
+			f"the other company's rule must be named: {conflicts}",
+		)
 
 	def test_existing_rule_with_a_stale_counter_is_NOT_coverage(self):
 		# Round-5 P0b: counter behind the highest name already issued under this prefix would
@@ -273,6 +305,7 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 			shard_mod,
 			_max_existing_suffix=MagicMock(return_value=42),
 			ambiguous_at_same_priority=MagicMock(return_value=[]),
+			_namespace_rows=MagicMock(return_value=[]),
 		):
 			covered, conflicts = shard_mod._coverage(_COMPANY)
 		self.assertEqual(covered, {})
@@ -290,6 +323,56 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 		self.assertEqual(covered, {})
 		self.assertIn("empty prefix", conflicts[0][1])
 
+	def test_a_non_equality_rule_is_not_an_exact_candidate(self):
+		# Round-6 issue 2. `_rule_rows` projects company/setype only from `=` conditions, so a
+		# `company != X` rule yields NULLs and is filtered out of the candidates. Previously it
+		# projected identically to `company = X`, inflating `active` to 2 and raising a false
+		# "multiple active rules claim this type" BEFORE frappe's resolver was consulted —
+		# and since apply is fail-closed, that false conflict blocked the whole migration.
+		rows = self._rows(("R1", "Repack", 0, 2))
+		rows.append(
+			frappe._dict(
+				name="EXCLUDER", disabled=0, n_conditions=2,
+				company=None, setype=None,          # `!=` projects NULL now
+				prefix="KGJPL-SE-EXC-.YY.-", prefix_digits=5, counter=0,
+			)
+		)
+		with patch.object(
+			shard_mod, "_rule_rows", return_value=rows
+		), self._effective({"Repack": "R1"}), patch.multiple(
+			shard_mod,
+			_max_existing_suffix=MagicMock(return_value=0),
+			ambiguous_at_same_priority=MagicMock(return_value=[]),
+			_namespace_rows=MagicMock(return_value=rows),
+		):
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {"Repack": "R1"}, "the `=` rule must still cover the type")
+		self.assertFalse(
+			any("multiple active rules" in why for _t, why, _r in conflicts),
+			f"a non-matching `!=` rule must not raise a duplicate conflict: {conflicts}",
+		)
+
+	def test_a_non_equality_rule_still_owns_its_prefix(self):
+		# The trap in fixing issue 2: a `!=` rule is not an exact candidate, but it still MINTS
+		# names under its prefix, so it must remain visible as a namespace owner. Filtering it
+		# out of both sources would have silently reopened the collision hole.
+		mine = self._rows(("R1", "Repack", 0, 2), prefix="KGJPL-SE-DUP-.YY.-")
+		excluder = frappe._dict(
+			name="EXCLUDER", disabled=0, prefix="KGJPL-SE-DUP-.YY.-",
+			prefix_digits=5, counter=0,
+		)
+		with patch.object(
+			shard_mod, "_rule_rows", return_value=mine
+		), self._effective({"Repack": "R1"}), patch.multiple(
+			shard_mod,
+			_max_existing_suffix=MagicMock(return_value=0),
+			ambiguous_at_same_priority=MagicMock(return_value=[]),
+			_namespace_rows=MagicMock(return_value=mine + [excluder]),
+		):
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {})
+		self.assertTrue(any("EXCLUDER" in why for _t, why, _r in conflicts))
+
 	def test_equal_priority_rival_makes_the_match_ambiguous(self):
 		# Round-5: frappe orders by `priority desc` with no tie-breaker, so an equal-priority
 		# rival means the winner is whatever the DB returns first — not a stable answer.
@@ -302,6 +385,7 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 				return_value=[frappe._dict(name="R1"), frappe._dict(name="RIVAL")]
 			),
 			rule_priority=MagicMock(return_value=0),
+			_namespace_rows=MagicMock(return_value=[]),
 		):
 			covered, conflicts = shard_mod._coverage(_COMPANY)
 		self.assertEqual(covered, {})
@@ -571,6 +655,46 @@ class TestShardLifecycle(IntegrationTestCase):
 			shard_mod, "_set_state"
 		) as mock_state:
 			shard_mod.rollback()
+		mock_state.assert_called_once_with(_COMPANY, shard_mod._ROLLED_BACK)
+
+	def test_rollback_refuses_before_writing_when_a_rule_drifted(self):
+		# Round-6 issue 3: drift used to be detected, the rule disabled, the transaction
+		# committed, and only THEN was the operator warned. Preflight now stops first.
+		with patch.object(
+			shard_mod, "_get_created", return_value=["MINE-1"]
+		), patch.object(
+			shard_mod, "_default_company", return_value=_COMPANY
+		), patch.object(shard_mod, "_rule_map", return_value={}), patch.object(
+			shard_mod.frappe.db, "exists", return_value=True
+		), patch.object(
+			shard_mod, "_validate_recorded_rule", return_value="company condition drifted"
+		), patch.object(shard_mod.frappe.db, "set_value") as mock_set, patch.object(
+			shard_mod.frappe.db, "commit"
+		) as mock_commit, patch.object(shard_mod, "_set_state") as mock_state:
+			with self.assertRaises(frappe.ValidationError):
+				shard_mod.rollback()
+		mock_set.assert_not_called()
+		mock_commit.assert_not_called()
+		mock_state.assert_not_called()
+
+	def test_rollback_force_proceeds_despite_drift(self):
+		# Rollback is the emergency lever for undoing the shard, so it must stay reachable —
+		# just deliberately.
+		with patch.object(
+			shard_mod, "_get_created", return_value=["MINE-1"]
+		), patch.object(
+			shard_mod, "_default_company", return_value=_COMPANY
+		), patch.object(shard_mod, "_rule_map", return_value={}), patch.object(
+			shard_mod.frappe.db, "exists", return_value=True
+		), patch.object(
+			shard_mod, "_validate_recorded_rule", return_value="company condition drifted"
+		), patch.object(shard_mod.frappe.db, "set_value") as mock_set, patch.object(
+			shard_mod.frappe.db, "commit"
+		), patch.object(shard_mod.frappe, "clear_cache"), patch.object(
+			shard_mod, "_set_state"
+		) as mock_state:
+			shard_mod.rollback(force=True)
+		self.assertEqual([c.args[1] for c in mock_set.call_args_list], ["MINE-1"])
 		mock_state.assert_called_once_with(_COMPANY, shard_mod._ROLLED_BACK)
 
 	def test_rollback_keeps_the_created_record(self):

@@ -214,13 +214,24 @@ def _rule_rows(active_only=False):
 	``active_only`` filters out disabled rules. Coverage decisions MUST pass it: a disabled
 	rule names nothing, so treating it as coverage silently leaves that type on the shared
 	``MAT-STE-`` row — and, after a rollback, makes the whole shard un-reappliable.
+
+	Only ``=`` conditions populate ``company``/``setype``. The operator is load-bearing: a rule
+	conditioned ``company != X`` carries the same field and value as ``company = X``, so
+	projecting on value alone made a NON-matching exclusion rule look like another exact
+	candidate for X. Combined with the duplicate check below — which runs before frappe's
+	resolver is consulted — that raised a false "multiple active rules claim this type", and
+	since apply is fail-closed a false conflict BLOCKS the whole migration. Rules that do not
+	bind by equality are not exact candidates; they remain visible to the authoritative paths
+	(the resolver and :func:`ambiguous_at_same_priority`) and to :func:`_namespace_rows`.
 	"""
 	return frappe.db.sql(
 		f"""
 		SELECT r.name, r.disabled, r.prefix, r.prefix_digits, r.counter,
-		       COUNT(*)                                                    AS n_conditions,
-		       MAX(CASE WHEN c.field = 'company'           THEN c.value END) AS company,
-		       MAX(CASE WHEN c.field = 'stock_entry_type'  THEN c.value END) AS setype
+		       COUNT(*)                                                     AS n_conditions,
+		       MAX(CASE WHEN c.field = 'company'          AND c.condition = '='
+		                THEN c.value END)                                   AS company,
+		       MAX(CASE WHEN c.field = 'stock_entry_type' AND c.condition = '='
+		                THEN c.value END)                                   AS setype
 		FROM `tabDocument Naming Rule` r
 		JOIN `tabDocument Naming Rule Condition` c ON c.parent = r.name
 		WHERE r.document_type = %s {"AND r.disabled = 0" if active_only else ""}
@@ -228,6 +239,26 @@ def _rule_rows(active_only=False):
 		""",
 		(_DOCTYPE,),
 		as_dict=True,
+	)
+
+
+def _namespace_rows():
+	"""EVERY active Stock Entry naming rule — no company filter, no operator filter.
+
+	``tabStock Entry.name`` is ONE global namespace while each Document Naming Rule owns an
+	INDEPENDENT counter, so "who else can mint names under this prefix?" is a global question.
+	Answering it from the company-filtered candidate rows missed a same-prefix rule belonging to
+	another company entirely: both counters would march through the same names and collide on
+	the primary key.
+
+	Deliberately unfiltered by operator too — a rule conditioned ``company != X`` is not an
+	exact candidate, but it still OWNS its prefix and still mints names under it, so it must be
+	counted as a namespace owner even though :func:`_rule_rows` excludes it from candidates.
+	"""
+	return frappe.get_all(
+		"Document Naming Rule",
+		filters={"document_type": _DOCTYPE, "disabled": 0},
+		fields=["name", "prefix", "prefix_digits", "counter", "disabled"],
 	)
 
 
@@ -355,6 +386,8 @@ def _coverage(company, reenablable=()):
 
 	reenablable = set(reenablable or ())
 	rows = [r for r in _rule_rows() if r.company == company and r.setype]
+	# Candidate rows are company- and equality-scoped; namespace ownership is neither.
+	namespace_rows = _namespace_rows()
 
 	# Structural facts per type, used for conflict REASONS and for duplicate detection.
 	by_type = {}
@@ -447,7 +480,7 @@ def _coverage(company, reenablable=()):
 		# Resolving to this rule proves WHICH rule wins, not that its output namespace is
 		# safe. A pre-existing rule reaches here without ever having been through _plan's
 		# prefix-avoidance and counter seeding, so validate that separately.
-		problem = _namespace_problem(rule, rows)
+		problem = _namespace_problem(rule, namespace_rows)
 		if problem:
 			conflicts.append((setype, problem, rule.name))
 			continue
@@ -871,10 +904,16 @@ def shard(company=None, confirm=False, all_types=True):
 	# fail-closed throw above), so reaching this line means coverage is complete.
 
 
-def rollback(company=None):
+def rollback(company=None, force=False):
 	"""Disable ONLY the rules this patch created, so naming falls back to MAT-STE-.
 
 	Counters are left as seeded (forward-only, so re-enabling can never collide).
+
+	Refuses BEFORE touching anything if any recorded rule has drifted from what this patch
+	created — someone repurposing a managed rule means disabling it would switch off
+	configuration that is no longer ours. Pass ``force=True`` to proceed anyway: rollback is
+	the emergency lever for undoing the shard, so it must stay reachable during an incident,
+	but taking down a repurposed rule has to be a deliberate act rather than a side effect.
 
 	Operates strictly on the names recorded by :func:`shard`. It deliberately does NOT fall
 	back to matching on the company prefix: on kggk-prod that predicate also matches five
@@ -903,14 +942,14 @@ def rollback(company=None):
 			print(f"    {rule:<14} {prefix:<26} created {str(created)[:19]}")
 		return
 
-	disabled, missing, repurposed = 0, 0, []
+	# PREFLIGHT — read-only. Every recorded rule is checked before ANY write, so a drifted
+	# rule stops the run with the site untouched rather than being disabled and reported
+	# afterwards (by which point the change is already committed).
+	targets, missing, repurposed = [], 0, []
 	for rule in recorded:
 		if not frappe.db.exists("Document Naming Rule", rule):
 			missing += 1
 			continue
-		# Disabling is the conservative action and is reversible, so a repurposed rule is
-		# still disabled — but say so. Silently switching off a rule that no longer describes
-		# what this patch created is exactly the kind of surprise an operator should see.
 		setype = frappe.db.get_value(
 			"Document Naming Rule Condition",
 			{"parent": rule, "field": "stock_entry_type"},
@@ -919,6 +958,24 @@ def rollback(company=None):
 		problem = _validate_recorded_rule(rule, company, setype)
 		if problem:
 			repurposed.append((rule, problem))
+		targets.append(rule)
+
+	if repurposed and not force:
+		print(
+			f"[shard] {len(repurposed)} recorded rule(s) no longer match what this patch "
+			f"created:"
+		)
+		for rule, problem in repurposed:
+			print(f"    {rule:<16} {problem}")
+		frappe.throw(
+			f"REFUSING to roll back {company!r}: {len(repurposed)} recorded Document Naming "
+			f"Rule(s) have been repurposed since this patch created them, so disabling them "
+			f"would switch off configuration that is no longer ours. Nothing has been "
+			f"changed. Review them, then re-run with force=True to disable them anyway."
+		)
+
+	disabled = 0
+	for rule in targets:
 		frappe.db.set_value(
 			"Document Naming Rule", rule, "disabled", 1, update_modified=False
 		)
@@ -935,9 +992,10 @@ def rollback(company=None):
 	if missing:
 		print(f"[shard] {missing} recorded rule(s) no longer exist — skipped.")
 	if repurposed:
+		# Only reachable with force=True — the preflight above throws otherwise.
 		print(
-			f"[shard] WARNING: {len(repurposed)} rule(s) were disabled but no longer match "
-			f"what this patch created — review before re-applying:"
+			f"[shard] WARNING: force=True disabled {len(repurposed)} rule(s) that no longer "
+			f"match what this patch created — review before re-applying:"
 		)
 		for rule, problem in repurposed:
 			print(f"    {rule:<16} {problem}")
