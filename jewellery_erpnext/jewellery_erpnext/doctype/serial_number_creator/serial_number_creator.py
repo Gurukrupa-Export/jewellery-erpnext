@@ -1507,6 +1507,55 @@ def calulate_id_wise_sum_up(self):
 				f"Source Table SUM: <b>{src_qty}</b>"
 			)
 
+	_validate_stone_pcs_conserved(self)
+
+
+def _validate_stone_pcs_conserved(self):
+	"""Every stone that leaves the source table must arrive in the finished goods.
+
+	Weight is reconciled above, but pcs was not, and for diamond and gemstone items pcs is
+	a physical accountability figure -- a count of stones -- not descriptive metadata. The
+	two tables are built by different code (``source_table`` per reservation,
+	``fg_details`` aggregated per item and split across the manufacturing ids), so nothing
+	structurally guaranteed they agreed.
+
+	What this does NOT catch, deliberately stated: an inflated SOURCE. The finished goods
+	are derived from the source table, so when the source itself over-counts -- as it did
+	when Stock Entry Detail attributes were keyed on (item, batch) while source rows were
+	keyed on (item, batch, warehouse) -- both sides agree and this passes. Correct
+	attribution at the source is what prevents that; this guards the step after it.
+
+	Metal and findings are excluded: their rows can carry an incidental pcs that means
+	"one physical piece", not a count to conserve.
+	"""
+
+	def _stone_pcs(rows):
+		totals = {}
+		for row in rows:
+			item_code = row.get("row_material")
+			if not item_code or item_code[:1].upper() not in ("D", "G"):
+				continue
+			totals[item_code] = totals.get(item_code, 0.0) + flt(row.get("pcs"))
+		return totals
+
+	source_pcs = _stone_pcs(self.source_table)
+	fg_pcs = _stone_pcs(self.fg_details)
+
+	for item_code, fg_total in fg_pcs.items():
+		src_total = source_pcs.get(item_code)
+		# An item absent from the source table is already caught by the weight check.
+		if src_total is None:
+			continue
+		if flt(fg_total, 3) != flt(src_total, 3):
+			frappe.throw(
+				_(
+					"Stone count for {0} does not match. FG Details has {1} pcs but the "
+					"Source Table has {2} pcs. A diamond or gemstone count must be "
+					"conserved between the two tables."
+				).format(frappe.bold(item_code), flt(fg_total, 3), flt(src_total, 3)),
+				title=_("Stone Count Mismatch"),
+			)
+
 
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)

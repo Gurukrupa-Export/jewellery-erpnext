@@ -3505,10 +3505,15 @@ def _build_and_submit_mwo_sre(
 	# from a Stock Entry row, so it keeps the link back to the Stock Entry Detail that
 	# carries custom_sub_setting_type. The heal callers have no such row and pass None;
 	# Serial Number Creator falls back to matching on (operation, item, batch) there.
-	if from_voucher:
-		new_sre.from_voucher_type = "Stock Entry"
-		new_sre.from_voucher_no = from_voucher[0]
-		new_sre.from_voucher_detail_no = from_voucher[1]
+	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+		set_sre_provenance,
+	)
+
+	set_sre_provenance(
+		new_sre,
+		from_voucher[0] if from_voucher else None,
+		from_voucher[1] if from_voucher else None,
+	)
 	if has_batch_no and batch_no:
 		new_sre.reservation_based_on = "Serial and Batch"
 		new_sre.append(

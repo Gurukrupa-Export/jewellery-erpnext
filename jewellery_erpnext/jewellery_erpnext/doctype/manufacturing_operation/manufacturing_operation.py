@@ -4513,9 +4513,11 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 	# Carried forward, not re-derived: this is a RELOCATION of an existing reservation,
 	# so it keeps its link to the Stock Entry Detail it was created from. Dropping it
 	# here would strand every relocated SRE without a sub_setting_type source.
-	for _f in ("from_voucher_type", "from_voucher_no", "from_voucher_detail_no"):
-		if hasattr(original_sre, _f):
-			setattr(new_sre, _f, getattr(original_sre, _f))
+	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+		copy_sre_provenance,
+	)
+
+	copy_sre_provenance(original_sre, new_sre)
 
 	# has_batch_no / has_serial_no — required so ERPNext picks the right
 	# validation branch. Resolve from Item master (matches stock_entry.py:667).
