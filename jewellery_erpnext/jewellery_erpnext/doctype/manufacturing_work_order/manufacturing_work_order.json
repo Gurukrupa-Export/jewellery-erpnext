@@ -42,6 +42,10 @@
   "auto_created",
   "setting_type",
   "sub_setting_type",
+  "photoshop_images_section",
+  "finish_front_view",
+  "column_break_photoshop",
+  "finish_left_view",
   "manufacturing_details_section",
   "manufacturer",
   "diamond_grade",
@@ -431,6 +435,27 @@
   {
    "fieldname": "column_break_lorzd",
    "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.for_fg",
+   "description": "Finish images for this work order. Required before submit when the Design Code Item has 'Is Photoshop Images' ticked. Stored on this work order only \u2014 never copied to the Item or the BOM.",
+   "fieldname": "photoshop_images_section",
+   "fieldtype": "Section Break",
+   "label": "Photoshop Images"
+  },
+  {
+   "fieldname": "finish_front_view",
+   "fieldtype": "Attach Image",
+   "label": "Finish Front View"
+  },
+  {
+   "fieldname": "column_break_photoshop",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "finish_left_view",
+   "fieldtype": "Attach Image",
+   "label": "Finish Left View"
   },
   {
    "collapsible": 1,
