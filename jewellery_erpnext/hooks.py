@@ -175,6 +175,11 @@ doc_events = {
 	},
 	"Stock Entry": {
 		"validate": [
+			# Fills to_<dimension> from <dimension> on every row. Must be at `validate`, not
+			# `before_validate`: StockEntry.validate_warehouse() has not yet resolved
+			# t_warehouse there, and validate_customer_gold_receipt (last before_validate
+			# hook) still rewrites inventory_type afterwards. See the function docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.set_target_inventory_dimensions",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
 			# Per-role Stock Entry Type whitelist. Fires only on a direct user save of
 			# the Stock Entry itself, never on the dozen cascades that mint one from
@@ -217,6 +222,13 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
+	},
+	"Stock Entry Type": {
+		# Keep the Stock Entry naming shard complete. A type added after the shard would
+		# otherwise have no Document Naming Rule, so its first document would fall back to
+		# the single shared MAT-STE- tabSeries row and reintroduce the 1213 contention.
+		# No-op on a site that has not been sharded. See the patch module docstring.
+		"after_insert": "jewellery_erpnext.patches.shard_stock_entry_naming_by_type.on_stock_entry_type_insert",
 	},
 	"Manufacturing Work Order": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_id",
@@ -355,6 +367,11 @@ override_doctype_class = {
 	"Stock Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.CustomStockEntry",
 	"Stock Reconciliation": [
 		"jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils.CustomStockReconciliation",
+		# NOTE: the module file really is spelled `stock_reonciliation` (missing the "c").
+		# Correcting only this path without renaming the file makes the import fail, which
+		# silently skips custom_field.json fixture sync — and the Workflow fixture that
+		# follows then dies with "Unknown column 'workflow_state'" because the custom field
+		# it depends on was never created. Matches the two references above.
 		"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.CustomStockReconciliation",
 	],
 	"Stock Ledger Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_ledger_entry.stock_ledger_entry.CustomStockLedgerEntry",

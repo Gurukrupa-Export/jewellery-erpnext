@@ -273,6 +273,83 @@ class TestPreallocateSeriesForDocs(IntegrationTestCase):
 		)
 		mock_pre.assert_called_once_with([])  # no naming_series prefixes to pin
 
+	@patch.object(lock_order.frappe.db, "get_value")
+	@patch.object(lock_order, "document_naming_rule_for_doc")
+	@patch.object(lock_order, "preallocate_series")
+	@patch.object(lock_order, "series_prefix_for_doc")
+	def test_named_doc_on_a_sharded_counter_pins_nothing(
+		self, mock_prefix, mock_pre, mock_dnr, mock_getval
+	):
+		# SHARDED (a Document Naming Rule governs the doc): a doc that already carries a
+		# name will never increment its counter again — frappe names inside insert() BEFORE
+		# the before_save/before_submit hooks, and the update path never names at all. The
+		# counter is per-(company x type), so nothing else wants that row either. Pin
+		# nothing. This is the 55% of production 1213s that died on MAT-STE-.
+		mock_dnr.return_value = "KGJPL-RULE"
+		doc = frappe._dict(doctype="Stock Entry", name="MAT-STE-23943")
+		lock_order.preallocate_series_for_docs(doc)
+		mock_getval.assert_not_called()  # the rule's counter is NOT pinned
+		mock_prefix.assert_not_called()
+		mock_pre.assert_called_once_with([])
+
+	@patch.object(lock_order, "document_naming_rule_for_doc", return_value=None)
+	@patch.object(lock_order, "preallocate_series")
+	@patch.object(lock_order, "series_prefix_for_doc", return_value="MAT-STE-")
+	def test_named_doc_on_a_shared_series_still_pins_it(
+		self, mock_prefix, mock_pre, mock_dnr
+	):
+		# NOT SHARDED (no rule matches): the doc falls back to a tabSeries row shared with
+		# every other Stock Entry — including the nested ones an on_submit cascade mints
+		# while already holding Bin locks. Skipping the pre-lock here would let the cascade
+		# take that row AFTER its Bins: the inversion this module exists to prevent.
+		# This is what makes the optimisation safe to deploy before the naming shard.
+		doc = frappe._dict(doctype="Stock Entry", name="MAT-STE-23943")
+		lock_order.preallocate_series_for_docs(doc)
+		mock_pre.assert_called_once_with(["MAT-STE-"])
+
+	@patch.object(lock_order, "document_naming_rule_for_doc", return_value=None)
+	@patch.object(lock_order, "preallocate_series")
+	@patch.object(lock_order, "series_prefix_for_doc", return_value="MAT-STE-")
+	def test_unsaved_doc_always_pins_its_counter(self, mock_prefix, mock_pre, mock_dnr):
+		# The stubs series_stubs() builds for Stock Entries a cascade mints LATER carry no
+		# name, and are exactly the case the pre-lock exists for. Both a bare unnamed doc
+		# and frappe's "new-<doctype>-<hash>" placeholder qualify.
+		for name in (None, "", "new-stock-entry-blogmxotln"):
+			with self.subTest(name=name):
+				mock_pre.reset_mock()
+				doc = frappe._dict(doctype="Stock Entry", name=name)
+				lock_order.preallocate_series_for_docs(doc)
+				mock_pre.assert_called_once_with(["MAT-STE-"])
+
+	@patch.object(lock_order.frappe.db, "get_value")
+	@patch.object(lock_order, "document_naming_rule_for_doc", return_value="KGJPL-RULE")
+	@patch.object(lock_order, "preallocate_series")
+	@patch.object(lock_order, "series_prefix_for_doc")
+	def test_unsaved_doc_on_a_sharded_counter_pins_the_rule(
+		self, mock_prefix, mock_pre, mock_dnr, mock_getval
+	):
+		# Post-shard a cascade's stub still pins — but its own per-type rule counter, never
+		# the shared tabSeries row. That is what keeps the Bin-before-counter inversion from
+		# re-forming once the blanket pre-lock is gone.
+		lock_order.preallocate_series_for_docs(frappe._dict(doctype="Stock Entry"))
+		mock_getval.assert_called_once_with(
+			"Document Naming Rule", "KGJPL-RULE", "counter", for_update=True
+		)
+		mock_prefix.assert_not_called()
+		mock_pre.assert_called_once_with([])
+
+	@patch.object(lock_order, "document_naming_rule_for_doc", return_value=None)
+	@patch.object(lock_order, "preallocate_series")
+	@patch.object(lock_order, "series_prefix_for_doc", return_value="MAT-STE-")
+	def test_mixed_docs_on_a_shared_series(self, mock_prefix, mock_pre, mock_dnr):
+		# Pre-shard, BOTH the already-named parent and the stub resolve to the same shared
+		# row, and both must contribute it — preallocate_series dedupes and sorts.
+		named = frappe._dict(doctype="Stock Entry", name="MAT-STE-23943")
+		stub = frappe._dict(doctype="Stock Entry")
+		lock_order.preallocate_series_for_docs(named, stub)
+		self.assertEqual(mock_prefix.call_count, 2)
+		mock_pre.assert_called_once_with(["MAT-STE-", "MAT-STE-"])
+
 	def tearDown(self):
 		return super().tearDown()
 
