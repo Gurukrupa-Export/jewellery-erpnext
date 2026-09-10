@@ -281,9 +281,9 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 				counter=0,
 			)
 		]
-		with patch.object(
-			shard_mod, "_rule_rows", return_value=mine
-		), self._effective({"Repack": "R1"}), patch.multiple(
+		with patch.object(shard_mod, "_rule_rows", return_value=mine), self._effective(
+			{"Repack": "R1"}
+		), patch.multiple(
 			shard_mod,
 			_max_existing_suffix=MagicMock(return_value=0),
 			ambiguous_at_same_priority=MagicMock(return_value=[]),
@@ -332,21 +332,28 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 		rows = self._rows(("R1", "Repack", 0, 2))
 		rows.append(
 			frappe._dict(
-				name="EXCLUDER", disabled=0, n_conditions=2,
-				company=None, setype=None,          # `!=` projects NULL now
-				prefix="KGJPL-SE-EXC-.YY.-", prefix_digits=5, counter=0,
+				name="EXCLUDER",
+				disabled=0,
+				n_conditions=2,
+				company=None,
+				setype=None,  # `!=` projects NULL now
+				prefix="KGJPL-SE-EXC-.YY.-",
+				prefix_digits=5,
+				counter=0,
 			)
 		)
-		with patch.object(
-			shard_mod, "_rule_rows", return_value=rows
-		), self._effective({"Repack": "R1"}), patch.multiple(
+		with patch.object(shard_mod, "_rule_rows", return_value=rows), self._effective(
+			{"Repack": "R1"}
+		), patch.multiple(
 			shard_mod,
 			_max_existing_suffix=MagicMock(return_value=0),
 			ambiguous_at_same_priority=MagicMock(return_value=[]),
 			_namespace_rows=MagicMock(return_value=rows),
 		):
 			covered, conflicts = shard_mod._coverage(_COMPANY)
-		self.assertEqual(covered, {"Repack": "R1"}, "the `=` rule must still cover the type")
+		self.assertEqual(
+			covered, {"Repack": "R1"}, "the `=` rule must still cover the type"
+		)
 		self.assertFalse(
 			any("multiple active rules" in why for _t, why, _r in conflicts),
 			f"a non-matching `!=` rule must not raise a duplicate conflict: {conflicts}",
@@ -358,12 +365,15 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 		# out of both sources would have silently reopened the collision hole.
 		mine = self._rows(("R1", "Repack", 0, 2), prefix="KGJPL-SE-DUP-.YY.-")
 		excluder = frappe._dict(
-			name="EXCLUDER", disabled=0, prefix="KGJPL-SE-DUP-.YY.-",
-			prefix_digits=5, counter=0,
+			name="EXCLUDER",
+			disabled=0,
+			prefix="KGJPL-SE-DUP-.YY.-",
+			prefix_digits=5,
+			counter=0,
 		)
-		with patch.object(
-			shard_mod, "_rule_rows", return_value=mine
-		), self._effective({"Repack": "R1"}), patch.multiple(
+		with patch.object(shard_mod, "_rule_rows", return_value=mine), self._effective(
+			{"Repack": "R1"}
+		), patch.multiple(
 			shard_mod,
 			_max_existing_suffix=MagicMock(return_value=0),
 			ambiguous_at_same_priority=MagicMock(return_value=[]),
@@ -667,7 +677,9 @@ class TestShardLifecycle(IntegrationTestCase):
 		), patch.object(shard_mod, "_rule_map", return_value={}), patch.object(
 			shard_mod.frappe.db, "exists", return_value=True
 		), patch.object(
-			shard_mod, "_validate_recorded_rule", return_value="company condition drifted"
+			shard_mod,
+			"_validate_recorded_rule",
+			return_value="company condition drifted",
 		), patch.object(shard_mod.frappe.db, "set_value") as mock_set, patch.object(
 			shard_mod.frappe.db, "commit"
 		) as mock_commit, patch.object(shard_mod, "_set_state") as mock_state:
@@ -687,7 +699,9 @@ class TestShardLifecycle(IntegrationTestCase):
 		), patch.object(shard_mod, "_rule_map", return_value={}), patch.object(
 			shard_mod.frappe.db, "exists", return_value=True
 		), patch.object(
-			shard_mod, "_validate_recorded_rule", return_value="company condition drifted"
+			shard_mod,
+			"_validate_recorded_rule",
+			return_value="company condition drifted",
 		), patch.object(shard_mod.frappe.db, "set_value") as mock_set, patch.object(
 			shard_mod.frappe.db, "commit"
 		), patch.object(shard_mod.frappe, "clear_cache"), patch.object(
@@ -1182,8 +1196,27 @@ class TestRealDocumentNamingRule(IntegrationTestCase):
 			shard_mod_lock_order.document_naming_rule_for_doc(self._stub(self.TYPE_B))
 		)
 		covered, conflicts = shard_mod._coverage(self.company)
+
+		# NOT coverage — that is the invariant this test exists for.
 		self.assertNotIn(self.TYPE_B, covered)
-		self.assertTrue(any(c[0] == self.TYPE_B for c in conflicts))
+
+		# ...and NOT a conflict either. A `company != X` rule is simply not a rule for X, so
+		# the type is genuinely uncovered and PLANNABLE. It used to be reported as a conflict
+		# only because `_rule_rows` projected `!=` identically to `=`, making the exclusion
+		# rule look like a candidate; since apply is fail-closed, that false conflict blocked
+		# the whole migration. Asserting a conflict here would re-encode that bug.
+		self.assertFalse(
+			any(c[0] == self.TYPE_B for c in conflicts),
+			f"a non-matching `!=` rule must not raise a conflict: {conflicts}",
+		)
+
+		# The proof that it is plannable rather than blocked: the planner offers a rule for it.
+		plan, _skipped, _conflicts = shard_mod._plan(self.company, all_types=True)
+		self.assertIn(
+			self.TYPE_B,
+			[p["setype"] for p in plan],
+			"an uncovered type must be plannable, not stuck",
+		)
 
 	def test_higher_priority_rule_wins_and_shadows_the_exact_one(self):
 		low = self._rule(self.TYPE_A, "ZZA-SE-LOW-.YY.-", priority=0)
