@@ -48,7 +48,6 @@ jewellery_erpnext.patches.add_repair_unpack_to_mop_reservation
 jewellery_erpnext.patches.add_material_request_manufacturing_order_index
 jewellery_erpnext.patches.ensure_float_precision_three
 jewellery_erpnext.patches.backfill_product_certification_receive_status
-jewellery_erpnext.patches.add_serial_no_ownership_tag_field
 jewellery_erpnext.patches.add_serial_no_order_type_field
 jewellery_erpnext.patches.add_serial_no_stamping_no_field
 jewellery_erpnext.patches.add_department_stock_recon_window_fields
@@ -100,8 +99,5 @@ jewellery_erpnext.patches.add_mr_transfer_to_department_workflow
 jewellery_erpnext.patches.update_mr_department_transfer_visibility
 jewellery_erpnext.patches.add_mr_department_to_mop_transition
 jewellery_erpnext.patches.add_sales_invoice_bom_summary_fields
-# Re-registered: commit 2d3ed5fd replaced this line instead of appending, so the patch has been
-# on disk but unregistered since. Its field, Quotation.custom_gk_purchase_order, is missing on
-# kggk-prod as a result -- the "Get Items From > Purchase Order" client script writes it.
-jewellery_erpnext.patches.add_quotation_gk_purchase_order_field
 jewellery_erpnext.patches.add_order_sales_flow_type_fields
+jewellery_erpnext.patches.remove_serial_no_ownership_tag_field

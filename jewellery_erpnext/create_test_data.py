@@ -3089,18 +3089,10 @@ def create_test_data():
 
 			po_refining_entry_field()
 
-			# Serial No.custom_ownership_tag is NOT in the git_action_v16 fixtures, so —
-			# like the other custom-field patches above — it must be provisioned here for
+			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures, so — like
+			# the other custom-field patches above — it must be provisioned here for
 			# test_site, else create_manufacturing_entry's set_value raises
-			# "Unknown column 'custom_ownership_tag'" the moment an SNC is submitted.
-			from jewellery_erpnext.patches.add_serial_no_ownership_tag_field import (
-				execute as _ensure_serial_no_ownership_tag_field,
-			)
-
-			_ensure_serial_no_ownership_tag_field()
-
-			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures either — same
-			# reasoning as custom_ownership_tag above.
+			# "Unknown column 'custom_order_type'" the moment an SNC is submitted.
 			from jewellery_erpnext.patches.add_serial_no_order_type_field import (
 				execute as _ensure_serial_no_order_type_field,
 			)

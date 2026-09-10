@@ -143,86 +143,32 @@ frappe.ui.form.on("Department IR", {
 					"gemstone_pcs",
 					"gemstone_wt",
 					"other_wt",
-					"previous_mop",
-					"is_finding",
 				])
 				.then((r) => {
 					let values = r.message;
-					frappe.db
-						.get_value("Manufacturing Operation", values.previous_mop, [
-							"gross_wt",
-							"diamond_wt",
-							"net_wt",
-							"finding_wt",
-							"diamond_pcs",
-							"gemstone_pcs",
-							"gemstone_wt",
-							"other_wt",
-							"received_gross_wt",
-						])
-						.then((v) => {
-							if (values.manufacturing_work_order) {
-								let row;
-								if (values.is_finding) {
-									// Finding: mirror the current operation exactly — no
-									// previous-MOP fallback. A finding's "receive from work
-									// order" legitimately empties the operation balance, so the
-									// previous MOP's weights would be phantom values here.
-									row = frm.add_child("department_ir_operation", {
-										manufacturing_work_order: values.manufacturing_work_order,
-										manufacturing_operation: values.name,
-										status: values.status,
-										gross_wt: values.gross_wt || 0,
-										diamond_wt: values.diamond_wt || 0,
-										net_wt: values.net_wt || 0,
-										finding_wt: values.finding_wt || 0,
-										gemstone_wt: values.gemstone_wt || 0,
-										other_wt: values.other_wt || 0,
-										diamond_pcs: values.diamond_pcs || 0,
-										gemstone_pcs: values.gemstone_pcs || 0,
-									});
-								} else {
-									let gr_wt = 0;
-									if (values.gross_wt > 0) {
-										gr_wt = values.gross_wt;
-									} else if (v.message.received_gross_wt > 0 || v.message.gross_wt) {
-										if (v.message.received_gross_wt > 0) {
-											gr_wt = v.message.received_gross_wt;
-										} else if (v.message.gross_wt > 0) {
-											gr_wt = v.message.gross_wt;
-										}
-									}
-
-									row = frm.add_child("department_ir_operation", {
-										manufacturing_work_order: values.manufacturing_work_order,
-										manufacturing_operation: values.name,
-										status: values.status,
-										gross_wt: gr_wt,
-										diamond_wt:
-											values.diamond_wt > 0 ? values.diamond_wt : v.message.diamond_wt,
-										net_wt: values.net_wt > 0 ? values.net_wt : v.message.net_wt,
-										finding_wt:
-											values.finding_wt > 0 ? values.finding_wt : v.message.finding_wt,
-										gemstone_wt:
-											values.gemstone_wt > 0
-												? values.gemstone_wt
-												: v.message.gemstone_wt,
-										other_wt: values.other_wt > 0 ? values.other_wt : v.message.other_wt,
-										diamond_pcs:
-											values.diamond_pcs > 0
-												? values.diamond_pcs
-												: v.message.diamond_pcs,
-										gemstone_pcs:
-											values.gemstone_pcs > 0
-												? values.gemstone_pcs
-												: v.message.gemstone_pcs,
-									});
-								}
-								frm.refresh_field("department_ir_operation");
-							} else {
-								frappe.throw(__("No Manufacturing Operation Found"));
-							}
-						});
+					if (!values || !values.manufacturing_work_order) {
+						frappe.throw(__("No Manufacturing Operation Found"));
+					}
+					// Mirror the operation exactly. There is no previous-MOP fallback: a zero
+					// bucket is a real zero — Manufacturing Operation weights are written from
+					// its MOP Log ledger — and the server rewrites all eight from this same
+					// operation on save (validate_and_update_gross_wt_from_mop). Reading the
+					// previous MOP here only put a weight in the grid that the operation does
+					// not hold and that the first save would take back out.
+					frm.add_child("department_ir_operation", {
+						manufacturing_work_order: values.manufacturing_work_order,
+						manufacturing_operation: values.name,
+						status: values.status,
+						gross_wt: values.gross_wt || 0,
+						diamond_wt: values.diamond_wt || 0,
+						net_wt: values.net_wt || 0,
+						finding_wt: values.finding_wt || 0,
+						gemstone_wt: values.gemstone_wt || 0,
+						other_wt: values.other_wt || 0,
+						diamond_pcs: values.diamond_pcs || 0,
+						gemstone_pcs: values.gemstone_pcs || 0,
+					});
+					frm.refresh_field("department_ir_operation");
 					frm.set_value("scan_mwo", "");
 				});
 		}

@@ -696,60 +696,24 @@ def scan_mwo_dir(doc):
 		"Manufacturing Operation", filters={"manufacturing_work_order": doc.scan_mwo}
 	)
 
-	prev = frappe.get_value(
-		"Manufacturing Operation",
-		values.previous_mop,
-		[
-			"gross_wt",
-			"diamond_wt",
-			"net_wt",
-			"finding_wt",
-			"diamond_pcs",
-			"gemstone_pcs",
-			"gemstone_wt",
-			"other_wt",
-			"received_gross_wt",
-		],
-		as_dict=True,
-	)
-
-	gr_wt = 0
-	if values.gross_wt and values.gross_wt > 0:
-		gr_wt = values.gross_wt
-	elif prev:
-		if prev.received_gross_wt and prev.received_gross_wt > 0:
-			gr_wt = prev.received_gross_wt
-		elif prev.gross_wt and prev.gross_wt > 0:
-			gr_wt = prev.gross_wt
-
+	# Mirror of the department_ir.js scan_mwo handler: the row takes the operation's own
+	# weights and nothing else. Keep this in step with that handler -- it exists so the
+	# suite can exercise the scan path without a browser, and it is only useful while the
+	# two agree.
 	doc.append(
 		"department_ir_operation",
 		{
 			"manufacturing_work_order": values.manufacturing_work_order,
 			"manufacturing_operation": values.name,
 			"status": values.status,
-			"gross_wt": gr_wt,
-			"diamond_wt": values.diamond_wt
-			if values.diamond_wt > 0
-			else (prev.diamond_wt if prev else 0),
-			"net_wt": values.net_wt
-			if values.net_wt > 0
-			else (prev.net_wt if prev else 0),
-			"finding_wt": values.finding_wt
-			if values.finding_wt > 0
-			else (prev.finding_wt if prev else 0),
-			"gemstone_wt": values.gemstone_wt
-			if values.gemstone_wt > 0
-			else (prev.gemstone_wt if prev else 0),
-			"other_wt": values.other_wt
-			if values.other_wt > 0
-			else (prev.other_wt if prev else 0),
-			"diamond_pcs": values.diamond_pcs
-			if values.diamond_pcs > 0
-			else (prev.diamond_pcs if prev else 0),
-			"gemstone_pcs": values.gemstone_pcs
-			if values.gemstone_pcs > 0
-			else (prev.gemstone_pcs if prev else 0),
+			"gross_wt": values.gross_wt or 0,
+			"diamond_wt": values.diamond_wt or 0,
+			"net_wt": values.net_wt or 0,
+			"finding_wt": values.finding_wt or 0,
+			"gemstone_wt": values.gemstone_wt or 0,
+			"other_wt": values.other_wt or 0,
+			"diamond_pcs": values.diamond_pcs or 0,
+			"gemstone_pcs": values.gemstone_pcs or 0,
 		},
 	)
 
