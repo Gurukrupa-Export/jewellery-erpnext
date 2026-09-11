@@ -698,7 +698,6 @@ def _allocate_tree_legs(se, tree, item_code, msl_wh, recv, loss):
 	if shortfall > _pending_eps():
 		_throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec)
 
-	_warn_tree_batch_substitution(tree, item_code, msl_wh, substituted, prec)
 	return recv_alloc, loss_alloc, ranks
 
 
@@ -731,38 +730,6 @@ def _warn_tree_customer_loss(customer_loss, prec):
 		+ "<br><br>"
 		+ "<br>".join(lines),
 		title=_("Customer Material Absorbed Loss"),
-		indicator="orange",
-	)
-
-
-def _warn_tree_batch_substitution(tree, item_code, msl_wh, substituted, prec):
-	"""ONE orange warning when a tree is repaid from a batch it did not itself issue.
-
-	Never silent, and never a throw. The substitution is always within the same ownership tier, so
-	it needs no approval -- but this site runs batch-wise valuation, where batches of the same item
-	carry materially different rates. Which batch moves is therefore a real GL movement, not a
-	bookkeeping label, and the operator has to be able to see it on the voucher.
-	"""
-	if not substituted:
-		return
-
-	merged = {}
-	for batch_no, qty in substituted:
-		merged[batch_no] = flt(flt(merged.get(batch_no)) + flt(qty), prec)
-	total = flt(sum(merged.values()), prec)
-
-	frappe.msgprint(
-		_(
-			"Tree {0}: what this tree issued of {1} is no longer available at {2}, so {3} g was "
-			"returned from batches of the SAME ownership beyond this tree's own issue. Same owner, "
-			"different metal — valuation follows the batch that actually moved:"
-		).format(tree.name, item_code, msl_wh, frappe.bold(total))
-		+ "<br><br>"
-		+ "<br>".join(
-			"{0}: {1}".format(frappe.bold(b), flt(q, prec))
-			for b, q in sorted(merged.items())
-		),
-		title=_("Substitute Batch Returned"),
 		indicator="orange",
 	)
 
@@ -1109,12 +1076,23 @@ def receive_material(tree, rows):
 
 
 def cancel_tree_stock_entries(tree):
-	"""Cancel every submitted tree-created SE (reversal/cleanup). Runs privileged (the whitelisted
-	callers gate on Tree Number 'write', not Stock Entry 'cancel')."""
+	"""Cancel every submitted SE the TREE ITSELF created (reversal/cleanup). Runs privileged (the
+	whitelisted callers gate on Tree Number 'write', not Stock Entry 'cancel').
+
+	``employee_ir`` must be empty: the casting Employee IR's own injection and loss entries are
+	also ``auto_created`` and now also carry ``custom_tree_number``, but they belong to the IR and
+	are reversed by ``cancel_injections_for_eir`` when the IR is cancelled. Cancelling them from
+	here would fight that owner and double-reverse the same movement.
+	"""
 	tree_name = tree.name if hasattr(tree, "name") else tree
 	names = frappe.db.get_all(
 		"Stock Entry",
-		{"custom_tree_number": tree_name, "auto_created": 1, "docstatus": 1},
+		{
+			"custom_tree_number": tree_name,
+			"auto_created": 1,
+			"docstatus": 1,
+			"employee_ir": ["in", ["", None]],
+		},
 		pluck="name",
 	)
 	for name in names:

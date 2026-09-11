@@ -113,10 +113,22 @@ frappe.ui.form.on("Employee IR", {
 	},
 	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
-			frm.doc.employee_ir_operations.forEach(function (item) {
-				if (item.manufacturing_work_order == frm.doc.scan_mwo)
-					frappe.throw(__("{0} Manufacturing Work Order already exists", [frm.doc.scan_mwo]));
-			});
+			let scanned = frm.doc.scan_mwo;
+			// Clear the field BEFORE any throw. frappe.throw aborts the handler, so the clear at
+			// the end of the success path never runs on a rejected scan -- the field keeps the
+			// rejected code, scanning it again fires no change event, and the scanner looks dead.
+			frm.set_value("scan_mwo", "");
+			let already = (frm.doc.employee_ir_operations || []).some(
+				(item) => item.manufacturing_work_order == scanned
+			);
+			if (already) {
+				frappe.throw({
+					title: __("Work Order Already Scanned"),
+					message: __("Manufacturing Work Order {0} is already scanned on this Employee IR.", [
+						scanned,
+					]),
+				});
+			}
 			let wo_limit = await get_employee_ir_wo_limit(frm);
 			if (wo_limit > 0 && frm.doc.employee_ir_operations.length >= wo_limit) {
 				frappe.throw(
@@ -128,7 +140,7 @@ frappe.ui.form.on("Employee IR", {
 			}
 			var query_filters = {
 				department: frm.doc.department,
-				manufacturing_work_order: frm.doc.scan_mwo,
+				manufacturing_work_order: scanned,
 			};
 			if (frm.doc.type == "Issue") {
 				query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
@@ -196,6 +208,7 @@ frappe.ui.form.on("Employee IR", {
 							message: __("No Manufacturing Operation Found"),
 						});
 					}
+					// already cleared at entry; kept for the case where a prior handler re-set it
 					frm.set_value("scan_mwo", "");
 				});
 		}
