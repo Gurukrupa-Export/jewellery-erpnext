@@ -43,6 +43,27 @@ import frappe
 _COMPANY = "Gurukrupa Export Private Limited"
 
 
+def _binds_to_company(conds, company):
+	"""True only when a condition BINDS the rule to ``company`` — i.e. ``company = <company>``.
+
+	The operator is load-bearing and was previously discarded: matching on
+	``field == "company" and value == company`` alone treats ``company != Gurukrupa`` as if it
+	bound TO Gurukrupa, because a ``!=`` row carries the same field and value. That inverts the
+	rule's meaning, and both callers act on the result — ``reshard`` would ENABLE a rule that
+	excludes this company, ``rollback`` would DISABLE it. Frappe supports ``=``, ``!=``, ``>``,
+	``<``, ``>=`` and ``<=`` here, so only an explicit ``=`` may count.
+
+	(The same operator-blindness was fixed in ``shard_stock_entry_naming_by_type._coverage``;
+	this is the sibling occurrence.)
+	"""
+	return any(
+		c.field == "company"
+		and (c.get("condition") or "") == "="
+		and (c.value or "") == company
+		for c in conds
+	)
+
+
 def _target_rules(company):
 	"""Disabled Stock Entry Document Naming Rules whose conditions bind to ``company``."""
 	rules = frappe.get_all(
@@ -57,7 +78,7 @@ def _target_rules(company):
 			filters={"parent": r.name},
 			fields=["field", "condition", "value"],
 		)
-		if any(c.field == "company" and (c.value or "") == company for c in conds):
+		if _binds_to_company(conds, company):
 			targeted.append((r, conds))
 	return targeted
 
@@ -157,12 +178,14 @@ def _target_rules_enabled(company):
 	)
 	out = []
 	for r in rules:
+		# `condition` MUST be selected here — without it _binds_to_company can never see the
+		# operator and every rule mentioning this company looks like it binds to it.
 		conds = frappe.get_all(
 			"Document Naming Rule Condition",
 			filters={"parent": r.name},
-			fields=["field", "value"],
+			fields=["field", "condition", "value"],
 		)
-		if any(c.field == "company" and (c.value or "") == company for c in conds):
+		if _binds_to_company(conds, company):
 			out.append((r, conds))
 	return out
 
