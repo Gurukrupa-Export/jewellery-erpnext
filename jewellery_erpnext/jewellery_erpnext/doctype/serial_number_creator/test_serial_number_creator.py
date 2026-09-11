@@ -8,6 +8,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+	_snc_bom_data,
 	_snc_se_detail_maps,
 	_stone_se_rate,
 )
@@ -1270,3 +1271,93 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 		with patch(f"{_SNC_MODULE}._active_sres_for", side_effect=_ReachedPriorityOne):
 			with self.assertRaises(_ReachedPriorityOne):
 				to_prepare_data_for_make_mnf_stock_entry(self._doc(3.186))
+
+
+class TestSncBomData(IntegrationTestCase):
+	"""The FG BOM rows an SNC hands to create_finished_goods_bom.
+
+	The reported symptom was an FG BOM amount that disagreed with the SNC it came from,
+	and only on the SNC path. Cause: this dict omitted ``parent``. The diamond branch of
+	``create_finished_goods_bom`` resolves ``weight_per_pcs`` with a subquery keyed on it
+	(``WHERE parent = %s``) and then books
+	``diamond_rate_for_specified_quantity = total_diamond_rate * weight_per_pcs``. With no
+	parent the subquery matched nothing, weight_per_pcs was 0, and the diamond amount was
+	0. ``get_stock_entry_data`` supplies ``parent`` on the non-SNC path, which is why only
+	SNC-created BOMs were wrong.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _snc(rows):
+		return frappe._dict(fg_details=[frappe._dict(r) for r in rows])
+
+	@patch(f"{_MOP_MODULE}._snc_se_detail_maps")
+	def test_parent_is_the_manufacture_stock_entry(self, mock_maps):
+		mock_maps.return_value = ({}, {})
+		snc = self._snc([{"row_material": "D-1", "qty": 1.0, "pcs": 4, "uom": "Carat"}])
+		data = _snc_bom_data(snc, "MAT-STE-99")
+		self.assertEqual(data[0]["parent"], "MAT-STE-99")
+
+	@patch(f"{_MOP_MODULE}._snc_se_detail_maps")
+	def test_rate_and_inventory_type_come_from_the_stock_entry(self, mock_maps):
+		# fg_details has no rate field and no inventory_type, so both are re-derived.
+		mock_maps.return_value = ({"D-1": 3200.0}, {"D-1": "Customer Goods"})
+		snc = self._snc([{"row_material": "D-1", "qty": 1.0, "pcs": 4, "uom": "Carat"}])
+		row = _snc_bom_data(snc, "MAT-STE-99")[0]
+		self.assertEqual(row["rate"], 3200.0)
+		self.assertEqual(row["inventory_type"], "Customer Goods")
+
+	@patch(f"{_MOP_MODULE}._snc_se_detail_maps")
+	def test_qty_and_pcs_are_carried_through_unchanged(self, mock_maps):
+		# The BOM branches divide by the PMO qty themselves; this must not pre-scale.
+		mock_maps.return_value = ({}, {})
+		snc = self._snc(
+			[{"row_material": "D-1", "qty": 2.586, "pcs": 5, "uom": "Carat"}]
+		)
+		row = _snc_bom_data(snc, "MAT-STE-99")[0]
+		self.assertEqual(row["qty"], 2.586)
+		self.assertEqual(row["pcs"], 5)
+
+	@patch(f"{_MOP_MODULE}._snc_se_detail_maps")
+	def test_unpriced_item_falls_back_to_zero_not_none(self, mock_maps):
+		# A None rate would propagate into rate * quantity and raise.
+		mock_maps.return_value = ({}, {})
+		snc = self._snc([{"row_material": "M-1", "qty": 1.0, "pcs": 0, "uom": "Gram"}])
+		self.assertEqual(_snc_bom_data(snc, "MAT-STE-99")[0]["rate"], 0)
+
+	@patch(f"{_MOP_MODULE}._snc_se_detail_maps")
+	def test_one_row_per_fg_detail(self, mock_maps):
+		mock_maps.return_value = ({}, {})
+		snc = self._snc(
+			[
+				{"row_material": "D-1", "qty": 1.0, "pcs": 4, "uom": "Carat"},
+				{"row_material": "M-1", "qty": 3.2, "pcs": 0, "uom": "Gram"},
+			]
+		)
+		data = _snc_bom_data(snc, "MAT-STE-99")
+		self.assertEqual([r["item_code"] for r in data], ["D-1", "M-1"])
+		self.assertTrue(all(r["parent"] == "MAT-STE-99" for r in data))
+
+
+class TestSncSeDetailMapsConsumedOnly(IntegrationTestCase):
+	"""The rate map must read the CONSUMED rows of the Manufacture entry only.
+
+	A Manufacture Stock Entry also carries the produced finished good and any scrap row,
+	and those have no source warehouse. Including them blended the finished good's own
+	valuation into the raw material it was made from.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	def test_query_excludes_rows_with_no_source_warehouse(self, mock_sql):
+		mock_sql.return_value = []
+		_snc_se_detail_maps("MAT-STE-TEST")
+		query = mock_sql.call_args[0][0]
+		self.assertIn("s_warehouse", query)
+		self.assertIn("tabStock Entry Detail", query)
