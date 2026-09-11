@@ -5,12 +5,41 @@ from frappe.core.doctype.data_import.data_import import (
 from frappe.core.doctype.data_import.exporter import Exporter
 from frappe.model.meta import get_field_precision
 from frappe.model.utils.user_settings import get_user_settings
+from frappe.utils import flt
 
 # Float cells whose on-screen display precision we mirror in the exported file.
 # Currency is deliberately excluded: Serial No has no Currency fields, and for a
 # Currency field whose precision comes from the row's own currency,
 # get_field_precision(doc=None) would fall back to the session default instead.
 _PRECISION_FIELDTYPES = ("Float",)
+
+
+def _round_float_cells(fields, rows):
+	"""Round Float cells to each column's display precision, in place.
+
+	Precision is resolved once per column (:func:`get_field_precision`); Float
+	fields fall back to ``System Settings > float_precision`` exactly as the Desk
+	formatter does. Currency is deliberately excluded -- a Serial No export has no
+	Currency columns, and a Currency field's precision would need the row's own
+	currency to resolve correctly.
+
+	Rounding goes through :func:`frappe.utils.flt`, so exported values follow the
+	same ``System Settings > rounding_method`` (Banker's / Commercial / legacy)
+	that the client-side Float formatter applies. A bare ``round()`` ties-to-even
+	would diverge at half-way values such as 2.675. Child-table rows leave parent
+	cells blank (empty strings); the float guard below skips those and every other
+	non-float cell, so non-Float columns stay byte-for-byte intact.
+	"""
+	rounding = [
+		get_field_precision(frappe._dict(df))
+		if df.fieldtype in _PRECISION_FIELDTYPES
+		else None
+		for df in fields
+	]
+	for row in rows:
+		for index, value in enumerate(row):
+			if isinstance(value, float) and rounding[index] is not None:
+				row[index] = flt(value, rounding[index])
 
 
 @frappe.whitelist()
@@ -79,23 +108,8 @@ def download_template(
 		order_by=order_by,
 	)
 
-	# Precision depends only on the column, so resolve it once per field instead
-	# of once per cell. Row 0 is the header; data rows align one cell per field in
-	# exporter.fields, and child-table rows leave parent cells blank (empty
-	# strings), which the float guard below skips.
-	rounding = [
-		get_field_precision(frappe._dict(df))
-		if df.fieldtype in _PRECISION_FIELDTYPES
-		else None
-		for df in exporter.fields
-	]
-	for row in exporter.csv_array[1:]:
-		for index, value in enumerate(row):
-			if isinstance(value, float) and rounding[index] is not None:
-				# round() ties-to-even on purpose: fmt_money -- the Float display
-				# path the UI renders -- also rounds via round(flt(amount), precision),
-				# so this matches the screen. flt() would obey System Settings'
-				# rounding method and diverge from what the user sees.
-				row[index] = round(value, rounding[index])
+	# build_response() appends the blank-template filler rows itself, so the loop
+	# must run here -- before it -- over only the real data rows.
+	_round_float_cells(exporter.fields, exporter.csv_array[1:])
 
 	exporter.build_response()
