@@ -46,6 +46,8 @@
   "column_break_iecr",
   "order_form_type",
   "order_type",
+  "sales_type",
+  "flow_type",
   "po_no",
   "child_po",
   "project",
@@ -262,6 +264,23 @@
    "fieldname": "order_type",
    "fieldtype": "Data",
    "label": "Order Type"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.sales_type",
+   "fetch_if_empty": 1,
+   "fieldname": "sales_type",
+   "fieldtype": "Link",
+   "label": "Sales Type",
+   "options": "Sales Type",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.flow_type",
+   "fetch_if_empty": 1,
+   "fieldname": "flow_type",
+   "fieldtype": "Data",
+   "label": "Flow Type",
+   "read_only": 1
   },
   {
    "fetch_from": "parent_manufacturing_order.po_no",
