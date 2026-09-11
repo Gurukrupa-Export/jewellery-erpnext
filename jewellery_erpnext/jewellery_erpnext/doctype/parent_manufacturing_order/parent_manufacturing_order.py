@@ -603,6 +603,7 @@ class ParentManufacturingOrder(Document):
 				continue
 
 			default_gemstone_item = None
+			default_finding_item = None
 			if item_type == "gemstone_item":
 				default_gemstone_item = frappe.db.get_value(
 					"Manufacturing Setting",
@@ -613,6 +614,19 @@ class ParentManufacturingOrder(Document):
 					frappe.throw(
 						_(
 							"Default Gemstone Item is not set in Manufacturing Setting. Please set this item G-PER-DUM-PRE-CC"
+						)
+					)
+
+			if item_type == "finding_item":
+				default_finding_item = frappe.db.get_value(
+					"Manufacturing Setting",
+					{"manufacturer": self.manufacturer},
+					"default_finding_item",
+				)
+				if not default_finding_item:
+					frappe.throw(
+						_(
+							"Default Finding Item is not set in Manufacturing Setting. Please set this item F-PER-DUM-PRE-CC"
 						)
 					)
 
@@ -637,11 +651,12 @@ class ParentManufacturingOrder(Document):
 			)
 			for i in val:
 				if i["qty"] > 0:
-					item_code_to_use = (
-						default_gemstone_item
-						if item_type == "gemstone_item"
-						else i["item_code"]
-					)
+					if item_type == "gemstone_item":
+						item_code_to_use = default_gemstone_item
+					elif item_type == "finding_item":
+						item_code_to_use = default_finding_item
+					else:
+						item_code_to_use = i["item_code"]
 					mr_doc.append(
 						"items",
 						{
@@ -656,7 +671,7 @@ class ParentManufacturingOrder(Document):
 							if i.get("is_customer_item") == 1
 							else None,
 							"description": i["item_code"]
-							if item_type == "gemstone_item"
+							if item_type in ("gemstone_item", "finding_item")
 							else None,
 						},
 					)
