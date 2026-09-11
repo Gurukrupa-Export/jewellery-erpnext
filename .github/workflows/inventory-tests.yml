@@ -58,6 +58,7 @@ jobs:
 
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_total_weight
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_rate

@@ -68,3 +68,6 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_photoshop_images
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_log
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_lineage_stock_entry_bridge
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_weight_sync
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_bom_gross_weight
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_weight_backfill_patches

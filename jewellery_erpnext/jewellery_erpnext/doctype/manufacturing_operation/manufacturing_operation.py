@@ -3495,21 +3495,28 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.metal_and_finding_weight = new_bom.finding_weight_ + new_bom.metal_weight
 	new_bom.net_weight = new_bom.metal_and_finding_weight
 
+	# Carat-gram conversion is rounded ONCE per family via carat_to_gram, and the
+	# gross_weight total is rounded once at the end -- the same round-of-sum
+	# mop_log.update_wt_detail and sync_mwo_weights use. The previous raw ``/ 5``
+	# (4.256 carats -> 0.8512 g) plus an unrounded sum drifted the Serial No's
+	# custom_gross_wt (fetch_from: custom_bom_no.gross_weight) up to +0.001 from the
+	# MWO MOP it mirrors (31.1992 vs 31.199).
 	new_bom.diamond_weight = new_bom.total_diamond_weight
-	new_bom.total_diamond_weight_in_gms = new_bom.diamond_weight / 5
+	new_bom.total_diamond_weight_in_gms = carat_to_gram(new_bom.diamond_weight)
 	new_bom.gemstone_weight = new_bom.total_gemstone_weight
-	new_bom.total_gemstone_weight_in_gms = new_bom.gemstone_weight / 5
+	new_bom.total_gemstone_weight_in_gms = carat_to_gram(new_bom.gemstone_weight)
 
 	new_bom.other_weight = sum(
 		flt(r.get("quantity", 0)) for r in new_bom.get("other_detail", [])
 	)
 
-	new_bom.gross_weight = (
+	new_bom.gross_weight = flt(
 		new_bom.metal_weight
 		+ new_bom.finding_weight_
 		+ new_bom.total_diamond_weight_in_gms
 		+ new_bom.total_gemstone_weight_in_gms
-		+ new_bom.other_weight
+		+ new_bom.other_weight,
+		3,
 	)
 	new_bom.total_bom_amount = (
 		new_bom.diamond_bom_amount
