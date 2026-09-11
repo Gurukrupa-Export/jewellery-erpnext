@@ -361,6 +361,10 @@ override_whitelisted_methods = {
 	"erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.make_purchase_receipt",
 	"erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.make_purchase_invoice",
 	"erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_receipt.make_purchase_invoice",
+	# The built-in list-view "Action → Export" writes raw DB floats, so Serial No
+	# weights export as 25.3796 while the UI shows 25.38. Round Float cells to the
+	# same precision the UI uses for Serial No exports only.
+	"frappe.core.doctype.data_import.data_import.download_template": "jewellery_erpnext.jewellery_erpnext.doc_events.data_export.download_template",
 }
 
 override_doctype_class = {
