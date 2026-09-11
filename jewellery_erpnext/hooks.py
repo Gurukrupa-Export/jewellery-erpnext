@@ -350,6 +350,7 @@ override_whitelisted_methods = {
 	# Core returns None when a title-link doctype's title_field is empty, which blanks the
 	# Link input until a page reload (Manufacturing Operation with no `operation`).
 	"frappe.desk.search.get_link_title": "jewellery_erpnext.jewellery_erpnext.doc_events.search.get_link_title",
+	"frappe.core.doctype.data_import.data_import.download_template": "jewellery_erpnext.jewellery_erpnext.doc_events.data_export.download_template",
 }
 
 override_doctype_class = {
