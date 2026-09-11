@@ -18,20 +18,43 @@ exist during validation:
                     batch check any earlier would reject every legitimate receipt, since the
                     rows carry no batch until then.
 
-This module does NOT touch rates, valuation or GL. Nominal valuation and the liability
-posting are separate, later work.
+``before_validate`` additionally freezes the Customer Gold rate snapshot -- see
+``set_customer_gold_rate_snapshot`` -- so the receipt permanently records which rate was
+resolved for its posting date.
+
+This module does NOT set ``basic_rate``, ``valuation_rate`` or any stock/GL value. Nominal
+valuation and the liability posting are separate, later work.
 """
 
 import frappe
 from frappe import _
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
+	resolve_customer_gold_rate_for_date,
+)
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	get_customer_gold_settings,
 	is_customer_gold_enabled,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	DEFAULT_INVENTORY_TYPE,
+)
+
 CUSTOMER_GOODS = "Customer Goods"
+
+#: Snapshot fields written by ``set_customer_gold_rate_snapshot``. Provisioned by
+#: ``patches.add_customer_gold_rate_snapshot_fields``.
+RATE_SNAPSHOT_FIELDS = (
+	"custom_gold_rate_reference",
+	"custom_gold_rate_date",
+	"custom_gold_rate_source",
+	"custom_gold_rate_field",
+	"custom_gold_rate_raw",
+	"custom_gold_rate_unit",
+	"custom_gold_rate_per_gram",
+)
 
 
 def _receipt_settings(doc):
@@ -61,6 +84,7 @@ def validate_customer_gold_receipt(doc, method=None):
 	_validate_receipt_purpose(settings)
 	customer = _validate_customer(doc)
 	_validate_rows(doc, settings, customer)
+	set_customer_gold_rate_snapshot(doc, settings)
 
 
 def _validate_receipt_purpose(settings):
@@ -110,14 +134,25 @@ def _validate_rows(doc, settings, customer):
 	configured_item = settings.customer_24kt_item
 
 	for row in doc.get("items") or []:
-		if row.get("inventory_type") and row.inventory_type != CUSTOMER_GOODS:
+		# ``Regular Stock`` here is NOT a caller's choice -- it is the framework's own
+		# blanket default. ``doc_events.stock_entry.before_validate`` runs FIRST in the
+		# before_validate chain (hooks.py) and ends with an unconditional
+		# ``if not row.inventory_type: row.inventory_type = "Regular Stock"``, so by the
+		# time this validator runs (last in that chain) every row already carries it.
+		# Treating it as "supplied" made every server-created Customer Gold receipt throw
+		# -- the API path the server-side tagging below exists to protect. Only the browser
+		# got through, because stock_entry.js sets Customer Goods before the save is sent.
+		# So blank and the default are both overridable; a DELIBERATE other ownership class
+		# (Customer Stock, Pure Metal) still hard-fails.
+		supplied = row.get("inventory_type")
+		if supplied and supplied not in (CUSTOMER_GOODS, DEFAULT_INVENTORY_TYPE):
 			frappe.throw(
 				_(
 					"Row #{0}: Customer Gold receipt requires Inventory Type {1}, but {2} was supplied."
 				).format(
 					row.idx,
 					frappe.bold(CUSTOMER_GOODS),
-					frappe.bold(row.inventory_type),
+					frappe.bold(supplied),
 				),
 				title=_("Invalid Inventory Type"),
 			)
@@ -199,3 +234,44 @@ def validate_customer_gold_batches(doc, method=None):
 				),
 				title=_("Invalid Batch Inventory Type"),
 			)
+
+
+def set_customer_gold_rate_snapshot(doc, settings):
+	"""Freeze the Customer Gold rate evidence on the receipt.
+
+	Runs on every validate of a DRAFT and overwrites unconditionally. That is deliberate
+	and serves two purposes at once:
+
+	* the snapshot re-resolves whenever ``posting_date`` or the configured source / field /
+	  unit changes, so a corrected posting date cannot leave yesterday's rate behind; and
+	* a client-supplied value can never become financial truth -- whatever arrives over the
+	  API is replaced by the server's own resolution.
+
+	CAREFUL -- ``before_validate`` DOES run on the submit transition. ``run_before_save_methods``
+	calls it for ``_action in ("save", "submit")`` (``frappe/model/document.py:1396-1397``) and
+	``check_docstatus_transition`` sets ``_action = "submit"`` for 0 -> 1 (``document.py:1126``).
+	So the snapshot is re-resolved ONE FINAL TIME at submit and is frozen only afterwards,
+	because ordinary saves are then blocked. The practical consequence: if the Gold Rates row
+	for this posting date is corrected between drafting and submitting, the submitted document
+	carries the corrected rate. That matches the agreed policy (resolve on draft, re-resolve on
+	change, freeze at submit) -- but it is a final re-resolve AT submit, not a stop-running-at-submit.
+
+	Cancellation does not clear it: a cancelled receipt must still show the rate it originally
+	used. An amendment carries no snapshot (the fields are ``no_copy``) and resolves afresh
+	against its own posting date.
+
+	Sets snapshot fields ONLY -- never ``basic_rate``, ``valuation_rate`` or an expense
+	account. Consuming the frozen rate for stock valuation is later work, and that work
+	must read ``custom_gold_rate_per_gram`` from here rather than resolving a rate again.
+	"""
+	rate = resolve_customer_gold_rate_for_date(doc.get("posting_date"), settings)
+
+	doc.custom_gold_rate_reference = rate.gold_rate_reference
+	doc.custom_gold_rate_date = rate.gold_rate_date
+	doc.custom_gold_rate_source = rate.rate_source
+	doc.custom_gold_rate_field = rate.rate_field
+	doc.custom_gold_rate_raw = rate.raw_rate
+	doc.custom_gold_rate_unit = rate.rate_unit
+	doc.custom_gold_rate_per_gram = rate.per_gram_rate
+
+	return rate

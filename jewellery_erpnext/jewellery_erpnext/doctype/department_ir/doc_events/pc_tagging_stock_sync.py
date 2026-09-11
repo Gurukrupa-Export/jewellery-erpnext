@@ -796,6 +796,9 @@ def _process_row(dept_ir_doc, row, scenario):
 	_safe_set(se, "manufacturer", dept_ir_doc.manufacturer)
 	_safe_set(se, "manufacturing_work_order", mwo)
 
+	# Resolve every source batch's ownership up front, in one query.
+	_ownership = _pc_tagging_batch_ownership([ln.get("batch_no") for ln in transfer_lines])
+
 	for line in transfer_lines:
 		item_row = {
 			"item_code": line["item_code"],
@@ -811,7 +814,7 @@ def _process_row(dept_ir_doc, row, scenario):
 			item_row["batch_no"] = line["batch_no"]
 		if line["pcs"]:
 			item_row["pcs"] = line["pcs"]  # Bug 3: field is "pcs" not "custom_pcs"
-		se.append("items", item_row)
+		se.append("items", _stamp_pc_tagging_row_ownership(item_row, _ownership))
 
 	se.save()
 	se.submit()
@@ -1005,3 +1008,48 @@ def _handle_cancel_row(dept_ir_doc, row, scenario):
 		)
 		new_sre.insert(ignore_links=1)
 		new_sre.submit()
+
+
+def _pc_tagging_batch_ownership(batch_nos):
+	"""``{batch_no: (custom_inventory_type, custom_customer)}`` in ONE query."""
+	batch_nos = sorted({b for b in batch_nos if b})
+	if not batch_nos:
+		return {}
+
+	rows = frappe.get_all(
+		"Batch",
+		filters={"name": ("in", batch_nos)},
+		fields=["name", "custom_inventory_type", "custom_customer"],
+	)
+	return {r.name: (r.custom_inventory_type, r.custom_customer) for r in rows}
+
+
+def _stamp_pc_tagging_row_ownership(row, ownership):
+	"""Carry the SOURCE batch's ownership onto a PC -> Tagging transfer row.
+
+	Without this the row reaches ``doc_events/stock_entry.py``'s blanket "default blank
+	inventory_type to Regular Stock", which silently books a customer's metal as company
+	stock -- and this builder sets ``auto_created = 1``, which short-circuits
+	``CustomStockEntry.update_batches``' ownership backfill, so nothing else fills it in.
+	``validate_loss_ownership_carried`` does not cover this either: it only fires for
+	Process Loss and Repack, and this is a Material Transfer to Department.
+
+	Same normalisation as every other builder (``customization/utils/row_ownership``) and
+	the same shape as ``mop_eod_sync._stamp_eod_row_ownership``, so a customer type with no
+	customer is downgraded rather than minting a row that trips the Customer Goods guard.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+		normalize_ownership,
+	)
+
+	batch_inv, batch_customer = ownership.get(row.get("batch_no")) or (None, None)
+	inventory_type, customer = normalize_ownership(
+		batch_inv,
+		batch_customer,
+		batch_no=row.get("batch_no"),
+		item_code=row.get("item_code"),
+	)
+	row["inventory_type"] = inventory_type
+	if customer:
+		row["customer"] = customer
+	return row
