@@ -3129,6 +3129,16 @@ def create_test_data():
 
 			_ensure_serial_no_stamping_no_field()
 
+			# The UNIQUE backstop on custom_stamping_no, so tests run against the same
+			# constraint production has. execute() seeds the tabSeries counters first (it
+			# calls seed_serial_no_stamping_series at its tail), so the index is built over
+			# already-consistent data.
+			from jewellery_erpnext.patches.add_serial_no_stamping_unique_index import (
+				execute as _ensure_serial_no_stamping_unique_index,
+			)
+
+			_ensure_serial_no_stamping_unique_index()
+
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /
