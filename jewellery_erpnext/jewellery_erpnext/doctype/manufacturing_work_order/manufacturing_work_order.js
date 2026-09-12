@@ -54,18 +54,30 @@ frappe.ui.form.on("Manufacturing Work Order", {
 			});
 		}
 		// Single unpack button, Repair work orders only: unpacks the repaired serial
-		// into the linked Repair Order's BOM raw materials as Customer Goods. PMO type
-		// is not on the form, so resolve it before adding the button.
-		if (frm.doc.docstatus == 1 && frm.doc.serial_no) {
-			frappe.db
-				.get_value("Parent Manufacturing Order", frm.doc.manufacturing_order, "type")
-				.then((r) => {
-					if (r.message && r.message.type === "Repair") {
-						frm.add_custom_button(__("Unpack Raw Material"), function () {
+		// into the linked Repair Order's BOM raw materials as Customer Goods.
+		//
+		// Eligibility is decided server-side (get_unpack_eligibility) because none of what
+		// it depends on -- the PMO's type, whether an unpack Stock Entry already exists --
+		// lives on this form. The server re-validates all of it before posting anything,
+		// so this call only decides what is shown, never what is allowed.
+		if (frm.doc.docstatus == 1) {
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_unpack_eligibility",
+				args: { mwo: frm.doc.name },
+				callback: (r) => {
+					if (!r.message) return;
+					if (r.message.eligible) {
+						frm.add_custom_button(__("Unpack Serial No"), function () {
 							frm.trigger("unpack_raw_material");
 						});
+					} else if (r.message.already_unpacked) {
+						// Button stays hidden, but the entry that consumed the serial is one click away.
+						frm.add_custom_button(__("Repair Unpack Entry"), function () {
+							frappe.set_route("Form", "Stock Entry", r.message.stock_entry);
+						});
 					}
-				});
+				},
+			});
 		}
 		if (frm.doc.docstatus == 1 && frm.doc.is_finding_mwo == 1) {
 			if (!frm.doc.final_transfer_entry) {
@@ -235,7 +247,9 @@ frappe.ui.form.on("Manufacturing Work Order", {
 			freeze_message: __("Unpacking...."),
 			callback: (r) => {
 				if (!r.exc) {
-					frappe.msgprint(__("Serial No unpacked into raw materials."));
+					frappe.msgprint(__("Serial No unpacked into raw materials via {0}.", [r.message]));
+					// Refresh re-runs the eligibility call, which now reports
+					// already_unpacked and swaps the button for a link to the entry.
 					frm.refresh();
 				}
 			},

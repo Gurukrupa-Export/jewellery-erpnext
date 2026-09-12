@@ -333,7 +333,12 @@ class ParentManufacturingOrder(Document):
 					self.custom_tracking_bom,
 					{"reference_doctype": self.doctype, "reference_docname": self.name},
 				)
-		if self.serial_no:
+		# Derive the serial's historical BOM from the tag only as a FALLBACK. When the
+		# Manufacturing Plan row already carried a serial_id_bom it is authoritative and
+		# must survive: a repair's serial BOM, its design BOM (master_bom) and its
+		# tracking BOM are three distinct identities, and re-deriving here unconditionally
+		# would let a tag_no match quietly overwrite the one the order was raised against.
+		if self.serial_no and not self.serial_id_bom:
 			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
 				self.db_set("serial_id_bom", serial_bom)
 
@@ -741,6 +746,18 @@ def make_manufacturing_order(
 		doc.rowname = row.name
 		doc.master_bom = master_bom
 		doc.diamond_grade = so_det.get("diamond_grade")
+		# Repair lineage, carried explicitly off the plan row.
+		#
+		# Both fields used to arrive only by side-channel: serial_no via the
+		# ``sales_order_item.serial_no`` fetch_from, and serial_id_bom via after_insert
+		# re-deriving it from BOM.tag_no. The plan row already holds both (queried in
+		# get_items_for_production and stored on Manufacturing Plan Table), so the values
+		# were being thrown away and then guessed at again -- and the guess fails whenever
+		# no BOM is tagged to the serial, leaving a Repair PMO (and every MWO under it)
+		# with no serial and no serial BOM, which is what hides Unpack Serial No.
+		# Assigning them here makes the row the single source of truth.
+		doc.serial_no = row.serial_no
+		doc.serial_id_bom = row.serial_id_bom
 		doc.insert(ignore_mandatory=True)
 
 	elif row.mwo:

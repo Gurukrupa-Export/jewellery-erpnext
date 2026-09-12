@@ -9,6 +9,7 @@ Canonical order (acquire in this sequence inside every multi-doctype write):
     Parent control row  ->  tabSeries  ->  tabBin  ->  Batch / SBB
         ->  Stock Reservation Entry  ->  Stock Ledger Entry
         ->  MOP Log  ->  Manufacturing Operation
+        ->  stamping counter (terminal)
 
 Two rules every custom on_submit / hook must follow:
 
@@ -20,6 +21,26 @@ Two rules every custom on_submit / hook must follow:
   with ``SELECT ... FOR UPDATE``, in sorted order, via :func:`lock_bins`. This
   removes the "shared read now, exclusive write later" lock-upgrade that turns a
   Series<->Bin interleaving into a deadlock cycle.
+
+**THE STAMPING COUNTER IS TERMINAL.** ``Serial No.custom_stamping_no`` claims its number
+from a ``tabSeries`` row (``doc_events.serial_no.reserve_stamping_sequence``). That is
+nominally position 2, and the three paths that mint one -- Serial Number Creator
+(``update_new_serial_no``), Product Certification (``update_huid`` -> ``add_to_serial_no``)
+and Job Card (``create_serial_no``) -- all do so while already holding Bin locks, which
+looks like an inversion. It is safe ONLY because every one of them takes it LAST and then
+commits, so they can queue on it but never form a cycle. Note also that Serial No's autoname
+is ``field:serial_no``, so a Serial No insert takes no other naming lock: for Job Card and
+desk edits the stamping row is the only shared row in the transaction, and a single lock
+cannot be half a cycle.
+
+RULE C -- mint the stamping number last. If you add a path that needs a Bin (or any
+position 2-8 row) AFTER a Serial No save, pre-lock with :func:`prelock_stamping_series`
+instead of relying on that ordering.
+
+Deliberately NOT pre-locked by default: it is one site-wide row, so pinning it at the start
+of a cascade would make every concurrent SNC/PC submit queue on it for the cascade's whole
+duration -- exactly the hot-row pathology ``patches/shard_stock_entry_naming_by_type.py``
+was written to escape. Minting late holds it for milliseconds instead.
 
 These helpers are deliberately tiny and side-effect-free except for the row locks
 they take (which release on the enclosing transaction's COMMIT/ROLLBACK, exactly
@@ -377,3 +398,52 @@ def preallocate_series_for_docs(*docs):
 	for name in sorted(dnr_names):
 		frappe.db.get_value("Document Naming Rule", name, "counter", for_update=True)
 	preallocate_series(series_prefixes)
+
+
+def prelock_stamping_series():
+	"""EXPERIMENTAL (opt-in): pin the stamping counter at canonical position 2, before any
+	Bin lock, for cascades that mint a ``Serial No.custom_stamping_no``.
+
+	OFF by default, and the app is correct without it -- see RULE C in the module docstring.
+	Uniqueness does NOT depend on this: ``reserve_stamping_sequence`` is atomic wherever it
+	is called from. This only decides WHERE in the acquisition order the counter lock lands,
+	i.e. it is purely a deadlock-ordering guard.
+
+	TRADE-OFF (accepted by the operator who enables it): the stamping counter is a single
+	site-wide row, so pinning it up front makes every concurrent Serial Number Creator /
+	Product Certification submit queue on it for the whole cascade rather than for the few
+	milliseconds around the mint. That is the same hot-row cost
+	``shard_stock_entry_naming_by_type`` exists to avoid, so enable it only if the 1213 rate
+	actually says to: ``site_config.json`` ``"prelock_stamping_series": 1``.
+
+	Pins TODAY'S and TOMORROW'S prefix. The prefix is derived from the clock, so a cascade
+	that starts at 23:59 on 31-Dec and mints after midnight resolves a DIFFERENT key than the
+	one it pinned -- and would take that fresh row while holding Bins, the exact inversion
+	this is meant to remove. The two keys collapse to one on 364 days a year.
+	"""
+	from frappe.utils import add_to_date, now_datetime
+
+	from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import (
+		_ensure_stamping_series_row,
+		_has_stamping_no_field,
+		stamping_prefix,
+		stamping_series_key,
+	)
+
+	if not frappe.conf.get("prelock_stamping_series"):
+		return
+	if not _has_stamping_no_field():
+		return
+
+	now = now_datetime()
+	keys = []
+	for prefix in sorted(
+		{stamping_prefix(now), stamping_prefix(add_to_date(now, days=1))}
+	):
+		key = stamping_series_key(prefix)
+		# FOR UPDATE on a row that does not exist locks nothing, so the row has to be there
+		# before preallocate_series can pin it.
+		_ensure_stamping_series_row(key, prefix)
+		keys.append(key)
+
+	preallocate_series(keys)

@@ -7,7 +7,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.model.naming import make_autoname
-from frappe.utils import cint, flt, get_datetime, now
+from frappe.utils import cint, flt, get_datetime, get_link_to_form, now
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.utils import (
 	add_time_log,
@@ -20,6 +20,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_nu
 from jewellery_erpnext.utils import (
 	carat_to_gram,
 	get_item_from_attribute,
+	get_repair_order_design_bom,
 	set_values_in_bulk,
 )
 
@@ -432,6 +433,43 @@ class ManufacturingWorkOrder(Document):
 		se.save()
 		se.submit()
 
+	def find_existing_unpack_entry(self):
+		"""Name of the live Repair Unpack Stock Entry for this work order, if any.
+
+		Keyed on the work order alone, not on the serial: one Repair MWO unpacks one
+		finished serial, and keying on the serial too would let a cleared/reassigned
+		serial slip a second unpack past the guard. Cancelled entries (docstatus 2) are
+		deliberately ignored so a legitimate retry after cancellation stays possible;
+		drafts count, because the batches and rows of a draft already exist.
+		"""
+		return frappe.db.get_value(
+			"Stock Entry",
+			{
+				"manufacturing_work_order": self.name,
+				"stock_entry_type": "Repair Unpack",
+				"docstatus": ["!=", 2],
+			},
+			"name",
+		)
+
+	def _assert_serial_matches_item(self):
+		"""The serial being unpacked must BE the finished good this work order makes.
+
+		Both fields are hand-settable on the PMO/MWO, so a mistyped or pasted serial can
+		otherwise point at an unrelated piece -- and unpacking it would consume that
+		customer's jewellery and book this order's components against it.
+		"""
+		serial_item = frappe.db.get_value("Serial No", self.serial_no, "item_code")
+		if not serial_item:
+			frappe.throw(_("Serial No {0} does not exist.").format(self.serial_no))
+		if serial_item != self.item_code:
+			frappe.throw(
+				_(
+					"Serial No {0} belongs to Item {1}, but this work order makes {2}. "
+					"Refusing to unpack an unrelated serial."
+				).format(self.serial_no, serial_item, self.item_code)
+			)
+
 	def _resolve_repair_order_bom(self):
 		"""Return (design BOM, PMO name) for this repair unpack.
 
@@ -457,7 +495,7 @@ class ManufacturingWorkOrder(Document):
 					"No Repair Order is linked to {0}; cannot resolve the repair BOM to unpack."
 				).format(pmo_name)
 			)
-		design_bom = frappe.db.get_value("Repair Order", order_form_id, "bom")
+		design_bom = get_repair_order_design_bom(order_form_type, order_form_id)
 		if not design_bom:
 			frappe.throw(
 				_(
@@ -580,10 +618,27 @@ class ManufacturingWorkOrder(Document):
 		if pmo_type != "Repair" or not self.serial_no:
 			frappe.throw(
 				_(
-					"Unpack Raw Material is only available for Repair work orders that "
+					"Unpack Serial No is only available for Repair work orders that "
 					"carry a serial number."
 				)
 			)
+		if self.docstatus != 1:
+			frappe.throw(
+				_("Unpack Serial No requires a submitted Manufacturing Work Order.")
+			)
+
+		# Idempotency: a double-click, a page reload mid-post or a retried request must not
+		# produce a second Stock Entry -- that would consume the serial twice, mint a second
+		# set of Customer Goods batches and double every MOP weight booked off these rows.
+		if existing := self.find_existing_unpack_entry():
+			frappe.throw(
+				_(
+					"Serial No {0} has already been unpacked for this work order by Stock "
+					"Entry {1}. Cancel it first if you need to unpack again."
+				).format(self.serial_no, get_link_to_form("Stock Entry", existing))
+			)
+
+		self._assert_serial_matches_item()
 
 		# The BOM to unpack lives on the linked Repair Order, not the MWO's inherited
 		# master_bom. Persist it onto the PMO + this MWO (it drives repair
@@ -855,6 +910,45 @@ class ManufacturingWorkOrder(Document):
 	@frappe.whitelist()
 	def create_mfg_entry(self):
 		create_se_entry(self)
+
+
+@frappe.whitelist()
+def get_unpack_eligibility(mwo):
+	"""Whether this work order should offer Unpack Serial No, and why not if it shouldn't.
+
+	Exists so the button's visibility is decided by the same server that will run the
+	unpack, rather than by the form guessing from whatever fields happen to be loaded.
+	It is a display aid ONLY -- create_unpack_serial_no_stock_entry re-checks every one
+	of these conditions itself and is the sole authority.
+
+	``already_unpacked`` is reported separately from ``eligible`` so the form can hide
+	the button and still point at the Stock Entry that did the work.
+	"""
+	doc = frappe.get_doc("Manufacturing Work Order", mwo)
+	doc.check_permission("read")
+
+	pmo_type = frappe.db.get_value(
+		"Parent Manufacturing Order", doc.manufacturing_order, "type"
+	)
+	existing = doc.find_existing_unpack_entry()
+
+	if pmo_type != "Repair":
+		reason = _("Not a Repair work order.")
+	elif doc.docstatus != 1:
+		reason = _("Work order is not submitted.")
+	elif not doc.serial_no:
+		reason = _("No repair Serial No is set on this work order.")
+	elif existing:
+		reason = _("Already unpacked by Stock Entry {0}.").format(existing)
+	else:
+		reason = None
+
+	return {
+		"eligible": reason is None,
+		"reason": reason,
+		"already_unpacked": bool(existing),
+		"stock_entry": existing,
+	}
 
 
 def _resolve_unpack_inventory(serial_no, pmo):
