@@ -26,8 +26,10 @@ site that still has duplicates, and would also try to reconcile the column to th
 ``length: 10`` the field declares while the column is actually varchar(64).
 
 The index NAME must be the fieldname: frappe's own add path emits
-``ADD UNIQUE INDEX IF NOT EXISTS {fieldname}``, so matching it makes a future sync a no-op
-instead of a duplicate-index error.
+``ADD UNIQUE INDEX IF NOT EXISTS {fieldname}`` (``frappe/database/mariadb/schema.py:85``), so
+matching it makes a future sync a no-op instead of a duplicate-index error. That is also why
+``frappe.db.add_unique()`` is not used here -- it names the constraint ``unique_{fieldname}``,
+which a later sync would not recognise as its own and would add a second index alongside.
 """
 
 import frappe
@@ -94,7 +96,13 @@ def execute():
 		)
 		return
 
-	frappe.db.sql(f"ALTER TABLE `{TABLE}` ADD UNIQUE INDEX `{FIELD}` (`{FIELD}`)")
+	# sql_ddl(), not sql(): the blank -> NULL UPDATE above leaves transaction_writes > 0, and
+	# frappe refuses DDL in that state (ImplicitCommitError, database.py check_implicit_commit)
+	# because ALTER TABLE autocommits in MariaDB and would silently commit those writes.
+	# sql_ddl commits first, then runs the statement -- the same commit-then-alter frappe's own
+	# db.add_index() / db.add_unique() do. Committing the normalisation here is correct: it is
+	# idempotent, and the ALTER would have committed it regardless.
+	frappe.db.sql_ddl(f"ALTER TABLE `{TABLE}` ADD UNIQUE INDEX `{FIELD}` (`{FIELD}`)")
 	_mark_custom_field_unique()
 	frappe.logger().info(
 		f"add_serial_no_stamping_unique_index: UNIQUE index on {TABLE}.{FIELD} created"
