@@ -1106,6 +1106,53 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 		create_mop_log(self, row, is_synced=True)
 
 
+SRE_PROVENANCE_FIELDS = (
+	"from_voucher_type",
+	"from_voucher_no",
+	"from_voucher_detail_no",
+)
+
+
+def set_sre_provenance(sre, stock_entry, stock_entry_detail):
+	"""Record the Stock Entry row a reservation was created from.
+
+	``voucher_*`` on a manufacturing reservation points at the Sales Order -- that is what
+	ERPNext reserves against -- so it is no route back to the Stock Entry Detail that
+	actually moved the material. That row is the only carrier of ``pcs`` and
+	``custom_sub_setting_type``, and Serial Number Creator needs both: a reservation, a
+	Batch and a Serial and Batch Entry all lack them.
+
+	No-op when there is no source row. The EOD heal paths rebuild a reservation from live
+	batch stock and have nothing to point at; inventing a link there would be worse than
+	the bounded (operation, item, batch) fallback Serial Number Creator falls back to.
+	"""
+	if not (stock_entry and stock_entry_detail):
+		return
+	sre.from_voucher_type = "Stock Entry"
+	sre.from_voucher_no = stock_entry
+	sre.from_voucher_detail_no = stock_entry_detail
+
+
+def copy_sre_provenance(source, target):
+	"""Carry the source-row link across a cancel-and-rebuild.
+
+	Relocating a reservation -- PC/Tagging, the EOD sync, a partial Material Receive -- is
+	not a new reservation, so it keeps the link it already had. Dropping it would strand
+	every relocated reservation on the fallback.
+
+	``source`` may be a Document or a plain dict, since the call sites have both.
+	"""
+	getter = (
+		source.get
+		if hasattr(source, "get")
+		else lambda f, d=None: getattr(source, f, d)
+	)
+	for field in SRE_PROVENANCE_FIELDS:
+		value = getter(field, None)
+		if value is not None:
+			setattr(target, field, value)
+
+
 def stock_reservation_entry_for_mwo(self):
 	# EIR injection: main_slip_inject.py stamps employee_ir on every auto-created
 	# SE header.  These SEs MUST always reserve — they are legitimate MWO-linked
@@ -1234,6 +1281,15 @@ def stock_reservation_entry_for_mwo(self):
 			row.manufacturing_operation
 		)
 		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
+		# The Stock Entry row this reservation was created from. ``voucher_*`` points at
+		# the Sales Order (that is what ERPNext reserves against), so without these three
+		# there is NO link back to the Stock Entry Detail — and that row is the only
+		# carrier of custom_sub_setting_type, which Serial Number Creator needs. Standard
+		# ERPNext fields, unused by this app until now. Every path that cancels and
+		# recreates an SRE must carry them forward or the link is lost on the first
+		# relocation; see _build_sre_from_context / _build_and_submit_mwo_sre /
+		# _build_replacement_sre.
+		set_sre_provenance(new_stock_reservation_entries_mwo, self.name, row.name)
 		new_stock_reservation_entries_mwo.available_qty = max(
 			available_qty_to_reserve, qty_to_be_reserved
 		)
