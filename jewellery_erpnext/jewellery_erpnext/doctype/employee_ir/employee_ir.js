@@ -102,13 +102,16 @@ frappe.ui.form.on("Employee IR", {
 	},
 
 	type(frm) {
-		frm.clear_table("department_ir_operation");
-		frm.refresh_field("department_ir_operation");
+		clear_operations_table(frm);
 		load_repeat_flag(frm);
+	},
+	department(frm) {
+		clear_operations_table(frm);
 	},
 	operation(frm) {
 		// Repeat-ness is per (work order, operation), so re-pointing the operation
 		// can flip the answer even with the same rows loaded.
+		clear_operations_table(frm);
 		load_repeat_flag(frm);
 	},
 	async scan_mwo(frm) {
@@ -315,6 +318,7 @@ frappe.ui.form.on("Employee IR", {
 				},
 			};
 		});
+		clear_operations_table(frm);
 	},
 	subcontractor(frm) {
 		frm.set_query("main_slip", function (doc) {
@@ -328,6 +332,7 @@ frappe.ui.form.on("Employee IR", {
 				},
 			};
 		});
+		clear_operations_table(frm);
 	},
 	subcontracting(frm) {
 		if (frm.doc.subcontracting == "Yes") {
@@ -356,8 +361,22 @@ frappe.ui.form.on("Employee IR", {
 				};
 			});
 		}
+		clear_operations_table(frm);
 	},
 });
+// The query-context fields (department, type, operation, employee, subcontracting,
+// subcontractor) narrow which Manufacturing Operations are eligible for the table, so
+// rows scanned under the old context are invalid once one of them changes and must be
+// cleared. FG BOM fields are derived from the loaded operations, so they go too --
+// leaving them behind would make validate_fg_bom_fields throw a cryptic mandatory error
+// for the new context's fields.
+function clear_operations_table(frm) {
+	frm.clear_table("employee_ir_operations");
+	frm.refresh_field("employee_ir_operations");
+	frm.clear_table("custom_fg_bom_fields");
+	frm.refresh_field("custom_fg_bom_fields");
+}
+
 function set_filters_on_parent_table_fields(frm, fields) {
 	fields.map(function (field) {
 		frm.set_query(field[0], function (doc) {

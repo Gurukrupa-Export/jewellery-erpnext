@@ -21,6 +21,9 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.subcontracting_utils import (
 	create_subcontracting_doc,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.bom_weights import (
+	apply_bom_weights,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
 	SAMPLE_ALLOWED_SE_TYPES,
 	is_customer_sample_batch,
@@ -462,6 +465,26 @@ def set_gross_wt(self):
 				"Serial No", row.serial_no, "custom_gross_wt"
 			)
 			row.gross_weight = gross_weight
+
+
+def set_fg_bom_weights(self):
+	"""Mirror each FG serial's own as-built BOM weights onto its row.
+
+	The Material Request -> Stock Entry mapper already carries these across for free --
+	the fieldnames are identical on Material Request Item and Stock Entry Detail, so
+	``frappe.model.mapper`` copies them with no mapping code. This re-stamps them on
+	every save anyway, for two reasons: ``update_batches`` rebuilds ``self.items``
+	wholesale on each draft save, and a Stock Entry can reach a serial by routes that
+	never touched a Material Request at all.
+
+	Distinct from ``set_gross_wt`` above, which fills the separate, older
+	``Stock Entry Detail.gross_weight`` from ``Serial No.custom_gross_wt``. That field
+	and this block are independent; neither writes the other's column.
+
+	Rows this cannot resolve are left untouched rather than blanked -- see
+	``apply_bom_weights``.
+	"""
+	apply_bom_weights(self.items)
 
 
 def _row_serials(serial_no):

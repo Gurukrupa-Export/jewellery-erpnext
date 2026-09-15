@@ -3121,8 +3121,8 @@ def create_test_data():
 
 			# Serial No.custom_stamping_no is patch-only for the same reason. `bench
 			# install-app` marks every patch as already applied on a fresh site, so
-			# `bench migrate` never runs it and set_stamping_no -- a before_save hook on
-			# EVERY Serial No -- had no field to read.
+			# `bench migrate` never runs it and set_stamping_no -- which every Serial
+			# Number Creator submit calls -- had no field to read.
 			from jewellery_erpnext.patches.add_serial_no_stamping_no_field import (
 				execute as _ensure_serial_no_stamping_no_field,
 			)
@@ -3138,6 +3138,18 @@ def create_test_data():
 			)
 
 			_ensure_serial_no_stamping_unique_index()
+
+			# The FG-serial BOM weight block on Material Request Item / Stock Entry Detail
+			# (custom_bom_gross_weight ... custom_bom_total_gemstone_pcs). Patch-only for
+			# the same reason as the Serial No fields above, and the git_action_v16 Custom
+			# Field fixture predates it, so without this the columns are missing on
+			# test_site and everything validate_fg_serial_rows / set_fg_bom_weights stamps
+			# is silently dropped on save.
+			from jewellery_erpnext.patches.add_fg_serial_bom_weight_fields import (
+				execute as _ensure_fg_serial_bom_weight_fields,
+			)
+
+			_ensure_fg_serial_bom_weight_fields()
 
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —

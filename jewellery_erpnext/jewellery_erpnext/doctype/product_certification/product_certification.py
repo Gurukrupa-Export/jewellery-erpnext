@@ -465,15 +465,6 @@ class ProductCertification(Document):
 							"Row #{0}: HUID is mandatory for Hall Marking Service"
 						).format(row.idx)
 					)
-				if (
-					self.service_type == "Diamond Certificate service"
-					and not row.certification
-				):
-					frappe.throw(
-						_(
-							"Row #{0}: Certification No is mandatory for Diamond Certificate service"
-						).format(row.idx)
-					)
 
 		if self.type == "Issue":
 			return
@@ -801,8 +792,8 @@ class ProductCertification(Document):
 	def validate_fire_assy_report(self):
 		"""A submitted Fire Assy Receive must carry the lab's answer on the row it belongs to.
 
-		The assay report is issued against the metal that went out, so Certification, Report No
-		and Report Result belong on each group's Touch row -- not on the pure recovered from it,
+		The assay report is issued against the metal that went out, so Report No and Report
+		Result belong on each group's Touch row -- not on the pure recovered from it,
 		and not on the loss written off. ``set_assay_row_types`` has already labelled the rows
 		in ``validate``, which Frappe runs immediately before ``before_submit``, so this reads
 		the label instead of re-deriving it from item codes.
@@ -815,8 +806,10 @@ class ProductCertification(Document):
 		``report_result`` is a Float, and the client-side mandatory check passes on 0
 		(``is_null(0)`` is false), so this is the only gate that actually holds it.
 
-		XRF is excluded: it has no pure row and no assay report -- its Touch row keeps the
-		plain Certification requirement and nothing more.
+		XRF is excluded: it has no pure row and no assay report, so nothing here applies to
+		it at all. (It used to be said that XRF "keeps the plain Certification requirement":
+		that came from the ``certification`` field's own client-side ``mandatory_depends_on``,
+		which carried no service_type clause. The field is gone, and with it that gate.)
 		"""
 		if self.type != "Receive" or self.service_type != "Fire Assy Service":
 			return
@@ -835,17 +828,13 @@ class ProductCertification(Document):
 				or row.item_code
 			)
 
-			for fieldname, label in (
-				("certification", _("Certification No")),
-				("report_no", _("Report No")),
-			):
-				if not row.get(fieldname):
-					frappe.throw(
-						_("Row #{0}: {1} is required for {2}.").format(
-							row.idx, label, frappe.bold(subject)
-						),
-						title=_("Assay Report Missing"),
-					)
+			if not row.report_no:
+				frappe.throw(
+					_("Row #{0}: Report No is required for {1}.").format(
+						row.idx, frappe.bold(subject)
+					),
+					title=_("Assay Report Missing"),
+				)
 
 			if flt(row.report_result) <= 0:
 				frappe.throw(
@@ -1009,8 +998,8 @@ class ProductCertification(Document):
 			self.receive_status = update_receive_status(self.name)
 
 	def update_huid(self):
-		"""Stamp HUID / certification numbers onto the Serial Nos and Parent Manufacturing
-		Orders behind the exploded rows.
+		"""Stamp HUIDs onto the Serial Nos and Parent Manufacturing Orders behind the
+		exploded rows.
 
 		Grouped by order: this used to load the Parent Manufacturing Order and run a full
 		``save()`` for EVERY exploded row, so ten rows of one order meant ten loads and ten
@@ -1021,9 +1010,9 @@ class ProductCertification(Document):
 		for row in self.exploded_product_details:
 			if row.serial_no:
 				add_to_serial_no(row.serial_no, self, row)
-			elif (row.manufacturing_work_order or row.parent_manufacturing_order) and (
-				row.huid or row.certification
-			):
+			elif (
+				row.manufacturing_work_order or row.parent_manufacturing_order
+			) and row.huid:
 				pending.append(row)
 
 		if not pending:
@@ -1055,15 +1044,13 @@ class ProductCertification(Document):
 		for pmo, rows in rows_by_pmo.items():
 			pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
 			for row in rows:
+				# `date` is unconditional: every row in `pending` has a truthy `huid` by
+				# construction, so the old `if row.huid else None` guard was tautological.
 				pmo_doc.append(
 					"product_certification_details",
 					{
 						"huid": row.huid,
-						"certification_no": row.certification,
-						"date": self.date if row.huid else None,
-						"certification_date": self.certification_date
-						if row.certification
-						else None,
+						"date": self.date,
 					},
 				)
 			pmo_doc.save()
@@ -1513,7 +1500,6 @@ class ProductCertification(Document):
 				if (
 					flt(orphan.gross_weight)
 					or flt(orphan.conversion_quantity)
-					or orphan.get("certification")
 					or orphan.get("report_no")
 				):
 					subject = (

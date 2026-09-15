@@ -18,6 +18,7 @@ from frappe.utils import (
 	nowdate,
 )
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import set_stamping_no
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
 )
@@ -1495,6 +1496,17 @@ def update_new_serial_no(self):
 				"certification_date": row.certification_date,
 			},
 		)
+
+	# THE ONLY PLACE a stamping number is ever minted. It goes onto physical metal and
+	# means "the SNC produced this piece", so it is claimed here rather than from a
+	# `before_save` hook on Serial No -- which stamped every Job Card tag, every Product
+	# Certification write-back and every desk edit as well. set_stamping_no is idempotent,
+	# so a re-run over an already-stamped piece keeps its number and burns none.
+	#
+	# Minting LAST satisfies lock_order RULE C: update_new_serial_no is the final call in
+	# on_submit, so the terminal `tabSeries` counter is taken after every Bin lock this
+	# cascade needs and is released on the commit that immediately follows.
+	set_stamping_no(new_sn_doc)
 	new_sn_doc.save()
 
 	if self.serial_no and self.fg_details and self.fg_details[0].serial_no:

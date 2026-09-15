@@ -64,15 +64,30 @@ def _warehouse(department=_DEST_DEPT, company=_COMPANY, is_group=0):
 	return frappe._dict(department=department, company=company, is_group=is_group)
 
 
-def _submitted(workflow_state, previously):
+def _submitted(
+	workflow_state,
+	previously,
+	material_request_type="Manufacture",
+	custom_operation_type="Transfer to MOP",
+	custom_manufacturing_operation=None,
+	warehouse="WH-Setting",
+):
 	"""A submitted request that already existed in ``previously`` before this save.
 
 	``before_update_after_submit`` fires on every Update, so the dispatch asks
 	``get_doc_before_save`` whether the state actually moved. Passing the same value for both
 	models a plain Update; a different one models a workflow action being applied.
+
+	The last four are stated rather than left off because the hook now also carries the
+	save-time department gate, whose predicate reads all of them. A document missing them
+	skips that gate by accident, which would make every noop assertion below vacuous.
 	"""
 	return SimpleNamespace(
 		workflow_state=workflow_state,
+		material_request_type=material_request_type,
+		custom_operation_type=custom_operation_type,
+		custom_manufacturing_operation=custom_manufacturing_operation,
+		items=[SimpleNamespace(warehouse=warehouse)],
 		get_doc_before_save=lambda: frappe._dict(workflow_state=previously),
 	)
 
@@ -245,7 +260,11 @@ class TestBeforeUpdateAfterSubmitDispatch(IntegrationTestCase):
 		return dept_transfer, mop, dept_mop
 
 	def test_department_state_calls_the_department_maker_only(self):
-		doc = SimpleNamespace(workflow_state="Material Transferred to Department")
+		doc = SimpleNamespace(
+			workflow_state="Material Transferred to Department",
+			material_request_type="Manufacture",
+			custom_operation_type="Transfer to Department",
+		)
 		dept_transfer, mop, dept_mop = self._dispatch(doc)
 
 		dept_transfer.assert_called_once_with(doc)
@@ -255,6 +274,8 @@ class TestBeforeUpdateAfterSubmitDispatch(IntegrationTestCase):
 	def test_mop_state_never_calls_the_department_maker(self):
 		doc = SimpleNamespace(
 			workflow_state="Material Transferred to MOP",
+			material_request_type="Manufacture",
+			custom_operation_type="Transfer to MOP",
 			custom_manufacturing_operation="MOP-001",
 			custom_department=None,
 			items=[SimpleNamespace(warehouse="WH-Setting")],
@@ -262,19 +283,25 @@ class TestBeforeUpdateAfterSubmitDispatch(IntegrationTestCase):
 
 		def _gv(doctype, name, fieldname=None, **kwargs):
 			if doctype == "Manufacturing Operation":
-				return frappe._dict(
-					status="Not Started", department=None, previous_mop=None
-				)
+				return frappe._dict(status="Not Started", department=None)
 			return None
 
 		with patch(f"{_MR_EVENTS}.frappe.db.get_value", side_effect=_gv):
 			dept_transfer, mop, _dept_mop = self._dispatch(doc)
 
 		dept_transfer.assert_not_called()
+		# Both departments come back None, which the rule treats as a match.
 		mop.assert_called_once_with(doc, mop="MOP-001")
 
-	def test_material_transferred_state_calls_nothing(self):
-		doc = SimpleNamespace(workflow_state="Material Transferred")
+	def test_material_transferred_state_makes_no_stock_entry(self):
+		"""Not "does nothing" any more -- a plain Update in this state does run the
+		department gate. It just never mints a Stock Entry."""
+		doc = SimpleNamespace(
+			workflow_state="Material Transferred",
+			material_request_type="Manufacture",
+			custom_operation_type="Transfer to MOP",
+			custom_manufacturing_operation=None,
+		)
 		dept_transfer, mop, dept_mop = self._dispatch(doc)
 
 		dept_transfer.assert_not_called()
@@ -298,10 +325,13 @@ class TestBeforeUpdateAfterSubmitDispatch(IntegrationTestCase):
 		mop.assert_not_called()
 		dept_mop.assert_not_called()
 
-	def test_plain_update_in_the_department_state_is_a_noop(self):
+	def test_plain_update_in_the_department_state_makes_no_stock_entry(self):
+		"""With no operation selected the department gate has nothing to assert, so this
+		save reaches neither half of the hook."""
 		doc = _submitted(
 			"Material Transferred to Department",
 			previously="Material Transferred to Department",
+			custom_manufacturing_operation=None,
 		)
 		dept_transfer, mop, dept_mop = self._dispatch(doc)
 
@@ -311,10 +341,40 @@ class TestBeforeUpdateAfterSubmitDispatch(IntegrationTestCase):
 
 	def test_the_transition_save_still_dispatches(self):
 		doc = _submitted(
-			"Material Transferred to Department", previously="Material Transferred"
+			"Material Transferred to Department",
+			previously="Material Transferred",
+			custom_operation_type="Transfer to Department",
 		)
 		dept_transfer, mop, dept_mop = self._dispatch(doc)
 
 		dept_transfer.assert_called_once_with(doc)
 		mop.assert_not_called()
 		dept_mop.assert_not_called()
+
+	def test_the_department_check_runs_above_the_transition_gate(self):
+		"""The cross-file companion to TestMopDepartmentCheckOnSave.
+
+		A plain Update -- same state before and after, so the dispatch below returns early
+		-- still has to reject an operation in the wrong department. If the check sat below
+		that gate this save would pass silently, which is the bug being fixed.
+		"""
+		doc = _submitted(
+			"Material Transferred",
+			previously="Material Transferred",
+			custom_manufacturing_operation="MOP-001",
+			warehouse="WH-Setting",
+		)
+
+		def _gv(doctype, name, fieldname=None, **kwargs):
+			if doctype == "Manufacturing Operation":
+				return "Pre Polish - GEPL"
+			if doctype == "Warehouse":
+				return "Diamond Setting - GEPL"
+			return None
+
+		with patch(f"{_MR_EVENTS}.frappe.db.get_value", side_effect=_gv):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				self._dispatch(doc)
+
+		self.assertIn("Diamond Setting - GEPL", str(ctx.exception))
+		self.assertIn("Pre Polish - GEPL", str(ctx.exception))

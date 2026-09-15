@@ -37,7 +37,8 @@
   "hall_marking_details_section",
   "product_details",
   "exploded_product_details",
-  "amended_from"
+  "amended_from",
+  "report"
  ],
  "fields": [
   {
@@ -242,6 +243,12 @@
    "fieldtype": "Link",
    "label": "Manufacturer",
    "options": "Manufacturer"
+  },
+  {
+   "depends_on": "eval:[\"Fire Assy Service\", \"XRF Services\"].includes(doc.service_type) && doc.type == \"Receive\"",
+   "fieldname": "report",
+   "fieldtype": "Attach",
+   "label": "Report"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -260,7 +267,7 @@
    "link_fieldname": "product_certification"
   }
  ],
- "modified": "2026-07-30 21:11:33.018835",
+ "modified": "2026-09-15 11:58:06.707000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Product Certification",
