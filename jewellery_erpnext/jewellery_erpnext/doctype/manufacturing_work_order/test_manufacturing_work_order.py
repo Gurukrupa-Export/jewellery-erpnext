@@ -164,14 +164,12 @@ class TestCreateMrForSplitWorkOrder(UnitTestCase):
 		self.assertIsNone(new_mr.custom_mop_se)
 		self.assertIsNone(new_mr.custom_department_transfer_se)
 
-	def test_manufacturing_operation_inherited_from_mwo(self):
+	def test_manufacturing_operation_left_blank_for_manual_selection(self):
+		"""custom_manufacturing_operation is a manual field the user picks from the dropdown
+		themselves -- it must always start blank on the new split MR, regardless of what the
+		source MWO's own manufacturing_operation currently is, and regardless of whatever
+		copy_doc would otherwise have carried over from old_mr."""
 		new_mr, *_ = self._run(mwo_operation="MOP-XYZ")
-		self.assertEqual(new_mr.custom_manufacturing_operation, "MOP-XYZ")
-
-	def test_manufacturing_operation_is_none_when_mwo_has_none(self):
-		"""F-06: the source MWO's manufacturing_operation being unset must not raise --
-		the field is simply left blank, for before_validate to derive later if it can."""
-		new_mr, *_ = self._run(mwo_operation=None)
 		self.assertIsNone(new_mr.custom_manufacturing_operation)
 
 	def test_manufacturing_work_order_linked(self):
