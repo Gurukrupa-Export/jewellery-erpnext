@@ -10,9 +10,14 @@ can be identified and filtered by ownership:
 - ``Outwork``  — every consumed row is Customer Goods (customer-supplied material)
 - ``Hybrid``   — both appear in the same job
 
-It can also carry an early default copied straight from the source Sales Order's
-``sales_type`` (see ``create_manufacturing_entry`` in manufacturing_operation.py),
-overwritten by the ledger-derived value above when one is derivable. ``Sales Type``
+AS SHIPPED TODAY IT HOLDS NONE OF THE ABOVE. The ledger-derived write in
+``create_manufacturing_entry`` (manufacturing_operation.py) is commented out, so the field
+carries only the early default copied straight from the source Sales Order's
+``sales_type``. The Outright/Outwork/Hybrid semantics described above are the field's
+INTENT, not its current content; serials minted while the derived write was live do hold
+them, so the column is not comparable across that boundary. (This paragraph previously
+said the default was "overwritten by the ledger-derived value when one is derivable",
+which has not been true since that line was disabled.) ``Sales Type``
 is a free-form master (Customers can carry several via Sales Type Multiselect, e.g.
 "Finished Goods" for ready-made-piece buyers) — not limited to Outright/Outwork/
 Hybrid — so this field is ``Data``, not ``Select``: a fixed option list would reject
