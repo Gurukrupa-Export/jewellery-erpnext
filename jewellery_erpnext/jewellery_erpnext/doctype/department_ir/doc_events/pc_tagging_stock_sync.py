@@ -485,6 +485,14 @@ def _build_sre_from_context(
 	new_sre.voucher_type = v_type
 	new_sre.voucher_no = v_no
 	new_sre.voucher_detail_no = v_detail
+	# Carried forward, not re-derived: this is a RELOCATION of an existing reservation,
+	# so it keeps its link to the Stock Entry Detail it was created from. Dropping it
+	# here would strand every relocated SRE without a sub_setting_type source.
+	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+		copy_sre_provenance,
+	)
+
+	copy_sre_provenance(orig_sre or {}, new_sre)
 	new_sre.reserved_qty = flt(qty, 3)
 	new_sre.voucher_qty = effective_voucher_qty
 	new_sre.available_qty = effective_available_qty

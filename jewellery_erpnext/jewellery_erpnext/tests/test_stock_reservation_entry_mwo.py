@@ -13,7 +13,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_reservation_entry.s
 	CustomStockReservationEntry,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+	SRE_PROVENANCE_FIELDS,
+	copy_sre_provenance,
 	onsubmit,
+	set_sre_provenance,
 	stock_reservation_entry_for_mwo,
 )
 
@@ -1350,3 +1353,112 @@ class TestCustomStockReservationEntry(IntegrationTestCase):
 			sre.auto_reserve_serial_and_batch("Voucher")
 
 		parent_mock.assert_called_once_with("Voucher")
+
+
+# ── Provenance: the link back to the Stock Entry Detail ────────────────────────
+#
+# ``voucher_*`` on a manufacturing reservation points at the SALES ORDER — that is what
+# ERPNext reserves against — so it is no route back to the Stock Entry row that moved the
+# material. That row is the only carrier of ``pcs`` and ``custom_sub_setting_type``, both
+# of which Serial Number Creator needs and neither of which a reservation, a Batch or a
+# Serial and Batch Entry holds.
+#
+# The link is only worth anything if EVERY path that cancels and rebuilds a reservation
+# carries it forward: the app relocates reservations from PC/Tagging, from the EOD sync and
+# from a partial Material Receive. A reservation that loses it falls back to a bounded
+# (operation, item, batch) guess.
+
+
+class TestSREProvenance(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_stamps_the_source_stock_entry_row(self):
+		sre = _bare_sre()
+		set_sre_provenance(sre, "MAT-STE-7", "SED-42")
+
+		self.assertEqual(sre.from_voucher_type, "Stock Entry")
+		self.assertEqual(sre.from_voucher_no, "MAT-STE-7")
+		self.assertEqual(sre.from_voucher_detail_no, "SED-42")
+
+	def test_no_source_row_leaves_the_link_unset(self):
+		# The EOD heal paths rebuild from live batch stock and have nothing to point at.
+		# Inventing a link there would be worse than the bounded fallback.
+		for entry, detail in ((None, None), ("MAT-STE-7", None), (None, "SED-42")):
+			sre = _bare_sre()
+			set_sre_provenance(sre, entry, detail)
+			self.assertFalse(hasattr(sre, "from_voucher_type"))
+
+	def test_relocation_carries_the_link_from_a_document(self):
+		# Partial Material Receive hands a cancelled SRE document.
+		original = _bare_sre(
+			from_voucher_type="Stock Entry",
+			from_voucher_no="MAT-STE-7",
+			from_voucher_detail_no="SED-42",
+		)
+		replacement = _bare_sre()
+
+		copy_sre_provenance(original, replacement)
+
+		self.assertEqual(replacement.from_voucher_type, "Stock Entry")
+		self.assertEqual(replacement.from_voucher_no, "MAT-STE-7")
+		self.assertEqual(replacement.from_voucher_detail_no, "SED-42")
+
+	def test_relocation_carries_the_link_from_a_dict(self):
+		# PC/Tagging and the EOD snapshot paths hand a plain dict.
+		original = {
+			"from_voucher_type": "Stock Entry",
+			"from_voucher_no": "MAT-STE-7",
+			"from_voucher_detail_no": "SED-42",
+		}
+		replacement = _bare_sre()
+
+		copy_sre_provenance(original, replacement)
+
+		self.assertEqual(replacement.from_voucher_detail_no, "SED-42")
+
+	def test_relocating_an_unlinked_reservation_sets_nothing(self):
+		# Every reservation created before the link existed. It must stay blank so the
+		# reader knows to fall back, rather than inheriting a None it might trust.
+		replacement = _bare_sre()
+
+		copy_sre_provenance({}, replacement)
+
+		for field in SRE_PROVENANCE_FIELDS:
+			self.assertFalse(hasattr(replacement, field))
+
+	def test_a_partially_linked_source_carries_only_what_it_has(self):
+		replacement = _bare_sre()
+
+		copy_sre_provenance({"from_voucher_type": "Stock Entry"}, replacement)
+
+		self.assertEqual(replacement.from_voucher_type, "Stock Entry")
+		self.assertFalse(hasattr(replacement, "from_voucher_detail_no"))
+
+	def test_every_recreate_path_uses_the_shared_helper(self):
+		# The three relocation builders live in three modules; the link is only reliable
+		# because they all route through one definition. If a fourth path is added, or one
+		# of these stops calling it, this fails.
+		import inspect
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events import (
+			pc_tagging_stock_sync,
+		)
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation import (
+			manufacturing_operation,
+		)
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings import (
+			mop_eod_sync,
+		)
+
+		for fn, helper in (
+			(manufacturing_operation._build_replacement_sre, "copy_sre_provenance"),
+			(pc_tagging_stock_sync._build_sre_from_context, "copy_sre_provenance"),
+			(mop_eod_sync._build_and_submit_mwo_sre, "set_sre_provenance"),
+		):
+			self.assertIn(
+				helper,
+				inspect.getsource(fn),
+				"%s must route its provenance through %s" % (fn.__name__, helper),
+			)
