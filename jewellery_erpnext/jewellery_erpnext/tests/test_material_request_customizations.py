@@ -581,14 +581,29 @@ class TestMakeStockEntry(IntegrationTestCase):
 				job_card="JC-1",
 				name="MR-1",
 			)
+			# frappe._dict, not MagicMock: MagicMock(name=...) names the mock itself
+			# rather than setting a `name` attribute, and `name` is the key the
+			# batch/serial map is built on.
 			source.items = [
-				MagicMock(
-					item_code="ITM-1", idx=1, batch_no="BATCH-1", serial_no="SR-1"
+				frappe._dict(
+					name="MRI-1",
+					item_code="ITM-1",
+					idx=1,
+					batch_no="BATCH-1",
+					serial_no="SR-1",
 				)
 			]
 
 			target = MagicMock()
-			target_row = frappe._dict(item_code="ITM-1", idx=1, conversion_factor=1)
+			# idx deliberately does NOT match the source row's: the mapper's `condition`
+			# can drop source rows, which renumbers target idx. Rows are paired by
+			# material_request_item (the source row name), so this must still resolve.
+			target_row = frappe._dict(
+				item_code="ITM-1",
+				idx=7,
+				conversion_factor=1,
+				material_request_item="MRI-1",
+			)
 			target.items = [target_row]
 
 			set_missing_values(source, target)
@@ -596,6 +611,9 @@ class TestMakeStockEntry(IntegrationTestCase):
 			self.assertEqual(target.purpose, "Material Transfer for Manufacture")
 			self.assertEqual(target.stock_entry_type, "Customer Goods Transfer")
 			self.assertEqual(target_row.batch_no, "BATCH-1")
+			self.assertEqual(target_row.serial_no, "SR-1")
+			# Stock Entry Detail hides serial_no/batch_no unless this flag is set.
+			self.assertEqual(target_row.use_serial_batch_fields, 1)
 			self.assertEqual(target.bom_no, "BOM-1")
 
 			source_row = frappe._dict(

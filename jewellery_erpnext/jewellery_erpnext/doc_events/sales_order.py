@@ -4470,15 +4470,27 @@ def fetch_sales_type_from_quotation(doc, method=None):
 	Skips if sales_type is already set (never overrides a manual choice) or if
 	there's no prevdoc_docname (Sales Order not created from a Quotation), so it
 	never interferes with the Customer-based get_sales_type() flow.
+
+	Flow Type needs NO bridge here and none should be added: both doctypes call it
+	custom_flow_type, so the mapper's generic copy carries it exactly like
+	order_type. It is only re-asserted below as a safety net for Sales Orders built
+	by paths that bypass the mapper (make_sales_order_batch), under the same
+	"never override" guard.
 	"""
-	if doc.sales_type:
-		return
 	quotation = next((r.prevdoc_docname for r in doc.items if r.prevdoc_docname), None)
 	if not quotation:
 		return
-	sales_type = frappe.db.get_value("Quotation", quotation, "custom_sales_type")
-	if sales_type:
-		doc.sales_type = sales_type
+
+	source = frappe.db.get_value(
+		"Quotation", quotation, ["custom_sales_type", "custom_flow_type"], as_dict=True
+	)
+	if not source:
+		return
+
+	if not doc.sales_type and source.custom_sales_type:
+		doc.sales_type = source.custom_sales_type
+	if not doc.get("custom_flow_type") and source.custom_flow_type:
+		doc.custom_flow_type = source.custom_flow_type
 
 
 @frappe.whitelist()

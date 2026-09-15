@@ -975,10 +975,20 @@ def prelock_bins(self, method=None):
 	# enable per site with site_config "serialize_stock_submit_by_item": 1 and A/B measure.
 	if frappe.conf.get("serialize_stock_submit_by_item"):
 		lock_items([r.item_code for r in self.items])
-	# Canonical position 2: pin this SE's naming-series counter (tabSeries) FOR UPDATE
-	# *before* any Bin lock, so a transaction can never hold a Bin while waiting on the
-	# series row another transaction holds while waiting on that Bin. Re-entrant with the
-	# getseries() call already made at insert (same row, same txn) — purely additive.
+	# Canonical position 2: pin this SE's naming counter FOR UPDATE *before* any Bin lock,
+	# so a transaction can never hold a Bin while waiting on the counter row another
+	# transaction holds while waiting on that Bin.
+	#
+	# What this costs depends on whether naming is sharded, and the helper decides per doc:
+	#   * NOT sharded — the SE falls back to the single shared MAT-STE- tabSeries row, which
+	#     a nested SE minted by an on_submit cascade will also want. Pinned unconditionally,
+	#     exactly as before, so the cascade can never take it after its Bin locks.
+	#   * SHARDED — the SE names off its own per-(company x type) Document Naming Rule
+	#     counter. By this point the doc is always already named (frappe runs set_new_name()
+	#     inside insert() BEFORE run_before_save_methods(), and the update path never names),
+	#     so it will not increment that counter again and nothing is pinned.
+	# Pinning the shared row here for every submit is what made it the dominant 1213 source
+	# in the Sep-2026 production Error Log; sharding is what actually removes the contention.
 	preallocate_series_for_docs(self)
 	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 

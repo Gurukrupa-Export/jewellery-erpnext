@@ -3107,6 +3107,16 @@ def create_test_data():
 
 			_ensure_serial_no_order_type_field()
 
+			# Serial No.custom_sales_type / custom_flow_type (and the matching Quotation /
+			# Sales Order / Material Request fields) are patch-only for the same reason.
+			# Without them create_manufacturing_entry's stamp raises "Unknown column
+			# 'custom_sales_type'" the moment an SNC is submitted.
+			from jewellery_erpnext.patches.add_order_sales_flow_type_fields import (
+				execute as _ensure_order_sales_flow_type_fields,
+			)
+
+			_ensure_order_sales_flow_type_fields()
+
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
 			# Without them every Sales Order / Delivery Note / Sales Invoice save raises
@@ -3136,6 +3146,17 @@ def create_test_data():
 			)
 
 			_ensure_serial_no_stamping_unique_index()
+			# The FG-serial BOM weight block on Material Request Item / Stock Entry Detail
+			# (custom_bom_gross_weight ... custom_bom_total_gemstone_pcs). Patch-only for
+			# the same reason as the Serial No fields above, and the git_action_v16 Custom
+			# Field fixture predates it, so without this the columns are missing on
+			# test_site and everything validate_fg_serial_rows / set_fg_bom_weights stamps
+			# is silently dropped on save.
+			from jewellery_erpnext.patches.add_fg_serial_bom_weight_fields import (
+				execute as _ensure_fg_serial_bom_weight_fields,
+			)
+
+			_ensure_fg_serial_bom_weight_fields()
 
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —

@@ -60,6 +60,8 @@
   "section_break_ibirs",
   "manufacturing_order",
   "order_type",
+  "sales_type",
+  "flow_type",
   "status",
   "split_from",
   "column_break_p1ihu",
@@ -258,6 +260,21 @@
    "fieldname": "order_type",
    "fieldtype": "Data",
    "label": "Order Type"
+  },
+  {
+   "fetch_from": "manufacturing_order.sales_type",
+   "fieldname": "sales_type",
+   "fieldtype": "Link",
+   "label": "Sales Type",
+   "options": "Sales Type",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_order.flow_type",
+   "fieldname": "flow_type",
+   "fieldtype": "Data",
+   "label": "Flow Type",
+   "read_only": 1
   },
   {
    "fetch_from": "manufacturing_order.metal_colour",
