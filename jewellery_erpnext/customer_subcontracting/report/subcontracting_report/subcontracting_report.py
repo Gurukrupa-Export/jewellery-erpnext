@@ -300,7 +300,44 @@ def get_conditions(filters):
 	return conditions
 
 
+def get_customer_goods_receipt_types():
+	"""Every Stock Entry Type that represents a customer goods receipt.
+
+	Always includes the legacy literal, and adds the configured type when the Customer
+	Gold flow is enabled. Parameterised rather than interpolated -- these values reach a
+	SQL ``IN`` clause.
+
+	Without this the report hardcoded the legacy type alone, so receipts under a
+	configured type contributed NO opening balance while their downstream usage rows still
+	appeared. Every such batch rendered as over-consumed: wrong numbers rather than an
+	error, which is the harder kind to notice.
+	"""
+	types = ["Customer Goods Received"]
+
+	try:
+		from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+			get_customer_gold_settings,
+			is_customer_gold_enabled,
+		)
+
+		if is_customer_gold_enabled():
+			configured = get_customer_gold_settings().get(
+				"customer_goods_stock_entry_type"
+			)
+			if configured and configured not in types:
+				types.append(configured)
+	except Exception:
+		# A report must never fail to render because settings could not be read; the
+		# legacy type alone is exactly the pre-existing behaviour.
+		pass
+
+	return types
+
+
 def get_cgr_data(filters, conditions):
+	query_filters = dict(filters or {})
+	query_filters["cgr_stock_entry_types"] = get_customer_goods_receipt_types()
+
 	return frappe.db.sql(
 		f"""
     SELECT
@@ -310,12 +347,12 @@ def get_cgr_data(filters, conditions):
       sed.item_code
     FROM `tabStock Entry Detail` sed
     JOIN `tabStock Entry` se ON se.name = sed.parent
-    WHERE se.stock_entry_type = 'Customer Goods Received'
+    WHERE se.stock_entry_type IN %(cgr_stock_entry_types)s
 	AND se.docstatus =1
     {conditions}
     GROUP BY sed.batch_no, sed.customer, sed.item_code
     """,
-		filters,
+		query_filters,
 		as_dict=1,
 		as_iterator=True,
 	)

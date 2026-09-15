@@ -170,7 +170,33 @@ def cancel_bom(self):
 			row.custom_tracking_bom = None
 
 
-@frappe.whitelist()
+#: The only parents the BOM-detail dialog is ever opened against. Every call site passes
+#: one of these two literals -- ``BOM`` from the Sales Order / Sales Invoice / Delivery
+#: Note / Purchase Order / Stock Entry dialogs, ``Tracking Bom`` from Quotation. Kept as an
+#: allowlist because ``parent_doctype`` arrives from the client and is fed straight to
+#: ``frappe.get_doc``.
+BOM_DETAIL_PARENTS = ("BOM", "Tracking Bom")
+
+#: Never accepted from the caller's row payload. ``docname``/``name`` identify the row;
+#: the rest are framework-owned. ``parenttype``/``parent`` matter most: Frappe's
+#: ``has_child_permission`` resolves the permission target from the row's IN-MEMORY
+#: ``parenttype``, so letting a caller set it lets them choose which doctype their own
+#: permission is checked against.
+_PROTECTED_ROW_FIELDS = (
+	"docname",
+	"name",
+	"parent",
+	"parenttype",
+	"parentfield",
+	"docstatus",
+	"owner",
+	"creation",
+	"modified",
+	"modified_by",
+)
+
+
+@frappe.whitelist(methods=["POST"])
 def update_bom_detail(
 	parent_doctype,
 	parent_doctype_name,
@@ -180,7 +206,40 @@ def update_bom_detail(
 	finding_detail,
 	other_detail,
 ):
+	"""Update the BOM detail child tables of one BOM or Tracking Bom.
+
+	SECURITY. This endpoint took its caller entirely on trust. It is reachable by any
+	authenticated session, and the five child DocTypes it writes are SHARED -- attached to
+	ERPNext's ``BOM`` by ``custom_fields/bom.json`` and to ``Order`` / ``Repair Order`` by
+	gke_customization. A row name therefore addresses far more than the named parent.
+
+	Four things are fixed here:
+
+	* **POST only.** ``@frappe.whitelist()`` alone leaves the endpoint GET-callable, and
+	  Frappe skips CSRF validation for methods outside ``UNSAFE_HTTP_METHODS`` -- so a write
+	  endpoint was drive-by triggerable from a link or an ``<img src>``.
+	* **Authorization.** There was no permission check at all. The parent's own ``save()``
+	  eventually checks ``write``, but only after every child row has already been written
+	  and saved individually.
+	* **``parent_doctype`` is caller-supplied** and went straight into ``frappe.get_doc``.
+	  Now restricted to the two doctypes the dialog actually uses.
+	* **Row resolution** -- see ``update_table``.
+
+	``ignore_validate_update_after_submit`` is deliberately left in place: editing a
+	submitted BOM's costing rows is what this endpoint is for, and narrowing that is a
+	behavioural decision for the business, not part of a security fix.
+	"""
+	if parent_doctype not in BOM_DETAIL_PARENTS:
+		frappe.throw(
+			_("{0} is not a valid parent for BOM details.").format(
+				frappe.bold(parent_doctype)
+			),
+			title=_("Invalid Parent DocType"),
+			exc=frappe.PermissionError,
+		)
+
 	parent = frappe.get_doc(parent_doctype, parent_doctype_name)
+	frappe.has_permission(parent_doctype, "write", doc=parent, throw=True)
 
 	set_metal_detail(parent, metal_detail)
 	set_diamond_detail(parent, diamond_detail)
@@ -239,12 +298,41 @@ def set_other_detail(parent, other_material):
 
 
 def update_table(parent, table, table_field, doc):
-	if not doc.get("docname"):
+	"""Update one row of ``table_field`` on ``parent``.
+
+	Existing rows are resolved from the PARENT's own child table, never globally by name.
+	``frappe.get_doc(table, docname)`` looked the row up by primary key alone and never
+	checked it belonged to ``parent`` -- and because these child DocTypes are shared with
+	ERPNext's ``BOM`` and with gke's ``Order`` / ``Repair Order``, a caller could name a row
+	under any of them and have it rewritten through a parent they were allowed to touch.
+
+	Framework-owned keys are stripped from the payload rather than merged. ``parenttype``
+	is the one that matters: ``frappe.permissions.has_child_permission`` reads it from the
+	row IN MEMORY, so a caller who could set it could choose which doctype their own
+	permission was checked against -- steering the check meant to police them.
+	"""
+	docname = doc.get("docname")
+
+	if not docname:
 		child_doc = parent.append(table_field, {})
 	else:
-		child_doc = frappe.get_doc(table, doc.get("docname"))
-	doc.pop("docname", "")
-	doc.pop("name", "")
+		child_doc = next(
+			(row for row in parent.get(table_field) or [] if row.name == docname), None
+		)
+		if not child_doc:
+			frappe.throw(
+				_("Row {0} does not belong to {1} {2}.").format(
+					frappe.bold(docname),
+					_(parent.doctype),
+					frappe.bold(parent.name),
+				),
+				title=_("Invalid Row Reference"),
+				exc=frappe.PermissionError,
+			)
+
+	for field in _PROTECTED_ROW_FIELDS:
+		doc.pop(field, None)
+
 	child_doc.update(doc)
 	child_doc.flags.ignore_validate_update_after_submit = True
 	child_doc.save()

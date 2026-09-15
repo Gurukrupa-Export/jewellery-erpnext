@@ -152,7 +152,26 @@ class TrackingBom(Document):
 			)
 
 
-@frappe.whitelist()
+#: Never accepted from the caller's row payload. ``docname``/``name`` identify the row; the
+#: rest are framework-owned. ``parenttype``/``parent`` matter most: Frappe's
+#: ``has_child_permission`` resolves the permission target from the row's IN-MEMORY
+#: ``parenttype``, so letting a caller set it lets them choose which doctype their own
+#: permission is checked against.
+_PROTECTED_ROW_FIELDS = (
+	"docname",
+	"name",
+	"parent",
+	"parenttype",
+	"parentfield",
+	"docstatus",
+	"owner",
+	"creation",
+	"modified",
+	"modified_by",
+)
+
+
+@frappe.whitelist(methods=["POST"])
 def update_tracking_bom_detail(
 	tracking_bom_name,
 	metal_detail=None,
@@ -161,10 +180,30 @@ def update_tracking_bom_detail(
 	finding_detail=None,
 	other_detail=None,
 ):
-	"""Whitelisted method to update Tracking BOM detail tables."""
+	"""Whitelisted method to update Tracking BOM detail tables.
+
+	SECURITY. This endpoint previously trusted its caller completely. Three things were
+	wrong and all three are fixed here:
+
+	* **No authorization.** ``@frappe.whitelist()`` with no permission check means any
+	  authenticated session could call it, whatever their role. It now requires ``write``
+	  on the specific Tracking Bom named.
+	* **Cross-document writes.** ``_update_child_table`` resolved each row with
+	  ``frappe.get_doc(child_doctype, d["docname"])`` -- a global lookup by name that never
+	  checked the row belonged to ``tracking_bom_name``. A caller who knew (or guessed) any
+	  ``BOM Metal Detail`` row name could rewrite it through an unrelated parent they DID
+	  have access to. Rows are now resolved from this parent's own child table, so a foreign
+	  name simply is not found.
+	* **GET-callable.** Restricted to POST, so it cannot be triggered by a plain link.
+
+	``ignore_validate_update_after_submit`` is left as it was: bypassing the
+	submitted-document guard is what this endpoint exists to do, and narrowing that is a
+	separate behavioural decision.
+	"""
 	import json
 
 	doc = frappe.get_doc("Tracking Bom", tracking_bom_name)
+	frappe.has_permission(doc.doctype, "write", doc=doc, throw=True)
 
 	if metal_detail:
 		_update_child_table(
@@ -194,14 +233,37 @@ def update_tracking_bom_detail(
 
 
 def _update_child_table(parent, child_doctype, table_field, data):
-	"""Helper to update a child table on Tracking BOM."""
+	"""Update rows of ``table_field`` on ``parent``.
+
+	Existing rows are looked up in the PARENT's own child table, never globally by name.
+	That is the structural half of the security fix: a ``docname`` belonging to another
+	Tracking Bom is not present in this map, so it is rejected instead of silently
+	rewriting another document's row.
+	"""
+	existing = {row.name: row for row in parent.get(table_field) or []}
+
 	for d in data:
-		if not d.get("docname"):
+		docname = d.get("docname")
+		if not docname:
 			child_doc = parent.append(table_field, {})
 		else:
-			child_doc = frappe.get_doc(child_doctype, d.get("docname"))
-		d.pop("docname", "")
-		d.pop("name", "")
+			child_doc = existing.get(docname)
+			if not child_doc:
+				frappe.throw(
+					_("Row {0} does not belong to {1} {2}.").format(
+						frappe.bold(docname),
+						_(parent.doctype),
+						frappe.bold(parent.name),
+					),
+					title=_("Invalid Row Reference"),
+					exc=frappe.PermissionError,
+				)
+
+		for field in _PROTECTED_ROW_FIELDS:
+			d.pop(field, None)
+
 		child_doc.update(d)
 		child_doc.flags.ignore_validate_update_after_submit = True
+		# Persistence is left exactly as it was -- the per-row save, then the parent save
+		# in the caller. This change is about WHICH row is resolved, not how it is written.
 		child_doc.save()

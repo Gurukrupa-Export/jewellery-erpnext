@@ -28,16 +28,18 @@ valuation and the liability posting are separate, later work.
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, getdate
 
 from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
 	resolve_customer_gold_rate_for_date,
 )
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+	VALUATION_NOMINAL,
+	get_customer_gold_company_settings,
 	get_customer_gold_settings,
+	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
 )
-
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	DEFAULT_INVENTORY_TYPE,
 )
@@ -84,7 +86,8 @@ def validate_customer_gold_receipt(doc, method=None):
 	_validate_receipt_purpose(settings)
 	customer = _validate_customer(doc)
 	_validate_rows(doc, settings, customer)
-	set_customer_gold_rate_snapshot(doc, settings)
+	rate = set_customer_gold_rate_snapshot(doc, settings)
+	apply_valuation_policy(doc, rate)
 
 
 def _validate_receipt_purpose(settings):
@@ -120,10 +123,29 @@ def _validate_customer(doc):
 			# blank. Backfill from the authoritative header rather than reject.
 			row.customer = customer
 		elif row.customer != customer:
+			# The batch is named when there is one, because in practice this message is what
+			# a user sees when they reuse ANOTHER customer's batch -- not when they type a
+			# mismatched customer. ``CustomStockEntry.update_batches`` runs earlier in the
+			# before_validate chain and overwrites ``row.customer`` from the batch, so by the
+			# time this check runs the row already carries the batch owner's name and the
+			# dedicated "Batch ... belongs to Customer ..." throw further down is unreachable.
+			#
+			# The receipt is correctly blocked either way -- this is not a hole -- but without
+			# the batch in the message the error text says only that two customer names differ
+			# and gives no clue which batch caused it. Fixing the ordering instead would mean
+			# reordering that before_validate chain, which is load-bearing for unrelated flows.
+			suffix = (
+				_(" Batch {0} is owned by {1}.").format(
+					frappe.bold(row.batch_no), frappe.bold(row.customer)
+				)
+				if row.get("batch_no")
+				else ""
+			)
 			frappe.throw(
 				_(
 					"Row #{0}: Customer {1} does not match the receipt Customer {2}."
-				).format(row.idx, frappe.bold(row.customer), frappe.bold(customer)),
+				).format(row.idx, frappe.bold(row.customer), frappe.bold(customer))
+				+ suffix,
 				title=_("Customer Mismatch"),
 			)
 
@@ -177,6 +199,106 @@ def _validate_rows(doc, settings, customer):
 			)
 
 
+#: Batch fields read by ``validate_customer_gold_batches``. ``custom_company`` is optional
+#: because it is NOT shipped by ``custom_fields/batch.json`` -- it reaches a site by some
+#: other route, so a freshly installed one does not have the column at all and naming it
+#: unconditionally raises ``Unknown column 'custom_company' in 'SELECT'``.
+_REQUIRED_BATCH_FIELDS = (
+	"item",
+	"custom_customer",
+	"custom_inventory_type",
+	"disabled",
+	"expiry_date",
+)
+_OPTIONAL_BATCH_FIELDS = ("custom_company",)
+
+
+def _batch_fields():
+	"""The Batch fields to read, skipping optional ones this site does not have.
+
+	Uses ``frappe.db.has_column`` rather than ``frappe.get_meta``. Both answer the
+	question, but ``get_meta`` resolves through ``frappe.db.get_value`` -- and the suites
+	covering this module patch that accessor wholesale, so a meta lookup here would be
+	answered by a test stub instead of the database. That is the same contamination that
+	produced the original CI failure in this area; ``has_column`` reads the table columns
+	directly and cannot be intercepted by it.
+	"""
+	return list(_REQUIRED_BATCH_FIELDS) + [
+		field
+		for field in _OPTIONAL_BATCH_FIELDS
+		if frappe.db.has_column("Batch", field)
+	]
+
+
+def apply_valuation_policy(doc, rate):
+	"""Stamp the row valuation fields required by the configured policy.
+
+	Runs AFTER ``set_customer_gold_rate_snapshot`` because the nominal branch needs the
+	resolved per-gram rate, and after ``_validate_rows`` because it needs the final
+	ownership tagging.
+
+	**Zero Value (the default, and every existing site).** Stamp
+	``allow_zero_valuation_rate`` and leave ``basic_rate`` alone. This has to happen here,
+	not in ``doc_events.stock_entry.allow_zero_valuation``: hooks.py runs that hook FIRST,
+	and at that point the blanket default earlier in the same hook has stamped the row
+	"Regular Stock", so allow_zero_valuation sees a non-customer row and leaves the flag at
+	0. ``_validate_rows`` then flips ownership to Customer Goods -- leaving Customer Goods
+	metal without the flag, which sends erpnext to the ``stock_entry.py:1661`` fallback and
+	either throws or books COMPANY valuation onto customer-owned metal. The browser never
+	showed this because ``stock_entry.js`` sets both fields client-side.
+
+	**Nominal.** Stamp ``basic_rate`` from the frozen per-gram rate and
+	``set_basic_rate_manually``, and deliberately do NOT stamp the allow-zero flag.
+	``set_basic_rate_manually`` is what makes the entered rate survive: erpnext's loop at
+	``stock_entry.py:1615-1619`` takes ``continue`` for such a row, computing ``basic_amount``
+	and skipping everything after -- including the allow-zero wipe at ``:1629``, the ``:1661``
+	valuation fallback, and ``get_args_for_incoming_rate``.
+
+	So the two flags are not in fact in conflict (``set_basic_rate_manually`` short-circuits
+	before the flag is ever read), but stamping both would be stamping one that can never be
+	consulted. They are kept mutually exclusive so the row says what it means.
+
+	This function decides NOTHING about accounting policy -- it applies whichever policy is
+	configured. Whether nominal is approved at all is D01.
+	"""
+	policy = get_customer_gold_valuation_policy()
+
+	if policy != VALUATION_NOMINAL:
+		for row in doc.get("items") or []:
+			row.allow_zero_valuation_rate = 1
+			row.set_basic_rate_manually = 0
+		return
+
+	# Resolved once per document, and deliberately NOT inside the loop: it throws when the
+	# company has no configured row, and that must fail the whole receipt rather than half of
+	# its rows. This is the first production caller of this resolver.
+	accounts = get_customer_gold_company_settings(doc.get("company"))
+	per_gram = flt(rate.per_gram_rate) if rate else 0.0
+
+	for row in doc.get("items") or []:
+		row.basic_rate = per_gram
+		row.set_basic_rate_manually = 1
+		row.allow_zero_valuation_rate = 0
+
+		# THE CONTRA ACCOUNT. For a Stock Entry the credit leg is the row's
+		# ``expense_account`` -- ``StockController.get_gl_entries`` reads it at
+		# ``stock_controller.py:810``, and the ``target_warehouse`` branch above it can never
+		# fire because Stock Entry Detail has no such field (it uses ``t_warehouse``).
+		#
+		# A Liability-root account is legitimate here; all three gates accept it:
+		#   * ``check_expense_account`` exempts "Stock Entry" from its P&L requirement
+		#     (``stock_controller.py:1080``);
+		#   * ``validate_difference_account`` rejects only ``account_type == "Stock"``, and
+		#     for an opening entry actually REQUIRES Asset/Liability -- core explicitly
+		#     contemplates a liability account here (``stock_entry.py:917-932``);
+		#   * ``GL Entry.validate`` has no root-type check at all.
+		#
+		# So the standard path credits the liability directly and NO reclassification JE is
+		# needed -- the spec's S07 §7.1 "already credits the approved liability" branch.
+		# Adding a JE on top would be the duplicate stock debit that section forbids.
+		row.expense_account = accounts.liability_account
+
+
 def validate_customer_gold_batches(doc, method=None):
 	"""Batch ownership rules, run after the batch creators have minted batches."""
 	settings = _receipt_settings(doc)
@@ -195,10 +317,7 @@ def validate_customer_gold_batches(doc, method=None):
 			)
 
 		batch = frappe.db.get_value(
-			"Batch",
-			row.batch_no,
-			["custom_customer", "custom_inventory_type"],
-			as_dict=True,
+			"Batch", row.batch_no, _batch_fields(), as_dict=True
 		)
 		if not batch:
 			frappe.throw(
@@ -207,6 +326,75 @@ def validate_customer_gold_batches(doc, method=None):
 				)
 			)
 
+		if batch.item and batch.item != row.item_code:
+			# erpnext does catch this eventually -- but in
+			# ``serial_and_batch_bundle``, built during ``on_submit``, i.e. after this
+			# hook. Throwing here names the row and the receipt while the operator still
+			# has the document in front of them.
+			frappe.throw(
+				_("Row #{0}: Batch {1} belongs to Item {2}, not {3}.").format(
+					row.idx,
+					frappe.bold(row.batch_no),
+					frappe.bold(batch.item),
+					frappe.bold(row.item_code),
+				),
+				title=_("Batch Item Mismatch"),
+			)
+
+		# Compared only when set, NEVER required, and only where the field exists at all.
+		# ``create_parent_batches`` does not stamp ``custom_company`` and neither does
+		# ``update_inventory_dimentions``, so demanding it would reject this flow's own
+		# freshly minted batches.
+		if (
+			batch.get("custom_company")
+			and doc.get("company")
+			and batch.custom_company != doc.company
+		):
+			frappe.throw(
+				_("Row #{0}: Batch {1} belongs to Company {2}, not {3}.").format(
+					row.idx,
+					frappe.bold(row.batch_no),
+					frappe.bold(batch.custom_company),
+					frappe.bold(doc.company),
+				),
+				title=_("Batch Company Mismatch"),
+			)
+
+		# A genuine gap, not belt-and-braces. erpnext's own ``StockEntry.validate_batch``
+		# guards disabled and expired batches only for purposes ``Material Transfer for
+		# Manufacture``, ``Manufacture``, ``Repack`` and ``Send to Subcontractor``.
+		# ``Material Receipt`` is NOT in that list -- and Settings force the configured
+		# Customer Gold type to be exactly ``Material Receipt``. So without this, a
+		# disabled or expired batch is accepted by erpnext and by this validator alike.
+		if batch.disabled:
+			frappe.throw(
+				_(
+					"Row #{0}: Batch {1} is disabled and cannot receive customer gold."
+				).format(row.idx, frappe.bold(row.batch_no)),
+				title=_("Batch Disabled"),
+			)
+
+		if batch.expiry_date and doc.get("posting_date"):
+			if getdate(batch.expiry_date) < getdate(doc.posting_date):
+				frappe.throw(
+					_(
+						"Row #{0}: Batch {1} expired on {2}, before the posting date {3}."
+					).format(
+						row.idx,
+						frappe.bold(row.batch_no),
+						frappe.bold(batch.expiry_date),
+						frappe.bold(doc.posting_date),
+					),
+					title=_("Batch Expired"),
+				)
+
+		# UNREACHABLE IN PRACTICE, and left in place deliberately. See the note at the
+		# Customer Mismatch throw above: ``CustomStockEntry.update_batches`` copies the batch
+		# owner onto ``row.customer`` earlier in the before_validate chain, so a row carrying
+		# another customer's batch is rejected there first. This remains as the correct check
+		# for any path that reaches this validator without that copy having happened -- a
+		# server-side caller, or a future reordering. It must not be deleted on the assumption
+		# that the earlier check will always fire.
 		if batch.custom_customer and batch.custom_customer != customer:
 			frappe.throw(
 				_(
@@ -233,6 +421,50 @@ def validate_customer_gold_batches(doc, method=None):
 					frappe.bold(batch.custom_inventory_type),
 				),
 				title=_("Invalid Batch Inventory Type"),
+			)
+
+		# The two guards above are of the shape `if <field> and <field> != expected`, so
+		# a BLANK value short-circuits past both. That is the C06 hole, and it is not
+		# theoretical: row_ownership documents that production holds Customer Goods
+		# batches with a NULL customer.
+		#
+		# A batch minted by this flow always carries both fields -- create_parent_batches
+		# sets custom_customer and custom_inventory_type together (batch_rename.py:76-77)
+		# -- so the only way to arrive here with a blank is a PRE-EXISTING batch that was
+		# never ownership-stamped, or was stamped Customer Goods without an owner. Neither
+		# may be adopted into a customer's receipt by silence.
+		#
+		# Deliberately scoped to this receipt. It does NOT change
+		# row_ownership.normalize_ownership, whose downgrade-to-Regular-Stock exists so
+		# that loss and repack builders can consume malformed historical stock without
+		# hard-failing a submit. Refusing to *originate* a customer obligation against an
+		# unowned batch is a different question from refusing to *consume* one.
+		if not batch.custom_inventory_type:
+			frappe.throw(
+				_(
+					"Row #{0}: Batch {1} has no Inventory Type, so it cannot be accepted "
+					"as customer gold. Set its Inventory Type to {2} and its Customer "
+					"before submitting."
+				).format(
+					row.idx,
+					frappe.bold(row.batch_no),
+					frappe.bold(CUSTOMER_GOODS),
+				),
+				title=_("Batch Ownership Unresolved"),
+			)
+
+		if not batch.custom_customer:
+			frappe.throw(
+				_(
+					"Row #{0}: Batch {1} is {2} but has no Customer, so the gold it holds "
+					"has no owner. Set its Customer to {3} before submitting."
+				).format(
+					row.idx,
+					frappe.bold(row.batch_no),
+					frappe.bold(CUSTOMER_GOODS),
+					frappe.bold(customer),
+				),
+				title=_("Batch Ownership Unresolved"),
 			)
 
 
