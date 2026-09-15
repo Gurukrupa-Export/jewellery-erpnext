@@ -176,3 +176,157 @@ class TestSetStampingNo(IntegrationTestCase):
 		):
 			stamping.set_stamping_no(doc)
 		self.assertEqual(doc.get("custom_stamping_no"), "2F0003")
+
+
+def _a_company():
+	return frappe.defaults.get_global_default("company") or frappe.db.get_value(
+		"Company", {}, "name"
+	)
+
+
+def _any_item():
+	"""Any Item on this site.
+
+	ERPNext's ``SerialNo.validate`` does not check ``Item.has_serial_no`` -- it only refuses
+	a warehouse on a brand-new doc -- so the link merely has to resolve.
+	"""
+	return frappe.db.get_value("Item", {"disabled": 0}, "name")
+
+
+class TestStampingIsSncOnly(IntegrationTestCase):
+	"""ONLY the Serial Number Creator may mint a stamping number.
+
+	The bug: ``set_stamping_no`` was wired as a ``before_save`` hook on Serial No, so every
+	Serial No save minted one -- Job Card tags (``job_card.create_serial_no``), Product
+	Certification write-backs (``product_certification.add_to_serial_no``), the
+	``serial_reference`` sales hooks and every plain desk edit. A stamping number goes onto
+	physical metal and means "the SNC produced this piece", so handing one to a tag or a
+	purchased serial makes the number meaningless.
+
+	The mint now happens at exactly one call site,
+	``serial_number_creator.update_new_serial_no``.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _make_serial_no(self, name):
+		frappe.db.delete("Serial No", {"serial_no": name})
+		doc = frappe.new_doc("Serial No")
+		doc.serial_no = name
+		doc.item_code = _any_item()
+		doc.company = _a_company()
+		doc.save()
+		self.addCleanup(frappe.db.delete, "Serial No", {"serial_no": name})
+		return doc
+
+	def _assert_unstamped(self, doc, why):
+		self.assertFalse(doc.get(stamping.STAMPING_NO_FIELD), why)
+		self.assertFalse(
+			frappe.db.get_value("Serial No", doc.name, stamping.STAMPING_NO_FIELD), why
+		)
+
+	def test_no_stamping_hook_is_registered_on_serial_no(self):
+		"""The structural guard: re-wiring the hook re-opens the bug."""
+		wired = frappe.get_hooks("doc_events").get("Serial No", {})
+		handlers = [
+			handler
+			for value in wired.values()
+			for handler in (value if isinstance(value, list) else [value])
+		]
+		self.assertEqual(
+			[h for h in handlers if "set_stamping_no" in h],
+			[],
+			"set_stamping_no is wired as a Serial No doc_event again. That stamps EVERY "
+			"Serial No save, not just the finished good the SNC produced.",
+		)
+
+	def test_signature_rejects_the_doc_event_calling_convention(self):
+		"""Frappe calls a doc_event as ``fn(doc, method)``.
+
+		The single-argument signature is what makes a re-wiring fail loudly on the first
+		Serial No save instead of silently stamping everything again.
+		"""
+		with self.assertRaises(TypeError):
+			stamping.set_stamping_no(frappe.new_doc("Serial No"), "before_save")
+
+	def test_a_plain_serial_no_save_is_not_stamped(self):
+		doc = self._make_serial_no("TEST-STAMP-PLAIN")
+		self._assert_unstamped(
+			doc, "a hand-created Serial No must carry no stamping number"
+		)
+
+	def test_a_later_edit_does_not_stamp_either(self):
+		"""The common desk case: someone opens an old serial and saves it."""
+		doc = self._make_serial_no("TEST-STAMP-EDITED")
+		doc.description = "edited"
+		doc.save()
+		self._assert_unstamped(
+			doc, "editing a Serial No must not mint a stamping number"
+		)
+
+	def test_a_job_card_tag_serial_is_not_stamped(self):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doc_events import job_card
+
+		if not frappe.defaults.get_global_default("company"):
+			# job_card.create_serial_no never sets `company`, so it relies on the global
+			# default to satisfy the reqd field. That is the real path's behaviour, not
+			# something to paper over here.
+			self.skipTest("no global default company on this site")
+
+		tag = "TEST-STAMP-JOBCARD-TAG"
+		frappe.db.delete("Serial No", {"serial_no": tag})
+		self.addCleanup(frappe.db.delete, "Serial No", {"serial_no": tag})
+
+		name = job_card.create_serial_no(
+			SimpleNamespace(
+				tag=tag,
+				item_code=_any_item(),
+				doctype="Job Card",
+				name="TEST-STAMP-JC-0001",
+			)
+		)
+		self.assertFalse(
+			frappe.db.get_value("Serial No", name, stamping.STAMPING_NO_FIELD),
+			"a Job Card tag is not an SNC-produced piece and must carry no stamping number",
+		)
+
+	def test_a_product_certification_huid_writeback_does_not_stamp(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification import (
+			add_to_serial_no,
+		)
+
+		doc = self._make_serial_no("TEST-STAMP-PC-HUID")
+		add_to_serial_no(
+			doc.name,
+			frappe._dict(date=frappe.utils.nowdate()),
+			frappe._dict(huid="TEST-HUID-0001"),
+		)
+		self._assert_unstamped(
+			frappe.get_doc("Serial No", doc.name),
+			"a Product Certification write-back must not mint a stamping number",
+		)
+
+	def test_the_snc_is_the_only_caller(self):
+		"""One mint site, provable by grep -- the whole point of dropping the hook."""
+		import pathlib
+
+		root = pathlib.Path(frappe.get_app_path("jewellery_erpnext"))
+		callers = sorted(
+			path.relative_to(root).as_posix()
+			for path in root.rglob("*.py")
+			if "set_stamping_no(" in path.read_text(encoding="utf-8")
+		)
+		self.assertEqual(
+			callers,
+			[
+				"jewellery_erpnext/doc_events/serial_no.py",
+				"jewellery_erpnext/doctype/serial_number_creator/serial_number_creator.py",
+				"jewellery_erpnext/tests/test_stamping_no.py",
+			],
+			"a new caller of set_stamping_no appeared. Only the Serial Number Creator may "
+			"mint a stamping number.",
+		)

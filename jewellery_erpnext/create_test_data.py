@@ -3121,8 +3121,8 @@ def create_test_data():
 
 			# Serial No.custom_stamping_no is patch-only for the same reason. `bench
 			# install-app` marks every patch as already applied on a fresh site, so
-			# `bench migrate` never runs it and set_stamping_no -- a before_save hook on
-			# EVERY Serial No -- had no field to read.
+			# `bench migrate` never runs it and set_stamping_no -- which every Serial
+			# Number Creator submit calls -- had no field to read.
 			from jewellery_erpnext.patches.add_serial_no_stamping_no_field import (
 				execute as _ensure_serial_no_stamping_no_field,
 			)

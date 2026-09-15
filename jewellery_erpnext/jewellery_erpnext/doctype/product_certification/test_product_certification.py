@@ -306,8 +306,10 @@ class TestProductCertification(IntegrationTestCase):
 		fetch_sn(certification_receive, serial_no.name)
 		certification_receive.total_amount = 450
 		certification_receive.save()
-		for row in certification_receive.exploded_product_details:
-			row.certification = "CERT-1234"
+		# No certification number is set: the `certification` field is gone from Exploded
+		# Product Details, and with it validate_items' Diamond Certificate gate. This is the
+		# suite's only Diamond Certificate Receive, so this submit IS the regression test
+		# that the gate no longer blocks one.
 		certification_receive.submit()
 
 		se = frappe.get_doc(
@@ -326,7 +328,7 @@ class TestProductCertification(IntegrationTestCase):
 			certification_receive.product_details[0].item_code, se.items[0].item_code
 		)
 
-		# Validation for certification update
+		# Validation for serial-no linkage
 		pmo_doc = frappe.db.get_value("Serial No", serial_no.name, "name")
 		self.assertTrue(pmo_doc)
 
@@ -425,6 +427,21 @@ class TestProductCertification(IntegrationTestCase):
 		receive.exploded_product_details[0].huid = "HM-9999"
 		receive.save()
 		receive.submit()
+
+		# This Receive's exploded row carries a PMO and no serial_no, so update_huid takes
+		# its PMO branch and appends to the HUID Detail table. That append used to read a
+		# `certification` field that no longer exists on Exploded Product Details; assert on
+		# the row so the branch is covered rather than merely executed.
+		pmo_huids = frappe.db.get_all(
+			"HUID Detail",
+			filters={"parent": pmo.name, "parenttype": "Parent Manufacturing Order"},
+			fields=["huid", "date"],
+		)
+		self.assertIn("HM-9999", [row.huid for row in pmo_huids])
+		self.assertTrue(
+			[row.date for row in pmo_huids if row.huid == "HM-9999"][0],
+			"update_huid must still stamp the date alongside the HUID",
+		)
 
 		# Verify Receive generated a Stock Entry and Purchase Order
 		receive_se_name = frappe.db.get_value(
@@ -710,7 +727,6 @@ class TestProductCertification(IntegrationTestCase):
 
 			# The assay report belongs to the Touch row and is demanded at submit by
 			# validate_fire_assy_report.
-			main_row.certification = "CERT-001"
 			main_row.report_no = "FA-RPT-001"
 			main_row.report_result = 91.85
 
@@ -2339,14 +2355,13 @@ _FULL_TOUCH = {
 	"assay_row_type": "Touch",
 	"item_code": "M22",
 	"tree_no": "TREE-A",
-	"certification": "CERT-1",
 	"report_no": "RPT-1",
 	"report_result": 91.85,
 }
 
 
 class TestFireAssyReport(IntegrationTestCase):
-	"""Certification / Report No / Report Result are demanded on the Touch row alone.
+	"""Report No / Report Result are demanded on the Touch row alone.
 
 	The JSON mandatory_depends_on is client-side only, and on a Float it never blocks a save
 	at all (is_null(0) is false), so this is the gate that actually holds.
@@ -2360,18 +2375,16 @@ class TestFireAssyReport(IntegrationTestCase):
 	def test_complete_touch_row_passes(self):
 		_check_report([dict(_FULL_TOUCH)])
 
-	def test_missing_certification_throws_naming_the_tree(self):
-		row = dict(_FULL_TOUCH, certification=None)
-		with self.assertRaises(ValidationError) as cm:
-			_check_report([row])
-		msg = frappe.utils.strip_html(str(cm.exception))
-		self.assertIn("Row #1", msg)
-		self.assertIn("TREE-A", msg)
-
-	def test_missing_report_no_throws(self):
+	def test_missing_report_no_throws_naming_the_tree(self):
+		# The row/tree assertions moved here from the deleted
+		# test_missing_certification_throws_naming_the_tree: an operator needs to know WHICH
+		# sample is short, and report_no is now the only Data field this gate guards.
 		with self.assertRaises(ValidationError) as cm:
 			_check_report([dict(_FULL_TOUCH, report_no=None)])
-		self.assertIn("Report No", frappe.utils.strip_html(str(cm.exception)))
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("Report No", msg)
+		self.assertIn("Row #1", msg)
+		self.assertIn("TREE-A", msg)
 
 	def test_zero_report_result_throws(self):
 		with self.assertRaises(ValidationError) as cm:
