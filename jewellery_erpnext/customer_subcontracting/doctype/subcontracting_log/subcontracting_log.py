@@ -46,6 +46,64 @@ ENTRY_TYPE = {
 	},
 }
 
+#: Types whose rows describe an inventory movement rather than a work-order consumption.
+#: The configured Customer Gold receipt type joins this set at runtime -- see
+#: ``_receipt_like_types``.
+_LEGACY_INVENTORY_TYPES = (
+	"Customer Goods Received",
+	"Customer Goods Transfer",
+	"Material Transfer (DEPARTMENT)",
+)
+
+
+def _configured_receipt_type():
+	"""The Stock Entry Type configured for Customer Gold receipts, or ``None``.
+
+	``None`` on every site that has not enabled and configured the feature, which is the
+	state of every site today -- so the legacy behaviour below is reached unchanged unless
+	someone has deliberately configured this.
+
+	Imported inside the function, as ``batch_rename._customer_gold_config`` does, to keep
+	this module importable when the settings doctype has not been synced.
+	"""
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_customer_gold_settings,
+		is_customer_gold_enabled,
+	)
+
+	if not is_customer_gold_enabled():
+		return None
+
+	return get_customer_gold_settings().get("customer_goods_stock_entry_type") or None
+
+
+def _entry_config(stock_entry_type, configured_type):
+	"""Resolve the log configuration, including for a configured receipt type.
+
+	Without this a site that configures its own receipt type got a Stock Entry that
+	validated, minted parent batches and computed pure quantities -- and then silently
+	created NO Subcontracting Log rows at all, because ``ENTRY_TYPE`` is a literal map and
+	``create_subcontracting_log`` returns early on a miss. No throw, no log, no trace.
+
+	A configured type is treated exactly like ``Customer Goods Received``: Settings force
+	it to ``purpose = "Material Receipt"``, so it describes the same event.
+	"""
+	config = ENTRY_TYPE.get(stock_entry_type)
+	if config:
+		return config
+
+	if configured_type and stock_entry_type == configured_type:
+		return ENTRY_TYPE["Customer Goods Received"]
+
+	return None
+
+
+def _is_inventory_movement(stock_entry_type, configured_type):
+	"""Whether this type's rows take the inventory branch rather than the work-order one."""
+	if stock_entry_type in _LEGACY_INVENTORY_TYPES:
+		return True
+	return bool(configured_type) and stock_entry_type == configured_type
+
 
 def create_subcontracting_log(doc, method=None):
 	if doc.doctype != "Stock Entry":
@@ -54,7 +112,8 @@ def create_subcontracting_log(doc, method=None):
 	if doc.docstatus != 1:
 		return
 
-	config = ENTRY_TYPE.get(doc.stock_entry_type)
+	configured_type = _configured_receipt_type()
+	config = _entry_config(doc.stock_entry_type, configured_type)
 
 	if not config:
 		return
@@ -65,11 +124,7 @@ def create_subcontracting_log(doc, method=None):
 		if not item.batch_no:
 			continue
 
-		if doc.stock_entry_type in [
-			"Customer Goods Received",
-			"Customer Goods Transfer",
-			"Material Transfer (DEPARTMENT)",
-		]:
+		if _is_inventory_movement(doc.stock_entry_type, configured_type):
 			log_data = get_inventory_data(doc, item, config)
 
 		elif doc.stock_entry_type in [

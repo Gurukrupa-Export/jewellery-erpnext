@@ -25,6 +25,8 @@ This module resolves a rate. It does NOT apply purity, GST, valuation or GL -- t
 separate concerns and separate days.
 """
 
+from math import isfinite
+
 import frappe
 from frappe import _
 from frappe.utils import flt, getdate
@@ -150,8 +152,24 @@ def _get_gold_rates_document(rate_date):
 			title=_("Customer Gold Rate Unavailable"),
 		)
 
-	name = frappe.db.get_value(GOLD_RATES_DOCTYPE, {"date": rate_date}, "name")
-	if not name:
+	# Fetch ALL records for the date, not the first match. ``Gold Rates`` autonames
+	# ``format:R-{date}``, which makes a second same-date record awkward but NOT
+	# impossible: the doctype sets ``allow_rename: 1`` and puts no ``unique`` on the
+	# ``date`` field, so renaming R-2026-09-14 out of the way frees the name for a
+	# second record carrying the same date. ``frappe.db.get_value`` would silently
+	# return whichever the DB yielded first and the receipt would freeze a rate chosen
+	# by row order. Ambiguity must block -- picking one is unauditable.
+	names = [
+		row.name
+		for row in frappe.get_all(
+			GOLD_RATES_DOCTYPE,
+			filters={"date": rate_date},
+			fields=["name"],
+			order_by="name",
+		)
+	]
+
+	if not names:
 		frappe.throw(
 			_(
 				"{0} is not available for Posting Date {1}. Please create the {0} record before submitting the Customer Gold Receipt."
@@ -161,7 +179,20 @@ def _get_gold_rates_document(rate_date):
 			),
 			title=_("Customer Gold Rate Unavailable"),
 		)
-	return name
+
+	if len(names) > 1:
+		frappe.throw(
+			_(
+				"{0} records exist for Posting Date {1} ({2}). Exactly one is required, so the rate cannot be resolved unambiguously. Please remove or correct the duplicates."
+			).format(
+				len(names),
+				frappe.bold(rate_date),
+				", ".join(frappe.bold(n) for n in names),
+			),
+			title=_("Customer Gold Rate Ambiguous"),
+		)
+
+	return names[0]
 
 
 def _get_source_row(gold_rates_name, source, rate_date):
@@ -220,7 +251,26 @@ def _get_raw_rate(row, rate_field, source, gold_rates_name):
 			title=_("Customer Gold Rate Unavailable"),
 		)
 
-	if flt(raw_rate) <= 0:
+	# Finiteness is checked BEFORE the positive test, because ``nan`` and ``inf`` do not
+	# fail it: ``float("nan") <= 0`` and ``float("inf") <= 0`` are both False, so a
+	# non-finite quote would sail through a bare positive guard and be frozen onto the
+	# receipt -- and ``nan / 10`` is still ``nan``, so the per-gram conversion would carry
+	# it into valuation. Ordering matters; a positive-only guard is not sufficient.
+	numeric_rate = flt(raw_rate)
+	if not isfinite(numeric_rate):
+		frappe.throw(
+			_(
+				"Gold Rate {0} for source {1} in {2} is not a finite number ({3}). A positive, finite rate is required."
+			).format(
+				frappe.bold(rate_field),
+				frappe.bold(source),
+				frappe.bold(gold_rates_name),
+				frappe.bold(raw_rate),
+			),
+			title=_("Customer Gold Rate Unavailable"),
+		)
+
+	if numeric_rate <= 0:
 		frappe.throw(
 			_(
 				"Gold Rate {0} for source {1} in {2} is {3}. A positive rate is required."
@@ -228,7 +278,7 @@ def _get_raw_rate(row, rate_field, source, gold_rates_name):
 				frappe.bold(rate_field),
 				frappe.bold(source),
 				frappe.bold(gold_rates_name),
-				frappe.bold(flt(raw_rate)),
+				frappe.bold(numeric_rate),
 			),
 			title=_("Customer Gold Rate Unavailable"),
 		)

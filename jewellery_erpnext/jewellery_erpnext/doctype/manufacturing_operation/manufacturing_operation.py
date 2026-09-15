@@ -559,8 +559,23 @@ class ManufacturingOperation(Document):
 		# Save the child document
 		child_doc.insert()
 
-	@frappe.whitelist()
 	def create_fg(self):
+		"""NOT whitelisted -- it cannot work as written, so it must not be exposed.
+
+		``create_finished_goods_bom`` requires ``mo_data`` (see its signature), and the
+		call below supplies only ``(self, se_name)``. Every invocation therefore raises
+		``TypeError``. While this carried ``@frappe.whitelist()`` that was an
+		API-reachable crash for any authenticated session.
+
+		The decorator is removed rather than the call repaired, because what ``mo_data``
+		should be on the Manufacturing Operation path is a business question, not a
+		mechanical one -- the working caller
+		(``serial_number_creator.py:1177``) builds an ``operation_data`` structure for it.
+		The only UI caller is already commented out
+		(``manufacturing_operation.js:42``), so nothing loses a working entry point.
+
+		Whoever re-enables that button must supply ``mo_data`` and re-add the decorator.
+		"""
 		se_name, _fg_serial = create_manufacturing_entry(self)
 		pmo = frappe.db.get_value(
 			"Manufacturing Work Order",
