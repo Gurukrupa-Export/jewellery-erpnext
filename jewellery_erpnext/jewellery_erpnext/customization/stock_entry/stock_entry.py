@@ -17,6 +17,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.in
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	get_fifo_batches,
 	set_employee,
+	set_fg_bom_weights,
 	set_gross_wt,
 	set_jwelex_tag_no,
 	# validate_inventory_dimention,
@@ -85,6 +86,7 @@ def before_validate(self, method):
 	validate_sample_goods_not_consumed(self)
 	set_employee(self)
 	set_gross_wt(self)
+	set_fg_bom_weights(self)
 	set_jwelex_tag_no(self)
 	validate_warehouse(self)
 

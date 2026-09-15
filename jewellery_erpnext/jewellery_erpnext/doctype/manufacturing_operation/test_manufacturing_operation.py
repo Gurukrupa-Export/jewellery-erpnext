@@ -796,8 +796,96 @@ def dir_for_receive(dir_issue):
 	return dir_receive
 
 
+# Reserve first -- the type the reserve step itself resolves to; Raw Material second, for a
+# department that has no Reserve warehouse ("Manufacturing Plan & Management - T" is one).
+# "Manufacturing" is deliberately absent: make_department_mop_stock_entry already targets
+# that warehouse, so routing a request at it would hand the Work Order entry the same source
+# and target on the fallback branch.
+_STAGING_WAREHOUSE_TYPES = ("Reserve", "Raw Material")
+
+
+def department_staging_warehouse(department, company):
+	"""A concrete warehouse in ``department`` a Material Request can be routed to."""
+	for warehouse_type in _STAGING_WAREHOUSE_TYPES:
+		warehouse = frappe.db.get_value(
+			"Warehouse",
+			{
+				"disabled": 0,
+				"is_group": 0,
+				"company": company,
+				"department": department,
+				"warehouse_type": warehouse_type,
+			},
+			"name",
+		)
+		if warehouse:
+			return warehouse
+
+	frappe.throw(f"No Reserve or Raw Material warehouse in department {department}")
+
+
+def route_material_request_to_operation_department(mr, mo):
+	"""Point a still-Draft Material Request at a warehouse in ``mo``'s department.
+
+	``doc_events.material_request.validate_mop_department`` measures a request by the
+	department of its Request Items' warehouse, and the ``create_pmo`` fixture cannot satisfy
+	it by choice of document:
+
+	* every generated request is routed to the Manufacturer's reservation warehouse for the
+	  row's variant -- M -> ``Waxing RSV - T``, D -> ``Diamond Setting RSV - T``,
+	  F -> ``Central RSV - T``
+	* every Manufacturing Operation is minted in ``Manufacturing Setting.default_department``,
+	  ``Manufacturing Plan & Management - T``
+
+	The two sets are disjoint, so neither pairing works -- not another request, and not
+	another operation (the only other department an operation of this PMO carries is the FG
+	one, ``Tagging - T``). The request is routed into the operation's department instead,
+	while it is still Draft: ``Material Request Item.warehouse`` is not ``allow_on_submit``.
+
+	Deliberately only the routing, and deliberately not a "Transfer to Department" workflow
+	run: that route is gated on ``custom_operation_type``, a ``gke_customization`` field whose
+	fixtures CI moves aside, so it does not exist on ``test_site`` at all.
+
+	Every Stock Entry these tests assert against is unaffected. The reserve entry resolves its
+	own target from the row's ``from_warehouse`` department
+	(``doc_events.material_request.create_stock_entry``), and
+	``make_department_mop_stock_entry`` -- the branch taken, since ``custom_department`` is
+	always set on these requests -- sources the Work Order entry from the last Stock Entry
+	booked against the request, reaching ``items[0].warehouse`` only on a fallback that
+	cannot fire once the reserve entry exists.
+
+	Deliberately NOT the operation's department: callers drive a Department IR *out of*
+	``Manufacturing Plan & Management - T`` with this same operation immediately afterwards.
+	"""
+	department = mo.get("department") or frappe.db.get_value(
+		"Manufacturing Operation", mo.name, "department"
+	)
+	if not department:
+		frappe.throw(f"Manufacturing Operation {mo.name} has no department")
+
+	# A no-op when the request is already there, so a fixture that one day grows a genuinely
+	# matching request keeps its own routing.
+	current = mr.items[0].warehouse if mr.items else None
+	if (
+		current
+		and frappe.db.get_value("Warehouse", current, "department") == department
+	):
+		return current
+
+	warehouse = department_staging_warehouse(department, mr.company)
+	# Header and rows together: reset_default_field_value only clears set_warehouse when the
+	# rows disagree with each other, so leaving it behind would strand a stale header.
+	mr.set_warehouse = warehouse
+	for row in mr.items:
+		row.warehouse = warehouse
+	mr.save()
+
+	return warehouse
+
+
 def mop_log_creation(mr_name, mo):
 	mr = frappe.get_doc("Material Request", mr_name)
+	route_material_request_to_operation_department(mr, mo)
 	apply_workflow(mr, "Send for Reservation")
 	apply_workflow(mr, "Reserve Material")
 	apply_workflow(mr, "Transfer Material")
