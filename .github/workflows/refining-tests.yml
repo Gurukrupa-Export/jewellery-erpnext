@@ -57,6 +57,8 @@ jobs:
 
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_shard_stock_entry_naming
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_reshard_gurukrupa_naming
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_queue_dedup
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_casting
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_material_balance
