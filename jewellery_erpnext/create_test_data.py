@@ -3109,6 +3109,15 @@ def create_test_data():
 
 			_ensure_order_sales_flow_type_fields()
 
+			# Quotation / Sales Order.custom_design_type is patch-only for the same reason,
+			# and must come after the flow type patch above -- custom_flow_type is its
+			# insert_after anchor on both doctypes.
+			from jewellery_erpnext.patches.add_design_type_fields import (
+				execute as _ensure_design_type_fields,
+			)
+
+			_ensure_design_type_fields()
+
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
 			# Without them every Sales Order / Delivery Note / Sales Invoice save raises
