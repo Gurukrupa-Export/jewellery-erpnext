@@ -2,6 +2,10 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.bom_weights import (
+	get_weights_for_serials,
+	row_serials,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 	prefetch_purity_percentages,
@@ -160,3 +164,66 @@ def validate_warehouse(self):
 							"The source warehouse and the target warehouse cannot be the same."
 						)
 					)
+
+
+def validate_fg_serial_rows(self):
+	"""One FG serial per row, qty 1, with that piece's BOM weights stamped.
+
+	Each finished-goods piece is a distinct physical item carrying its own as-built BOM,
+	so a row holding several FG serials cannot describe them -- its weights would belong
+	to whichever piece happened to be scanned first. The desk form already splits scans
+	one row per serial; this is the backstop for the paths that bypass it (direct API
+	save, data import, an amended older request).
+
+	Scope is deliberately narrow. Only rows whose serials resolve an as-built BOM are
+	touched, which is exactly what "an FG serial" means here. A serialised row that is
+	not FG -- and every row with no serial at all -- is left completely alone, so this
+	cannot disturb the non-FG serialised flows or the Settle path.
+
+	Throws rather than silently coercing ``qty``: ``qty`` is in
+	``GUARDED_MR_ITEM_FIELDS``, so a quiet correction on a post-Draft save would read as
+	a user edit to ``guard_non_system_manager_field_edits`` and be rejected there with a
+	far more confusing message.
+
+	``getattr`` throughout, mirroring that guard: the tests drive this path with
+	``SimpleNamespace``-style mocks that carry no ``.get()``.
+	"""
+	rows = [
+		(row, row_serials(getattr(row, "serial_no", None)))
+		for row in (getattr(self, "items", None) or [])
+	]
+	rows = [(row, serials) for row, serials in rows if serials]
+	if not rows:
+		# The overwhelming majority of Material Requests carry no serials at all, and
+		# this runs on every save -- cost nothing on them.
+		return
+
+	# One bulk resolve for every serial in the document, not just the single-serial
+	# rows: a merged row has to be classified as FG before it can be rejected as one.
+	weights = get_weights_for_serials(
+		[serial for _, serials in rows for serial in serials]
+	)
+
+	for row, serials in rows:
+		fg_serials = [serial for serial in serials if serial in weights]
+		if not fg_serials:
+			continue
+
+		idx = getattr(row, "idx", "?")
+		if len(serials) > 1:
+			frappe.throw(
+				_(
+					"Row #{0}: {1} serial numbers on one row. Each finished-goods serial"
+					" must be on its own row with quantity 1."
+				).format(idx, len(serials))
+			)
+
+		if flt(getattr(row, "qty", 0)) != 1:
+			frappe.throw(
+				_(
+					"Row #{0}: quantity must be 1 for finished-goods serial {1}, not {2}."
+				).format(idx, serials[0], flt(getattr(row, "qty", 0)))
+			)
+
+		for fieldname, value in weights[serials[0]].items():
+			setattr(row, fieldname, value)
