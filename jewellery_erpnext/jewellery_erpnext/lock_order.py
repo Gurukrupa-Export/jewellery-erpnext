@@ -283,9 +283,56 @@ def series_stubs(company, *stock_entry_types):
 	return stubs
 
 
+def _mints_new_name(doc):
+	"""True when ``doc`` has yet to be given a name, i.e. it will still ask a naming
+	counter for one.
+
+	``Document.insert()`` calls ``set_new_name()`` (and through it ``getseries()``, which
+	takes the ``tabSeries`` row ``FOR UPDATE``) *before* ``run_before_save_methods()``, and
+	the update path never names a doc at all. So by the time a before_save/before_submit
+	hook such as ``stock_entry.prelock_bins`` sees a real doc, its name is already minted
+	and its counter lock is either already held by this transaction (insert) or will never
+	be taken by it (submit of an already-saved draft). Pre-locking there buys nothing and
+	merely holds the shared counter row for the rest of the transaction — on a site whose
+	Stock Entries all share one ``MAT-STE-`` ``tabSeries`` row, that turns a microsecond
+	counter lock into a transaction-length one and makes every concurrent submit queue
+	behind it (the dominant 1213 source in the Sep-2026 production Error Log).
+
+	Only an unnamed doc still needs the pre-lock: the ``frappe.new_doc`` stubs
+	:func:`series_stubs` builds for the Stock Entries a cascade mints *later*, while it
+	already holds Bin locks — exactly the inversion this module exists to prevent.
+
+	CALLERS MUST GATE THIS ON SHARDING
+	----------------------------------
+	While a doctype still names off ONE shared ``tabSeries`` row, the blanket pre-lock is
+	*accidentally* covering its cascades: it pins the very row each nested doc would later
+	ask for, making ``getseries()`` inside an ``on_submit`` cascade a free re-entrant no-op.
+	Skipping it there would remove that cover and let the cascade take the shared row *while
+	already holding Bin locks* — a new inversion.
+
+	:func:`preallocate_series_for_docs` therefore consults this ONLY for docs governed by a
+	Document Naming Rule, i.e. those on a per-type counter no unrelated transaction wants.
+	A doc falling back to a shared ``tabSeries`` row keeps the unconditional pre-lock. That
+	gate is per-doc and automatic, so deployment order does not matter: before
+	``patches/shard_stock_entry_naming_by_type.py`` runs, the old behaviour holds unchanged;
+	as rules appear, each type switches itself over.
+	"""
+	name = doc.get("name") if hasattr(doc, "get") else getattr(doc, "name", None)
+	# frappe gives an unsaved client-side doc a "new-<doctype>-<hash>" placeholder name.
+	return not name or str(name).startswith("new-")
+
+
 def preallocate_series_for_docs(*docs):
 	"""Pre-acquire the naming-counter lock (canonical position 2) for each given
 	doc/new_doc, before any Bin lock is taken.
+
+	A doc that already carries a name is skipped — but ONLY when a Document Naming Rule
+	governs it, i.e. its counter is per-(company x type) and no unrelated transaction wants
+	that row. A doc that falls back to a SHARED ``tabSeries`` row is always pre-locked, even
+	when already named, because a nested doc minted later by an ``on_submit`` cascade will
+	ask for that same shared row after Bin locks are held. This gate is what makes the
+	optimisation safe to deploy before, during or after
+	``patches/shard_stock_entry_naming_by_type.py``. See :func:`_mints_new_name`.
 
 	Respects frappe's naming precedence: when an active Document Naming Rule governs a
 	doc, its ``tabDocument Naming Rule.counter`` row is the lock to pin — the
@@ -313,8 +360,16 @@ def preallocate_series_for_docs(*docs):
 			continue
 		dnr = document_naming_rule_for_doc(d)
 		if dnr:
-			dnr_names.add(dnr)
+			# SHARDED: this doc names off its own per-(company x type) counter row, which
+			# no unrelated transaction wants. An already-named doc will never increment it
+			# again, so there is nothing to pin — skip it and stop paying for the lock.
+			if _mints_new_name(d):
+				dnr_names.add(dnr)
 			continue
+		# NOT SHARDED: this doc falls back to a `tabSeries` row shared with every other doc
+		# of its doctype — including the nested ones an on_submit cascade mints while
+		# already holding Bin locks. Keep the unconditional pre-lock so that row is still
+		# taken BEFORE any Bin, exactly as before. See _mints_new_name's gating note.
 		prefix = series_prefix_for_doc(d)
 		if prefix:
 			series_prefixes.append(prefix)
