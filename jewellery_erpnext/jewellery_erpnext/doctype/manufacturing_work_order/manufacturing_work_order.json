@@ -62,6 +62,7 @@
   "order_type",
   "sales_type",
   "flow_type",
+  "design_type",
   "status",
   "split_from",
   "column_break_p1ihu",
@@ -274,6 +275,14 @@
    "fieldname": "flow_type",
    "fieldtype": "Data",
    "label": "Flow Type",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_order.design_type",
+   "fieldname": "design_type",
+   "fieldtype": "Link",
+   "label": "Design Type",
+   "options": "Attribute Value",
    "read_only": 1
   },
   {

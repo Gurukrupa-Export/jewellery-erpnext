@@ -21,12 +21,14 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 from jewellery_erpnext.utils import get_repair_order_design_bom
 
 # Sales Order fieldname -> Manufacturing Plan fieldname. The names differ because the Sales Order
-# side is a mix of a standard field (order_type), an old unprefixed custom field (sales_type) and a
-# new prefixed one (custom_flow_type), while the plan is app-owned and uses the bare names.
+# side is a mix of a standard field (order_type), an old unprefixed custom field (sales_type) and
+# newer prefixed ones (custom_flow_type, custom_design_type), while the plan is app-owned and uses
+# the bare names.
 ORDER_DIMENSION_MAP = {
 	"order_type": "order_type",
 	"sales_type": "sales_type",
 	"custom_flow_type": "flow_type",
+	"custom_design_type": "design_type",
 }
 
 
@@ -140,14 +142,20 @@ class ManufacturingPlan(Document):
 		self.set_order_dimensions()
 
 	def set_order_dimensions(self):
-		"""Stamp Order Type / Sales Type / Flow Type from the plan's source Sales Orders.
+		"""Stamp Order Type / Sales Type / Flow Type / Design Type from the source Sales Orders.
 
-		These three ride from the Purchase Order down the whole chain, and every hop below the
+		These four ride from the Purchase Order down the whole chain, and every hop below the
 		plan reads them off a single document: PMO fetches from its one Sales Order, MWO from its
 		PMO, SNC from its PMO, Serial No is stamped from the SNC. The plan is the only place in
-		that chain that can span several Sales Orders at once, so it is the only place the three
+		that chain that can span several Sales Orders at once, so it is the only place the four
 		can disagree -- and a plan that mixes them would fan out into PMOs the operator never
 		chose. So a mismatch is a planning error and throws rather than being silently blanked.
+
+		Design Type is held to the same strict rule as the other three, unlike the v15 lineage
+		which exempts it via SOFT_ORDER_DIMENSIONS. That exemption exists because a plan there can
+		legitimately span several designs; on this site it cannot -- all 340 Manufacturing Plans
+		draw from exactly one Sales Order, so a single plan never has two design types to
+		reconcile.
 
 		Runs on every validate, i.e. on save AND on submit, so a plan whose rows were re-fetched
 		or hand-edited is re-checked and re-stamped. That is cheap because every fetch wipes the
