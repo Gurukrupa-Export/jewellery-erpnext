@@ -559,8 +559,23 @@ class ManufacturingOperation(Document):
 		# Save the child document
 		child_doc.insert()
 
-	@frappe.whitelist()
 	def create_fg(self):
+		"""NOT whitelisted -- it cannot work as written, so it must not be exposed.
+
+		``create_finished_goods_bom`` requires ``mo_data`` (see its signature), and the
+		call below supplies only ``(self, se_name)``. Every invocation therefore raises
+		``TypeError``. While this carried ``@frappe.whitelist()`` that was an
+		API-reachable crash for any authenticated session.
+
+		The decorator is removed rather than the call repaired, because what ``mo_data``
+		should be on the Manufacturing Operation path is a business question, not a
+		mechanical one -- the working caller
+		(``serial_number_creator.py:1177``) builds an ``operation_data`` structure for it.
+		The only UI caller is already commented out
+		(``manufacturing_operation.js:42``), so nothing loses a working entry point.
+
+		Whoever re-enables that button must supply ``mo_data`` and re-add the decorator.
+		"""
 		se_name, _fg_serial = create_manufacturing_entry(self)
 		pmo = frappe.db.get_value(
 			"Manufacturing Work Order",
@@ -1268,11 +1283,27 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_repair_type", pmo_det.get("repair_type")
 	)
-	# Ownership marker. Sales Type is stamped first as an early default (custom_ownership_tag
-	# is a plain Data field, since Sales Type is a free-form master not limited to
-	# Outright/Outwork/Hybrid), then immediately overwritten by the ledger-derived value
-	# when one is derivable, so the final value always reflects what was actually consumed
-	# rather than what was quoted/sold.
+	# Ownership marker -- and READ THE NEXT FEW LINES BEFORE TRUSTING IT.
+	#
+	# ``custom_ownership_tag`` currently holds the QUOTED Sales Type and nothing else. The
+	# ledger-derived write that would replace it is commented out immediately below, so the
+	# field reflects what was sold, NOT what was actually consumed.
+	#
+	# (This comment previously claimed the opposite -- that the sales_type default was
+	# "immediately overwritten by the ledger-derived value ... so the final value always
+	# reflects what was actually consumed". That was false while the derived write was
+	# disabled, and it is the kind of comment that gets believed.)
+	#
+	# Consequence for anyone reading this column: serials created BEFORE the derived write
+	# was disabled hold an Outright/Outwork/Hybrid value derived from consumption, while
+	# later ones hold a free-form Sales Type. The column is not comparable across that
+	# boundary.
+	#
+	# Do NOT simply uncomment the line below: ``_derive_ownership_tag`` returns the
+	# Outright/Outwork/Hybrid trio, while a DB-resident Client Script string-compares this
+	# field against ``Sales Order.sales_type``, whose master carries values outside that
+	# trio (e.g. "Branch"). Re-enabling it in place would break Sales Order serial entry on
+	# live sites. Separating "quoted" from "consumed" needs its own field -- see C11.
 	sales_type = (
 		frappe.db.get_value("Sales Order", doc.sales_order_id, "sales_type")
 		if doc.get("sales_order_id")
