@@ -607,21 +607,17 @@ class TestGrossWeightWithoutADraw(_TreeReceiveHarness):
 	NOT loaded, locked, re-statused or saved, exactly as before the column existed.
 	"""
 
-	def _ledger_row(self, wo_received_gross_wt=0.0):
-		return [
-			frappe._dict(
-				name="TMD-1",
-				item_code=ITEM,
-				wo_received_gross_wt=wo_received_gross_wt,
-			)
-		]
+	def _ledger_row(self):
+		# No wo_received_gross_wt: _credit_wo_received_gross does not read the running
+		# total any more, it hands the DB a delta to apply to whatever the row holds.
+		return [frappe._dict(name="TMD-1", item_code=ITEM)]
 
 	def _written(self, db):
-		"""The wo_received_gross_wt writes _credit_wo_received_gross made."""
+		"""(sql, params) for each wo_received_gross_wt increment issued."""
 		return [
-			c.args
-			for c in db.set_value.call_args_list
-			if c.args and c.args[0] == "Tree Material Detail"
+			(" ".join(c.args[0].split()), c.args[1])
+			for c in db.sql.call_args_list
+			if c.args and "tabTree Material Detail" in c.args[0]
 		]
 
 	def test_no_gain_receive_still_records_the_gross_weight(self):
@@ -631,9 +627,25 @@ class TestGrossWeightWithoutADraw(_TreeReceiveHarness):
 
 		written = self._written(db)
 		self.assertEqual(len(written), 1)
-		self.assertEqual(written[0][1], "TMD-1")
-		self.assertEqual(written[0][2], "wo_received_gross_wt")
-		self.assertAlmostEqual(written[0][3], 2.0, places=3)
+		self.assertEqual(written[0][1]["name"], "TMD-1")
+		self.assertAlmostEqual(written[0][1]["delta"], 2.0, places=3)
+
+	def test_the_credit_is_an_atomic_increment_not_a_computed_assignment(self):
+		"""No lock is taken here, so the DB must do the adding.
+
+		Reading the row and writing back ``old + delta`` loses one of two concurrent
+		no-draw credits, and loses to the draw path's ``tree.save()`` besides. The
+		statement has to increment the row as stored and floor the result itself.
+		"""
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
+		db = self.run_update(eir, tree, child_rows=self._ledger_row())
+
+		sql, params = self._written(db)[0]
+		self.assertIn("UPDATE `tabTree Material Detail`", sql)
+		self.assertIn("COALESCE(wo_received_gross_wt, 0) + %(delta)s", sql)
+		self.assertIn("GREATEST( 0,", sql)
+		self.assertEqual(params["prec"], 3)
 
 	def test_a_no_draw_receive_never_saves_the_tree(self):
 		tree = make_tree(issue=2.0)
@@ -650,7 +662,7 @@ class TestGrossWeightWithoutADraw(_TreeReceiveHarness):
 
 		written = self._written(db)
 		self.assertEqual(len(written), 1)
-		self.assertAlmostEqual(written[0][3], 3.9, places=3)
+		self.assertAlmostEqual(written[0][1]["delta"], 3.9, places=3)
 		self.assertEqual(tree.saves, 0)
 
 	def test_recorded_for_a_subcontracted_receive(self):
@@ -660,26 +672,28 @@ class TestGrossWeightWithoutADraw(_TreeReceiveHarness):
 
 		written = self._written(db)
 		self.assertEqual(len(written), 1)
-		self.assertAlmostEqual(written[0][3], 3.9, places=3)
+		self.assertAlmostEqual(written[0][1]["delta"], 3.9, places=3)
 
 	def test_accumulates_onto_what_the_row_already_holds(self):
+		# The += lives in the statement, so whatever the row holds when the UPDATE
+		# lands is what the weight is added to.
 		tree = make_tree(issue=2.0)
 		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
-		db = self.run_update(
-			eir, tree, child_rows=self._ledger_row(wo_received_gross_wt=5.0)
-		)
-		self.assertAlmostEqual(self._written(db)[0][3], 7.0, places=3)
+		db = self.run_update(eir, tree, child_rows=self._ledger_row())
+
+		sql, params = self._written(db)[0]
+		self.assertIn("COALESCE(wo_received_gross_wt, 0) + %(delta)s", sql)
+		self.assertAlmostEqual(params["delta"], 2.0, places=3)
 
 	def test_cancel_subtracts_and_never_goes_negative(self):
 		tree = make_tree(issue=2.0)
 		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
-		db = self.run_update(
-			eir,
-			tree,
-			cancel=True,
-			child_rows=self._ledger_row(wo_received_gross_wt=0.5),
-		)
-		self.assertEqual(self._written(db)[0][3], 0.0)
+		db = self.run_update(eir, tree, cancel=True, child_rows=self._ledger_row())
+
+		sql, params = self._written(db)[0]
+		self.assertAlmostEqual(params["delta"], -2.0, places=3)
+		# Floored by the DB, so a cancel bigger than the running total cannot go negative.
+		self.assertIn("GREATEST( 0,", sql)
 
 	def test_a_missing_ledger_row_is_skipped_not_thrown(self):
 		# The informational column may never abort a receive that is otherwise valid.

@@ -770,6 +770,16 @@ def _credit_wo_received_gross(tree_name, item_totals, cancel, prec):
 	drag a tree through ``TreeNumber.validate``, recompute its status, take its row
 	lock, or trip the "tree is submitted" guard. A receive that draws nothing from a
 	tree behaved this way before the column existed and must keep behaving that way.
+
+	Because it takes no lock, the increment is applied by the DATABASE rather than
+	computed in Python from a value read a moment earlier. Read-modify-write here would
+	be a lost update: two concurrent no-draw receives on the same tree both read the same
+	old weight and the second overwrites the first, and a no-draw receive racing the draw
+	path above (which loads the tree, mutates the row in memory, then ``tree.save()``s the
+	lot) loses whichever write lands first. The single ``UPDATE`` below increments against
+	the row as InnoDB has it at write time, so concurrent credits accumulate and a credit
+	interleaved with a parent save is the one that survives, not one of two guesses.
+	``GREATEST(0, ...)`` keeps the floor the cancel path relies on.
 	"""
 	rows = frappe.get_all(
 		"Tree Material Detail",
@@ -778,7 +788,7 @@ def _credit_wo_received_gross(tree_name, item_totals, cancel, prec):
 			"parenttype": "Tree Number",
 			"item_code": ["in", list(item_totals)],
 		},
-		fields=["name", "item_code", "wo_received_gross_wt"],
+		fields=["name", "item_code"],
 	)
 	by_item = {}
 	for row in rows:
@@ -790,15 +800,19 @@ def _credit_wo_received_gross(tree_name, item_totals, cancel, prec):
 		row = by_item.get(item)
 		if not row:
 			continue
-		updated = max(
-			0.0, flt(flt(row.wo_received_gross_wt) + sign * flt(weight), prec)
-		)
-		frappe.db.set_value(
-			"Tree Material Detail",
-			row.name,
-			"wo_received_gross_wt",
-			updated,
-			update_modified=False,
+		frappe.db.sql(
+			"""
+			UPDATE `tabTree Material Detail`
+			SET wo_received_gross_wt = GREATEST(
+				0, ROUND(COALESCE(wo_received_gross_wt, 0) + %(delta)s, %(prec)s)
+			)
+			WHERE name = %(name)s
+			""",
+			{
+				"delta": flt(sign * flt(weight), prec),
+				"prec": prec,
+				"name": row.name,
+			},
 		)
 
 

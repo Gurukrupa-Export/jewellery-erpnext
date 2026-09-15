@@ -61,6 +61,23 @@ from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
 def _receive_rows(tree_names):
 	"""Submitted casting-Receive EIR rows belonging to any of ``tree_names``.
 
+	Gated on ``Department Operation.tree_no_reqd`` because that is the LIVE eligibility
+	rule: ``update_tree_on_receive`` opens with ``if not is_casting_eir(eir): return``,
+	and ``is_casting_eir`` is exactly this flag on ``Employee IR.operation``. A receive
+	booked at any other operation never touched a tree column, so the backfill must not
+	invent one for it.
+
+	The pin is NOT evidence of a casting receive and cannot stand in for this gate.
+	``employee_ir.on_submit`` calls ``pin_tree_numbers_on_receive`` for EVERY Receive,
+	ungated -- it stamps provenance for Stock Entry lineage, not tree arithmetic -- and
+	that helper falls back to ``MWO.tree_number``. So a Pre Polish or Final Polish
+	receive on a work order still carrying its casting tree gets ``eiro.tree_number``
+	pinned to that tree. Without this join those rows read as pinned casting receives:
+	their ``received_gross_wt`` inflates ``wo_received_gross_wt``, and on an EIR with
+	``is_raw_material`` set their gain inflates ``wo_receive_qty`` -- neither of which
+	the live path would ever have written. They would not even show in the fallback
+	count, since the pin is present.
+
 	Attribution mirrors the LIVE rule in ``tree_casting._row_tree_and_item``:
 	``Employee IR Operation.tree_number`` first, then the work order's ``tree_number``.
 	Matching the live rule is the whole point -- if the patch attributes more narrowly
@@ -96,11 +113,13 @@ def _receive_rows(tree_names):
 			eir.subcontracting
 		FROM `tabEmployee IR Operation` eiro
 		INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+		INNER JOIN `tabDepartment Operation` dop ON dop.name = eir.operation
 		LEFT JOIN `tabManufacturing Work Order` mwo
 			ON mwo.name = eiro.manufacturing_work_order
 		WHERE eiro.parenttype = 'Employee IR'
 		  AND eir.docstatus = 1
 		  AND eir.type = 'Receive'
+		  AND dop.tree_no_reqd = 1
 		  AND COALESCE(eiro.tree_number, mwo.tree_number) IN %(trees)s
 		""",
 		{"trees": tuple(tree_names)},
