@@ -19,6 +19,15 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 	make_manufacturing_order,
 )
 
+# Sales Order fieldname -> Manufacturing Plan fieldname. The names differ because the Sales Order
+# side is a mix of a standard field (order_type), an old unprefixed custom field (sales_type) and a
+# new prefixed one (custom_flow_type), while the plan is app-owned and uses the bare names.
+ORDER_DIMENSION_MAP = {
+	"order_type": "order_type",
+	"sales_type": "sales_type",
+	"custom_flow_type": "flow_type",
+}
+
 
 def is_subcontracting_selected(value):
 	"""True only when the plan is actually flagged for subcontracting.
@@ -127,6 +136,57 @@ class ManufacturingPlan(Document):
 	def validate(self):
 		self.validate_qty_with_bom_creation()
 		self.refresh_mould_ids()
+		self.set_order_dimensions()
+
+	def set_order_dimensions(self):
+		"""Stamp Order Type / Sales Type / Flow Type from the plan's source Sales Orders.
+
+		These three ride from the Purchase Order down the whole chain, and every hop below the
+		plan reads them off a single document: PMO fetches from its one Sales Order, MWO from its
+		PMO, SNC from its PMO, Serial No is stamped from the SNC. The plan is the only place in
+		that chain that can span several Sales Orders at once, so it is the only place the three
+		can disagree -- and a plan that mixes them would fan out into PMOs the operator never
+		chose. So a mismatch is a planning error and throws rather than being silently blanked.
+
+		Runs on every validate, i.e. on save AND on submit, so a plan whose rows were re-fetched
+		or hand-edited is re-checked and re-stamped. That is cheap because every fetch wipes the
+		child table first (see get_items_for_production), so this only ever sees one coherent
+		batch of rows.
+
+		Rows sourced from a Manufacturing Work Order instead of a Sales Order carry no
+		sales_order and are skipped; a plan built entirely from MWOs leaves all three blank.
+		"""
+		sales_orders = sorted(
+			{
+				row.sales_order
+				for row in self.manufacturing_plan_table
+				if row.get("sales_order")
+			}
+		)
+		if not sales_orders:
+			return
+
+		# One query however many orders feed the plan -- a large plan can span dozens of them.
+		rows = frappe.get_all(
+			"Sales Order",
+			filters={"name": ["in", sales_orders]},
+			fields=["name", *ORDER_DIMENSION_MAP],
+			order_by="name",
+		)
+
+		so_meta = frappe.get_meta("Sales Order")
+		for so_field, target_field in ORDER_DIMENSION_MAP.items():
+			distinct = {row.get(so_field) for row in rows}
+			if len(distinct) > 1:
+				detail = "<br>".join(
+					f"{row.name}: {row.get(so_field) or _('(blank)')}" for row in rows
+				)
+				frappe.throw(
+					_(
+						"All Sales Orders on a Manufacturing Plan must share the same {0}. Found:<br>{1}"
+					).format(frappe.bold(so_meta.get_label(so_field)), detail)
+				)
+			self.set(target_field, distinct.pop() if distinct else None)
 
 	def refresh_mould_ids(self):
 		"""Keep every plan row's Mould List ID (the Mould docname) in sync with the

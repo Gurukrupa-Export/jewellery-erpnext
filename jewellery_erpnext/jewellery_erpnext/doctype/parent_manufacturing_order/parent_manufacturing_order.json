@@ -90,6 +90,8 @@
   "column_break_0hg6a",
   "order_form_type",
   "order_type",
+  "sales_type",
+  "flow_type",
   "po_no",
   "child_po",
   "project",
@@ -250,6 +252,22 @@
    "fieldname": "order_type",
    "fieldtype": "Data",
    "label": "Order Type"
+  },
+  {
+   "fetch_from": "sales_order.sales_type",
+   "fieldname": "sales_type",
+   "fieldtype": "Link",
+   "label": "Sales Type",
+   "options": "Sales Type",
+   "read_only": 1
+  },
+  {
+   "description": "Data, not Select, for the same reason order_type above is Data: the option list lives upstream and a copy hard-coded here would start failing PMO save the day it is edited.",
+   "fetch_from": "sales_order.custom_flow_type",
+   "fieldname": "flow_type",
+   "fieldtype": "Data",
+   "label": "Flow Type",
+   "read_only": 1
   },
   {
    "fieldname": "master_bom",
