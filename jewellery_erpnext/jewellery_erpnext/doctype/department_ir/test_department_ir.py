@@ -13,6 +13,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir imp
 	fetch_and_update,
 	get_manufacturing_operations,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
+	WEIGHT_FIELDS,
+	validate_and_update_gross_wt_from_mop,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance import (
 	get_tolerance_failures,
 	validate_product_tolerance,
@@ -391,6 +395,7 @@ def mo_creation():
 
 
 _TOL_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance"
+_UTILS_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils"
 
 
 def _dir_row(**kwargs):
@@ -431,6 +436,114 @@ def _metal_band(**kwargs):
 	)
 	band.update(kwargs)
 	return band
+
+
+class TestRowMirrorsTheOperation(UnitTestCase):
+	"""A Department IR row carries the Manufacturing Operation's own weights.
+
+	There is no previous-operation fallback. The `or` chain that used to provide one read
+	a legitimate 0.0 as "unknown" and resurrected weight the operation did not hold --
+	Department-IR-Labh-2026-02662 asked an operator to move 7.99 g out of MOP-G6L23, whose
+	every bucket was 0, because its previous operation still read 7.99. The is_finding and
+	is_mwo_refined carve-outs were the two honest zeroes already recognised; these tests
+	pin that every honest zero is now treated the same way.
+	"""
+
+	MOP = "MOP-G6L23"
+	MWO = "MWO-KGJPL-MU06633-001-9-91.75-Y-01"
+
+	def _resolve(self, mop_data, rows=None):
+		"""Run the resolver over one row, with everything but the weight read stubbed."""
+		rows = (
+			rows
+			if rows is not None
+			else [
+				_dir_row(
+					manufacturing_operation=self.MOP, manufacturing_work_order=self.MWO
+				)
+			]
+		)
+		doc = FrappeDict(
+			type="Issue",
+			next_department="Manufacturing Plan & Management - T",
+			current_department="Central - T",
+			department_ir_operation=rows,
+		)
+		with patch(f"{_UTILS_MODULE}.validate_duplicate"), patch(
+			f"{_UTILS_MODULE}.validate_allowed_operation"
+		), patch(f"{_UTILS_MODULE}.update_mop_balance"), patch(
+			f"{_UTILS_MODULE}.update_previous_mop_data"
+		), patch(
+			f"{_UTILS_MODULE}.frappe.db.get_value", return_value=FrappeDict(mop_data)
+		) as get_value:
+			mwo_list = validate_and_update_gross_wt_from_mop(doc)
+		return rows, mwo_list, get_value
+
+	def test_zero_operation_gives_a_zero_row(self):
+		"""The reported bug: every bucket 0 on the operation must stay 0 on the row."""
+		rows, _mwo_list, _gv = self._resolve(dict.fromkeys(WEIGHT_FIELDS, 0.0))
+		for field in WEIGHT_FIELDS:
+			self.assertEqual(
+				rows[0].get(field), 0, f"{field} should mirror the operation"
+			)
+
+	def test_the_previous_operation_is_never_read(self):
+		"""One read, for the operation itself. A second read is the fallback coming back."""
+		_rows, _mwo_list, get_value = self._resolve(dict.fromkeys(WEIGHT_FIELDS, 0.0))
+		self.assertEqual(get_value.call_count, 1)
+		self.assertEqual(get_value.call_args.args[1], self.MOP)
+
+	def test_every_bucket_comes_from_the_operation(self):
+		mop_data = {
+			"gross_wt": 7.99,
+			"net_wt": 6.984,
+			"finding_wt": 0.684,
+			"diamond_wt": 1.2,
+			"diamond_pcs": 40,
+			"gemstone_wt": 0.41,
+			"gemstone_pcs": 1,
+			"other_wt": 0.0,
+		}
+		rows, _mwo_list, _gv = self._resolve(mop_data)
+		for field, expected in mop_data.items():
+			self.assertEqual(rows[0].get(field), expected)
+
+	def test_a_null_bucket_becomes_zero_not_none(self):
+		"""diamond_pcs / gemstone_pcs are Data fields; None there would render as blank."""
+		rows, _mwo_list, _gv = self._resolve(dict.fromkeys(WEIGHT_FIELDS, None))
+		for field in WEIGHT_FIELDS:
+			self.assertEqual(rows[0].get(field), 0)
+
+	def test_a_hand_edited_row_is_overwritten(self):
+		"""The grid allows bulk edit, and this runs on every draft save."""
+		row = _dir_row(
+			manufacturing_operation=self.MOP,
+			manufacturing_work_order=self.MWO,
+			gross_wt=99.0,
+			net_wt=99.0,
+		)
+		rows, _mwo_list, _gv = self._resolve(
+			dict.fromkeys(WEIGHT_FIELDS, 0.0), rows=[row]
+		)
+		self.assertEqual(rows[0].gross_wt, 0)
+		self.assertEqual(rows[0].net_wt, 0)
+
+	def test_every_row_reaches_the_repairing_check(self):
+		"""mwo_list feeds valid_reparing_or_next_operation.
+
+		It used to be reset at the top of each iteration and appended to only in the
+		fallback branch, so it ended up holding the last row's work order -- or nothing at
+		all when that row was a finding -- which made the Repairing decision depend on row
+		order.
+		"""
+		rows = [
+			_dir_row(manufacturing_operation="MOP-A", manufacturing_work_order="MWO-A"),
+			_dir_row(manufacturing_operation="MOP-B", manufacturing_work_order="MWO-B"),
+		]
+		_rows, mwo_list, _gv = self._resolve(
+			dict.fromkeys(WEIGHT_FIELDS, 0.0), rows=rows
+		)
+		self.assertEqual(mwo_list, ["MWO-A", "MWO-B"])
 
 
 class TestProductToleranceGate(UnitTestCase):

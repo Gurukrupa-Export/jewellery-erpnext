@@ -231,6 +231,70 @@ class TestMaterialRequestTransferType(IntegrationTestCase):
 		return super().tearDown()
 
 
+class TestManufacturingOperationAutoFill(IntegrationTestCase):
+	"""F-05 in the PR #1236 review: custom_manufacturing_operation is now a value
+	before_validate can derive from the linked Manufacturing Work Order, not purely
+	user-supplied data. Pins down the two things that matter about that -- it only fills a
+	currently-blank field, and once filled it is never overwritten even if the MWO's own
+	operation has since moved on -- which is what makes it safe for this field to no longer
+	be freely editable outside Draft (guard_non_system_manager_field_edits)."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, mr, lookups):
+		"""Call before_validate with every frappe.db.get_value it can reach mapped through
+		one name->value dict, and the unrelated downstream validators stubbed out."""
+
+		def _gv(doctype, name, field):
+			return lookups.get(name)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.frappe.db.get_value",
+			side_effect=_gv,
+		), patch.object(mr_mod, "update_pure_qty"), patch.object(
+			mr_mod, "validate_target_item"
+		), patch.object(mr_mod, "validate_warehouse"), patch.object(
+			mr_mod, "set_reservation_warehouse"
+		):
+			mr_mod.before_validate(mr, None)
+		return mr.custom_manufacturing_operation
+
+	def test_fills_blank_operation_from_linked_mwo(self):
+		mr = MockMaterialRequest(material_request_type="Manufacture")
+		mr.custom_manufacturing_work_order = "MWO-1"
+		mr.manufacturing_order = "PMO-1"
+		result = self._run(mr, {"MWO-1": "MOP-NEW", "MOP-NEW": "PMO-1"})
+		self.assertEqual(result, "MOP-NEW")
+
+	def test_does_not_overwrite_an_existing_value(self):
+		"""Even if the MWO's own operation has since moved on to MOP-NEWER, a value
+		already on the Material Request is left exactly as it was."""
+		mr = MockMaterialRequest(material_request_type="Manufacture")
+		mr.custom_manufacturing_work_order = "MWO-1"
+		mr.custom_manufacturing_operation = "MOP-OLD"
+		mr.manufacturing_order = "PMO-1"
+		result = self._run(mr, {"MWO-1": "MOP-NEWER", "MOP-OLD": "PMO-1"})
+		self.assertEqual(result, "MOP-OLD")
+
+	def test_no_manufacturing_work_order_linked_leaves_it_blank(self):
+		mr = MockMaterialRequest(material_request_type="Manufacture")
+		result = self._run(mr, {})
+		self.assertIsNone(result)
+
+	def test_mwo_with_no_operation_yet_leaves_it_blank(self):
+		"""F-06's counterpart on the read side: a linked MWO that has no
+		manufacturing_operation yet must not raise, just leave the field blank."""
+		mr = MockMaterialRequest(material_request_type="Manufacture")
+		mr.custom_manufacturing_work_order = "MWO-1"
+		result = self._run(mr, {"MWO-1": None})
+		self.assertIsNone(result)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
 class TestValidateTargetItem(IntegrationTestCase):
 	"""validate_target_item's bulk sieve-size / dimension lookup.
 

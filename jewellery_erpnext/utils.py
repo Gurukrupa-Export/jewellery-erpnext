@@ -837,3 +837,29 @@ def get_warehouse_from_user(user_id, warehouse_type):
 	)
 
 	return warehouse_name
+
+
+def get_repair_order_design_bom(order_form_type, order_form_id):
+	"""Return the Repair Order's design BOM, or None when this row is not a repair.
+
+	A repair carries three DIFFERENT BOM identities and they must never be collapsed
+	into one another:
+
+	* ``serial_id_bom``      -- the historical BOM the incoming finished serial was
+	                            originally built against. Evidence of what the piece
+	                            *is* today.
+	* design BOM (this one)  -- ``Repair Order.bom``. The composition the repair is
+	                            manufactured against, and the one Unpack Serial No
+	                            disassembles the finished serial into. Lands on
+	                            ``master_bom``.
+	* ``custom_tracking_bom``-- the Tracking Bom driving the jewellery manufacturing
+	                            flow (it is what fans the PMO out into MWOs).
+
+	Returns None rather than throwing so creation-time callers (Manufacturing Plan ->
+	PMO) can fall back to the row's own BOM for repairs raised without a Repair Order
+	link. The unpack path re-resolves through ``_resolve_repair_order_bom`` and raises
+	its own business error there, where a missing design BOM is genuinely fatal.
+	"""
+	if order_form_type != "Repair Order" or not order_form_id:
+		return None
+	return frappe.db.get_value("Repair Order", order_form_id, "bom")

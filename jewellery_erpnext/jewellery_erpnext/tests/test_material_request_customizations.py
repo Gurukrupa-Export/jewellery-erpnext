@@ -746,3 +746,159 @@ class TestSetReservationWarehouse(IntegrationTestCase):
 
 		self.assertEqual(mr.set_warehouse, "Waxing RSV - GEPL")
 		mock_map.assert_called_once_with("Shubh")
+
+
+def _guard_row(name, item_code="ITEM-A", qty=1, pcs=1, idx=1, **extra):
+	return SimpleNamespace(
+		name=name, idx=idx, item_code=item_code, qty=qty, pcs=pcs, **extra
+	)
+
+
+def _guard_before(
+	workflow_state="Material Reserved",
+	company="C1",
+	material_request_type="Manufacture",
+	items=None,
+):
+	return SimpleNamespace(
+		workflow_state=workflow_state,
+		company=company,
+		material_request_type=material_request_type,
+		items=items or [],
+	)
+
+
+def _guard_mr(
+	is_new=False,
+	before=None,
+	company="C1",
+	material_request_type="Manufacture",
+	items=None,
+	workflow_state="Material Reserved",
+):
+	"""SimpleNamespace, not MagicMock, for the same reason as ``_reservation_mr``: this
+	function branches on ``is_new()``/``get_doc_before_save()`` return values, which a
+	MagicMock call would make truthy regardless of what's configured."""
+	return SimpleNamespace(
+		company=company,
+		material_request_type=material_request_type,
+		workflow_state=workflow_state,
+		items=items or [],
+		is_new=lambda: is_new,
+		get_doc_before_save=lambda: before,
+	)
+
+
+class TestGuardNonSystemManagerFieldEdits(IntegrationTestCase):
+	"""Server-side backstop for the System-Manager-only edit restriction (F-01 in the
+	PR #1236 review): Workflow.allow_edit only disables the desk form client-side, so this
+	closes the gap for a direct API/RPC save."""
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_new_document_is_never_guarded(self, mock_roles):
+		mr = _guard_mr(is_new=True)
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_no_before_save_snapshot_is_let_through(self, mock_roles):
+		mr = _guard_mr(is_new=False, before=None)
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_leaving_draft_is_not_guarded(self, mock_roles):
+		"""The save that moves a request OUT of Draft is the legitimate transition itself,
+		not an edit to guard against."""
+		before = _guard_before(
+			workflow_state="Draft", items=[_guard_row("row-1", qty=1)]
+		)
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", qty=99)])
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["System Manager"])
+	def test_system_manager_is_exempt(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", qty=1)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", qty=99)])
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_unchanged_fields_pass(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", qty=1)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", qty=1)])
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_workflow_state_only_change_does_not_throw(self, mock_roles):
+		"""A legitimate transition (e.g. Reservation Pending -> Material Reserved) with
+		nothing else changed must not be blocked."""
+		before = _guard_before(
+			workflow_state="Reservation Pending", items=[_guard_row("row-1")]
+		)
+		mr = _guard_mr(
+			before=before,
+			items=[_guard_row("row-1")],
+			workflow_state="Material Reserved",
+		)
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_warehouse_change_alone_does_not_throw(self, mock_roles):
+		"""warehouse is deliberately excluded from the guarded item fields:
+		set_reservation_warehouse can legitimately back-fill a still-blank row.warehouse on
+		any save, regardless of workflow state."""
+		before_row = _guard_row("row-1", warehouse=None)
+		after_row = _guard_row("row-1", warehouse="WH-1")
+		before = _guard_before(items=[before_row])
+		mr = _guard_mr(before=before, items=[after_row])
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_qty_change_throws_for_other_role(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", qty=1)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", qty=99)])
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("qty", str(ctx.exception))
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_item_code_change_throws(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", item_code="A")])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", item_code="B")])
+		with self.assertRaises(frappe.PermissionError):
+			mr_mod.guard_non_system_manager_field_edits(mr)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_pcs_change_throws(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", pcs=1)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", pcs=5)])
+		with self.assertRaises(frappe.PermissionError):
+			mr_mod.guard_non_system_manager_field_edits(mr)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_company_change_throws(self, mock_roles):
+		before = _guard_before(company="C1")
+		mr = _guard_mr(before=before, company="C2")
+		with self.assertRaises(frappe.PermissionError):
+			mr_mod.guard_non_system_manager_field_edits(mr)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_material_request_type_change_throws(self, mock_roles):
+		before = _guard_before(material_request_type="Manufacture")
+		mr = _guard_mr(before=before, material_request_type="Purchase")
+		with self.assertRaises(frappe.PermissionError):
+			mr_mod.guard_non_system_manager_field_edits(mr)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_new_row_throws(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1")])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1"), _guard_row("row-2")])
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("new item", str(ctx.exception))
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_deleted_row_throws(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1"), _guard_row("row-2")])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1")])
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("deleted", str(ctx.exception))

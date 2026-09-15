@@ -11,7 +11,20 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	update_mop_balance,
 )
-from jewellery_erpnext.utils import is_mwo_refined
+
+# The weight buckets a Department IR Operation row mirrors from its Manufacturing
+# Operation. Same names on both doctypes, so one list drives the read and the write and
+# the two cannot drift apart. Order matches the child table's field order.
+WEIGHT_FIELDS = (
+	"gross_wt",
+	"net_wt",
+	"finding_wt",
+	"diamond_wt",
+	"diamond_pcs",
+	"gemstone_wt",
+	"gemstone_pcs",
+	"other_wt",
+)
 
 
 def validate_no_sample_issue(doc, method=None):
@@ -124,8 +137,11 @@ def validate_and_update_gross_wt_from_mop(self):
 		return
 
 	validate_duplicate(self)
+	# Built once, not reset per row: valid_reparing_or_next_operation matches the whole
+	# document's work orders against earlier transfers to the same next_department, and a
+	# list holding only the last row's MWO made that answer depend on row order.
+	mwo_list = []
 	for row in self.department_ir_operation:
-		mwo_list = []
 		validate_allowed_operation(row.manufacturing_work_order, self.next_department)
 		doc = update_mop_balance(row.manufacturing_operation)
 		update_previous_mop_data(doc)
@@ -133,82 +149,34 @@ def validate_and_update_gross_wt_from_mop(self):
 		mop_data = frappe.db.get_value(
 			"Manufacturing Operation",
 			row.manufacturing_operation,
-			[
-				"gross_wt",
-				"diamond_wt",
-				"net_wt",
-				"finding_wt",
-				"diamond_pcs",
-				"gemstone_pcs",
-				"gemstone_wt",
-				"other_wt",
-				"is_finding",
-			],
+			WEIGHT_FIELDS,
 			as_dict=1,
 		)
-		previous_mop = frappe.db.get_value(
-			"Manufacturing Operation", row.manufacturing_operation, "previous_mop"
-		)
 
-		previous_mop_data = frappe._dict()
-
-		if previous_mop:
-			previous_mop_data = frappe.db.get_value(
-				"Manufacturing Operation",
-				previous_mop,
-				[
-					"received_gross_wt",
-					"gross_wt",
-					"diamond_wt",
-					"net_wt",
-					"finding_wt",
-					"diamond_pcs",
-					"gemstone_pcs",
-					"gemstone_wt",
-					"other_wt",
-				],
-				as_dict=1,
-			)
-
-		if mop_data.get("is_finding") or is_mwo_refined(row.manufacturing_work_order):
-			# Finding: mirror the current operation exactly — no previous-MOP fallback.
-			# A finding's "receive from work order" legitimately empties the operation
-			# balance, so resurrecting the previous MOP's weights would show phantom values.
-			# Refined MWO: same rule — the Refining Entry zeroed the operation weights
-			# because the metal physically left for the refinery, so a 0 here is real;
-			# the `or`-fallback below would resurrect the pre-refining weight from the
-			# previous MOP (the "gross wt reappears after refining" bug).
-			row.gross_wt = mop_data.get("gross_wt") or 0
-			row.net_wt = mop_data.get("net_wt") or 0
-			row.diamond_wt = mop_data.get("diamond_wt") or 0
-			row.finding_wt = mop_data.get("finding_wt") or 0
-			row.diamond_pcs = mop_data.get("diamond_pcs") or 0
-			row.gemstone_pcs = mop_data.get("gemstone_pcs") or 0
-			row.gemstone_wt = mop_data.get("gemstone_wt") or 0
-			row.other_wt = mop_data.get("other_wt") or 0
-		else:
-			row.gross_wt = (
-				mop_data.get("gross_wt")
-				or previous_mop_data.get("received_gross_wt")
-				or previous_mop_data.get("gross_wt")
-			)
-			row.net_wt = mop_data.get("net_wt") or previous_mop_data.get("net_wt")
-			row.diamond_wt = mop_data.get("diamond_wt") or previous_mop_data.get(
-				"diamond_wt"
-			)
-			row.finding_wt = mop_data.get("finding_wt") or previous_mop_data.get(
-				"finding_wt"
-			)
-			row.diamond_pcs = mop_data.get("diamond_pcs") or previous_mop_data.get(
-				"diamond_pcs"
-			)
-			row.gemstone_pcs = mop_data.get("gemstone_pcs") or previous_mop_data.get(
-				"gemstone_pcs"
-			)
-			row.gemstone_wt = mop_data.get("gemstone_wt") or previous_mop_data.get(
-				"gemstone_wt"
-			)
-			row.other_wt = mop_data.get("other_wt") or previous_mop_data.get("other_wt")
+		# The row shows what the OPERATION holds, and nothing else. A zero bucket is a
+		# real zero, not a missing reading: Manufacturing Operation weights are written
+		# only by mop_log.update_wt_detail replaying the MOP Log ledger, so an operation
+		# reading 0 is one whose ledger holds nothing.
+		#
+		# This used to fall through an `or` chain to the previous operation's
+		# received_gross_wt / gross_wt, which treats a legitimate 0.0 as "unknown" and
+		# resurrects weight the operation does not hold: Department-IR-Labh-2026-02662
+		# asked an operator to move 7.99 g out of MOP-G6L23, every bucket of which was 0,
+		# because its previous operation MOP-2FR81 still read 7.99. The is_finding and
+		# is_mwo_refined carve-outs that guarded this were the two zeroes already known to
+		# be honest; every other honest zero was still overwritten. One rule now covers
+		# all of them, so there is no branch left to keep in step.
+		#
+		# A freshly minted in-transit operation is not a counter-example:
+		# create_operation_for_next_dept copies the weight buckets forward and
+		# create_mop_log_for_department_ir clones the ledger, so it already carries its
+		# own figure before this runs.
+		#
+		# These row weights are display and product-tolerance input only. The stock moves
+		# from the MOP Log clone in create_mop_log_for_department_ir, which never reads a
+		# row weight, so showing the real 0 cannot mis-move metal.
+		for field in WEIGHT_FIELDS:
+			setattr(row, field, mop_data.get(field) or 0)
 		mwo_list.append(row.manufacturing_work_order)
 
 	return mwo_list

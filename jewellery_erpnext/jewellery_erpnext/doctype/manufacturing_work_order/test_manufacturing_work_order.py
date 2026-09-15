@@ -1,11 +1,15 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 
+from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
+	manufacturing_work_order as mwo_mod,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.test_parent_manufacturing_order import (
 	create_man_plan,
 )
@@ -100,6 +104,96 @@ class TestManufacturingWorkOrder(IntegrationTestCase):
 		) as mock_create_se:
 			mwo.create_mfg_entry()
 			mock_create_se.assert_called_once_with(mwo)
+
+
+class TestCreateMrForSplitWorkOrder(UnitTestCase):
+	"""Unit coverage for ``create_mr_for_split_work_order`` -- F-04/F-06 in the PR #1236
+	review: the split-MR stage-stamp reset and MOP inheritance had no test coverage, and
+	the function's behaviour when the source MWO has no ``manufacturing_operation`` yet
+	was unconfirmed.
+
+	Mocked rather than built on ``create_pmo``, and ``UnitTestCase`` rather than
+	``IntegrationTestCase``: the function's own DB calls (``get_value``, ``count``,
+	``get_doc``, ``copy_doc``) are simple enough to stub directly, and doing so avoids both
+	the full Parent Manufacturing Order/BOM fixture chain ``create_pmo`` needs and
+	``IntegrationTestCase.setUpClass``'s auto-generated test records for "Manufacturing Work
+	Order" (which cascades into Company and fails on a site without that base fixture) --
+	this test never touches the database at all.
+	"""
+
+	def _run(self, mwo_operation="MOP-NEW"):
+		item_a = MagicMock(qty=5, pcs=3)
+		item_b = MagicMock(qty=2, pcs=1)
+		old_mr = MagicMock(title="MRD-LH-(TEST-001)-2")
+		new_mr = MagicMock(title="MRD-LH-(TEST-001)-2", items=[item_a, item_b])
+		new_mr.flags = SimpleNamespace()
+
+		def _gv(doctype, filters, fieldname=None):
+			if (
+				doctype == "Manufacturing Work Order"
+				and fieldname == "manufacturing_order"
+			):
+				return "PMO-1"
+			if (
+				doctype == "Manufacturing Work Order"
+				and fieldname == "manufacturing_operation"
+			):
+				return mwo_operation
+			if doctype == "Material Request":
+				return "OLD-MR-1"
+			return None
+
+		with (
+			patch("frappe.db.get_value", side_effect=_gv),
+			patch("frappe.db.count", return_value=1),
+			patch("frappe.get_doc", return_value=old_mr),
+			patch("frappe.copy_doc", return_value=new_mr),
+			patch("frappe.msgprint"),
+		):
+			mwo_mod.create_mr_for_split_work_order(
+				"MWO-CHILD-1", "Test_Company", "Test_Manufacturer"
+			)
+
+		return new_mr, item_a, item_b
+
+	def test_stage_stamps_are_cleared(self):
+		"""The bug this closed: copy_doc otherwise carries the old (about-to-be-cancelled)
+		MR's Reserve/MOP/Department Transfer Stock Entry links onto the new split MR."""
+		new_mr, *_ = self._run()
+		self.assertIsNone(new_mr.custom_reserve_se)
+		self.assertIsNone(new_mr.custom_mop_se)
+		self.assertIsNone(new_mr.custom_department_transfer_se)
+
+	def test_manufacturing_operation_inherited_from_mwo(self):
+		new_mr, *_ = self._run(mwo_operation="MOP-XYZ")
+		self.assertEqual(new_mr.custom_manufacturing_operation, "MOP-XYZ")
+
+	def test_manufacturing_operation_is_none_when_mwo_has_none(self):
+		"""F-06: the source MWO's manufacturing_operation being unset must not raise --
+		the field is simply left blank, for before_validate to derive later if it can."""
+		new_mr, *_ = self._run(mwo_operation=None)
+		self.assertIsNone(new_mr.custom_manufacturing_operation)
+
+	def test_manufacturing_work_order_linked(self):
+		new_mr, *_ = self._run()
+		self.assertEqual(new_mr.custom_manufacturing_work_order, "MWO-CHILD-1")
+
+	def test_item_quantities_reset_to_zero(self):
+		_, item_a, item_b = self._run()
+		self.assertEqual(item_a.qty, 0)
+		self.assertEqual(item_a.pcs, 0)
+		self.assertEqual(item_b.qty, 0)
+		self.assertEqual(item_b.pcs, 0)
+
+	def test_workflow_state_reset_to_draft(self):
+		new_mr, *_ = self._run()
+		self.assertEqual(new_mr.workflow_state, "Draft")
+
+	def test_saved_with_ignore_mandatory_and_validate(self):
+		new_mr, *_ = self._run()
+		self.assertTrue(new_mr.flags.ignore_mandatory)
+		self.assertTrue(new_mr.flags.ignore_validate)
+		new_mr.save.assert_called_once()
 
 
 def create_pmo(self):

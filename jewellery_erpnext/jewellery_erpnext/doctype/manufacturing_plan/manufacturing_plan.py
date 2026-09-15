@@ -18,6 +18,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 	create_mwo,
 	make_manufacturing_order,
 )
+from jewellery_erpnext.utils import get_repair_order_design_bom
 
 # Sales Order fieldname -> Manufacturing Plan fieldname. The names differ because the Sales Order
 # side is a mix of a standard field (order_type), an old unprefixed custom field (sales_type) and a
@@ -258,7 +259,19 @@ class ManufacturingPlan(Document):
 		so_data_map = fetch_doc_map(
 			"Sales Order Item",
 			so_items,
-			["name", "metal_type", "metal_touch", "metal_colour", "diamond_grade"],
+			[
+				"name",
+				"metal_type",
+				"metal_touch",
+				"metal_colour",
+				"diamond_grade",
+				# The Repair Order link travels on the Sales Order Item, not on the plan row
+				# (Manufacturing Plan Table has order_form_type but no order_form_id), so it is
+				# cached here to resolve the repair design BOM at PMO-creation time without a
+				# per-row query. See create_manufacturing_order().
+				"order_form_type",
+				"order_form_id",
+			],
 		)
 
 		mwo_data_map = fetch_doc_map(
@@ -599,6 +612,37 @@ def fetch_doc_map(doctype, names, fields, key_field="name"):
 	return {d[key_field]: d for d in data}
 
 
+def _resolve_repair_master_bom(row, so_det):
+	"""Pick the BOM a Repair PMO must be created against.
+
+	``master_bom`` on a repair means "the composition this repair is manufactured and
+	unpacked against". That is the Repair Order's design BOM -- the same BOM
+	``ManufacturingWorkOrder._resolve_repair_order_bom`` reaches for when Unpack Serial
+	No runs. Resolving it HERE is what lets the PMO and its MWOs show the correct repair
+	BOM the moment they are created, instead of the unpack button having to back-fill it
+	on first click (by which time the operator has already seen a blank BOM).
+
+	Order of preference:
+
+	1. ``Repair Order.bom`` -- authoritative whenever the row was raised from a Repair
+	   Order (``order_form_type == "Repair Order"``).
+	2. ``row.serial_id_bom`` -- the historical serial BOM. Header-``order_type`` repairs
+	   carry no Repair Order link at all, and this is what they have always used; keeping
+	   it second means their behaviour is untouched.
+	3. ``row.bom`` -- the BOM get_items_for_production already resolved for the row
+	   (Copy BOM, else serial_id_bom). Previously a repair row that had a Copy BOM but no
+	   serial_id_bom produced master_bom=None, i.e. a PMO -- and every MWO under it --
+	   with no BOM at all. This last fallback closes that hole.
+	"""
+	return (
+		get_repair_order_design_bom(
+			so_det.get("order_form_type"), so_det.get("order_form_id")
+		)
+		or row.serial_id_bom
+		or row.bom
+	)
+
+
 def create_manufacturing_order(doc, row, cache_data=None):
 	"""Create one Parent Manufacturing Order per unit of the row. Returns the number created."""
 	if cache_data is None:
@@ -633,6 +677,8 @@ def create_manufacturing_order(doc, row, cache_data=None):
 		fields = ["metal_type", "metal_touch", "metal_colour"]
 		if row.mwo:
 			fields.append("master_bom")
+		else:
+			fields += ["order_form_type", "order_form_id"]
 
 		fetched_val = frappe.get_value(doc_type, docname, fields, as_dict=1)
 		if fetched_val:
@@ -642,7 +688,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	if doc.select_manufacture_order == "Manufacturing":
 		master_bom = row.manufacturing_bom
 	elif doc.select_manufacture_order == "Repair":
-		master_bom = row.serial_id_bom
+		master_bom = _resolve_repair_master_bom(row, so_det)
 
 	if master_bom:
 		# caching check

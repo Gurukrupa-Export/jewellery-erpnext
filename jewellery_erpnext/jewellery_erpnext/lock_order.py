@@ -9,6 +9,7 @@ Canonical order (acquire in this sequence inside every multi-doctype write):
     Parent control row  ->  tabSeries  ->  tabBin  ->  Batch / SBB
         ->  Stock Reservation Entry  ->  Stock Ledger Entry
         ->  MOP Log  ->  Manufacturing Operation
+        ->  stamping counter (terminal)
 
 Two rules every custom on_submit / hook must follow:
 
@@ -20,6 +21,26 @@ Two rules every custom on_submit / hook must follow:
   with ``SELECT ... FOR UPDATE``, in sorted order, via :func:`lock_bins`. This
   removes the "shared read now, exclusive write later" lock-upgrade that turns a
   Series<->Bin interleaving into a deadlock cycle.
+
+**THE STAMPING COUNTER IS TERMINAL.** ``Serial No.custom_stamping_no`` claims its number
+from a ``tabSeries`` row (``doc_events.serial_no.reserve_stamping_sequence``). That is
+nominally position 2, and the three paths that mint one -- Serial Number Creator
+(``update_new_serial_no``), Product Certification (``update_huid`` -> ``add_to_serial_no``)
+and Job Card (``create_serial_no``) -- all do so while already holding Bin locks, which
+looks like an inversion. It is safe ONLY because every one of them takes it LAST and then
+commits, so they can queue on it but never form a cycle. Note also that Serial No's autoname
+is ``field:serial_no``, so a Serial No insert takes no other naming lock: for Job Card and
+desk edits the stamping row is the only shared row in the transaction, and a single lock
+cannot be half a cycle.
+
+RULE C -- mint the stamping number last. If you add a path that needs a Bin (or any
+position 2-8 row) AFTER a Serial No save, pre-lock with :func:`prelock_stamping_series`
+instead of relying on that ordering.
+
+Deliberately NOT pre-locked by default: it is one site-wide row, so pinning it at the start
+of a cascade would make every concurrent SNC/PC submit queue on it for the cascade's whole
+duration -- exactly the hot-row pathology ``patches/shard_stock_entry_naming_by_type.py``
+was written to escape. Minting late holds it for milliseconds instead.
 
 These helpers are deliberately tiny and side-effect-free except for the row locks
 they take (which release on the enclosing transaction's COMMIT/ROLLBACK, exactly
@@ -283,9 +304,56 @@ def series_stubs(company, *stock_entry_types):
 	return stubs
 
 
+def _mints_new_name(doc):
+	"""True when ``doc`` has yet to be given a name, i.e. it will still ask a naming
+	counter for one.
+
+	``Document.insert()`` calls ``set_new_name()`` (and through it ``getseries()``, which
+	takes the ``tabSeries`` row ``FOR UPDATE``) *before* ``run_before_save_methods()``, and
+	the update path never names a doc at all. So by the time a before_save/before_submit
+	hook such as ``stock_entry.prelock_bins`` sees a real doc, its name is already minted
+	and its counter lock is either already held by this transaction (insert) or will never
+	be taken by it (submit of an already-saved draft). Pre-locking there buys nothing and
+	merely holds the shared counter row for the rest of the transaction — on a site whose
+	Stock Entries all share one ``MAT-STE-`` ``tabSeries`` row, that turns a microsecond
+	counter lock into a transaction-length one and makes every concurrent submit queue
+	behind it (the dominant 1213 source in the Sep-2026 production Error Log).
+
+	Only an unnamed doc still needs the pre-lock: the ``frappe.new_doc`` stubs
+	:func:`series_stubs` builds for the Stock Entries a cascade mints *later*, while it
+	already holds Bin locks — exactly the inversion this module exists to prevent.
+
+	CALLERS MUST GATE THIS ON SHARDING
+	----------------------------------
+	While a doctype still names off ONE shared ``tabSeries`` row, the blanket pre-lock is
+	*accidentally* covering its cascades: it pins the very row each nested doc would later
+	ask for, making ``getseries()`` inside an ``on_submit`` cascade a free re-entrant no-op.
+	Skipping it there would remove that cover and let the cascade take the shared row *while
+	already holding Bin locks* — a new inversion.
+
+	:func:`preallocate_series_for_docs` therefore consults this ONLY for docs governed by a
+	Document Naming Rule, i.e. those on a per-type counter no unrelated transaction wants.
+	A doc falling back to a shared ``tabSeries`` row keeps the unconditional pre-lock. That
+	gate is per-doc and automatic, so deployment order does not matter: before
+	``patches/shard_stock_entry_naming_by_type.py`` runs, the old behaviour holds unchanged;
+	as rules appear, each type switches itself over.
+	"""
+	name = doc.get("name") if hasattr(doc, "get") else getattr(doc, "name", None)
+	# frappe gives an unsaved client-side doc a "new-<doctype>-<hash>" placeholder name.
+	return not name or str(name).startswith("new-")
+
+
 def preallocate_series_for_docs(*docs):
 	"""Pre-acquire the naming-counter lock (canonical position 2) for each given
 	doc/new_doc, before any Bin lock is taken.
+
+	A doc that already carries a name is skipped — but ONLY when a Document Naming Rule
+	governs it, i.e. its counter is per-(company x type) and no unrelated transaction wants
+	that row. A doc that falls back to a SHARED ``tabSeries`` row is always pre-locked, even
+	when already named, because a nested doc minted later by an ``on_submit`` cascade will
+	ask for that same shared row after Bin locks are held. This gate is what makes the
+	optimisation safe to deploy before, during or after
+	``patches/shard_stock_entry_naming_by_type.py``. See :func:`_mints_new_name`.
 
 	Respects frappe's naming precedence: when an active Document Naming Rule governs a
 	doc, its ``tabDocument Naming Rule.counter`` row is the lock to pin — the
@@ -313,8 +381,16 @@ def preallocate_series_for_docs(*docs):
 			continue
 		dnr = document_naming_rule_for_doc(d)
 		if dnr:
-			dnr_names.add(dnr)
+			# SHARDED: this doc names off its own per-(company x type) counter row, which
+			# no unrelated transaction wants. An already-named doc will never increment it
+			# again, so there is nothing to pin — skip it and stop paying for the lock.
+			if _mints_new_name(d):
+				dnr_names.add(dnr)
 			continue
+		# NOT SHARDED: this doc falls back to a `tabSeries` row shared with every other doc
+		# of its doctype — including the nested ones an on_submit cascade mints while
+		# already holding Bin locks. Keep the unconditional pre-lock so that row is still
+		# taken BEFORE any Bin, exactly as before. See _mints_new_name's gating note.
 		prefix = series_prefix_for_doc(d)
 		if prefix:
 			series_prefixes.append(prefix)
@@ -322,3 +398,52 @@ def preallocate_series_for_docs(*docs):
 	for name in sorted(dnr_names):
 		frappe.db.get_value("Document Naming Rule", name, "counter", for_update=True)
 	preallocate_series(series_prefixes)
+
+
+def prelock_stamping_series():
+	"""EXPERIMENTAL (opt-in): pin the stamping counter at canonical position 2, before any
+	Bin lock, for cascades that mint a ``Serial No.custom_stamping_no``.
+
+	OFF by default, and the app is correct without it -- see RULE C in the module docstring.
+	Uniqueness does NOT depend on this: ``reserve_stamping_sequence`` is atomic wherever it
+	is called from. This only decides WHERE in the acquisition order the counter lock lands,
+	i.e. it is purely a deadlock-ordering guard.
+
+	TRADE-OFF (accepted by the operator who enables it): the stamping counter is a single
+	site-wide row, so pinning it up front makes every concurrent Serial Number Creator /
+	Product Certification submit queue on it for the whole cascade rather than for the few
+	milliseconds around the mint. That is the same hot-row cost
+	``shard_stock_entry_naming_by_type`` exists to avoid, so enable it only if the 1213 rate
+	actually says to: ``site_config.json`` ``"prelock_stamping_series": 1``.
+
+	Pins TODAY'S and TOMORROW'S prefix. The prefix is derived from the clock, so a cascade
+	that starts at 23:59 on 31-Dec and mints after midnight resolves a DIFFERENT key than the
+	one it pinned -- and would take that fresh row while holding Bins, the exact inversion
+	this is meant to remove. The two keys collapse to one on 364 days a year.
+	"""
+	from frappe.utils import add_to_date, now_datetime
+
+	from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import (
+		_ensure_stamping_series_row,
+		_has_stamping_no_field,
+		stamping_prefix,
+		stamping_series_key,
+	)
+
+	if not frappe.conf.get("prelock_stamping_series"):
+		return
+	if not _has_stamping_no_field():
+		return
+
+	now = now_datetime()
+	keys = []
+	for prefix in sorted(
+		{stamping_prefix(now), stamping_prefix(add_to_date(now, days=1))}
+	):
+		key = stamping_series_key(prefix)
+		# FOR UPDATE on a row that does not exist locks nothing, so the row has to be there
+		# before preallocate_series can pin it.
+		_ensure_stamping_series_row(key, prefix)
+		keys.append(key)
+
+	preallocate_series(keys)
