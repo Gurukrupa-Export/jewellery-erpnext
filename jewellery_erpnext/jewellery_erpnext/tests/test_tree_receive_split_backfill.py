@@ -51,6 +51,16 @@ def ledger_row(name="TMD-1", receive_qty=0.0, item=ITEM, parent=TREE):
 
 
 class _BackfillHarness(IntegrationTestCase):
+	def setUp(self):
+		# Resolve the rounding method BEFORE frappe.db is mocked out below. flt(x, prec)
+		# reaches System Settings for it, and flt swallows whatever that read raises and
+		# returns 0.0 -- so against a MagicMock db every quantity in this module silently
+		# collapses to zero and the split tests pass or fail for the wrong reason. Warming
+		# it here caches it on frappe.local for the duration of the test, which is the same
+		# guard test_tree_employee_ir_receive.py carries (0b4e638, the refining suite).
+		super().setUp()
+		frappe.get_system_settings("rounding_method")
+
 	def split(self, rows, ledger, items=None):
 		"""Run _split_chunk over ``rows``; returns ({row name: written dict}, stats)."""
 		stats = {"fallback_rows": 0, "unresolved_items": 0}
