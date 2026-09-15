@@ -28,6 +28,9 @@
   "supplier",
   "estimated_date",
   "purchase_type",
+  "custom_order_type",
+  "custom_sales_type",
+  "custom_flow_type",
   "get_items_for_production_order",
   "manufacturing_plan_table",
   "section_break_cjenr",
@@ -184,6 +187,27 @@
    "fieldtype": "Link",
    "label": "Purchase Type",
    "options": "Purchase Type"
+  },
+  {
+   "description": "Read from the source Sales Orders. Left blank when they disagree; submitting a subcontracting plan then throws.",
+   "fieldname": "custom_order_type",
+   "fieldtype": "Data",
+   "label": "Order Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_sales_type",
+   "fieldtype": "Link",
+   "label": "Sales Type",
+   "options": "Sales Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_flow_type",
+   "fieldtype": "Select",
+   "label": "Flow Type",
+   "options": "\nMTO\nMTBI\nMTR\nFILLER\nGCC\nUS\nJWO\nPROTO\nSTT\nPCPM",
+   "read_only": 1
   },
   {
    "fieldname": "manufacturing_work_order",

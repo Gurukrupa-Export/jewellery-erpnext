@@ -29,10 +29,11 @@
   "currency",
   "effective_from",
   "gemstone_grade",
+  "from_weight",
+  "to_weight",
   "section_break_menw",
   "handling_charges_in_percentage",
   "handling_charges_rate",
-  "column_break_ucvl",
   "outright_handling_charges_in_percentage",
   "outright_handling_charges_rate",
   "column_break_jnj7",
@@ -110,6 +111,7 @@
    "depends_on": "eval:doc.price_list_type=='Fixed'",
    "fieldname": "item",
    "fieldtype": "Link",
+   "hidden": 1,
    "label": "Item",
    "options": "Item"
   },
@@ -228,11 +230,13 @@
   {
    "fieldname": "handling_charges_in_percentage",
    "fieldtype": "Percent",
+   "hidden": 1,
    "label": "Handling Charges %"
   },
   {
    "fieldname": "handling_charges_rate",
    "fieldtype": "Currency",
+   "hidden": 1,
    "label": "Handling Charges Rate"
   },
   {
@@ -260,18 +264,24 @@
    "fieldtype": "Section Break"
   },
   {
-   "fieldname": "column_break_ucvl",
+   "fieldname": "column_break_jnj7",
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "column_break_jnj7",
-   "fieldtype": "Column Break"
+   "fieldname": "from_weight",
+   "fieldtype": "Float",
+   "label": "From Weight"
+  },
+  {
+   "fieldname": "to_weight",
+   "fieldtype": "Float",
+   "label": "To Weight"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-29 15:48:37.763459",
- "modified_by": "Administrator",
+ "modified": "2026-09-02 17:29:00.483925",
+ "modified_by": "shruti_b@gkexport.com",
  "module": "Gurukrupa Exports",
  "name": "Gemstone Price List",
  "naming_rule": "Expression",

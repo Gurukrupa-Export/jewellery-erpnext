@@ -519,7 +519,7 @@ def before_submit(self, method):
 		)
 	):
 		create_repack_for_subcontracting(self, self.subcontractor, main_slip)
-	if self.stock_entry_type != "Manufacture" and self.company != "Sadguru Diamond":
+	if self.stock_entry_type != "Manufacture" and self.company not in ["Sadguru Diamond","Gurukrupa Bullions LLP"]:
 		self.posting_time = frappe.utils.nowtime()
 
 	# group_se_items_and_update_mop_items(self, method)

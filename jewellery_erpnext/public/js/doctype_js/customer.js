@@ -34,21 +34,21 @@ function set_filters_on_child_table_fields(frm, fields, table) {
 	});
 }
 
-frappe.ui.form.on("Customer", {
-	refresh(frm) {
-		frm.set_value("vendor_code", frm.doc.name);
-	},
-	validate(frm) {
-		var touch = [];
-		var type = [];
-		$.each(frm.doc.metal_criteria || [], function (i, d) {
-			// if (in_list(touch,d.metal_touch) && in_list(type,d.metal_type)) {
-			if (touch.includes(d.metal_touch) && type.includes(d.metal_type)) {
-				frappe.throw(__("Metal Touch must be Unique"));
-			} else {
-				touch.push(d.metal_touch);
-				type.push(d.metal_type);
-			}
-		});
-	},
-});
+// frappe.ui.form.on("Customer", {
+// 	refresh(frm) {
+// 		frm.set_value("vendor_code", frm.doc.name);
+// 	},
+// 	validate(frm) {
+// 		var touch = [];
+// 		var type = [];
+// 		$.each(frm.doc.metal_criteria || [], function (i, d) {
+// 			// if (in_list(touch,d.metal_touch) && in_list(type,d.metal_type)) {
+// 			if (touch.includes(d.metal_touch) && type.includes(d.metal_type)) {
+// 				frappe.throw(__("Metal Touch must be Unique"));
+// 			} else {
+// 				touch.push(d.metal_touch);
+// 				type.push(d.metal_type);
+// 			}
+// 		});
+// 	},
+// });

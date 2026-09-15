@@ -57,7 +57,23 @@ def on_cancel(self, method):
 
 def before_submit(self, method):
 	validate_invoice_item(self)
-	
+
+
+def get_order_bom(row):
+	"""Origin BOM for a Quotation Item, taken from the Order the row came from.
+
+	`copy_bom` is provenance -- "which BOM did this row originate from". For a row raised
+	from an `Order` it must never fall back to the item's master / Finished Goods / Template
+	BOM: that is a property of the item, not of this order.
+
+	`order_form_id` is a Dynamic Link on `order_form_type` ("" / Order / Repair Order), so the
+	type has to be checked before reading it as an `Order`.
+	"""
+	if row.get("order_form_type") == "Order" and row.get("order_form_id"):
+		return frappe.db.get_value("Order", row.get("order_form_id"), "new_bom")
+	return None
+
+
 def create_new_bom(self):
 	"""
 	Create Quotation Type BOM from Template/ Finished Goods Bom
@@ -78,10 +94,13 @@ def create_new_bom(self):
 	item_bom_data = frappe._dict()
 	bom_data = frappe._dict()
 	for row in self.items:
-		if item_bom_data.get(row.item_code):
-			row.db_set("quotation_bom", item_bom_data.get(row.item_code))
-		if bom_data.get(row.item_code):
-			row.db_set("copy_bom", bom_data.get(row.item_code))
+		# Keyed on the order too, not just the item: two rows for the same item raised from
+		# different Orders must each get their own BOM, and their own `copy_bom`.
+		cache_key = (row.item_code, row.get("order_form_type"), row.get("order_form_id"))
+		if item_bom_data.get(cache_key):
+			row.db_set("quotation_bom", item_bom_data.get(cache_key))
+		if bom_data.get(cache_key):
+			row.db_set("copy_bom", bom_data.get(cache_key))
 		if row.quotation_bom:
 			continue
 		bom = frappe.qb.DocType("BOM")
@@ -173,7 +192,14 @@ def create_new_bom(self):
 		if bom:
 			try:
 				create_quotation_bom(
-					self, row, bom[0].get("name"), attribute_data, metal_criteria, item_bom_data, bom_data
+					self,
+					row,
+					bom[0].get("name"),
+					attribute_data,
+					metal_criteria,
+					item_bom_data,
+					bom_data,
+					cache_key,
 				)
 			except Exception as e:
 				frappe.log_error(title="Quotation Error", message=f"{e}")
@@ -196,17 +222,21 @@ def create_new_bom(self):
 		frappe.db.set_value(self.doctype, self.name, "custom_bom_creation_logs", None)
 
 
-def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bom_data, bom_data):
-	copy_bom = bom 
+def create_quotation_bom(
+	self, row, bom, attribute_data, metal_criteria, item_bom_data, bom_data, cache_key
+):
+	order_bom = get_order_bom(row)
 
-	#  If Order Form ID exists, try using its new_bom as copy_bom
-	if row.order_form_id:
-		order_form_bom = frappe.db.get_value("Order", row.order_form_id, "new_bom")
-		if order_form_bom:
-			copy_bom = order_form_bom
+	# `copy_bom` is provenance, and for an Order-sourced row the Order's BOM is the only
+	# acceptable answer -- blank if the Order has none, never the item's master/Template BOM.
+	# Rows from anywhere else keep stamping the BOM the query above found.
+	copy_bom = order_bom if row.get("order_form_type") == "Order" else bom
 
 	row.db_set("copy_bom", copy_bom)
-	doc = frappe.copy_doc(frappe.get_doc("BOM", copy_bom))
+
+	# Clone source is separate from the stamp, and unchanged: an Order row still clones from
+	# the Order's BOM, everything else from the queried BOM.
+	doc = frappe.copy_doc(frappe.get_doc("BOM", order_bom or bom))
 	doc.custom_creation_doctype = self.doctype
 	doc.custom_creation_docname = self.name
 
@@ -848,8 +878,8 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
     + doc.finding_bom_amount
     + doc.gemstone_bom_amount
 	)
-	item_bom_data[row.item_code] = doc.name
-	bom_data[row.item_code] = bom
+	item_bom_data[cache_key] = doc.name
+	bom_data[cache_key] = copy_bom
 	doc.db_set("custom_creation_docname", self.name)
 	row.db_set("quotation_bom", doc.name)
 	row.gold_bom_rate = doc.gold_bom_amount
@@ -1349,8 +1379,9 @@ def validate_gold_rate_with_gst(self):
 							i.idx, i.qty, order_qty
 						)
 					)
-	if not self.gold_rate_with_gst:
-		frappe.throw("Gold Rate with GST is mandatory.")
+		if i.metal_type=='Gold':
+			if not self.gold_rate_with_gst:
+				frappe.throw("Gold Rate with GST is mandatory.")
 
 
 

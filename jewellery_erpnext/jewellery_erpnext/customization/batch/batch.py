@@ -19,7 +19,8 @@ def validate(self, method):
 		"Gurukrupa Export Private Limited": "GE",
 		"KG GK Jewellers Private Limited": "KG",
 		"Sadguru Diamond": "SD",
-		"Sadguru Hallmarking Centre": "SHC"
+		"Sadguru Hallmarking Centre": "SHC",
+		"Gurukrupa Bullions LLP":"GBL"
 	}
 	company_abbr = company.get(self.custom_company)
 	if not company_abbr and self.reference_doctype == "Stock Entry" and self.reference_name:
@@ -97,7 +98,7 @@ def autoname(self,method=None):
 		company ={"Gurukrupa Export Private Limited":"GE",
 			"KG GK Jewellers Private Limited":"KG",
 			"Sadguru Diamond":"SD",
-			"Sadguru Hallmarking Centre":"SHC"}
+			"Sadguru Hallmarking Centre":"SHC","Gurukrupa Bullions LLP":"GBL"}
 		company_abbr = company.get(self.custom_company)
 
 		if item_group == "Diamond - V":

@@ -1,4 +1,5 @@
 import frappe
+from jewellery_erpnext.jewellery_erpnext.doc_events.stock_transactions import set_batch_certificate_id
 
 from jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.doc_events.utils import (
 	update_bundle_details,
@@ -14,3 +15,4 @@ def before_validate(self, method):
 
 def on_submit(self, method):
 	update_bundle_details(self)
+	set_batch_certificate_id(self)
