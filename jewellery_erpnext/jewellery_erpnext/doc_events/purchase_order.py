@@ -342,11 +342,19 @@ ORDER_DIMENSION_MAP = {
     "order_type": "custom_order_type",
     "sales_type": "custom_sales_type",
     "custom_flow_type": "custom_flow_type",
+    "custom_design_type": "custom_design_type",
 }
+
+# Dimensions exempt from the unanimity throw at submit. Design type is informational -- it never
+# drives pricing, routing or the supplier's obligation the way order/sales/flow type do -- and one
+# plan legitimately spans several designs, so a disagreement there is normal, not a planning error.
+# It also keeps the rollout safe: every Sales Order predating the custom_design_type column reads
+# back blank, and a plan mixing legacy and new orders would otherwise throw the day the patch lands.
+SOFT_ORDER_DIMENSIONS = frozenset({"custom_design_type"})
 
 
 def source_order_dimensions(doc, strict=False):
-    """Order type / sales type / flow type read off the Manufacturing Plan's source Sales Orders.
+    """Order type / sales type / flow type / design type read off the plan's source Sales Orders.
 
     Returns a `{target_fieldname: value}` dict for the Manufacturing Plan / Purchase Order side.
 
@@ -355,6 +363,9 @@ def source_order_dimensions(doc, strict=False):
     stays editable. On submit of a subcontracting plan (`strict=True`) those values are about to
     ride onto a supplier's Purchase Order, where a wrong one is not recoverable -- so a mismatch is
     a planning error and throws.
+
+    `strict` applies to every dimension except those in `SOFT_ORDER_DIMENSIONS`, which stay blank
+    on a disagreement however the function is called.
     """
     sales_orders = {
         row.sales_order
@@ -376,7 +387,7 @@ def source_order_dimensions(doc, strict=False):
         distinct = {row.get(so_field) for row in rows}
         if len(distinct) == 1:
             values[target_field] = distinct.pop()
-        elif strict:
+        elif strict and target_field not in SOFT_ORDER_DIMENSIONS:
             detail = ", ".join(
                 f"{row.name}: {row.get(so_field) or _('(blank)')}"
                 for row in sorted(rows, key=lambda r: r.name)

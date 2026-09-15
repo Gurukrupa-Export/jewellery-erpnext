@@ -38,6 +38,17 @@
   },
   {
    "dt": "Quotation",
+   "fieldname": "custom_design_type",
+   "fieldtype": "Link",
+   "insert_after": "custom_flow_type",
+   "is_system_generated": 1,
+   "label": "Design Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
    "fetch_from": "company_address.gstin",
    "fieldname": "company_gstin",
    "fieldtype": "Data",
