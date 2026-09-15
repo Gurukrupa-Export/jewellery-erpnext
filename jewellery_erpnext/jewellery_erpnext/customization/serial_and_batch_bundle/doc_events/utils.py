@@ -6,6 +6,59 @@ from frappe.utils import (
 	get_link_to_form,
 )
 
+from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
+	record_batch_components,
+)
+
+
+def _lane_output_share(bundle, lane, produced_row, produced_qty):
+	"""This output's share of its lane, as a fraction in ``(0, 1]``.
+
+	THE DEFECT THIS EXISTS TO FIX
+	-----------------------------
+	``update_parent_batch_id`` runs on Serial and Batch Bundle ``after_insert``, and there is one
+	bundle per produced Stock Entry Detail row. A Metal Conversion lane emits up to THREE produced
+	rows -- the target metal, the customer's released alloy and the company's carved-out alloy
+	(``metal_conversions.py:567-645``) -- so this function is called once per output, and each call
+	used to hand ``record_batch_components`` the FULL lane source list. A lane consuming 100 g
+	therefore recorded 200-300 g of components. That is gap 3 from the ``Batch Component``
+	docstring -- the exact double-counting the component table was built to fix -- reproduced in
+	the writer's own call site.
+
+	WHY ``row.qty`` ALONE IS NOT THE FIX
+	------------------------------------
+	Scaling by the output quantity needs a denominator, and the lane's total produced quantity is
+	not in scope here: sibling bundles for the lane's other produced rows may not exist yet,
+	because ``after_insert`` fires per-SLE as the ledger is written. So the denominator is taken
+	from ``Stock Entry Detail`` directly -- the produced rows of this lane are identifiable by
+	``custom_conversion_lane`` plus a set ``t_warehouse``, independently of bundle creation order.
+
+	Reading Stock Entry Detail here is safe in the lock order (``lock_order.py``): this runs at
+	Batch/SBB depth, position 4, and SED is a child of a row this transaction already holds. It
+	adds no Bin or Series lock, so it cannot invert the discipline.
+
+	Returns ``1.0`` when the lane cannot be resolved, which preserves the pre-existing
+	voucher-wide behaviour for every non-lane-tagged flow.
+	"""
+	if not lane or not produced_row:
+		return 1.0
+
+	rows = frappe.get_all(
+		"Stock Entry Detail",
+		filters={"parent": bundle.voucher_no, "custom_conversion_lane": lane},
+		fields=["name", "qty", "t_warehouse"],
+	)
+	produced = [r for r in rows if r.t_warehouse]
+	total = sum(flt(r.qty) for r in produced)
+
+	if not produced or total <= 0:
+		return 1.0
+
+	# Conservation is the property that matters: the shares of a lane's outputs sum to exactly
+	# 1.0, so every source is attributed across the lane's outputs once and only once.
+	share = flt(produced_qty) / total
+	return share if share > 0 else 1.0
+
 
 def _conversion_lane_map(bundle, batch_list):
 	"""``{voucher_detail_no: lane tag}`` for a lane-tagged Stock Entry, else ``{}``.
@@ -134,6 +187,38 @@ def update_parent_batch_id(self):
 					batch_doc.flags.is_update_origin_entries = True
 					batch_doc.flags.current_stock_entry_type = stock_entry_type
 					batch_doc.save()
+
+					# C09: record what the batch is MADE OF, beside -- never instead of --
+					# the origin entries above. The two answer different questions and the
+					# component table is written independently rather than derived from
+					# custom_origin_entries, which has no owner column, de-dupes on batch_no
+					# alone, does not apportion, and is not transitive. Six differences, with
+					# evidence, in the Batch Component docstring.
+					#
+					# Best-effort by design: this is provenance enrichment on the submit path
+					# of every Manufacture/Repack. A failure here must not roll back a
+					# legitimate stock movement, so it is logged and swallowed. The carve-out
+					# that consumes it treats "no components recorded" as "carve out nothing",
+					# so a skipped write degrades to today's behaviour rather than to a wrong
+					# number.
+					try:
+						# Apportion the lane's sources to THIS output. Without the share the
+						# same full source list is recorded against every produced row of the
+						# lane -- see _lane_output_share for the measured 2-3x over-recording.
+						share = _lane_output_share(
+							self, lane, self.get("voucher_detail_no"), row.qty
+						)
+						record_batch_components(
+							row.batch_no,
+							[(batch.name, flt(batch.qty) * share) for batch in sources],
+							voucher_type=self.voucher_type,
+						)
+					except Exception:
+						frappe.log_error(
+							title="Batch Component provenance skipped",
+							message=f"{row.batch_no} on {self.voucher_type} {self.voucher_no}\n\n"
+							+ frappe.get_traceback(),
+						)
 
 
 class CustomSerialBatchBundle(SerialBatchBundle):
