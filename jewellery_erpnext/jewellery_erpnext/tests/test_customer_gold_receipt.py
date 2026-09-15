@@ -12,6 +12,9 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from jewellery_erpnext.customer_subcontracting import (
+	customer_gold_receipt as cg_receipt,
+)
 from jewellery_erpnext.customer_subcontracting.customer_gold_receipt import (
 	validate_customer_gold_batches,
 	validate_customer_gold_receipt,
@@ -34,6 +37,7 @@ SE_TYPE = "Customer Goods Received"
 CUSTOMER = "GJCU0009"
 OTHER_CUSTOMER = "MHCU0012"
 BATCH = "GJCU0009-2F07-M-G-24KT-99.9-Y-01"
+COMPANY = "Gurukrupa Export Private Limited"
 
 SETTINGS = frappe._dict(
 	customer_goods_stock_entry_type=SE_TYPE,
@@ -78,6 +82,7 @@ def _entry(**overrides):
 		doctype="Stock Entry",
 		stock_entry_type=SE_TYPE,
 		posting_date="2026-08-15",
+		company=COMPANY,
 		_customer=CUSTOMER,
 		items=[_item_row()],
 	)
@@ -85,22 +90,56 @@ def _entry(**overrides):
 	return doc
 
 
+def _batch(**overrides):
+	"""A Batch row as ``validate_customer_gold_batches`` now reads it.
+
+	Defaults are the healthy case; each C06 fixture overrides one field. Note
+	``custom_company`` defaults to ``None`` on purpose -- ``create_parent_batches`` never
+	stamps it, so a freshly minted batch really does look like this, and the validator
+	must tolerate it rather than demand a company.
+	"""
+	row = frappe._dict(
+		item=ITEM,
+		custom_customer=CUSTOMER,
+		custom_inventory_type="Customer Goods",
+		custom_company=None,
+		disabled=0,
+		expiry_date=None,
+	)
+	row.update(overrides)
+	return row
+
+
 def _db_get_value(doctype, name, fieldname=None, as_dict=False):
 	if doctype == "Stock Entry Type":
 		return "Material Receipt"
 	if doctype == "Batch":
 		if name == BATCH:
-			return frappe._dict(
-				custom_customer=CUSTOMER, custom_inventory_type="Customer Goods"
-			)
+			return _batch()
 		if name == "FOREIGN-BATCH":
-			return frappe._dict(
-				custom_customer=OTHER_CUSTOMER, custom_inventory_type="Customer Goods"
-			)
+			return _batch(custom_customer=OTHER_CUSTOMER)
 		if name == "REGULAR-BATCH":
-			return frappe._dict(
-				custom_customer=None, custom_inventory_type="Regular Stock"
-			)
+			return _batch(custom_customer=None, custom_inventory_type="Regular Stock")
+		# C06 fixtures. Both shapes short-circuited past the ownership guards, which
+		# are `if <field> and <field> != expected`. row_ownership records that the
+		# second shape -- Customer Goods with a NULL customer -- exists in production.
+		if name == "UNSTAMPED-BATCH":
+			return _batch(custom_customer=None, custom_inventory_type=None)
+		if name == "OWNERLESS-CG-BATCH":
+			return _batch(custom_customer=None)
+		# C06 second wave: item / company / disabled / expiry.
+		if name == "WRONG-ITEM-BATCH":
+			return _batch(item="M-G-22KT-91.6-Y")
+		if name == "OTHER-COMPANY-BATCH":
+			return _batch(custom_company="Some Other Company")
+		if name == "SAME-COMPANY-BATCH":
+			return _batch(custom_company=COMPANY)
+		if name == "DISABLED-BATCH":
+			return _batch(disabled=1)
+		if name == "EXPIRED-BATCH":
+			return _batch(expiry_date="2020-01-01")
+		if name == "FUTURE-EXPIRY-BATCH":
+			return _batch(expiry_date="2099-01-01")
 		return None
 	return None
 
@@ -108,6 +147,7 @@ def _db_get_value(doctype, name, fieldname=None, as_dict=False):
 @patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
 class TestCustomerGoldReceiptRules(IntegrationTestCase):
 	"""Receipt eligibility, with the feature enabled."""
@@ -132,6 +172,38 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 		doc = _entry(items=[_item_row(customer=None)])
 		validate_customer_gold_receipt(doc)
 		self.assertEqual(doc.get("items")[0].customer, CUSTOMER)
+
+	# -- C15: the zero-valuation flag must be stamped here, not left to the earlier hook --
+	def test_allow_zero_valuation_is_stamped_on_every_row(self, *_mocks):
+		"""C15. Customer Goods metal must never reach erpnext without the flag.
+
+		``doc_events.stock_entry.allow_zero_valuation`` runs EARLIER in the before_validate
+		chain than this validator, and it keys on ``inventory_type``. At that point an
+		API-created row still carries the blanket "Regular Stock" default, so the flag is
+		left at 0 -- and this validator then flips ownership to Customer Goods. The row
+		would reach erpnext owned by the customer but without the flag, and
+		``get_valuation_rate(..., allow_zero_rate=0, raise_error_if_no_rate=True)`` would
+		either throw or book company valuation onto customer-owned metal.
+		"""
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].allow_zero_valuation_rate, 1)
+
+	def test_allow_zero_valuation_is_stamped_even_when_row_arrives_regular_stock(
+		self, *_mocks
+	):
+		"""The exact API path: the blanket default already stamped Regular Stock."""
+		doc = _entry(items=[_item_row(inventory_type="Regular Stock")])
+		validate_customer_gold_receipt(doc)
+		row = doc.get("items")[0]
+		self.assertEqual(row.inventory_type, "Customer Goods")
+		self.assertEqual(row.allow_zero_valuation_rate, 1)
+
+	def test_allow_zero_valuation_is_stamped_on_all_rows(self, *_mocks):
+		doc = _entry(items=[_item_row(), _item_row(), _item_row()])
+		validate_customer_gold_receipt(doc)
+		for row in doc.get("items"):
+			self.assertEqual(row.allow_zero_valuation_rate, 1)
 
 	def test_wrong_item_blocks(self, *_mocks):
 		doc = _entry(items=[_item_row(item_code="M-G-22KT-91.9-Y")])
@@ -201,6 +273,36 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			validate_customer_gold_batches(doc)
 
+	def test_a_batch_with_no_inventory_type_blocks(self, *_mocks):
+		"""C06: a batch never ownership-stamped must not be adopted by silence.
+
+		`if batch.custom_inventory_type and ... != CUSTOMER_GOODS` passes a blank,
+		so this shape reached submit and created a customer obligation against a
+		batch whose owner was never recorded.
+		"""
+		doc = _entry(items=[_item_row(batch_no="UNSTAMPED-BATCH")])
+		with self.assertRaises(frappe.ValidationError):
+			validate_customer_gold_batches(doc)
+
+	def test_a_customer_goods_batch_with_no_customer_blocks(self, *_mocks):
+		"""C06: Customer Goods with a NULL owner is unresolved, not acceptable.
+
+		The sibling guard is `if batch.custom_customer and ... != customer`, which a
+		blank also passes -- so the gold had a type but no owner.
+		"""
+		doc = _entry(items=[_item_row(batch_no="OWNERLESS-CG-BATCH")])
+		with self.assertRaises(frappe.ValidationError):
+			validate_customer_gold_batches(doc)
+
+	def test_a_correctly_owned_batch_still_passes(self, *_mocks):
+		"""The tightening must not touch the normal path.
+
+		create_parent_batches stamps customer and inventory type together
+		(batch_rename.py:76-77), so every batch this flow mints looks like this.
+		"""
+		doc = _entry(items=[_item_row(batch_no=BATCH)])
+		validate_customer_gold_batches(doc)
+
 	def test_other_stock_entry_type_is_untouched(self, *_mocks):
 		"""A different Stock Entry Type must not be validated, even with the flag on."""
 		doc = _entry(stock_entry_type="Material Transfer (WORK ORDER)", _customer=None)
@@ -211,6 +313,7 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 @patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=False)
 class TestCustomerGoldReceiptDisabled(IntegrationTestCase):
 	"""Regression: with the feature off, nothing is enforced and nothing is mutated."""
@@ -253,8 +356,93 @@ NEW_RATE = frappe._dict(
 )
 
 
+@patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
+@patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+class TestCustomerGoldBatchIntegrity(IntegrationTestCase):
+	"""C06 -- item, company and expiry/disabled, beyond the two ownership checks."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _submit(self, batch_no):
+		doc = _entry(items=[_item_row(batch_no=batch_no)])
+		validate_customer_gold_batches(doc)
+
+	def test_healthy_batch_passes(self, *_mocks):
+		self._submit(BATCH)
+
+	# -- item -------------------------------------------------------------------
+	def test_batch_of_another_item_blocks(self, *_mocks):
+		"""erpnext catches this too, but only at on_submit -- too late to be useful."""
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._submit("WRONG-ITEM-BATCH")
+		self.assertIn("belongs to Item", str(ctx.exception))
+
+	# -- company ----------------------------------------------------------------
+	def test_batch_of_another_company_blocks(self, *_mocks):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._submit("OTHER-COMPANY-BATCH")
+		self.assertIn("belongs to Company", str(ctx.exception))
+
+	def test_batch_of_the_same_company_passes(self, *_mocks):
+		self._submit("SAME-COMPANY-BATCH")
+
+	def test_batch_without_a_company_is_accepted(self, *_mocks):
+		"""MUST pass. ``create_parent_batches`` never stamps ``custom_company``, so
+		requiring it would reject this flow's own freshly minted batches."""
+		self._submit(BATCH)
+
+	# -- disabled / expiry ------------------------------------------------------
+	def test_disabled_batch_blocks(self, *_mocks):
+		"""A genuine gap: erpnext's own validate_batch skips Material Receipt entirely."""
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._submit("DISABLED-BATCH")
+		self.assertIn("disabled", str(ctx.exception).lower())
+
+	def test_expired_batch_blocks(self, *_mocks):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._submit("EXPIRED-BATCH")
+		self.assertIn("expired", str(ctx.exception).lower())
+
+	def test_batch_expiring_after_the_posting_date_passes(self, *_mocks):
+		self._submit("FUTURE-EXPIRY-BATCH")
+
+	def test_batch_without_an_expiry_passes(self, *_mocks):
+		self._submit(BATCH)
+
+	# -- portability -------------------------------------------------------------
+	def test_optional_fields_are_omitted_when_the_site_lacks_them(self, *_mocks):
+		"""``custom_company`` is NOT in ``custom_fields/batch.json``.
+
+		A freshly installed site therefore has no such column, and naming it in the SELECT
+		raises ``Unknown column 'custom_company'``. Caught by the integration suite on a
+		clean site, so this pins it here too.
+		"""
+
+		with patch(f"{MOD}.frappe.db.has_column", return_value=False):
+			fields = cg_receipt._batch_fields()
+
+		self.assertNotIn("custom_company", fields)
+		for required in (
+			"item",
+			"custom_customer",
+			"custom_inventory_type",
+			"disabled",
+		):
+			self.assertIn(required, fields)
+
+	def test_optional_fields_are_included_when_present(self, *_mocks):
+		with patch(f"{MOD}.frappe.db.has_column", return_value=True):
+			self.assertIn("custom_company", cg_receipt._batch_fields())
+
+
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
 class TestCustomerGoldRateSnapshot(IntegrationTestCase):
 	"""The receipt freezes the resolved rate as audit evidence."""
@@ -352,6 +540,7 @@ class TestCustomerGoldRateSnapshot(IntegrationTestCase):
 
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=False)
 class TestCustomerGoldRateSnapshotDisabled(IntegrationTestCase):
 	"""Regression: with the feature off, no rate is ever looked up."""
@@ -397,11 +586,17 @@ class TestPureQtyExclusion(IntegrationTestCase):
 
 	def test_flag_off_keeps_every_legacy_exclusion(self):
 		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=False):
-			self.assertEqual(_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES)
+			self.assertEqual(
+				_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES
+			)
 
 	def test_flag_on_unexcludes_only_the_configured_type(self):
-		settings = frappe._dict(customer_goods_stock_entry_type="Customer Goods Received")
-		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(f"{SE_MOD}.get_customer_gold_settings", return_value=settings):
+		settings = frappe._dict(
+			customer_goods_stock_entry_type="Customer Goods Received"
+		)
+		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(
+			f"{SE_MOD}.get_customer_gold_settings", return_value=settings
+		):
 			excluded = _pure_qty_excluded_types()
 		self.assertNotIn("Customer Goods Received", excluded)
 		# Transfer and Issue are deliberately untouched -- not analysed by this project.
@@ -410,11 +605,142 @@ class TestPureQtyExclusion(IntegrationTestCase):
 
 	def test_flag_on_but_unconfigured_keeps_legacy(self):
 		settings = frappe._dict(customer_goods_stock_entry_type=None)
-		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(f"{SE_MOD}.get_customer_gold_settings", return_value=settings):
-			self.assertEqual(_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES)
+		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(
+			f"{SE_MOD}.get_customer_gold_settings", return_value=settings
+		):
+			self.assertEqual(
+				_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES
+			)
 
 	def test_a_differently_named_configured_type_is_honoured(self):
 		settings = frappe._dict(customer_goods_stock_entry_type="CG Intake")
-		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(f"{SE_MOD}.get_customer_gold_settings", return_value=settings):
+		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(
+			f"{SE_MOD}.get_customer_gold_settings", return_value=settings
+		):
 			# Nothing is un-excluded, because "CG Intake" was never in the legacy list.
-			self.assertEqual(_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES)
+			self.assertEqual(
+				_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES
+			)
+
+
+@patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+class TestCustomerGoldValuationPolicy(IntegrationTestCase):
+	"""C01 -- which valuation fields a receipt stamps, per configured policy.
+
+	The two policies are deliberately mutually exclusive on the row, even though erpnext
+	would tolerate both being set. ``set_basic_rate_manually`` short-circuits at
+	``stock_entry.py:1615-1619`` before ``allow_zero_valuation_rate`` is ever read, so
+	stamping both would mean stamping a flag that can never be consulted. A row should say
+	what it means.
+
+	Nominal is NOT enabled by these tests being green: D01 is the open decision about whether
+	it is the approved policy. The default is Zero Value and every existing site keeps it.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	#: Stand-in for the per-company account resolver. The nominal branch calls it once per
+	#: document, and it reads Subcontracting Settings for real -- which this suite does not
+	#: have. Patched rather than widened into ``_db_get_value`` because it is a resolver, not
+	#: a raw field read: a narrow dependency boundary, per C03.
+	ACCOUNTS = frappe._dict(
+		liability_account="Customer Gold Liability - GEPL",
+		cogs_adjustment_account="Customer Gold COGS Adjustment - GEPL",
+	)
+
+	def _rows_under(self, policy, **entry_kwargs):
+		doc = _entry(**entry_kwargs)
+		with (
+			patch(f"{MOD}.get_customer_gold_valuation_policy", return_value=policy),
+			patch(
+				f"{MOD}.get_customer_gold_company_settings", return_value=self.ACCOUNTS
+			),
+		):
+			validate_customer_gold_receipt(doc)
+		return doc.get("items")
+
+	# -- Zero Value: today's behaviour, and the default ---------------------------
+	def test_zero_value_stamps_allow_zero_and_not_the_manual_rate(self, *_mocks):
+		row = self._rows_under("Zero Value")[0]
+		self.assertEqual(row.allow_zero_valuation_rate, 1)
+		self.assertEqual(row.set_basic_rate_manually, 0)
+
+	def test_zero_value_does_not_book_a_rate(self, *_mocks):
+		"""The resolved rate stays evidence only -- it must not reach basic_rate."""
+		row = self._rows_under("Zero Value")[0]
+		self.assertFalse(row.get("basic_rate"))
+
+	def test_an_unknown_policy_falls_back_to_zero_value(self, *_mocks):
+		"""Fail-safe: anything that is not exactly Nominal behaves as Zero Value."""
+		for policy in ("", None, "nominal", "Something Else"):
+			with self.subTest(policy=policy):
+				row = self._rows_under(policy)[0]
+				self.assertEqual(row.allow_zero_valuation_rate, 1)
+				self.assertFalse(row.get("basic_rate"))
+
+	# -- Nominal ------------------------------------------------------------------
+	def test_nominal_books_the_frozen_per_gram_rate(self, *_mocks):
+		row = self._rows_under("Nominal")[0]
+		self.assertEqual(row.basic_rate, RATE.per_gram_rate)
+
+	def test_nominal_sets_the_manual_rate_flag(self, *_mocks):
+		"""``set_basic_rate_manually`` is what makes the entered rate survive erpnext.
+
+		Without it the row falls through to the allow-zero wipe and the valuation fallback.
+		"""
+		row = self._rows_under("Nominal")[0]
+		self.assertEqual(row.set_basic_rate_manually, 1)
+
+	def test_nominal_does_not_stamp_allow_zero(self, *_mocks):
+		row = self._rows_under("Nominal")[0]
+		self.assertEqual(row.allow_zero_valuation_rate, 0)
+
+	def test_the_two_flags_are_mutually_exclusive_under_both_policies(self, *_mocks):
+		for policy in ("Zero Value", "Nominal"):
+			with self.subTest(policy=policy):
+				row = self._rows_under(policy)[0]
+				self.assertNotEqual(
+					bool(row.allow_zero_valuation_rate),
+					bool(row.set_basic_rate_manually),
+					"exactly one of the two valuation flags must be set",
+				)
+
+	def test_nominal_applies_to_every_row(self, *_mocks):
+		rows = self._rows_under(
+			"Nominal", items=[_item_row(), _item_row(), _item_row()]
+		)
+		for row in rows:
+			self.assertEqual(row.basic_rate, RATE.per_gram_rate)
+			self.assertEqual(row.set_basic_rate_manually, 1)
+
+	def test_nominal_rate_comes_from_the_snapshot_not_a_fresh_lookup(self, *_mocks):
+		"""The booked rate must be the frozen evidence, resolved once."""
+		doc = _entry()
+		with (
+			patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Nominal"),
+			patch(
+				f"{MOD}.get_customer_gold_company_settings", return_value=self.ACCOUNTS
+			),
+		):
+			validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].basic_rate, doc.custom_gold_rate_per_gram)
+
+	def test_nominal_stamps_the_liability_account_as_the_contra(self, *_mocks):
+		"""For a Stock Entry the credit leg is the row's ``expense_account``.
+
+		A Liability-root account is legitimate there -- ``check_expense_account`` exempts
+		Stock Entry from its P&L requirement, ``validate_difference_account`` rejects only
+		``account_type == "Stock"``, and GL Entry has no root-type check. So the standard
+		path credits the liability directly and no reclassification Journal Entry is needed.
+		"""
+		row = self._rows_under("Nominal")[0]
+		self.assertEqual(row.expense_account, self.ACCOUNTS.liability_account)
+
+	def test_zero_value_does_not_stamp_a_contra_account(self, *_mocks):
+		row = self._rows_under("Zero Value")[0]
+		self.assertFalse(row.get("expense_account"))
