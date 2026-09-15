@@ -3129,14 +3129,23 @@ def create_test_data():
 
 			# Serial No.custom_stamping_no is patch-only for the same reason. `bench
 			# install-app` marks every patch as already applied on a fresh site, so
-			# `bench migrate` never runs it and set_stamping_no -- a before_save hook on
-			# EVERY Serial No -- had no field to read.
+			# `bench migrate` never runs it and set_stamping_no -- which every Serial
+			# Number Creator submit calls -- had no field to read.
 			from jewellery_erpnext.patches.add_serial_no_stamping_no_field import (
 				execute as _ensure_serial_no_stamping_no_field,
 			)
 
 			_ensure_serial_no_stamping_no_field()
 
+			# The UNIQUE backstop on custom_stamping_no, so tests run against the same
+			# constraint production has. execute() seeds the tabSeries counters first (it
+			# calls seed_serial_no_stamping_series at its tail), so the index is built over
+			# already-consistent data.
+			from jewellery_erpnext.patches.add_serial_no_stamping_unique_index import (
+				execute as _ensure_serial_no_stamping_unique_index,
+			)
+
+			_ensure_serial_no_stamping_unique_index()
 			# The FG-serial BOM weight block on Material Request Item / Stock Entry Detail
 			# (custom_bom_gross_weight ... custom_bom_total_gemstone_pcs). Patch-only for
 			# the same reason as the Serial No fields above, and the git_action_v16 Custom

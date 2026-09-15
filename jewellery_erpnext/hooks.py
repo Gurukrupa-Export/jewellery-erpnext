@@ -293,7 +293,15 @@ doc_events = {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Serial No": {
-		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.set_stamping_no",
+		# NO stamping hook here, deliberately. `custom_stamping_no` goes onto physical metal
+		# and means "the Serial Number Creator produced this piece", so it is minted at
+		# exactly ONE call site -- serial_number_creator.update_new_serial_no -- and nowhere
+		# else. As a `before_save` hook it stamped EVERY Serial No save: Job Card tagging
+		# (doc_events.job_card.create_serial_no), Product Certification
+		# (product_certification.add_to_serial_no), the serial_reference sales hooks and
+		# every plain desk edit all minted numbers for pieces that are not SNC output.
+		# Re-adding it here re-opens that bug; the guard is
+		# tests.test_stamping_no.TestStampingIsSncOnly.
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table",
 	},
 	"Material Request": {
