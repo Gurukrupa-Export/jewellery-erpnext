@@ -232,12 +232,12 @@ class TestMaterialRequestTransferType(IntegrationTestCase):
 
 
 class TestManufacturingOperationAutoFill(IntegrationTestCase):
-	"""F-05 in the PR #1236 review: custom_manufacturing_operation is now a value
-	before_validate can derive from the linked Manufacturing Work Order, not purely
-	user-supplied data. Pins down the two things that matter about that -- it only fills a
-	currently-blank field, and once filled it is never overwritten even if the MWO's own
-	operation has since moved on -- which is what makes it safe for this field to no longer
-	be freely editable outside Draft (guard_non_system_manager_field_edits)."""
+	"""F-05 in the PR #1236 review, later revised: custom_manufacturing_operation is a value
+	before_validate derives from the linked Manufacturing Work Order. It stays synced to the
+	MWO's current operation across saves (so it tracks the job as it moves departments)
+	right up until a Stock Entry has actually been booked against it (custom_mop_se set by
+	make_mop_stock_entry / make_department_mop_stock_entry) -- past that point the SE already
+	references the old value, so resyncing would silently desync the MR from its own SE."""
 
 	@classmethod
 	def setUpClass(cls):
@@ -268,12 +268,25 @@ class TestManufacturingOperationAutoFill(IntegrationTestCase):
 		result = self._run(mr, {"MWO-1": "MOP-NEW", "MOP-NEW": "PMO-1"})
 		self.assertEqual(result, "MOP-NEW")
 
-	def test_does_not_overwrite_an_existing_value(self):
-		"""Even if the MWO's own operation has since moved on to MOP-NEWER, a value
-		already on the Material Request is left exactly as it was."""
+	def test_resyncs_existing_value_when_mwo_has_moved_on(self):
+		"""No Stock Entry booked yet (custom_mop_se blank): if the MWO's own operation has
+		since moved on to MOP-NEWER, a stale value already on the Material Request is
+		refreshed to match it, instead of being left frozen at the old one."""
 		mr = MockMaterialRequest(material_request_type="Manufacture")
 		mr.custom_manufacturing_work_order = "MWO-1"
 		mr.custom_manufacturing_operation = "MOP-OLD"
+		mr.manufacturing_order = "PMO-1"
+		result = self._run(mr, {"MWO-1": "MOP-NEWER", "MOP-NEWER": "PMO-1"})
+		self.assertEqual(result, "MOP-NEWER")
+
+	def test_freezes_once_stock_entry_booked(self):
+		"""Once custom_mop_se is set, a Stock Entry has already been created referencing
+		the current value -- further saves must not resync it even if the MWO's operation
+		has since moved on, or the MR would silently desync from its own Stock Entry."""
+		mr = MockMaterialRequest(material_request_type="Manufacture")
+		mr.custom_manufacturing_work_order = "MWO-1"
+		mr.custom_manufacturing_operation = "MOP-OLD"
+		mr.custom_mop_se = "STE-0001"
 		mr.manufacturing_order = "PMO-1"
 		result = self._run(mr, {"MWO-1": "MOP-NEWER", "MOP-OLD": "PMO-1"})
 		self.assertEqual(result, "MOP-OLD")
