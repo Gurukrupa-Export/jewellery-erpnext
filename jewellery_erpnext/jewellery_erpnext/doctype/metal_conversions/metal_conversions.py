@@ -10,6 +10,9 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
+	get_company_component_qty,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.lanes import (
 	REGULAR_STOCK,
 	apportion,
@@ -577,22 +580,69 @@ def make_metal_stock_entry(self):
 			booked_target + flt(lane["target_qty"], precision), precision
 		)
 
-		if flt(target_alloy_qtys[idx], precision) > 0:
+		released_alloy = flt(target_alloy_qtys[idx], precision)
+		if released_alloy > 0:
 			# Alloy freed by raising the purity belongs to the lane whose metal freed
 			# it, customer included -- otherwise a customer's alloy would silently
 			# become company stock.
-			se.append(
-				"items",
-				dict(
-					_common(),
-					item_code=self.target_alloy,
-					qty=flt(target_alloy_qtys[idx], precision),
-					inventory_type=lane_inv_type,
-					customer=lane["customer"],
-					t_warehouse=target_wh,
-					custom_conversion_lane=tag,
-				),
-			)
+			#
+			# C09 CARVE-OUT. That rule is right for metal the customer supplied, and
+			# wrong for the part of the melt the COMPANY supplied. When company alloy
+			# was blended into a customer lane on an earlier conversion, raising the
+			# purity again frees some of that same company alloy -- and handing all of
+			# it back tagged to the customer converts company stock into customer
+			# stock with no transaction and no counterparty.
+			#
+			# The split is taken from RECORDED components (customer_gold_components),
+			# never re-derived from the source batches' current tags, which are mutable.
+			# ``get_company_component_qty`` returns 0.0 for a batch with no recorded
+			# components, so on a site with no component history this branch emits
+			# exactly the single row it always did -- which is why shipping it changes
+			# no existing behaviour and no existing test.
+			company_alloy = 0.0
+			if lane["customer"]:
+				company_alloy = min(
+					released_alloy,
+					flt(
+						get_company_component_qty(
+							[allocation["batch"] for allocation in lane["batches"]]
+						),
+						precision,
+					),
+				)
+
+			customer_alloy = flt(released_alloy - company_alloy, precision)
+
+			if customer_alloy > 0:
+				se.append(
+					"items",
+					dict(
+						_common(),
+						item_code=self.target_alloy,
+						qty=customer_alloy,
+						inventory_type=lane_inv_type,
+						customer=lane["customer"],
+						t_warehouse=target_wh,
+						custom_conversion_lane=tag,
+					),
+				)
+
+			if company_alloy > 0:
+				# Same lane tag on purpose: it funded this lane and its Batch Rate
+				# contribution still belongs to this lane's target batch. Only the
+				# OWNERSHIP differs.
+				se.append(
+					"items",
+					dict(
+						_common(),
+						item_code=self.target_alloy,
+						qty=company_alloy,
+						inventory_type=REGULAR_STOCK,
+						customer=None,
+						t_warehouse=target_wh,
+						custom_conversion_lane=tag,
+					),
+				)
 
 	# Replaces the old "Inventory types in Source Table are not consistent" throw. That
 	# guard existed only because this voucher used to be single-ownership by
