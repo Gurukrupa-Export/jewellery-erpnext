@@ -1,5 +1,6 @@
 frappe.ui.form.on("Material Request", {
 	refresh(frm) {
+		patch_barcode_scanner_for_serial_no_rows(frm);
 		frm.trigger("get_items_from_customer_goods");
 		frm.trigger("manufacturing_operation_query");
 		if (frm.doc.material_request_type === "Material Transfer") {
@@ -126,86 +127,83 @@ frappe.ui.form.on("Material Request", {
 	// 		});
 	// },
 	manufacturing_operation_query(frm) {
-		if (frm.doc.custom_manufacturing_work_order) {
-			frappe.db
-				.get_list("Manufacturing Operation", {
-					fields: ["name"],
-					filters: {
-						manufacturing_work_order: frm.doc.custom_manufacturing_work_order,
-						// Not just "Not Started" -- by the time a request reaches this stage the
-						// job's current operation has usually already moved into WIP (or later),
-						// and excluding it here made it impossible to pick the one operation that's
-						// actually correct. Finished is the only status the server itself rejects
-						// (before_update_after_submit's "Cannot select an operation that is already
-						// Finished" throw), so mirror that instead of a narrower allow-list.
-						status: ["not in", ["Finished"]],
-					},
-				})
-				.then((records) => {
-					const mop_list = records.map((item) => item.name);
+		// The two sources of candidate operations. Resolved into one promise so the
+		// department filter below is written once and can never apply to only one of them.
+		const mop_names = frm.doc.custom_manufacturing_work_order
+			? frappe.db
+					.get_list("Manufacturing Operation", {
+						fields: ["name"],
+						filters: {
+							manufacturing_work_order: frm.doc.custom_manufacturing_work_order,
+							// Not just "Not Started" -- by the time a request reaches this stage the
+							// job's current operation has usually already moved into WIP (or later),
+							// and excluding it here made it impossible to pick the one operation that's
+							// actually correct. Finished is the only status the server itself rejects
+							// (before_update_after_submit's "Cannot select an operation that is already
+							// Finished" throw), so mirror that instead of a narrower allow-list.
+							status: ["not in", ["Finished"]],
+						},
+					})
+					.then((records) => records.map((item) => item.name))
+			: frappe.db
+					.get_list("Manufacturing Work Order", {
+						fields: ["manufacturing_operation"],
+						filters: {
+							manufacturing_order: frm.doc.manufacturing_order,
+							docstatus: 1,
+						},
+					})
+					.then((records) => records.map((item) => item.manufacturing_operation));
 
-					frm.set_query("custom_manufacturing_operation", function () {
-						return {
-							filters: {
-								name: ["in", mop_list],
-								department_ir_status: ["not in", "In-Transit"],
-								is_finding: 0,
-							},
-						};
-					});
-				});
-		} else {
-			frappe.db
-				.get_list("Manufacturing Work Order", {
-					fields: ["manufacturing_operation"],
-					filters: {
-						manufacturing_order: frm.doc.manufacturing_order,
-						docstatus: 1,
-					},
-				})
-				.then((records) => {
-					const mop_list = records.map((item) => item.manufacturing_operation);
+		Promise.all([mop_names, mr_material_department(frm)]).then(([mop_list, department]) => {
+			const filters = {
+				name: ["in", mop_list],
+				department_ir_status: ["not in", "In-Transit"],
+				is_finding: 0,
+			};
 
-					frm.set_query("custom_manufacturing_operation", function () {
-						return {
-							filters: {
-								name: ["in", mop_list],
-								department_ir_status: ["not in", "In-Transit"],
-								is_finding: 0,
-							},
-						};
-					});
-				});
-		}
+			// Only offer operations doc_events/material_request.validate_mop_department
+			// would accept, so the operator does not pick one the server is about to
+			// reject. Advisory only — set_query filters the dropdown, it does not stop a
+			// typed-in name or an API save, so the server stays the authority.
+			//
+			// Skipped when the warehouse has no department, rather than filtering on null:
+			// that is a setup gap, and the server treats it as a pass.
+			if (department) filters.department = department;
+
+			frm.set_query("custom_manufacturing_operation", function () {
+				return { filters };
+			});
+		});
+	},
+	set_warehouse(frm) {
+		// The candidate list is scoped by the material's department, so a change of
+		// warehouse invalidates it. refresh() already re-queries on every form load; these
+		// two cover a change made without leaving the form.
+		frm.trigger("manufacturing_operation_query");
+	},
+	custom_destination_warehouse(frm) {
+		frm.trigger("manufacturing_operation_query");
 	},
 	// Warn as soon as the operation is picked, rather than letting the operator
-	// discover the mismatch when "Transfer to MOP" throws. Non-blocking on purpose:
-	// the field is mandatory in the "Material Transferred" state, so throwing here
-	// would make the document unsaveable. The server guard
-	// (doc_events/material_request.before_update_after_submit) is the hard block.
+	// discover the mismatch when the save throws. Non-blocking on purpose: the field is
+	// mandatory in the "Material Transferred" state, so throwing here would make the
+	// document unsaveable. The server guard
+	// (doc_events/material_request.validate_mop_department) is the hard block.
 	custom_manufacturing_operation(frm) {
 		const mop = frm.doc.custom_manufacturing_operation;
 		const transferred = !!frm.doc.custom_department_transfer_se;
-		// Mirrors _current_material_warehouse on the server: a completed Transfer to
-		// Department has moved the material on, so the Request Item warehouse is stale
-		// from that point and the two would otherwise disagree about where it sits.
-		const warehouse = transferred
-			? frm.doc.custom_destination_warehouse
-			: (frm.doc.items || []).length && frm.doc.items[0].warehouse;
-		if (!mop || !warehouse) return;
+		if (!mop) return;
 
 		Promise.all([
-			frappe.db.get_value("Manufacturing Operation", mop, ["department", "previous_mop"]),
-			frappe.db.get_value("Warehouse", warehouse, "department"),
-		]).then(([mop_res, wh_res]) => {
+			frappe.db.get_value("Manufacturing Operation", mop, "department"),
+			mr_material_department(frm),
+		]).then(([mop_res, row_dept]) => {
 			const mop_dept = mop_res.message && mop_res.message.department;
-			const row_dept = wh_res.message && wh_res.message.department;
-			// Mirrors the server guard's exemption: an operation that has never been moved
-			// by a Department IR sits in the default department and is a gathering point.
-			// That exemption does not survive a Transfer to Department — the operator has
-			// already chosen where this material lives.
-			const enforced = transferred || (mop_res.message && mop_res.message.previous_mop);
-			if (enforced && mop_dept && row_dept && mop_dept !== row_dept) {
+			// No exemption, mirroring the server: the MWO's first operation sits in the
+			// default department and used to be waved through as a "gathering point",
+			// which is exactly how wrong-department operations got in.
+			if (mop_dept && row_dept && mop_dept !== row_dept) {
 				frappe.show_alert(
 					{
 						message: transferred
@@ -345,20 +343,56 @@ frappe.ui.form.on("Material Request Item", {
 	},
 	serial_no: function (frm, cdt, cdn) {
 		let child = locals[cdt][cdn];
-		if (child.serial_no) {
-			if (!child.item_code) {
-				frappe.db
-					.get_value("Serial No", child.serial_no, [
-						"item_code",
-						"custom_bom_no",
-						"custom_gross_wt",
-					])
-					.then((r) => {
-						frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
-						frappe.model.set_value(cdt, cdn, "bom_no", r.message.custom_bom_no);
-					});
-			}
+		const serials = mr_row_serials(child.serial_no);
+
+		if (!serials.length) {
+			// Serial cleared: drop the weights with it, so the row cannot keep showing
+			// the previous piece's figures.
+			let cleared = {};
+			FG_BOM_WEIGHT_FIELDS.forEach((f) => (cleared[f] = null));
+			frappe.model.set_value(cdt, cdn, cleared);
+			return;
 		}
+
+		// BOM weights are per-piece, so they only mean anything on a single-serial row.
+		if (serials.length !== 1) {
+			return;
+		}
+
+		// One round trip: the endpoint resolves Serial No -> custom_bom_no -> BOM server
+		// side. Deliberately NOT gated on `!child.item_code` the way this used to be --
+		// the scanner sets item_code (set_item, step 4) before serial_no (step 5), so
+		// that gate meant the weights were never fetched on the scan path at all.
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.customization.utils.bom_weights.get_serial_fg_details",
+			args: { serial_no: serials[0] },
+			callback: function (r) {
+				const details = r && r.message;
+				if (!details) {
+					return;
+				}
+
+				let updates = {};
+				// Only when blank: on the scan path the scanner has already set this,
+				// and re-setting it would re-trigger the item_code handler.
+				if (!child.item_code && details.item_code) {
+					updates.item_code = details.item_code;
+				}
+
+				// No as-built BOM means this is not an FG serial -- stamp nothing.
+				if (details.bom_no) {
+					updates.bom_no = details.bom_no;
+					updates.qty = 1;
+					FG_BOM_WEIGHT_FIELDS.forEach((f) => {
+						updates[f] = details[f] || 0;
+					});
+				}
+
+				if (Object.keys(updates).length) {
+					frappe.model.set_value(cdt, cdn, updates).then(() => frm.refresh_field("items"));
+				}
+			},
+		});
 	},
 	item_code(frm, cdt, cdn) {
 		frm.trigger("custom_insurance_rate");
@@ -409,23 +443,31 @@ frappe.ui.form.on("Material Request Item", {
 						});
 						refresh_field("items");
 
-						let no_batch_serial_number_value = false;
-						if (d.has_serial_no || d.has_batch_no) {
-							no_batch_serial_number_value = true;
-						}
-						frappe.flags.hide_serial_batch_dialog = false;
-						frappe.flags.dialog_set = false;
-
-						if (
-							no_batch_serial_number_value &&
-							!frappe.flags.hide_serial_batch_dialog &&
-							!frappe.flags.dialog_set
-						) {
-							frappe.flags.dialog_set = true;
-							frappe.flags.hide_serial_batch_dialog = true;
-							erpnext.stock.select_batch_and_serial_no(frm, d);
-						} else {
+						// A scan already carries its serial, so the picker has nothing to
+						// ask. It used to open once per item code; with one row per
+						// serial it would now open on every single scan. The marker
+						// lives on the row rather than in frappe.flags because this
+						// callback is async and can land after the scanner has cleared
+						// its own flags.
+						if (!d.__fg_serial_scan) {
+							let no_batch_serial_number_value = false;
+							if (d.has_serial_no || d.has_batch_no) {
+								no_batch_serial_number_value = true;
+							}
+							frappe.flags.hide_serial_batch_dialog = false;
 							frappe.flags.dialog_set = false;
+
+							if (
+								no_batch_serial_number_value &&
+								!frappe.flags.hide_serial_batch_dialog &&
+								!frappe.flags.dialog_set
+							) {
+								frappe.flags.dialog_set = true;
+								frappe.flags.hide_serial_batch_dialog = true;
+								erpnext.stock.select_batch_and_serial_no(frm, d);
+							} else {
+								frappe.flags.dialog_set = false;
+							}
 						}
 					}
 				},
@@ -484,6 +526,147 @@ function apply_reservation_warehouse(frm) {
 		// keeping header and rows consistent so reset_default_field_value cannot clear it.
 		frm.set_value("set_warehouse", targets[0]);
 	});
+}
+
+// Mirrors _current_material_warehouse in doc_events/material_request.py: a completed
+// Transfer to Department has moved the material on, so the Request Item warehouse is stale
+// from that point and the two would otherwise disagree about where the material sits.
+function mr_material_warehouse(frm) {
+	if (frm.doc.custom_department_transfer_se) {
+		return frm.doc.custom_destination_warehouse;
+	}
+
+	const rows = frm.doc.items || [];
+	return rows.length ? rows[0].warehouse : null;
+}
+
+// Department of the warehouse the material currently sits in -- the value the server
+// compares the selected operation against. Cached on the form keyed by the warehouse
+// itself, so it self-invalidates the moment the warehouse changes and never goes stale.
+function mr_material_department(frm) {
+	const warehouse = mr_material_warehouse(frm);
+	if (!warehouse) return Promise.resolve(null);
+
+	const cached = frm.__mr_material_department;
+	if (cached && cached.warehouse === warehouse) {
+		return Promise.resolve(cached.department);
+	}
+
+	return frappe.db.get_value("Warehouse", warehouse, "department").then((r) => {
+		const department = (r.message && r.message.department) || null;
+		frm.__mr_material_department = { warehouse, department };
+		return department;
+	});
+}
+
+// Fields stamped from the scanned serial's own as-built BOM. Mirrors BOM_WEIGHT_FIELDS
+// in customization/utils/bom_weights.py -- the server re-stamps the identical values on
+// save, so the two lists must not drift.
+const FG_BOM_WEIGHT_FIELDS = [
+	"custom_bom_gross_weight",
+	"custom_bom_metal_weight",
+	"custom_bom_finding_weight",
+	"custom_bom_diamond_weight",
+	"custom_bom_total_diamond_pcs",
+	"custom_bom_gemstone_weight",
+	"custom_bom_total_gemstone_pcs",
+];
+
+function mr_row_serials(value) {
+	return String(value || "")
+		.split("\n")
+		.map((s) => s.trim())
+		.filter(Boolean);
+}
+
+// Exact, cross-row match. Core's is_duplicate_serial_no inspects only the one candidate
+// row and compares with `.includes`, so once every row holds a single serial it stops
+// catching repeats altogether -- and it would falsely reject "GK-1" against "GK-12".
+function mr_serial_already_scanned(frm, serial_no) {
+	return (frm.doc.items || []).some((d) => mr_row_serials(d.serial_no).includes(serial_no));
+}
+
+// One scanned FG serial = one row of qty 1.
+//
+// Stock ERPNext merges every scan of the same item_code into the first matching row and
+// increments qty (barcode_scanner.js get_row_to_modify_on_scan). On Material Request that
+// is unconditional, because Material Request Item has no `has_item_scanned` field for the
+// core guard to check. But each FG piece carries its own as-built BOM and its own
+// weights, so a merged row cannot represent them.
+//
+// Patched rather than solved with a `has_item_scanned` field: a field would only stop the
+// merge, while the wrapper below also has to clear frm.has_items, run the duplicate check
+// early, and force qty to 1. Same approach as sales_order.js.
+function patch_barcode_scanner_for_serial_no_rows(frm) {
+	if (frm.__serial_no_barcode_scanner_patched) {
+		return;
+	}
+
+	let scanner = frm.cscript && frm.cscript.barcode_scanner;
+	if (!scanner) {
+		return;
+	}
+
+	frm.__serial_no_barcode_scanner_patched = true;
+
+	let original_get_row_to_modify_on_scan = scanner.get_row_to_modify_on_scan;
+	scanner.get_row_to_modify_on_scan = function (...args) {
+		if (!this.__scanning_serial_no) {
+			return original_get_row_to_modify_on_scan.apply(this, args);
+		}
+		// Reuse a genuinely blank row -- a new Material Request opens with one, and
+		// returning undefined here would strand it above the first scan -- but never an
+		// already-populated one.
+		return (this.frm.doc[this.items_table_name] || []).find(
+			(d) => !d.item_code && !d[this.serial_no_field]
+		);
+	};
+
+	// Kept in sync for any other caller that reaches it.
+	scanner.is_duplicate_serial_no = function (row, serial_no) {
+		if (!serial_no) {
+			return false;
+		}
+		const duplicate = mr_serial_already_scanned(this.frm, serial_no);
+		if (duplicate) {
+			this.show_alert(__("Serial No {0} is already added", [serial_no]), "orange");
+		}
+		return duplicate;
+	};
+
+	let original_update_table = scanner.update_table;
+	scanner.update_table = function (data) {
+		this.__scanning_serial_no = !!data.serial_no;
+		if (!data.serial_no) {
+			// Plain item-barcode scans keep stock merge/increment behaviour.
+			return original_update_table.call(this, data);
+		}
+
+		// Checked here, before core runs: core checks duplicates only after it has
+		// already called add_child, so a late rejection leaves an orphan blank row.
+		if (mr_serial_already_scanned(this.frm, data.serial_no)) {
+			this.show_alert(__("Serial No {0} is already added", [data.serial_no]), "orange");
+			this.clean_up();
+			return Promise.reject();
+		}
+
+		// frm.has_items is recomputed on every refresh (transaction.js
+		// validate_has_items) and is truthy whenever row 1 is populated. Core's set_item
+		// then diverts to prepare_item_for_scan -- a modal that never resolves the scan
+		// promise -- instead of increment(). Core only clears the flag inside its own
+		// "new row" branch, which reusing a blank row skips, so clear it here.
+		this.frm.has_items = false;
+
+		return original_update_table.call(this, data).then((row) => {
+			if (!row) {
+				return row;
+			}
+			// Marks the row for the whole scan, including async callbacks that resolve
+			// after the scanner's own flags are cleared. Not persisted.
+			locals[row.doctype][row.name].__fg_serial_scan = true;
+			return frappe.model.set_value(row.doctype, row.name, "qty", 1).then(() => row);
+		});
+	};
 }
 
 erpnext.stock.select_batch_and_serial_no = (frm, item) => {

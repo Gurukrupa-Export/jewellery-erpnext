@@ -1371,6 +1371,8 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 		), patch.object(
 			cse_mod, "set_gross_wt", side_effect=_record("set_gross_wt")
 		), patch.object(
+			cse_mod, "set_fg_bom_weights", side_effect=_record("set_fg_bom_weights")
+		), patch.object(
 			cse_mod, "set_jwelex_tag_no", side_effect=_record("set_jwelex_tag_no")
 		), patch.object(
 			cse_mod, "validate_warehouse", side_effect=_record("validate_warehouse")
@@ -1386,6 +1388,7 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 				"validate_sample_goods_not_consumed",
 				"set_employee",
 				"set_gross_wt",
+				"set_fg_bom_weights",
 				"set_jwelex_tag_no",
 				"validate_warehouse",
 			],
