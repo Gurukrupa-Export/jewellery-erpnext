@@ -132,7 +132,13 @@ frappe.ui.form.on("Material Request", {
 					fields: ["name"],
 					filters: {
 						manufacturing_work_order: frm.doc.custom_manufacturing_work_order,
-						status: "Not Started",
+						// Not just "Not Started" -- by the time a request reaches this stage the
+						// job's current operation has usually already moved into WIP (or later),
+						// and excluding it here made it impossible to pick the one operation that's
+						// actually correct. Finished is the only status the server itself rejects
+						// (before_update_after_submit's "Cannot select an operation that is already
+						// Finished" throw), so mirror that instead of a narrower allow-list.
+						status: ["not in", ["Finished"]],
 					},
 				})
 				.then((records) => {

@@ -83,6 +83,37 @@ def validate_gemstone_alternative_items(self, method=None):
 		frappe.throw("<br>".join(errors))
 
 
+def _sync_manufacturing_operation_from_mwo(self):
+	"""Refresh custom_manufacturing_operation from the linked MWO's current operation.
+
+	Called from both ``before_validate`` (Draft-phase save/submit) and
+	``before_update_after_submit`` (every save once the request is already submitted --
+	which is where "Reserve Material" / "Transfer to MOP" workflow transitions actually
+	run, since ``before_validate`` never fires again once docstatus is 1: Frappe's
+	``run_before_save_methods`` only calls it for the "save"/"submit" actions, not
+	"update_after_submit"). Keeps the field tracking the job as it moves departments,
+	right up until a Stock Entry has actually been booked against it (custom_mop_se, set
+	by make_mop_stock_entry / make_department_mop_stock_entry) -- past that point the SE
+	already references whatever value was current at consumption time, so resyncing
+	further would silently desync the MR from its own Stock Entry.
+
+	getattr with a default, not plain attribute access: custom_manufacturing_work_order is
+	a custom field that may not exist in every site's DocType meta (e.g. a fresh test site
+	before its patch has run), where attribute access raises AttributeError. Also mirrors
+	_current_material_warehouse below -- the tests drive this path with SimpleNamespace-like
+	mocks that carry no .get(), so getattr is the one accessor that works for both.
+	"""
+	manufacturing_work_order = getattr(self, "custom_manufacturing_work_order", None)
+	if not manufacturing_work_order or getattr(self, "custom_mop_se", None):
+		return
+
+	current_mop = frappe.db.get_value(
+		"Manufacturing Work Order", manufacturing_work_order, "manufacturing_operation"
+	)
+	if current_mop:
+		self.custom_manufacturing_operation = current_mop
+
+
 def before_validate(self, method):
 	# Auto-derive the transfer type ONLY when it has not been set yet. Once a
 	# value exists (chosen manually, or defaulted on a prior save) it is
@@ -119,21 +150,7 @@ def before_validate(self, method):
 	validate_target_item(self)
 	validate_warehouse(self)
 
-	# getattr with a default, not plain attribute access: custom_manufacturing_work_order is a
-	# custom field that may not exist in every site's DocType meta (e.g. a fresh test site
-	# before its patch has run), where attribute access raises AttributeError. Also mirrors
-	# _current_material_warehouse below -- the tests drive this path with SimpleNamespace-like
-	# mocks that carry no .get(), so getattr is the one accessor that works for both.
-	manufacturing_work_order = getattr(self, "custom_manufacturing_work_order", None)
-	if (
-		not getattr(self, "custom_manufacturing_operation", None)
-		and manufacturing_work_order
-	):
-		self.custom_manufacturing_operation = frappe.db.get_value(
-			"Manufacturing Work Order",
-			manufacturing_work_order,
-			"manufacturing_operation",
-		)
+	_sync_manufacturing_operation_from_mwo(self)
 
 	if self.custom_manufacturing_operation:
 		linked_mo = frappe.db.get_value(
@@ -271,8 +288,16 @@ def before_update_after_submit(self, method):
 	but they are not exclusive over the document's life: "Material Transferred to Department"
 	also offers Transfer to MOP, so a request can pass through both branches in turn.
 
-	Everything here belongs to the workflow action, so nothing runs on a plain Update.
+	Everything below the sync call belongs to the workflow action, so it doesn't run on a
+	plain Update. The sync itself deliberately runs on every save, workflow action or not: once
+	the request is submitted, ``before_validate`` never fires again (Frappe only runs it for the
+	"save"/"submit" actions, not "update_after_submit"), so this is the only hook left that can
+	keep custom_manufacturing_operation tracking the MWO's current operation as the job moves
+	departments -- including a plain Update where the user is just looking at the form before
+	deciding to click "Transfer to MOP".
 	"""
+	_sync_manufacturing_operation_from_mwo(self)
+
 	if not _workflow_action_just_applied(self):
 		return
 
