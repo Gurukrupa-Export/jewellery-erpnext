@@ -59,9 +59,27 @@ def _db_get_value(doctype, filters, fieldname=None, **kwargs):
 	return None
 
 
+#: Extra same-date ``Gold Rates`` parents, keyed by date string. Empty by default so the
+#: ordinary fixture stays unambiguous; the ambiguity tests patch this in.
+EXTRA_SAME_DATE_PARENTS = {}
+
+
 def _get_all(doctype, filters=None, fields=None, **kwargs):
-	"""Stand-in for frappe.get_all over Gold Rates branchs."""
+	"""Stand-in for frappe.get_all, dispatching on doctype.
+
+	MUST dispatch: the resolver calls ``frappe.get_all`` for BOTH the ``Gold Rates``
+	parent (exact-date ambiguity) and the ``Gold Rates branchs`` child (source row). A
+	stand-in that only understood the child silently returned ``[]`` for the parent and
+	made every test fail with "Gold Rates is not available".
+	"""
 	filters = filters or {}
+
+	if doctype == "Gold Rates":
+		date = str(filters.get("date"))
+		names = [ref for ref in (REF_OLD, REF_NEW) if ref.endswith(date)]
+		names += EXTRA_SAME_DATE_PARENTS.get(date, [])
+		return [frappe._dict(name=n) for n in sorted(names)]
+
 	rates = RATES.get(filters.get("parent"), {})
 	row = rates.get(filters.get("particulars"))
 	if row is None:
@@ -122,14 +140,18 @@ class TestCustomerGoldRateService(IntegrationTestCase):
 	def test_non_round_precision_is_preserved(self, *_mocks):
 		"""71,648.30 per 10 g must resolve to 7,164.83 per gram, not 7,164.8."""
 		rates = {REF_OLD: {SOURCE: {"live_rate": 71648.30}}}
-		with patch(
-			f"{MOD}.frappe.get_all",
-			side_effect=lambda dt, filters=None, fields=None, **kw: (
-				[frappe._dict(rates[filters["parent"]][filters["particulars"]])]
-				if filters.get("parent") in rates
-				else []
-			),
-		):
+
+		def _rows(doctype, filters=None, fields=None, **kw):
+			# Must dispatch on doctype -- the resolver queries the Gold Rates PARENT
+			# (exact-date ambiguity) as well as the Gold Rates branchs child.
+			if doctype == "Gold Rates":
+				return _get_all(doctype, filters, fields, **kw)
+			filters = filters or {}
+			if filters.get("parent") not in rates:
+				return []
+			return [frappe._dict(rates[filters["parent"]][filters["particulars"]])]
+
+		with patch(f"{MOD}.frappe.get_all", side_effect=_rows):
 			res = resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
 		self.assertEqual(res.raw_rate, 71648.30)
 		self.assertEqual(res.per_gram_rate, 7164.83)
@@ -252,3 +274,196 @@ class TestCustomerGoldRateMissing(IntegrationTestCase):
 			self.assertRaises(frappe.ValidationError),
 		):
 			resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
+
+
+@patch(f"{MOD}.frappe.get_all", side_effect=_get_all)
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.frappe.db.exists", side_effect=_db_exists)
+class TestGoldRatesExactDateAmbiguity(IntegrationTestCase):
+	"""CG-T025 -- two ``Gold Rates`` records sharing one date must block.
+
+	Reachable in the real schema: ``Gold Rates`` autonames ``format:R-{date}`` but sets
+	``allow_rename: 1`` and puts no ``unique`` constraint on ``date``, so renaming the
+	first record frees its name for a second one carrying the same date.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_single_record_still_resolves(self, *_mocks):
+		"""Guard the guard: the ordinary one-record case must not have regressed."""
+		res = resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
+		self.assertEqual(res.gold_rate_reference, REF_OLD)
+
+	def test_duplicate_exact_date_records_block(self, *_mocks):
+		with patch.dict(
+			EXTRA_SAME_DATE_PARENTS, {DATE_OLD: ["R-2026-08-15-RENAMED"]}, clear=False
+		):
+			with self.assertRaises(frappe.ValidationError):
+				resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
+
+	def test_duplicate_block_names_both_records(self, *_mocks):
+		"""The operator must be told WHICH records collide, or they cannot fix it."""
+		with patch.dict(
+			EXTRA_SAME_DATE_PARENTS, {DATE_OLD: ["R-2026-08-15-RENAMED"]}, clear=False
+		):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
+		message = str(ctx.exception)
+		self.assertIn(REF_OLD, message)
+		self.assertIn("R-2026-08-15-RENAMED", message)
+
+	def test_ambiguity_does_not_silently_pick_first(self, *_mocks):
+		"""The whole point: no result may come back when the date is ambiguous."""
+		with patch.dict(
+			EXTRA_SAME_DATE_PARENTS, {DATE_OLD: ["R-2026-08-15-RENAMED"]}, clear=False
+		):
+			try:
+				res = resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
+			except frappe.ValidationError:
+				return
+		self.fail(f"ambiguous date silently resolved to {res.gold_rate_reference}")
+
+	def test_ambiguity_on_one_date_does_not_affect_another(self, *_mocks):
+		with patch.dict(
+			EXTRA_SAME_DATE_PARENTS, {DATE_OLD: ["R-2026-08-15-RENAMED"]}, clear=False
+		):
+			res = resolve_customer_gold_rate_for_date(DATE_NEW, _settings())
+		self.assertEqual(res.gold_rate_reference, REF_NEW)
+
+
+@patch(f"{MOD}.frappe.get_all", side_effect=_get_all)
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.frappe.db.exists", side_effect=_db_exists)
+class TestGoldRateNonFiniteQuotes(IntegrationTestCase):
+	"""CG-T027 -- ``nan`` and ``inf`` must be rejected.
+
+	Neither fails a bare positive test: ``float("nan") <= 0`` and ``float("inf") <= 0``
+	are both ``False``. Without an explicit finiteness check a non-finite quote would be
+	frozen onto the receipt, and ``nan / 10`` is still ``nan``, carrying it into the
+	per-gram conversion.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _resolve_with_rate(self, raw):
+		rates = {REF_OLD: {SOURCE: {"live_rate": raw}}}
+
+		def _rows(doctype, filters=None, fields=None, **kwargs):
+			if doctype == "Gold Rates":
+				return _get_all(doctype, filters, fields, **kwargs)
+			filters = filters or {}
+			row = rates.get(filters.get("parent"), {}).get(filters.get("particulars"))
+			return [] if row is None else [frappe._dict(row)]
+
+		with patch(f"{MOD}.frappe.get_all", side_effect=_rows):
+			return resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
+
+	def test_nan_rate_blocks(self, *_mocks):
+		with self.assertRaises(frappe.ValidationError):
+			self._resolve_with_rate(float("nan"))
+
+	def test_positive_infinity_rate_blocks(self, *_mocks):
+		with self.assertRaises(frappe.ValidationError):
+			self._resolve_with_rate(float("inf"))
+
+	def test_negative_infinity_rate_blocks(self, *_mocks):
+		with self.assertRaises(frappe.ValidationError):
+			self._resolve_with_rate(float("-inf"))
+
+	def test_nan_never_reaches_per_gram_conversion(self, *_mocks):
+		"""Explicitly assert the value does not escape as a nan per-gram rate."""
+		try:
+			res = self._resolve_with_rate(float("nan"))
+		except frappe.ValidationError:
+			return
+		self.fail(f"nan escaped resolution as per_gram_rate={res.per_gram_rate}")
+
+	def test_finite_rate_still_resolves(self, *_mocks):
+		"""Guard the guard -- the finiteness check must not reject ordinary rates."""
+		res = self._resolve_with_rate(71648.30)
+		self.assertAlmostEqual(res.per_gram_rate, 7164.83, places=2)
+
+
+@patch(f"{MOD}.frappe.get_all", side_effect=_get_all)
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.frappe.db.exists", side_effect=_db_exists)
+class TestGoldRateOperatingCase(IntegrationTestCase):
+	"""The rate-unit case named in the specification, both ways round.
+
+	Rs 71,648.30 per 10 g and Rs 7,164.83 per g are the same money with different raw
+	evidence, and the snapshot must keep the raw form and unit distinguishable.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _resolve(self, raw, unit):
+		rates = {REF_OLD: {SOURCE: {"live_rate": raw}}}
+
+		def _rows(doctype, filters=None, fields=None, **kwargs):
+			if doctype == "Gold Rates":
+				return _get_all(doctype, filters, fields, **kwargs)
+			filters = filters or {}
+			row = rates.get(filters.get("parent"), {}).get(filters.get("particulars"))
+			return [] if row is None else [frappe._dict(row)]
+
+		with patch(f"{MOD}.frappe.get_all", side_effect=_rows):
+			return resolve_customer_gold_rate_for_date(
+				DATE_OLD, _settings(gold_rate_unit=unit)
+			)
+
+	def test_per_10_gram_quote_gives_expected_per_gram(self, *_mocks):
+		res = self._resolve(71648.30, "Per 10 Gram")
+		self.assertAlmostEqual(res.per_gram_rate, 7164.83, places=2)
+
+	def test_per_gram_quote_gives_the_same_per_gram(self, *_mocks):
+		res = self._resolve(7164.83, "Per Gram")
+		self.assertAlmostEqual(res.per_gram_rate, 7164.83, places=2)
+
+	def test_both_units_value_ten_grams_identically(self, *_mocks):
+		per_10 = self._resolve(71648.30, "Per 10 Gram")
+		per_1 = self._resolve(7164.83, "Per Gram")
+		self.assertAlmostEqual(
+			per_10.per_gram_rate * 10, per_1.per_gram_rate * 10, places=2
+		)
+		self.assertAlmostEqual(per_10.per_gram_rate * 10, 71648.30, places=2)
+
+	def test_raw_evidence_stays_distinguishable_between_the_two(self, *_mocks):
+		"""Same money, different evidence -- the snapshot must not blur them."""
+		per_10 = self._resolve(71648.30, "Per 10 Gram")
+		per_1 = self._resolve(7164.83, "Per Gram")
+		self.assertEqual(per_10.raw_rate, 71648.30)
+		self.assertEqual(per_10.rate_unit, "Per 10 Gram")
+		self.assertEqual(per_1.raw_rate, 7164.83)
+		self.assertEqual(per_1.rate_unit, "Per Gram")
+
+
+@patch(f"{MOD}.frappe.get_all", side_effect=_get_all)
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.frappe.db.exists", side_effect=_db_exists)
+class TestGoldRateResolutionIsReadOnly(IntegrationTestCase):
+	"""C08 -- valuing a receipt must never invoke the Gold Rates updater.
+
+	The ``Gold Rates`` controller makes external provider calls from ``validate``. The
+	resolver therefore must never load or save the document -- only query it. This pins
+	that property so a future refactor to ``frappe.get_doc`` is caught here.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_resolution_never_loads_the_gold_rates_document(self, *_mocks):
+		with patch(f"{MOD}.frappe.get_doc") as get_doc:
+			resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
+		get_doc.assert_not_called()
+
+	def test_resolution_never_commits(self, *_mocks):
+		with patch(f"{MOD}.frappe.db.commit") as commit:
+			resolve_customer_gold_rate_for_date(DATE_OLD, _settings())
+		commit.assert_not_called()
