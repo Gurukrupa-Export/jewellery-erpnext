@@ -151,13 +151,6 @@ def before_validate(self, method):
 	validate_target_item(self)
 	validate_warehouse(self)
 
-	# Called from here rather than registered as its own hooks.py entry: this repo's
-	# hooks.py is repeatedly reverted by rebases, and a dropped registration would fail
-	# silently -- FG rows would quietly stop being validated and stamped.
-	validate_fg_serial_rows(self)
-
-	_sync_manufacturing_operation_from_mwo(self)
-
 	if self.custom_manufacturing_operation:
 		linked_mo = frappe.db.get_value(
 			"Manufacturing Operation",
