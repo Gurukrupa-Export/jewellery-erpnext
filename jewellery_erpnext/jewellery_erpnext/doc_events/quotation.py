@@ -131,6 +131,15 @@ def create_new_bom(self):
 
 			if "F-G" in row.item_code or mod_reason == "Change in Metal Touch":
 				bom = [{"name": frappe.db.get_value("Order", row.order_form_id, "new_bom")}]
+		elif row.order_form_type == "Repair Order" and not bom:
+			fg_bom = frappe.db.get_value(
+			"BOM",
+			{"item": row.item_code, "is_active": 1, "bom_type": "Finish Goods"},
+			"name",
+			order_by="creation asc",
+			)
+			if fg_bom:
+				bom = [{"name": fg_bom}]
 		# query = """
 		# 	SELECT name
 		# 	FROM BOM
