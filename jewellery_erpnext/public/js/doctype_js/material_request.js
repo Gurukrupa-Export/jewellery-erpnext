@@ -159,8 +159,15 @@ frappe.ui.form.on("Material Request", {
 			const filters = {
 				name: ["in", mop_list],
 				department_ir_status: ["not in", "In-Transit"],
-				is_finding: 0,
 			};
+
+			// Only meaningful in the fallback branch above (no custom_manufacturing_work_order
+			// yet), where mop_list pools one operation per MWO across the whole manufacturing_order
+			// -- some finding, some not -- and this MR's own items decide which kind belongs. Once
+			// custom_manufacturing_work_order is set, mop_list is already scoped to that one MWO's
+			// own operation(s), so its is_finding status is exactly correct as-is; forcing it to 0
+			// would hide a finding MWO's only valid operation from a finding job's own MR.
+			if (!frm.doc.custom_manufacturing_work_order) filters.is_finding = 0;
 
 			// Only offer operations doc_events/material_request.validate_mop_department
 			// would accept, so the operator does not pick one the server is about to

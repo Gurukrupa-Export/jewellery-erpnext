@@ -14,7 +14,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.be
 	get_variant_warehouse_map,
 	set_reservation_warehouse,
 	update_pure_qty,
-	validate_fg_serial_rows,
 	validate_warehouse,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.prefetch import (
@@ -82,37 +81,6 @@ def validate_gemstone_alternative_items(self, method=None):
 
 	if errors:
 		frappe.throw("<br>".join(errors))
-
-
-def _sync_manufacturing_operation_from_mwo(self):
-	"""Refresh custom_manufacturing_operation from the linked MWO's current operation.
-
-	Called from both ``before_validate`` (Draft-phase save/submit) and
-	``before_update_after_submit`` (every save once the request is already submitted --
-	which is where "Reserve Material" / "Transfer to MOP" workflow transitions actually
-	run, since ``before_validate`` never fires again once docstatus is 1: Frappe's
-	``run_before_save_methods`` only calls it for the "save"/"submit" actions, not
-	"update_after_submit"). Keeps the field tracking the job as it moves departments,
-	right up until a Stock Entry has actually been booked against it (custom_mop_se, set
-	by make_mop_stock_entry / make_department_mop_stock_entry) -- past that point the SE
-	already references whatever value was current at consumption time, so resyncing
-	further would silently desync the MR from its own Stock Entry.
-
-	getattr with a default, not plain attribute access: custom_manufacturing_work_order is
-	a custom field that may not exist in every site's DocType meta (e.g. a fresh test site
-	before its patch has run), where attribute access raises AttributeError. Also mirrors
-	_current_material_warehouse below -- the tests drive this path with SimpleNamespace-like
-	mocks that carry no .get(), so getattr is the one accessor that works for both.
-	"""
-	manufacturing_work_order = getattr(self, "custom_manufacturing_work_order", None)
-	if not manufacturing_work_order or getattr(self, "custom_mop_se", None):
-		return
-
-	current_mop = frappe.db.get_value(
-		"Manufacturing Work Order", manufacturing_work_order, "manufacturing_operation"
-	)
-	if current_mop:
-		self.custom_manufacturing_operation = current_mop
 
 
 def before_validate(self, method):
@@ -418,14 +386,7 @@ def before_update_after_submit(self, method):
 	departments -- including a plain Update where the user is just looking at the form before
 	deciding to click "Transfer to MOP".
 	"""
-	_sync_manufacturing_operation_from_mwo(self)
 
-	# The save-time half of the operation/department rule, ABOVE the transition gate on
-	# purpose: it has to run on a plain Update too, so the operator is told immediately
-	# rather than when they reach the Actions menu. Deliberately after the sync above --
-	# the sync is what puts the MWO's current operation on the document, and checking
-	# before it would validate the previous operation (or none at all).
-	#
 	# This hook rather than before_validate, which is where an "on save" check would
 	# normally go. frappe runs before_validate only for _action "save"/"submit", never
 	# "update_after_submit" (model/document.py run_before_save_methods) -- and every
