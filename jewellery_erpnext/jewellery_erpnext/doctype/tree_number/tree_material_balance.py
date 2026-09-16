@@ -120,6 +120,43 @@ def recompute_row_pending(row, precision=None):
 	return row.pending_qty
 
 
+def derive_manual_receive(row, precision=None):
+	"""Set ``row.manual_receive_qty`` = receive_qty - wo_receive_qty, floored at 0.
+
+	``manual_receive_qty`` is DERIVED, never accumulated. The two halves of the receive
+	provenance split have to add back up to ``receive_qty`` exactly, and the only way to
+	guarantee that is to have one of them computed from the other two numbers on every
+	save -- the same single-writer discipline ``pending_qty`` already gets.
+
+	Accumulating it independently is what breaks the invariant, in two ways that both bit:
+
+	  * The Employee IR cancel path floors ``receive_qty`` and ``wo_receive_qty`` at zero
+	    SEPARATELY. On a row where ``wo_receive_qty`` under-states the real work-order
+	    share (legacy rows the backfill could not attribute), the two clamp by different
+	    amounts and the halves stop summing.
+	  * The tree Receive Material button added its raw, un-rounded payload while the
+	    Employee IR path re-rounds ``receive_qty`` to the ledger precision, stranding a
+	    rounding residue on every interleaving. Those residues accumulate rather than
+	    cancelling, and drift past the tolerance the dashboard checks.
+
+	Deriving it removes both: whatever ``receive_qty`` and ``wo_receive_qty`` say after a
+	write, the button's share is by definition the remainder.
+
+	Floored at 0 because ``wo_receive_qty`` can legitimately exceed ``receive_qty`` on a
+	historically over-drawn row; a negative "returned by the button" figure would be
+	nonsense, and the over-draw is already surfaced through ``pending_qty``.
+	"""
+	if precision is None:
+		precision = qty_precision()
+	manual = flt(
+		flt(_get(row, "receive_qty"), precision)
+		- flt(_get(row, "wo_receive_qty"), precision),
+		precision,
+	)
+	row.manual_receive_qty = _zero_normalised(max(0.0, manual))
+	return row.manual_receive_qty
+
+
 def row_violation(row, precision=None):
 	"""How far ``receive + loss`` overshoots ``issue`` on this row (0.0 when balanced)."""
 	if precision is None:

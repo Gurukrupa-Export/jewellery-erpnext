@@ -3052,3 +3052,85 @@ class TestPerSampleLossWeight(IntegrationTestCase):
 		# S2: half of everything, and independent of S1.
 		self.assertEqual(rows[4].conversion_quantity, 16.306)
 		self.assertEqual(rows[5].gross_weight, 3.694)
+
+
+class TestEarringAmountSplit(IntegrationTestCase):
+	"""Total Amount is split per PIECE, not per row.
+
+	Hall Marking and Fire Assy are billed per piece and an earring pair is two pieces sitting
+	on ONE exploded row, so that row takes two shares: 150 across an Earrings row and one
+	other row is 100 / 50, not 75 / 75.
+
+	The row is never split in two. TestExplodedRowPerProductRow owns the row count and it
+	stays one exploded row per Product Details row -- only the share changes.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _doc(self, service_type, total_amount, categories, doc_type="Receive"):
+		doc = frappe.new_doc("Product Certification")
+		doc.type = doc_type
+		doc.service_type = service_type
+		doc.total_amount = total_amount
+		for index, category in enumerate(categories, start=1):
+			doc.append(
+				"exploded_product_details",
+				{
+					"item_code": "TEST-ITEM-001",
+					"serial_no": f"TEST-SERIAL-{index:03d}",
+					"category": category,
+					"gross_weight": 1.0,
+				},
+			)
+		return doc
+
+	def _amounts(self, doc):
+		doc.distribute_amount()
+		return [flt(row.amount, 2) for row in doc.exploded_product_details]
+
+	def test_hall_marking_earring_takes_two_of_three_shares(self):
+		doc = self._doc("Hall Marking Service", 150, ["Earrings", "Ring"])
+		self.assertEqual(self._amounts(doc), [100.0, 50.0])
+
+	def test_fire_assy_earring_takes_two_of_three_shares(self):
+		doc = self._doc("Fire Assy Service", 150, ["Earrings", "Ring"])
+		self.assertEqual(self._amounts(doc), [100.0, 50.0])
+
+	def test_the_earring_row_is_not_split_in_two(self):
+		doc = self._doc("Hall Marking Service", 150, ["Earrings", "Ring"])
+		doc.distribute_amount()
+		self.assertEqual(len(doc.exploded_product_details), 2)
+
+	def test_two_earrings_share_equally(self):
+		"""Four units between them, so each pair still carries half the total."""
+		doc = self._doc("Hall Marking Service", 200, ["Earrings", "Earrings"])
+		self.assertEqual(self._amounts(doc), [100.0, 100.0])
+
+	def test_no_earring_is_the_flat_split_it_replaces(self):
+		doc = self._doc("Hall Marking Service", 150, ["Ring", "Bangle"])
+		self.assertEqual(self._amounts(doc), [75.0, 75.0])
+
+	def test_a_blank_category_is_one_unit(self):
+		"""A Fire Assy pure / loss row is appended with no category of its own."""
+		doc = self._doc("Fire Assy Service", 150, ["Earrings", None])
+		self.assertEqual(self._amounts(doc), [100.0, 50.0])
+
+	def test_diamond_certificate_keeps_the_flat_split(self):
+		"""certification_amount is already priced off diamond_weight, which carries both
+		stones of a pair -- weighting the row on top would count the pair twice."""
+		doc = self._doc("Diamond Certificate service", 150, ["Earrings", "Ring"])
+		self.assertEqual(self._amounts(doc), [75.0, 75.0])
+
+	def test_xrf_keeps_the_flat_split(self):
+		doc = self._doc("XRF Services", 150, ["Earrings", "Ring"])
+		self.assertEqual(self._amounts(doc), [75.0, 75.0])
+
+	def test_an_issue_carries_no_amount(self):
+		doc = self._doc(
+			"Hall Marking Service", 150, ["Earrings", "Ring"], doc_type="Issue"
+		)
+		self.assertEqual(self._amounts(doc), [0.0, 0.0])
+		self.assertEqual(doc.total_amount, 0)

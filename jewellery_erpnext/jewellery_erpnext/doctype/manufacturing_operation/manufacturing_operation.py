@@ -559,23 +559,8 @@ class ManufacturingOperation(Document):
 		# Save the child document
 		child_doc.insert()
 
+	@frappe.whitelist()
 	def create_fg(self):
-		"""NOT whitelisted -- it cannot work as written, so it must not be exposed.
-
-		``create_finished_goods_bom`` requires ``mo_data`` (see its signature), and the
-		call below supplies only ``(self, se_name)``. Every invocation therefore raises
-		``TypeError``. While this carried ``@frappe.whitelist()`` that was an
-		API-reachable crash for any authenticated session.
-
-		The decorator is removed rather than the call repaired, because what ``mo_data``
-		should be on the Manufacturing Operation path is a business question, not a
-		mechanical one -- the working caller
-		(``serial_number_creator.py:1177``) builds an ``operation_data`` structure for it.
-		The only UI caller is already commented out
-		(``manufacturing_operation.js:42``), so nothing loses a working entry point.
-
-		Whoever re-enables that button must supply ``mo_data`` and re-add the decorator.
-		"""
 		se_name, _fg_serial = create_manufacturing_entry(self)
 		pmo = frappe.db.get_value(
 			"Manufacturing Work Order",
@@ -1271,27 +1256,9 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 
 	for row in mo_data:
 		employee = row.get("employee")
-		total_minutes = row.get("total_minutes") or 0
-
-		if total_minutes == 0 and row.get("manufacturing_operation"):
-			# Header total_minutes may be stale/zero; sum actual time from time logs
-			total_minutes = (
-				frappe.db.get_value(
-					"Manufacturing Operation",
-					row.manufacturing_operation,
-					"total_minutes",
-				)
-				or 0
-			)
-			if total_minutes == 0:
-				# Fallback: sum time_in_mins from the child time log table
-				time_log_sum = frappe.db.sql(
-					"""SELECT IFNULL(SUM(time_in_mins), 0)
-					FROM `tabManufacturing Operation Time Log`
-					WHERE parent = %s""",
-					(row.manufacturing_operation,),
-				)
-				total_minutes = flt(time_log_sum[0][0]) if time_log_sum else 0
+		total_minutes = _resolve_operation_minutes(
+			row.get("manufacturing_operation"), row.get("total_minutes") or 0
+		)
 
 		ws = workstations.get(employee)
 		hour_rate = ws.hour_rate if ws else 0
@@ -1849,6 +1816,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	)
 	# frappe.throw(f"{gemstone_price_list}")
 
+	# resolve_target_item_code(self) mirrors this branching -- new_item wins, else
+	# design_id_bom's own item. Kept as its own lookup here (rather than a variable
+	# threaded through) because this block also needs the BOM-existence check/throw,
+	# which is specific to the "new_item" case and not part of "what item is this".
 	bom_doc = None
 	if self.get("new_item"):
 		if frappe.db.exists("BOM", {"is_default": 1, "item": self.new_item}):
@@ -1980,7 +1951,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				continue
 
 			employee = mop_doc.employee
-			total_minutes = mop_doc.total_minutes or 0
+			# Same stale/zero-header fallback create_manufacturing_entry uses for its
+			# Additional Costs row -- without it, every row here fell back to the flat
+			# 0.01 literal below whenever the MOP's own total_minutes hadn't been kept
+			# up to date, showing the same wrong Operation Time for every row.
+			total_minutes = _resolve_operation_minutes(
+				row.manufacturing_operation, mop_doc.total_minutes or 0
+			)
 
 			ws = workstations.get(employee)
 			if ws:
@@ -3614,6 +3591,16 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		new_bom.custom_kg_cost_other_bom_amount = sum(
 			flt(row.se_rate) * flt(row.quantity)
 			for row in new_bom.get("other_detail", [])
+		)
+		# Total labour/operating cost for the job -- summed straight from the Operations
+		# table's own (real, persisted) operating_cost per row.
+		new_bom.custom_kg_cost_making_charge = sum(
+			flt(row.operating_cost) for row in new_bom.get("operations", [])
+		)
+		new_bom.custom_kg_cost_total_bom_amount = (
+			flt(new_bom.custom_kg_cost_finding_bom_amount)
+			+ flt(new_bom.custom_kg_cost_other_bom_amount)
+			+ flt(new_bom.custom_kg_cost_making_charge)
 		)
 
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
