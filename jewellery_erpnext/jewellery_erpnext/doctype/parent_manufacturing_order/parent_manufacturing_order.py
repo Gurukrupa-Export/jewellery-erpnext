@@ -505,6 +505,8 @@ def make_manufacturing_order(
 		doc.rowname = row.name
 		doc.master_bom = master_bom
 		doc.diamond_grade = so_det.get("diamond_grade")
+		# Carry the design type from the Manufacturing Plan (immediate predecessor).
+		doc.design_type = source_doc.custom_design_type
 		# if source_doc.select_manufacture_order == "Manufacturing":
 		# 	doc.master_bom = row.manufacturing_bom
 		# elif source_doc.select_manufacture_order == "Repair" and row.order_form_type == "Repair Order":
@@ -551,6 +553,8 @@ def make_manufacturing_order(
 		doc.manufacturing_plan = source_doc.name
 		doc.qty = row.qty_per_manufacturing_order
 		doc.rowname = row.name
+		# Carry the design type from the Manufacturing Plan (immediate predecessor).
+		doc.design_type = source_doc.custom_design_type
 		doc.insert(ignore_mandatory=True)
 		row.manufacturing_bom = so_det.get("master_bom")
 

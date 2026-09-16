@@ -11,7 +11,11 @@ from frappe.query_builder import CustomFunction
 from frappe.utils import cint
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import refetch_fg_purchase_rate
-from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import make_subcontracting_order
+from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import (
+	ORDER_DIMENSION_MAP,
+	make_subcontracting_order,
+	source_order_dimensions,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	make_manufacturing_order,
 )
@@ -80,7 +84,19 @@ class ManufacturingPlan(Document):
 
 	def validate(self):
 		self.validate_qty_with_bom_creation()
+		self.set_order_dimensions()
 		# create_new_bom(self)
+
+	def set_order_dimensions(self):
+		"""Stamp design type from the source Sales Orders onto the header.
+
+		Left blank when the source orders disagree, so the plan stays editable and submittable --
+		`on_submit` then carries whatever is here onto the Parent Manufacturing Orders and, for a
+		subcontracting plan, the supplier's Purchase Order.
+		"""
+		values = source_order_dimensions(self)
+		for target_field in ORDER_DIMENSION_MAP.values():
+			self.set(target_field, values.get(target_field))
 
 	def validate_qty_with_bom_creation(self):
 		total = 0
