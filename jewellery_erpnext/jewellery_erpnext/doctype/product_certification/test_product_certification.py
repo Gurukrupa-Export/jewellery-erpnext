@@ -306,8 +306,10 @@ class TestProductCertification(IntegrationTestCase):
 		fetch_sn(certification_receive, serial_no.name)
 		certification_receive.total_amount = 450
 		certification_receive.save()
-		for row in certification_receive.exploded_product_details:
-			row.certification = "CERT-1234"
+		# No certification number is set: the `certification` field is gone from Exploded
+		# Product Details, and with it validate_items' Diamond Certificate gate. This is the
+		# suite's only Diamond Certificate Receive, so this submit IS the regression test
+		# that the gate no longer blocks one.
 		certification_receive.submit()
 
 		se = frappe.get_doc(
@@ -326,7 +328,7 @@ class TestProductCertification(IntegrationTestCase):
 			certification_receive.product_details[0].item_code, se.items[0].item_code
 		)
 
-		# Validation for certification update
+		# Validation for serial-no linkage
 		pmo_doc = frappe.db.get_value("Serial No", serial_no.name, "name")
 		self.assertTrue(pmo_doc)
 
@@ -425,6 +427,21 @@ class TestProductCertification(IntegrationTestCase):
 		receive.exploded_product_details[0].huid = "HM-9999"
 		receive.save()
 		receive.submit()
+
+		# This Receive's exploded row carries a PMO and no serial_no, so update_huid takes
+		# its PMO branch and appends to the HUID Detail table. That append used to read a
+		# `certification` field that no longer exists on Exploded Product Details; assert on
+		# the row so the branch is covered rather than merely executed.
+		pmo_huids = frappe.db.get_all(
+			"HUID Detail",
+			filters={"parent": pmo.name, "parenttype": "Parent Manufacturing Order"},
+			fields=["huid", "date"],
+		)
+		self.assertIn("HM-9999", [row.huid for row in pmo_huids])
+		self.assertTrue(
+			[row.date for row in pmo_huids if row.huid == "HM-9999"][0],
+			"update_huid must still stamp the date alongside the HUID",
+		)
 
 		# Verify Receive generated a Stock Entry and Purchase Order
 		receive_se_name = frappe.db.get_value(

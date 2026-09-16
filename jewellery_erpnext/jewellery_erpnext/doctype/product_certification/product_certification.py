@@ -282,15 +282,6 @@ class ProductCertification(Document):
 							"Row #{0}: HUID is mandatory for Hall Marking Service"
 						).format(row.idx)
 					)
-				if (
-					self.service_type == "Diamond Certificate service"
-					and not row.certification
-				):
-					frappe.throw(
-						_(
-							"Row #{0}: Certification No is mandatory for Diamond Certificate service"
-						).format(row.idx)
-					)
 
 		if self.type == "Issue":
 			return
@@ -703,8 +694,8 @@ class ProductCertification(Document):
 			self.receive_status = update_receive_status(self.name)
 
 	def update_huid(self):
-		"""Stamp HUID / certification numbers onto the Serial Nos and Parent Manufacturing
-		Orders behind the exploded rows.
+		"""Stamp HUIDs onto the Serial Nos and Parent Manufacturing Orders behind the
+		exploded rows.
 
 		Grouped by order: this used to load the Parent Manufacturing Order and run a full
 		``save()`` for EVERY exploded row, so ten rows of one order meant ten loads and ten
@@ -715,9 +706,9 @@ class ProductCertification(Document):
 		for row in self.exploded_product_details:
 			if row.serial_no:
 				add_to_serial_no(row.serial_no, self, row)
-			elif (row.manufacturing_work_order or row.parent_manufacturing_order) and (
-				row.huid or row.certification
-			):
+			elif (
+				row.manufacturing_work_order or row.parent_manufacturing_order
+			) and row.huid:
 				pending.append(row)
 
 		if not pending:
@@ -749,15 +740,13 @@ class ProductCertification(Document):
 		for pmo, rows in rows_by_pmo.items():
 			pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
 			for row in rows:
+				# `date` is unconditional: every row in `pending` has a truthy `huid` by
+				# construction, so the old `if row.huid else None` guard was tautological.
 				pmo_doc.append(
 					"product_certification_details",
 					{
 						"huid": row.huid,
-						"certification_no": row.certification,
-						"date": self.date if row.huid else None,
-						"certification_date": self.certification_date
-						if row.certification
-						else None,
+						"date": self.date,
 					},
 				)
 			pmo_doc.save()
