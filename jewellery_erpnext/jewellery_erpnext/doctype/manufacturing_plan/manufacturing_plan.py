@@ -82,7 +82,49 @@ class ManufacturingPlan(Document):
 				),
 			)
 
+	def set_order_dimensions(self):
+		"""Fill the MP's dimension fields from its linked Sales Order(s).
+
+		The Manufacturing Plan is the source of the order-dimension chain
+		(PMO -> MWO -> SNC -> Serial No). It stamps ``custom_sales_type`` /
+		``custom_order_type`` / ``custom_flow_type`` from the linked Sales Order's
+		``sales_type`` / ``order_type`` / ``custom_flow_type`` so the values only ever have to
+		be entered once, at the Order Form / Sales Order. A field is stamped only when every
+		linked Sales Order agrees on a value; a blank or disagreement leaves the field
+		untouched (no invented value), so a hand-filled Manufacturing Plan is not clobbered.
+		"""
+		sales_order_names = set()
+		for row in self.sales_order:
+			if row.get("sales_order"):
+				sales_order_names.add(row.sales_order)
+		for row in self.manufacturing_plan_table:
+			if row.get("sales_order"):
+				sales_order_names.add(row.sales_order)
+		if not sales_order_names:
+			return
+
+		so_fields = ["sales_type", "order_type"]
+		if frappe.db.has_column("Sales Order", "custom_flow_type"):
+			so_fields.append("custom_flow_type")
+
+		so_rows = frappe.db.get_all(
+			"Sales Order",
+			filters={"name": ["in", list(sales_order_names)]},
+			fields=so_fields,
+		)
+
+		for target_field, source_field in (
+			("custom_sales_type", "sales_type"),
+			("custom_order_type", "order_type"),
+			("custom_flow_type", "custom_flow_type"),
+		):
+			distinct_values = {so.get(source_field) for so in so_rows}
+			distinct_values.discard(None)
+			if len(distinct_values) == 1:
+				self.set(target_field, distinct_values.pop())
+
 	def validate(self):
+		self.set_order_dimensions()
 		self.validate_qty_with_bom_creation()
 		self.set_order_dimensions()
 		# create_new_bom(self)
