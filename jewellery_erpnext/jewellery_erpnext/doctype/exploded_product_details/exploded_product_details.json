@@ -16,10 +16,14 @@
   "metal_touch",
   "metal_colour",
   "tree_no",
+  "sample_name",
   "column_break_xsw31",
   "docname",
+  "assay_row_type",
   "supply_raw_material",
   "huid",
+  "report_no",
+  "report_result",
   "report",
   "item_details_section",
   "category",
@@ -59,6 +63,14 @@
    "read_only": 1
   },
   {
+   "description": "Set by Product Certification on Fire Assy / XRF rows. Blank means unclassified.",
+   "fieldname": "assay_row_type",
+   "fieldtype": "Select",
+   "label": "Assay Row Type",
+   "options": "\nTouch\nPure\nLoss",
+   "read_only": 1
+  },
+  {
    "columns": 1,
    "default": "0",
    "fieldname": "supply_raw_material",
@@ -81,7 +93,7 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "HUID",
-   "mandatory_depends_on": "eval:parent.type == \"Receive\" && parent.__islocal == 0",
+   "mandatory_depends_on": "eval:parent.service_type == \"Hall Marking Service\" && parent.type == \"Receive\" && parent.__islocal == 0",
    "read_only_depends_on": "eval:parent.type == \"Issue\""
   },
   {
@@ -215,6 +227,27 @@
    "read_only": 1
   },
   {
+   "columns": 1,
+   "depends_on": "eval:parent.service_type == \"Fire Assy Service\" && parent.type == \"Receive\" && doc.assay_row_type == \"Touch\"",
+   "fieldname": "report_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Report No",
+   "mandatory_depends_on": "eval:parent.service_type == \"Fire Assy Service\" && parent.type == \"Receive\" && parent.__islocal == 0 && doc.assay_row_type == \"Touch\""
+  },
+  {
+   "columns": 1,
+   "depends_on": "eval:parent.service_type == \"Fire Assy Service\" && parent.type == \"Receive\" && doc.assay_row_type == \"Touch\"",
+   "description": "Assayed purity returned by the lab, in %.",
+   "fieldname": "report_result",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Report Result",
+   "mandatory_depends_on": "eval:parent.service_type == \"Fire Assy Service\" && parent.type == \"Receive\" && parent.__islocal == 0 && doc.assay_row_type == \"Touch\"",
+   "non_negative": 1,
+   "precision": "3"
+  },
+  {
    "fieldname": "amount",
    "fieldtype": "Currency",
    "label": "Amount"
@@ -224,6 +257,13 @@
    "fieldtype": "Link",
    "label": "Tree No",
    "options": "Tree Number"
+  },
+  {
+   "description": "Copied from the Product Details row this group was built from.",
+   "fieldname": "sample_name",
+   "fieldtype": "Data",
+   "label": "Sample Name",
+   "read_only": 1
   },
   {
    "fieldname": "main_slip",
@@ -257,7 +297,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-09-16 10:00:00.000000",
+ "modified": "2026-09-15 17:00:02.673786",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Exploded Product Details",
