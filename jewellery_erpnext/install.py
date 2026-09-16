@@ -153,9 +153,15 @@ def _fieldnames_owned_by_another_apps_fixtures():
 	try:
 		apps_dir = os.path.dirname(os.path.dirname(frappe.get_app_path("frappe")))
 		candidates = sorted(os.listdir(apps_dir))
-	except Exception:  # noqa: BLE001 - unreadable bench layout; provisioning must still run
+	except Exception as exc:  # noqa: BLE001 - unreadable bench layout
+		# NOT a silent continue. A scan that quietly finds nothing looks identical to a bench
+		# with no sibling apps, and the consequence -- a collision that kills `bench migrate`
+		# on every fresh install -- is far too expensive to diagnose from silence. This cost
+		# three CI rounds to find precisely because the reads below swallowed their errors.
+		print(f"jewellery_erpnext: cannot scan apps dir for sibling fixtures: {exc!r}")
 		return owned
 
+	seen = []
 	for app in candidates:
 		if app == "jewellery_erpnext":
 			continue
@@ -163,12 +169,15 @@ def _fieldnames_owned_by_another_apps_fixtures():
 		if not os.path.isfile(path):
 			continue
 		try:
-			with open(path) as handle:
+			with open(path, encoding="utf-8") as handle:
 				records = json.load(handle)
-		except Exception:  # noqa: BLE001 - a malformed sibling fixture is not ours to fix
+		except Exception as exc:  # noqa: BLE001 - a malformed sibling fixture is not ours to fix
+			print(f"jewellery_erpnext: could not read {app} fixtures: {exc!r}")
 			continue
 		if not isinstance(records, list):
+			print(f"jewellery_erpnext: {app} custom_field.json is not a list; ignored")
 			continue
+		before = len(owned)
 		for record in records:
 			if (
 				isinstance(record, dict)
@@ -176,7 +185,13 @@ def _fieldnames_owned_by_another_apps_fixtures():
 				and record.get("fieldname")
 			):
 				owned.add((record["dt"], record["fieldname"]))
+		seen.append(f"{app}={len(owned) - before}")
 
+	print(
+		f"jewellery_erpnext: sibling-fixture scan of {apps_dir}: "
+		f"{len(candidates)} dir(s), read [{', '.join(seen) or 'none'}], "
+		f"{len(owned)} (dt, fieldname) pair(s) owned elsewhere"
+	)
 	return owned
 
 
