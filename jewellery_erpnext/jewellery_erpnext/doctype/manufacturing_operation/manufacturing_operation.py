@@ -864,6 +864,44 @@ class ManufacturingOperation(Document):
 				)
 
 
+def resolve_target_item_code(doc):
+	"""Item this doc's FG BOM/operations are for: ``doc.new_item`` if set, else the
+	item on ``doc.design_id_bom``. Single source of truth so the Manufacturing
+	Operation scoping query (``to_prepare_data_for_make_mnf_stock_entry``) and the FG
+	BOM copy (``create_finished_goods_bom``) never disagree about which item they mean.
+	"""
+	if doc.get("new_item"):
+		return doc.new_item
+	if doc.get("design_id_bom"):
+		return frappe.db.get_value("BOM", doc.design_id_bom, "item")
+	return None
+
+
+def _resolve_operation_minutes(mop_name, header_minutes=0):
+	"""Real total_minutes for one Manufacturing Operation, tolerating a stale/zero
+	header value. total_minutes is denormalized from the Time Log child table and can
+	go stale/zero; refetch the header once, then fall back to summing the Time Log
+	rows directly, before giving up and returning 0.
+	"""
+	total_minutes = flt(header_minutes)
+	if total_minutes or not mop_name:
+		return total_minutes
+
+	total_minutes = flt(
+		frappe.db.get_value("Manufacturing Operation", mop_name, "total_minutes")
+	)
+	if total_minutes:
+		return total_minutes
+
+	time_log_sum = frappe.db.sql(
+		"""SELECT IFNULL(SUM(time_in_mins), 0)
+		FROM `tabManufacturing Operation Time Log`
+		WHERE parent = %s""",
+		(mop_name,),
+	)
+	return flt(time_log_sum[0][0]) if time_log_sum else 0
+
+
 def _finished_goods_ownership(row_data):
 	"""Who owns the finished piece, derived from the metal actually consumed.
 
