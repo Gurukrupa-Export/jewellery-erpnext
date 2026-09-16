@@ -100,6 +100,100 @@ def after_install():
 	provision_schema()
 
 
+def _fieldnames_owned_by_another_apps_fixtures():
+	"""``{(dt, fieldname)}`` that some OTHER app on this bench ships as a ``fixtures`` record.
+
+	THE BUG THIS EXISTS TO PREVENT, MEASURED IN CI
+	-----------------------------------------------
+	Two apps can declare the same field on the same DocType through different mechanisms, and
+	they then collide at the Custom Field DOCUMENT level even though the schema they want is
+	the same::
+
+	    jewellery_erpnext/custom_fields/warehouse.json   -> Custom Field "Warehouse-department"
+	    gke_customization/fixtures/custom_field.json     -> Custom Field "Warehouse-custom_department"
+
+	Both carry ``fieldname = "department"`` on ``Warehouse``. ``custom_field.py``'s ``validate``
+	rejects the second on ``(dt, fieldname)`` regardless of document name::
+
+	    frappe.exceptions.ValidationError:
+	        A field with the name department already exists in Warehouse
+
+	Before ``provision_schema`` existed, this app's ``custom_fields/*.json`` were never applied
+	(``after_migrate`` is commented out at ``hooks.py:12``), so the sibling's fixture always won
+	and nothing ever collided. Provisioning them made this app create the field FIRST, and then
+	``sync_fixtures`` -- which re-imports every app's fixtures on EVERY ``bench migrate`` --
+	died importing the sibling's record. A fresh install could no longer migrate.
+
+	WHY DEFER TO THE FIXTURE RATHER THAN RACE IT
+	---------------------------------------------
+	Ordering cannot be fixed: this app installs before ``gke_customization`` (``sites/apps.txt``),
+	so its provisioning always runs before that app's fixtures exist, whether it is hooked on
+	``after_install`` or ``after_sync``. And a fixture is re-imported on every migrate, so the
+	sibling's record is the one that keeps being reasserted. The field still ends up on the
+	DocType -- by the sibling's hand -- which is the outcome provisioning wanted anyway.
+
+	Reads ``sites/apps.txt`` via ``frappe.get_all_apps`` rather than the site's installed apps,
+	because at ``after_install`` time the sibling may not be installed yet while its fixture is
+	already on disk and certain to be imported later.
+	"""
+	owned = set()
+
+	try:
+		apps = frappe.get_all_apps(with_internal_apps=False)
+	except Exception:  # noqa: BLE001 - no apps.txt readable; provisioning must still run
+		return owned
+
+	for app in apps:
+		if app == "jewellery_erpnext":
+			continue
+		try:
+			path = os.path.join(
+				frappe.get_app_path(app), "fixtures", "custom_field.json"
+			)
+		except Exception:  # noqa: BLE001 - app listed but not on disk
+			continue
+		if not os.path.isfile(path):
+			continue
+		try:
+			with open(path) as handle:
+				records = json.load(handle)
+		except Exception:  # noqa: BLE001 - a malformed sibling fixture is not ours to fix
+			continue
+		if not isinstance(records, list):
+			continue
+		for record in records:
+			if (
+				isinstance(record, dict)
+				and record.get("dt")
+				and record.get("fieldname")
+			):
+				owned.add((record["dt"], record["fieldname"]))
+
+	return owned
+
+
+def _drop_fields_owned_by_another_apps_fixtures(spec, owned):
+	"""Drop fields a sibling app's fixtures will create, so the two do not collide.
+
+	See :func:`_fieldnames_owned_by_another_apps_fixtures` for the failure this avoids.
+	"""
+	usable = {}
+	dropped = []
+
+	for doctype, fields in spec.items():
+		keep = []
+		for field in fields:
+			if (doctype, field.get("fieldname")) in owned:
+				dropped.append(f"{doctype}.{field.get('fieldname')}")
+				continue
+			keep.append(field)
+
+		if keep:
+			usable[doctype] = keep
+
+	return usable, dropped
+
+
 def provision_schema(verbose=True):
 	"""Apply every ``custom_fields/*.json`` file, then the schema patches.
 
@@ -113,6 +207,8 @@ def provision_schema(verbose=True):
 	"""
 	applied = skipped = 0
 	drift = []
+	deferred = []
+	owned_elsewhere = _fieldnames_owned_by_another_apps_fixtures()
 
 	for filename in sorted(os.listdir(CUSTOM_FIELDS_DIR)):
 		if not filename.endswith(".json"):
@@ -123,6 +219,11 @@ def provision_schema(verbose=True):
 
 		usable, dropped = _drop_fields_with_missing_targets(spec)
 		skipped += dropped
+
+		usable, yielded = _drop_fields_owned_by_another_apps_fixtures(
+			usable, owned_elsewhere
+		)
+		deferred.extend(yielded)
 
 		if usable:
 			drift.extend(report_field_drift(usable))
@@ -136,6 +237,12 @@ def provision_schema(verbose=True):
 			f"jewellery_erpnext: provisioned custom fields from {applied} file(s); "
 			f"skipped {skipped} field(s) targeting doctypes that are not installed"
 		)
+		if deferred:
+			print(
+				f"jewellery_erpnext: deferred {len(deferred)} field(s) to the app whose "
+				f"fixtures already own them -- creating them here would make that app's "
+				f"fixture import fail on every migrate: " + ", ".join(sorted(deferred))
+			)
 		if drift:
 			print(
 				f"jewellery_erpnext: {len(drift)} existing field(s) DIFFER from this app's "
@@ -152,7 +259,7 @@ def provision_schema(verbose=True):
 			if len(drift) > 20:
 				print(f"  ... and {len(drift) - 20} more")
 
-	return applied, skipped, drift
+	return applied, skipped, drift, deferred
 
 
 def after_sync():
