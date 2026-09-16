@@ -66,18 +66,19 @@ The rule now: **provisioning creates; it never modifies.** Incompatible drift is
 ``report_field_drift`` and is a human decision, not a silent rewrite. Approved field migrations
 must be narrow, explicit and separately tested.
 
-Wired to ``after_migrate``, and the ordering is load-bearing rather than incidental.
-``frappe/installer.py`` runs ``after_install`` at ``:360`` but ``sync_fixtures`` only at
-``:367``, so provisioning from the install hook created this app's Custom Fields BEFORE any
-fixture record existed -- and a fixture claiming the same ``(dt, fieldname)`` under a different
-document name was then rejected, killing ``bench migrate`` on every fresh install.
-``frappe/migrate.py`` runs ``sync_fixtures()`` at ``:171`` and ``after_migrate`` at ``:200-202``,
-which is the order this needs.
+Wired to ``after_install``, and the ordering is load-bearing in BOTH directions.
+``frappe/installer.py`` runs ``after_install`` at ``:360`` and ``sync_fixtures`` at ``:367``.
+Provisioning before fixtures is required, because a fixture's ``Dynamic Link`` record needs the
+Link field it points at to exist already. Provisioning before fixtures is also what lets a
+fixture record claiming the same ``(dt, fieldname)`` under a different document name be
+rejected. Both failures are real and CI produced each in turn; the guard in
+``_pairs_a_fixture_claims_under_another_name`` is what resolves them, by provisioning early and
+withholding only the pairs that would collide.
 
 That is NOT the hook target commented out at ``hooks.py:12``. That one points at
 ``jewellery_erpnext/migrate.py``, which calls ``create_custom_fields`` with the default
 ``update=True`` -- the overwrite-everything behaviour this module exists to replace. It stays
-disabled; this is the create-only alternative.
+disabled.
 """
 
 import json
@@ -108,59 +109,37 @@ _DOCTYPE_LINK_TYPES = ("Link", "Table", "Table MultiSelect")
 def after_install():
 	"""Entry point for ``hooks.py``'s ``after_install``.
 
-	Custom-field provisioning deliberately does NOT happen here any more. ``frappe/installer.py``
-	runs this hook at ``:360`` but ``sync_fixtures(name)`` only at ``:367``, so provisioning from
-	here created this app's Custom Fields BEFORE any fixture record existed -- and a fixture that
-	claims the same ``(dt, fieldname)`` under a different document name then lost the race and
-	took ``bench migrate`` down. See :func:`after_migrate`.
+	PROVISIONING RUNS HERE, BEFORE FIXTURES, AND THE ORDER IS FORCED FROM BOTH SIDES
+	---------------------------------------------------------------------------------
+	``frappe/installer.py`` runs this hook at ``:360`` and ``sync_fixtures(name)`` at ``:367``,
+	so everything created here exists before any fixture record is imported. Two failures pull
+	in opposite directions across that boundary, and CI has now produced both:
 
-	What remains is the one job only the install path can do. ``installer.py:358`` calls
+	* **Provision too late** and a fixture's ``Dynamic Link`` record has no Link field to point
+	  at -- ``check_dynamic_link_options`` (``doctype.py:1420``) throws *"Options 'Dynamic Link'
+	  type of field must point to another Link Field with options as 'DocType'"*. Two of the five
+	  Dynamic Link fields this app declares target a Link field declared in the same
+	  ``custom_fields/*.json`` set (``BOM.custom_creation_docname`` ->
+	  ``custom_creation_doctype``, ``Serial No.custom_reference_docname`` ->
+	  ``custom_reference_doctype``), and fixture records import in FILE ORDER -- ``import_doc``
+	  sorts files in a directory, never records within a file.
+
+	* **Provision too early** and a fixture claiming the same ``(dt, fieldname)`` under a
+	  DIFFERENT document name is rejected -- *"A field with the name department already exists in
+	  Warehouse"* -- which kills ``bench migrate`` outright, because ``import_fixtures`` catches
+	  only ``ImportError`` and ``DoesNotExistError`` (``frappe/utils/fixtures.py:45``).
+
+	Moving the hook cannot satisfy both. :func:`_pairs_a_fixture_claims_under_another_name` is
+	what does: provision early so the Dynamic Link targets exist, and withhold exactly the
+	handful of pairs a fixture will claim under a name this app cannot produce.
+
+	The other job here is one only the install path can do. ``installer.py:358`` calls
 	``set_all_patches_as_completed(name)``, which writes a ``Patch Log`` row for every entry in
 	``patches.txt`` WITHOUT importing the module, so the schema those patches create never exists
-	and the first migrate skips them because the log says they already ran.
-
-	``_run_schema_patches`` stays here rather than moving to ``after_migrate`` with the rest:
-	those patches call ``create_custom_fields`` with the default ``update=True``, so running them
-	on every migrate would re-save any field whose site definition has drifted -- exactly the
-	silent overwrite this module exists to forbid. On a fresh install there is nothing to
-	overwrite. Keep it that way: a patch listed there must own its fieldnames outright.
-	"""
-	_run_schema_patches()
-
-
-def after_migrate():
-	"""Entry point for ``hooks.py``'s ``after_migrate``. Provisions this app's custom fields.
-
-	WHY PROVISIONING LIVES HERE AND NOT ON ``after_install``
-	--------------------------------------------------------
-	A Custom Field this app provisions can only ever be named ``f"{dt}-{fieldname}"`` --
-	``CustomField.autoname`` (``custom_field.py:125-127``) is unconditional and
-	``Document.insert`` always reaches it. So when another fixture ships the SAME
-	``(dt, fieldname)`` under a DIFFERENT document name, the two are separate documents fighting
-	over one column, and the loser is rejected::
-
-	    frappe.exceptions.ValidationError:
-	        A field with the name department already exists in Warehouse
-
-	``CustomField.validate`` (``custom_field.py:175-183``) tests the parent DocType's meta, so
-	the differing name does not save it. And ``import_fixtures`` catches only ``ImportError`` and
-	``DoesNotExistError`` (``frappe/utils/fixtures.py:45``) -- a ``ValidationError`` propagates
-	and kills the whole migrate. That is why this failure is fatal rather than a printed warning.
-
-	``after_migrate`` inverts the order for free. ``SiteMigration.post_schema_updates`` calls
-	``sync_fixtures()`` at ``migrate.py:171`` and the ``after_migrate`` hooks at ``:200-202``, in
-	that order. Every installed app's fixture records are therefore already in place when this
-	runs, and ``create_custom_fields(..., update=False)`` finds the pair present and does nothing
-	-- ``get_existing_custom_fields`` keys on ``(dt, fieldname)`` and never on document name. The
-	fixture's record wins by construction, no ownership has to be predicted, and every one of the
-	cross-app name mismatches on this bench is covered at once.
-
-	Note this is the same hook ``hooks.py:12`` has commented out. That line points at
-	``jewellery_erpnext/migrate.py``, whose ``after_migrate`` calls ``create_custom_fields`` with
-	the default ``update=True`` -- it would rewrite every property this app's JSON names, on every
-	migrate, on every site. It stays dead. This is the create-only replacement.
+	and the first migrate skips them because the log says they ran.
 	"""
 	provision_schema()
+	_run_schema_patches()
 
 
 def _pairs_a_fixture_claims_under_another_name():
@@ -168,7 +147,7 @@ def _pairs_a_fixture_claims_under_another_name():
 
 	THE ONLY COLLISION THAT IS REAL
 	--------------------------------
-	Because ``autoname`` is unconditional (see :func:`after_migrate`), a fixture record whose
+	Because ``autoname`` is unconditional, a fixture record whose
 	``name`` EQUALS ``f"{dt}-{fieldname}"`` is the very same document this app would create:
 	whoever runs first inserts it, the other updates it, and nothing can collide. A collision
 	needs a record whose name DIFFERS. Everything else is safe to provision.
@@ -196,9 +175,8 @@ def _pairs_a_fixture_claims_under_another_name():
 	-------------------------------------------
 	The apps DIRECTORY rather than ``frappe.get_installed_apps()``: an app can sit on disk and be
 	installed later, and the migrate that follows will import its fixture -- colliding with
-	whatever this app created meanwhile. ``after_migrate`` ordering cannot help there, because
-	this app's provisioning has already run and committed. That case is the whole reason this
-	guard still exists.
+	whatever this app created meanwhile -- and provisioning has already run and committed by
+	then, so no hook ordering can help. That case is the whole reason this guard exists.
 
 	Records are selected by ``doctype == "Custom Field"`` across every ``*.json`` rather than by
 	the filename ``custom_field.json``, because ``fixture_auto_order`` and the ``prefix`` option
@@ -311,12 +289,9 @@ def provision_schema(verbose=True):
 	drift and left for a human -- see the module docstring for why the previous
 	overwrite-on-every-run behaviour was unsafe.
 
-	Runs from ``after_migrate``, which is what makes the create-only skip meaningful: every
-	installed app's fixtures are already in place by then, so a field another fixture owns under
-	a different document name is simply found present and left alone. See :func:`after_migrate`.
-
-	The schema patches are NOT run here. They use ``update=True`` and belong to the install path
-	only -- see :func:`after_install`.
+	Runs from ``after_install``, BEFORE any fixture is imported -- see :func:`after_install` for
+	why that direction is forced, and why the collision guard rather than the hook choice is what
+	keeps it safe.
 
 	Returns ``(applied, skipped, drift, deferred)`` so a caller can act on the drift and the
 	deferrals rather than have them buried in stdout.

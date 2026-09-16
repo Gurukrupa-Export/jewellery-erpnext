@@ -32,12 +32,16 @@ after_migrate = (
 	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
 )
 
-# Provisions this app's custom fields on a FRESH install. Without it a new site gets none
-# of them: custom_fields/*.json is only read by the after_migrate hook above (disabled),
-# and `bench install-app` MARKS patches complete without running them, so the patch that
-# would create the rate-snapshot fields never executes. Idempotent -- create_custom_fields
-# keys on (dt, fieldname) -- and re-runnable on an existing site with:
-#   bench --site <site> execute jewellery_erpnext.install.provision_schema
+# Provisions this app's custom fields, BEFORE fixtures import (installer.py:360 vs :367).
+# That direction is required: a fixture's Dynamic Link record needs its target Link field to
+# exist already. It is also what lets a fixture claiming the same (dt, fieldname) under a
+# different document name collide -- so provisioning withholds exactly those pairs rather than
+# moving hooks. See install.after_install; CI produced both failures in turn.
+#
+# Also closes the patch gap: `bench install-app` writes a Patch Log row for every patches.txt
+# entry WITHOUT importing the module (installer.py:358), so that schema never exists and the
+# next migrate skips it as already applied.
+# Re-runnable by hand: bench --site <site> execute jewellery_erpnext.install.provision_schema
 after_install = "jewellery_erpnext.install.after_install"
 
 # Runs AFTER sync_fixtures/sync_customizations (frappe/installer.py:371), which after_install
