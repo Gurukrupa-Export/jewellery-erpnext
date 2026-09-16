@@ -1,7 +1,7 @@
 import json
 
 import frappe
-from frappe.utils import cint
+from frappe.utils import cint, cstr
 
 # from frappe.query_builder import Case
 # from frappe.query_builder.functions import Locate
@@ -27,6 +27,66 @@ GRADE_FIELDS = [
 ]
 
 
+def is_customer_diamond_flag(value):
+	"""Read the Sales Order Item's Yes/No text as the PMO's is_customer_diamond checkbox.
+
+	The two sides used to disagree on case -- Manufacturing Plan lowercased the string while
+	the PMO compared it to "Yes" -- so a row saved as "yes" resolved its grade one way at plan
+	time and the other way on the PMO. One reading of the value keeps them in step.
+	"""
+	return 1 if cstr(value).strip().lower() == "yes" else 0
+
+
+def _grade_flags(grades):
+	"""is_customer_diamond_quality for every grade name, in one query."""
+	names = [g for g in grades if g]
+	if not names:
+		return {}
+
+	return {
+		d.name: cint(d.is_customer_diamond_quality)
+		for d in frappe.get_all(
+			"Attribute Value",
+			filters={"name": ["in", names]},
+			fields=["name", "is_customer_diamond_quality"],
+		)
+	}
+
+
+def pick_diamond_grade(grades, is_customer_diamond, flags=None):
+	"""Choose one grade out of an ordered diamond_grade_1..4 sequence.
+
+	Customer diamond: only an Attribute Value flagged is_customer_diamond_quality will do, so an
+	unflagged grade is never a substitute. Returning None here is what makes the PMO throw
+	instead of silently stamping the wrong grade onto the tracking BOM and the item variant.
+
+	Not customer diamond: either kind is acceptable. Plain grades are preferred so a correctly
+	configured customer keeps resolving to the grade it always has; the flagged one is only
+	taken when nothing else is configured for the quality.
+
+	``flags`` maps grade name -> truthy is_customer_diamond_quality. Callers that already hold
+	those values pass them in; leaving it None looks them up.
+	"""
+	grades = [g for g in grades if g]
+	if not grades:
+		return None
+
+	if flags is None:
+		flags = _grade_flags(grades)
+
+	if cint(is_customer_diamond):
+		for grade in grades:
+			if flags.get(grade):
+				return grade
+		return None
+
+	for grade in grades:
+		if not flags.get(grade):
+			return grade
+
+	return grades[0]
+
+
 def resolve_diamond_grade(customer, diamond_quality, is_customer_diamond):
 	"""Pick the grade to auto-apply for a customer/quality pair.
 
@@ -45,16 +105,7 @@ def resolve_diamond_grade(customer, diamond_quality, is_customer_diamond):
 	if not row:
 		return None
 
-	for grade in row:
-		if not grade:
-			continue
-		is_customer_grade = frappe.db.get_value(
-			"Attribute Value", grade, "is_customer_diamond_quality"
-		)
-		if bool(cint(is_customer_diamond)) == bool(is_customer_grade):
-			return grade
-
-	return None
+	return pick_diamond_grade(row, is_customer_diamond)
 
 
 @frappe.whitelist()
@@ -72,54 +123,35 @@ def get_diamond_grade(doctype, txt, searchfield, start, page_len, filters):
 	if isinstance(filters, str):
 		filters = json.loads(filters)
 
-	customer = filters.get("customer")
+	# Same customer the controller resolves against: a PMO with a Ref Customer stores that
+	# customer's grade, so listing the ordering customer's grades here offers values the save
+	# would immediately replace.
+	customer = filters.get("ref_customer") or filters.get("customer")
 	diamond_quality = filters.get("diamond_quality")
 	use_custom = filters.get("use_custom_diamond_grade")
-	is_customer_diamond = int(filters.get("is_customer_diamond") or 0)
+	is_customer_diamond = cint(filters.get("is_customer_diamond"))
 
 	data = frappe.db.get_all(
 		"Customer Diamond Grade",
 		{"parent": customer, "diamond_quality": diamond_quality},
-		["diamond_grade_1", "diamond_grade_2", "diamond_grade_3", "diamond_grade_4"],
+		GRADE_FIELDS,
 	)
 
 	if not data:
 		return []
 
-	grade_fields = [
-		"diamond_grade_1",
-		"diamond_grade_2",
-		"diamond_grade_3",
-		"diamond_grade_4",
-	]
-
-	if use_custom:
-		# Return all unique non-empty grades
-		grades = set()
-		for row in data:
-			for key in grade_fields:
-				if row.get(key):
-					grades.add(row[key])
-		return [(g,) for g in sorted(grades)]
-
-	# When not using custom grade, pick the correct grade based on is_customer_diamond
 	all_grades = []
 	for row in data:
-		for key in grade_fields:
+		for key in GRADE_FIELDS:
 			grade = row.get(key)
 			if grade and grade not in all_grades:
 				all_grades.append(grade)
 
-	for grade in all_grades:
-		is_customer_grade = frappe.db.get_value(
-			"Attribute Value", grade, "is_customer_diamond_quality"
-		)
-		if is_customer_diamond and is_customer_grade:
-			return [(grade,)]
-		elif not is_customer_diamond and not is_customer_grade:
-			return [(grade,)]
+	if use_custom:
+		# Manual override: offer every grade the customer has for the quality, so a user can
+		# pick one the automatic rule would not.
+		return [(g,) for g in sorted(all_grades)]
 
-	# Fallback: return first available grade
-	if all_grades:
-		return [(all_grades[0],)]
-	return []
+	grade = pick_diamond_grade(all_grades, is_customer_diamond)
+
+	return [(grade,)] if grade else []
