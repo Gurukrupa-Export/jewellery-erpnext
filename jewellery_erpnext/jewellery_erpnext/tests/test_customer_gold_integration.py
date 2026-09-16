@@ -4655,45 +4655,27 @@ class TestManufacturedPieceSettles(TestProductionEvents):
 		)
 		self.assertEqual(events[0].customer, CUSTOMER)
 
-	def test_a_manufactured_delivery_reaches_the_settlement_path_with_a_real_amount_pending(
-		self,
-	):
-		"""Step 8's money half -- what is proven, and what is honestly still open.
+	def test_a_manufactured_delivery_settles_only_the_booked_customer_value(self):
+		"""SOP Example C, and the number the SOP is written around.
 
-		WHAT IS PROVEN HERE
-		-------------------
-		The delivery of a manufactured piece now reaches ``settle_customer_gold_liability`` with a
-		real event attributed to the right customer. Before the ownership fix it never got that
-		far: ``_batch_owner`` returned ``None``, the row was skipped, and the function was handed
-		an empty list.
+		    "On Delivery Note, clear only the booked customer value included in the delivered
+		     Serial Number."
 
-		WHAT IS NOT PROVEN, AND WHY NOT
-		--------------------------------
-		No Journal Entry posts in this fixture, and that is a property of the fixture rather than
-		of the code. Measured on this run::
+		The finished piece here is made from **6.000 g** of customer 24KT booked at
+		Rs.7,164.83/g, so the settlement must be::
 
-		    delivery event   qty -6.000   cg_carrying_value_delta 0.0
-		    delivery SLE     qty -6.000   stock_value_difference  0.0   valuation_rate 7164.83
+		    6.000 x 7,164.83 = Rs.42,988.98
 
-		``_manufacture`` submits its finished row with ``allow_zero_valuation_rate = 1`` -- without
-		it a bare test site cannot value a manufacture at all -- so the finished batch enters stock
-		at zero and therefore leaves at zero. ``settle_customer_gold_liability`` returns on
-		``if not total`` and writes nothing, which is correct behaviour for a zero-value movement
-		(``TestZeroValuePostsNoSettlement`` asserts exactly that for the raw path).
+		which is the SOP's own S1 figure. It is deliberately NOT the finished item's stock
+		value: that also holds company alloy and production cost, which the invoice recovers,
+		and settling it would discharge more obligation than was ever raised.
 
-		THE REAL QUESTION THIS LEAVES OPEN
-		-----------------------------------
-		Settling a manufactured piece must clear only **the booked customer value inside it**, not
-		the finished item's stock value -- SOP Example C settles Rs.42,988.98 against an FG stock
-		value of Rs.43,186.98, the difference being company alloy and production cost that the
-		invoice recovers. Today the amount comes from the delivery SLE's own
-		``stock_value_difference``, which for a manufactured piece is the whole FG value. So once
-		a fixture values the FG properly, this path would settle too MUCH.
-
-		That is Gate N7, and it is unrun: ``42988.98`` appears in no test in this suite. The
-		component breakdown needed to answer it already exists (``Batch Component``,
-		``customer_gold_components.get_component_qty``); wiring it into the settlement amount is
-		separate work and is not claimed here.
+		Two separate defects had to fall for this to be assertable. The finished batch carried
+		no owner, so no custody event was written and there was nothing to settle from; and once
+		ownership was fixed, the amount still came from the delivery's own
+		``stock_value_difference`` -- the whole FG value. ``_booked_customer_value`` makes it the
+		customer's share, read from ``Batch Component`` and rated at the ORIGINAL receipt's
+		booked rate rather than anything fetched today.
 		"""
 		batch = self._stocked_batch(qty=20)
 		se = self._manufacture(batch, 6)
@@ -4706,20 +4688,77 @@ class TestManufacturedPieceSettles(TestProductionEvents):
 		events = frappe.get_all(
 			"Customer Gold Ledger Entry",
 			filters={"reference_docname": dn.name, "cg_event_kind": "Delivery"},
-			fields=["customer", "cg_gross_qty_delta", "cg_carrying_value_delta"],
+			fields=["customer", "cg_carrying_value_delta"],
 		)
 		self.assertEqual(len(events), 1, msg="the delivery wrote no custody event")
 		self.assertEqual(events[0].customer, CUSTOMER)
-		self.assertAlmostEqual(flt(events[0].cg_gross_qty_delta), -6.0, places=3)
+		self.assertAlmostEqual(
+			flt(events[0].cg_carrying_value_delta),
+			-42988.98,
+			places=2,
+			msg="the event did not carry the booked customer value 6 x 7,164.83",
+		)
 
-		# The fixture's finished batch is zero-valued, so no JE is expected. Asserting this
-		# rather than leaving it unstated is what stops a future reader concluding that
-		# manufactured settlement is proven when it is not.
-		self.assertAlmostEqual(flt(events[0].cg_carrying_value_delta), 0.0, places=2)
+		entries = self._settlement_entries(dn.name)
 		self.assertEqual(
-			self._settlement_entries(dn.name),
-			[],
-			msg="a zero-valued movement must not post a settlement",
+			len(entries), 1, msg=f"expected one settlement JE, got {entries}"
+		)
+
+		je = frappe.get_doc("Journal Entry", entries[0])
+		self.assertEqual(je.docstatus, 1)
+		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
+		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		self.assertAlmostEqual(
+			debits.get(self.liability_account, 0.0),
+			42988.98,
+			places=2,
+			msg="Dr Customer Gold Liability was not the booked customer value",
+		)
+		self.assertAlmostEqual(
+			credits.get(self.cogs_account, 0.0),
+			42988.98,
+			places=2,
+			msg="Cr Customer Gold COGS Adjustment was not the booked customer value",
+		)
+
+	def test_the_settled_value_is_not_the_finished_items_stock_value(self):
+		"""The distinction the SOP spends a paragraph on, asserted directly.
+
+		S1 settles Rs.42,988.98 against an FG stock value of Rs.43,186.98 -- the Rs.198.00
+		difference being company alloy and production cost. A settlement that tracked the stock
+		ledger would over-discharge by exactly that, and on this fixture the two numbers differ
+		by the whole amount, because the fixture's finished batch is zero-valued.
+		"""
+		batch = self._stocked_batch(qty=20)
+		se = self._manufacture(batch, 6)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+
+		dn = self._delivery(fg_batch, qty=6)
+		dn.save()
+		dn.submit()
+
+		event_value = flt(
+			frappe.db.get_value(
+				"Customer Gold Ledger Entry",
+				{"reference_docname": dn.name, "cg_event_kind": "Delivery"},
+				"cg_carrying_value_delta",
+			)
+		)
+		sle_value = flt(
+			frappe.db.get_value(
+				"Stock Ledger Entry",
+				{"voucher_no": dn.name, "is_cancelled": 0},
+				"stock_value_difference",
+			)
+		)
+
+		self.assertAlmostEqual(event_value, -42988.98, places=2)
+		self.assertNotAlmostEqual(
+			event_value,
+			sle_value,
+			places=2,
+			msg="the settlement is tracking the stock ledger rather than the booked customer "
+			"value -- on a piece with company alloy in it that over-discharges the liability",
 		)
 
 	def test_the_manufactured_delivery_does_not_settle_twice(self):

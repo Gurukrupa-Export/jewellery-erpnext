@@ -304,6 +304,97 @@ def _row_serials(row):
 	return [None]
 
 
+def _booked_customer_value(doc, batch_no, customer, moved_qty):
+	"""The customer's BOOKED value inside ``batch_no``, pro-rata to ``moved_qty``, or ``None``.
+
+	WHY THE STOCK LEDGER'S NUMBER IS THE WRONG ONE FOR A MANUFACTURED PIECE
+	-----------------------------------------------------------------------
+	``_row_carrying_value`` reads the delivery's own ``stock_value_difference``, and for a RAW
+	batch that is exactly right: the thing leaving is the customer's metal and nothing else.
+
+	A manufactured piece is not that. Its stock value is customer metal PLUS company alloy PLUS
+	production cost, and the invoice recovers the last two. Settling the whole figure would
+	discharge more obligation than was ever raised. The SOP states the rule and the arithmetic::
+
+	    "On Delivery Note, clear only the booked customer value included in the delivered
+	     Serial Number."
+
+	    S1: customer source 6.000 g -> Rs.42,988.98 settled, against an FG stock value of
+	        Rs.43,186.98. The Rs.198.00 difference is company alloy and production.
+
+	42,988.98 is 6.000 x 7,164.83 -- the customer's SOURCE GRAMS at the rate they were BOOKED
+	at, not the finished item's valuation. That is what this computes.
+
+	WHERE EACH NUMBER COMES FROM
+	----------------------------
+	``Batch Component`` already records, per source, how many grams of whose metal are inside a
+	batch, and which batch they came from. So the customer's grams are
+	``component["qty"]`` and the rate is the one their ORIGINAL receipt booked --
+	``get_booked_rate`` against ``component["source_batch"]``, never a rate fetched today. The
+	SOP forbids re-rating at delivery, and reading the source batch's receipt events is what
+	makes that structural rather than a promise.
+
+	RETURNS ``None`` -- meaning "fall back to the stock ledger" -- IN THREE CASES
+	-----------------------------------------------------------------------------
+	* The batch has no recorded customer components. That is every raw received batch, so the
+	  existing, well-tested raw path is untouched by construction.
+	* A component names no source batch, so its origin cannot be established.
+	* A source batch has no booked rate (received under Zero Value, or predating the ledger).
+	  ``get_booked_rate`` returns ``None`` there, and inventing a rate for a settlement is the
+	  one thing worse than falling back.
+
+	It never returns a partial sum. A value assembled from some of the components and not the
+	others would look precise and be wrong.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
+		_recorded_components,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+		get_booked_rate,
+	)
+
+	if not batch_no or not customer:
+		return None
+
+	components = _recorded_components(batch_no)
+	if not components:
+		return None
+
+	mine = [
+		component
+		for component in components
+		if component.get("inventory_type") == CUSTOMER_GOODS
+		and component.get("customer") == customer
+	]
+	if not mine:
+		return None
+
+	total = 0.0
+	for component in mine:
+		source = component.get("source_batch")
+		if not source:
+			return None
+
+		rate = get_booked_rate(doc.company, customer, source)
+		if rate is None:
+			return None
+
+		total += flt(component.get("qty")) * flt(rate)
+
+	# Pro-rata by what actually moved. Delivering the whole batch settles the whole booked
+	# value; delivering half of it settles half. The denominator is the batch's own quantity,
+	# not the component total, because components describe what the batch is MADE OF -- a
+	# 13.263 g piece holding 10 g of customer metal must not settle 10/13.263 of the value when
+	# all 13.263 g ship.
+	batch_qty = flt(frappe.db.get_value("Batch", batch_no, "batch_qty")) or flt(
+		moved_qty
+	)
+	if not batch_qty:
+		return None
+
+	return flt(total * (flt(moved_qty) / batch_qty), 2)
+
+
 def _row_carrying_value(doc, row):
 	"""Carrying value that actually left the books for this row, or ``None``.
 
@@ -1278,7 +1369,25 @@ def record_fulfilment(doc, method=None):
 		# no value, so a 0.0 here would assert a measurement that was never taken; NULL says
 		# "not valued", which is the truth and is what makes the memorandum record complete
 		# under either answer to D01.
-		carrying_value = _row_carrying_value(doc, row) if nominal else None
+		# The booked customer value wins where it can be established -- a manufactured piece
+		# must settle only the customer's share, not the finished item's stock value. It
+		# returns None for a raw batch (no recorded components), which is every case the
+		# stock-ledger reading was written for. See _booked_customer_value.
+		carrying_value = None
+		if nominal:
+			booked = _booked_customer_value(
+				doc, batch_no, customer, abs(flt(row.get("qty")))
+			)
+			if booked is None:
+				carrying_value = _row_carrying_value(doc, row)
+			else:
+				# Same sign convention as the quantity delta a few lines below, and as the
+				# stock ledger's own number: value LEAVES on a delivery and comes BACK on a
+				# return. erpnext builds a return row with an already-negative qty, so the
+				# sign is read off the row rather than branched on is_return.
+				carrying_value = (
+					-abs(booked) if flt(row.get("qty")) >= 0 else abs(booked)
+				)
 		value_per_serial = (
 			flt(carrying_value) / len(serials) if carrying_value is not None else None
 		)
