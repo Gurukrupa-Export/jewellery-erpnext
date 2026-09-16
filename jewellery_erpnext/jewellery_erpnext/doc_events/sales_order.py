@@ -8,6 +8,9 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	set_bom_item_details,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.hallmarking import (
+	hallmarking_pieces,
+)
 
 # Companies allowed to use Sales Type "Hybrid" (3% on company-owned material +
 # 5% on customer-supplied material within the same BOM). Extend this tuple to
@@ -3374,10 +3377,11 @@ def validate_item_dharm(self):
 							aggregated_hallmarking_items[key][
 								"amount"
 							] += bom_doc.hallmarking_amount
-							# frappe.msgprint(f"hii{bom_doc.hallmarking_amount}")
-							aggregated_hallmarking_items[key]["qty"] += 1
-							if bom_doc.item_category == "Earrings":
-								aggregated_hallmarking_items[key]["qty"] += 1
+							# qty is a PIECE count: an Earrings BOM is the pair, so it
+							# counts as two against one whole-BOM amount.
+							aggregated_hallmarking_items[key][
+								"qty"
+							] += hallmarking_pieces(bom_doc)
 							tax_rate_decimal = (
 								aggregated_hallmarking_items[key]["tax_rate"] / 100
 							)

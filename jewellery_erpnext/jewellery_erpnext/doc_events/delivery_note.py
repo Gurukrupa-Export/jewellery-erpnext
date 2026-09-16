@@ -1,6 +1,9 @@
 import frappe
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.hallmarking import (
+	hallmarking_pieces,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice import set_gst_details
 
 
@@ -262,13 +265,16 @@ def update_dn_einvoice_items(self):
 
 		if bom_doc.hallmarking_amount:
 			einvoice_item, hsn_code, uom = get_einvoice_item({"is_for_hallmarking": 1})
+			# qty is a PIECE count, so an Earrings BOM (the pair) counts as two -- the
+			# amount is the whole-BOM total and already covers both. Same convention as
+			# sales_order.py / sales_invoice.py.
 			add(
 				aggregated_hallmarking_items,
 				einvoice_item,
 				hsn_code,
 				uom,
 				flt(bom_doc.hallmarking_amount),
-				1,
+				hallmarking_pieces(bom_doc),
 			)
 
 		if bom_doc.certification_amount:

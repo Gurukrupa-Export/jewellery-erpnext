@@ -289,15 +289,17 @@
    "label": "Jwelex Tag No"
   },
   {
+   "depends_on": "eval:parent.service_type == \"Fire Assy Service\" && parent.type == \"Receive\" && doc.assay_row_type == \"Touch\"",
    "fieldname": "report",
    "fieldtype": "Attach",
-   "label": "Report"
+   "label": "Report",
+   "read_only_depends_on": "eval:parent.type == \"Issue\""
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-09-15 17:00:02.673786",
+ "modified": "2026-09-16 10:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Exploded Product Details",

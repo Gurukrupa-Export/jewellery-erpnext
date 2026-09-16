@@ -10,6 +10,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.doc_events 
 	utils as si_utils,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events import sales_invoice as si_events
+from jewellery_erpnext.jewellery_erpnext.doc_events.hallmarking import (
+	hallmarking_pieces,
+)
 
 SI = "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice"
 UTILS = (
@@ -1064,3 +1067,45 @@ class TestSetGstDetails(_SIBase):
 		self.assertEqual(si.items[0].gst_treatment, "Taxable")
 		self.assertEqual(si.items[0].cgst_rate, 1.5)
 		self.assertEqual(si.items[0].cgst_amount, 15.0)
+
+
+class TestHallmarkingPieces(IntegrationTestCase):
+	"""One definition of how many PIECES a BOM is hallmarked as.
+
+	`BOM.hallmarking_amount` is a whole-BOM line total, and an Earrings BOM is the pair, so
+	the amount covers two pieces. Anywhere that amount is reported against a qty -- the
+	e-invoice hallmarking line in sales_order.py, sales_invoice.py and delivery_note.py --
+	the qty is a piece count and must say 2, or the rate shown (`amount / qty`) comes out as
+	the pair total instead of the per-piece charge.
+
+	This lived as a bare `if bom_doc.item_category == "Earrings"` in sales_order.py only;
+	the other two aggregators counted 1 and disagreed with it.
+	"""
+
+	def test_an_earring_bom_is_two_pieces(self):
+		self.assertEqual(hallmarking_pieces(frappe._dict(item_category="Earrings")), 2)
+
+	def test_any_other_category_is_one_piece(self):
+		for category in ("Ring", "Bangle", "Pendant", "Necklace"):
+			with self.subTest(category=category):
+				self.assertEqual(
+					hallmarking_pieces(frappe._dict(item_category=category)), 1
+				)
+
+	def test_a_missing_or_blank_category_is_one_piece(self):
+		self.assertEqual(hallmarking_pieces(frappe._dict()), 1)
+		self.assertEqual(hallmarking_pieces(frappe._dict(item_category=None)), 1)
+		self.assertEqual(hallmarking_pieces(frappe._dict(item_category="")), 1)
+
+	def test_the_match_is_exact_not_a_substring(self):
+		"""`item_subcategory` values like "Earrings - Studs" live elsewhere; this reads
+		item_category, which is the exact Attribute Value."""
+		self.assertEqual(
+			hallmarking_pieces(frappe._dict(item_category="Earrings - Studs")), 1
+		)
+		self.assertEqual(hallmarking_pieces(frappe._dict(item_category="earrings")), 1)
+
+	def test_it_reads_a_document_the_same_way(self):
+		"""The call sites pass a real BOM doc, not a _dict."""
+		bom = SimpleNamespace(item_category="Earrings")
+		self.assertEqual(hallmarking_pieces(bom), 2)

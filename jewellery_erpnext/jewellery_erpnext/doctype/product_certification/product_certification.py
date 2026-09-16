@@ -12,8 +12,15 @@ from frappe.utils import cint, flt
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.hallmarking import (
+	HALLMARKING_PIECE_CATEGORY,
+	HALLMARKING_PIECES_PER_UNIT,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 	get_item_loss_item,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.lanes import (
+	apportion,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.receive_status import (
 	FULLY_RECEIVED,
@@ -65,8 +72,15 @@ def _slip_key(row):
 	)
 
 
-_EARRING_CATEGORY = "Earrings"
-_EARRING_UNITS = 2
+# Deliberately the SAME constants the e-invoice hallmarking line bills by -- imported,
+# not restated, so the share an earring row takes of total_amount can never drift from
+# the piece count the invoice charges for it. Jewellery Settings -> Certification
+# Settings has a `category -> "Count per Unit"` table that would configure exactly this,
+# but no code anywhere in the app reads it; driving the certification side from it while
+# the invoicing side stays hardcoded would desynchronise amount from qty. Wire up (or
+# delete) that table and both sides move together -- see the note in `get_exploded_table`.
+_EARRING_CATEGORY = HALLMARKING_PIECE_CATEGORY
+_EARRING_UNITS = HALLMARKING_PIECES_PER_UNIT
 
 # Only these two bill per piece. Diamond Certificate prices off diamond_weight, which
 # already carries both stones of a pair, and XRF is out of scope -- both keep the flat split.
@@ -77,9 +91,9 @@ def _amount_units(service_type, row):
 	"""How many billable pieces one exploded row stands for.
 
 	An earring pair is one row but two pieces, so it takes two shares of the entered total --
-	the same convention ``doc_events/sales_order.py`` uses to bill hallmarking per piece, where
-	an ``item_category == "Earrings"`` BOM counts twice. Every other row, and every row of a
-	service that does not bill per piece, is worth one.
+	the same convention ``doc_events/hallmarking.hallmarking_pieces`` applies when the e-invoice
+	hallmarking line bills per piece, where an Earrings BOM counts twice. Every other row, and
+	every row of a service that does not bill per piece, is worth one.
 
 	Read off the exploded row's own ``category``, which fetches from ``item_code.item_category``
 	(and, on the Hall Marking branch, is copied down from the Product Details row by
@@ -959,14 +973,23 @@ class ProductCertification(Document):
 			_amount_units(self.service_type, row)
 			for row in self.exploded_product_details
 		]
-		amt = flt(self.total_amount) / sum(units)
+		# Apportioned, not `total / sum(units)` per row: the shares are rounded at the
+		# stored precision of `amount` and the rounding residual is folded back into the
+		# largest share, so the rows sum to EXACTLY total_amount. `update_bom_details`
+		# sums these straight onto BOM.hallmarking_amount, so a split that did not
+		# reconcile would put a total on the BOM that the operator never entered.
+		shares = apportion(
+			flt(self.total_amount),
+			units,
+			precision=self.exploded_product_details[0].precision("amount"),
+		)
 
 		# Fire Assy / XRF weights are owned by calculate_fire_assy_loss_weight — the
 		# remainder back-fill below is un-purity-converted and would overwrite the
 		# computed loss row. Only the amount split applies there.
 		if self.service_type in ["Fire Assy Service", "XRF Services"]:
-			for row, unit in zip(self.exploded_product_details, units):
-				row.amount = amt * unit
+			for row, share in zip(self.exploded_product_details, shares):
+				row.amount = share
 			return
 
 		qty_data = {}
@@ -977,7 +1000,7 @@ class ProductCertification(Document):
 			)
 			qty_data[key] = flt(qty_data.get(key)) + flt(row.total_weight)
 
-		for row, unit in zip(self.exploded_product_details, units):
+		for row, share in zip(self.exploded_product_details, shares):
 			# Keyed on THIS row's own order — it used to reuse the `common_order` left
 			# over from the loop above (the last Product Details row's order), which only
 			# happened to be right when every row shared one order.
@@ -991,7 +1014,7 @@ class ProductCertification(Document):
 					qty_data[key] = 0
 				else:
 					qty_data[key] -= row.gross_weight
-			row.amount = amt * unit
+			row.amount = share
 
 	def on_submit(self):
 		if self.service_type in ["Fire Assy Service", "XRF Services"]:
@@ -1281,7 +1304,9 @@ class ProductCertification(Document):
 			# Exploded rows are 1:1 with Product Details rows. Jewellery Settings ->
 			# Certification Settings (category -> "Count per Unit") is deliberately not
 			# consulted: the per-category fan-out it configured is what this table no
-			# longer does.
+			# longer does. The per-piece count that survived it lives as a hardcoded
+			# `_EARRING_UNITS` on the AMOUNT split only -- it changes each row's share of
+			# total_amount, never the number of rows. See `_amount_units`.
 			sources = self._exploded_source_data()
 			exploded_index = self._exploded_row_index()
 			for row in self.product_details:
