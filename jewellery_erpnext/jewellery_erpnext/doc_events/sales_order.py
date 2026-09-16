@@ -959,15 +959,20 @@ def validate_quotation_item(self):
 						})
 
 def validate_sales_type(self):
+	# custom_design_type already auto-maps Quotation -> Sales Order (same fieldname on both sides);
+	# re-asserting it here covers amended and hand-built orders the mapper never touches. It is
+	# deliberately not made mandatory below -- only sales_type is.
 	for r in self.items:
 		if r.prevdoc_docname:
 			quotation_doc = frappe.db.get_value(
-				'Quotation', r.prevdoc_docname, ['custom_sales_type', 'custom_flow_type'], as_dict=True
+				'Quotation', r.prevdoc_docname, ['custom_sales_type', 'custom_flow_type', 'custom_design_type'], as_dict=True
 			) or {}
 			if quotation_doc.get('custom_sales_type'):
 				self.sales_type = quotation_doc.custom_sales_type
 			if quotation_doc.get('custom_flow_type'):
 				self.custom_flow_type = quotation_doc.custom_flow_type
+			if quotation_doc.get('custom_design_type'):
+				self.custom_design_type = quotation_doc.custom_design_type
 	if not self.sales_type :
 		frappe.throw("Sales Type is mandatory.")
 	# if not self.gold_rate_with_gst and self.company != 'Sadguru Diamond':

@@ -28,6 +28,7 @@
   "supplier",
   "estimated_date",
   "purchase_type",
+  "custom_design_type",
   "get_items_for_production_order",
   "manufacturing_plan_table",
   "section_break_cjenr",
@@ -184,6 +185,13 @@
    "fieldtype": "Link",
    "label": "Purchase Type",
    "options": "Purchase Type"
+  },
+  {
+   "fieldname": "custom_design_type",
+   "fieldtype": "Link",
+   "label": "Design Type",
+   "options": "Attribute Value",
+   "read_only": 1
   },
   {
    "fieldname": "manufacturing_work_order",
