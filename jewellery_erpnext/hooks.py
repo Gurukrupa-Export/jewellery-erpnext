@@ -41,9 +41,11 @@ after_migrate = (
 after_install = "jewellery_erpnext.install.after_install"
 
 # Runs AFTER sync_fixtures/sync_customizations (frappe/installer.py:371), which after_install
-# (:360) does not. Reconciles Custom Fields that a sibling app's fixture import silently dropped:
-# frappe wraps a whole fixture FILE in one try/except, so one bad record discards every record
-# after it, with a bare print and exit code 0. See install.reconcile_cross_app_fixtures.
+# (:360) does not. Reconciles Custom Fields that a sibling app's fixture import dropped: frappe
+# wraps a whole fixture FILE in one try/except, so one bad record discards every record after it.
+# That catch covers ImportError and DoesNotExistError only (frappe/utils/fixtures.py:45) -- those
+# fail with a bare print and exit code 0; anything else, a ValidationError included, propagates
+# and kills the run. See install.reconcile_cross_app_fixtures.
 after_sync = "jewellery_erpnext.install.after_sync"
 
 doctype_js = {

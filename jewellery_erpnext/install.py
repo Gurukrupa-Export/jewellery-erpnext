@@ -66,8 +66,18 @@ The rule now: **provisioning creates; it never modifies.** Incompatible drift is
 ``report_field_drift`` and is a human decision, not a silent rewrite. Approved field migrations
 must be narrow, explicit and separately tested.
 
-Deliberately NOT wired to ``after_migrate``: that hook is disabled for reasons recorded at
-``hooks.py:12`` and re-enabling it would load far more than this.
+Wired to ``after_migrate``, and the ordering is load-bearing rather than incidental.
+``frappe/installer.py`` runs ``after_install`` at ``:360`` but ``sync_fixtures`` only at
+``:367``, so provisioning from the install hook created this app's Custom Fields BEFORE any
+fixture record existed -- and a fixture claiming the same ``(dt, fieldname)`` under a different
+document name was then rejected, killing ``bench migrate`` on every fresh install.
+``frappe/migrate.py`` runs ``sync_fixtures()`` at ``:171`` and ``after_migrate`` at ``:200-202``,
+which is the order this needs.
+
+That is NOT the hook target commented out at ``hooks.py:12``. That one points at
+``jewellery_erpnext/migrate.py``, which calls ``create_custom_fields`` with the default
+``update=True`` -- the overwrite-everything behaviour this module exists to replace. It stays
+disabled; this is the create-only alternative.
 """
 
 import json
@@ -96,109 +106,185 @@ _DOCTYPE_LINK_TYPES = ("Link", "Table", "Table MultiSelect")
 
 
 def after_install():
-	"""Entry point for ``hooks.py``'s ``after_install``."""
-	provision_schema()
+	"""Entry point for ``hooks.py``'s ``after_install``.
+
+	Custom-field provisioning deliberately does NOT happen here any more. ``frappe/installer.py``
+	runs this hook at ``:360`` but ``sync_fixtures(name)`` only at ``:367``, so provisioning from
+	here created this app's Custom Fields BEFORE any fixture record existed -- and a fixture that
+	claims the same ``(dt, fieldname)`` under a different document name then lost the race and
+	took ``bench migrate`` down. See :func:`after_migrate`.
+
+	What remains is the one job only the install path can do. ``installer.py:358`` calls
+	``set_all_patches_as_completed(name)``, which writes a ``Patch Log`` row for every entry in
+	``patches.txt`` WITHOUT importing the module, so the schema those patches create never exists
+	and the first migrate skips them because the log says they already ran.
+
+	``_run_schema_patches`` stays here rather than moving to ``after_migrate`` with the rest:
+	those patches call ``create_custom_fields`` with the default ``update=True``, so running them
+	on every migrate would re-save any field whose site definition has drifted -- exactly the
+	silent overwrite this module exists to forbid. On a fresh install there is nothing to
+	overwrite. Keep it that way: a patch listed there must own its fieldnames outright.
+	"""
+	_run_schema_patches()
 
 
-def _fieldnames_owned_by_another_apps_fixtures():
-	"""``{(dt, fieldname)}`` that some OTHER app on this bench ships as a ``fixtures`` record.
+def after_migrate():
+	"""Entry point for ``hooks.py``'s ``after_migrate``. Provisions this app's custom fields.
 
-	THE BUG THIS EXISTS TO PREVENT, MEASURED IN CI
-	-----------------------------------------------
-	Two apps can declare the same field on the same DocType through different mechanisms, and
-	they then collide at the Custom Field DOCUMENT level even though the schema they want is
-	the same::
-
-	    jewellery_erpnext/custom_fields/warehouse.json   -> Custom Field "Warehouse-department"
-	    gke_customization/fixtures/custom_field.json     -> Custom Field "Warehouse-custom_department"
-
-	Both carry ``fieldname = "department"`` on ``Warehouse``. ``custom_field.py``'s ``validate``
-	rejects the second on ``(dt, fieldname)`` regardless of document name::
+	WHY PROVISIONING LIVES HERE AND NOT ON ``after_install``
+	--------------------------------------------------------
+	A Custom Field this app provisions can only ever be named ``f"{dt}-{fieldname}"`` --
+	``CustomField.autoname`` (``custom_field.py:125-127``) is unconditional and
+	``Document.insert`` always reaches it. So when another fixture ships the SAME
+	``(dt, fieldname)`` under a DIFFERENT document name, the two are separate documents fighting
+	over one column, and the loser is rejected::
 
 	    frappe.exceptions.ValidationError:
 	        A field with the name department already exists in Warehouse
 
-	Before ``provision_schema`` existed, this app's ``custom_fields/*.json`` were never applied
-	(``after_migrate`` is commented out at ``hooks.py:12``), so the sibling's fixture always won
-	and nothing ever collided. Provisioning them made this app create the field FIRST, and then
-	``sync_fixtures`` -- which re-imports every app's fixtures on EVERY ``bench migrate`` --
-	died importing the sibling's record. A fresh install could no longer migrate.
+	``CustomField.validate`` (``custom_field.py:175-183``) tests the parent DocType's meta, so
+	the differing name does not save it. And ``import_fixtures`` catches only ``ImportError`` and
+	``DoesNotExistError`` (``frappe/utils/fixtures.py:45``) -- a ``ValidationError`` propagates
+	and kills the whole migrate. That is why this failure is fatal rather than a printed warning.
 
-	WHY DEFER TO THE FIXTURE RATHER THAN RACE IT
-	---------------------------------------------
-	Ordering cannot be fixed: this app installs before ``gke_customization`` (``sites/apps.txt``),
-	so its provisioning always runs before that app's fixtures exist, whether it is hooked on
-	``after_install`` or ``after_sync``. And a fixture is re-imported on every migrate, so the
-	sibling's record is the one that keeps being reasserted. The field still ends up on the
-	DocType -- by the sibling's hand -- which is the outcome provisioning wanted anyway.
+	``after_migrate`` inverts the order for free. ``SiteMigration.post_schema_updates`` calls
+	``sync_fixtures()`` at ``migrate.py:171`` and the ``after_migrate`` hooks at ``:200-202``, in
+	that order. Every installed app's fixture records are therefore already in place when this
+	runs, and ``create_custom_fields(..., update=False)`` finds the pair present and does nothing
+	-- ``get_existing_custom_fields`` keys on ``(dt, fieldname)`` and never on document name. The
+	fixture's record wins by construction, no ownership has to be predicted, and every one of the
+	cross-app name mismatches on this bench is covered at once.
 
-	Scans the bench's ``apps/`` DIRECTORY rather than any list of installed apps, because at
-	``after_install`` time the sibling is typically not installed yet while its fixture is
-	already on disk and certain to be imported later. See the comment on the scan itself.
+	Note this is the same hook ``hooks.py:12`` has commented out. That line points at
+	``jewellery_erpnext/migrate.py``, whose ``after_migrate`` calls ``create_custom_fields`` with
+	the default ``update=True`` -- it would rewrite every property this app's JSON names, on every
+	migrate, on every site. It stays dead. This is the create-only replacement.
 	"""
-	owned = set()
+	provision_schema()
 
-	# THE APPS DIRECTORY ON DISK, NOT ``apps.txt`` AND NOT THE INSTALLED LIST.
-	#
-	# This distinction is the whole fix, and CI proved it. Both ``frappe.get_all_apps()`` and
-	# ``frappe.get_installed_apps()`` answer "what is installed SO FAR", and apps install one
-	# at a time -- the CI log shows jewellery_erpnext installing BEFORE gke_customization. So
-	# at this app's ``after_install`` the sibling is in neither list, its fixture is never
-	# scanned, and the very field that collides gets provisioned anyway.
-	#
-	# Measured: reading apps.txt deferred 1280 fields on a fully-installed bench but only 185
-	# in CI, and the migrate died on exactly the field that fell through that gap. The
-	# directory is on disk from the start, so it answers the same on the first install and
-	# the thousandth.
+
+def _pairs_a_fixture_claims_under_another_name():
+	"""``{(dt, fieldname)}`` that some fixture ships under a name this app cannot produce.
+
+	THE ONLY COLLISION THAT IS REAL
+	--------------------------------
+	Because ``autoname`` is unconditional (see :func:`after_migrate`), a fixture record whose
+	``name`` EQUALS ``f"{dt}-{fieldname}"`` is the very same document this app would create:
+	whoever runs first inserts it, the other updates it, and nothing can collide. A collision
+	needs a record whose name DIFFERS. Everything else is safe to provision.
+
+	That distinction is worth roughly seventy to one. Measured on this bench: 1,478
+	``(dt, fieldname)`` pairs overlap another fixture, and only ~18-28 of them are name
+	mismatches. The guard this replaces deferred all of them -- surrendering ~1,280 fields this
+	app owns outright to avoid a couple of dozen real conflicts, and still missing the two that
+	actually broke CI.
+
+	THIS APP'S OWN FIXTURES ARE SCANNED TOO, AND THAT IS THE POINT
+	---------------------------------------------------------------
+	The previous guard skipped ``jewellery_erpnext`` by name, which made it structurally
+	incapable of finding the record that was failing. ``install.sh:79-81`` copies the
+	``git_action_v16`` branch's fixtures OVER this app's own ``fixtures/`` directory before the CI
+	site is built, so in CI this app's fixture file is not the ten-record file in the repo -- it
+	is a 2,412-record export that contains ``Warehouse-custom_department`` and
+	``Warehouse-custom_subcontractor``. Skipping ourselves hid both.
+
+	(``install.sh:88-90`` also moves ``gke_customization``'s fixtures to ``fixtures_disabled``, so
+	that app's records are never imported in CI at all. Two rounds of this guard were spent
+	looking for a collision from an app whose fixtures CI had renamed out of the way.)
+
+	WHY THE DIRECTORY, AND WHY EVERY JSON FILE
+	-------------------------------------------
+	The apps DIRECTORY rather than ``frappe.get_installed_apps()``: an app can sit on disk and be
+	installed later, and the migrate that follows will import its fixture -- colliding with
+	whatever this app created meanwhile. ``after_migrate`` ordering cannot help there, because
+	this app's provisioning has already run and committed. That case is the whole reason this
+	guard still exists.
+
+	Records are selected by ``doctype == "Custom Field"`` across every ``*.json`` rather than by
+	the filename ``custom_field.json``, because ``fixture_auto_order`` and the ``prefix`` option
+	both rename exported files (``frappe/utils/fixtures.py:89-101``).
+
+	ACCEPTED LIMIT, STATED RATHER THAN DISCOVERED LATER
+	----------------------------------------------------
+	If an app is on disk and never installed, its claims are honoured anyway and those fields do
+	not exist on the site. ``verify_site_schema`` then reports them, which is the correct signal
+	for a half-configured bench. Narrowing this to installed apps would reintroduce the original
+	failure.
+	"""
+	claimed = set()
+	scanned = []
+	apps_dir = None
+
 	try:
 		apps_dir = os.path.dirname(os.path.dirname(frappe.get_app_path("frappe")))
 		candidates = sorted(os.listdir(apps_dir))
-	except Exception as exc:  # noqa: BLE001 - unreadable bench layout
-		# NOT a silent continue. A scan that quietly finds nothing looks identical to a bench
-		# with no sibling apps, and the consequence -- a collision that kills `bench migrate`
-		# on every fresh install -- is far too expensive to diagnose from silence. This cost
-		# three CI rounds to find precisely because the reads below swallowed their errors.
-		print(f"jewellery_erpnext: cannot scan apps dir for sibling fixtures: {exc!r}")
-		return owned
+	except OSError as exc:
+		# NOT a silent continue. A scan that quietly finds nothing is indistinguishable from a
+		# bench with no colliding fixtures, and the consequence -- a migrate that dies on every
+		# fresh install -- is far too expensive to diagnose from silence. Three CI rounds were
+		# spent on exactly that, on a scan that was reading a directory CI had renamed.
+		print(
+			f"jewellery_erpnext: cannot scan apps dir for fixture-claimed fields: {exc!r}"
+		)
+		return claimed
 
-	seen = []
 	for app in candidates:
-		if app == "jewellery_erpnext":
+		fixtures_dir = os.path.join(apps_dir, app, app, "fixtures")
+		if not os.path.isdir(fixtures_dir):
 			continue
-		path = os.path.join(apps_dir, app, app, "fixtures", "custom_field.json")
-		if not os.path.isfile(path):
-			continue
-		try:
-			with open(path, encoding="utf-8") as handle:
-				records = json.load(handle)
-		except Exception as exc:  # noqa: BLE001 - a malformed sibling fixture is not ours to fix
-			print(f"jewellery_erpnext: could not read {app} fixtures: {exc!r}")
-			continue
-		if not isinstance(records, list):
-			print(f"jewellery_erpnext: {app} custom_field.json is not a list; ignored")
-			continue
-		before = len(owned)
-		for record in records:
-			if (
-				isinstance(record, dict)
-				and record.get("dt")
-				and record.get("fieldname")
-			):
-				owned.add((record["dt"], record["fieldname"]))
-		seen.append(f"{app}={len(owned) - before}")
+
+		for filename in sorted(os.listdir(fixtures_dir)):
+			if not filename.endswith(".json"):
+				continue
+
+			try:
+				with open(
+					os.path.join(fixtures_dir, filename), encoding="utf-8"
+				) as handle:
+					records = json.load(handle)
+			except (OSError, ValueError) as exc:
+				# A malformed sibling fixture is not ours to fix, but it IS ours to report.
+				print(
+					f"jewellery_erpnext: could not read {app}/fixtures/{filename}: {exc!r}"
+				)
+				continue
+
+			if not isinstance(records, list):
+				continue
+
+			found = 0
+			for record in records:
+				if (
+					not isinstance(record, dict)
+					or record.get("doctype") != "Custom Field"
+				):
+					continue
+
+				dt = record.get("dt")
+				fieldname = record.get("fieldname")
+				name = record.get("name")
+				if not (dt and fieldname and name):
+					continue
+
+				if name != f"{dt}-{fieldname}":
+					claimed.add((dt, fieldname))
+					found += 1
+
+			if found:
+				scanned.append(f"{app}/{filename}={found}")
 
 	print(
-		f"jewellery_erpnext: sibling-fixture scan of {apps_dir}: "
-		f"{len(candidates)} dir(s), read [{', '.join(seen) or 'none'}], "
-		f"{len(owned)} (dt, fieldname) pair(s) owned elsewhere"
+		f"jewellery_erpnext: fixture-name scan of {apps_dir} -- {len(claimed)} (dt, fieldname) "
+		f"pair(s) claimed under a document name this app cannot produce "
+		f"[{', '.join(scanned) or 'none'}]"
 	)
-	return owned
+	return claimed
 
 
-def _drop_fields_owned_by_another_apps_fixtures(spec, owned):
-	"""Drop fields a sibling app's fixtures will create, so the two do not collide.
+def _drop_fields_claimed_by_a_fixture(spec, claimed):
+	"""Drop fields a fixture record already claims under an incompatible document name.
 
-	See :func:`_fieldnames_owned_by_another_apps_fixtures` for the failure this avoids.
+	See :func:`_pairs_a_fixture_claims_under_another_name` for the failure this avoids.
 	"""
 	usable = {}
 	dropped = []
@@ -206,7 +292,7 @@ def _drop_fields_owned_by_another_apps_fixtures(spec, owned):
 	for doctype, fields in spec.items():
 		keep = []
 		for field in fields:
-			if (doctype, field.get("fieldname")) in owned:
+			if (doctype, field.get("fieldname")) in claimed:
 				dropped.append(f"{doctype}.{field.get('fieldname')}")
 				continue
 			keep.append(field)
@@ -218,42 +304,47 @@ def _drop_fields_owned_by_another_apps_fixtures(spec, owned):
 
 
 def provision_schema(verbose=True):
-	"""Apply every ``custom_fields/*.json`` file, then the schema patches.
+	"""Apply every ``custom_fields/*.json`` file. Create-only, after fixtures.
 
 	CREATE-ONLY. ``update=False`` means an existing Custom Field is left byte-for-byte alone,
 	whatever the repo JSON says about it. Anything already present that differs is reported as
 	drift and left for a human -- see the module docstring for why the previous
 	overwrite-on-every-run behaviour was unsafe.
 
-	Returns ``(applied, skipped, drift)`` so a caller can act on the drift rather than have it
-	buried in stdout.
+	Runs from ``after_migrate``, which is what makes the create-only skip meaningful: every
+	installed app's fixtures are already in place by then, so a field another fixture owns under
+	a different document name is simply found present and left alone. See :func:`after_migrate`.
+
+	The schema patches are NOT run here. They use ``update=True`` and belong to the install path
+	only -- see :func:`after_install`.
+
+	Returns ``(applied, skipped, drift, deferred)`` so a caller can act on the drift and the
+	deferrals rather than have them buried in stdout.
 	"""
 	applied = skipped = 0
 	drift = []
 	deferred = []
-	owned_elsewhere = _fieldnames_owned_by_another_apps_fixtures()
+	claimed_elsewhere = _pairs_a_fixture_claims_under_another_name()
 
 	for filename in sorted(os.listdir(CUSTOM_FIELDS_DIR)):
 		if not filename.endswith(".json"):
 			continue
 
-		with open(os.path.join(CUSTOM_FIELDS_DIR, filename)) as handle:
+		with open(
+			os.path.join(CUSTOM_FIELDS_DIR, filename), encoding="utf-8"
+		) as handle:
 			spec = json.load(handle)
 
 		usable, dropped = _drop_fields_with_missing_targets(spec)
 		skipped += dropped
 
-		usable, yielded = _drop_fields_owned_by_another_apps_fixtures(
-			usable, owned_elsewhere
-		)
+		usable, yielded = _drop_fields_claimed_by_a_fixture(usable, claimed_elsewhere)
 		deferred.extend(yielded)
 
 		if usable:
 			drift.extend(report_field_drift(usable))
 			create_custom_fields(usable, ignore_validate=True, update=False)
 			applied += 1
-
-	_run_schema_patches()
 
 	if verbose:
 		print(
@@ -262,9 +353,10 @@ def provision_schema(verbose=True):
 		)
 		if deferred:
 			print(
-				f"jewellery_erpnext: deferred {len(deferred)} field(s) to the app whose "
-				f"fixtures already own them -- creating them here would make that app's "
-				f"fixture import fail on every migrate: " + ", ".join(sorted(deferred))
+				f"jewellery_erpnext: deferred {len(deferred)} field(s) to the fixture that "
+				f"claims them under a document name this app cannot produce -- creating them "
+				f"here would make that fixture's import fail: "
+				+ ", ".join(sorted(deferred))
 			)
 		if drift:
 			print(
