@@ -797,7 +797,9 @@ def _process_row(dept_ir_doc, row, scenario):
 	_safe_set(se, "manufacturing_work_order", mwo)
 
 	# Resolve every source batch's ownership up front, in one query.
-	_ownership = _pc_tagging_batch_ownership([ln.get("batch_no") for ln in transfer_lines])
+	_ownership = _pc_tagging_batch_ownership(
+		[ln.get("batch_no") for ln in transfer_lines]
+	)
 
 	for line in transfer_lines:
 		item_row = {
