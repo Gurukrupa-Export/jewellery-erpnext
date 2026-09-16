@@ -4333,9 +4333,11 @@ class TestProductionEvents(TestCustodyTransfer):
 		se.manufacturer = MANUFACTURER
 		se.posting_date = self.posting_date
 		se.set_posting_time = 1
-		se._customer = CUSTOMER
-		se.append(
-			"items",
+		# NO se._customer. create_manufacturing_entry does not set one, and setting it here
+		# made this fixture kinder than production: create_child_batches falls back to the
+		# header when a row carries no customer, so a header would have masked exactly the
+		# defect these tests exist to catch.
+		consumed = [
 			{
 				"item_code": self.item,
 				"qty": qty,
@@ -4346,8 +4348,20 @@ class TestProductionEvents(TestCustodyTransfer):
 				"customer": CUSTOMER,
 				"allow_zero_valuation_rate": 1,
 				"expense_account": self.difference_account,
-			},
+			}
+		]
+		for row in consumed:
+			se.append("items", row)
+
+		# Exactly what create_manufacturing_entry now does: the finished row takes its
+		# ownership from the metal consumed, rather than a hardcoded "Regular Stock".
+		# Calling the real helper keeps this fixture honest -- if production's rule changes,
+		# this changes with it instead of quietly drifting into testing a fiction.
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_finished_goods_ownership,
 		)
+
+		fg_inventory_type, fg_customer = _finished_goods_ownership(consumed)
 		se.append(
 			"items",
 			{
@@ -4358,8 +4372,8 @@ class TestProductionEvents(TestCustodyTransfer):
 				"stock_uom": "Gram",
 				"conversion_factor": 1,
 				"is_finished_item": 1,
-				# Exactly what create_manufacturing_entry hardcodes.
-				"inventory_type": "Regular Stock",
+				"inventory_type": fg_inventory_type,
+				"customer": fg_customer,
 				"allow_zero_valuation_rate": 1,
 				"expense_account": self.difference_account,
 			},
@@ -4461,61 +4475,275 @@ class TestProductionEvents(TestCustodyTransfer):
 
 		self.assertEqual(self._events(manufacture.name), [])
 
-	def test_what_actually_happens_to_the_finished_goods_batch(self):
-		"""The finding this class was built to settle, asserted rather than assumed.
+	def test_the_finished_goods_batch_carries_its_customer(self):
+		"""The defect this class was built to settle -- now the other way round.
 
-		`create_manufacturing_entry` hardcodes the FG row `"inventory_type": "Regular Stock"`
-		(`manufacturing_operation.py:1118`). `create_child_batches` mints customer child batches,
-		and its `CUSTOMER_INVENTORY_TYPES` filter applies **only in the mixed-ownership branch**
-		(`batch_rename.py:285`) — in single-lane mode it takes the customer from the row or header
-		regardless of inventory type.
+		WHAT THIS USED TO ASSERT, AND WHY THAT WAS THE WHOLE BUG
+		--------------------------------------------------------
+		Until this fix, ``create_manufacturing_entry`` hardcoded the finished row
+		``"inventory_type": "Regular Stock"`` with no customer, so a piece made entirely from one
+		customer's metal was minted as company stock. Measured on 2026-09-15::
 
-		So the outcome was genuinely uncertain from reading alone. This records what the code
-		actually does, so the next person does not have to guess either.
+		    batch id              CG-TEST-CUSTOMER-A-...-01-A
+		    custom_customer       None
+		    custom_inventory_type Regular Stock
+
+		The batch was NAMED after the customer -- ``create_child_batches`` takes the name from the
+		row -- which is exactly why it went unnoticed: the id looked right while the ownership
+		fields said company stock. ``_batch_owner`` reads the FIELDS, so delivering that finished
+		piece wrote no custody event and released no liability, and SOP Examples C and D could
+		never close for anything manufactured.
+
+		This test recorded that as fact. It now asserts the opposite, which is the point of the
+		change: the finished piece belongs to whoever owned the metal that went into it.
 		"""
 		batch = self._stocked_batch(qty=20)
 		se = self._manufacture(batch, 6)
-
 		fg_row = [r for r in se.items if r.get("is_finished_item")][0]
-		fg_batch = fg_row.batch_no
 
-		if not fg_batch:
-			self.skipTest("this fixture's FG row was minted no batch at all")
+		self.assertEqual(
+			fg_row.inventory_type,
+			"Customer Goods",
+			msg="the finished row was booked as company stock",
+		)
+		self.assertEqual(fg_row.customer, CUSTOMER)
+
+		self.assertTrue(
+			fg_row.batch_no,
+			msg="no batch was minted for the finished row, so ownership cannot be asserted "
+			"-- this used to be a skipTest, which let the whole check pass silently",
+		)
 
 		owner = frappe.db.get_value(
 			"Batch",
-			fg_batch,
+			fg_row.batch_no,
 			["custom_customer", "custom_inventory_type"],
 			as_dict=True,
 		)
+		self.assertEqual(owner.custom_customer, CUSTOMER)
+		self.assertEqual(owner.custom_inventory_type, "Customer Goods")
 
-		# MEASURED, 2026-09-15. The batch is NAMED after the customer — `create_child_batches`
-		# mints it through the single-lane branch, so the id begins with the customer code — but
-		# its ownership fields say company stock:
-		#
-		#     batch id             CG-TEST-CUSTOMER-A-...-01-A
-		#     custom_customer      None
-		#     custom_inventory_type Regular Stock
-		#
-		# The name says one thing and the data says another. That matters because `_batch_owner`
-		# reads the FIELDS, so **delivering this finished piece writes no custody event and
-		# releases no liability** — even though it is made entirely of one customer's gold.
-		#
-		# This test pins the current behaviour rather than asserting a preference. Whether a
-		# finished piece made from customer gold is still the customer's is a business decision,
-		# not one to change quietly inside a ledger commit. It is recorded as a live gap.
-		self.assertIsNone(
-			owner.custom_customer,
-			"FG batch ownership changed — the delivery-side gap may now be closed; "
-			"re-check whether a manufactured piece releases its liability",
+		# And the consequence that actually matters: the ledger can now find an owner for it.
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
 		)
-		self.assertEqual(owner.custom_inventory_type, "Regular Stock")
 
-		# The consumed side is unaffected: the ledger still knows the metal went into FG.
-		production = [
-			e for e in self._events(se.name) if e.cg_event_kind == "Production"
+		self.assertEqual(cgf._batch_owner(fg_row.batch_no), CUSTOMER)
+
+	def test_a_mixed_owner_manufacture_stays_company_stock_and_says_so(self):
+		"""Two customers' metal in one job is a question, not a calculation.
+
+		Apportioning ONE finished piece across two owners -- whose grams does a delivery
+		discharge, and in what ratio -- is a business rule nobody has specified. Guessing it
+		would put a number in a liability account that no one computed, and liability entries
+		are not cheap to unpick. So a mixed job stays company-owned, which is recoverable, and
+		logs loudly rather than failing silently.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_finished_goods_ownership,
+		)
+
+		before = frappe.db.count(
+			"Error Log",
+			{"method": "Customer Gold: mixed-owner manufacture left as company stock"},
+		)
+
+		mixed = [
+			{"inventory_type": "Customer Goods", "customer": CUSTOMER},
+			{"inventory_type": "Customer Goods", "customer": OTHER_CUSTOMER},
 		]
-		self.assertEqual(len(production), 1)
+		self.assertEqual(_finished_goods_ownership(mixed), ("Regular Stock", None))
+
+		self.assertGreater(
+			frappe.db.count(
+				"Error Log",
+				{
+					"method": "Customer Gold: mixed-owner manufacture left as company stock"
+				},
+			),
+			before,
+			msg="a mixed-owner job was silently downgraded to company stock",
+		)
+
+		# The controls, so the rule above is not passing for an unrelated reason.
+		self.assertEqual(
+			_finished_goods_ownership(
+				[{"inventory_type": "Customer Goods", "customer": CUSTOMER}] * 2
+			),
+			("Customer Goods", CUSTOMER),
+			msg="two rows of the SAME customer is one owner, not a mixed job",
+		)
+		self.assertEqual(
+			_finished_goods_ownership(
+				[{"inventory_type": "Regular Stock", "customer": None}]
+			),
+			("Regular Stock", None),
+		)
+		self.assertEqual(_finished_goods_ownership([]), ("Regular Stock", None))
+
+
+class TestManufacturedPieceSettles(TestProductionEvents):
+	"""SOP steps 6-8, end to end -- the leg the whole flow exists for.
+
+	    "Track through manufacturing -> Calculate final ownership split -> Sell and settle.
+	     On Delivery Note submission, clear only the booked customer value included in the
+	     delivered Serial Number."
+
+	THIS COULD NOT PASS BEFORE, AND NOTHING TESTED IT
+	--------------------------------------------------
+	Every settlement proof in this suite delivered the RAW batch the customer handed over --
+	``_stocked_batch`` straight into ``_delivery``. The moment metal was manufactured,
+	``create_manufacturing_entry`` booked the finished row as ``Regular Stock`` with no customer,
+	``_batch_owner`` returned ``None``, ``record_fulfilment`` skipped the row, and
+	``settle_customer_gold_liability`` received an empty list and returned.
+
+	So the liability raised at receipt was **permanent for the only business case the SOP
+	describes**: the gold becomes jewellery, ships, is invoiced, and Customer Gold Liability
+	never moves. The gap was measured and recorded rather than fixed, and this class is what
+	proves it is now closed.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		settings = frappe.get_doc(SETTINGS_DOCTYPE)
+		settings.customer_gold_valuation_policy = "Nominal"
+		settings.save(ignore_permissions=True)
+		frappe.clear_cache(doctype=SETTINGS_DOCTYPE)
+
+	def _settlement_entries(self, voucher):
+		return sorted(
+			{
+				r.cg_settlement_voucher
+				for r in frappe.get_all(
+					"Customer Gold Ledger Entry",
+					filters={
+						"reference_docname": voucher,
+						"cg_settlement_voucher": ["!=", ""],
+					},
+					fields=["cg_settlement_voucher"],
+				)
+				if r.cg_settlement_voucher
+			}
+		)
+
+	def test_the_policy_is_actually_nominal_for_this_class(self):
+		"""Without this, every settlement assertion below could pass by being skipped."""
+		from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+			get_customer_gold_valuation_policy,
+		)
+
+		self.assertEqual(get_customer_gold_valuation_policy(), "Nominal")
+
+	def test_delivering_a_manufactured_piece_writes_a_custody_event(self):
+		"""Step 8, first half. Previously zero events: the FG batch had no owner."""
+		batch = self._stocked_batch(qty=20)
+		se = self._manufacture(batch, 6)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+		self.assertTrue(fg_batch, msg="no FG batch to deliver")
+
+		dn = self._delivery(fg_batch, qty=6)
+		dn.save()
+		dn.submit()
+
+		events = [e for e in self._events(dn.name) if e.cg_event_kind == "Delivery"]
+		self.assertEqual(
+			len(events),
+			1,
+			msg="delivering a piece made of customer gold wrote no custody event -- the "
+			"finished batch is not owned by the customer",
+		)
+		self.assertEqual(events[0].customer, CUSTOMER)
+
+	def test_a_manufactured_delivery_reaches_the_settlement_path_with_a_real_amount_pending(
+		self,
+	):
+		"""Step 8's money half -- what is proven, and what is honestly still open.
+
+		WHAT IS PROVEN HERE
+		-------------------
+		The delivery of a manufactured piece now reaches ``settle_customer_gold_liability`` with a
+		real event attributed to the right customer. Before the ownership fix it never got that
+		far: ``_batch_owner`` returned ``None``, the row was skipped, and the function was handed
+		an empty list.
+
+		WHAT IS NOT PROVEN, AND WHY NOT
+		--------------------------------
+		No Journal Entry posts in this fixture, and that is a property of the fixture rather than
+		of the code. Measured on this run::
+
+		    delivery event   qty -6.000   cg_carrying_value_delta 0.0
+		    delivery SLE     qty -6.000   stock_value_difference  0.0   valuation_rate 7164.83
+
+		``_manufacture`` submits its finished row with ``allow_zero_valuation_rate = 1`` -- without
+		it a bare test site cannot value a manufacture at all -- so the finished batch enters stock
+		at zero and therefore leaves at zero. ``settle_customer_gold_liability`` returns on
+		``if not total`` and writes nothing, which is correct behaviour for a zero-value movement
+		(``TestZeroValuePostsNoSettlement`` asserts exactly that for the raw path).
+
+		THE REAL QUESTION THIS LEAVES OPEN
+		-----------------------------------
+		Settling a manufactured piece must clear only **the booked customer value inside it**, not
+		the finished item's stock value -- SOP Example C settles Rs.42,988.98 against an FG stock
+		value of Rs.43,186.98, the difference being company alloy and production cost that the
+		invoice recovers. Today the amount comes from the delivery SLE's own
+		``stock_value_difference``, which for a manufactured piece is the whole FG value. So once
+		a fixture values the FG properly, this path would settle too MUCH.
+
+		That is Gate N7, and it is unrun: ``42988.98`` appears in no test in this suite. The
+		component breakdown needed to answer it already exists (``Batch Component``,
+		``customer_gold_components.get_component_qty``); wiring it into the settlement amount is
+		separate work and is not claimed here.
+		"""
+		batch = self._stocked_batch(qty=20)
+		se = self._manufacture(batch, 6)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+
+		dn = self._delivery(fg_batch, qty=6)
+		dn.save()
+		dn.submit()
+
+		events = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"reference_docname": dn.name, "cg_event_kind": "Delivery"},
+			fields=["customer", "cg_gross_qty_delta", "cg_carrying_value_delta"],
+		)
+		self.assertEqual(len(events), 1, msg="the delivery wrote no custody event")
+		self.assertEqual(events[0].customer, CUSTOMER)
+		self.assertAlmostEqual(flt(events[0].cg_gross_qty_delta), -6.0, places=3)
+
+		# The fixture's finished batch is zero-valued, so no JE is expected. Asserting this
+		# rather than leaving it unstated is what stops a future reader concluding that
+		# manufactured settlement is proven when it is not.
+		self.assertAlmostEqual(flt(events[0].cg_carrying_value_delta), 0.0, places=2)
+		self.assertEqual(
+			self._settlement_entries(dn.name),
+			[],
+			msg="a zero-valued movement must not post a settlement",
+		)
+
+	def test_the_manufactured_delivery_does_not_settle_twice(self):
+		"""SOP section 8: "Do not create duplicate revaluation or settlement entries"."""
+		batch = self._stocked_batch(qty=20)
+		se = self._manufacture(batch, 6)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+
+		dn = self._delivery(fg_batch, qty=6)
+		dn.save()
+		dn.submit()
+		first = self._settlement_entries(dn.name)
+
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
+		)
+
+		cgf.record_fulfilment(frappe.get_doc("Delivery Note", dn.name))
+
+		self.assertEqual(
+			self._settlement_entries(dn.name),
+			first,
+			msg="replaying the hook produced a second settlement",
+		)
 
 
 class TestLossAndRecovery(TestCustodyTransfer):
