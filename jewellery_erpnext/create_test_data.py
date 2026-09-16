@@ -1176,25 +1176,38 @@ def create_test_data():
 			)
 			making_charge_price.insert(ignore_permissions=True)
 
-		if not frappe.db.exists("Purchase Type", "FG Purchase"):
-			frappe.get_doc({"doctype": "Purchase Type", "type": "FG Purchase"}).insert(
-				ignore_permissions=True
-			)
-
-		# Required by Sketch Order Form, which hardcodes it:
-		# sketch_order_form.create_purchase_order sets purchase_type="Subcontracting" on the
-		# Purchase Order it builds at submit. Purchase Order.purchase_type is a Link to
-		# Purchase Type (custom_fields/purchase_order.json), so the master has to exist or the
-		# save raises "Could not find Purchase Type: Subcontracting".
+		# EVERY Purchase Type this app's PRODUCTION code hardcodes, not just the one that
+		# happened to fail first.
 		#
-		# It was never needed before because the field itself was never created on a CI site --
-		# this app's custom_fields/*.json were inert (after_migrate disabled), so the assignment
-		# landed on a non-field attribute and no link was validated. install.provision_schema
-		# now creates the field, which is correct, and that is what made this gap reachable.
-		if not frappe.db.exists("Purchase Type", "Subcontracting"):
-			frappe.get_doc(
-				{"doctype": "Purchase Type", "type": "Subcontracting"}
-			).insert(ignore_permissions=True)
+		# Purchase Order.purchase_type is a Link to Purchase Type (declared in this app's own
+		# custom_fields/purchase_order.json), so each of these masters has to exist or the save
+		# raises "Could not find Purchase Type: <x>":
+		#
+		#   Service            product_certification/doc_events/utils.py:167
+		#   FG Purchase        employee_ir.py:754
+		#   Branch Purchase    customization/sales_invoice/doc_events/utils.py:64
+		#                      customization/serial_and_batch_bundle/serial_and_batch_bundle.py:35
+		#   Subcontracting     gurukrupa_exports/.../sketch_order_form.py:243
+		#
+		# None of this was needed before, because the FIELD was never created on a CI site: this
+		# app's custom_fields/*.json are inert (the after_migrate hook that would load them is
+		# commented out at hooks.py:12), so the assignments landed on an attribute that was not
+		# a field and no link was ever validated. install.provision_schema now creates the
+		# app's own declared field, which is correct -- and that is what made these missing
+		# masters reachable, one CI round at a time.
+		#
+		# Values that appear ONLY in test files ("Invalid Type", "Regular", "Test Type",
+		# "Unknown Type") are deliberate negative-test inputs and must stay absent.
+		for purchase_type in (
+			"FG Purchase",
+			"Service",
+			"Branch Purchase",
+			"Subcontracting",
+		):
+			if not frappe.db.exists("Purchase Type", purchase_type):
+				frappe.get_doc(
+					{"doctype": "Purchase Type", "type": purchase_type}
+				).insert(ignore_permissions=True)
 
 		if not frappe.db.exists("Warehouse Type", "Scrap"):
 			frappe.get_doc({"doctype": "Warehouse Type", "__newname": "Scrap"}).insert(
