@@ -18,6 +18,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufac
 	create_sales_order,
 	manufacturing_plan_creation,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
+	get_diamond_grade,
+	is_customer_diamond_flag,
+	pick_diamond_grade,
+	resolve_diamond_grade,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	update_parent_details,
 )
@@ -1263,3 +1269,222 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 			doc.before_save()
 
 		update_parent.assert_called_once_with(doc)
+
+
+FILTERS_QUERY = (
+	"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+	"doc_events.filters_query"
+)
+
+
+class TestPickDiamondGrade(UnitTestCase):
+	"""The rule that decides which of diamond_grade_1..4 a PMO gets.
+
+	The two branches are deliberately asymmetric. A customer-diamond order may only take a
+	grade flagged is_customer_diamond_quality, because the grade is stamped onto the tracking
+	BOM and the item variant -- a wrong one there is silent. A non-customer-diamond order may
+	take either kind; it only prefers the unflagged one.
+	"""
+
+	def _pick(self, grades, is_customer_diamond, flags=None):
+		return pick_diamond_grade(grades, is_customer_diamond, flags=flags or {})
+
+	def test_customer_diamond_takes_the_flagged_grade(self):
+		self.assertEqual(self._pick(["A", "B"], 1, {"A": 0, "B": 1}), "B")
+
+	def test_customer_diamond_never_substitutes_an_unflagged_grade(self):
+		"""Returns None on purpose: before_save turns that into the "not mentioned" throw."""
+		self.assertIsNone(self._pick(["A", "B"], 1, {"A": 0, "B": 0}))
+
+	def test_plain_order_prefers_the_unflagged_grade(self):
+		self.assertEqual(self._pick(["B", "A"], 0, {"A": 0, "B": 1}), "A")
+
+	def test_plain_order_accepts_a_flagged_grade_when_it_is_the_only_one(self):
+		"""The reported gap: this used to resolve to None and block the save."""
+		self.assertEqual(self._pick(["A"], 0, {"A": 1}), "A")
+
+	def test_plain_order_falls_back_to_the_first_grade_when_all_are_flagged(self):
+		self.assertEqual(self._pick(["B", "C"], 0, {"B": 1, "C": 1}), "B")
+
+	def test_column_order_decides_ties(self):
+		self.assertEqual(self._pick(["B", "A"], 0, {"A": 0, "B": 0}), "B")
+
+	def test_blank_columns_are_skipped_not_returned(self):
+		self.assertEqual(self._pick([None, "", "A"], 0, {"A": 0}), "A")
+
+	def test_no_grades_configured_resolves_to_nothing(self):
+		self.assertIsNone(self._pick([], 0))
+		self.assertIsNone(self._pick([None, None, None, None], 1))
+
+	def test_accepts_the_tuple_db_get_value_returns(self):
+		"""resolve_diamond_grade passes the raw get_value row straight through."""
+		self.assertEqual(self._pick(("A", "B", None, None), 1, {"A": 0, "B": 1}), "B")
+
+	def test_flags_are_looked_up_when_the_caller_does_not_supply_them(self):
+		with patch(
+			f"{FILTERS_QUERY}.frappe.get_all",
+			return_value=[
+				frappe._dict(name="A", is_customer_diamond_quality=0),
+				frappe._dict(name="B", is_customer_diamond_quality=1),
+			],
+		) as get_all:
+			self.assertEqual(pick_diamond_grade(["A", "B"], 1), "B")
+
+		get_all.assert_called_once()
+
+	def test_flag_lookup_is_skipped_when_there_is_nothing_to_pick(self):
+		with patch(f"{FILTERS_QUERY}.frappe.get_all") as get_all:
+			self.assertIsNone(pick_diamond_grade([None, ""], 1))
+
+		get_all.assert_not_called()
+
+
+class TestIsCustomerDiamondFlag(UnitTestCase):
+	"""Sales Order Item stores Yes/No text; the PMO stores a checkbox.
+
+	Manufacturing Plan used to lowercase the string while the PMO compared it to "Yes", so a
+	row saved as "yes" graded one way at plan time and the other on the PMO.
+	"""
+
+	def test_yes_in_any_casing_is_a_customer_diamond(self):
+		for value in ("Yes", "yes", "YES", " Yes "):
+			with self.subTest(value=value):
+				self.assertEqual(is_customer_diamond_flag(value), 1)
+
+	def test_everything_else_is_not(self):
+		for value in ("No", "no", "", None, "Y", "1"):
+			with self.subTest(value=value):
+				self.assertEqual(is_customer_diamond_flag(value), 0)
+
+
+class TestResolveDiamondGrade(UnitTestCase):
+	"""resolve_diamond_grade wraps the picker with the Customer Diamond Grade lookup."""
+
+	def _resolve(self, row, customer="CUST", quality="VVS", is_customer_diamond=0):
+		with (
+			patch(
+				f"{FILTERS_QUERY}.frappe.db.get_value", return_value=row
+			) as get_value,
+			patch(
+				f"{FILTERS_QUERY}.frappe.get_all",
+				return_value=[
+					frappe._dict(name="A", is_customer_diamond_quality=0),
+					frappe._dict(name="B", is_customer_diamond_quality=1),
+				],
+			),
+		):
+			grade = resolve_diamond_grade(customer, quality, is_customer_diamond)
+		return grade, get_value
+
+	def test_reads_the_row_for_the_customer_and_quality(self):
+		grade, get_value = self._resolve(("A", "B", None, None), is_customer_diamond=1)
+
+		self.assertEqual(grade, "B")
+		get_value.assert_called_once_with(
+			"Customer Diamond Grade",
+			{"parent": "CUST", "diamond_quality": "VVS"},
+			[
+				"diamond_grade_1",
+				"diamond_grade_2",
+				"diamond_grade_3",
+				"diamond_grade_4",
+			],
+		)
+
+	def test_no_row_for_the_quality_resolves_to_nothing(self):
+		grade, _ = self._resolve(None)
+
+		self.assertIsNone(grade)
+
+	def test_a_missing_customer_or_quality_never_queries(self):
+		with patch(f"{FILTERS_QUERY}.frappe.db.get_value") as get_value:
+			self.assertIsNone(resolve_diamond_grade(None, "VVS", 1))
+			self.assertIsNone(resolve_diamond_grade("CUST", None, 1))
+
+		get_value.assert_not_called()
+
+
+class TestDiamondGradeLinkQuery(UnitTestCase):
+	"""The dropdown must offer what the controller would store, from the same customer.
+
+	It used to filter on the ordering customer while the controller resolved against
+	ref_customer, and to fall back to the first grade regardless of the flag -- so the list
+	could offer a value the next save replaced.
+	"""
+
+	ROW = [
+		frappe._dict(
+			diamond_grade_1="A",
+			diamond_grade_2="B",
+			diamond_grade_3=None,
+			diamond_grade_4=None,
+		)
+	]
+
+	def _query(self, filters, rows=None):
+		with (
+			patch(
+				f"{FILTERS_QUERY}.frappe.db.get_all",
+				return_value=self.ROW if rows is None else rows,
+			) as get_all,
+			patch(
+				f"{FILTERS_QUERY}.frappe.get_all",
+				return_value=[
+					frappe._dict(name="A", is_customer_diamond_quality=0),
+					frappe._dict(name="B", is_customer_diamond_quality=1),
+				],
+			),
+		):
+			result = get_diamond_grade(
+				"Attribute Value", "", "diamond_grade", 0, 20, filters
+			)
+		return result, get_all
+
+	def test_ref_customer_outranks_the_ordering_customer(self):
+		_, get_all = self._query(
+			{"customer": "CUST", "ref_customer": "REF-CUST", "diamond_quality": "VVS"}
+		)
+
+		self.assertEqual(get_all.call_args[0][1]["parent"], "REF-CUST")
+
+	def test_falls_back_to_the_ordering_customer(self):
+		_, get_all = self._query({"customer": "CUST", "diamond_quality": "VVS"})
+
+		self.assertEqual(get_all.call_args[0][1]["parent"], "CUST")
+
+	def test_accepts_the_json_string_frappe_passes_for_filters(self):
+		result, _ = self._query('{"customer": "CUST", "diamond_quality": "VVS"}')
+
+		self.assertEqual(result, [("A",)])
+
+	def test_offers_the_grade_the_controller_would_store(self):
+		result, _ = self._query(
+			{"customer": "CUST", "diamond_quality": "VVS", "is_customer_diamond": 1}
+		)
+
+		self.assertEqual(result, [("B",)])
+
+	def test_offers_nothing_rather_than_a_grade_the_save_would_reject(self):
+		result, _ = self._query(
+			{"customer": "CUST", "diamond_quality": "VVS", "is_customer_diamond": 1},
+			rows=[frappe._dict(diamond_grade_1="A")],
+		)
+
+		self.assertEqual(result, [])
+
+	def test_manual_override_lists_every_grade(self):
+		result, _ = self._query(
+			{
+				"customer": "CUST",
+				"diamond_quality": "VVS",
+				"use_custom_diamond_grade": 1,
+				"is_customer_diamond": 1,
+			}
+		)
+
+		self.assertEqual(result, [("A",), ("B",)])
+
+	def test_a_customer_with_no_row_for_the_quality_lists_nothing(self):
+		result, _ = self._query({"customer": "CUST", "diamond_quality": "VVS"}, rows=[])
+
+		self.assertEqual(result, [])

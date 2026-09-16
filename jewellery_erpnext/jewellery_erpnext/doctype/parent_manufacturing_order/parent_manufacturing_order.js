@@ -16,13 +16,17 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		set_filters_on_parent_table_fields(frm, parent_fields);
 	},
 	refresh(frm) {
-		if (frm.doc.customer && frm.doc.diamond_quality) {
+		if ((frm.doc.customer || frm.doc.ref_customer) && frm.doc.diamond_quality) {
 			frm.set_query("diamond_grade", function () {
 				return {
 					query: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
 					searchfield: "diamond_grade",
 					filters: {
+						// ref_customer has to travel with the customer: the server prefers it, and
+						// set_auto_diamond_grade already resolves against it. Sending only customer
+						// made the picker list grades the save would immediately replace.
 						customer: frm.doc.customer,
+						ref_customer: frm.doc.ref_customer,
 						diamond_quality: frm.doc.diamond_quality,
 						use_custom_diamond_grade: frm.doc.use_custom_diamond_grade ? 1 : 0,
 						is_customer_diamond: frm.doc.is_customer_diamond ? 1 : 0,

@@ -21,6 +21,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
+	is_customer_diamond_flag,
 	resolve_diamond_grade,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
@@ -733,7 +734,9 @@ def make_manufacturing_order(
 		doc.customer_sample = row.customer_sample
 		doc.customer_voucher_no = row.customer_voucher_no
 		doc.is_customer_gold = 1 if row.customer_gold == "Yes" else 0
-		doc.is_customer_diamond = 1 if row.customer_diamond == "Yes" else 0
+		# Shared with Manufacturing Plan's own reading of the same string, so the grade the plan
+		# computes for a row and the one this PMO resolves on save agree on the flag.
+		doc.is_customer_diamond = is_customer_diamond_flag(row.customer_diamond)
 		doc.is_customer_gemstone = 1 if row.customer_stone == "Yes" else 0
 		doc.is_customer_material = 1 if row.customer_good == "Yes" else 0
 		doc.customer_weight = row.customer_weight
