@@ -51,6 +51,7 @@ jobs:
           echo "Running Core Tests..."
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Sketch Order Form"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Department IR"
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.department_ir.tests.test_pc_tagging_stock_sync
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Employee IR"
 
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation

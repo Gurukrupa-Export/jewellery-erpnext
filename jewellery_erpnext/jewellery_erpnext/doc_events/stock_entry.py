@@ -41,6 +41,47 @@ from jewellery_erpnext.utils import (
 
 MANUFACTURER = frappe.defaults.get_user_default("manufacturer")
 
+#: Stock Entry Types historically skipped by the ``custom_pure_qty`` computation below.
+#: The exclusion is why customer metal carries ``pure_qty = 0`` -- the rows were never
+#: reached, so the zeros are "never computed", not "computed as zero". Nothing is wrong with
+#: the inputs: the 24KT item carries its Metal Purity attribute and Manufacturing Setting
+#: resolves ``pure_gold_item``.
+_PURE_QTY_LEGACY_EXCLUDED_TYPES = (
+	"Customer Goods Transfer",
+	"Customer Goods Issue",
+	"Customer Goods Received",
+)
+
+
+def _pure_qty_excluded_types():
+	"""Which Stock Entry Types skip the ``custom_pure_qty`` computation.
+
+	When the Customer Gold flow is ON, the configured receipt type is removed from the
+	exclusion list so customer receipts finally get a real pure quantity -- the balance
+	calculation, PMO allocation and the per-serial split all read it, and a wrong zero would
+	propagate into every one of them.
+
+	Scoped deliberately: only the CONFIGURED receipt type is un-excluded, and only while the
+	flag is on. Transfer and Issue keep their historical behaviour, because this project has
+	not analysed them. Every site with the flag off -- which is every site today -- keeps
+	exactly its previous behaviour.
+	"""
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_customer_gold_settings,
+		is_customer_gold_enabled,
+	)
+
+	if not is_customer_gold_enabled():
+		return _PURE_QTY_LEGACY_EXCLUDED_TYPES
+
+	configured_type = get_customer_gold_settings().get(
+		"customer_goods_stock_entry_type"
+	)
+	if not configured_type:
+		return _PURE_QTY_LEGACY_EXCLUDED_TYPES
+
+	return tuple(t for t in _PURE_QTY_LEGACY_EXCLUDED_TYPES if t != configured_type)
+
 
 def set_target_inventory_dimensions(self, method=None):
 	"""Mirror every registered inventory dimension from a row's SOURCE field onto its TARGET field.
@@ -148,10 +189,33 @@ def before_validate(self, method):
 	# item table so this is one query instead of O(rows). Its only reader sits behind
 	# ``not self.auto_created``, so skip the query entirely on auto-created SEs.
 	has_batch_map = {}
-	if not self.auto_created:
-		has_batch_map = bulk_map(
-			"Item", [row.item_code for row in self.items], ["has_batch_no"]
-		)
+	# One query, two purposes, and deliberately UNCONDITIONAL now.
+	#
+	# ``variant_of`` is needed on every save, including auto-created ones, because
+	# ``row.custom_variant_of`` cannot be trusted: it is a ``fetch_from`` field with
+	# ``allow_on_submit = 0``, and the framework's re-fetch
+	# (``base_document.py:1063``) is guarded by
+	# ``is_new() or not docstatus.is_submitted() or allow_on_submit``. ``_save`` runs
+	# ``set_docstatus()`` BEFORE ``_validate_links()``, so on the SUBMIT transition the
+	# child row is already docstatus 1 and the re-fetch is skipped -- while
+	# ``frappe/desk/form/save.py`` has accepted the caller's full payload. ``read_only``
+	# is a UI property only.
+	#
+	# Reproduced on a real document: forging ``custom_variant_of`` to another real
+	# template (``D``, ``F``, ``G`` and ``ML`` all exist in production) skipped the
+	# pure-quantity block entirely and a ``custom_pure_qty`` of 1 persisted on a 100 g
+	# receipt. Link validation does not help -- it checks the target exists, not that the
+	# value was re-derived.
+	item_map = bulk_map(
+		"Item", [row.item_code for row in self.items], ["has_batch_no", "variant_of"]
+	)
+	has_batch_map = item_map
+
+	# Same reason as has_batch_map above: this reads Subcontracting Settings, and the
+	# answer cannot change part-way through one document. Called from inside the loop it
+	# ran once per M/F row -- 26k times on a consolidated EOD entry -- for a value that is
+	# constant across the whole save.
+	pure_qty_excluded_types = _pure_qty_excluded_types()
 
 	for row in self.items:
 		if (
@@ -183,11 +247,13 @@ def before_validate(self, method):
 						row.manufacturing_operation
 					)
 				)
-		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in [
-			"Customer Goods Transfer",
-			"Customer Goods Issue",
-			"Customer Goods Received",
-		]:
+		# Re-derive from the Item rather than trusting the posted row -- see item_map above.
+		row.custom_variant_of = (item_map.get(row.item_code) or {}).get("variant_of")
+
+		if (
+			row.custom_variant_of in ["M", "F"]
+			and self.stock_entry_type not in pure_qty_excluded_types
+		):
 			if not pure_item_purity:
 				if self.stock_entry_type == "Material Transfer":
 					manufacturer = None
@@ -272,6 +338,9 @@ def before_validate(self, method):
 			item_purity = get_purity_percentage(row.item_code)
 
 			if not item_purity:
+				# Zero it rather than leaving whatever arrived: a client-supplied value
+				# must never survive just because purity could not be resolved.
+				row.custom_pure_qty = 0
 				continue
 
 			if pure_item_purity == item_purity:

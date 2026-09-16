@@ -11,12 +11,14 @@
   "customer_24kt_item",
   "column_break_receipt",
   "customer_goods_stock_entry_type",
+  "customer_gold_return_stock_entry_type",
   "gold_rate_section",
   "gold_rate_source",
   "gold_rate_field",
   "column_break_gold_rate",
   "gold_rate_unit",
   "accounting_section",
+  "customer_gold_valuation_policy",
   "company_accounts",
   "repack_section",
   "category"
@@ -59,6 +61,14 @@
    "options": "Stock Entry Type"
   },
   {
+   "fieldname": "customer_gold_return_stock_entry_type",
+   "fieldtype": "Link",
+   "options": "Stock Entry Type",
+   "label": "Customer Gold Return Stock Entry Type",
+   "depends_on": "enable_customer_gold_flow",
+   "description": "Material Issue type used when unused customer gold is physically returned. The return posts at the metal's BOOKED carrying rate, never a current market rate."
+  },
+  {
    "depends_on": "enable_customer_gold_flow",
    "fieldname": "gold_rate_section",
    "fieldtype": "Section Break",
@@ -94,6 +104,16 @@
    "fieldname": "accounting_section",
    "fieldtype": "Section Break",
    "label": "Accounting"
+  },
+  {
+   "default": "Zero Value",
+   "depends_on": "enable_customer_gold_flow",
+   "description": "How a Customer Gold receipt values stock. <b>Zero Value</b> (the default, and the behaviour of every existing site) books the metal at 0 and posts no GL \u2014 the resolved rate is kept as evidence only. <b>Nominal</b> books the frozen per-gram rate as stock value with an equal Customer Gold Liability. Nominal changes an accounting policy and must not be enabled on a site holding real data without the recorded authority.",
+   "fieldname": "customer_gold_valuation_policy",
+   "fieldtype": "Select",
+   "label": "Valuation Policy",
+   "options": "Zero Value\nNominal",
+   "reqd": 0
   },
   {
    "fieldname": "company_accounts",
