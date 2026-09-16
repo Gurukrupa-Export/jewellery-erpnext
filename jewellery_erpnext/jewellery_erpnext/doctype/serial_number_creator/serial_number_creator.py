@@ -261,6 +261,13 @@ def get_operation_details(data, docname, mwo, pmo, company, mnf, dpt, for_fg, de
 	# snc_doc.manufacturing_operation = mnf_op_doc.name
 	snc_doc.manufacturing_work_order = mwo
 	snc_doc.parent_manufacturing_order = pmo
+	# Carry the order dimension fields from the Manufacturing Work Order (immediate predecessor).
+	mwo_dimensions = frappe.db.get_value(
+		"Manufacturing Work Order", mwo, ["sales_type", "order_type", "flow_type"], as_dict=1
+	) or {}
+	snc_doc.sales_type = mwo_dimensions.get("sales_type")
+	snc_doc.order_type = mwo_dimensions.get("order_type")
+	snc_doc.flow_type = mwo_dimensions.get("flow_type")
 	snc_doc.company = company
 	snc_doc.manufacturer = mnf
 	snc_doc.department = dpt
@@ -310,6 +317,10 @@ def calulate_id_wise_sum_up(self):
 
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
+	# Carry the order dimension fields from the Serial Number Creator (immediate predecessor).
+	new_sn_doc.sales_type = self.sales_type
+	new_sn_doc.order_type = self.order_type
+	new_sn_doc.flow_type = self.flow_type
 	existing_huid = []
 	existing_certification = []
 

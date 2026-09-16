@@ -961,9 +961,13 @@ def validate_quotation_item(self):
 def validate_sales_type(self):
 	for r in self.items:
 		if r.prevdoc_docname:
-			quotation_sales_type = frappe.db.get_value('Quotation', r.prevdoc_docname, 'custom_sales_type')
-			if quotation_sales_type:  
-				self.sales_type = quotation_sales_type
+			quotation_doc = frappe.db.get_value(
+				'Quotation', r.prevdoc_docname, ['custom_sales_type', 'custom_flow_type'], as_dict=True
+			) or {}
+			if quotation_doc.get('custom_sales_type'):
+				self.sales_type = quotation_doc.custom_sales_type
+			if quotation_doc.get('custom_flow_type'):
+				self.custom_flow_type = quotation_doc.custom_flow_type
 	if not self.sales_type :
 		frappe.throw("Sales Type is mandatory.")
 	# if not self.gold_rate_with_gst and self.company != 'Sadguru Diamond':
