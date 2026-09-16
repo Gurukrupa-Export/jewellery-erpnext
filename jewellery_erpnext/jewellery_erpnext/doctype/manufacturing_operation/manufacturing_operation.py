@@ -879,6 +879,58 @@ class ManufacturingOperation(Document):
 				)
 
 
+def _finished_goods_ownership(row_data):
+	"""Who owns the finished piece, derived from the metal actually consumed.
+
+	WHY THE FINISHED ROW CANNOT JUST BE "Regular Stock"
+	----------------------------------------------------
+	It was, hardcoded, and that silently broke the whole customer-gold flow. A piece made
+	entirely from one customer's metal was minted as company stock, so
+	``customer_gold_fulfilment._batch_owner`` -- which reads ``Batch.custom_customer`` and
+	``custom_inventory_type``, not the batch NAME -- returned ``None`` for it. ``record_fulfilment``
+	then skipped the row, ``settle_customer_gold_liability`` received an empty list, and delivering
+	the finished jewellery released no liability at all.
+
+	The batch is *named* after the customer (``batch_rename.create_child_batches`` takes the name
+	from the row or header), which is exactly why the bug survived: the id looked right while the
+	ownership fields said company stock. The SOP's Examples C and D -- settle the booked customer
+	value on delivery -- could never close for anything that had been manufactured.
+
+	WHY A SINGLE OWNER ONLY
+	-----------------------
+	Returning a customer for a job that consumed TWO customers' metal would put a number in the
+	liability account that nobody computed. Apportioning a finished piece across owners is a
+	business rule (which customer's grams does the delivered piece discharge, and in what ratio)
+	that has not been specified, and ``Batch Component`` is where that answer belongs once it is.
+	Until then a mixed job stays company-owned and says so out loud, which is recoverable; a
+	guessed split posted to a liability account is not.
+
+	Returns ``(inventory_type, customer)`` ready to splat onto the finished row.
+	"""
+	owners = {
+		entry.get("customer")
+		for entry in row_data or []
+		if entry.get("inventory_type") == "Customer Goods" and entry.get("customer")
+	}
+
+	if len(owners) == 1:
+		return "Customer Goods", owners.pop()
+
+	if len(owners) > 1:
+		frappe.log_error(
+			title="Customer Gold: mixed-owner manufacture left as company stock",
+			message=(
+				f"A manufacture consumed metal owned by {len(owners)} different customers "
+				f"({', '.join(sorted(owners))}). The finished row is booked as Regular Stock "
+				f"because apportioning one finished piece across owners is not defined, so "
+				f"delivering it will release no customer gold liability. Split the job per "
+				f"customer, or specify the apportionment rule."
+			),
+		)
+
+	return "Regular Stock", None
+
+
 def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if mo_data is None:
 		mo_data = []
@@ -1107,6 +1159,8 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if fg_mop_logs:
 		fg_to_wh = fg_mop_logs[0].to_warehouse
 
+	fg_inventory_type, fg_customer = _finished_goods_ownership(row_data)
+
 	se.append(
 		"items",
 		{
@@ -1116,7 +1170,10 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"s_warehouse": None,
 			"department": doc.department,
 			"to_department": doc.department,
-			"inventory_type": "Regular Stock",
+			# Derived from the consumed rows, never hardcoded -- see
+			# _finished_goods_ownership for what the hardcoded "Regular Stock" broke.
+			"inventory_type": fg_inventory_type,
+			"customer": fg_customer,
 			"manufacturing_operation": op_name,
 			"use_serial_batch_fields": 1,
 			"serial_no": sr_no,
