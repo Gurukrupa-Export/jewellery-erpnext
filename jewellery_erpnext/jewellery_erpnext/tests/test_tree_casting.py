@@ -1909,9 +1909,12 @@ class TestTreeOwedBatches(IntegrationTestCase):
 		self.assertEqual(out, [])
 
 	def test_capped_at_physical_when_drawn_out_untagged(self):
-		"""A casting EIR injection drains the tree's own batch without stamping custom_tree_number.
+		"""Netting alone would still claim 6.0; the physical cap is what keeps it honest.
 
-		Netting alone would still claim 6.0; the physical cap is what keeps it honest.
+		The casting EIR injection now DOES stamp ``custom_tree_number`` (``_stamp_se_header``), so
+		its draws net out of the pool on their own. The cap still has to hold: entries posted
+		before that stamp existed carry no tree, and neither do the untagged
+		``Material Transfer to Department`` movements that also leave the MSL warehouse.
 		"""
 		out = self._call([self._in("B1", 6.0)], [{"batch_no": "B1", "qty": 1.25}])
 		self.assertEqual(out, [("B1", 1.25)])
@@ -2624,3 +2627,77 @@ class TestReceiveWithSubstituteBatch(IntegrationTestCase):
 					ownership=self.OWN,
 				)
 		fb.assert_not_called()
+
+
+class TestRowTreeName(IntegrationTestCase):
+	"""``tree_casting.row_tree_name`` — provenance without the metal-item resolution.
+
+	Split out of ``_row_tree_and_item`` so a caller that only needs the tree (stamping a Stock
+	Entry) neither pays for ``get_item_from_attribute`` nor inherits its failure modes on a work
+	order with incomplete metal attributes.
+	"""
+
+	def test_no_work_order_means_no_tree(self):
+		self.assertIsNone(
+			tree_casting.row_tree_name(SimpleNamespace(manufacturing_work_order=None))
+		)
+
+	def test_pinned_row_value_wins_without_touching_the_work_order(self):
+		"""No DB call at all when the row already carries the tree."""
+		row = SimpleNamespace(
+			manufacturing_work_order="MWO-1", tree_number="TREE-PINNED"
+		)
+		with patch.object(tree_casting.frappe, "get_cached_value") as gcv:
+			self.assertEqual(tree_casting.row_tree_name(row), "TREE-PINNED")
+		gcv.assert_not_called()
+
+	def test_falls_back_to_the_work_order(self):
+		"""The live case at stamping time: pin_tree_numbers_on_receive has not run yet."""
+		row = SimpleNamespace(manufacturing_work_order="MWO-1", tree_number=None)
+		with patch.object(
+			tree_casting.frappe, "get_cached_value", return_value="TREE-FROM-MWO"
+		):
+			self.assertEqual(tree_casting.row_tree_name(row), "TREE-FROM-MWO")
+
+	def test_no_tree_anywhere_returns_none(self):
+		row = SimpleNamespace(manufacturing_work_order="MWO-1", tree_number=None)
+		with patch.object(tree_casting.frappe, "get_cached_value", return_value=None):
+			self.assertIsNone(tree_casting.row_tree_name(row))
+
+	def test_does_not_resolve_the_metal_item(self):
+		"""A work order whose attributes cannot resolve must still yield its tree."""
+		row = SimpleNamespace(manufacturing_work_order="MWO-1", tree_number="TREE-1")
+		with patch.object(
+			tree_casting, "_metal_item", side_effect=AssertionError("must not run")
+		):
+			self.assertEqual(tree_casting.row_tree_name(row), "TREE-1")
+
+	def test_a_missing_work_order_degrades_to_none_instead_of_raising(self):
+		"""Stamping provenance must never abort an otherwise-valid Receive."""
+		row = SimpleNamespace(manufacturing_work_order="GONE", tree_number=None)
+		with patch.object(tree_casting.frappe, "get_cached_value", return_value=None):
+			self.assertIsNone(tree_casting.row_tree_name(row))
+
+
+class TestCancelTreeStockEntriesOwnership(IntegrationTestCase):
+	"""``cancel_tree_stock_entries`` must not reach the Employee IR's own entries.
+
+	Regression origin: once ``_stamp_se_header`` began stamping ``custom_tree_number``, the tree's
+	reversal filter (``custom_tree_number`` + ``auto_created``) started matching the casting IR's
+	injection and loss entries too — which ``cancel_injections_for_eir`` already owns. Reversing a
+	tree would have double-cancelled another document's postings.
+	"""
+
+	def test_filter_excludes_employee_ir_owned_entries(self):
+		with patch.object(tse.frappe.db, "get_all", return_value=[]) as ga:
+			tse.cancel_tree_stock_entries(SimpleNamespace(name="TREE-1"))
+		filters = ga.call_args[0][1]
+		self.assertEqual(filters["custom_tree_number"], "TREE-1")
+		self.assertEqual(filters["auto_created"], 1)
+		self.assertEqual(filters["docstatus"], 1)
+		self.assertEqual(filters["employee_ir"], ["in", ["", None]])
+
+	def test_accepts_a_plain_tree_name(self):
+		with patch.object(tse.frappe.db, "get_all", return_value=[]) as ga:
+			tse.cancel_tree_stock_entries("TREE-2")
+		self.assertEqual(ga.call_args[0][1]["custom_tree_number"], "TREE-2")
