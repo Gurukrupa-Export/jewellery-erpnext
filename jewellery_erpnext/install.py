@@ -440,11 +440,35 @@ def reconcile_cross_app_fixtures(verbose=True):
 				] = f"module belongs to an app that is not installed: {module}"
 				continue
 
+			# A RECORD THIS CANNOT HONESTLY CREATE, BECAUSE autoname WOULD RENAME IT.
+			#
+			# ``CustomField.autoname`` (``custom_field.py:125-127``) is unconditional and
+			# ``Document.insert`` always reaches it::
+			#
+			#     self.name = self.dt + "-" + self.fieldname
+			#
+			# So inserting a fixture record named ``Warehouse-custom_department`` whose
+			# fieldname is plain ``department`` does NOT produce that document -- it produces
+			# ``Warehouse-department``. The fixture can then never match it by name again, so
+			# the next ``sync_fixtures`` inserts a second document for the same column and dies
+			# on "A field with the name department already exists in Warehouse", taking the
+			# whole migrate with it.
+			#
+			# This is the same rule ``_pairs_a_fixture_claims_under_another_name`` applies to
+			# provisioning, and it has to be applied here too: CI proved that deferring the
+			# field in provisioning merely moved the job to this function, which then created
+			# it under the wrong name and reintroduced the identical failure one step later.
+			# The record belongs to the fixture importer, which preserves names; leave it there.
+			if name != f"{record['dt']}-{record.get('fieldname')}":
+				skipped_target += 1
+				skipped_reasons[
+					name
+				] = "fixture name differs from autoname; creating it here would rename it"
+				continue
+
 			# The fixture's fieldname already exists as a column on the parent -- typically a
-			# stale record whose fieldname core has since taken for itself (a record named
-			# `Warehouse-custom_department` whose fieldname is plain `department`). Creating it
-			# raises "A field with the name X already exists", which is correct and not fixable
-			# from here.
+			# stale record whose fieldname core has since taken for itself. Creating it raises
+			# "A field with the name X already exists", which is correct and not fixable here.
 			try:
 				collides = frappe.db.has_column(record["dt"], record.get("fieldname"))
 			except Exception:  # noqa: BLE001 -- a missing table is already answered above
