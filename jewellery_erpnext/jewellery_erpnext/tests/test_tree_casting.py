@@ -66,12 +66,38 @@ def _md(issue, receive, loss):
 	return row
 
 
+class _EIROpRow(SimpleNamespace):
+	"""Employee IR Operation row that behaves like a real child Document.
+
+	Two things a bare SimpleNamespace does not give us, both of which the casting
+	code uses on real child rows:
+
+	  * ``db_set`` -- ``create_tree_on_issue`` writes the tree back onto the row that
+	    way (the document is already submitted by then). Recorded here so the
+	    issue-stamp tests can assert on it.
+	  * ``get`` -- ``unlink_tree_on_issue_cancel`` reads the row with ``row.get(...)``,
+	    the same accessor ``frappe.model.document.Document`` provides. Omitting it made
+	    the fake diverge from the thing it stands in for, and the tests failed on the
+	    FAKE rather than on the code under test.
+	"""
+
+	def __init__(self, **kwargs):
+		kwargs.setdefault("tree_number", None)
+		super().__init__(**kwargs)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+	def db_set(self, fieldname, value, **kwargs):
+		setattr(self, fieldname, value)
+
+
 def _eir(rows, op="Casting WO", typ="Issue"):
 	return SimpleNamespace(
 		operation=op,
 		type=typ,
 		employee_ir_operations=[
-			SimpleNamespace(manufacturing_work_order=name) for name in rows
+			_EIROpRow(manufacturing_work_order=name) for name in rows
 		],
 	)
 
@@ -400,7 +426,7 @@ class TestCastingIssueQtySeed(IntegrationTestCase):
 			department="Waxing",
 			operation="Casting",
 			employee="E",
-			employee_ir_operations=[SimpleNamespace(manufacturing_work_order="MWO-A")],
+			employee_ir_operations=[_EIROpRow(manufacturing_work_order="MWO-A")],
 		)
 		fake_tree = _FakeTreeDoc()
 
@@ -432,6 +458,174 @@ class TestCastingIssueQtySeed(IntegrationTestCase):
 		self.assertEqual(md.pending_qty, 0)
 
 
+class TestIssueStampsTreeOnEirRows(IntegrationTestCase):
+	"""The Issue that creates a casting tree stamps it onto its OWN operation rows.
+
+	Before this, ``create_tree_on_issue`` wrote the tree only onto the work orders, so a
+	casting Issue Employee IR showed an empty Tree Number column while the Receive that
+	closed the loop showed a filled one. Both ends now carry it.
+
+	The stamp is scoped to casting operations by ``is_casting_eir``
+	(``Department Operation.tree_no_reqd``), never by the operation's name.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _issue(self, work_orders, casting=True):
+		"""Run create_tree_on_issue over `work_orders`; return the EIR and the fake tree."""
+		mwos = {
+			name: _MWODoc(
+				name=name,
+				metal_type="Gold",
+				metal_touch="22KT",
+				metal_purity="91.9",
+				metal_colour="Yellow",
+				metal_weight=1.0,
+				gross_wt=0.0,
+			)
+			for name in work_orders
+		}
+		eir = SimpleNamespace(
+			name="EIR-1",
+			company="C",
+			manufacturer="M",
+			department="Waxing",
+			operation="Casting",
+			employee="E",
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order=n) for n in work_orders
+			],
+		)
+		fake_tree = _FakeTreeDoc()
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			if doctype == "Department Operation":
+				return 1 if casting else 0
+			return None
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(
+				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
+			),
+			patch.object(tree_casting.frappe, "new_doc", return_value=fake_tree),
+			patch.object(
+				tree_casting, "get_item_from_attribute", return_value="M-G-22KT-91.9-Y"
+			),
+			patch.object(tree_casting.frappe.db, "set_value"),
+		):
+			tree_casting.create_tree_on_issue(eir)
+
+		return eir, fake_tree
+
+	def test_every_row_carries_the_new_tree(self):
+		eir, tree = self._issue(["MWO-A", "MWO-B"])
+		for row in eir.employee_ir_operations:
+			self.assertEqual(row.tree_number, tree.name)
+
+	def test_the_row_stamp_matches_the_work_order_stamp(self):
+		# One tree per casting Issue: the row and its work order can never disagree.
+		eir, tree = self._issue(["MWO-A"])
+		self.assertEqual(eir.employee_ir_operations[0].tree_number, "TREE-TEST-0001")
+		self.assertEqual(tree.name, "TREE-TEST-0001")
+
+	def test_a_non_casting_issue_stamps_nothing(self):
+		eir, _tree = self._issue(["MWO-A"], casting=False)
+		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestUnlinkTreeOnIssueCancel(IntegrationTestCase):
+	"""Cancelling a casting Issue force-deletes the tree, so every stamp must come off.
+
+	A row left pointing at a deleted Tree Number is a dangling link -- the whole reason
+	the clear is not optional. It is scoped to the tree being deleted: on a re-issue a row
+	may already have been re-stamped onto a newer tree, and that one must survive.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _cancel(self, rows, tree_name="TREE-0001", casting=True):
+		"""rows: [(mwo, row_tree_number, live_mwo_tree_number)]."""
+		eir = SimpleNamespace(
+			name="EIR-1",
+			operation="Casting",
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order=mwo, tree_number=row_tree)
+				for mwo, row_tree, _live in rows
+			],
+		)
+		live = {mwo: live_tree for mwo, _row_tree, live_tree in rows}
+		tree = SimpleNamespace(
+			name=tree_name,
+			status="Issued",
+			material_details=[
+				SimpleNamespace(receive_qty=0.0, loss_qty=0.0),
+			],
+		)
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			if doctype == "Department Operation":
+				return 1 if casting else 0
+			if doctype == "Tree Number":
+				return tree_name
+			if doctype == "Manufacturing Work Order":
+				return live.get(name)
+			return None
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events import (
+			tree_stock_entry,
+		)
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
+			patch.object(tree_casting.frappe.db, "set_value"),
+			patch.object(tree_casting.frappe, "delete_doc"),
+			patch.object(tree_stock_entry, "cancel_tree_stock_entries"),
+		):
+			tree_casting.unlink_tree_on_issue_cancel(eir)
+
+		return eir
+
+	def test_the_row_stamp_is_cleared(self):
+		eir = self._cancel([("MWO-A", "TREE-0001", "TREE-0001")])
+		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
+
+	def test_every_row_is_cleared(self):
+		eir = self._cancel(
+			[
+				("MWO-A", "TREE-0001", "TREE-0001"),
+				("MWO-B", "TREE-0001", "TREE-0001"),
+			]
+		)
+		for row in eir.employee_ir_operations:
+			self.assertIsNone(row.tree_number)
+
+	def test_a_row_re_stamped_onto_a_newer_tree_survives(self):
+		# The work order was re-issued onto TREE-0002 before this cancel ran; clearing
+		# it here would desync the live tree from its issue.
+		eir = self._cancel([("MWO-A", "TREE-0002", "TREE-0002")])
+		self.assertEqual(eir.employee_ir_operations[0].tree_number, "TREE-0002")
+
+	def test_a_non_casting_cancel_touches_nothing(self):
+		eir = self._cancel([("MWO-A", "TREE-0001", "TREE-0001")], casting=False)
+		self.assertEqual(eir.employee_ir_operations[0].tree_number, "TREE-0001")
+
+	def tearDown(self):
+		return super().tearDown()
+
+
 def _mwo_doc(name, tree_number):
 	"""Fake MWO for the receive-aggregation path (needs attribute access for _metal_item and
 	.get('tree_number'))."""
@@ -452,7 +646,7 @@ def _recv_eir(rows, typ="Receive", loss_rows=None, is_raw_material=1):
 	def _op(r):
 		name, recv = r[0], r[1]
 		gross = r[2] if len(r) > 2 else recv
-		return SimpleNamespace(
+		return _EIROpRow(
 			manufacturing_work_order=name, received_gross_wt=recv, gross_wt=gross
 		)
 
@@ -482,12 +676,23 @@ def _ledger_tree(issue=0.0, receive=0.0, loss=0.0, item="M-G-18KT-75-Y"):
 				item_code=item,
 				issue_qty=issue,
 				receive_qty=receive,
+				# Provenance split of receive_qty + the informational gross weight.
+				wo_receive_qty=receive,
+				manual_receive_qty=0.0,
+				wo_received_gross_wt=0.0,
 				loss_qty=loss,
 				pending_qty=issue - receive - loss,
 			)
 		],
 	)
-	tree.save = lambda *a, **k: None
+
+	def _save(*a, **k):
+		# Mirror TreeNumber.calculate_material_pending: manual_receive_qty is derived on
+		# every save, never accumulated.
+		for md in tree.material_details:
+			md.manual_receive_qty = max(0.0, md.receive_qty - md.wo_receive_qty)
+
+	tree.save = _save
 	return tree
 
 
@@ -607,6 +812,9 @@ class TestUpdateTreeOnReceiveCancel(IntegrationTestCase):
 			patch.object(
 				tree_casting, "get_item_from_attribute", return_value=self.ITEM
 			),
+			# _credit_wo_received_gross reads child rows directly for any tree this
+			# receive only REPORTS against (no draw); keep it off the real DB.
+			patch.object(tree_casting.frappe, "get_all", return_value=[]),
 		):
 			tree_casting.update_tree_on_receive(eir, cancel=True)
 
@@ -660,7 +868,7 @@ def _grp_eir(work_orders, typ="Issue"):
 		department="Casting Dept",
 		subcontracting="No",
 		employee_ir_operations=[
-			SimpleNamespace(manufacturing_work_order=name) for name in work_orders
+			_EIROpRow(manufacturing_work_order=name) for name in work_orders
 		],
 	)
 
@@ -941,7 +1149,7 @@ class TestCastingGroupStamp(IntegrationTestCase):
 			operation="Casting",
 			employee="E",
 			employee_ir_operations=[
-				SimpleNamespace(manufacturing_work_order=n) for n in mwos
+				_EIROpRow(manufacturing_work_order=n) for n in mwos
 			],
 		)
 

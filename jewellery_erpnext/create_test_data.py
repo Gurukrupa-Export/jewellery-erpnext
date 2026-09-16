@@ -1176,10 +1176,38 @@ def create_test_data():
 			)
 			making_charge_price.insert(ignore_permissions=True)
 
-		if not frappe.db.exists("Purchase Type", "FG Purchase"):
-			frappe.get_doc({"doctype": "Purchase Type", "type": "FG Purchase"}).insert(
-				ignore_permissions=True
-			)
+		# EVERY Purchase Type this app's PRODUCTION code hardcodes, not just the one that
+		# happened to fail first.
+		#
+		# Purchase Order.purchase_type is a Link to Purchase Type (declared in this app's own
+		# custom_fields/purchase_order.json), so each of these masters has to exist or the save
+		# raises "Could not find Purchase Type: <x>":
+		#
+		#   Service            product_certification/doc_events/utils.py:167
+		#   FG Purchase        employee_ir.py:754
+		#   Branch Purchase    customization/sales_invoice/doc_events/utils.py:64
+		#                      customization/serial_and_batch_bundle/serial_and_batch_bundle.py:35
+		#   Subcontracting     gurukrupa_exports/.../sketch_order_form.py:243
+		#
+		# None of this was needed before, because the FIELD was never created on a CI site: this
+		# app's custom_fields/*.json are inert (the after_migrate hook that would load them is
+		# commented out at hooks.py:12), so the assignments landed on an attribute that was not
+		# a field and no link was ever validated. install.provision_schema now creates the
+		# app's own declared field, which is correct -- and that is what made these missing
+		# masters reachable, one CI round at a time.
+		#
+		# Values that appear ONLY in test files ("Invalid Type", "Regular", "Test Type",
+		# "Unknown Type") are deliberate negative-test inputs and must stay absent.
+		for purchase_type in (
+			"FG Purchase",
+			"Service",
+			"Branch Purchase",
+			"Subcontracting",
+		):
+			if not frappe.db.exists("Purchase Type", purchase_type):
+				frappe.get_doc(
+					{"doctype": "Purchase Type", "type": purchase_type}
+				).insert(ignore_permissions=True)
 
 		if not frappe.db.exists("Warehouse Type", "Scrap"):
 			frappe.get_doc({"doctype": "Warehouse Type", "__newname": "Scrap"}).insert(

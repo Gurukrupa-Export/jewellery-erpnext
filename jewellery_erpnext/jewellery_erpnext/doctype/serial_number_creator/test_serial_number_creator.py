@@ -8,8 +8,10 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+	_resolve_operation_minutes,
 	_snc_se_detail_maps,
 	_stone_se_rate,
+	resolve_target_item_code,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
@@ -543,6 +545,161 @@ class TestSNCSeDetailMaps(IntegrationTestCase):
 		rate_map, inv_map = _snc_se_detail_maps("MAT-STE-EMPTY")
 		self.assertEqual(rate_map, {})
 		self.assertEqual(inv_map, {})
+
+
+class TestResolveTargetItemCode(IntegrationTestCase):
+	"""``resolve_target_item_code`` is the single source of truth for which item a
+	Serial Number Creator's FG BOM/operations are for -- used both to scope the
+	Manufacturing Operation query in ``to_prepare_data_for_make_mnf_stock_entry`` and
+	to pick ``bom_doc`` in ``create_finished_goods_bom``, so the two can never
+	silently disagree about which item they mean. Regression: before this existed,
+	the Manufacturing Operation query was scoped to the whole Parent Manufacturing
+	Order only, pulling in operations for unrelated items/routes.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_MOP_MODULE}.frappe.db.get_value")
+	def test_uses_new_item_when_set(self, mock_get_value):
+		doc = frappe._dict(new_item="ITEM-A", design_id_bom="BOM-X")
+		self.assertEqual(resolve_target_item_code(doc), "ITEM-A")
+		mock_get_value.assert_not_called()
+
+	@patch(f"{_MOP_MODULE}.frappe.db.get_value")
+	def test_falls_back_to_design_bom_item_when_no_new_item(self, mock_get_value):
+		mock_get_value.return_value = "ITEM-B"
+		doc = frappe._dict(new_item=None, design_id_bom="BOM-X")
+		self.assertEqual(resolve_target_item_code(doc), "ITEM-B")
+		mock_get_value.assert_called_once_with("BOM", "BOM-X", "item")
+
+	def test_returns_none_when_neither_set(self):
+		doc = frappe._dict(new_item=None, design_id_bom=None)
+		self.assertIsNone(resolve_target_item_code(doc))
+
+
+class TestResolveOperationMinutes(IntegrationTestCase):
+	"""``_resolve_operation_minutes`` tolerates a stale/zero ``total_minutes`` header
+	on a Manufacturing Operation by refetching it, then falling back to summing its
+	Time Log child rows. Regression: ``create_finished_goods_bom`` used to trust the
+	header value as-is, so a stale/zero header meant every row in the new BOM's
+	Operations table showed the flat 0.01 fallback instead of the real time.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_MOP_MODULE}.frappe.db.get_value")
+	def test_returns_header_value_when_nonzero(self, mock_get_value):
+		self.assertEqual(_resolve_operation_minutes("MOP-1", 45), 45)
+		mock_get_value.assert_not_called()
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	@patch(f"{_MOP_MODULE}.frappe.db.get_value")
+	def test_refetches_header_when_zero_then_uses_it(self, mock_get_value, mock_sql):
+		mock_get_value.return_value = 30
+		self.assertEqual(_resolve_operation_minutes("MOP-1", 0), 30)
+		mock_sql.assert_not_called()
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	@patch(f"{_MOP_MODULE}.frappe.db.get_value")
+	def test_falls_back_to_time_log_sum_when_header_still_zero(
+		self, mock_get_value, mock_sql
+	):
+		mock_get_value.return_value = 0
+		mock_sql.return_value = [[52.5]]
+		self.assertEqual(_resolve_operation_minutes("MOP-1", 0), 52.5)
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	@patch(f"{_MOP_MODULE}.frappe.db.get_value")
+	def test_returns_zero_when_nothing_found(self, mock_get_value, mock_sql):
+		mock_get_value.return_value = None
+		mock_sql.return_value = [[0]]
+		self.assertEqual(_resolve_operation_minutes("MOP-1", 0), 0)
+
+	@patch(f"{_MOP_MODULE}.frappe.db.get_value")
+	def test_returns_zero_without_query_when_no_mop_name(self, mock_get_value):
+		self.assertEqual(_resolve_operation_minutes(None, 0), 0)
+		mock_get_value.assert_not_called()
+
+
+class TestToPrepareDataOperationScoping(IntegrationTestCase):
+	"""``to_prepare_data_for_make_mnf_stock_entry``'s Manufacturing Operation query used
+	to scope only by manufacturing_order (the whole Parent Manufacturing Order),
+	pulling in operations for unrelated items/routes under the same PMO. Regression:
+	confirmed on a live record where this pulled in 16 Manufacturing Operations across
+	unrelated departments instead of just the ones for the item actually being
+	finished. With an empty source_table, row_data stays empty and the function
+	returns right after building operation_data, so this exercises the real filter
+	construction without needing the rest of the (heavy, locking/Bin-touching) function.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _mock_get_all(mop_calls):
+		# The function also fetches wo_list ("Manufacturing Work Order") after building
+		# operation_data, to mark those work orders Completed -- give it a nonexistent
+		# name (harmless no-op update on the real, unmocked set_values_in_bulk) rather
+		# than [] (an empty SQL "IN ()" clause is invalid and unrelated to what's under
+		# test here).
+		def _inner(doctype, *args, **kwargs):
+			if doctype == "Manufacturing Operation":
+				mop_calls.append(args[0] if args else kwargs.get("filters"))
+				return []
+			if doctype == "Manufacturing Work Order":
+				return ["MWO-NONEXISTENT"]
+			return []
+
+		return _inner
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	@patch(f"{_SNC_MODULE}.frappe.db.get_value")
+	def test_filters_by_item_code_when_resolvable(self, mock_get_value, mock_get_all):
+		mock_get_value.return_value = (
+			"PMO-1"  # Manufacturing Work Order -> manufacturing_order
+		)
+		mop_calls = []
+		mock_get_all.side_effect = self._mock_get_all(mop_calls)
+		doc = frappe._dict(
+			source_table=[],
+			manufacturing_work_order="MWO-1",
+			new_item="ITEM-A",
+			design_id_bom="BOM-X",
+		)
+
+		to_prepare_data_for_make_mnf_stock_entry(doc)
+
+		self.assertEqual(len(mop_calls), 1)
+		filters = mop_calls[0]
+		self.assertEqual(filters.get("manufacturing_order"), "PMO-1")
+		self.assertEqual(filters.get("item_code"), "ITEM-A")
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	@patch(f"{_SNC_MODULE}.frappe.db.get_value")
+	def test_falls_back_to_pmo_only_when_item_unresolvable(
+		self, mock_get_value, mock_get_all
+	):
+		mock_get_value.return_value = "PMO-1"
+		mop_calls = []
+		mock_get_all.side_effect = self._mock_get_all(mop_calls)
+		doc = frappe._dict(
+			source_table=[],
+			manufacturing_work_order="MWO-1",
+			new_item=None,
+			design_id_bom=None,
+		)
+
+		to_prepare_data_for_make_mnf_stock_entry(doc)
+
+		self.assertEqual(len(mop_calls), 1)
+		filters = mop_calls[0]
+		self.assertEqual(filters.get("manufacturing_order"), "PMO-1")
+		self.assertNotIn("item_code", filters)
 
 
 class TestStoneSeRate(IntegrationTestCase):
