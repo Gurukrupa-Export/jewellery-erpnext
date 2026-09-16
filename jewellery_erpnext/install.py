@@ -132,26 +132,34 @@ def _fieldnames_owned_by_another_apps_fixtures():
 	sibling's record is the one that keeps being reasserted. The field still ends up on the
 	DocType -- by the sibling's hand -- which is the outcome provisioning wanted anyway.
 
-	Reads ``sites/apps.txt`` via ``frappe.get_all_apps`` rather than the site's installed apps,
-	because at ``after_install`` time the sibling may not be installed yet while its fixture is
-	already on disk and certain to be imported later.
+	Scans the bench's ``apps/`` DIRECTORY rather than any list of installed apps, because at
+	``after_install`` time the sibling is typically not installed yet while its fixture is
+	already on disk and certain to be imported later. See the comment on the scan itself.
 	"""
 	owned = set()
 
+	# THE APPS DIRECTORY ON DISK, NOT ``apps.txt`` AND NOT THE INSTALLED LIST.
+	#
+	# This distinction is the whole fix, and CI proved it. Both ``frappe.get_all_apps()`` and
+	# ``frappe.get_installed_apps()`` answer "what is installed SO FAR", and apps install one
+	# at a time -- the CI log shows jewellery_erpnext installing BEFORE gke_customization. So
+	# at this app's ``after_install`` the sibling is in neither list, its fixture is never
+	# scanned, and the very field that collides gets provisioned anyway.
+	#
+	# Measured: reading apps.txt deferred 1280 fields on a fully-installed bench but only 185
+	# in CI, and the migrate died on exactly the field that fell through that gap. The
+	# directory is on disk from the start, so it answers the same on the first install and
+	# the thousandth.
 	try:
-		apps = frappe.get_all_apps(with_internal_apps=False)
-	except Exception:  # noqa: BLE001 - no apps.txt readable; provisioning must still run
+		apps_dir = os.path.dirname(os.path.dirname(frappe.get_app_path("frappe")))
+		candidates = sorted(os.listdir(apps_dir))
+	except Exception:  # noqa: BLE001 - unreadable bench layout; provisioning must still run
 		return owned
 
-	for app in apps:
+	for app in candidates:
 		if app == "jewellery_erpnext":
 			continue
-		try:
-			path = os.path.join(
-				frappe.get_app_path(app), "fixtures", "custom_field.json"
-			)
-		except Exception:  # noqa: BLE001 - app listed but not on disk
-			continue
+		path = os.path.join(apps_dir, app, app, "fixtures", "custom_field.json")
 		if not os.path.isfile(path):
 			continue
 		try:
