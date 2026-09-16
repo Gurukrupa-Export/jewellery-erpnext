@@ -11,18 +11,31 @@ app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
 # after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
-# Provisions this app's custom fields on a FRESH install. Without it a new site gets none
-# of them: custom_fields/*.json is only read by the after_migrate hook above (disabled),
-# and `bench install-app` MARKS patches complete without running them, so the patch that
-# would create the rate-snapshot fields never executes. Idempotent -- create_custom_fields
-# keys on (dt, fieldname) -- and re-runnable on an existing site with:
-#   bench --site <site> execute jewellery_erpnext.install.provision_schema
+# Provisions this app's custom fields. frappe/migrate.py runs sync_fixtures() at :171 and the
+# after_migrate hooks at :200-202, in that order, so by the time this runs every installed
+# app's fixture records are already in place and create_custom_fields(update=False) leaves any
+# (dt, fieldname) they own alone. That ordering is the fix: provisioning used to run from
+# after_install (installer.py:360) BEFORE sync_fixtures (:367), so a fixture claiming the same
+# column under a different document name was rejected and took `bench migrate` down.
+#
+# NOT the target on line 12. That points at jewellery_erpnext/migrate.py, whose after_migrate
+# calls create_custom_fields with the default update=True -- it would rewrite every property
+# this app's JSON names, on every migrate, on every site. It stays disabled.
+# Re-runnable by hand: bench --site <site> execute jewellery_erpnext.install.provision_schema
+after_migrate = "jewellery_erpnext.install.after_migrate"
+
+# `bench install-app` writes a Patch Log row for every patches.txt entry WITHOUT importing the
+# module (installer.py:358 -> set_all_patches_as_completed), so the schema those patches create
+# never exists and the next migrate skips them as already applied. This hook is the only window
+# in which that gap can be closed. Custom fields are deliberately NOT provisioned here.
 after_install = "jewellery_erpnext.install.after_install"
 
 # Runs AFTER sync_fixtures/sync_customizations (frappe/installer.py:371), which after_install
-# (:360) does not. Reconciles Custom Fields that a sibling app's fixture import silently dropped:
-# frappe wraps a whole fixture FILE in one try/except, so one bad record discards every record
-# after it, with a bare print and exit code 0. See install.reconcile_cross_app_fixtures.
+# (:360) does not. Reconciles Custom Fields that a sibling app's fixture import dropped: frappe
+# wraps a whole fixture FILE in one try/except, so one bad record discards every record after it.
+# That catch covers ImportError and DoesNotExistError only (frappe/utils/fixtures.py:45) -- those
+# fail with a bare print and exit code 0; anything else, a ValidationError included, propagates
+# and kills the run. See install.reconcile_cross_app_fixtures.
 after_sync = "jewellery_erpnext.install.after_sync"
 
 doctype_js = {
