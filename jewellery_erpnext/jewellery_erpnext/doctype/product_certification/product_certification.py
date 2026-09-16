@@ -978,10 +978,13 @@ class ProductCertification(Document):
 		# largest share, so the rows sum to EXACTLY total_amount. `update_bom_details`
 		# sums these straight onto BOM.hallmarking_amount, so a split that did not
 		# reconcile would put a total on the BOM that the operator never entered.
+		# Read off the PARENT with a parentfield, not off a row: callers build
+		# exploded_product_details as bare frappe._dict rows as well as real child
+		# Documents, and a _dict has no .precision().
 		shares = apportion(
 			flt(self.total_amount),
 			units,
-			precision=self.exploded_product_details[0].precision("amount"),
+			precision=self.precision("amount", "exploded_product_details"),
 		)
 
 		# Fire Assy / XRF weights are owned by calculate_fire_assy_loss_weight — the

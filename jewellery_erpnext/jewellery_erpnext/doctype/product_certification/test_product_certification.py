@@ -3120,7 +3120,7 @@ class TestEarringAmountSplit(IntegrationTestCase):
 		doc.distribute_amount()
 		amounts = [row.amount for row in doc.exploded_product_details]
 
-		precision = doc.exploded_product_details[0].precision("amount")
+		precision = doc.precision("amount", "exploded_product_details")
 		self.assertEqual(flt(sum(amounts), precision), 100.0)
 		# The residual lands on the largest share -- the earring row -- so it is the one
 		# row that is not exactly twice a single-unit share.
@@ -3146,6 +3146,25 @@ class TestEarringAmountSplit(IntegrationTestCase):
 		"""A Fire Assy pure / loss row is appended with no category of its own."""
 		doc = self._doc("Fire Assy Service", 150, ["Earrings", None])
 		self.assertEqual(self._amounts(doc), [100.0, 50.0])
+
+	def test_bare_dict_rows_are_split_too(self):
+		"""Not every caller appends real child Documents -- some assign frappe._dict rows
+		(see test_distribute_amount_multiple_orders). A _dict has no .precision(), so the
+		stored precision has to be read off the parent with a parentfield, not off a row."""
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.service_type = "Hall Marking Service"
+		doc.total_amount = 150
+		doc.exploded_product_details = [
+			frappe._dict(
+				{"serial_no": "S1", "category": "Earrings", "gross_weight": 1.0}
+			),
+			frappe._dict({"serial_no": "S2", "category": "Ring", "gross_weight": 1.0}),
+		]
+		doc.distribute_amount()
+		self.assertEqual(
+			[flt(row.amount, 2) for row in doc.exploded_product_details], [100.0, 50.0]
+		)
 
 	def test_diamond_certificate_keeps_the_flat_split(self):
 		"""certification_amount is already priced off diamond_weight, which carries both
