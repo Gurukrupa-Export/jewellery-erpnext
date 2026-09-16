@@ -50,6 +50,32 @@ def _slip_key(row):
 	return (row.get("main_slip") or "", row.get("tree_no") or "")
 
 
+_EARRING_CATEGORY = "Earrings"
+_EARRING_UNITS = 2
+
+# Only these two bill per piece. Diamond Certificate prices off diamond_weight, which
+# already carries both stones of a pair, and XRF is out of scope -- both keep the flat split.
+_UNIT_WEIGHTED_SERVICES = ("Hall Marking Service", "Fire Assy Service")
+
+
+def _amount_units(service_type, row):
+	"""How many billable pieces one exploded row stands for.
+
+	An earring pair is one row but two pieces, so it takes two shares of the entered total --
+	the same convention ``doc_events/sales_order.py`` uses to bill hallmarking per piece, where
+	an ``item_category == "Earrings"`` BOM counts twice. Every other row, and every row of a
+	service that does not bill per piece, is worth one.
+
+	Read off the exploded row's own ``category``, which fetches from ``item_code.item_category``
+	(and, on the Hall Marking branch, is copied down from the Product Details row by
+	``get_exploded_table``). A tree-scanned Fire Assy row carries the *metal* item, whose
+	category is never "Earrings", so the weighting is inert there by construction.
+	"""
+	if service_type not in _UNIT_WEIGHTED_SERVICES:
+		return 1
+	return _EARRING_UNITS if row.get("category") == _EARRING_CATEGORY else 1
+
+
 @frappe.request_cache
 def _department_wo_warehouse(department, throw=True):
 	"""The department's WO warehouse -- ``warehouse_type = "Manufacturing"``, e.g.
@@ -619,17 +645,24 @@ class ProductCertification(Document):
 	def distribute_amount(self):
 		if not self.exploded_product_details:
 			return
-		length = len(self.exploded_product_details)
 		if self.type == "Issue":
 			self.total_amount = 0
-		amt = flt(self.total_amount) / length
+
+		# Split by piece, not by row: an Earrings row is two pieces on one row and takes two
+		# shares of the entered total. With no earring in the table every unit is 1, so
+		# sum(units) is the row count and this is exactly the flat split it replaces.
+		units = [
+			_amount_units(self.service_type, row)
+			for row in self.exploded_product_details
+		]
+		amt = flt(self.total_amount) / sum(units)
 
 		# Fire Assy / XRF weights are owned by calculate_fire_assy_loss_weight — the
 		# remainder back-fill below is un-purity-converted and would overwrite the
 		# computed loss row. Only the amount split applies there.
 		if self.service_type in ["Fire Assy Service", "XRF Services"]:
-			for row in self.exploded_product_details:
-				row.amount = amt
+			for row, unit in zip(self.exploded_product_details, units):
+				row.amount = amt * unit
 			return
 
 		qty_data = {}
@@ -640,7 +673,7 @@ class ProductCertification(Document):
 			)
 			qty_data[key] = flt(qty_data.get(key)) + flt(row.total_weight)
 
-		for row in self.exploded_product_details:
+		for row, unit in zip(self.exploded_product_details, units):
 			# Keyed on THIS row's own order — it used to reuse the `common_order` left
 			# over from the loop above (the last Product Details row's order), which only
 			# happened to be right when every row shared one order.
@@ -654,7 +687,7 @@ class ProductCertification(Document):
 					qty_data[key] = 0
 				else:
 					qty_data[key] -= row.gross_weight
-			row.amount = amt
+			row.amount = amt * unit
 
 	def on_submit(self):
 		if self.service_type in ["Fire Assy Service", "XRF Services"]:

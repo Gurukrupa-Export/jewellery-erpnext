@@ -156,7 +156,7 @@
    "label": "Extra Charges"
   },
   {
-   "depends_on": "eval: (doc.service_type == 'Hall Marking Service' || doc.service_type == 'Diamond Certificate service') && doc.type == 'Receive'",
+   "depends_on": "eval: ['Hall Marking Service', 'Diamond Certificate service', 'Fire Assy Service'].includes(doc.service_type) && doc.type == 'Receive'",
    "fetch_from": "invoice_no.total",
    "fieldname": "total_amount",
    "fieldtype": "Float",
@@ -260,7 +260,7 @@
    "link_fieldname": "product_certification"
   }
  ],
- "modified": "2026-07-30 21:11:33.018835",
+ "modified": "2026-09-16 10:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Product Certification",

@@ -20,6 +20,7 @@
   "docname",
   "supply_raw_material",
   "huid",
+  "report",
   "item_details_section",
   "category",
   "sub_category",
@@ -246,6 +247,11 @@
    "fieldname": "jwelex_tag_no",
    "fieldtype": "Data",
    "label": "Jwelex Tag No"
+  },
+  {
+   "fieldname": "report",
+   "fieldtype": "Attach",
+   "label": "Report"
   }
  ],
  "index_web_pages_for_search": 1,
