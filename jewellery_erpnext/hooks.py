@@ -11,23 +11,16 @@ app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
 # after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
-# Provisions this app's custom fields. frappe/migrate.py runs sync_fixtures() at :171 and the
-# after_migrate hooks at :200-202, in that order, so by the time this runs every installed
-# app's fixture records are already in place and create_custom_fields(update=False) leaves any
-# (dt, fieldname) they own alone. That ordering is the fix: provisioning used to run from
-# after_install (installer.py:360) BEFORE sync_fixtures (:367), so a fixture claiming the same
-# column under a different document name was rejected and took `bench migrate` down.
+# Provisions this app's custom fields, BEFORE fixtures import (installer.py:360 vs :367).
+# That direction is required: a fixture's Dynamic Link record needs its target Link field to
+# exist already. It is also what lets a fixture claiming the same (dt, fieldname) under a
+# different document name collide -- so provisioning withholds exactly those pairs rather than
+# moving hooks. See install.after_install; CI produced both failures in turn.
 #
-# NOT the target on line 12. That points at jewellery_erpnext/migrate.py, whose after_migrate
-# calls create_custom_fields with the default update=True -- it would rewrite every property
-# this app's JSON names, on every migrate, on every site. It stays disabled.
+# Also closes the patch gap: `bench install-app` writes a Patch Log row for every patches.txt
+# entry WITHOUT importing the module (installer.py:358), so that schema never exists and the
+# next migrate skips it as already applied.
 # Re-runnable by hand: bench --site <site> execute jewellery_erpnext.install.provision_schema
-after_migrate = "jewellery_erpnext.install.after_migrate"
-
-# `bench install-app` writes a Patch Log row for every patches.txt entry WITHOUT importing the
-# module (installer.py:358 -> set_all_patches_as_completed), so the schema those patches create
-# never exists and the next migrate skips them as already applied. This hook is the only window
-# in which that gap can be closed. Custom fields are deliberately NOT provisioned here.
 after_install = "jewellery_erpnext.install.after_install"
 
 # Runs AFTER sync_fixtures/sync_customizations (frappe/installer.py:371), which after_install
