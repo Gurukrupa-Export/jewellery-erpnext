@@ -1181,6 +1181,21 @@ def create_test_data():
 				ignore_permissions=True
 			)
 
+		# Required by Sketch Order Form, which hardcodes it:
+		# sketch_order_form.create_purchase_order sets purchase_type="Subcontracting" on the
+		# Purchase Order it builds at submit. Purchase Order.purchase_type is a Link to
+		# Purchase Type (custom_fields/purchase_order.json), so the master has to exist or the
+		# save raises "Could not find Purchase Type: Subcontracting".
+		#
+		# It was never needed before because the field itself was never created on a CI site --
+		# this app's custom_fields/*.json were inert (after_migrate disabled), so the assignment
+		# landed on a non-field attribute and no link was validated. install.provision_schema
+		# now creates the field, which is correct, and that is what made this gap reachable.
+		if not frappe.db.exists("Purchase Type", "Subcontracting"):
+			frappe.get_doc(
+				{"doctype": "Purchase Type", "type": "Subcontracting"}
+			).insert(ignore_permissions=True)
+
 		if not frappe.db.exists("Warehouse Type", "Scrap"):
 			frappe.get_doc({"doctype": "Warehouse Type", "__newname": "Scrap"}).insert(
 				ignore_permissions=True
