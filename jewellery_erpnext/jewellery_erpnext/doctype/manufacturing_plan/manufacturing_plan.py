@@ -20,6 +20,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	pick_diamond_grade,
 	resolve_diamond_grade,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
+	resolve_parent_chains,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	create_mwo,
 	make_manufacturing_order,
@@ -278,8 +281,6 @@ class ManufacturingPlan(Document):
 				"metal_touch",
 				"metal_colour",
 				"diamond_grade",
-				# The quotation behind the line, used below to resolve Ref Customer.
-				"prevdoc_docname",
 			],
 		)
 
@@ -300,40 +301,28 @@ class ManufacturingPlan(Document):
 			"BOM", bom_names, ["name", "metal_type_", "metal_colour", "metal_touch"]
 		)
 
-		# Ref Customer per plan row, resolved the way the PMO resolves it on save
-		# (parent_manufacturing_order/doc_events/utils._resolve_ref_customer): the plan row's own
-		# Sales Order Item is the line whose quotation records the customer behind an internal
-		# order, and that line's sales order customer is the rung below it. Resolving it here --
-		# instead of grading against row.customer -- is what keeps the grade the plan computes
-		# equal to the one the PMO stores, so the PMO's before_save no longer silently replaces it.
+		# Ref Customer per plan row, from the very walk the PMO runs on save -- not a second
+		# reading of it. The climb is not obvious (a line's Purchase Order leads back to the
+		# PREVIOUS plan's row, and it is THAT row's quotation which records the customer), and
+		# the copy this replaced climbed from the current line instead, using the walk's bottom
+		# rung as if it were its top. That is what let a plan grade a row against one customer
+		# and the PMO it created against another.
+		#
+		# One batch of queries for the whole table, so this keeps clear of the per-row cost the
+		# maps above exist to avoid. The `or row.customer` tail mirrors _set_diamond_grade:
+		# the walk itself never falls back to the ordering customer, the grade lookup does.
 		#
 		# Must stay ABOVE the two customer-keyed fetches below: the ref customers it finds are
 		# added to customer_names so their Customer Diamond Grade rows come back in the same query.
-		quotations = {
-			d.get("prevdoc_docname")
-			for d in so_data_map.values()
-			if d.get("prevdoc_docname")
-		}
-		quotation_ref_map = {}
-		if quotations:
-			quotation_ref_map = {
-				q.name: q.ref_customer
-				for q in frappe.get_all(
-					"Quotation",
-					filters={"name": ["in", list(quotations)]},
-					fields=["name", "ref_customer"],
-				)
-			}
+		parent_chains = resolve_parent_chains(so_items)
 
 		ref_customer_map = {}
 		for row in self.manufacturing_plan_table:
 			if not row.docname:
 				continue
 
-			so_det = so_data_map.get(row.docname) or {}
-			ref_customer = (
-				quotation_ref_map.get(so_det.get("prevdoc_docname")) or row.customer
-			)
+			chain = parent_chains.get(row.docname)
+			ref_customer = (chain.ref_customer if chain else None) or row.customer
 			if not ref_customer:
 				continue
 
