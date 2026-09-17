@@ -1488,3 +1488,91 @@ class TestDiamondGradeLinkQuery(UnitTestCase):
 		result, _ = self._query({"customer": "CUST", "diamond_quality": "VVS"}, rows=[])
 
 		self.assertEqual(result, [])
+
+
+class TestSalesTypeGradeOverride(UnitTestCase):
+	"""Outright/Outwork constrain the manual override list, and only that list.
+
+	Outright is a company-owned sale and Outwork a customer-supplied one, so each admits one
+	kind of grade. Sales Type is also what sets custom_customer_diamond on the quotation, which
+	becomes is_customer_diamond here -- so the two disagreeing means the PMO was edited into a
+	state neither answer fits, and the list is empty rather than arbitrary.
+	"""
+
+	ROW = [
+		frappe._dict(
+			diamond_grade_1="A",
+			diamond_grade_2="B",
+			diamond_grade_3=None,
+			diamond_grade_4=None,
+		)
+	]
+
+	def _query(self, **filters):
+		filters.setdefault("customer", "CUST")
+		filters.setdefault("diamond_quality", "VVS")
+		filters.setdefault("use_custom_diamond_grade", 1)
+
+		with (
+			patch(f"{FILTERS_QUERY}.frappe.db.get_all", return_value=self.ROW),
+			patch(
+				f"{FILTERS_QUERY}.frappe.get_all",
+				return_value=[
+					frappe._dict(name="A", is_customer_diamond_quality=0),
+					frappe._dict(name="B", is_customer_diamond_quality=1),
+				],
+			),
+		):
+			return get_diamond_grade(
+				"Attribute Value", "", "diamond_grade", 0, 20, filters
+			)
+
+	def test_outright_offers_only_unflagged_grades(self):
+		self.assertEqual(
+			self._query(sales_type="Outright", is_customer_diamond=0), [("A",)]
+		)
+
+	def test_outwork_offers_only_flagged_grades(self):
+		self.assertEqual(
+			self._query(sales_type="Outwork", is_customer_diamond=1), [("B",)]
+		)
+
+	def test_outright_with_the_box_ticked_offers_nothing(self):
+		self.assertEqual(self._query(sales_type="Outright", is_customer_diamond=1), [])
+
+	def test_outwork_with_the_box_unticked_offers_nothing(self):
+		self.assertEqual(self._query(sales_type="Outwork", is_customer_diamond=0), [])
+
+	def test_a_sales_type_without_a_rule_keeps_the_full_list(self):
+		"""Hybrid, Branch Sales, Certification and Repairing admit either kind."""
+		for sales_type in ("Hybrid", "Branch Sales", "Certification", "Repairing"):
+			for is_customer_diamond in (0, 1):
+				with self.subTest(sales_type=sales_type, icd=is_customer_diamond):
+					self.assertEqual(
+						self._query(
+							sales_type=sales_type,
+							is_customer_diamond=is_customer_diamond,
+						),
+						[("A",), ("B",)],
+					)
+
+	def test_a_blank_sales_type_keeps_the_full_list(self):
+		"""sales_type is fetch_from + read_only, so PMOs predating the field have none."""
+		for filters in ({}, {"sales_type": None}, {"sales_type": ""}):
+			with self.subTest(filters=filters):
+				self.assertEqual(self._query(**filters), [("A",), ("B",)])
+
+	def test_sales_type_does_not_reach_the_automatic_grade(self):
+		"""The override is the only thing Sales Type constrains.
+
+		With use_custom_diamond_grade off the field is read-only and the query returns the one
+		grade the controller would store, which is is_customer_diamond's business alone.
+		"""
+		self.assertEqual(
+			self._query(
+				sales_type="Outright",
+				is_customer_diamond=1,
+				use_custom_diamond_grade=0,
+			),
+			[("B",)],
+		)

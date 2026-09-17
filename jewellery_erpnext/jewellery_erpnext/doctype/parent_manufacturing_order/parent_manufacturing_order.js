@@ -30,6 +30,7 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 						diamond_quality: frm.doc.diamond_quality,
 						use_custom_diamond_grade: frm.doc.use_custom_diamond_grade ? 1 : 0,
 						is_customer_diamond: frm.doc.is_customer_diamond ? 1 : 0,
+						sales_type: frm.doc.sales_type,
 					},
 				};
 			});
@@ -37,6 +38,9 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 
 		// Always control read-only dynamically
 		frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
+
+		apply_customer_details_visibility(frm);
+		apply_grade_override_hint(frm);
 
 		if (!frm.doc.__islocal) {
 			frm.add_custom_button(__("Send For Customer Approval"), function () {
@@ -93,11 +97,13 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 
 	is_customer_diamond(frm) {
 		set_auto_diamond_grade(frm);
+		apply_grade_override_hint(frm);
 	},
 
 	use_custom_diamond_grade(frm) {
 		frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
 		set_auto_diamond_grade(frm);
+		apply_grade_override_hint(frm);
 	},
 
 	create_customer_transfer: function (frm) {
@@ -176,6 +182,54 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		}
 	},
 });
+
+// The section break plus every field in it: hiding the break alone leaves the fields reachable if
+// anything later re-renders them, and the list is short enough to be exact.
+const CUSTOMER_DETAIL_FIELDS = [
+	"customer_details_section",
+	"is_customer_gold",
+	"is_customer_diamond",
+	"is_customer_gemstone",
+	"is_customer_material",
+];
+
+// Sales Type -> the is_customer_diamond it implies, mirroring SALES_TYPE_CUSTOMER_DIAMOND in
+// doc_events/filters_query.py. Only used to explain an empty dropdown; the server decides the list.
+const SALES_TYPE_CUSTOMER_DIAMOND = { Outright: 0, Outwork: 1 };
+
+// Cosmetic only. The values still reach the browser and the REST API -- this keeps the section off
+// the form, it does not stop a non-manager writing those fields another way.
+function apply_customer_details_visibility(frm) {
+	// Set both ways, not just to 1: df properties live on the client-side doctype meta and
+	// persist across forms for the session, so a one-way toggle leaks into the next form.
+	const hidden = frappe.user.has_role("System Manager") ? 0 : 1;
+	CUSTOMER_DETAIL_FIELDS.forEach((field) => {
+		frm.set_df_property(field, "hidden", hidden);
+	});
+}
+
+// An Outright/Outwork PMO whose Is Customer Diamond disagrees with it gets an empty grade list
+// from the server. Say why, or the override looks broken rather than blocked.
+function apply_grade_override_hint(frm) {
+	// Sales Type is a Link, so its value is whatever Sales Type records exist -- test for the
+	// two values this map holds rather than for "not undefined", which a name like "constructor"
+	// would satisfy off Object.prototype.
+	const expected = SALES_TYPE_CUSTOMER_DIAMOND[frm.doc.sales_type];
+	const has_rule = expected === 0 || expected === 1;
+	const mismatch =
+		frm.doc.use_custom_diamond_grade && has_rule && expected !== (frm.doc.is_customer_diamond ? 1 : 0);
+
+	frm.set_df_property(
+		"diamond_grade",
+		"description",
+		mismatch
+			? __("No grades to choose from: a {0} order expects Is Customer Diamond to be {1}.", [
+					frm.doc.sales_type,
+					expected ? __("ticked") : __("unticked"),
+			  ])
+			: ""
+	);
+}
 
 // Must never be called from refresh: frm.set_value marks the form dirty, so resolving the grade on
 // load makes a freshly opened record show as unsaved. Only run it when the user changes an input;
