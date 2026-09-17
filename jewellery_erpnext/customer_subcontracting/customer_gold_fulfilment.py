@@ -989,10 +989,19 @@ def _write_production(doc, row, batch_no, customer, currency):
 
 	WHY THE CONSUMED ROWS AND NOT THE FINISHED-GOODS ROW
 	----------------------------------------------------
-	``create_manufacturing_entry`` hardcodes the FG row as
-	``"inventory_type": "Regular Stock"`` with no customer at all
-	(``manufacturing_operation.py:1118``), while the consumed rows immediately above it carry real
-	ownership (``:1067-1069``). So the FG row cannot answer "whose metal is this".
+	Not because the FG row lacks an owner -- it has one. ``_finished_goods_ownership``
+	(``manufacturing_operation.py:905-953``) derives the finished row's ``inventory_type`` and
+	``customer`` from the metal consumed, and it must, or a delivery of the piece could never
+	settle the liability.
+
+	The reason is double counting. The consumed row and the finished row are the SAME metal, once
+	as input and once as output. An event on each would move the customer's holding twice for one
+	physical fact. The consumed side is the one that carries the composition the spec asks for --
+	"actual finished-goods composition" IS what went in -- so that is the side that writes.
+
+	``record_stock_movement`` skips the produced row explicitly for this reason; see the branch
+	there. It used to fall through to the unclassified diagnostic instead, which is how the double
+	-counting question got asked in the first place.
 
 	The consumed rows can, and they are also the better source on the merits: the spec asks for
 	"actual finished-goods composition", and what was actually consumed IS the composition.
@@ -1185,9 +1194,29 @@ def record_stock_movement(doc, method=None):
 			continue
 
 		if doc.get("purpose") == "Manufacture" and source and not target:
-			# A consumed row of a manufacture. The produced FG row is skipped deliberately --
-			# see ``_write_production`` for why it cannot answer who owns the metal.
+			# A consumed row of a manufacture. The produced row is skipped just below.
 			_write_production(doc, row, batches[0], customer, currency)
+			continue
+
+		if doc.get("purpose") == "Manufacture" and target and not source:
+			# The PRODUCED row of a manufacture -- finished goods, and any by-product. No event,
+			# and no diagnostic either, because nothing is missing.
+			#
+			# The consumed row above already wrote the Production event for this metal. The
+			# finished piece is that same metal in another shape, so writing a second event here
+			# would count the customer's holding twice.
+			#
+			# This branch is new, and the reason is a regression the walkthrough caught. The FG
+			# row used to be hardcoded ``Regular Stock``, so it was dropped by the owner check
+			# long before reaching the bottom of this loop. Now that ``_finished_goods_ownership``
+			# gives the finished piece its customer -- which it must, or the delivery can never
+			# settle -- the row survives that check, is one-sided, and fell through to the
+			# unclassified diagnostic below. It logged "No custody event was written; the holding
+			# will not reflect this row" on EVERY customer-gold manufacture: 313 rows on the
+			# integration site alone, each one a false alarm about correct behaviour.
+			#
+			# A diagnostic that cries wolf on the normal path is worse than no diagnostic, because
+			# it trains people to ignore the log that also carries the real drift.
 			continue
 
 		if not (source and target):
@@ -1603,6 +1632,30 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision):
 	obligation shrinks -- **Dr Customer Gold Liability / Cr Customer Gold COGS Adjustment**, the
 	SOP's Example C posting. A physical return inverts both legs.
 	"""
+	# Refuse to post the two legs to one ledger. The settings validator already rejects this,
+	# but it only runs on SAVE and it returns early while the feature flag is off
+	# (subcontracting_settings.py:60-61) -- so a row configured before the flag was switched on
+	# has never been validated at all. That is exactly how the real KGJPL row was written.
+	#
+	# Blocking here fails the delivery, which is the right outcome: the alternative is a balanced
+	# Dr X / Cr X entry that erpnext accepts, that moves no balance, and that permanently claims
+	# the events via cg_settlement_voucher so no later correction can settle them.
+	if accounts.liability_account == accounts.cogs_adjustment_account:
+		frappe.throw(
+			frappe._(
+				"Customer Gold Liability and COGS Adjustment are both configured as {0} for "
+				"company {1}. Settling against a single account would post it against itself "
+				"and leave the liability untouched. Fix the Customer Gold accounts in "
+				"Subcontracting Settings before submitting {2} {3}."
+			).format(
+				frappe.bold(accounts.liability_account),
+				frappe.bold(doc.company),
+				doc.doctype,
+				frappe.bold(doc.name),
+			),
+			title=frappe._("Customer Gold Accounts Must Differ"),
+		)
+
 	# A party is set only when the account actually demands one. A Customer Gold Liability
 	# account is commonly a plain Liability ledger, for which Frappe rejects a party outright;
 	# stamping one unconditionally would fail every settlement on such a chart.

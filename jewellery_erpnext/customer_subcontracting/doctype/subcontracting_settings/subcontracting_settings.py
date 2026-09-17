@@ -28,6 +28,11 @@ GOLD_RATE_FIELDS = ("live_rate", "9_am", "3_pm", "11_pm")
 GOLD_RATE_UNITS = ("Per Gram", "Per 10 Gram")
 
 RECEIPT_PURPOSE = "Material Receipt"
+#: Returning custody metal takes it OUT of the warehouse, so the configured type must be an
+#: issue. ``_build_return_entry`` builds a row with ``s_warehouse`` and no ``t_warehouse``; any
+#: other purpose makes erpnext reject that row deep inside an ``ignore_permissions`` submit,
+#: which surfaces as a framework traceback at return time instead of a readable message here.
+RETURN_PURPOSE = "Material Issue"
 
 #: The Customer Gold rate basis is per gram, so the receipt item must be stocked in grams.
 RECEIPT_STOCK_UOM = "Gram"
@@ -60,8 +65,47 @@ def validate_customer_gold_settings(doc):
 		return
 
 	validate_customer_gold_receipt_config(doc)
+	validate_customer_gold_return_config(doc)
 	validate_customer_gold_rate_config(doc)
 	validate_customer_gold_accounts(doc)
+
+
+def validate_customer_gold_return_config(doc):
+	"""Check the return type the way the receipt type is already checked.
+
+	The receipt side gets a purpose check here AND a second one at runtime
+	(``customer_gold_receipt._validate_receipt_purpose``). The return side had neither: the only
+	guard anywhere was ``_build_return_entry`` throwing when the field is BLANK. A field pointing
+	at a Material Transfer or Material Receipt type passed configuration cleanly and failed later,
+	inside the return, as a raw framework error.
+
+	Blank is still allowed. A site that never returns customer gold does not have to configure a
+	return type, and ``_is_customer_gold_return`` already answers ``False`` rather than raising
+	for that case -- "no returns configured" is a legitimate state, "returns configured wrongly"
+	is not.
+	"""
+	configured = doc.get("customer_gold_return_stock_entry_type")
+	if not configured:
+		return
+
+	purpose = frappe.db.get_value("Stock Entry Type", configured, "purpose")
+	if not purpose:
+		frappe.throw(
+			_("Stock Entry Type {0} does not exist.").format(frappe.bold(configured)),
+			title=_("Customer Gold Configuration Incomplete"),
+		)
+	if purpose != RETURN_PURPOSE:
+		frappe.throw(
+			_(
+				"Customer Gold Return Stock Entry Type {0} has purpose {1}, but returning "
+				"customer gold requires {2}."
+			).format(
+				frappe.bold(configured),
+				frappe.bold(purpose),
+				frappe.bold(RETURN_PURPOSE),
+			),
+			title=_("Invalid Stock Entry Type"),
+		)
 
 
 def validate_customer_gold_receipt_config(doc):
@@ -73,54 +117,31 @@ def validate_customer_gold_receipt_config(doc):
 			title=_("Customer Gold Configuration Incomplete"),
 		)
 
-	item = frappe.db.get_value(
-		"Item",
-		doc.customer_24kt_item,
-		["disabled", "is_stock_item", "has_batch_no", "stock_uom"],
-		as_dict=True,
-	)
-	if not item:
-		frappe.throw(
-			_("Customer 24KT Item {0} does not exist.").format(
-				frappe.bold(doc.customer_24kt_item)
-			)
-		)
-	if item.disabled:
-		frappe.throw(
-			_("Customer 24KT Item {0} is disabled.").format(
-				frappe.bold(doc.customer_24kt_item)
-			)
-		)
-	if not item.is_stock_item:
-		frappe.throw(
-			_("Customer 24KT Item {0} must be a Stock Item.").format(
-				frappe.bold(doc.customer_24kt_item)
-			)
-		)
-	if not item.has_batch_no:
-		frappe.throw(
-			_(
-				"Customer 24KT Item {0} must be batch controlled, because customer gold is tracked per batch."
-			).format(frappe.bold(doc.customer_24kt_item))
-		)
+	_validate_receipt_item(doc.customer_24kt_item, _("Customer 24KT Item"))
 
-	if item.stock_uom != RECEIPT_STOCK_UOM:
-		# Load-bearing, not cosmetic. ``customer_gold_rate.convert_gold_rate_to_per_gram``
-		# turns a "Per 10 Gram" quote into a per-gram rate by dividing by 10, and
-		# ``apply_valuation_policy`` then books that figure as ``basic_rate`` -- which
-		# erpnext labels "as per Stock UOM". If the item's stock UOM is not grams, the
-		# booked value is wrong by the conversion factor and nothing downstream would
-		# notice. Not a tautology either: on this bench 67 metal items are Gram and 2
-		# are Nos.
-		frappe.throw(
-			_(
-				"Customer 24KT Item {0} has Stock UOM {1}, but the Customer Gold rate basis is per {2}."
-			).format(
-				frappe.bold(doc.customer_24kt_item),
-				frappe.bold(item.stock_uom or _("not set")),
-				frappe.bold(RECEIPT_STOCK_UOM),
-			),
-			title=_("Unsupported Stock UOM"),
+	# Additional purities the customer may hand over -- 99.5 alongside 99.9, say. Held to
+	# EXACTLY the same standard as the primary item: an extra item that is not batch controlled
+	# or not stocked in grams breaks custody tracking and rate arithmetic the same way, and
+	# there is no reason for the secondary list to be the lenient one.
+	seen_items = {doc.customer_24kt_item}
+	for row in doc.get("customer_gold_items") or []:
+		if not row.item:
+			frappe.throw(
+				_("Row #{0}: Item is mandatory in Additional Customer Gold Items.").format(
+					row.idx
+				)
+			)
+		if row.item in seen_items:
+			frappe.throw(
+				_(
+					"Row #{0}: Item {1} is already accepted -- it is either the Customer 24KT "
+					"Item or a duplicate row."
+				).format(row.idx, frappe.bold(row.item)),
+				title=_("Duplicate Customer Gold Item"),
+			)
+		seen_items.add(row.item)
+		_validate_receipt_item(
+			row.item, _("Additional Customer Gold Item (Row #{0})").format(row.idx)
 		)
 
 	if not doc.get("customer_goods_stock_entry_type"):
@@ -150,6 +171,76 @@ def validate_customer_gold_receipt_config(doc):
 				frappe.bold(RECEIPT_PURPOSE),
 			)
 		)
+
+
+def _validate_receipt_item(item_code, label):
+	"""Every item a customer may hand over must clear the same four gates.
+
+	Extracted so the additional-purity rows cannot drift into a weaker standard than the
+	primary item. ``label`` names which field is at fault, because with several items
+	configured "Customer 24KT Item is disabled" would point at the wrong row.
+	"""
+	item = frappe.db.get_value(
+		"Item",
+		item_code,
+		["disabled", "is_stock_item", "has_batch_no", "stock_uom"],
+		as_dict=True,
+	)
+	if not item:
+		frappe.throw(_("{0} {1} does not exist.").format(label, frappe.bold(item_code)))
+	if item.disabled:
+		frappe.throw(_("{0} {1} is disabled.").format(label, frappe.bold(item_code)))
+	if not item.is_stock_item:
+		frappe.throw(
+			_("{0} {1} must be a Stock Item.").format(label, frappe.bold(item_code))
+		)
+	if not item.has_batch_no:
+		frappe.throw(
+			_(
+				"{0} {1} must be batch controlled, because customer gold is tracked per batch."
+			).format(label, frappe.bold(item_code))
+		)
+
+	if item.stock_uom != RECEIPT_STOCK_UOM:
+		# Load-bearing, not cosmetic. ``customer_gold_rate.convert_gold_rate_to_per_gram``
+		# turns a "Per 10 Gram" quote into a per-gram rate by dividing by 10, and
+		# ``apply_valuation_policy`` then books that figure as ``basic_rate`` -- which
+		# erpnext labels "as per Stock UOM". If the item's stock UOM is not grams, the
+		# booked value is wrong by the conversion factor and nothing downstream would
+		# notice. Not a tautology either: on this bench 67 metal items are Gram and 2
+		# are Nos.
+		frappe.throw(
+			_(
+				"{0} {1} has Stock UOM {2}, but the Customer Gold rate basis is per {3}."
+			).format(
+				label,
+				frappe.bold(item_code),
+				frappe.bold(item.stock_uom or _("not set")),
+				frappe.bold(RECEIPT_STOCK_UOM),
+			),
+			title=_("Unsupported Stock UOM"),
+		)
+
+
+def get_allowed_customer_gold_items(settings=None):
+	"""Every item a customer may hand over, primary first.
+
+	The primary ``customer_24kt_item`` is always included, so a site that configures no
+	additional purities behaves exactly as it did when the receipt tested one item for equality.
+	Returns a list rather than a set: the primary item's position is meaningful -- it is the item
+	the configured Gold Rate is quoted against, and every other purity is priced relative to it.
+	"""
+	settings = settings or get_customer_gold_settings()
+
+	allowed = []
+	primary = settings.get("customer_24kt_item")
+	if primary:
+		allowed.append(primary)
+	for row in settings.get("customer_gold_items") or []:
+		item = row.get("item") if isinstance(row, dict) else row.item
+		if item and item not in allowed:
+			allowed.append(item)
+	return allowed
 
 
 def validate_customer_gold_rate_config(doc):
@@ -231,6 +322,47 @@ def validate_customer_gold_accounts(doc):
 			row.idx,
 			_("Customer Gold COGS Adjustment Account"),
 		)
+
+		_reject_identical_accounts(row)
+
+
+def _reject_identical_accounts(row):
+	"""The two settlement legs must land on different ledgers.
+
+	``_build_settlement_entry`` debits the liability account and credits the COGS adjustment
+	account. Point both at one account and the Journal Entry becomes ``Dr X / Cr X``: balanced,
+	so erpnext accepts it -- its only same-account rule is PER ROW
+	(``journal_entry.py:959-961``, ``if d.debit and d.credit``) and these are two separate rows.
+	It inserts, submits, and moves the balance by nothing.
+
+	WHY THIS HAS TO BLOCK AT SAVE RATHER THAN BE DETECTED LATER
+	-----------------------------------------------------------
+	The failure is silent AND irreversible through the normal path. ``settle_customer_gold_liability``
+	stamps ``cg_settlement_voucher`` on every event it settles and only ever selects events where
+	that field is unset. Once a no-op Journal Entry has claimed them, correcting the configuration
+	does not re-settle anything -- the next run finds nothing to do and returns. The custody ledger
+	then reads "settled" while the general ledger still carries the whole obligation, and nothing in
+	the app reconciles the two. Recovery means cancelling every affected Delivery Note.
+
+	Found on a real configuration: both fields set to ``Customer Goods Receive - KGJPL - KGJPL``.
+	It passed every existing check, because the liability gate wants root type ``Liability`` --
+	which that account is -- and the COGS gate has no root-type rule to fail.
+	"""
+	liability = row.customer_gold_liability_account
+	cogs = row.customer_gold_cogs_adjustment_account
+	if not liability or not cogs or liability != cogs:
+		return
+
+	frappe.throw(
+		_(
+			"Row #{0}: Customer Gold Liability Account and Customer Gold COGS Adjustment "
+			"Account are both set to {1}. The settlement Journal Entry debits the first and "
+			"credits the second, so a single account would post {2} against itself and the "
+			"liability would never reduce. Configure a separate account -- typically an "
+			"Expense account -- for the COGS Adjustment."
+		).format(row.idx, frappe.bold(liability), frappe.bold(liability)),
+		title=_("Customer Gold Accounts Must Differ"),
+	)
 
 
 def _validate_account(account, company, idx, label, expected_root_type=None):

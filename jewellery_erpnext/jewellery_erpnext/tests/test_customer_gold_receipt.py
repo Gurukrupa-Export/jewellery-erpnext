@@ -744,3 +744,112 @@ class TestCustomerGoldValuationPolicy(IntegrationTestCase):
 	def test_zero_value_does_not_stamp_a_contra_account(self, *_mocks):
 		row = self._rows_under("Zero Value")[0]
 		self.assertFalse(row.get("expense_account"))
+
+
+#: A second purity a customer may hand over. Real on this bench's chart of items.
+SECOND_ITEM = "M-G-24KT-99.5-Y"
+#: The fixtures' purities, so every figure below can be rechecked against the masters.
+PRIMARY_PURITY = 99.9
+SECOND_PURITY = 99.5
+
+
+class TestPurityScaledRate(IntegrationTestCase):
+	"""Customers hand over more than one purity, and the rate must follow the fine content.
+
+	The configured Gold Rate is quoted per gram of the Customer 24KT Item (decision D02). Applying
+	that same rupees-per-gram to a LOWER purity over-credits the customer, every receipt, in the
+	same direction. Gold is bought on fine content, so the rate is restated by the purity ratio.
+
+	WHY THE PURITY IS READ FROM THE ATTRIBUTE VALUE
+	-----------------------------------------------
+	``metal_utils.get_purity_percentage`` reads ``Attribute Value.purity_percentage``, and that
+	column is wrong on this bench: the row named ``99.9`` carries **100.0**. Scaling against 100.0
+	instead of 99.9 mis-rates every non-primary purity by 0.1%. The last test here pins the
+	choice, because it is the kind of detail a later refactor "simplifies" back to the broken
+	helper.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_the_reference_item_is_not_rescaled(self):
+		"""The path every existing site takes. Must be bit-for-bit what it was before."""
+		self.assertEqual(cg_receipt._rate_for_item(7200.0, ITEM, ITEM), 7200.0)
+
+	def test_a_lower_purity_is_rated_down(self):
+		"""7,200.00 x 99.5 / 99.9. Hand-computed, not derived from the code under test."""
+		with patch.object(
+			cg_receipt,
+			"_metal_purity",
+			side_effect=lambda i: {ITEM: PRIMARY_PURITY, SECOND_ITEM: SECOND_PURITY}[i],
+		):
+			self.assertAlmostEqual(
+				cg_receipt._rate_for_item(7200.0, SECOND_ITEM, ITEM),
+				7171.1712,
+				places=4,
+				msg="99.5 metal must not be booked at the 99.9 rate",
+			)
+
+	def test_the_difference_is_material_on_a_real_receipt(self):
+		"""Not a rounding nicety: state the money, so nobody writes this off as noise."""
+		with patch.object(
+			cg_receipt,
+			"_metal_purity",
+			side_effect=lambda i: {ITEM: PRIMARY_PURITY, SECOND_ITEM: SECOND_PURITY}[i],
+		):
+			scaled = cg_receipt._rate_for_item(7164.83, SECOND_ITEM, ITEM)
+
+		self.assertAlmostEqual(
+			(7164.83 - scaled) * 10,
+			286.88,
+			places=2,
+			msg="10 g of 99.5 booked at the 99.9 rate over-credits by this much",
+		)
+
+	def test_an_unresolvable_purity_refuses_rather_than_guessing(self):
+		"""``repack.get_purity`` defaults to 99.9 and ``batch_rename.get_purity`` to 100.
+
+		Two different guesses for the same unknown, already in this codebase. A third guess
+		here would set a customer's booked value, so this one refuses instead.
+		"""
+		with patch.object(cg_receipt, "_metal_purity", return_value=None):
+			with self.assertRaises(frappe.ValidationError):
+				cg_receipt._rate_for_item(7200.0, SECOND_ITEM, ITEM)
+
+	def test_a_zero_rate_stays_zero_without_touching_purity(self):
+		"""Nothing to scale, so nothing is read -- and no throw for a missing purity."""
+		with patch.object(cg_receipt, "_metal_purity", return_value=None):
+			self.assertEqual(cg_receipt._rate_for_item(0.0, SECOND_ITEM, ITEM), 0.0)
+
+	def test_purity_comes_from_the_attribute_value_not_the_broken_column(self):
+		"""D04's defence. Reading ``purity_percentage`` would return 100.0 for this item."""
+		captured = {}
+
+		def _get_all(doctype, **kwargs):
+			captured["doctype"] = doctype
+			captured["fields"] = kwargs.get("fields")
+			captured["filters"] = kwargs.get("filters")
+			return [frappe._dict(attribute_value="99.9")]
+
+		with patch.object(cg_receipt.frappe, "get_all", side_effect=_get_all):
+			self.assertEqual(cg_receipt._metal_purity(ITEM), 99.9)
+
+		self.assertEqual(captured["doctype"], "Item Variant Attribute")
+		self.assertEqual(captured["fields"], ["attribute_value"])
+		self.assertEqual(captured["filters"]["attribute"], "Metal Purity")
+
+	def test_a_missing_attribute_reads_as_unknown(self):
+		with patch.object(cg_receipt.frappe, "get_all", return_value=[]):
+			self.assertIsNone(cg_receipt._metal_purity(ITEM))
+
+	def test_a_non_positive_attribute_reads_as_unknown(self):
+		"""``91.75`` carries 0.0 on this bench -- the same class of master defect as ``99.9``."""
+		for value in ("0", "", "not a number"):
+			with self.subTest(value=value):
+				with patch.object(
+					cg_receipt.frappe,
+					"get_all",
+					return_value=[frappe._dict(attribute_value=value)],
+				):
+					self.assertIsNone(cg_receipt._metal_purity(ITEM))

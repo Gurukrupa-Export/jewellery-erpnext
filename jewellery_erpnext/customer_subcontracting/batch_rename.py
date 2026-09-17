@@ -29,7 +29,7 @@ _LEGACY_PARENT_BATCH_TYPES = (
 
 
 def _customer_gold_config():
-	"""``(configured_receipt_type, configured_item)`` for the customer gold flow.
+	"""``(configured_receipt_type, configured_items)`` for the customer gold flow.
 
 	``(None, None)`` when the flow is off or unconfigured, which is every site today —
 	so the legacy behaviour below is reached unchanged unless someone has deliberately
@@ -39,6 +39,7 @@ def _customer_gold_config():
 	module importable when the settings doctype has not been synced.
 	"""
 	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_allowed_customer_gold_items,
 		get_customer_gold_settings,
 		is_customer_gold_enabled,
 	)
@@ -49,30 +50,40 @@ def _customer_gold_config():
 	settings = get_customer_gold_settings()
 	return (
 		settings.get("customer_goods_stock_entry_type"),
-		settings.get("customer_24kt_item"),
+		get_allowed_customer_gold_items(settings),
 	)
 
 
-def _is_eligible_item(item_code, configured_item):
+def _is_eligible_item(item_code, configured_items):
 	"""Whether this row's item should be minted a customer parent batch.
 
 	Two independent tests, either of which qualifies:
 
-	* it IS the configured receipt item — identity, resolved from Settings; and
+	* it is ONE OF the configured receipt items — resolved from Settings; and
 	* it carries the ``24KT`` token — the historical rule.
 
 	The token test is retained rather than replaced. Settings is unconfigured on every
 	site today, so removing it would stop minting batches for the existing flow
 	entirely. Adding identity is what lets a correctly configured item whose code
 	happens not to contain ``24KT`` work at all — the C05 gap.
+
+	Membership, not equality, since a customer may hand over more than one purity. The token
+	test alone would not cover them: an additional 99.5 item need not carry ``24KT`` in its
+	code, and without a batch the metal has no custody identity at all.
 	"""
-	if configured_item and item_code == configured_item:
+	# A bare string is normalised rather than trusted. ``"X" in "PREFIX-X-SUFFIX"`` is a
+	# SUBSTRING test, so a caller passing one item code as a string -- which every caller did
+	# before this took a list -- would silently match unrelated items whose codes contain it.
+	if isinstance(configured_items, str):
+		configured_items = [configured_items]
+
+	if configured_items and item_code in configured_items:
 		return True
 	return "24KT" in item_code
 
 
 def create_parent_batches(doc, method=None):
-	configured_type, configured_item = _customer_gold_config()
+	configured_type, configured_items = _customer_gold_config()
 
 	if doc.doctype == "Stock Entry":
 		accepted = _LEGACY_PARENT_BATCH_TYPES + (
@@ -92,7 +103,7 @@ def create_parent_batches(doc, method=None):
 		if not row.item_code:
 			continue
 
-		if not _is_eligible_item(row.item_code, configured_item):
+		if not _is_eligible_item(row.item_code, configured_items):
 			continue
 
 		if row.batch_no:

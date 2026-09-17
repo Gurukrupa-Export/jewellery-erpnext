@@ -9,6 +9,7 @@
   "enable_customer_gold_flow",
   "receipt_section",
   "customer_24kt_item",
+  "customer_gold_items",
   "column_break_receipt",
   "customer_goods_stock_entry_type",
   "customer_gold_return_stock_entry_type",
@@ -48,6 +49,13 @@
    "fieldtype": "Link",
    "label": "Customer 24KT Item",
    "options": "Item"
+  },
+  {
+   "description": "Additional purities a customer may hand over, for example 99.5 alongside 99.9. Leave empty to accept only the Customer 24KT Item. Each item is booked at the Customer 24KT Item's rate scaled by its Metal Purity.",
+   "fieldname": "customer_gold_items",
+   "fieldtype": "Table",
+   "label": "Additional Customer Gold Items",
+   "options": "Customer Gold Item"
   },
   {
    "fieldname": "column_break_receipt",
@@ -137,7 +145,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-08-20 09:00:00.000000",
+ "modified": "2026-09-17 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Subcontracting Settings",
