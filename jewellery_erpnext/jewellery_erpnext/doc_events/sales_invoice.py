@@ -9,6 +9,9 @@ from frappe.utils import flt, get_last_day, getdate
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	_calculate_diamond_amount,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.hallmarking import (
+	hallmarking_pieces,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
 
 
@@ -978,8 +981,13 @@ def update_si_data(self):
 					{"is_for_hallmarking": 1},
 					["name", "hsn_code", "uom"],
 				)
+				# Per PIECE, matching sales_order.py: hallmarking_amount is the whole-BOM
+				# total, so an Earrings BOM (the pair) carries two pieces' worth and must
+				# count as two on the qty side. Counting it as one made the displayed rate
+				# the pair total rather than the per-piece charge.
+				pieces = hallmarking_pieces(bom_doc)
 				if invoice_data.get(custom_item):
-					invoice_data[custom_item]["qty"] += 1
+					invoice_data[custom_item]["qty"] += pieces
 					invoice_data[custom_item]["amount"] += bom_doc.hallmarking_amount
 					invoice_data[custom_item]["rate"] = (
 						invoice_data[custom_item]["amount"]
@@ -987,11 +995,11 @@ def update_si_data(self):
 					)
 				else:
 					invoice_data[custom_item] = {
-						"qty": 1,
+						"qty": pieces,
 						"hsn_code": hsn_code,
 						"uom": uom,
 						"amount": bom_doc.hallmarking_amount,
-						"rate": bom_doc.hallmarking_amount,
+						"rate": bom_doc.hallmarking_amount / pieces,
 						"income_account": row.income_account,
 						"cost_center": row.cost_center,
 					}
@@ -1952,9 +1960,11 @@ def update_income_account(self):
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_completed_product_return_orders(doctype, txt, searchfield, start, page_len, filters):
-
-    return frappe.db.sql("""
+def get_completed_product_return_orders(
+	doctype, txt, searchfield, start, page_len, filters
+):
+	return frappe.db.sql(
+		"""
         SELECT pro.name
         FROM `tabProduct Return Order Form` pro
         WHERE pro.docstatus = 1
@@ -1972,9 +1982,10 @@ def get_completed_product_return_orders(doctype, txt, searchfield, start, page_l
           )
         ORDER BY pro.modified DESC
         LIMIT %(start)s, %(page_len)s
-    """, {
-        "txt": f"%{txt}%",
-        "start": start,
-        "page_len": page_len,
-    })
-
+    """,
+		{
+			"txt": f"%{txt}%",
+			"start": start,
+			"page_len": page_len,
+		},
+	)

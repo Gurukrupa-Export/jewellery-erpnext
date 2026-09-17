@@ -14,6 +14,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification import (
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
 	create_po,
+	update_bom_details,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification import (
 	ProductCertification,
@@ -3095,9 +3096,37 @@ class TestEarringAmountSplit(IntegrationTestCase):
 		doc = self._doc("Hall Marking Service", 150, ["Earrings", "Ring"])
 		self.assertEqual(self._amounts(doc), [100.0, 50.0])
 
-	def test_fire_assy_earring_takes_two_of_three_shares(self):
+	def test_fire_assy_weights_the_helper_the_same_way(self):
+		"""Helper-level only, and inert in production: get_exploded_table appends Fire Assy
+		rows with no category at all (they carry the METAL item, never a finished Earrings
+		item), so this shape does not occur. It pins that Fire Assy shares the Hall Marking
+		rule rather than any billing behaviour -- see
+		test_fire_assy_rows_have_no_category_so_the_split_stays_flat for the real shape."""
 		doc = self._doc("Fire Assy Service", 150, ["Earrings", "Ring"])
 		self.assertEqual(self._amounts(doc), [100.0, 50.0])
+
+	def test_fire_assy_rows_have_no_category_so_the_split_stays_flat(self):
+		"""The metal / pure / loss rows get_exploded_table really appends carry no category,
+		so every unit is 1 and the split is flat -- the earring weighting cannot reach them."""
+		doc = self._doc("Fire Assy Service", 150, [None, None, None])
+		self.assertEqual(self._amounts(doc), [50.0, 50.0, 50.0])
+
+	def test_shares_sum_to_the_entered_total(self):
+		"""update_bom_details sums these straight onto the BOM, so a total that does not
+		divide evenly must still reconcile to what the operator entered."""
+		# 9 units into 100 divides to 11.111..., so the rounded shares cannot sum to 100
+		# on their own -- a flat `total / units` per row leaves the rows at 99.99.
+		doc = self._doc("Hall Marking Service", 100, ["Earrings"] + ["Ring"] * 7)
+		doc.distribute_amount()
+		amounts = [row.amount for row in doc.exploded_product_details]
+
+		precision = doc.precision("amount", "exploded_product_details")
+		self.assertEqual(flt(sum(amounts), precision), 100.0)
+		# The residual lands on the largest share -- the earring row -- so it is the one
+		# row that is not exactly twice a single-unit share.
+		self.assertEqual(amounts[1:], [amounts[1]] * 7)
+		self.assertGreater(amounts[0], amounts[1])
+		self.assertAlmostEqual(amounts[0], 2 * amounts[1], places=1)
 
 	def test_the_earring_row_is_not_split_in_two(self):
 		doc = self._doc("Hall Marking Service", 150, ["Earrings", "Ring"])
@@ -3118,6 +3147,25 @@ class TestEarringAmountSplit(IntegrationTestCase):
 		doc = self._doc("Fire Assy Service", 150, ["Earrings", None])
 		self.assertEqual(self._amounts(doc), [100.0, 50.0])
 
+	def test_bare_dict_rows_are_split_too(self):
+		"""Not every caller appends real child Documents -- some assign frappe._dict rows
+		(see test_distribute_amount_multiple_orders). A _dict has no .precision(), so the
+		stored precision has to be read off the parent with a parentfield, not off a row."""
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.service_type = "Hall Marking Service"
+		doc.total_amount = 150
+		doc.exploded_product_details = [
+			frappe._dict(
+				{"serial_no": "S1", "category": "Earrings", "gross_weight": 1.0}
+			),
+			frappe._dict({"serial_no": "S2", "category": "Ring", "gross_weight": 1.0}),
+		]
+		doc.distribute_amount()
+		self.assertEqual(
+			[flt(row.amount, 2) for row in doc.exploded_product_details], [100.0, 50.0]
+		)
+
 	def test_diamond_certificate_keeps_the_flat_split(self):
 		"""certification_amount is already priced off diamond_weight, which carries both
 		stones of a pair -- weighting the row on top would count the pair twice."""
@@ -3134,3 +3182,147 @@ class TestEarringAmountSplit(IntegrationTestCase):
 		)
 		self.assertEqual(self._amounts(doc), [0.0, 0.0])
 		self.assertEqual(doc.total_amount, 0)
+
+
+class TestEarringAmountSplitThroughExplode(IntegrationTestCase):
+	"""The split, driven through the path that really populates `category`.
+
+	TestEarringAmountSplit hand-sets `category` on an exploded row. In production nothing
+	does that: on the Hall Marking branch `get_exploded_table` copies it down from the
+	Product Details row, and the row's own `fetch_from: item_code.item_category` is applied
+	by `_validate_links()` -- which frappe runs BEFORE `validate()`, where the exploded rows
+	are built, so a row created on that save has no fetched value until the next one.
+
+	So `get_exploded_table` copying it down is the only thing making the weighting work on a
+	first save. This class drives that, and would catch a regression in it that the
+	hand-set tests cannot see.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _explode_and_split(self, categories, total_amount=150):
+		doc = frappe.new_doc("Product Certification")
+		doc.service_type = "Hall Marking Service"
+		doc.type = "Receive"
+		doc.total_amount = total_amount
+		for index, category in enumerate(categories, start=1):
+			doc.append(
+				"product_details",
+				{
+					"item_code": "ITEM-1",
+					"serial_no": f"SN-{index}",
+					"bom": "BOM-1",
+					"category": category,
+				},
+			)
+		sources = frappe._dict(
+			bom={"BOM-1": _BOM_WEIGHTS},
+			bom_metal={},
+			mwo={},
+			mop={},
+			latest_mop={},
+			pmo={},
+			pmo_departments={},
+		)
+		with patch.object(
+			ProductCertification, "_exploded_source_data", return_value=sources
+		):
+			doc.get_exploded_table()
+		doc.distribute_amount()
+		return doc.exploded_product_details
+
+	def test_category_reaches_the_exploded_row_from_product_details(self):
+		rows = self._explode_and_split(["Earrings", "Ring"])
+		self.assertEqual([row.category for row in rows], ["Earrings", "Ring"])
+
+	def test_the_earring_row_takes_two_of_three_shares(self):
+		rows = self._explode_and_split(["Earrings", "Ring"])
+		self.assertEqual([flt(row.amount, 2) for row in rows], [100.0, 50.0])
+
+	def test_no_earring_is_the_flat_split(self):
+		rows = self._explode_and_split(["Ring", "Bangle"])
+		self.assertEqual([flt(row.amount, 2) for row in rows], [75.0, 75.0])
+
+
+class TestBomHallmarkingAmountUnit(IntegrationTestCase):
+	"""What `update_bom_details` actually writes onto BOM.hallmarking_amount.
+
+	`TestEarringAmountSplit` stops at `distribute_amount()`, so nothing observed the value
+	that leaves the document. This pins it, because the whole point of the per-piece split
+	is the number that lands on the BOM.
+
+	The unit it carries is a WHOLE-BOM line total: an Earrings BOM is the pair, so its
+	hallmarking_amount covers both pieces. That is what every site pricing a BOM expects
+	(`purchase_order.update_rate` and the sales_invoice line rates sum it alongside
+	`making_charge` and `gold_bom_amount`), and it is why the e-invoice hallmarking line --
+	which reports amount against a PIECE count -- has to count an Earrings BOM as two.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _written(self, rows, service_type="Hall Marking Service"):
+		"""Run update_bom_details and capture the BOM writes instead of hitting the DB."""
+		doc = frappe.new_doc("Product Certification")
+		doc.service_type = service_type
+		doc.type = "Receive"
+		doc.total_amount = 150
+		for index, (bom, category) in enumerate(rows, start=1):
+			doc.append(
+				"exploded_product_details",
+				{
+					"item_code": "TEST-ITEM-001",
+					"serial_no": f"TEST-SERIAL-{index:03d}",
+					"bom": bom,
+					"category": category,
+					"gross_weight": 1.0,
+				},
+			)
+		doc.distribute_amount()
+
+		written = {}
+
+		def _set_value(doctype, name, field, value):
+			written[(doctype, name, field)] = value
+
+		with patch.object(frappe.db, "set_value", _set_value):
+			update_bom_details(doc)
+		return written
+
+	def test_an_earring_bom_carries_the_pair_total(self):
+		written = self._written([("BOM-EAR", "Earrings"), ("BOM-RING", "Ring")])
+		self.assertEqual(written[("BOM", "BOM-EAR", "hallmarking_amount")], 100.0)
+		self.assertEqual(written[("BOM", "BOM-RING", "hallmarking_amount")], 50.0)
+
+	def test_the_writes_sum_to_the_entered_total(self):
+		written = self._written([("BOM-EAR", "Earrings"), ("BOM-RING", "Ring")])
+		self.assertEqual(flt(sum(written.values()), 2), 150.0)
+
+	def test_rows_sharing_a_bom_are_summed_onto_it(self):
+		written = self._written([("BOM-EAR", "Earrings"), ("BOM-EAR", "Ring")])
+		self.assertEqual(written[("BOM", "BOM-EAR", "hallmarking_amount")], 150.0)
+
+	def test_diamond_certificate_writes_the_other_field_and_stays_flat(self):
+		written = self._written(
+			[("BOM-EAR", "Earrings"), ("BOM-RING", "Ring")],
+			service_type="Diamond Certificate service",
+		)
+		self.assertEqual(written[("BOM", "BOM-EAR", "certification_amount")], 75.0)
+		self.assertEqual(written[("BOM", "BOM-RING", "certification_amount")], 75.0)
+
+	def test_an_issue_writes_nothing(self):
+		doc = frappe.new_doc("Product Certification")
+		doc.service_type = "Hall Marking Service"
+		doc.type = "Issue"
+		doc.append(
+			"exploded_product_details",
+			{"item_code": "TEST-ITEM-001", "bom": "BOM-EAR", "category": "Earrings"},
+		)
+		with patch.object(frappe.db, "set_value") as set_value:
+			update_bom_details(doc)
+		set_value.assert_not_called()
