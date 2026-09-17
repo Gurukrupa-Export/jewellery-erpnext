@@ -762,9 +762,22 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		"manufacturing_order",
 	)
 
+	from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+		resolve_target_item_code,
+	)
+
+	# manufacturing_order alone scopes to the whole Parent Manufacturing Order, which
+	# can carry Manufacturing Operations for other items/routes entirely -- narrow
+	# (never replace; a repeat/rework run can share the same item across a different,
+	# unrelated PMO) by ANDing in this SNC's own target item when it's resolvable.
+	mop_filters = {"manufacturing_order": pmo, "docstatus": ["!=", 2]}
+	target_item = resolve_target_item_code(self)
+	if target_item:
+		mop_filters["item_code"] = target_item
+
 	operation_data = frappe.get_all(
 		"Manufacturing Operation",
-		{"manufacturing_order": pmo, "docstatus": ["!=", 2]},
+		mop_filters,
 		["name as manufacturing_operation", "employee", "total_minutes", "operation"],
 	)
 
@@ -1496,7 +1509,6 @@ def update_new_serial_no(self):
 				"certification_date": row.certification_date,
 			},
 		)
-
 	# THE ONLY PLACE a stamping number is ever minted. It goes onto physical metal and
 	# means "the SNC produced this piece", so it is claimed here rather than from a
 	# `before_save` hook on Serial No -- which stamped every Job Card tag, every Product

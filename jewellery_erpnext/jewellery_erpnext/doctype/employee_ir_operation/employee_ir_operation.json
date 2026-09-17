@@ -18,6 +18,10 @@
   "section_break_iyhv",
   "net_wt",
   "finding_wt",
+  "finding_item1",
+  "finding_wt1",
+  "finding_item2",
+  "finding_wt2",
   "other_wt",
   "diamond_wt",
   "no_of_moulds",
@@ -100,6 +104,34 @@
    "precision": "3"
   },
   {
+   "depends_on": "eval:parent.is_finding_repack_reqd",
+   "fieldname": "finding_item1",
+   "fieldtype": "Link",
+   "label": "Finding Item 1",
+   "options": "Item"
+  },
+  {
+   "depends_on": "eval:parent.is_finding_repack_reqd",
+   "fieldname": "finding_wt1",
+   "fieldtype": "Float",
+   "label": "Finding Wt 1",
+   "precision": "3"
+  },
+  {
+   "depends_on": "eval:parent.is_finding_repack_reqd",
+   "fieldname": "finding_item2",
+   "fieldtype": "Link",
+   "label": "Finding Item 2",
+   "options": "Item"
+  },
+  {
+   "depends_on": "eval:parent.is_finding_repack_reqd",
+   "fieldname": "finding_wt2",
+   "fieldtype": "Float",
+   "label": "Finding Wt 2",
+   "precision": "3"
+  },
+  {
    "fetch_from": "manufacturing_operation.other_wt",
    "fieldname": "other_wt",
    "fieldtype": "Float",
@@ -174,20 +206,21 @@
    "label": "Is Finding MWO"
   },
   {
+   "columns": 1,
    "fieldname": "tree_number",
    "fieldtype": "Link",
-   "hidden": 1,
+   "in_list_view": 1,
    "label": "Tree Number",
    "no_copy": 1,
    "options": "Tree Number",
    "read_only": 1,
-   "description": "Casting tree this receive drew metal from. Pinned at submit so a cancel reverses the same tree even if the work order has since been re-issued onto a new one."
+   "description": "Casting tree this row is attached to - stamped on the Issue that creates the tree, and again on the Receive that draws from it. Pinned at submit so a cancel reverses the same tree even if the work order has since been re-issued onto a new one. The grid column is shown only for tree (casting) operations."
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-12-30 18:31:23.868358",
+ "modified": "2026-09-17 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR Operation",

@@ -17,6 +17,7 @@
 "is_subcontracted",
 "allow_zero_qty_wo",
 "allow_finding_mwo",
+"is_finding_repack_requirement",
 "service_item",
 "column_break_otjqr",
 "is_qc_reqd",
@@ -186,6 +187,12 @@
 "label": "Allow Finding MWO"
 },
 {
+"default": "0",
+"fieldname": "is_finding_repack_requirement",
+"fieldtype": "Check",
+"label": "Is Finding Repack Requirement"
+},
+{
 "fieldname": "manufacturer",
 "fieldtype": "Link",
 "label": "Manufacturer",
@@ -219,7 +226,7 @@
 ],
 "index_web_pages_for_search": 1,
 "links": [],
-"modified": "2025-04-22 16:34:56.702796",
+"modified": "2026-09-17 10:00:00.000000",
 "modified_by": "Administrator",
 "module": "Jewellery Erpnext",
 "name": "Department Operation",
