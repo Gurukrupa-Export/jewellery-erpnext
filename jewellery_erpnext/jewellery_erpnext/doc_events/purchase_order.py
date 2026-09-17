@@ -325,11 +325,64 @@ def make_subcontracting_order(doc):
         po_doc.manufacturing_plan = doc.name
         po_doc.custom_customer_po = supplier_wise_items[row].get("custom_customer_po")
         po_doc.is_subcontracted = supplier_wise_items[row].get("is_subcontracted")
+        # Design type rides down from the source Sales Orders via the plan header.
+        for target_field in ORDER_DIMENSION_MAP.values():
+            po_doc.set(target_field, doc.get(target_field))
         if gold_rate:
             po_doc.gold_rate_with_gst = gold_rate
         for item in supplier_wise_items[row]["items"]:
             po_doc.append("items", item)
         po_doc.save()
+
+
+# Sales Order fieldname -> Manufacturing Plan / Purchase Order fieldname. One entry today; kept as
+# a map so the Manufacturing Plan header stamp and the Purchase Order stamp share a single source of
+# truth, and so backporting the order type / sales type / flow type chain is an additive change.
+ORDER_DIMENSION_MAP = {
+    "custom_design_type": "custom_design_type",
+    "sales_type": "custom_sales_type",
+    "order_type": "custom_order_type",
+    "custom_flow_type": "custom_flow_type",
+}
+
+
+def source_order_dimensions(doc):
+    """Design type read off the Manufacturing Plan's source Sales Orders.
+
+    Returns a `{target_fieldname: value}` dict for the Manufacturing Plan / Purchase Order side.
+
+    Mirrors `_source_gold_rate`: a single header value can only be stamped when every source Sales
+    Order agrees, otherwise the field is left out and stays blank. Unlike the gold rate, a
+    disagreement here is not an error and never blocks a submit -- design type is informational, it
+    drives neither pricing nor routing nor the supplier's obligation, and one plan legitimately
+    spans several designs. It also keeps a rollout safe: every Sales Order predating the
+    `custom_design_type` column reads back blank.
+
+    If the order type / sales type / flow type dimensions are ever backported to this branch, they
+    join `ORDER_DIMENSION_MAP` and this is where their unanimity-throw would live.
+    """
+    sales_orders = {
+        row.sales_order
+        for row in doc.manufacturing_plan_table
+        if row.get("sales_order")
+    }
+    if not sales_orders:
+        return {}
+
+    # One query however many orders feed the plan -- a 133-row plan can span dozens of them.
+    rows = frappe.get_all(
+        "Sales Order",
+        filters={"name": ["in", list(sales_orders)]},
+        fields=["name", *ORDER_DIMENSION_MAP],
+    )
+
+    values = {}
+    for so_field, target_field in ORDER_DIMENSION_MAP.items():
+        distinct = {row.get(so_field) for row in rows}
+        if len(distinct) == 1:
+            values[target_field] = distinct.pop()
+
+    return values
 
 
 def _source_gold_rate(doc):

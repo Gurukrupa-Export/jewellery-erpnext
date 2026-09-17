@@ -63,7 +63,7 @@
    "dt": "BOM",
    "fieldname": "product_shape",
    "fieldtype": "Data",
-   "insert_after": "breadth",
+   "insert_after": "length",
    "label": "Product Shape",
    "module": "Jewellery Erpnext"
   },
@@ -335,26 +335,6 @@
    "is_system_generated": 1,
    "label": "Other WT 1",
    "module": "Jewellery Erpnext"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "custom_other_item_2",
-   "fieldtype": "Link",
-   "insert_after": "custom_other_item_1",
-   "is_system_generated": 1,
-   "label": "Other Item 2",
-   "module": "Jewellery Erpnext",
-   "options": "Item"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "custom_other_item_1",
-   "fieldtype": "Link",
-   "insert_after": "section_break_olkss",
-   "is_system_generated": 1,
-   "label": "Other Item 1",
-   "module": "Jewellery Erpnext",
-   "options": "Item"
   },
   {
    "dt": "BOM",
@@ -703,7 +683,7 @@
    "dt": "BOM",
    "fieldname": "black_beed",
    "fieldtype": "Link",
-   "insert_after": "custom_other_item_2",
+   "insert_after": "hook_type",
    "label": "Black Beed",
    "module": "Jewellery Erpnext",
    "options": "Attribute Value"
@@ -1055,14 +1035,6 @@
    "fieldtype": "Float",
    "insert_after": "column_break_28",
    "label": "Space between Mugappu",
-   "module": "Jewellery Erpnext"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "breadth",
-   "fieldtype": "Float",
-   "insert_after": "length",
-   "label": "Breadth",
    "module": "Jewellery Erpnext"
   },
   {
@@ -1559,82 +1531,10 @@
   },
   {
    "dt": "BOM",
-   "fieldname": "gemstone_type1",
-   "fieldtype": "Link",
-   "insert_after": "section_break_s9het",
-   "label": "Gemstone Type1",
-   "module": "Jewellery Erpnext",
-   "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
    "fieldname": "sizer_type",
    "fieldtype": "Link",
    "insert_after": "product_shape",
    "label": "Sizer Type",
-   "module": "Jewellery Erpnext",
-   "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "gemstone_type2",
-   "fieldtype": "Link",
-   "insert_after": "column_break_lur9h",
-   "label": "Gemstone Type2",
-   "module": "Jewellery Erpnext",
-   "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "gemstone_type3",
-   "fieldtype": "Link",
-   "insert_after": "column_break_vodng",
-   "label": "Gemstone Type3",
-   "module": "Jewellery Erpnext",
-   "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "gemstone_type4",
-   "fieldtype": "Link",
-   "insert_after": "column_break_1tdce",
-   "label": "Gemstone Type4",
-   "module": "Jewellery Erpnext",
-   "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "gemstone_type5",
-   "fieldtype": "Link",
-   "insert_after": "gemstone_type1",
-   "label": "Gemstone Type5",
-   "module": "Jewellery Erpnext",
-   "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "gemstone_type6",
-   "fieldtype": "Link",
-   "insert_after": "gemstone_type2",
-   "label": "Gemstone Type6",
-   "module": "Jewellery Erpnext",
-   "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "gemstone_type7",
-   "fieldtype": "Link",
-   "insert_after": "gemstone_type3",
-   "label": "Gemstone Type7",
-   "module": "Jewellery Erpnext",
-   "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "gemstone_type8",
-   "fieldtype": "Link",
-   "insert_after": "gemstone_type4",
-   "label": "Gemstone Type8",
    "module": "Jewellery Erpnext",
    "options": "Attribute Value"
   },
@@ -1646,27 +1546,6 @@
    "label": "Stone Changeable",
    "module": "Jewellery Erpnext",
    "options": "Attribute Value"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "column_break_vodng",
-   "fieldtype": "Column Break",
-   "insert_after": "gemstone_type6",
-   "module": "Jewellery Erpnext"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "column_break_1tdce",
-   "fieldtype": "Column Break",
-   "insert_after": "gemstone_type7",
-   "module": "Jewellery Erpnext"
-  },
-  {
-   "dt": "BOM",
-   "fieldname": "column_break_lur9h",
-   "fieldtype": "Column Break",
-   "insert_after": "gemstone_type5",
-   "module": "Jewellery Erpnext"
   },
   {
    "dt": "BOM",
@@ -1879,7 +1758,7 @@
    "dt": "BOM",
    "fieldname": "section_break_6fswi",
    "fieldtype": "Section Break",
-   "insert_after": "gemstone_type8",
+   "insert_after": "section_break_fjfjl",
    "module": "Jewellery Erpnext"
   },
   {

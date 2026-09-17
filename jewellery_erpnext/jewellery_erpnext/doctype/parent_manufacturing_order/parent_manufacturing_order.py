@@ -497,6 +497,10 @@ def make_manufacturing_order(
 		doc.type = source_doc.select_manufacture_order
 		# doc.sales_order_bom = row.bom
 		doc.service_type = service_type
+		# Carry the order dimension fields from the Manufacturing Plan (immediate predecessor).
+		doc.sales_type = source_doc.custom_sales_type
+		doc.order_type = source_doc.custom_order_type
+		doc.flow_type = source_doc.custom_flow_type
 		doc.manufacturing_plan = source_doc.name
 		# doc.manufacturer = frappe.db.get_value(
 		# 	"Manufacturer", {"company": source_doc.company}, "name", order_by="creation asc"
@@ -505,6 +509,8 @@ def make_manufacturing_order(
 		doc.rowname = row.name
 		doc.master_bom = master_bom
 		doc.diamond_grade = so_det.get("diamond_grade")
+		# Carry the design type from the Manufacturing Plan (immediate predecessor).
+		doc.design_type = source_doc.custom_design_type
 		# if source_doc.select_manufacture_order == "Manufacturing":
 		# 	doc.master_bom = row.manufacturing_bom
 		# elif source_doc.select_manufacture_order == "Repair" and row.order_form_type == "Repair Order":
@@ -544,6 +550,10 @@ def make_manufacturing_order(
 		doc.type = "Finding Manufacturing"
 		doc.is_finding_mwo = True
 		doc.item_code = row.item_code
+		# Carry the order dimension fields from the Manufacturing Plan (immediate predecessor).
+		doc.sales_type = source_doc.custom_sales_type
+		doc.order_type = source_doc.custom_order_type
+		doc.flow_type = source_doc.custom_flow_type
 		doc.master_bom = so_det.get("master_bom")
 		doc.metal_type = so_det.get("metal_type")
 		doc.metal_touch = so_det.get("metal_touch")
@@ -551,6 +561,8 @@ def make_manufacturing_order(
 		doc.manufacturing_plan = source_doc.name
 		doc.qty = row.qty_per_manufacturing_order
 		doc.rowname = row.name
+		# Carry the design type from the Manufacturing Plan (immediate predecessor).
+		doc.design_type = source_doc.custom_design_type
 		doc.insert(ignore_mandatory=True)
 		row.manufacturing_bom = so_det.get("master_bom")
 
