@@ -799,9 +799,14 @@ class TestCustomerGoldReceiptPostsCorrectly(_CustomerGoldIntegrationCase):
 		The same metal contains 75.400 FINE grams. custom_pure_qty holds the former.
 		"""
 		se = self._receipt(qty=100, item_code=self.operating_item)
-		# Not the configured 24KT item, so the receipt validator rejects it -- assert the
-		# computation on the saved draft instead of forcing an unrealistic submit.
-		with self.assertThrowsContaining("Customer 24KT Item"):
+		# Not one of the configured customer gold items, so the receipt validator rejects it --
+		# assert the computation on the saved draft instead of forcing an unrealistic submit.
+		#
+		# The fragment tracks the message the validator actually raises. It changed when the
+		# receipt began accepting a LIST of purities: an operating-purity item is now rejected
+		# for not being on that list rather than for not being THE 24KT item, and the message
+		# names what would have been accepted.
+		with self.assertThrowsContaining("is not configured for Customer Gold receipts"):
 			se.save()
 
 
@@ -4317,12 +4322,17 @@ class TestConversionEvents(TestComponentApportionment):
 class TestProductionEvents(TestCustodyTransfer):
 	"""Spec §5 — `Production`: customer metal embodied in finished goods.
 
-	Driven by the CONSUMED rows, not the finished-goods row. That is not a shortcut — the FG row
-	is hardcoded `"inventory_type": "Regular Stock"` with no customer
-	(`manufacturing_operation.py:1118`), so it cannot answer who owns the metal. The consumed rows
-	immediately above it carry real ownership and are, on the merits, the better source: what was
-	actually consumed IS the composition the spec asks for.
+	Driven by the CONSUMED rows, not the finished-goods row — and no longer because the FG row
+	lacks an owner. `_finished_goods_ownership` gives it one, and must, or the delivery could
+	never settle the liability. The reason is that the consumed row and the finished row are the
+	same metal twice, once in and once out; an event on each would move the holding twice for one
+	physical fact. The consumed side also carries the composition the spec asks for — what was
+	actually consumed IS the composition.
 	"""
+
+	#: Shared with ``TestDispatcherDiagnostics``, which pins the same false-alarm rule for
+	#: returns. Both branches of the dispatcher's unclassified diagnostic are now covered.
+	UNCLASSIFIED = "Customer Gold: unclassified one-sided movement"
 
 	def _manufacture(self, batch, qty, fg_item=None, consume_item=None):
 		"""A real Manufacture Stock Entry consuming customer metal.
@@ -4401,7 +4411,12 @@ class TestProductionEvents(TestCustodyTransfer):
 		self.assertEqual(events[0].cg_stage, "FG")
 
 	def test_the_finished_goods_row_writes_nothing(self):
-		"""It is hardcoded Regular Stock — reading ownership off it would be wrong."""
+		"""One event for one physical fact.
+
+		The finished row DOES carry an owner now -- ``_finished_goods_ownership`` gives it one,
+		and the settlement depends on that. It writes no event because it is the same metal as
+		the consumed row in another shape, and counting both would double the holding.
+		"""
 		batch = self._stocked_batch(qty=20)
 
 		se = self._manufacture(batch, 6)
@@ -4413,6 +4428,31 @@ class TestProductionEvents(TestCustodyTransfer):
 			len(production),
 			1,
 			"the FG row produced an event; it cannot know whose metal it holds",
+		)
+
+	def test_a_manufacture_logs_no_false_alarm_for_its_finished_row(self):
+		"""The second false alarm of the same shape as the return one, caught the same way.
+
+		Giving the finished row its customer -- required, or a delivery can never settle -- also
+		made it survive the dispatcher's owner check. It is one-sided, so it then fell through to
+		the unclassified diagnostic and logged *"No custody event was written; the holding will
+		not reflect this row"* on EVERY customer-gold manufacture. Nothing was actually missing:
+		the consumed row's Production event already accounts for that metal.
+
+		Found by running the SOP for real, not by a test: 313 of these rows had accumulated on
+		the integration site. A log that cries wolf on the normal path is worse than no log,
+		because the real drift it also carries stops being read.
+		"""
+		batch = self._stocked_batch(qty=20)
+		before = frappe.db.count("Error Log", {"method": self.UNCLASSIFIED})
+
+		self._manufacture(batch, 6)
+
+		self.assertEqual(
+			frappe.db.count("Error Log", {"method": self.UNCLASSIFIED}),
+			before,
+			msg="the finished row logged an unclassified-movement alarm; it is handled, "
+			"not dropped -- the consumed row already wrote the Production event",
 		)
 
 	def test_production_does_not_change_the_holding(self):

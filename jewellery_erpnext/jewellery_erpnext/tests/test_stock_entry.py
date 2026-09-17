@@ -1861,7 +1861,12 @@ class TestInventoryUtilsGuards(_StockEntryTestCase):
 # ----------------------------------------------------- batch_rename.create_parent_batches
 class TestCreateParentBatches(_StockEntryTestCase):
 	def _run(self, doc, serial="01", cg_config=(None, None)):
-		"""``cg_config`` is ``(configured_receipt_type, configured_item)``.
+		"""``cg_config`` is ``(configured_receipt_type, configured_items)``.
+
+		The second element is a LIST since a customer may hand over more than one purity.
+		Passed as a list here rather than a bare string on purpose: ``_is_eligible_item``
+		normalises a string, but a test that relied on that would be exercising the
+		compatibility shim instead of the contract.
 
 		Pinned explicitly rather than left to the site. Unpatched,
 		``_customer_gold_config`` reads Subcontracting Settings from the database,
@@ -3064,14 +3069,14 @@ class TestCreateParentBatchesConfiguredDispatch(TestCreateParentBatches):
 		"""Eligibility by identity, not by a substring of the item code."""
 		inserted = self._run(
 			self._se_type("CG Intake", item_code="GOLD-PURE-999"),
-			cg_config=("CG Intake", "GOLD-PURE-999"),
+			cg_config=("CG Intake", ["GOLD-PURE-999"]),
 		)
 		self.assertEqual(len(inserted), 1)
 
 	def test_a_non_configured_item_without_the_token_is_still_skipped(self):
 		inserted = self._run(
 			self._se_type("CG Intake", item_code="M-G-18KT"),
-			cg_config=("CG Intake", "GOLD-PURE-999"),
+			cg_config=("CG Intake", ["GOLD-PURE-999"]),
 		)
 		self.assertEqual(inserted, [])
 
@@ -3080,7 +3085,7 @@ class TestCreateParentBatchesConfiguredDispatch(TestCreateParentBatches):
 		sites that have configured nothing."""
 		inserted = self._run(
 			self._se_type("Customer Goods Received", item_code="24KT-GOLD"),
-			cg_config=("CG Intake", "GOLD-PURE-999"),
+			cg_config=("CG Intake", ["GOLD-PURE-999"]),
 		)
 		self.assertEqual(len(inserted), 1)
 
@@ -3270,7 +3275,7 @@ class TestCreateParentBatchesPurchaseReceiptLeg(TestCreateParentBatches):
 		"""
 		inserted = self._run(
 			self._pr(item_code="GOLD-PURE-999"),
-			cg_config=("CG Intake", "GOLD-PURE-999"),
+			cg_config=("CG Intake", ["GOLD-PURE-999"]),
 		)
 		self.assertEqual(len(inserted), 1)
 		self.assertEqual(inserted[0].custom_customer, "CUST-1")
