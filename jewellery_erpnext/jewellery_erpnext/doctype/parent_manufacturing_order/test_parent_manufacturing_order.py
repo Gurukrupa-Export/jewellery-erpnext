@@ -1619,6 +1619,23 @@ class TestSalesTypeExpects(UnitTestCase):
 				self.assertIsNone(sales_type_expects(sales_type))
 
 
+class FakePMOPolicy(FakePMO):
+	"""FakePMO carrying the real policy methods, so the tests run the shipped code.
+
+	Calling ParentManufacturingOrder._validate_diamond_grade_policy(fake) unbound does not work:
+	frappe._dict resolves a missing attribute to None instead of raising, so the first call the
+	method makes on self -- _grade_policy_inputs_changed -- comes back None and is then invoked.
+	Binding the methods onto the class puts them where normal attribute lookup finds them, which
+	is ahead of __getattr__.
+	"""
+
+	GRADE_POLICY_FIELDS = ParentManufacturingOrder.GRADE_POLICY_FIELDS
+	_grade_policy_inputs_changed = ParentManufacturingOrder._grade_policy_inputs_changed
+	_validate_diamond_grade_policy = (
+		ParentManufacturingOrder._validate_diamond_grade_policy
+	)
+
+
 class TestDiamondGradePolicyValidation(UnitTestCase):
 	"""The grade rules have to hold on the save path, not only in the dropdown.
 
@@ -1631,7 +1648,7 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 	FILTERS_IN_PMO = f"{PMO_MODULE}.customer_grades"
 
 	def _validate(self, before=_UNSET, configured=("PLAIN", "CUSTOMER"), **fields):
-		doc = FakePMO(
+		doc = FakePMOPolicy(
 			customer="CUST",
 			ref_customer=None,
 			diamond_quality="VVS",
@@ -1655,7 +1672,7 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 				),
 			),
 		):
-			ParentManufacturingOrder._validate_diamond_grade_policy(doc)
+			doc._validate_diamond_grade_policy()
 
 	# --- the Sales Type invariant, which applies in both modes ---
 
@@ -1793,7 +1810,7 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 					self._validate(before=before, **fields)
 
 	def test_ignore_validations_is_still_an_escape_hatch(self):
-		doc = FakePMO(
+		doc = FakePMOPolicy(
 			customer="CUST",
 			diamond_quality="VVS",
 			sales_type="Outright",
@@ -1804,4 +1821,4 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 		)
 		doc.get_doc_before_save = lambda: None
 
-		ParentManufacturingOrder._validate_diamond_grade_policy(doc)
+		doc._validate_diamond_grade_policy()
