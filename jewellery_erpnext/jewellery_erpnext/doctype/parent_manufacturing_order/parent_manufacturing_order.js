@@ -98,12 +98,14 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 	is_customer_diamond(frm) {
 		set_auto_diamond_grade(frm);
 		apply_grade_override_hint(frm);
+		clear_disallowed_custom_grade(frm);
 	},
 
 	use_custom_diamond_grade(frm) {
 		frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
 		set_auto_diamond_grade(frm);
 		apply_grade_override_hint(frm);
+		clear_disallowed_custom_grade(frm);
 	},
 
 	create_customer_transfer: function (frm) {
@@ -208,27 +210,53 @@ function apply_customer_details_visibility(frm) {
 	});
 }
 
-// An Outright/Outwork PMO whose Is Customer Diamond disagrees with it gets an empty grade list
-// from the server. Say why, or the override looks broken rather than blocked.
+// The controller now rejects a Sales Type that disagrees with Is Customer Diamond, in both
+// automatic and custom mode. Say so on the form rather than letting the user find out on save.
 function apply_grade_override_hint(frm) {
 	// Sales Type is a Link, so its value is whatever Sales Type records exist -- test for the
 	// two values this map holds rather than for "not undefined", which a name like "constructor"
 	// would satisfy off Object.prototype.
 	const expected = SALES_TYPE_CUSTOMER_DIAMOND[frm.doc.sales_type];
 	const has_rule = expected === 0 || expected === 1;
-	const mismatch =
-		frm.doc.use_custom_diamond_grade && has_rule && expected !== (frm.doc.is_customer_diamond ? 1 : 0);
+	const mismatch = has_rule && expected !== (frm.doc.is_customer_diamond ? 1 : 0);
 
 	frm.set_df_property(
 		"diamond_grade",
 		"description",
 		mismatch
-			? __("No grades to choose from: a {0} order expects Is Customer Diamond to be {1}.", [
-					frm.doc.sales_type,
-					expected ? __("ticked") : __("unticked"),
-			  ])
+			? __(
+					"A {0} order requires Is Customer Diamond to be {1}. Saving is blocked until that is corrected.",
+					[frm.doc.sales_type, expected ? __("checked") : __("unchecked")]
+			  )
 			: ""
 	);
+}
+
+// Turning the override on leaves whatever the automatic rule resolved sitting in the field, and
+// that value may be one the override is not allowed to keep -- the reported case is a customer
+// whose only configured grade is a customer-diamond one on an Outright order. Clear it here
+// rather than let the user discover it as a save error on a field they never touched.
+function clear_disallowed_custom_grade(frm) {
+	if (!frm.doc.use_custom_diamond_grade || !frm.doc.diamond_grade) {
+		return;
+	}
+
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_allowed_custom_diamond_grades",
+		args: {
+			customer: frm.doc.customer,
+			ref_customer: frm.doc.ref_customer,
+			diamond_quality: frm.doc.diamond_quality,
+			sales_type: frm.doc.sales_type,
+			is_customer_diamond: frm.doc.is_customer_diamond ? 1 : 0,
+		},
+		callback: function (r) {
+			const allowed = r.message || [];
+			if (!allowed.includes(frm.doc.diamond_grade)) {
+				frm.set_value("diamond_grade", null);
+			}
+		},
+	});
 }
 
 // Must never be called from refresh: frm.set_value marks the form dirty, so resolving the grade on

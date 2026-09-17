@@ -19,15 +19,19 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufac
 	manufacturing_plan_creation,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
+	custom_override_grades,
 	get_diamond_grade,
 	is_customer_diamond_flag,
 	pick_diamond_grade,
 	resolve_diamond_grade,
+	sales_type_expects,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
+	resolve_parent_chains,
 	update_parent_details,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
+	ParentManufacturingOrder,
 	get_item_code,
 	set_diamond_tolerance_table,
 	set_metal_tolerance_table,
@@ -1045,8 +1049,13 @@ class TestDiamondToleranceScoping(UnitTestCase):
 
 
 class TestParentDetailsRefCustomer(UnitTestCase):
-	"""update_parent_details walks sales order item -> PO item -> manufacturing plan row to
-	reach the quotation the order came from, and takes Ref Customer from it."""
+	"""update_parent_details climbs a line's parent chain and takes Ref Customer from it.
+
+	The climb is the point: a line's Purchase Order leads back to the PREVIOUS plan's row, and
+	it is THAT row's sales order line whose quotation records the customer behind an internal
+	order. This line's own quotation is only the last resort. Resolving from the current line
+	alone uses the bottom rung as if it were the top, which is the bug these pin down.
+	"""
 
 	SO_ITEM = "SO-ITEM-CHILD"
 	PO_ITEM = "PO-ITEM-1"
@@ -1056,22 +1065,6 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 	PARENT_MP = "MP-1"
 	PURCHASE_ORDER = "PUR-ORD-1"
 	OWN_QUOTATION = "QTN-OWN"
-
-	def _stub_fields(self, row, fieldname, as_dict):
-		"""Answer a get_value the way frappe would, for whichever call shape was used.
-
-		One combined read or a read per field are both fine -- how many round trips the walk
-		takes is not what these tests are about. Asking for a field the fixture does not model
-		still fails, so a wrong field name cannot pass unnoticed.
-		"""
-		if isinstance(fieldname, str):
-			self.assertIn(fieldname, row)
-			return row[fieldname]
-
-		for field in fieldname:
-			self.assertIn(field, row)
-		values = [row[field] for field in fieldname]
-		return frappe._dict(zip(fieldname, values)) if as_dict else tuple(values)
 
 	def _patched_chain(
 		self,
@@ -1083,62 +1076,85 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 		po_ref_customer=None,
 		own_quotation_ref_customer=None,
 	):
-		"""Stub the lookup chain; docname defaults to the parent sales order item.
+		"""Stub the records the walk may read; docname defaults to the parent sales order item.
 
-		Every branch pins the *record* it is asked for, and an unrecognised name fails the test
-		outright. A stub that answers regardless of ``name`` would hand back fixture data for a
-		lookup against the wrong id -- exactly the regression these tests exist to catch, since
-		the whole point of the walk is which record each step reaches. The query *shape* is
-		deliberately not pinned: see _stub_fields.
+		Every record is pinned by name, and asking for one the fixture does not model fails the
+		test outright. A stub that answered regardless of ``name`` would hand back fixture data
+		for a lookup against the wrong id -- exactly the regression these exist to catch, since
+		the whole point of the walk is which record each step reaches.
 		"""
-		mfg_plan_details = frappe._dict(
-			parent=self.PARENT_MP,
-			sales_order=self.PARENT_SALES_ORDER,
-			docname=self.PARENT_SO_ITEM if docname is _UNSET else docname,
-		)
-		po_item = frappe._dict(
-			parent=self.PURCHASE_ORDER,
-			custom_m_plan_details=self.MP_ROW if m_plan_row is _UNSET else m_plan_row,
-		)
+		m_plan_row = self.MP_ROW if m_plan_row is _UNSET else m_plan_row
+		po_row = self.PO_ITEM if po_row is _UNSET else po_row
+		docname = self.PARENT_SO_ITEM if docname is _UNSET else docname
 
-		def get_value(doctype, name=None, fieldname=None, **kwargs):
-			if doctype == "Sales Order Item" and name == self.SO_ITEM:
-				self.assertEqual(fieldname, "custom_po_details")
-				return self.PO_ITEM if po_row is _UNSET else po_row
-			if doctype == "Sales Order Item" and name == self.PARENT_SO_ITEM:
-				self.assertEqual(fieldname, "prevdoc_docname")
-				return quotation
+		lines = {
+			self.SO_ITEM: {
+				"name": self.SO_ITEM,
+				"custom_po_details": po_row,
+				# The framework fetches the PMO's own `quotation` field from here, so the walk
+				# reads it off the line rather than off the document.
+				"prevdoc_docname": self.OWN_QUOTATION,
+			}
+		}
+		if docname:
+			lines[docname] = {"name": docname, "prevdoc_docname": quotation}
 
-			if doctype == "Purchase Order Item":
-				self.assertEqual(name, self.PO_ITEM if po_row is _UNSET else po_row)
-				return self._stub_fields(po_item, fieldname, kwargs.get("as_dict"))
+		tables = {
+			"Sales Order Item": lines,
+			"Purchase Order Item": {
+				po_row: {
+					"name": po_row,
+					"parent": self.PURCHASE_ORDER,
+					"custom_m_plan_details": m_plan_row,
+				}
+			}
+			if po_row
+			else {},
+			"Manufacturing Plan Table": {
+				m_plan_row: {
+					"name": m_plan_row,
+					"parent": self.PARENT_MP,
+					"sales_order": self.PARENT_SALES_ORDER,
+					"docname": docname,
+				}
+			}
+			if m_plan_row
+			else {},
+			"Quotation": {
+				self.OWN_QUOTATION: {
+					"name": self.OWN_QUOTATION,
+					"ref_customer": own_quotation_ref_customer,
+				}
+			},
+			"Sales Order": {
+				self.PARENT_SALES_ORDER: {
+					"name": self.PARENT_SALES_ORDER,
+					"customer": "CUST-FROM-SO",
+				}
+			},
+			"Purchase Order": {
+				self.PURCHASE_ORDER: {
+					"name": self.PURCHASE_ORDER,
+					"ref_customer": po_ref_customer,
+				}
+			},
+		}
+		if quotation:
+			tables["Quotation"][quotation] = {
+				"name": quotation,
+				"ref_customer": quotation_ref_customer,
+			}
 
-			if doctype == "Manufacturing Plan Table":
-				# the row the walk actually read off po_item, not a fixed id -- the walk must
-				# follow the link it found rather than one hardcoded here
-				self.assertEqual(name, po_item.custom_m_plan_details)
-				return mfg_plan_details
+		def get_all(doctype, filters=None, fields=None):
+			known = tables.get(doctype, {})
+			rows = []
+			for name in filters["name"][1]:
+				if name not in known:
+					self.fail(f"unexpected lookup: {doctype} {name}")
+				rows.append(frappe._dict({f: known[name].get(f) for f in fields}))
+			return rows
 
-			if doctype == "Quotation" and name == self.OWN_QUOTATION:
-				return own_quotation_ref_customer
-			if doctype == "Quotation":
-				# only the quotation this walk resolved may be read -- a stale parent_quotation
-				# left on the document must never reach here
-				self.assertEqual(name, quotation)
-				return quotation_ref_customer
-
-			if doctype == "Purchase Order":
-				self.assertEqual(name, self.PURCHASE_ORDER)
-				return po_ref_customer
-
-			if doctype == "Sales Order":
-				# likewise for a stale parent_sales_order
-				self.assertEqual(name, self.PARENT_SALES_ORDER)
-				return "CUST-FROM-SO"
-
-			self.fail(f"unexpected lookup: {doctype} {name}")
-
-		return patch(f"{PMO_UTILS}.frappe.db.get_value", side_effect=get_value)
+		return patch(f"{PMO_UTILS}.frappe.get_all", side_effect=get_all)
 
 	def test_ref_customer_comes_from_the_parent_quotation(self):
 		doc = frappe._dict(sales_order_item=self.SO_ITEM)
@@ -1149,6 +1165,18 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 		self.assertEqual(doc.parent_quotation, "QTN-1")
 		self.assertEqual(doc.parent_sales_order, "SO-PARENT")
 		self.assertEqual(doc.parent_mp, "MP-1")
+		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
+
+	def test_the_parent_quotation_is_not_this_lines_own_quotation(self):
+		"""The regression: resolving from the current line reaches QTN-OWN, one rung too low."""
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(
+			quotation_ref_customer="CUST-FROM-QTN",
+			own_quotation_ref_customer="CUST-FROM-OWN-QTN",
+		):
+			update_parent_details(doc)
+
 		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
 
 	def test_ref_customer_falls_back_to_sales_order_customer(self):
@@ -1198,7 +1226,7 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 
 	def test_ref_customer_comes_from_its_own_quotation_when_the_walk_never_starts(self):
 		# no custom_po_details on the sales order line, so the walk exits at its first guard
-		doc = frappe._dict(sales_order_item=self.SO_ITEM, quotation=self.OWN_QUOTATION)
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
 
 		with self._patched_chain(
 			po_row=None, own_quotation_ref_customer="CUST-FROM-OWN-QTN"
@@ -1210,7 +1238,7 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 	def test_the_parent_quotation_outranks_the_coarser_sources(self):
 		# a Purchase Order carries one Ref Customer for every row on it, so the per-line
 		# sources must win wherever they resolve
-		doc = frappe._dict(sales_order_item=self.SO_ITEM, quotation=self.OWN_QUOTATION)
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
 
 		with self._patched_chain(
 			quotation_ref_customer="CUST-FROM-QTN",
@@ -1221,27 +1249,16 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 
 		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
 
-	def test_a_stale_parent_quotation_loses_to_the_current_walk(self):
-		# parent_quotation is not read-only and survives an early exit, so an earlier save can
-		# leave one behind; only what this walk re-establishes may feed ref_customer
-		doc = frappe._dict(sales_order_item=self.SO_ITEM, parent_quotation="QTN-STALE")
-
-		# reading QTN-STALE trips the stub, which answers only for the walk's own quotation
-		with self._patched_chain(m_plan_row=None, po_ref_customer="CUST-FROM-PO"):
-			update_parent_details(doc)
-
-		self.assertEqual(doc.ref_customer, "CUST-FROM-PO")
-
-	def test_stale_parent_links_lose_to_the_orders_own_quotation(self):
+	def test_stale_parent_links_on_the_document_are_never_consulted(self):
+		# parent_quotation and parent_sales_order are not read-only and survive an early exit, so
+		# an earlier save can leave them behind. The walk derives every link afresh, so reading
+		# either would be a lookup the stub does not recognise and the test would fail.
 		doc = frappe._dict(
 			sales_order_item=self.SO_ITEM,
 			parent_quotation="QTN-STALE",
 			parent_sales_order="SO-STALE",
-			quotation=self.OWN_QUOTATION,
 		)
 
-		# QTN-STALE and SO-STALE are both unknown to the stub, so consulting either fails the
-		# test rather than quietly returning a plausible customer
 		with self._patched_chain(
 			po_row=None, own_quotation_ref_customer="CUST-FROM-OWN-QTN"
 		):
@@ -1257,6 +1274,21 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 			update_parent_details(doc)
 
 		self.assertEqual(doc.ref_customer, "CUST-BY-HAND")
+
+	def test_a_batch_resolves_every_line_the_way_one_document_would(self):
+		"""Manufacturing Plan resolves a whole table through this; it must not drift."""
+		with self._patched_chain(quotation_ref_customer="CUST-FROM-QTN"):
+			chains = resolve_parent_chains([self.SO_ITEM, self.SO_ITEM, None])
+
+		self.assertEqual(list(chains), [self.SO_ITEM])
+		self.assertEqual(chains[self.SO_ITEM].ref_customer, "CUST-FROM-QTN")
+
+	def test_no_lines_resolves_without_querying(self):
+		with patch(f"{PMO_UTILS}.frappe.get_all") as get_all:
+			self.assertEqual(resolve_parent_chains([]), {})
+			self.assertEqual(resolve_parent_chains([None]), {})
+
+		get_all.assert_not_called()
 
 	def test_before_save_resolves_parent_details_on_insert(self):
 		doc = frappe.new_doc("Parent Manufacturing Order")
@@ -1412,21 +1444,16 @@ class TestDiamondGradeLinkQuery(UnitTestCase):
 	could offer a value the next save replaced.
 	"""
 
-	ROW = [
-		frappe._dict(
-			diamond_grade_1="A",
-			diamond_grade_2="B",
-			diamond_grade_3=None,
-			diamond_grade_4=None,
-		)
-	]
+	# One Customer Diamond Grade row, the shape frappe.db.get_value returns for GRADE_FIELDS.
+	# A is a plain grade, B a customer-diamond one.
+	ROW = ("A", "B", None, None)
 
-	def _query(self, filters, rows=None):
+	def _query(self, filters, rows=_UNSET):
 		with (
 			patch(
-				f"{FILTERS_QUERY}.frappe.db.get_all",
-				return_value=self.ROW if rows is None else rows,
-			) as get_all,
+				f"{FILTERS_QUERY}.frappe.db.get_value",
+				return_value=self.ROW if rows is _UNSET else rows,
+			) as get_value,
 			patch(
 				f"{FILTERS_QUERY}.frappe.get_all",
 				return_value=[
@@ -1438,19 +1465,19 @@ class TestDiamondGradeLinkQuery(UnitTestCase):
 			result = get_diamond_grade(
 				"Attribute Value", "", "diamond_grade", 0, 20, filters
 			)
-		return result, get_all
+		return result, get_value
 
 	def test_ref_customer_outranks_the_ordering_customer(self):
-		_, get_all = self._query(
+		_, get_value = self._query(
 			{"customer": "CUST", "ref_customer": "REF-CUST", "diamond_quality": "VVS"}
 		)
 
-		self.assertEqual(get_all.call_args[0][1]["parent"], "REF-CUST")
+		self.assertEqual(get_value.call_args[0][1]["parent"], "REF-CUST")
 
 	def test_falls_back_to_the_ordering_customer(self):
-		_, get_all = self._query({"customer": "CUST", "diamond_quality": "VVS"})
+		_, get_value = self._query({"customer": "CUST", "diamond_quality": "VVS"})
 
-		self.assertEqual(get_all.call_args[0][1]["parent"], "CUST")
+		self.assertEqual(get_value.call_args[0][1]["parent"], "CUST")
 
 	def test_accepts_the_json_string_frappe_passes_for_filters(self):
 		result, _ = self._query('{"customer": "CUST", "diamond_quality": "VVS"}')
@@ -1467,7 +1494,7 @@ class TestDiamondGradeLinkQuery(UnitTestCase):
 	def test_offers_nothing_rather_than_a_grade_the_save_would_reject(self):
 		result, _ = self._query(
 			{"customer": "CUST", "diamond_quality": "VVS", "is_customer_diamond": 1},
-			rows=[frappe._dict(diamond_grade_1="A")],
+			rows=("A", None, None, None),
 		)
 
 		self.assertEqual(result, [])
@@ -1485,7 +1512,9 @@ class TestDiamondGradeLinkQuery(UnitTestCase):
 		self.assertEqual(result, [("A",), ("B",)])
 
 	def test_a_customer_with_no_row_for_the_quality_lists_nothing(self):
-		result, _ = self._query({"customer": "CUST", "diamond_quality": "VVS"}, rows=[])
+		result, _ = self._query(
+			{"customer": "CUST", "diamond_quality": "VVS"}, rows=None
+		)
 
 		self.assertEqual(result, [])
 
@@ -1499,14 +1528,7 @@ class TestSalesTypeGradeOverride(UnitTestCase):
 	state neither answer fits, and the list is empty rather than arbitrary.
 	"""
 
-	ROW = [
-		frappe._dict(
-			diamond_grade_1="A",
-			diamond_grade_2="B",
-			diamond_grade_3=None,
-			diamond_grade_4=None,
-		)
-	]
+	ROW = ("A", "B", None, None)
 
 	def _query(self, **filters):
 		filters.setdefault("customer", "CUST")
@@ -1514,7 +1536,7 @@ class TestSalesTypeGradeOverride(UnitTestCase):
 		filters.setdefault("use_custom_diamond_grade", 1)
 
 		with (
-			patch(f"{FILTERS_QUERY}.frappe.db.get_all", return_value=self.ROW),
+			patch(f"{FILTERS_QUERY}.frappe.db.get_value", return_value=self.ROW),
 			patch(
 				f"{FILTERS_QUERY}.frappe.get_all",
 				return_value=[
@@ -1576,3 +1598,210 @@ class TestSalesTypeGradeOverride(UnitTestCase):
 			),
 			[("B",)],
 		)
+
+
+class TestSalesTypeExpects(UnitTestCase):
+	"""Only Outright and Outwork dictate an ownership; everything else stays neutral."""
+
+	def test_the_two_types_that_dictate_ownership(self):
+		self.assertEqual(sales_type_expects("Outright"), 0)
+		self.assertEqual(sales_type_expects("Outwork"), 1)
+
+	def test_every_other_type_dictates_nothing(self):
+		for sales_type in ("Hybrid", "Branch Sales", "Certification", "Repairing"):
+			with self.subTest(sales_type=sales_type):
+				self.assertIsNone(sales_type_expects(sales_type))
+
+	def test_a_missing_sales_type_dictates_nothing(self):
+		"""sales_type is fetch_from + read_only, so PMOs predating the field carry none."""
+		for sales_type in (None, ""):
+			with self.subTest(sales_type=sales_type):
+				self.assertIsNone(sales_type_expects(sales_type))
+
+
+class TestDiamondGradePolicyValidation(UnitTestCase):
+	"""The grade rules have to hold on the save path, not only in the dropdown.
+
+	A REST write, an import, a server script, or a value already sitting in the field when the
+	user ticks Use Custom Diamond Grade all reach save without passing through the link query.
+	Since before_submit copies this grade onto the tracking BOM and it also selects the diamond
+	item variant, a wrong value here is silent and durable.
+	"""
+
+	FILTERS_IN_PMO = f"{PMO_MODULE}.customer_grades"
+
+	def _validate(self, before=_UNSET, configured=("PLAIN", "CUSTOMER"), **fields):
+		doc = FakePMO(
+			customer="CUST",
+			ref_customer=None,
+			diamond_quality="VVS",
+			sales_type=None,
+			is_customer_diamond=0,
+			use_custom_diamond_grade=0,
+			diamond_grade=None,
+			flags=frappe._dict(ignore_validations=False),
+		)
+		doc.update(fields)
+		# None models an insert, which must always validate
+		doc.get_doc_before_save = lambda: None if before is _UNSET else before
+
+		flags = {"PLAIN": 0, "CUSTOMER": 1}
+		with (
+			patch(self.FILTERS_IN_PMO, return_value=list(configured)),
+			patch(
+				f"{PMO_MODULE}.custom_override_grades",
+				side_effect=lambda grades, st, icd: custom_override_grades(
+					grades, st, icd, flags=flags
+				),
+			),
+		):
+			ParentManufacturingOrder._validate_diamond_grade_policy(doc)
+
+	# --- the Sales Type invariant, which applies in both modes ---
+
+	def test_outright_with_customer_diamond_is_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(sales_type="Outright", is_customer_diamond=1)
+
+	def test_outwork_without_customer_diamond_is_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(sales_type="Outwork", is_customer_diamond=0)
+
+	def test_matching_combinations_pass(self):
+		self._validate(sales_type="Outright", is_customer_diamond=0)
+		self._validate(sales_type="Outwork", is_customer_diamond=1)
+
+	def test_the_invariant_holds_in_automatic_mode_too(self):
+		"""The gap this closes: the dropdown blocked the mismatch, the save did not."""
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(
+				sales_type="Outright", is_customer_diamond=1, use_custom_diamond_grade=0
+			)
+
+	def test_a_neutral_sales_type_imposes_nothing(self):
+		for sales_type in ("Hybrid", None):
+			for is_customer_diamond in (0, 1):
+				with self.subTest(sales_type=sales_type, icd=is_customer_diamond):
+					self._validate(
+						sales_type=sales_type, is_customer_diamond=is_customer_diamond
+					)
+
+	# --- the manual override allowed-list ---
+
+	def test_a_custom_grade_outside_the_allowed_list_is_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(
+				sales_type="Outright",
+				is_customer_diamond=0,
+				use_custom_diamond_grade=1,
+				diamond_grade="CUSTOMER",
+			)
+
+	def test_a_custom_grade_inside_the_allowed_list_passes(self):
+		self._validate(
+			sales_type="Outright",
+			is_customer_diamond=0,
+			use_custom_diamond_grade=1,
+			diamond_grade="PLAIN",
+		)
+
+	def test_the_stale_grade_left_by_switching_to_custom_mode_is_rejected(self):
+		"""The reported walkthrough, end to end.
+
+		Outright, not customer diamond, and the only configured grade is a customer-diamond
+		one: automatic mode legitimately resolves it, then the user ticks Use Custom Diamond
+		Grade and the value stays in the field although the override may no longer hold it.
+		"""
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(
+				sales_type="Outright",
+				is_customer_diamond=0,
+				use_custom_diamond_grade=1,
+				diamond_grade="CUSTOMER",
+				configured=("CUSTOMER",),
+			)
+
+	def test_a_customer_with_no_configured_grade_rejects_any_custom_grade(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(
+				use_custom_diamond_grade=1, diamond_grade="ANYTHING", configured=()
+			)
+
+	def test_automatic_mode_does_not_check_the_allowed_list(self):
+		"""Sales Type narrows the override only; the automatic grade is the picker's business."""
+		self._validate(
+			sales_type="Outright",
+			is_customer_diamond=0,
+			use_custom_diamond_grade=0,
+			diamond_grade="CUSTOMER",
+			configured=("CUSTOMER",),
+		)
+
+	def test_custom_mode_without_a_grade_is_left_to_the_existing_check(self):
+		# before_save already throws "Diamond Grade is not mentioned in customer" for an item
+		# without a batch no; this validator must not pre-empt it with a different message
+		self._validate(use_custom_diamond_grade=1, diamond_grade=None)
+
+	# --- blast radius on records that predate the policy ---
+
+	def test_a_save_touching_none_of_the_inputs_is_left_alone(self):
+		before = frappe._dict(
+			customer="CUST",
+			ref_customer=None,
+			diamond_quality="VVS",
+			sales_type="Outright",
+			is_customer_diamond=1,
+			use_custom_diamond_grade=1,
+			diamond_grade="CUSTOMER",
+		)
+
+		# the same invalid state on both sides: someone is editing an unrelated field
+		self._validate(
+			before=before,
+			sales_type="Outright",
+			is_customer_diamond=1,
+			use_custom_diamond_grade=1,
+			diamond_grade="CUSTOMER",
+		)
+
+	def test_touching_any_input_revalidates(self):
+		for field, value in (
+			("diamond_grade", "CUSTOMER"),
+			("use_custom_diamond_grade", 1),
+			("sales_type", "Outright"),
+			("is_customer_diamond", 1),
+			("diamond_quality", "VS"),
+			("customer", "OTHER"),
+			("ref_customer", "OTHER"),
+		):
+			before = frappe._dict(
+				customer="CUST",
+				ref_customer=None,
+				diamond_quality="VVS",
+				sales_type="Outright",
+				is_customer_diamond=0,
+				use_custom_diamond_grade=0,
+				diamond_grade=None,
+			)
+			fields = dict(before)
+			fields[field] = value
+			fields["sales_type"] = "Outright"
+			fields["is_customer_diamond"] = 1
+
+			with self.subTest(field=field):
+				with self.assertRaises(frappe.ValidationError):
+					self._validate(before=before, **fields)
+
+	def test_ignore_validations_is_still_an_escape_hatch(self):
+		doc = FakePMO(
+			customer="CUST",
+			diamond_quality="VVS",
+			sales_type="Outright",
+			is_customer_diamond=1,
+			use_custom_diamond_grade=0,
+			diamond_grade=None,
+			flags=frappe._dict(ignore_validations=True),
+		)
+		doc.get_doc_before_save = lambda: None
+
+		ParentManufacturingOrder._validate_diamond_grade_policy(doc)

@@ -92,7 +92,7 @@ def pick_diamond_grade(grades, is_customer_diamond, flags=None):
 	return grades[0]
 
 
-def custom_override_grades(all_grades, sales_type, is_customer_diamond):
+def custom_override_grades(all_grades, sales_type, is_customer_diamond, flags=None):
 	"""The grades the manual override (use_custom_diamond_grade) may offer.
 
 	Sales Type and the checkbox have to agree, because Sales Type is what sets
@@ -100,6 +100,9 @@ def custom_override_grades(all_grades, sales_type, is_customer_diamond):
 	and that is what becomes is_customer_diamond here. A PMO where the two disagree has been
 	edited into a state neither answer fits, so the list is empty on purpose: that sends the user
 	back to fix one of them rather than letting them pick a grade the sale does not support.
+
+	``flags`` is the same optional grade -> is_customer_diamond_quality map pick_diamond_grade
+	takes, for callers that already hold those values.
 	"""
 	expected = SALES_TYPE_CUSTOMER_DIAMOND.get(sales_type)
 	if expected is None:
@@ -110,9 +113,56 @@ def custom_override_grades(all_grades, sales_type, is_customer_diamond):
 	if expected != cint(is_customer_diamond):
 		return []
 
-	flags = _grade_flags(all_grades)
+	if flags is None:
+		flags = _grade_flags(all_grades)
 
 	return [g for g in all_grades if cint(bool(flags.get(g))) == expected]
+
+
+def sales_type_expects(sales_type):
+	"""The is_customer_diamond this Sales Type requires, or None when it dictates nothing."""
+	return SALES_TYPE_CUSTOMER_DIAMOND.get(sales_type)
+
+
+def customer_grades(customer, diamond_quality):
+	"""Every grade configured for a customer/quality pair, in diamond_grade_1..4 order."""
+	if not (customer and diamond_quality):
+		return []
+
+	row = frappe.db.get_value(
+		"Customer Diamond Grade",
+		{"parent": customer, "diamond_quality": diamond_quality},
+		GRADE_FIELDS,
+	)
+	if not row:
+		return []
+
+	grades = []
+	for grade in row:
+		if grade and grade not in grades:
+			grades.append(grade)
+
+	return grades
+
+
+@frappe.whitelist()
+def get_allowed_custom_diamond_grades(
+	customer=None,
+	ref_customer=None,
+	diamond_quality=None,
+	sales_type=None,
+	is_customer_diamond=0,
+):
+	"""The grades a manual override may legitimately hold.
+
+	The same answer the link query gives the dropdown and the controller enforces on save, so
+	the form can tell whether a value already in the field has just become invalid.
+	"""
+	return custom_override_grades(
+		customer_grades(ref_customer or customer, diamond_quality),
+		sales_type,
+		is_customer_diamond,
+	)
 
 
 def resolve_diamond_grade(customer, diamond_quality, is_customer_diamond):
@@ -160,21 +210,9 @@ def get_diamond_grade(doctype, txt, searchfield, start, page_len, filters):
 	is_customer_diamond = cint(filters.get("is_customer_diamond"))
 	sales_type = filters.get("sales_type")
 
-	data = frappe.db.get_all(
-		"Customer Diamond Grade",
-		{"parent": customer, "diamond_quality": diamond_quality},
-		GRADE_FIELDS,
-	)
-
-	if not data:
+	all_grades = customer_grades(customer, diamond_quality)
+	if not all_grades:
 		return []
-
-	all_grades = []
-	for row in data:
-		for key in GRADE_FIELDS:
-			grade = row.get(key)
-			if grade and grade not in all_grades:
-				all_grades.append(grade)
 
 	if use_custom:
 		# Manual override: offer the grades this sale admits, so a user can pick one the
