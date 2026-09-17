@@ -340,6 +340,9 @@ def make_subcontracting_order(doc):
 # truth, and so backporting the order type / sales type / flow type chain is an additive change.
 ORDER_DIMENSION_MAP = {
     "custom_design_type": "custom_design_type",
+    "sales_type": "custom_sales_type",
+    "order_type": "custom_order_type",
+    "custom_flow_type": "custom_flow_type",
 }
 
 
