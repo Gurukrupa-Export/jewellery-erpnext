@@ -3117,18 +3117,10 @@ def create_test_data():
 
 			po_refining_entry_field()
 
-			# Serial No.custom_ownership_tag is NOT in the git_action_v16 fixtures, so —
-			# like the other custom-field patches above — it must be provisioned here for
+			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures, so — like
+			# the other custom-field patches above — it must be provisioned here for
 			# test_site, else create_manufacturing_entry's set_value raises
-			# "Unknown column 'custom_ownership_tag'" the moment an SNC is submitted.
-			from jewellery_erpnext.patches.add_serial_no_ownership_tag_field import (
-				execute as _ensure_serial_no_ownership_tag_field,
-			)
-
-			_ensure_serial_no_ownership_tag_field()
-
-			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures either — same
-			# reasoning as custom_ownership_tag above.
+			# "Unknown column 'custom_order_type'" the moment an SNC is submitted.
 			from jewellery_erpnext.patches.add_serial_no_order_type_field import (
 				execute as _ensure_serial_no_order_type_field,
 			)
@@ -3144,6 +3136,15 @@ def create_test_data():
 			)
 
 			_ensure_order_sales_flow_type_fields()
+
+			# Quotation / Sales Order.custom_design_type is patch-only for the same reason,
+			# and must come after the flow type patch above -- custom_flow_type is its
+			# insert_after anchor on both doctypes.
+			from jewellery_erpnext.patches.add_design_type_fields import (
+				execute as _ensure_design_type_fields,
+			)
+
+			_ensure_design_type_fields()
 
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
