@@ -35,6 +35,7 @@ from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
 )
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	VALUATION_NOMINAL,
+	get_allowed_customer_gold_items,
 	get_customer_gold_company_settings,
 	get_customer_gold_settings,
 	get_customer_gold_valuation_policy,
@@ -45,6 +46,11 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 )
 
 CUSTOMER_GOODS = "Customer Goods"
+
+#: The Item Attribute carrying metal purity. Hardcoded the same way ``metal_utils.py:21`` and
+#: ``sub_utils/repack.py:377`` hardcode it -- there is no shared constant to import, and the
+#: test fixtures' copy is test code.
+METAL_PURITY_ATTRIBUTE = "Metal Purity"
 
 #: Snapshot fields written by ``set_customer_gold_rate_snapshot``. Provisioned by
 #: ``patches.add_customer_gold_rate_snapshot_fields``.
@@ -153,7 +159,7 @@ def _validate_customer(doc):
 
 
 def _validate_rows(doc, settings, customer):
-	configured_item = settings.customer_24kt_item
+	allowed_items = get_allowed_customer_gold_items(settings)
 
 	for row in doc.get("items") or []:
 		# ``Regular Stock`` here is NOT a caller's choice -- it is the framework's own
@@ -182,11 +188,20 @@ def _validate_rows(doc, settings, customer):
 		# today only the client sets this.
 		row.inventory_type = CUSTOMER_GOODS
 
-		if row.item_code != configured_item:
+		if row.item_code not in allowed_items:
+			# Customers do not all hand over the same purity -- 99.5 arrives alongside 99.9 --
+			# so this is a membership test over the configured list, not equality with one
+			# item. A site that configures no additional purities gets a single-element list
+			# and therefore the exact behaviour this check had before.
 			frappe.throw(
 				_(
-					"Row #{0}: Customer Gold receipt accepts only the configured Customer 24KT Item {1}."
-				).format(row.idx, frappe.bold(configured_item)),
+					"Row #{0}: Item {1} is not configured for Customer Gold receipts. "
+					"Accepted items: {2}."
+				).format(
+					row.idx,
+					frappe.bold(row.item_code),
+					frappe.bold(", ".join(allowed_items) or _("none")),
+				),
 				title=_("Invalid Item"),
 			)
 
@@ -228,6 +243,80 @@ def _batch_fields():
 		for field in _OPTIONAL_BATCH_FIELDS
 		if frappe.db.has_column("Batch", field)
 	]
+
+
+def _metal_purity(item_code):
+	"""The item's Metal Purity, read from the attribute VALUE, or ``None``.
+
+	WHY NOT ``metal_utils.get_purity_percentage``
+	----------------------------------------------
+	That helper joins to ``Attribute Value.purity_percentage``, and that column is wrong on this
+	bench: the row named ``99.9`` carries **100.0**, and ``91.75`` carries **0.0** across 54
+	items (measured; see D04 in docs-customer-gold/DECISIONS.md). Reading it here would price
+	99.5 gold against a 100.0 reference instead of 99.9 -- a 0.1% error on every receipt, in the
+	customer's favour, for ever.
+
+	The attribute VALUE is the same fact without the mis-keyed column: ``Attribute Value``
+	autonames ``field:attribute_value``, so the row named ``99.9`` IS the purity. ``repack.py``
+	and ``batch_rename.py`` already read it this way.
+
+	This does NOT repair the master, deliberately. That row is load-bearing elsewhere -- it
+	currently masks a fine-versus-reference basis mix-up in ``sub_utils/repack.py:244-256`` that
+	produces physical quantities on submitted Stock Entries, so correcting it in isolation would
+	turn a rounding error into wrong weights. Sequencing that is a business decision. Reading the
+	right field here is not.
+
+	Returns ``None`` when the item has no Metal Purity attribute or it does not parse. The
+	caller refuses rather than defaulting: ``repack.get_purity`` falls back to 99.9 and
+	``batch_rename.get_purity`` to 100 -- two different guesses for the same unknown -- and a
+	guess that sets a customer's booked value is exactly the wrong place to have one.
+	"""
+	rows = frappe.get_all(
+		"Item Variant Attribute",
+		filters={"parent": item_code, "attribute": METAL_PURITY_ATTRIBUTE},
+		fields=["attribute_value"],
+		limit=1,
+	)
+	if not rows:
+		return None
+
+	purity = flt(rows[0].attribute_value)
+	return purity if purity > 0 else None
+
+
+def _rate_for_item(per_gram, item_code, reference_item):
+	"""``per_gram`` restated for this row's purity.
+
+	The configured Gold Rate is quoted per gram of the Customer 24KT Item (decision D02). When a
+	customer hands over a different purity, the same rupees-per-gram would misprice it: gold is
+	bought and sold on fine content, so 99.5 metal is worth ``99.5 / 99.9`` of 99.9 metal. On a
+	10 g receipt at Rs.7,164.83 that difference is Rs.28.69 -- small per receipt, systematic
+	across every one of them, and always in the same direction.
+
+	The reference item returns ``per_gram`` unchanged, so a site receiving only the configured
+	item books exactly what it booked before this existed.
+	"""
+	per_gram = flt(per_gram)
+	if not per_gram or not item_code or item_code == reference_item:
+		return per_gram
+
+	row_purity = _metal_purity(item_code)
+	reference_purity = _metal_purity(reference_item)
+	if not row_purity or not reference_purity:
+		frappe.throw(
+			_(
+				"Cannot book {0} at the Customer Gold rate: the Metal Purity of {1} could not "
+				"be resolved, so its rate cannot be restated from the {2} quote. Set the Metal "
+				"Purity attribute on both items."
+			).format(
+				frappe.bold(item_code),
+				frappe.bold(item_code if not row_purity else reference_item),
+				frappe.bold(reference_item),
+			),
+			title=_("Customer Gold Purity Unknown"),
+		)
+
+	return per_gram * row_purity / reference_purity
 
 
 def apply_valuation_policy(doc, rate):
@@ -275,8 +364,11 @@ def apply_valuation_policy(doc, rate):
 	accounts = get_customer_gold_company_settings(doc.get("company"))
 	per_gram = flt(rate.per_gram_rate) if rate else 0.0
 
+	settings = get_customer_gold_settings()
+	reference_item = settings.get("customer_24kt_item")
+
 	for row in doc.get("items") or []:
-		row.basic_rate = per_gram
+		row.basic_rate = _rate_for_item(per_gram, row.item_code, reference_item)
 		row.set_basic_rate_manually = 1
 		row.allow_zero_valuation_rate = 0
 

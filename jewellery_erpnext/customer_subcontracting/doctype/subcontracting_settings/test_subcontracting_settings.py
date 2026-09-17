@@ -15,6 +15,7 @@ from frappe.tests import IntegrationTestCase
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	ENABLE_FLAG,
 	SETTINGS_DOCTYPE,
+	get_allowed_customer_gold_items,
 	is_customer_gold_enabled,
 	validate_customer_gold_settings,
 )
@@ -23,6 +24,14 @@ MOD = "jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings
 
 ITEM = "M-G-24KT-99.9-Y"
 SE_TYPE = "Customer Goods Received"
+RETURN_SE_TYPE = "Customer Goods Issue"
+#: A second purity a customer may hand over, alongside the 99.9 primary.
+SECOND_ITEM = "M-G-24KT-99.5-Y"
+#: Same, but not batch controlled -- the negative case for the shared item gates.
+SECOND_ITEM_NO_BATCH = "M-G-24KT-99.5-N"
+#: A real type on this bench with the WRONG purpose for a return -- not an invented name, so the
+#: test fails the way a misconfiguration actually would.
+TRANSFER_SE_TYPE = "Material Transfer"
 COMPANY_A = "Company A"
 COMPANY_B = "Company B"
 LIAB_A = "Customer Gold Liability - A"
@@ -94,9 +103,17 @@ _ACCOUNTS = {
 def _db_get_value(doctype, name, fieldname=None, as_dict=False):
 	"""Stand-in for frappe.db.get_value covering the three masters read by validate."""
 	if doctype == "Item":
-		return _item() if name == ITEM else None
+		return {
+			ITEM: _item(),
+			SECOND_ITEM: _item(),
+			SECOND_ITEM_NO_BATCH: _item(has_batch_no=0),
+		}.get(name)
 	if doctype == "Stock Entry Type":
-		return "Material Receipt" if name == SE_TYPE else None
+		return {
+			SE_TYPE: "Material Receipt",
+			RETURN_SE_TYPE: "Material Issue",
+			TRANSFER_SE_TYPE: "Material Transfer",
+		}.get(name)
 	if doctype == "Account":
 		return _ACCOUNTS.get(name)
 	return None
@@ -336,6 +353,143 @@ class TestCustomerGoldSettings(IntegrationTestCase):
 		"""Classification is pending Finance approval, so any non-group company account passes."""
 		validate_customer_gold_settings(
 			_settings(company_accounts=[_row(1, cogs=COGS_A)])
+		)
+
+	# ------------------------------------------------------- the two legs must differ
+	def test_identical_liability_and_cogs_accounts_block(self, _mock):
+		"""A real production configuration, and every other check passes it.
+
+		Found on the live KGJPL settings: both fields set to one account. It cleared the
+		liability gate because that account IS root type Liability, and cleared the COGS gate
+		because that one has no root-type rule. The settlement it would produce is
+		``Dr X / Cr X`` -- balanced, accepted by erpnext, and worth nothing.
+		"""
+		with self._blocks("are both set to"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, liability=LIAB_A, cogs=LIAB_A)])
+			)
+
+	def test_an_identical_expense_pair_blocks_on_root_type_first(self, _mock):
+		"""Pins the ORDER of the two rules, because it decides what the user is told.
+
+		The root-type gate runs before the sameness check, so an identical pair of EXPENSE
+		accounts never reaches the sameness rule -- it is rejected for not being a liability.
+		Which means the only identical pair that can reach the sameness check is a Liability
+		one, and that is precisely the real-world case above.
+
+		Asserted rather than assumed: the first draft of this test expected the sameness
+		message here and was wrong. The message a user sees when they misconfigure is worth
+		knowing exactly.
+		"""
+		with self._blocks("root type"):
+			validate_customer_gold_settings(
+				_settings(
+					company_accounts=[
+						_row(1, liability="Expense - A", cogs="Expense - A")
+					]
+				)
+			)
+
+	def test_distinct_accounts_still_pass(self, _mock):
+		"""Guard the guard. The normal two-account configuration must stay valid."""
+		validate_customer_gold_settings(
+			_settings(company_accounts=[_row(1, liability=LIAB_A, cogs=COGS_A)])
+		)
+
+	# ------------------------------------------------------- the return entry type
+	def test_return_stock_entry_type_with_wrong_purpose_blocks(self, _mock):
+		"""The receipt type had this check in two places; the return type had it in none."""
+		with self._blocks("requires"):
+			validate_customer_gold_settings(
+				_settings(customer_gold_return_stock_entry_type=TRANSFER_SE_TYPE)
+			)
+
+	def test_missing_return_stock_entry_type_blocks(self, _mock):
+		with self._blocks("does not exist"):
+			validate_customer_gold_settings(
+				_settings(customer_gold_return_stock_entry_type="No Such Type")
+			)
+
+	def test_material_issue_return_type_passes(self, _mock):
+		validate_customer_gold_settings(
+			_settings(customer_gold_return_stock_entry_type=RETURN_SE_TYPE)
+		)
+
+	# ------------------------------------------------- more than one customer purity
+	def test_additional_items_are_held_to_the_same_standard(self, _mock):
+		"""An extra purity that is not batch controlled breaks custody the same way.
+
+		The point of extracting ``_validate_receipt_item`` was that the secondary list must not
+		become the lenient one. This is what pins that.
+		"""
+		with self._blocks("must be batch controlled"):
+			validate_customer_gold_settings(
+				_settings(
+					customer_gold_items=[
+						frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH)
+					]
+				)
+			)
+
+	def test_an_additional_item_names_its_own_row_in_the_error(self, _mock):
+		"""With several items configured, "Customer 24KT Item is disabled" points at the wrong one."""
+		with self._blocks("Row #1"):
+			validate_customer_gold_settings(
+				_settings(
+					customer_gold_items=[
+						frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH)
+					]
+				)
+			)
+
+	def test_a_second_purity_passes(self, _mock):
+		validate_customer_gold_settings(
+			_settings(customer_gold_items=[frappe._dict(idx=1, item=SECOND_ITEM)])
+		)
+
+	def test_repeating_the_primary_item_blocks(self, _mock):
+		"""Listing the 24KT item again is a configuration mistake, not a no-op."""
+		with self._blocks("already accepted"):
+			validate_customer_gold_settings(
+				_settings(customer_gold_items=[frappe._dict(idx=1, item=ITEM)])
+			)
+
+	def test_a_duplicated_additional_item_blocks(self, _mock):
+		with self._blocks("already accepted"):
+			validate_customer_gold_settings(
+				_settings(
+					customer_gold_items=[
+						frappe._dict(idx=1, item=SECOND_ITEM),
+						frappe._dict(idx=2, item=SECOND_ITEM),
+					]
+				)
+			)
+
+	def test_no_additional_items_is_still_valid(self, _mock):
+		"""Every existing site. The list is empty and only the 24KT item is accepted."""
+		validate_customer_gold_settings(_settings(customer_gold_items=[]))
+
+	def test_the_allowed_list_puts_the_primary_item_first(self, _mock):
+		"""Order is load-bearing: the primary item is what the Gold Rate is quoted against."""
+		self.assertEqual(
+			get_allowed_customer_gold_items(
+				_settings(customer_gold_items=[frappe._dict(idx=1, item=SECOND_ITEM)])
+			),
+			[ITEM, SECOND_ITEM],
+		)
+
+	def test_the_allowed_list_is_just_the_primary_when_unconfigured(self, _mock):
+		self.assertEqual(get_allowed_customer_gold_items(_settings()), [ITEM])
+
+	def test_a_blank_return_type_is_allowed(self, _mock):
+		"""A site that never returns customer gold does not have to configure returns.
+
+		This is the case the new check must NOT break: ``_is_customer_gold_return`` already
+		answers "not a return" for an unconfigured site rather than raising, so blank is a
+		supported state. Only a configured-but-wrong value is an error.
+		"""
+		validate_customer_gold_settings(
+			_settings(customer_gold_return_stock_entry_type=None)
 		)
 
 
