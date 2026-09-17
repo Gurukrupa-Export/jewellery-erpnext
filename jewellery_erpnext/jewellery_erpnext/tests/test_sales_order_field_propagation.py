@@ -241,6 +241,54 @@ class TestSalesOrderFieldPropagation(FrappeTestCase):
         self.assertEqual(pmo.qty, 1)
         self.assertEqual(pmo.manufacturing_plan, "MP-0001")
 
+    # ------------------------------------------------------------------ MP -> PO
+    def _make_po(self, mp_dimensions):
+        from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import make_subcontracting_order
+        with patch(
+            "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc",
+            return_value=DocRecorder("Purchase Order", items=[]),
+        ) as new_doc, patch(
+            "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_single_value",
+            return_value="SERVICE-001"
+        ), patch(
+            "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order._source_gold_rate",
+            return_value=0
+        ):
+            source = frappe._dict(
+                name="MP-0001",
+                company="Test Company",
+                manufacturing_plan_table=[
+                    frappe._dict(
+                        supplier="Test Supplier",
+                        customer="Test Customer",
+                        purchase_type="FG Purchase",
+                        customer_po="PO-123",
+                        item_code="M-ITEM-001",
+                        subcontracting_qty=1,
+                        manufacturing_bom="BOM-001",
+                        copy_bom=None,
+                        diamond_quality="VVS",
+                        child_po=None,
+                        name="MPT-0001"
+                    )
+                ],
+                **{f"custom_{k}": v for k, v in mp_dimensions.items()},
+            )
+            make_subcontracting_order(source)
+            return new_doc.return_value
+
+    def test_full_propagation_mp_to_po(self):
+        po = self._make_po(DIMENSIONS)
+        self.assertEqual(po.custom_sales_type, "Retail")
+        self.assertEqual(po.custom_order_type, "Stock Order")
+        self.assertEqual(po.custom_flow_type, "MTO")
+
+    def test_partial_values_mp_to_po(self):
+        po = self._make_po({"sales_type": "Retail"})
+        self.assertEqual(po.custom_sales_type, "Retail")
+        self.assertEqual(po.get("custom_order_type"), None)
+        self.assertEqual(po.get("custom_flow_type"), None)
+
     # ----------------------------------------------------------------- PMO -> MWO
     def test_pmo_to_mwo_fields_are_mappable(self):
         # get_mapped_doc copies same-named, non-no_copy fields (frappe.model.mapper.map_fields);
@@ -458,6 +506,11 @@ class TestSalesOrderFieldPropagation(FrappeTestCase):
                 "sales_type": "Link",
                 "order_type": "Data",
                 "flow_type": "Select",
+            },
+            "Purchase Order": {
+                "custom_sales_type": "Link",
+                "custom_order_type": "Data",
+                "custom_flow_type": "Select",
             },
         }
         for doctype, fields in read_only.items():
