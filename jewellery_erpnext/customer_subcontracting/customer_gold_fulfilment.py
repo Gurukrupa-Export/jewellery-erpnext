@@ -304,6 +304,46 @@ def _row_serials(row):
 	return [None]
 
 
+def _restate_qty(qty, held_item, source_item):
+	"""``qty`` grams of ``held_item`` expressed as grams of ``source_item``, or ``None``.
+
+	Fine gold is the bridge, because it is the one measure a purity change conserves::
+
+	    fine   = qty x purity(held) / 100
+	    result = fine / purity(source) x 100  ==  qty x purity(held) / purity(source)
+
+	The division cancels the 100s, so no rounding is introduced beyond the caller's own.
+
+	``None`` means "not restatable", never a guess. The items differ and a purity is missing or
+	non-positive, so there is no defensible conversion -- and a settlement computed from an
+	indefensible one is money moved on a number nobody can reconstruct.
+
+	Identity when the items match, which is the ordinary case: raw batches and same-item repacks
+	reach this with ``held_item == source_item`` and must come out bit-for-bit unchanged. The
+	equality test comes FIRST for that reason -- an item whose purity is unmapped still restates
+	into itself correctly, and refusing there would break paths that never had a unit problem.
+	"""
+	qty = flt(qty)
+	if not qty:
+		return 0.0
+
+	if held_item and source_item and held_item == source_item:
+		return qty
+
+	if not held_item or not source_item:
+		# One of the two is unknown, so it cannot be shown that no conversion happened. The
+		# quantity may well be in the right units already; "may well be" is not good enough to
+		# settle a liability on.
+		return None
+
+	held_purity = get_purity_percentage(held_item)
+	source_purity = get_purity_percentage(source_item)
+	if not held_purity or not source_purity or flt(source_purity) <= 0:
+		return None
+
+	return qty * flt(held_purity) / flt(source_purity)
+
+
 def _booked_customer_value(doc, batch_no, customer, moved_qty):
 	"""The customer's BOOKED value inside ``batch_no``, pro-rata to ``moved_qty``, or ``None``.
 
@@ -328,11 +368,32 @@ def _booked_customer_value(doc, batch_no, customer, moved_qty):
 	WHERE EACH NUMBER COMES FROM
 	----------------------------
 	``Batch Component`` already records, per source, how many grams of whose metal are inside a
-	batch, and which batch they came from. So the customer's grams are
-	``component["qty"]`` and the rate is the one their ORIGINAL receipt booked --
+	batch, and which batch they came from. The rate is the one their ORIGINAL receipt booked --
 	``get_booked_rate`` against ``component["source_batch"]``, never a rate fetched today. The
 	SOP forbids re-rating at delivery, and reading the source batch's receipt events is what
 	makes that structural rather than a promise.
+
+	THE TWO QUANTITIES ARE IN DIFFERENT UNITS, AND MULTIPLYING THEM DIRECTLY OVERSTATES
+	-----------------------------------------------------------------------------------
+	``component["qty"]`` is NOT the customer's source grams. ``resolve_components`` apportions
+	so that the returned quantities sum to the quantity DRAWN -- its docstring says so -- which
+	means they are denominated in the held batch's item, while ``get_booked_rate`` is rupees per
+	gram of the SOURCE batch's item. Those agree only while nothing changed the purity.
+
+	Put a conversion in between and they diverge, in the customer's disfavour. Receive 6.000 g
+	of 99.9%, alloy it down to 7.950 g of 75.4%, manufacture, deliver::
+
+	    component qty  7.950 g (of the 18KT piece)  x  7,164.83 (per gram of 24KT)
+	                = Rs.56,960.40 settled against a Rs.42,988.98 obligation
+
+	Rs.13,971.42 of liability discharged that the customer never posted, with the excess landing
+	in COGS Adjustment. Reproduced end to end on cg-integration.test before this guard existed.
+
+	Fine gold is what survives a purity change -- it is the same substance on both sides -- so
+	the component is restated through it: ``qty x purity(held) / purity(source)``. For the case
+	above that is ``7.950 x 75.4 / 99.9 = 6.000 g``, and 6.000 x 7,164.83 is the SOP's
+	Rs.42,988.98. When the two items are the same the ratio is 1 and every same-item path --
+	every raw batch, every repack -- computes exactly what it computed before.
 
 	RETURNS ``None`` -- meaning "fall back to the stock ledger" -- IN THREE CASES
 	-----------------------------------------------------------------------------
@@ -342,6 +403,8 @@ def _booked_customer_value(doc, batch_no, customer, moved_qty):
 	* A source batch has no booked rate (received under Zero Value, or predating the ledger).
 	  ``get_booked_rate`` returns ``None`` there, and inventing a rate for a settlement is the
 	  one thing worse than falling back.
+	* The component cannot be restated into the source batch's units -- the two items differ and
+	  either one's purity is unknown. Settling at an unconvertible rate is the defect above.
 
 	It never returns a partial sum. A value assembled from some of the components and not the
 	others would look precise and be wrong.
@@ -369,6 +432,8 @@ def _booked_customer_value(doc, batch_no, customer, moved_qty):
 	if not mine:
 		return None
 
+	held_item = frappe.db.get_value("Batch", batch_no, "item")
+
 	total = 0.0
 	for component in mine:
 		source = component.get("source_batch")
@@ -379,7 +444,18 @@ def _booked_customer_value(doc, batch_no, customer, moved_qty):
 		if rate is None:
 			return None
 
-		total += flt(component.get("qty")) * flt(rate)
+		# The rate belongs to the source batch's item, so the quantity has to be expressed in
+		# that item's grams before the two can be multiplied. Read the item off the source
+		# BATCH -- that is the batch get_booked_rate averaged its receipts over, so it is the
+		# item the rate is per-gram of. ``component["item_code"]`` is the fallback.
+		source_item = (
+			frappe.db.get_value("Batch", source, "item") or component.get("item_code")
+		)
+		source_qty = _restate_qty(flt(component.get("qty")), held_item, source_item)
+		if source_qty is None:
+			return None
+
+		total += source_qty * flt(rate)
 
 	# Pro-rata by what actually moved. Delivering the whole batch settles the whole booked
 	# value; delivering half of it settles half. The denominator is the batch's own quantity,
