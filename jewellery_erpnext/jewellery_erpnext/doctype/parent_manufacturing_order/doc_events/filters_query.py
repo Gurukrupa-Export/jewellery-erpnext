@@ -26,6 +26,11 @@ GRADE_FIELDS = [
 	"diamond_grade_4",
 ]
 
+# Sales Type -> the is_customer_diamond it implies. Outright is a company-owned sale, Outwork a
+# customer-supplied one, so each admits only one kind of grade. Hybrid, Branch Sales,
+# Certification and Repairing are deliberately absent: they admit either kind.
+SALES_TYPE_CUSTOMER_DIAMOND = {"Outright": 0, "Outwork": 1}
+
 
 def is_customer_diamond_flag(value):
 	"""Read the Sales Order Item's Yes/No text as the PMO's is_customer_diamond checkbox.
@@ -87,6 +92,29 @@ def pick_diamond_grade(grades, is_customer_diamond, flags=None):
 	return grades[0]
 
 
+def custom_override_grades(all_grades, sales_type, is_customer_diamond):
+	"""The grades the manual override (use_custom_diamond_grade) may offer.
+
+	Sales Type and the checkbox have to agree, because Sales Type is what sets
+	custom_customer_diamond on the quotation in the first place (public/js/doctype_js/quotation.js)
+	and that is what becomes is_customer_diamond here. A PMO where the two disagree has been
+	edited into a state neither answer fits, so the list is empty on purpose: that sends the user
+	back to fix one of them rather than letting them pick a grade the sale does not support.
+	"""
+	expected = SALES_TYPE_CUSTOMER_DIAMOND.get(sales_type)
+	if expected is None:
+		# No Outright/Outwork rule to apply -- including a PMO whose read-only sales_type never
+		# fetched, which is every PMO created before the field existed.
+		return all_grades
+
+	if expected != cint(is_customer_diamond):
+		return []
+
+	flags = _grade_flags(all_grades)
+
+	return [g for g in all_grades if cint(bool(flags.get(g))) == expected]
+
+
 def resolve_diamond_grade(customer, diamond_quality, is_customer_diamond):
 	"""Pick the grade to auto-apply for a customer/quality pair.
 
@@ -130,6 +158,7 @@ def get_diamond_grade(doctype, txt, searchfield, start, page_len, filters):
 	diamond_quality = filters.get("diamond_quality")
 	use_custom = filters.get("use_custom_diamond_grade")
 	is_customer_diamond = cint(filters.get("is_customer_diamond"))
+	sales_type = filters.get("sales_type")
 
 	data = frappe.db.get_all(
 		"Customer Diamond Grade",
@@ -148,9 +177,14 @@ def get_diamond_grade(doctype, txt, searchfield, start, page_len, filters):
 				all_grades.append(grade)
 
 	if use_custom:
-		# Manual override: offer every grade the customer has for the quality, so a user can
-		# pick one the automatic rule would not.
-		return [(g,) for g in sorted(all_grades)]
+		# Manual override: offer the grades this sale admits, so a user can pick one the
+		# automatic rule would not -- but not one Outright/Outwork rules out.
+		return [
+			(g,)
+			for g in sorted(
+				custom_override_grades(all_grades, sales_type, is_customer_diamond)
+			)
+		]
 
 	grade = pick_diamond_grade(all_grades, is_customer_diamond)
 
