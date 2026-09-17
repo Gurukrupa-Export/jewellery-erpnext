@@ -38,6 +38,13 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_
 	is_loss_booking_blocked,
 	validate_loss_rows_against_gate,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_repack import (
+	create_finding_repack_for_row,
+	finding_bin_pairs,
+	lock_finding_repack_trees,
+	reverse_finding_draw_on_trees,
+	validate_finding_repack,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_utils import (
 	get_summary_data,
 )
@@ -171,6 +178,7 @@ class EmployeeIR(Document):
 		validate_loss_qty(self)
 		validate_casting_tree(self)
 		validate_casting_receive(self)
+		validate_finding_repack(self)
 		self.validate_fg_bom_fields()
 		self.set_repeat_receive_flag()
 
@@ -369,6 +377,10 @@ class EmployeeIR(Document):
 		# Bins while waiting on a Tree that a concurrent Tree Number button holds while waiting on
 		# those same Bins: a textbook 1213 cycle.
 		lock_trees_for_eir(self)
+		# ...and the trees the finding repack draws from, which lock_trees_for_eir does not cover:
+		# it is scoped to casting operations, while a finding repack can run on any operation whose
+		# work order still carries a tree.
+		lock_finding_repack_trees(self)
 
 		precision = cint(
 			frappe.db.get_single_value("System Settings", "float_precision")
@@ -472,6 +484,7 @@ class EmployeeIR(Document):
 			from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 				MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
 				REPACK_STOCK_ENTRY_TYPE,
+				_resolve_source_warehouse_raw_material,
 			)
 			from jewellery_erpnext.jewellery_erpnext.lock_order import (
 				lock_bins,
@@ -484,6 +497,13 @@ class EmployeeIR(Document):
 				for r in (self.manually_book_loss_details + self.employee_loss_details)
 				for wh in (department_wh, actor_wh)
 			]
+			# The finding repack consumes tree metal out of the MSL warehouse and produces the
+			# findings back into it, then the Material Transfer carries them to the department.
+			# Those Bins are only reached at submit time, so they have to join this one sorted
+			# acquisition or they would be taken out of sequence (lock_order RULE B).
+			_eir_pairs += finding_bin_pairs(
+				self, _resolve_source_warehouse_raw_material(self), department_wh
+			)
 			# Pin each nested SE type's naming counter (the per-(company x type)
 			# Document Naming Rule counter post-reshard, or the tabSeries fallback)
 			# BEFORE the Bins -- a blank stub matches no naming rule and would pin
@@ -546,12 +566,26 @@ class EmployeeIR(Document):
 					(row.manufacturing_operation, {**res, "complete_time": curr_time})
 				)
 
+				# Finding repack: when the operation has is_finding_repack_requirement,
+				# convert this row's share of the casting tree's metal into the finding
+				# items named on it. Runs BEFORE the injection below for two reasons —
+				# the findings' batches must exist before the Material Transfer that
+				# carries them is built, and the tree draw it books has to be on the
+				# ledger before update_tree_on_receive re-checks the gain against what
+				# the tree still has outstanding.
+				finding_rows = create_finding_repack_for_row(self, row)
+
 				# Main Slip gain injection: when is_raw_material and
 				# received_gross_wt > gross_wt, repack the delta from the
 				# employee/subcontractor warehouse into the MOP warehouse.
 				# The SE bridge then writes the positive MOP Log row that
 				# create_mop_log_for_employee_ir_receive will see.
-				stock_entry_name = inject_extra_metal_for_eir_receive(self, row)
+				# The finding rows ride the same Material Transfer (WORK ORDER) leg, so
+				# their weight reaches the operation exactly the way the extra metal's
+				# does — via the MOP Log bridge, bucketed to finding_wt by item prefix.
+				stock_entry_name = inject_extra_metal_for_eir_receive(
+					self, row, extra_transfer_rows=finding_rows
+				)
 
 				# Combined-loss receive: create_mop_log_for_employee_ir_receive
 				# now subtracts employee_loss_details + manually_book_loss_details
@@ -680,6 +714,14 @@ class EmployeeIR(Document):
 			# against the wrong ledger.
 			pin_tree_numbers_on_receive(self)
 		update_tree_on_receive(self, cancel=cancel)
+
+		if cancel:
+			# Give the trees back what the finding repacks took. The Repack Stock Entries
+			# themselves are already reversed by cancel_injections_for_eir above (they are
+			# auto_created and carry employee_ir); this is the ledger half. Runs AFTER
+			# update_tree_on_receive so both credits land on a tree that is read fresh under
+			# its own lock, never on one cached across the two writers.
+			reverse_finding_draw_on_trees(self)
 
 		self._refresh_msl_tracking()
 
