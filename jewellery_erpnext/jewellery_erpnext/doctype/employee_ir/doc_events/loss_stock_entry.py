@@ -3,9 +3,8 @@
 On Receive submit: for each row in employee_loss_details and
 manually_book_loss_details with proportionally_loss > 0, creates a
 "Process Loss" (Repack purpose) Stock Entry that moves the loss quantity
-from the SRE source warehouse to either:
-  - Scrap warehouse by department  (is_raw_material = 0)
-  - Employee / Subcontractor Raw Material warehouse  (is_raw_material = 1)
+from the SRE source warehouse to the Department Scrap warehouse, and maps the
+item to its corresponding loss variant (e.g., M -> ML, F -> FL).
 
 Before the SE is submitted, each matching Stock Reservation Entry that still holds a
 reservation is cancelled and recreated with reduced reserved_qty, so the loss quantity
@@ -23,7 +22,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, nowtime, today
+from frappe.utils import flt, nowtime, today
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	resolve_batch_ownership,
@@ -737,38 +736,8 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 
 
 def _resolve_t_warehouse(eir, table_name):
-	"""Resolve target warehouse based on is_raw_material."""
-	if eir.subcontracting == "Yes":
-		return _resolve_raw_material_warehouse(eir)
+	"""Resolve target warehouse. Process Loss always uses the Department Scrap warehouse."""
 	return _resolve_scrap_warehouse(eir)
-
-
-def _resolve_raw_material_warehouse(eir):
-	if eir.subcontracting == "Yes":
-		if not eir.subcontractor:
-			frappe.throw(
-				_(
-					"Employee IR {0}: subcontractor is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"company": eir.company,
-				"subcontractor": eir.subcontractor,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for "
-					"subcontractor {1}"
-				).format(eir.name, eir.subcontractor)
-			)
-	return wh
 
 
 def _resolve_scrap_warehouse(eir):
@@ -805,11 +774,7 @@ def _resolve_scrap_warehouse(eir):
 
 def _resolve_loss_item(eir, row, table_name):
 	"""Return the item_code to use on the produce row of the Process Loss SE."""
-	if cint(eir.is_raw_material):
-		# Same item — loss moves to employee/subcontractor raw-material warehouse.
-		return row.item_code
-
-	# Scrap path: resolve the dust/loss variant via the manufacturer's mapping.
+	# Process Loss always resolves the dust/loss variant via the manufacturer's mapping.
 	if not row.variant_of:
 		frappe.throw(
 			_(

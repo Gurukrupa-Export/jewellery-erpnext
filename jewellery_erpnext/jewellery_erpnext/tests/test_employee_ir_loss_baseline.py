@@ -1937,6 +1937,7 @@ def _doc(**fields):
 		"msl_warehouse": "EMP-0001 RM - GK",
 		"scrap_warehouse": "Casting Scrap - GK",
 		"stock_entry": None,
+		"subcontracting": "No",
 		"items": [_se_row("M-G-18KT-75.4-Y", 5.0)],
 	}
 	defaults.update(fields)
@@ -1980,24 +1981,39 @@ class TestResolvers(IntegrationTestCase):
 		with self.assertRaises(ValidationError):
 			ele._resolve_msl_warehouse(_doc(employee=None))
 
-	def test_process_loss_target_warehouse_always_scrap(self):
-		eir_raw = _doc(is_raw_material=1)
-		eir_not_raw = _doc(is_raw_material=0)
+	def test_process_loss_route_keeps_item_and_warehouse_consistent(self):
+		from types import SimpleNamespace
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
-			return_value="Scrap - GK",
-		):
-			self.assertEqual(
-				loss_stock_entry._resolve_t_warehouse(eir_raw, "employee_loss_details"),
-				"Scrap - GK",
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		combinations = [(0, "No"), (1, "No"), (0, "Yes"), (1, "Yes")]
+
+		for is_raw, sub in combinations:
+			eir = _doc(
+				is_raw_material=is_raw, subcontracting=sub, subcontractor="Sub-1"
 			)
-			self.assertEqual(
-				loss_stock_entry._resolve_t_warehouse(
-					eir_not_raw, "employee_loss_details"
-				),
-				"Scrap - GK",
+			row = SimpleNamespace(
+				item_code="ORIGINAL-ITEM", variant_of="VARIANT", idx=1, loss_type="Loss"
 			)
+
+			with patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+				return_value="Scrap - GK",
+			), patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+				return_value="LOSS-ITEM-1",
+			), patch("frappe.db.get_value", return_value="Some Value"):
+				t_warehouse = loss_stock_entry._resolve_t_warehouse(
+					eir, "employee_loss_details"
+				)
+				loss_item = loss_stock_entry._resolve_loss_item(
+					eir, row, "employee_loss_details"
+				)
+
+				self.assertEqual(t_warehouse, "Scrap - GK")
+				self.assertEqual(loss_item, "LOSS-ITEM-1")
 
 	def test_scrap_warehouse(self):
 		with patch(
@@ -2036,6 +2052,79 @@ class TestResolvers(IntegrationTestCase):
 			self.assertEqual(
 				ele._resolve_loss_item(_doc(), "M-G-18KT-75.4-Y"), "ML-G-18KT-75.4-Y"
 			)
+
+
+class TestProcessLossStockEntryFinalRows(IntegrationTestCase):
+	def test_produce_row_uses_correct_item_and_warehouse(self):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		# Internal Employee route
+		eir_internal = _doc(subcontracting="No")
+		row_internal = SimpleNamespace(
+			item_code="ORIGINAL-ITEM",
+			variant_of="VARIANT",
+			idx=1,
+			loss_type="Loss",
+			batch_no="B1",
+			manufacturing_work_order="MWO-1",
+			proportionally_loss=5.0,
+		)
+
+		# Subcontractor route
+		eir_sub = _doc(subcontracting="Yes", subcontractor="Sub-1")
+		row_sub = SimpleNamespace(
+			item_code="ORIGINAL-ITEM",
+			variant_of="VARIANT",
+			idx=1,
+			loss_type="Loss",
+			batch_no="B1",
+			manufacturing_work_order="MWO-1",
+			proportionally_loss=5.0,
+		)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+			return_value="Scrap - GK",
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+			return_value="LOSS-ITEM-1",
+		), patch("frappe.db.get_value", return_value="Some Value"), patch(
+			"frappe.get_precision", return_value=3
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry.batch_owner_no_wastage",
+			return_value=False,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._find_sre",
+			return_value=(
+				SimpleNamespace(
+					warehouse="Source WH - GK", name="SRE-1", get=lambda x: None
+				),
+				[],
+			),
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._sre_remaining",
+			return_value=10.0,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_batch_inventory",
+			return_value=("Internal", None),
+		):
+			res_internal = loss_stock_entry._prepare_loss_row(
+				eir_internal, row_internal, "employee_loss_details"
+			)
+			self.assertEqual(res_internal["loss_item"], "LOSS-ITEM-1")
+			self.assertEqual(res_internal["t_warehouse"], "Scrap - GK")
+			self.assertEqual(res_internal["s_warehouse"], "Source WH - GK")
+
+			res_sub = loss_stock_entry._prepare_loss_row(
+				eir_sub, row_sub, "employee_loss_details"
+			)
+			self.assertEqual(res_sub["loss_item"], "LOSS-ITEM-1")
+			self.assertEqual(res_sub["t_warehouse"], "Scrap - GK")
+			self.assertEqual(res_sub["s_warehouse"], "Source WH - GK")
 
 
 class TestFifoBatches(IntegrationTestCase):
