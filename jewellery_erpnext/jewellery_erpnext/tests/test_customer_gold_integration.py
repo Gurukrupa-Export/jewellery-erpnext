@@ -4324,8 +4324,13 @@ class TestProductionEvents(TestCustodyTransfer):
 	actually consumed IS the composition the spec asks for.
 	"""
 
-	def _manufacture(self, batch, qty, fg_item=None):
-		"""A real Manufacture Stock Entry consuming customer metal."""
+	def _manufacture(self, batch, qty, fg_item=None, consume_item=None):
+		"""A real Manufacture Stock Entry consuming customer metal.
+
+		``consume_item`` defaults to ``self.item`` so every existing caller is unchanged. It
+		exists because a batch that has been through a conversion holds the OTHER item, and
+		erpnext rejects a row whose batch does not belong to its item code.
+		"""
 		se = frappe.new_doc("Stock Entry")
 		se.stock_entry_type = MANUFACTURE_SE_TYPE
 		se.purpose = "Manufacture"
@@ -4339,7 +4344,7 @@ class TestProductionEvents(TestCustodyTransfer):
 		# defect these tests exist to catch.
 		consumed = [
 			{
-				"item_code": self.item,
+				"item_code": consume_item or self.item,
 				"qty": qty,
 				"s_warehouse": self.warehouse,
 				"batch_no": batch,
@@ -4782,6 +4787,303 @@ class TestManufacturedPieceSettles(TestProductionEvents):
 			self._settlement_entries(dn.name),
 			first,
 			msg="replaying the hook produced a second settlement",
+		)
+
+
+class TestConvertedPieceSettlesTheSourceValue(TestManufacturedPieceSettles):
+	"""The same settlement, with a purity change in the middle. It over-discharged by 32%.
+
+	``TestManufacturedPieceSettles`` proves the booked value is settled, but every fixture in
+	it manufactures ``self.item`` out of ``self.item``. Real work does not: the customer hands
+	over 24KT and the piece that ships is 18KT, because alloy went in. That is SOP Example B
+	followed by Examples C and the settlement -- the ordinary case, and it appeared in no test.
+
+	FOUND BY RUNNING THE SOP FOR REAL, NOT BY READING THE CODE
+	----------------------------------------------------------
+	On cg-integration.test: receive 10 g of 99.9%, convert 6 g of it to 7.95 g of 75.4%,
+	manufacture, deliver. Expected Rs.42,988.98. Posted::
+
+	    DN-26-00001  Delivery  -7.9500 g   value -56,960.40   ACC-JV-2026-00001
+	    Dr CG Test Customer Gold Liability   56,960.40
+	    Cr CG Test Customer Gold COGS Adj                56,960.40
+
+	Rs.13,971.42 more liability discharged than the customer ever posted -- 32.5% over -- and
+	the excess credited to COGS Adjustment, where it reads as margin.
+
+	``resolve_components`` apportions to the quantity DRAWN, so the component said 7.950 g and
+	named the 24KT receipt batch as its source. ``get_booked_rate`` returned that batch's
+	Rs.7,164.83 per 24KT gram. Multiplying them multiplies 18KT grams by a 24KT rate.
+
+	The three assertions below are the three places the wrong number surfaced -- the custody
+	event, the debit, and the credit. All three are asserted because a fix that corrected the
+	event while leaving the JE alone would be worse than the defect: the ledger and the GL would
+	then disagree about the same delivery.
+	"""
+
+	#: The fixtures' own purities, so every figure below can be rechecked against the masters.
+	SOURCE_PURITY = 99.9
+	CONVERTED_PURITY = 75.4
+	BOOKED_RATE = 7164.83
+
+	SOURCE_QTY = 6.0
+	#: 6.000 g of 99.9% carries 5.994 g of fine gold, which at 75.4% is 7.949602... g. Stock
+	#: quantities persist at 2dp, so what the system can actually hold is 7.95.
+	CONVERTED_QTY = 7.95
+
+	#: What this fixture must settle: 7.95 x 75.4 / 99.9 x 7,164.83, recomputed here from the
+	#: constants above rather than read back from the code under test.
+	EXPECTED_VALUE = 42991.13
+	#: The SOP's S1 figure for 6.000 g. EXPECTED_VALUE sits Rs.2.15 above it, and that gap is
+	#: entirely the 7.949602 -> 7.95 quantity rounding: 0.0004 g of 24KT at Rs.7,164.83. It is
+	#: asserted as a tolerance below, so a real regression cannot hide inside it.
+	SOP_VALUE = 42988.98
+	#: What the defect posted: 7.950 x 7,164.83, the 18KT gram count at the 24KT rate.
+	OVERSTATED_VALUE = 56960.40
+
+	def _convert(self, source_batch):
+		"""A real lane-tagged conversion from the 99.9% item to the 75.4% one."""
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = REPACK_SE_TYPE
+		se.purpose = "Repack"
+		se.company = COMPANY
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		se._customer = CUSTOMER
+		se.append(
+			"items",
+			{
+				"item_code": self.item,
+				"qty": self.SOURCE_QTY,
+				"s_warehouse": self.warehouse,
+				"batch_no": source_batch,
+				"use_serial_batch_fields": 1,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"custom_conversion_lane": f"Customer Goods|{CUSTOMER}",
+				"expense_account": self.difference_account,
+			},
+		)
+		se.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": self.CONVERTED_QTY,
+				"t_warehouse": self.warehouse,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"custom_conversion_lane": f"Customer Goods|{CUSTOMER}",
+				"expense_account": self.difference_account,
+			},
+		)
+		se.flags.ignore_mandatory = True
+		se.save()
+		se.submit()
+		return se.items[1].batch_no
+
+	def _deliver_operating_item(self, batch_no, qty):
+		"""``_delivery`` hardcodes ``self.item``; the converted piece is the other one."""
+		if not frappe.db.exists("Sales Type", SALES_TYPE):
+			frappe.get_doc(
+				{"doctype": "Sales Type", "type": SALES_TYPE, "tax_rate": 0}
+			).insert(ignore_permissions=True)
+		if not frappe.db.exists("Customer Payment Terms", {"customer": CUSTOMER}):
+			frappe.get_doc(
+				{"doctype": "Customer Payment Terms", "customer": CUSTOMER}
+			).insert(ignore_permissions=True)
+
+		so = frappe.new_doc("Sales Order")
+		so.company = COMPANY
+		so.customer = CUSTOMER
+		so.sales_type = SALES_TYPE
+		so.transaction_date = self.posting_date
+		so.delivery_date = self.posting_date
+		so.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": qty,
+				"rate": 0,
+				"delivery_date": self.posting_date,
+				"warehouse": self.warehouse,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+			},
+		)
+		so.flags.ignore_mandatory = True
+		so.save()
+		so.submit()
+
+		dn = frappe.new_doc("Delivery Note")
+		dn.company = COMPANY
+		dn.customer = CUSTOMER
+		dn.posting_date = self.posting_date
+		dn.set_posting_time = 1
+		dn.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": qty,
+				"rate": 0,
+				"warehouse": self.warehouse,
+				"batch_no": batch_no,
+				"use_serial_batch_fields": 1,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"against_sales_order": so.name,
+				"so_detail": so.items[0].name,
+			},
+		)
+		dn.flags.ignore_mandatory = True
+		dn.save()
+		dn.submit()
+		return dn
+
+	def _receipt_convert_manufacture_deliver(self):
+		"""The whole SOP leg, with real documents at every step."""
+		batch = self._stocked_batch(qty=10)
+		converted = self._convert(batch)
+		se = self._manufacture(
+			converted,
+			self.CONVERTED_QTY,
+			fg_item=self.operating_item,
+			consume_item=self.operating_item,
+		)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+		return self._deliver_operating_item(fg_batch, self.CONVERTED_QTY)
+
+	def test_the_component_is_restated_into_the_source_items_grams(self):
+		"""The unit conversion on its own, so a failure says which half broke."""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			_restate_qty,
+		)
+
+		self.assertAlmostEqual(
+			_restate_qty(self.CONVERTED_QTY, self.operating_item, self.item),
+			self.CONVERTED_QTY * self.CONVERTED_PURITY / self.SOURCE_PURITY,
+			places=6,
+			msg="7.95 g of 75.4% is 6.0003 g of 99.9% -- same 5.9943 g of fine gold",
+		)
+		self.assertAlmostEqual(
+			_restate_qty(self.CONVERTED_QTY, self.operating_item, self.item),
+			self.SOURCE_QTY,
+			places=3,
+			msg="and that is the 6.000 g drawn, to the precision quantities are stored at",
+		)
+
+	def test_an_identical_item_restates_to_itself(self):
+		"""The no-op path every same-item fixture in this suite depends on."""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			_restate_qty,
+		)
+
+		self.assertEqual(_restate_qty(6.0, self.item, self.item), 6.0)
+
+	def test_an_unrestatable_component_refuses_rather_than_guessing(self):
+		"""No source item means no defensible rate, so the caller must fall back."""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			_restate_qty,
+		)
+
+		self.assertIsNone(_restate_qty(6.0, self.operating_item, None))
+		self.assertIsNone(_restate_qty(6.0, None, self.item))
+
+	def test_the_custody_event_settles_the_source_value_not_the_converted_grams(self):
+		"""The defect, at the ledger. Rs.42,988.98, never Rs.56,960.40."""
+		dn = self._receipt_convert_manufacture_deliver()
+
+		events = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"reference_docname": dn.name, "cg_event_kind": "Delivery"},
+			fields=["customer", "cg_carrying_value_delta"],
+		)
+		self.assertEqual(len(events), 1, msg="the delivery wrote no custody event")
+		self.assertEqual(events[0].customer, CUSTOMER)
+
+		value = flt(events[0].cg_carrying_value_delta)
+		self.assertNotAlmostEqual(
+			value,
+			-self.OVERSTATED_VALUE,
+			places=2,
+			msg="settled the 18KT gram count at the 24KT rate -- the original defect",
+		)
+		self.assertAlmostEqual(
+			value,
+			-self.EXPECTED_VALUE,
+			places=2,
+			msg="not 7.95 x 75.4 / 99.9 x 7,164.83",
+		)
+		self.assertAlmostEqual(
+			value,
+			-self.SOP_VALUE,
+			delta=3.0,
+			msg="a purity change must not change what the customer posted; only the "
+			"2dp quantity rounding may move it, and that is worth Rs.2.15",
+		)
+
+	def test_the_journal_entry_agrees_with_the_custody_event(self):
+		"""Both legs, because a ledger that disagrees with the GL is worse than either."""
+		dn = self._receipt_convert_manufacture_deliver()
+
+		entries = self._settlement_entries(dn.name)
+		self.assertEqual(
+			len(entries), 1, msg=f"expected one settlement JE, got {entries}"
+		)
+
+		je = frappe.get_doc("Journal Entry", entries[0])
+		self.assertEqual(je.docstatus, 1)
+		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
+		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+
+		self.assertAlmostEqual(
+			debits.get(self.liability_account, 0.0),
+			self.EXPECTED_VALUE,
+			places=2,
+			msg="Dr Customer Gold Liability over-discharged the obligation",
+		)
+		self.assertAlmostEqual(
+			credits.get(self.cogs_account, 0.0),
+			self.EXPECTED_VALUE,
+			places=2,
+			msg="Cr COGS Adjustment credited margin that was never earned",
+		)
+
+	def test_the_fine_gold_is_conserved_across_the_whole_leg(self):
+		"""The independent check: whatever the rupees do, the metal must balance.
+
+		5.994 g of fine gold went into the conversion and 5.994 g shipped, so the customer's
+		fine position returns to what it was before the 6 g was drawn -- the 4 g still in raw
+		custody, and nothing else.
+		"""
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
+		)
+
+		batch = self._stocked_batch(qty=10)
+		after_receipt = cgf.get_customer_gold_fine_position(COMPANY, CUSTOMER)
+
+		converted = self._convert(batch)
+		se = self._manufacture(
+			converted,
+			self.CONVERTED_QTY,
+			fg_item=self.operating_item,
+			consume_item=self.operating_item,
+		)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+		self._deliver_operating_item(fg_batch, self.CONVERTED_QTY)
+
+		self.assertAlmostEqual(
+			cgf.get_customer_gold_fine_position(COMPANY, CUSTOMER),
+			after_receipt - self.CONVERTED_QTY * self.CONVERTED_PURITY / 100.0,
+			places=3,
+			msg="the fine gold delivered is not the fine gold that was converted",
 		)
 
 
