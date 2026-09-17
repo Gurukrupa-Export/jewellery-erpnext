@@ -15,13 +15,81 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	CUSTOMER_INVENTORY_TYPES,
 )
 
+#: Stock Entry Types that have always minted customer parent batches. Kept as a literal
+#: list because they are not interchangeable with the configured receipt type:
+#: "Subcontracting Repack" has purpose `Repack`, while the settings validator requires the
+#: configured type to have purpose `Material Receipt`
+#: (``subcontracting_settings.RECEIPT_PURPOSE``). It can therefore never BE the configured
+#: type, and replacing this list with the configured one alone would silently kill the
+#: Subcontracting Repack leg.
+_LEGACY_PARENT_BATCH_TYPES = (
+	"Customer Goods Received",
+	"Subcontracting Repack",
+)
+
+
+def _customer_gold_config():
+	"""``(configured_receipt_type, configured_items)`` for the customer gold flow.
+
+	``(None, None)`` when the flow is off or unconfigured, which is every site today —
+	so the legacy behaviour below is reached unchanged unless someone has deliberately
+	configured this.
+
+	Imported inside the function, as ``_pure_qty_excluded_types`` does, to keep this
+	module importable when the settings doctype has not been synced.
+	"""
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_allowed_customer_gold_items,
+		get_customer_gold_settings,
+		is_customer_gold_enabled,
+	)
+
+	if not is_customer_gold_enabled():
+		return None, None
+
+	settings = get_customer_gold_settings()
+	return (
+		settings.get("customer_goods_stock_entry_type"),
+		get_allowed_customer_gold_items(settings),
+	)
+
+
+def _is_eligible_item(item_code, configured_items):
+	"""Whether this row's item should be minted a customer parent batch.
+
+	Two independent tests, either of which qualifies:
+
+	* it is ONE OF the configured receipt items — resolved from Settings; and
+	* it carries the ``24KT`` token — the historical rule.
+
+	The token test is retained rather than replaced. Settings is unconfigured on every
+	site today, so removing it would stop minting batches for the existing flow
+	entirely. Adding identity is what lets a correctly configured item whose code
+	happens not to contain ``24KT`` work at all — the C05 gap.
+
+	Membership, not equality, since a customer may hand over more than one purity. The token
+	test alone would not cover them: an additional 99.5 item need not carry ``24KT`` in its
+	code, and without a batch the metal has no custody identity at all.
+	"""
+	# A bare string is normalised rather than trusted. ``"X" in "PREFIX-X-SUFFIX"`` is a
+	# SUBSTRING test, so a caller passing one item code as a string -- which every caller did
+	# before this took a list -- would silently match unrelated items whose codes contain it.
+	if isinstance(configured_items, str):
+		configured_items = [configured_items]
+
+	if configured_items and item_code in configured_items:
+		return True
+	return "24KT" in item_code
+
 
 def create_parent_batches(doc, method=None):
+	configured_type, configured_items = _customer_gold_config()
+
 	if doc.doctype == "Stock Entry":
-		if getattr(doc, "stock_entry_type", None) not in [
-			"Customer Goods Received",
-			"Subcontracting Repack",
-		]:
+		accepted = _LEGACY_PARENT_BATCH_TYPES + (
+			(configured_type,) if configured_type else ()
+		)
+		if getattr(doc, "stock_entry_type", None) not in accepted:
 			return
 
 	elif doc.doctype == "Purchase Receipt":
@@ -35,7 +103,7 @@ def create_parent_batches(doc, method=None):
 		if not row.item_code:
 			continue
 
-		if "24KT" not in row.item_code:
+		if not _is_eligible_item(row.item_code, configured_items):
 			continue
 
 		if row.batch_no:
@@ -73,7 +141,17 @@ def create_parent_batches(doc, method=None):
 			# Stock Entry leg only; on a Purchase Receipt the owning customer arrives on
 			# the row, resolved from the supplier's Party Link by
 			# purchase_receipt/doc_events/utils.py::update_inventory_type.
-			batch.custom_customer = doc._customer or customer
+			# getattr, not bare attribute access: ``_customer`` is a Custom Field on
+			# Stock Entry only. Purchase Receipt has no such field, so the bare form
+			# raised AttributeError on the Purchase Receipt leg (frappe's Document
+			# defines no __getattr__ fallback). That crash is pre-existing for any
+			# ``24KT`` item on a Subcontracting receipt; configuring a customer item
+			# whose code lacks the token newly routes THOSE rows here too, turning a
+			# row that used to be skipped into a hard submit failure.
+			# Precedence is deliberately unchanged -- header first, then the row value
+			# already resolved above -- because which customer owns a batch on a mixed
+			# voucher is an ownership decision, not a crash fix. See HANDOFF.md C7.
+			batch.custom_customer = getattr(doc, "_customer", None) or customer
 			batch.custom_inventory_type = "Customer Goods"
 			batch.custom_customer_voucher_type = "Customer Subcontracting"
 			batch.custom_metal_rate = _source_row_rate(doc, row)

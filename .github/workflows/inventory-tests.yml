@@ -67,3 +67,17 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_receipt
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_serial_bom_weights
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_rate
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tracking_bom_security
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_dispatch
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_settlement_basis_mismatch
+          # C09/C12, added 2026-09-14. CI runs a curated allowlist -- a new test_*.py does NOT
+          # execute unless it is named here. That collection gap is what C14 actually is, so a
+          # suite added by the Customer Gold programme and left unregistered would reproduce it.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_components
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_fulfilment
+          bench --site test_site run-tests --module jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.test_subcontracting_settings
+          # NOT registered here on purpose: tests.test_customer_gold_integration. It requires the
+          # disposable site's masters (company, warehouses, Gold Rates, accounts) and exercises the
+          # Nominal valuation policy, which must never run against a shared CI site. It runs with:
+          #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_integration

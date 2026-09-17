@@ -1,0 +1,350 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-09-11 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "identity_section",
+  "cg_event_key",
+  "cg_event_kind",
+  "cg_stage",
+  "column_break_identity",
+  "company",
+  "customer",
+  "cg_schema_version",
+  "cg_policy_version",
+  "source_section",
+  "reference_doctype",
+  "reference_docname",
+  "cg_source_row",
+  "column_break_source",
+  "cg_source_event",
+  "cg_reversal_of",
+  "cg_settlement_voucher",
+  "cg_order_reference",
+  "cg_reservation",
+  "cg_composition_version",
+  "quantity_section",
+  "item_code",
+  "batch_no",
+  "serial_no",
+  "stock_uom",
+  "column_break_qty",
+  "cg_gross_qty_delta",
+  "cg_fine_gold_delta",
+  "cg_reference_qty_delta",
+  "cg_reference_purity",
+  "cg_fine_measurement_status",
+  "cg_reference_measurement_status",
+  "cg_measurement_reason",
+  "value_section",
+  "cg_carrying_value_delta",
+  "cg_currency",
+  "column_break_value",
+  "cg_recorded_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Event Identity"
+  },
+  {
+   "fieldname": "cg_event_key",
+   "fieldtype": "Data",
+   "label": "Event Key",
+   "reqd": 1,
+   "unique": 1,
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "description": "Deterministic server-derived identity. Uniqueness is enforced by the database, not by a prior existence check.",
+   "length": 140
+  },
+  {
+   "fieldname": "cg_event_kind",
+   "fieldtype": "Select",
+   "label": "Event Kind",
+   "options": "Receipt\nTransfer Out\nTransfer In\nConversion Out\nConversion In\nAllocation\nRelease\nProduction\nReturn\nRevaluation\nDelivery\nDelivery Return\nReversal\nApproved Loss\nRecovery",
+   "reqd": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "cg_stage",
+   "fieldtype": "Select",
+   "label": "Stage",
+   "options": "\nRM\nTransit\nWIP\nFG\nRecoverable Scrap\nClosed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "cg_schema_version",
+   "fieldtype": "Int",
+   "label": "Schema Version",
+   "read_only": 1,
+   "default": "1"
+  },
+  {
+   "fieldname": "cg_policy_version",
+   "fieldtype": "Data",
+   "label": "Policy Version",
+   "read_only": 1,
+   "description": "The accounting policy in force when this event posted. Historical behaviour must never depend on today's configuration."
+  },
+  {
+   "fieldname": "source_section",
+   "fieldtype": "Section Break",
+   "label": "Source"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference Doctype",
+   "options": "DocType",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_docname",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Name",
+   "options": "reference_doctype",
+   "reqd": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "cg_source_row",
+   "fieldtype": "Data",
+   "label": "Source Row",
+   "read_only": 1,
+   "description": "Child row name of the source voucher. Stable across row reordering, unlike idx.",
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_source",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cg_source_event",
+   "fieldtype": "Link",
+   "label": "Source Event",
+   "options": "Customer Gold Ledger Entry",
+   "read_only": 1,
+   "description": "The receipt layer this event draws from."
+  },
+  {
+   "fieldname": "cg_reversal_of",
+   "fieldtype": "Link",
+   "label": "Reversal Of",
+   "options": "Customer Gold Ledger Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cg_settlement_voucher",
+   "fieldtype": "Data",
+   "label": "Settlement Voucher",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cg_order_reference",
+   "fieldtype": "Data",
+   "label": "Order Reference",
+   "read_only": 1,
+   "description": "The MWO an allocation was propagated to, when it differs from the PMO in reference_docname."
+  },
+  {
+   "fieldname": "cg_reservation",
+   "fieldtype": "Data",
+   "label": "Stock Reservation Entry",
+   "read_only": 1,
+   "description": "The SRE that physically enforces this allocation. The event records intent; the SRE is what erpnext's Bin and negative-stock accounting actually honour.",
+   "search_index": 1
+  },
+  {
+   "fieldname": "cg_composition_version",
+   "fieldtype": "Data",
+   "label": "Composition Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quantity_section",
+   "fieldtype": "Section Break",
+   "label": "Quantities"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "label": "Batch",
+   "options": "Batch",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Link",
+   "label": "Serial No",
+   "options": "Serial No",
+   "read_only": 1,
+   "search_index": 1,
+   "description": "The physical piece this event is about. Blank for events that are not per-serial, such as a receipt."
+  },
+  {
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "label": "Stock UOM",
+   "options": "UOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_qty",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cg_gross_qty_delta",
+   "fieldtype": "Float",
+   "label": "Gross Qty Delta",
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "fieldname": "cg_fine_gold_delta",
+   "fieldtype": "Float",
+   "label": "Fine Gold Delta",
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "fieldname": "cg_reference_qty_delta",
+   "fieldtype": "Float",
+   "label": "Reference Qty Delta",
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "fieldname": "cg_reference_purity",
+   "fieldtype": "Float",
+   "label": "Reference Purity",
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "fieldname": "cg_fine_measurement_status",
+   "fieldtype": "Select",
+   "options": "\nKnown\nUnknown\nInvalid",
+   "label": "Fine Measurement Status",
+   "description": "Whether cg_fine_gold_delta is a measurement or an absence of one. Needed because the column is NOT NULL DEFAULT 0 -- a stored 0.0 cannot by itself distinguish 'no gold' from 'not measured'.",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cg_reference_measurement_status",
+   "fieldtype": "Select",
+   "options": "\nKnown\nUnknown\nInvalid",
+   "label": "Reference Measurement Status",
+   "description": "Independent of the fine status: a known item purity can make fine grams measurable while the reference denominator stays unresolved.",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cg_measurement_reason",
+   "fieldtype": "Select",
+   "options": "\nambiguous_manufacturing_setting\nmissing_reference_item\nmissing_item_purity",
+   "label": "Measurement Reason",
+   "description": "Why a measurement is Unknown or Invalid, so the gap is actionable rather than merely visible.",
+   "read_only": 1
+  },
+  {
+   "fieldname": "value_section",
+   "fieldtype": "Section Break",
+   "label": "Value"
+  },
+  {
+   "fieldname": "cg_carrying_value_delta",
+   "fieldtype": "Currency",
+   "label": "Carrying Value Delta",
+   "options": "cg_currency",
+   "read_only": 1,
+   "precision": "4"
+  },
+  {
+   "fieldname": "cg_currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_value",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cg_recorded_at",
+   "fieldtype": "Datetime",
+   "label": "Recorded At",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 0,
+ "links": [],
+ "modified": "2026-09-14 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Customer Subcontracting",
+ "name": "Customer Gold Ledger Entry",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Stock Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
