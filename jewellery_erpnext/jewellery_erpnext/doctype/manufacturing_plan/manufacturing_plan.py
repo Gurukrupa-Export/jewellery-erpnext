@@ -14,6 +14,15 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import (
 from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_mould_id_map,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
+	GRADE_FIELDS,
+	is_customer_diamond_flag,
+	pick_diamond_grade,
+	resolve_diamond_grade,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
+	resolve_parent_chains,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	create_mwo,
 	make_manufacturing_order,
@@ -299,6 +308,36 @@ class ManufacturingPlan(Document):
 			"BOM", bom_names, ["name", "metal_type_", "metal_colour", "metal_touch"]
 		)
 
+		# Ref Customer per plan row, from the very walk the PMO runs on save -- not a second
+		# reading of it. The climb is not obvious (a line's Purchase Order leads back to the
+		# PREVIOUS plan's row, and it is THAT row's quotation which records the customer), and
+		# the copy this replaced climbed from the current line instead, using the walk's bottom
+		# rung as if it were its top. That is what let a plan grade a row against one customer
+		# and the PMO it created against another.
+		#
+		# One batch of queries for the whole table, so this keeps clear of the per-row cost the
+		# maps above exist to avoid. The `or row.customer` tail mirrors _set_diamond_grade:
+		# the walk itself never falls back to the ordering customer, the grade lookup does.
+		#
+		# Must stay ABOVE the two customer-keyed fetches below: the ref customers it finds are
+		# added to customer_names so their Customer Diamond Grade rows come back in the same query.
+		parent_chains = resolve_parent_chains(so_items)
+
+		ref_customer_map = {}
+		for row in self.manufacturing_plan_table:
+			if not row.docname:
+				continue
+
+			chain = parent_chains.get(row.docname)
+			ref_customer = (chain.ref_customer if chain else None) or row.customer
+			if not ref_customer:
+				continue
+
+			ref_customer_map[row.docname] = ref_customer
+			customer_names.add(ref_customer)
+			if row.diamond_quality:
+				customer_diamond_keys.add((ref_customer, row.diamond_quality))
+
 		customer_data_map = fetch_doc_map(
 			"Customer", customer_names, ["name", "is_internal_customer"]
 		)
@@ -349,6 +388,7 @@ class ManufacturingPlan(Document):
 			"item_data": item_data_map,
 			"customer_diamond_grade": customer_diamond_grade_map,
 			"attribute_value_set": attribute_value_set,
+			"ref_customer": ref_customer_map,
 			"mp_context": {
 				"manufacturer": manufacturer,
 				"finding_default_department": finding_default_department,
@@ -668,6 +708,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	item_data_map = cache_data.get("item_data", {})
 	attribute_value_set = cache_data.get("attribute_value_set", set())
 	customer_diamond_grade_map = cache_data.get("customer_diamond_grade", {})
+	ref_customer_map = cache_data.get("ref_customer", {})
 
 	so_det = {}
 	# Use plain dict copy instead of frappe._dict for memory/speed
@@ -730,46 +771,31 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	)
 
 	if row.diamond_quality and not is_internal_customer:
-		key = (row.customer, row.diamond_quality)
-		diamond_grade = None
+		# Same rule, same customer and same reading of the Yes/No flag as the PMO applies in
+		# before_save. This used to be a second implementation that graded against row.customer
+		# and fell back to diamond_grade_1, so a plan could throw on a row the PMO would have
+		# resolved -- or hand it a grade the PMO then quietly replaced.
+		effective_customer = ref_customer_map.get(row.docname) or row.customer
+		is_customer_diamond = is_customer_diamond_flag(row.customer_diamond)
+		grade_row = customer_diamond_grade_map.get(
+			(effective_customer, row.diamond_quality)
+		)
 
-		diamond_grade_data = customer_diamond_grade_map.get(key)
-		if diamond_grade_data:
-			grades_to_check = [
-				diamond_grade_data.get("diamond_grade_1"),
-				diamond_grade_data.get("diamond_grade_2"),
-				diamond_grade_data.get("diamond_grade_3"),
-				diamond_grade_data.get("diamond_grade_4"),
-			]
-
-			from frappe import cstr
-
-			customer_diamond = cstr(row.customer_diamond).strip().lower()
-
-			if customer_diamond == "yes":
-				for grade in grades_to_check:
-					if grade and grade in attribute_value_set:
-						diamond_grade = grade
-						break
-			else:
-				for grade in grades_to_check:
-					if grade and grade not in attribute_value_set:
-						diamond_grade = grade
-						break
-
-		if not diamond_grade:
-			if diamond_grade_data:
-				for grade in grades_to_check:
-					if grade:
-						diamond_grade = grade
-						break
-			if not diamond_grade:
-				# Minimal fallback
-				diamond_grade = frappe.db.get_value(
-					"Customer Diamond Grade",
-					{"parent": row.customer, "diamond_quality": row.diamond_quality},
-					"diamond_grade_1",
-				)
+		if grade_row:
+			grades = [grade_row.get(f) for f in GRADE_FIELDS]
+			# attribute_value_set is the prefetched set of Attribute Values flagged
+			# is_customer_diamond_quality, so passing it keeps this per-row and query-free.
+			diamond_grade = pick_diamond_grade(
+				grades,
+				is_customer_diamond,
+				flags={g: g in attribute_value_set for g in grades if g},
+			)
+		else:
+			# Same fallback shape as the maps above: the caller may not have passed cache_data,
+			# and the ref customer resolved here may not have been in the prefetch either.
+			diamond_grade = resolve_diamond_grade(
+				effective_customer, row.diamond_quality, is_customer_diamond
+			)
 
 		so_det["diamond_grade"] = diamond_grade
 
@@ -781,8 +807,12 @@ def create_manufacturing_order(doc, row, cache_data=None):
 			has_batch_no = frappe.db.get_value("Item", row.item_code, "has_batch_no")
 
 		if not so_det.get("diamond_grade") and not has_batch_no:
+			# Names the customer actually consulted -- with a Ref Customer in play that is not
+			# row.customer, and pointing at the ordering customer sends people to the wrong master.
 			frappe.throw(
-				_("Diamond Grade is not mentioned in customer {0}").format(row.customer)
+				_("Diamond Grade is not mentioned in customer {0}").format(
+					effective_customer
+				)
 			)
 
 	mp_context = cache_data.get("mp_context") if cache_data else None
