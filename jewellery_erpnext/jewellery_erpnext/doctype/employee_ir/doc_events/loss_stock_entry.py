@@ -738,7 +738,7 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 
 def _resolve_t_warehouse(eir, table_name):
 	"""Resolve target warehouse based on is_raw_material."""
-	if cint(eir.is_raw_material):
+	if eir.subcontracting == "Yes":
 		return _resolve_raw_material_warehouse(eir)
 	return _resolve_scrap_warehouse(eir)
 
@@ -767,28 +767,6 @@ def _resolve_raw_material_warehouse(eir):
 					"Employee IR {0}: No Raw Material warehouse found for "
 					"subcontractor {1}"
 				).format(eir.name, eir.subcontractor)
-			)
-	else:
-		if not eir.employee:
-			frappe.throw(
-				_(
-					"Employee IR {0}: employee is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"employee": eir.employee,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for employee {1}"
-				).format(eir.name, eir.employee)
 			)
 	return wh
 

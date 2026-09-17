@@ -1980,6 +1980,25 @@ class TestResolvers(IntegrationTestCase):
 		with self.assertRaises(ValidationError):
 			ele._resolve_msl_warehouse(_doc(employee=None))
 
+	def test_process_loss_target_warehouse_always_scrap(self):
+		eir_raw = _doc(is_raw_material=1)
+		eir_not_raw = _doc(is_raw_material=0)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+			return_value="Scrap - GK",
+		):
+			self.assertEqual(
+				loss_stock_entry._resolve_t_warehouse(eir_raw, "employee_loss_details"),
+				"Scrap - GK",
+			)
+			self.assertEqual(
+				loss_stock_entry._resolve_t_warehouse(
+					eir_not_raw, "employee_loss_details"
+				),
+				"Scrap - GK",
+			)
+
 	def test_scrap_warehouse(self):
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse",
