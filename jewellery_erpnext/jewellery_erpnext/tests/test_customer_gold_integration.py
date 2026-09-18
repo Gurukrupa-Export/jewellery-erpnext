@@ -2797,6 +2797,102 @@ class TestNextOrderRevaluation(TestFulfilmentLedger):
 			with self.assertRaises(frappe.PermissionError):
 				get_revaluation_history(COMPANY, CUSTOMER)
 
+	def test_revaluing_the_same_batch_twice_is_refused(self):
+		"""The defect: the second call posted the delta again against metal that never moved.
+
+		The event key was derived from the Stock Reconciliation this function mints, so it was
+		unique by construction and the UNIQUE index on ``cg_event_key`` could never fire. And
+		``get_booked_rate`` reads Receipt events only, so the baseline does not advance -- the
+		second call recomputed the SAME non-zero delta rather than zero. Two calls, Rs.670.34
+		twice, on 2 g that did not move.
+		"""
+		batch = self._stocked_batch(qty=2)
+		_, first = self._revalue(batch, new_rate=7500.00)
+		self.assertAlmostEqual(first, 670.34, places=2)
+
+		with self.assertThrowsContaining("already been revalued"):
+			self._revalue(batch, new_rate=7500.00)
+
+	def test_a_refused_repeat_posts_nothing_at_all(self):
+		"""The refusal must come BEFORE the Stock Reconciliation is built.
+
+		Throwing after it is submitted would leave a document that moved stock value with no
+		custody event to explain it -- worse than the double-post. Asserted by counting both
+		sides, not just the ledger.
+		"""
+		batch = self._stocked_batch(qty=2)
+		self._revalue(batch, new_rate=7500.00)
+
+		events_before = frappe.db.count(
+			"Customer Gold Ledger Entry",
+			{"batch_no": batch, "cg_event_kind": "Revaluation"},
+		)
+		recos_before = frappe.db.count(
+			"Stock Reconciliation", {"docstatus": 1, "company": COMPANY}
+		)
+
+		with self.assertThrowsContaining("already been revalued"):
+			self._revalue(batch, new_rate=7500.00)
+
+		self.assertEqual(
+			frappe.db.count(
+				"Customer Gold Ledger Entry",
+				{"batch_no": batch, "cg_event_kind": "Revaluation"},
+			),
+			events_before,
+			msg="a second Revaluation event was written",
+		)
+		self.assertEqual(
+			frappe.db.count("Stock Reconciliation", {"docstatus": 1, "company": COMPANY}),
+			recos_before,
+			msg="an orphan Stock Reconciliation was submitted before the refusal",
+		)
+
+	def test_the_liability_does_not_move_on_the_refused_repeat(self):
+		"""What the defect actually cost: the obligation grew twice for one price change."""
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
+		)
+
+		batch = self._stocked_batch(qty=2)
+		self._revalue(batch, new_rate=7500.00)
+		after_first = flt(
+			frappe.db.sql(
+				"""SELECT SUM(cg_carrying_value_delta) FROM `tabCustomer Gold Ledger Entry`
+				   WHERE company=%s AND customer=%s AND docstatus < 2""",
+				(COMPANY, CUSTOMER),
+			)[0][0]
+		)
+
+		with self.assertThrowsContaining("already been revalued"):
+			self._revalue(batch, new_rate=7500.00)
+
+		self.assertAlmostEqual(
+			flt(
+				frappe.db.sql(
+					"""SELECT SUM(cg_carrying_value_delta) FROM `tabCustomer Gold Ledger Entry`
+					   WHERE company=%s AND customer=%s AND docstatus < 2""",
+					(COMPANY, CUSTOMER),
+				)[0][0]
+			),
+			after_first,
+			places=2,
+			msg="the liability moved on a revaluation that was refused",
+		)
+
+	def test_a_genuinely_different_rate_is_still_allowed(self):
+		"""Guard the guard. The rate really can move twice in a day."""
+		batch = self._stocked_batch(qty=2)
+		self._revalue(batch, new_rate=7500.00)
+
+		_, second = self._revalue(batch, new_rate=7800.00)
+		self.assertAlmostEqual(
+			second,
+			(7800.00 - 7164.83) * 2,
+			places=2,
+			msg="a revaluation to a NEW rate was blocked; only exact repeats should be",
+		)
+
 	def test_return_and_revaluation_use_opposite_rates(self):
 		"""The heart of it: the same 2 g, valued two ways, differing by exactly Rs.670.34."""
 		from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
