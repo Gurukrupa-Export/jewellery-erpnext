@@ -43,7 +43,7 @@ before, worth more or less than it was.
 """
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
 	EVENT_REVALUATION,
@@ -67,6 +67,11 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
 )
+
+
+# Bound on how many times one batch/rate/date may be revalued and cancelled before the
+# retry is treated as a loop rather than a correction. See ``_resolve_revaluation_event_key``.
+_MAX_REVALUATION_ATTEMPTS = 100
 
 
 # POST-only: this SUBMITS a Stock Reconciliation, and a state-changing endpoint reachable by
@@ -172,33 +177,7 @@ def revalue_customer_gold(
 	#
 	# The rate is formatted at fixed precision so that 7500 and 7500.0 produce one key rather
 	# than two.
-	event_key = build_event_key(
-		company,
-		"Stock Reconciliation",
-		f"{batch_no}|{posting_date}|{flt(new_rate):.6f}",
-		batch_no,
-		EVENT_REVALUATION,
-	)
-
-	# CHECKED BEFORE THE STOCK RECONCILIATION IS BUILT, DELIBERATELY.
-	#
-	# ``_build_revaluation_entry`` submits a document that moves stock value. Letting the
-	# duplicate surface later, as a UNIQUE violation on the ledger insert, would leave that
-	# submitted Stock Reconciliation behind with no custody event to explain it -- a worse
-	# state than the double-post this guards against. The UNIQUE index stays as the backstop
-	# for a genuine race.
-	if frappe.db.exists(LEDGER_DOCTYPE, {"cg_event_key": event_key}):
-		frappe.throw(
-			frappe._(
-				"Batch {0} has already been revalued to {1} on {2}. Revaluing it again "
-				"would post the difference a second time against metal that has not moved."
-			).format(
-				frappe.bold(batch_no),
-				frappe.bold(frappe.utils.fmt_money(new_rate)),
-				frappe.bold(str(posting_date)),
-			),
-			title=frappe._("Customer Gold Already Revalued"),
-		)
+	event_key = _resolve_revaluation_event_key(company, batch_no, posting_date, new_rate)
 
 	entry = _build_revaluation_entry(
 		company,
@@ -237,6 +216,122 @@ def revalue_customer_gold(
 	)
 
 	return entry, delta
+
+
+
+def _resolve_revaluation_event_key(company, batch_no, posting_date, new_rate):
+	"""The ledger key for this revaluation, or a refusal if it has already been posted.
+
+	IDENTITY OF THE BUSINESS OPERATION, NOT OF THE DOCUMENT IT CREATES.
+
+	The key used to be built from the Stock Reconciliation minted below, so every call produced
+	a fresh name, a fresh key, and a row the UNIQUE index on ``cg_event_key`` could never collide
+	with. Revaluing the same batch to the same rate twice therefore posted the delta TWICE, and
+	it is not self-correcting: ``get_booked_rate`` reads ``Receipt`` events only, so the baseline
+	never moves and the second call computes the same non-zero delta as the first.
+
+	Keyed on what actually identifies the operation -- this batch, this rate, this posting date --
+	a repeat collides. The rate is formatted at fixed precision so 7500 and 7500.0 give one key.
+
+	WHY A ROW IS NOT ENOUGH TO REFUSE ON.
+
+	Nothing reverses a revaluation event when its Stock Reconciliation is cancelled: ``hooks.py``
+	registers no ``on_cancel`` for Stock Reconciliation, and ``_reverse_events`` is wired only to
+	the delivery and stock-entry paths. ``Customer Gold Ledger Entry`` is ``is_submittable: 0``,
+	so frappe's ``check_if_doc_is_linked`` never blocks that cancel either. The row therefore
+	outlives the document that justified it.
+
+	Refusing on the row alone would mean that cancelling a revaluation -- a routine correction --
+	permanently barred that batch from being revalued to that rate on that date ever again, with
+	no way out but a manual delete.
+
+	WHY THE DEAD KEY CANNOT SIMPLY BE REUSED.
+
+	``cg_event_key`` carries a UNIQUE index (``unique: 1``, and a real unique index in MariaDB).
+	Letting the retry through on the original key would submit the Stock Reconciliation and then
+	fail the ledger insert on that index -- leaving a submitted document that moved stock value
+	with no custody event to explain it. That is the exact state the pre-check exists to prevent.
+
+	So a superseded attempt does not free its key; it consumes it, and the retry is allocated the
+	next slot. The first attempt keeps the bare key, so the common path is byte-identical to
+	before.
+	"""
+	for attempt in range(1, _MAX_REVALUATION_ATTEMPTS + 1):
+		discriminator = f"{batch_no}|{posting_date}|{flt(new_rate):.6f}"
+		if attempt > 1:
+			discriminator = f"{discriminator}|attempt-{attempt}"
+
+		key = build_event_key(
+			company,
+			"Stock Reconciliation",
+			discriminator,
+			batch_no,
+			EVENT_REVALUATION,
+		)
+
+		prior = frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={"cg_event_key": key},
+			fields=["name", "reference_doctype", "reference_docname"],
+			limit=1,
+		)
+		if not prior:
+			# CHECKED BEFORE THE STOCK RECONCILIATION IS BUILT, DELIBERATELY. The caller
+			# submits a document that moves stock value on the strength of this key being
+			# free. The UNIQUE index stays as the backstop for a genuine race.
+			return key
+
+		if _revaluation_event_is_live(prior[0]):
+			frappe.throw(
+				frappe._(
+					"Batch {0} has already been revalued to {1} on {2}. Revaluing it again "
+					"would post the difference a second time against metal that has not moved."
+				).format(
+					frappe.bold(batch_no),
+					frappe.bold(frappe.utils.fmt_money(new_rate)),
+					frappe.bold(str(posting_date)),
+				),
+				title=frappe._("Customer Gold Already Revalued"),
+			)
+
+	# Only reachable if the same batch/rate/date has been revalued and cancelled a hundred
+	# times. That is not a correction pattern, it is a loop, and inventing a hundred-and-first
+	# key would hide it.
+	frappe.throw(
+		frappe._(
+			"Batch {0} has been revalued to {1} on {2} and cancelled {3} times. Refusing to "
+			"allocate another attempt -- investigate why the correction keeps being undone."
+		).format(
+			frappe.bold(batch_no),
+			frappe.bold(frappe.utils.fmt_money(new_rate)),
+			frappe.bold(str(posting_date)),
+			_MAX_REVALUATION_ATTEMPTS,
+		),
+		title=frappe._("Customer Gold Revaluation Retried Too Often"),
+	)
+
+
+def _revaluation_event_is_live(row):
+	"""Does this ledger row still describe value that is actually posted?
+
+	Judged by the SOURCE VOUCHER's docstatus, because the row itself has none -- the ledger is
+	not submittable. A cancelled Stock Reconciliation has moved no value, so the operation it
+	recorded has not happened and may be performed again.
+
+	A row with no usable reference is treated as LIVE. That is the safe direction: it refuses a
+	second posting rather than risking a double one.
+	"""
+	if row.get("reference_doctype") != "Stock Reconciliation" or not row.get("reference_docname"):
+		return True
+
+	docstatus = frappe.db.get_value(
+		row["reference_doctype"], row["reference_docname"], "docstatus"
+	)
+	if docstatus is None:
+		# Hard-deleted. No document, no posting -- same as cancelled.
+		return False
+
+	return cint(docstatus) != 2
 
 
 def _reject_partial(batch_no, warehouse, item_code, free):
