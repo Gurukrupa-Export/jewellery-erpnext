@@ -324,7 +324,7 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 	):
 		"""A mirrored Purchase Order can name a BOM that was never replicated to this site.
 
-		gke_customization only pushes a BOM when setting_type == "Nova Glow" and
+		gke_customization only pushes a BOM when setting_type == "Close" and
 		bom_type == "Template", so this is a real state, not a hypothetical one. It must read
 		as a Copy BOM problem rather than a raw DoesNotExistError.
 		"""

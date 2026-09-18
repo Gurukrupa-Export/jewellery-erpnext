@@ -31,7 +31,7 @@ def create_test_data():
 		create(
 			{
 				"doctype": "Attribute Value",
-				"attribute_value": "Nova Glow",
+				"attribute_value": "Close",
 				"is_setting_type": 1,
 			}
 		)
@@ -39,9 +39,9 @@ def create_test_data():
 		create(
 			{
 				"doctype": "Attribute Value",
-				"attribute_value": "Nova Glow Setting",
+				"attribute_value": "Close Setting",
 				"is_sub_setting_type": 1,
-				"parent_attribute_value": "Nova Glow",
+				"parent_attribute_value": "Close",
 			}
 		)
 
@@ -218,7 +218,7 @@ def create_test_data():
 				"attribute_name": "Setting Type",
 				"item_attribute_values": [
 					{"attribute_value": "Open", "abbr": "OP"},
-					{"attribute_value": "Nova Glow", "abbr": "CL"},
+					{"attribute_value": "Close", "abbr": "CL"},
 				],
 			}
 		)
@@ -228,7 +228,7 @@ def create_test_data():
 				"doctype": "Item Attribute",
 				"attribute_name": "Sub Setting Type1",
 				"item_attribute_values": [
-					{"attribute_value": "Nova Glow Setting", "abbr": "CLS"},
+					{"attribute_value": "Close Setting", "abbr": "CLS"},
 					{"attribute_value": "Close-Open Setting", "abbr": "CES"},
 				],
 			}
@@ -239,7 +239,7 @@ def create_test_data():
 				"doctype": "Item Attribute",
 				"attribute_name": "Sub Setting Type2",
 				"item_attribute_values": [
-					{"attribute_value": "Nova Glow Setting", "abbr": "CLS"},
+					{"attribute_value": "Close Setting", "abbr": "CLS"},
 					{"attribute_value": "Close-Open Setting", "abbr": "CES"},
 				],
 			}
@@ -1080,7 +1080,7 @@ def create_test_data():
 					"item_category": "Mugappu",
 					"item_subcategory": "Casual Mugappu",
 					"item_category_code": "MU",
-					"setting_type": "Nova Glow",
+					"setting_type": "Close",
 					"sequence": "01087",
 					"productivity": "Studded",
 					"designer": frappe.db.exists(
@@ -1154,7 +1154,7 @@ def create_test_data():
 			{
 				"customer": "Test_Customer_External",
 				"metal_touch": "22KT",
-				"setting_type": "Nova Glow",
+				"setting_type": "Close",
 				"metal_type": "Gold",
 			},
 		):
@@ -1162,7 +1162,7 @@ def create_test_data():
 				{
 					"doctype": "Making Charge Price",
 					"customer": "Test_Customer_External",
-					"setting_type": "Nova Glow",
+					"setting_type": "Close",
 					"currency": "INR",
 					"metal_touch": "22KT",
 					"metal_type": "Gold",
@@ -3334,16 +3334,16 @@ def setup_data():
 
 	for _setting_value in (
 		{"attribute_value": "Open", "is_setting_type": 1},
-		{"attribute_value": "Nova Glow", "is_setting_type": 1},
+		{"attribute_value": "Close", "is_setting_type": 1},
 		{
 			"attribute_value": "Close-Open Setting",
 			"is_sub_setting_type": 1,
 			"parent_attribute_value": "Open",
 		},
 		{
-			"attribute_value": "Nova Glow Setting",
+			"attribute_value": "Close Setting",
 			"is_sub_setting_type": 1,
-			"parent_attribute_value": "Nova Glow",
+			"parent_attribute_value": "Close",
 		},
 	):
 		if not frappe.db.exists("Attribute Value", _setting_value["attribute_value"]):
