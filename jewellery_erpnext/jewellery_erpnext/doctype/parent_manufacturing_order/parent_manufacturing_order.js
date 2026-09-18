@@ -16,16 +16,21 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		set_filters_on_parent_table_fields(frm, parent_fields);
 	},
 	refresh(frm) {
-		if (frm.doc.customer && frm.doc.diamond_quality) {
+		if ((frm.doc.customer || frm.doc.ref_customer) && frm.doc.diamond_quality) {
 			frm.set_query("diamond_grade", function () {
 				return {
 					query: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
 					searchfield: "diamond_grade",
 					filters: {
+						// ref_customer has to travel with the customer: the server prefers it, and
+						// set_auto_diamond_grade already resolves against it. Sending only customer
+						// made the picker list grades the save would immediately replace.
 						customer: frm.doc.customer,
+						ref_customer: frm.doc.ref_customer,
 						diamond_quality: frm.doc.diamond_quality,
 						use_custom_diamond_grade: frm.doc.use_custom_diamond_grade ? 1 : 0,
 						is_customer_diamond: frm.doc.is_customer_diamond ? 1 : 0,
+						sales_type: frm.doc.sales_type,
 					},
 				};
 			});
@@ -33,6 +38,9 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 
 		// Always control read-only dynamically
 		frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
+
+		apply_customer_details_visibility(frm);
+		apply_grade_override_hint(frm);
 
 		if (!frm.doc.__islocal) {
 			frm.add_custom_button(__("Send For Customer Approval"), function () {
@@ -89,11 +97,15 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 
 	is_customer_diamond(frm) {
 		set_auto_diamond_grade(frm);
+		apply_grade_override_hint(frm);
+		clear_disallowed_custom_grade(frm);
 	},
 
 	use_custom_diamond_grade(frm) {
 		frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
 		set_auto_diamond_grade(frm);
+		apply_grade_override_hint(frm);
+		clear_disallowed_custom_grade(frm);
 	},
 
 	create_customer_transfer: function (frm) {
@@ -172,6 +184,80 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		}
 	},
 });
+
+// The section break plus every field in it: hiding the break alone leaves the fields reachable if
+// anything later re-renders them, and the list is short enough to be exact.
+const CUSTOMER_DETAIL_FIELDS = [
+	"customer_details_section",
+	"is_customer_gold",
+	"is_customer_diamond",
+	"is_customer_gemstone",
+	"is_customer_material",
+];
+
+// Sales Type -> the is_customer_diamond it implies, mirroring SALES_TYPE_CUSTOMER_DIAMOND in
+// doc_events/filters_query.py. Only used to explain an empty dropdown; the server decides the list.
+const SALES_TYPE_CUSTOMER_DIAMOND = { Outright: 0, Outwork: 1 };
+
+// Cosmetic only. The values still reach the browser and the REST API -- this keeps the section off
+// the form, it does not stop a non-manager writing those fields another way.
+function apply_customer_details_visibility(frm) {
+	// Set both ways, not just to 1: df properties live on the client-side doctype meta and
+	// persist across forms for the session, so a one-way toggle leaks into the next form.
+	const hidden = frappe.user.has_role("System Manager") ? 0 : 1;
+	CUSTOMER_DETAIL_FIELDS.forEach((field) => {
+		frm.set_df_property(field, "hidden", hidden);
+	});
+}
+
+// The controller now rejects a Sales Type that disagrees with Is Customer Diamond, in both
+// automatic and custom mode. Say so on the form rather than letting the user find out on save.
+function apply_grade_override_hint(frm) {
+	// Sales Type is a Link, so its value is whatever Sales Type records exist -- test for the
+	// two values this map holds rather than for "not undefined", which a name like "constructor"
+	// would satisfy off Object.prototype.
+	const expected = SALES_TYPE_CUSTOMER_DIAMOND[frm.doc.sales_type];
+	const has_rule = expected === 0 || expected === 1;
+	const mismatch = has_rule && expected !== (frm.doc.is_customer_diamond ? 1 : 0);
+
+	frm.set_df_property(
+		"diamond_grade",
+		"description",
+		mismatch
+			? __(
+					"A {0} order requires Is Customer Diamond to be {1}. Saving is blocked until that is corrected.",
+					[frm.doc.sales_type, expected ? __("checked") : __("unchecked")]
+			  )
+			: ""
+	);
+}
+
+// Turning the override on leaves whatever the automatic rule resolved sitting in the field, and
+// that value may be one the override is not allowed to keep -- the reported case is a customer
+// whose only configured grade is a customer-diamond one on an Outright order. Clear it here
+// rather than let the user discover it as a save error on a field they never touched.
+function clear_disallowed_custom_grade(frm) {
+	if (!frm.doc.use_custom_diamond_grade || !frm.doc.diamond_grade) {
+		return;
+	}
+
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_allowed_custom_diamond_grades",
+		args: {
+			customer: frm.doc.customer,
+			ref_customer: frm.doc.ref_customer,
+			diamond_quality: frm.doc.diamond_quality,
+			sales_type: frm.doc.sales_type,
+			is_customer_diamond: frm.doc.is_customer_diamond ? 1 : 0,
+		},
+		callback: function (r) {
+			const allowed = r.message || [];
+			if (!allowed.includes(frm.doc.diamond_grade)) {
+				frm.set_value("diamond_grade", null);
+			}
+		},
+	});
+}
 
 // Must never be called from refresh: frm.set_value marks the form dirty, so resolving the grade on
 // load makes a freshly opened record show as unsaved. Only run it when the user changes an input;

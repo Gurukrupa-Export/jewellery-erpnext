@@ -7,7 +7,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
-from frappe.utils import flt, get_link_to_form
+from frappe.utils import cint, flt, get_link_to_form
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
 from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
@@ -21,7 +21,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
+	custom_override_grades,
+	customer_grades,
+	is_customer_diamond_flag,
 	resolve_diamond_grade,
+	sales_type_expects,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
@@ -299,6 +303,78 @@ class ParentManufacturingOrder(Document):
 				(self.diamond_grade, self.custom_tracking_bom),
 			)
 
+	# What the stored grade depends on. A save that touches none of these leaves a PMO created
+	# before the policy existed editable for unrelated reasons, rather than dead until someone
+	# reconciles its customer master.
+	GRADE_POLICY_FIELDS = (
+		"diamond_grade",
+		"use_custom_diamond_grade",
+		"sales_type",
+		"is_customer_diamond",
+		"diamond_quality",
+		"customer",
+		"ref_customer",
+	)
+
+	def _grade_policy_inputs_changed(self):
+		before = self.get_doc_before_save()
+		if not before:
+			# Insert: nothing to compare against, and a new PMO must be valid from the start.
+			return True
+
+		return any(
+			self.get(field) != before.get(field) for field in self.GRADE_POLICY_FIELDS
+		)
+
+	def _validate_diamond_grade_policy(self):
+		"""Enforce the grade rules on the document, not just in the dropdown.
+
+		The link query filters what the picker offers, which is UX: a REST write, an import, a
+		server script, or simply a value already sitting in the field when the user ticks
+		Use Custom Diamond Grade all reach save without passing through it. Since before_submit
+		copies this grade onto the tracking BOM and it also selects the diamond item variant, a
+		wrong value here is silent and durable -- so the rule has to live on the save path.
+		"""
+		if self.flags.ignore_validations or not self._grade_policy_inputs_changed():
+			return
+
+		expected = sales_type_expects(self.sales_type)
+		if expected is not None and expected != cint(self.is_customer_diamond):
+			# Sales Type is what sets customer_diamond on the quotation in the first place, so
+			# the two disagreeing is a contradiction rather than a preference -- and leaving it
+			# to the dropdown alone let automatic mode save a grade the override forbids.
+			frappe.throw(
+				_("A {0} order requires Is Customer Diamond to be {1}.").format(
+					frappe.bold(self.sales_type),
+					_("checked") if expected else _("unchecked"),
+				)
+			)
+
+		if not (self.use_custom_diamond_grade and self.diamond_grade):
+			return
+
+		customer = self.ref_customer or self.customer
+		allowed = custom_override_grades(
+			customer_grades(customer, self.diamond_quality),
+			self.sales_type,
+			self.is_customer_diamond,
+		)
+		if self.diamond_grade in allowed:
+			return
+
+		if not allowed:
+			frappe.throw(
+				_(
+					"{0} has no Diamond Grade for quality {1} that this order can use."
+				).format(frappe.bold(customer), frappe.bold(self.diamond_quality))
+			)
+
+		frappe.throw(
+			_(
+				"Diamond Grade {0} is not allowed for this order. Choose one of: {1}."
+			).format(frappe.bold(self.diamond_grade), ", ".join(allowed))
+		)
+
 	def _set_diamond_grade(self):
 		if self.use_custom_diamond_grade:
 			return
@@ -346,6 +422,9 @@ class ParentManufacturingOrder(Document):
 		# Kept ABOVE the is_new/ignore_validations early-return so the Mould List ID
 		# is populated on insert (independent re-derivation from this PMO's own item_code).
 		self.mould_id = get_current_mould_id(self.item_code)
+		# Also above it: the grade a PMO carries has to be legitimate from the moment it is
+		# created, and validate is the only hook frappe runs on both save and submit.
+		self._validate_diamond_grade_policy()
 		if self.is_new() or self.flags.ignore_validations:
 			return
 		self.metal_details()
@@ -733,7 +812,9 @@ def make_manufacturing_order(
 		doc.customer_sample = row.customer_sample
 		doc.customer_voucher_no = row.customer_voucher_no
 		doc.is_customer_gold = 1 if row.customer_gold == "Yes" else 0
-		doc.is_customer_diamond = 1 if row.customer_diamond == "Yes" else 0
+		# Shared with Manufacturing Plan's own reading of the same string, so the grade the plan
+		# computes for a row and the one this PMO resolves on save agree on the flag.
+		doc.is_customer_diamond = is_customer_diamond_flag(row.customer_diamond)
 		doc.is_customer_gemstone = 1 if row.customer_stone == "Yes" else 0
 		doc.is_customer_material = 1 if row.customer_good == "Yes" else 0
 		doc.customer_weight = row.customer_weight
