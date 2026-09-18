@@ -3,6 +3,8 @@
 
 from unittest.mock import patch
 
+import re
+
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
 
@@ -1822,3 +1824,125 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 		doc.get_doc_before_save = lambda: None
 
 		doc._validate_diamond_grade_policy()
+
+
+class TestMaterialRequestOwnershipStampPersists(IntegrationTestCase):
+	"""``make_manufacturing_order`` tags customer-supplied Material Request rows.
+
+	It wrote the value to ``custom_inventory_type``. Material Request Item has no such
+	field -- confirmed in ``tabCustom Field`` on the live kg-gk site as well as here --
+	and Frappe's ``get_valid_dict`` silently drops child keys it does not recognise. So
+	the stamp had never reached the database on any site, and nothing failed to say so.
+
+	These tests assert the MECHANISM rather than the assignment. A test that checked the
+	dict passed to ``append()`` would have passed happily throughout the defect's life:
+	the code always did set the key, it just set one that goes nowhere.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_material_request_item_has_inventory_type(self):
+		"""The field the fix writes to must exist, or the fix is the same bug again."""
+		self.assertTrue(
+			frappe.get_meta("Material Request Item").has_field("inventory_type"),
+			msg="Material Request Item has no inventory_type field",
+		)
+
+	def test_material_request_item_has_no_custom_inventory_type(self):
+		"""The field the defect wrote to. If this ever starts existing, revisit the fix."""
+		self.assertFalse(
+			frappe.get_meta("Material Request Item").has_field("custom_inventory_type"),
+			msg="custom_inventory_type now exists -- the original write may have been "
+			"intentional after all; re-check before trusting this fix",
+		)
+
+	def test_the_ownership_value_survives_get_valid_dict(self):
+		"""The actual failure mode, reproduced both ways round.
+
+		``get_valid_dict`` is what discards the key, so it is what the test exercises --
+		not a mock of it.
+		"""
+		row = frappe.new_doc("Material Request Item")
+		row.update(
+			{
+				"inventory_type": "Customer Stock",
+				"custom_inventory_type": "Customer Stock",
+			}
+		)
+		valid = row.get_valid_dict()
+
+		self.assertEqual(
+			valid.get("inventory_type"),
+			"Customer Stock",
+			msg="the stamp the fix writes did not survive",
+		)
+		self.assertNotIn(
+			"custom_inventory_type",
+			valid,
+			msg="the key the defect wrote is silently dropped -- this is the whole bug",
+		)
+
+	def test_every_inventory_type_this_writes_is_a_real_record(self):
+		"""``inventory_type`` is a LINK, so a value with no master hard-throws on insert.
+
+		This could not bite while the key was ``custom_inventory_type``: ``get_valid_dict``
+		dropped it before any link check ran, so the value was never validated. Landing the stamp
+		makes it real, and a wrong one does not fail quietly -- it raises LinkValidationError and
+		takes down Material Request creation for every customer-supplied BOM.
+
+		The row stamp was "Customer Stock", which exists only on a disposable test site whose
+		fixtures create it. kg-gk, alfarsi and gk each hold exactly two Inventory Type records.
+		Asserting against the site's own masters rather than a hardcoded list, so this fails
+		wherever it would actually break.
+		"""
+		import inspect
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order import (
+			parent_manufacturing_order as pmo,
+		)
+
+		source = inspect.getsource(pmo)
+		written = set(re.findall(r'"inventory_type":\s*"([^"]+)"', source))
+		written |= set(re.findall(r'\.inventory_type\s*=\s*"([^"]+)"', source))
+		self.assertTrue(written, msg="found no inventory_type literals to check")
+
+		for value in sorted(written):
+			self.assertTrue(
+				frappe.db.exists("Inventory Type", value),
+				msg=(
+					f"parent_manufacturing_order stamps inventory_type={value!r}, which is not "
+					f"an Inventory Type record on this site -- the insert would raise "
+					f"LinkValidationError"
+				),
+			)
+
+	def test_the_row_stamp_agrees_with_the_header_stamp(self):
+		"""Header and rows described the same metal two different ways.
+
+		The parent was stamped "Customer Goods" and the rows "Customer Stock". Only the header
+		value existed as a master, and nothing reconciled the two.
+		"""
+		import inspect
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order import (
+			parent_manufacturing_order as pmo,
+		)
+
+		source = inspect.getsource(pmo)
+		row_values = set(re.findall(r'"inventory_type":\s*"([^"]+)"', source))
+		header_values = set(re.findall(r'\.inventory_type\s*=\s*"([^"]+)"', source))
+
+		self.assertEqual(
+			row_values & {"Customer Goods", "Customer Stock"},
+			header_values & {"Customer Goods", "Customer Stock"},
+			msg="the Material Request header and its item rows stamp different ownership types",
+		)
+
+	def test_custom_is_customer_item_does_persist(self):
+		"""Why the row looked half-tagged: the sibling key on the same dict is real."""
+		row = frappe.new_doc("Material Request Item")
+		row.update({"custom_is_customer_item": 1})
+
+		self.assertEqual(row.get_valid_dict().get("custom_is_customer_item"), 1)

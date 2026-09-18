@@ -799,9 +799,14 @@ class TestCustomerGoldReceiptPostsCorrectly(_CustomerGoldIntegrationCase):
 		The same metal contains 75.400 FINE grams. custom_pure_qty holds the former.
 		"""
 		se = self._receipt(qty=100, item_code=self.operating_item)
-		# Not the configured 24KT item, so the receipt validator rejects it -- assert the
-		# computation on the saved draft instead of forcing an unrealistic submit.
-		with self.assertThrowsContaining("Customer 24KT Item"):
+		# Not one of the configured customer gold items, so the receipt validator rejects it --
+		# assert the computation on the saved draft instead of forcing an unrealistic submit.
+		#
+		# The fragment tracks the message the validator actually raises. It changed when the
+		# receipt began accepting a LIST of purities: an operating-purity item is now rejected
+		# for not being on that list rather than for not being THE 24KT item, and the message
+		# names what would have been accepted.
+		with self.assertThrowsContaining("is not configured for Customer Gold receipts"):
 			se.save()
 
 
@@ -2792,6 +2797,234 @@ class TestNextOrderRevaluation(TestFulfilmentLedger):
 			with self.assertRaises(frappe.PermissionError):
 				get_revaluation_history(COMPANY, CUSTOMER)
 
+	def _carrying_value_total(self):
+		"""Net customer gold carrying value on the ledger, reversals included."""
+		return flt(
+			frappe.db.sql(
+				"""SELECT SUM(cg_carrying_value_delta) FROM `tabCustomer Gold Ledger Entry`
+				   WHERE company=%s AND customer=%s AND docstatus < 2""",
+				(COMPANY, CUSTOMER),
+			)[0][0]
+		)
+
+	def test_revaluing_the_same_batch_twice_is_refused(self):
+		"""The defect: the second call posted the delta again against metal that never moved.
+
+		The event key was derived from the Stock Reconciliation this function mints, so it was
+		unique by construction and the UNIQUE index on ``cg_event_key`` could never fire. And
+		``get_booked_rate`` reads Receipt events only, so the baseline does not advance -- the
+		second call recomputed the SAME non-zero delta rather than zero. Two calls, Rs.670.34
+		twice, on 2 g that did not move.
+		"""
+		batch = self._stocked_batch(qty=2)
+		_, first = self._revalue(batch, new_rate=7500.00)
+		self.assertAlmostEqual(first, 670.34, places=2)
+
+		with self.assertThrowsContaining("already been revalued"):
+			self._revalue(batch, new_rate=7500.00)
+
+	def test_a_refused_repeat_posts_nothing_at_all(self):
+		"""The refusal must come BEFORE the Stock Reconciliation is built.
+
+		Throwing after it is submitted would leave a document that moved stock value with no
+		custody event to explain it -- worse than the double-post. Asserted by counting both
+		sides, not just the ledger.
+		"""
+		batch = self._stocked_batch(qty=2)
+		self._revalue(batch, new_rate=7500.00)
+
+		events_before = frappe.db.count(
+			"Customer Gold Ledger Entry",
+			{"batch_no": batch, "cg_event_kind": "Revaluation"},
+		)
+		recos_before = frappe.db.count(
+			"Stock Reconciliation", {"docstatus": 1, "company": COMPANY}
+		)
+
+		with self.assertThrowsContaining("already been revalued"):
+			self._revalue(batch, new_rate=7500.00)
+
+		self.assertEqual(
+			frappe.db.count(
+				"Customer Gold Ledger Entry",
+				{"batch_no": batch, "cg_event_kind": "Revaluation"},
+			),
+			events_before,
+			msg="a second Revaluation event was written",
+		)
+		self.assertEqual(
+			frappe.db.count("Stock Reconciliation", {"docstatus": 1, "company": COMPANY}),
+			recos_before,
+			msg="an orphan Stock Reconciliation was submitted before the refusal",
+		)
+
+	def test_the_liability_does_not_move_on_the_refused_repeat(self):
+		"""What the defect actually cost: the obligation grew twice for one price change."""
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
+		)
+
+		batch = self._stocked_batch(qty=2)
+		self._revalue(batch, new_rate=7500.00)
+		after_first = flt(
+			frappe.db.sql(
+				"""SELECT SUM(cg_carrying_value_delta) FROM `tabCustomer Gold Ledger Entry`
+				   WHERE company=%s AND customer=%s AND docstatus < 2""",
+				(COMPANY, CUSTOMER),
+			)[0][0]
+		)
+
+		with self.assertThrowsContaining("already been revalued"):
+			self._revalue(batch, new_rate=7500.00)
+
+		self.assertAlmostEqual(
+			flt(
+				frappe.db.sql(
+					"""SELECT SUM(cg_carrying_value_delta) FROM `tabCustomer Gold Ledger Entry`
+					   WHERE company=%s AND customer=%s AND docstatus < 2""",
+					(COMPANY, CUSTOMER),
+				)[0][0]
+			),
+			after_first,
+			places=2,
+			msg="the liability moved on a revaluation that was refused",
+		)
+
+	def test_a_genuinely_different_rate_is_still_allowed(self):
+		"""Guard the guard. The rate really can move twice in a day."""
+		batch = self._stocked_batch(qty=2)
+		self._revalue(batch, new_rate=7500.00)
+
+		_, second = self._revalue(batch, new_rate=7800.00)
+		self.assertAlmostEqual(
+			second,
+			(7800.00 - 7164.83) * 2,
+			places=2,
+			msg="a revaluation to a NEW rate was blocked; only exact repeats should be",
+		)
+
+	def test_cancelling_the_reconciliation_reverses_the_custody_event(self):
+		"""Cancelling a revaluation must undo it in BOTH books, not just the stock one.
+
+		ERPNext reverses the stock value and the GL itself. Nothing reversed the custody event:
+		``hooks.py`` registered no ``on_cancel`` for Stock Reconciliation and ``_reverse_events``
+		was wired only to the delivery and stock-entry paths. The event stayed, and the settlement
+		Journal Entry takes its amount from the ledger -- so a cancelled revaluation still inflated
+		what was settled against the customer.
+		"""
+		batch = self._stocked_batch(qty=2)
+		before = self._carrying_value_total()
+
+		sr, delta = self._revalue(batch, new_rate=7500.00)
+		self.assertAlmostEqual(delta, 670.34, places=2)
+		self.assertAlmostEqual(self._carrying_value_total(), before + 670.34, places=2)
+
+		frappe.get_doc("Stock Reconciliation", sr).cancel()
+
+		self.assertAlmostEqual(
+			self._carrying_value_total(),
+			before,
+			places=2,
+			msg="the custody ledger still carries a revaluation whose document was cancelled",
+		)
+
+	def test_cancelling_unblocks_the_same_revaluation(self):
+		"""The idempotency guard must not outlive the posting it is guarding.
+
+		The guard refuses on the ledger row. The row survives its Stock Reconciliation being
+		cancelled -- ``Customer Gold Ledger Entry`` is ``is_submittable: 0``, so frappe's
+		``check_if_doc_is_linked`` never blocks that cancel. Judged on the row alone, cancelling a
+		revaluation would permanently bar that batch from ever being revalued to that rate on that
+		date again, with no way out but a manual delete.
+		"""
+		batch = self._stocked_batch(qty=2)
+		sr, _ = self._revalue(batch, new_rate=7500.00)
+
+		# Control: while it is live, the repeat is still refused.
+		with self.assertThrowsContaining("already been revalued"):
+			self._revalue(batch, new_rate=7500.00)
+
+		frappe.get_doc("Stock Reconciliation", sr).cancel()
+
+		_, delta = self._revalue(batch, new_rate=7500.00)
+		self.assertAlmostEqual(
+			delta,
+			670.34,
+			places=2,
+			msg="a legitimate re-revaluation after a cancellation was refused",
+		)
+
+	def test_the_retry_after_a_cancel_posts_the_delta_exactly_once(self):
+		"""The whole point: unblocking the retry must not double-count it.
+
+		Reversal-on-cancel and the retry are two halves of one fix. With only the retry, the
+		cancelled event would still be on the ledger and the liability would carry Rs.670.34 twice
+		for one price change -- the very defect the idempotency guard was added to stop, reached by
+		a different route.
+		"""
+		batch = self._stocked_batch(qty=2)
+		before = self._carrying_value_total()
+
+		sr, _ = self._revalue(batch, new_rate=7500.00)
+		frappe.get_doc("Stock Reconciliation", sr).cancel()
+		self._revalue(batch, new_rate=7500.00)
+
+		self.assertAlmostEqual(
+			self._carrying_value_total(),
+			before + 670.34,
+			places=2,
+			msg="the liability moved twice for one price change",
+		)
+
+	def test_the_retry_is_allocated_its_own_event_key(self):
+		"""``cg_event_key`` is UNIQUE, so the retry cannot reuse the superseded key.
+
+		Reusing it would submit the Stock Reconciliation and then fail the ledger insert on the
+		unique index -- leaving a document that moved stock value with no custody event to explain
+		it. That is the exact state the pre-check exists to prevent, so a dead attempt consumes its
+		key and the retry takes the next slot.
+		"""
+		batch = self._stocked_batch(qty=2)
+		sr, _ = self._revalue(batch, new_rate=7500.00)
+		frappe.get_doc("Stock Reconciliation", sr).cancel()
+		self._revalue(batch, new_rate=7500.00)
+
+		keys = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"batch_no": batch, "cg_event_kind": "Revaluation"},
+			pluck="cg_event_key",
+		)
+		self.assertEqual(
+			len(keys),
+			len(set(keys)),
+			msg="two Revaluation events share an event key; the UNIQUE index would have fired",
+		)
+		self.assertGreaterEqual(len(keys), 2)
+
+	def test_cancelling_an_ordinary_reconciliation_is_a_no_op(self):
+		"""The hook fires for EVERY Stock Reconciliation on the site, not just ours.
+
+		One that wrote no customer gold events must cancel exactly as it did before.
+		"""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			reverse_revaluation,
+		)
+
+		batch = self._stocked_batch(qty=2)
+		sr, _ = self._revalue(batch, new_rate=7500.00)
+		doc = frappe.get_doc("Stock Reconciliation", sr)
+		doc.cancel()
+
+		before = self._carrying_value_total()
+		# Second callback, as a repeated cancellation hook would deliver it.
+		reverse_revaluation(doc)
+		self.assertAlmostEqual(
+			self._carrying_value_total(),
+			before,
+			places=2,
+			msg="a repeated cancellation callback wrote a second reversal",
+		)
+
 	def test_return_and_revaluation_use_opposite_rates(self):
 		"""The heart of it: the same 2 g, valued two ways, differing by exactly Rs.670.34."""
 		from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
@@ -4317,15 +4550,25 @@ class TestConversionEvents(TestComponentApportionment):
 class TestProductionEvents(TestCustodyTransfer):
 	"""Spec §5 — `Production`: customer metal embodied in finished goods.
 
-	Driven by the CONSUMED rows, not the finished-goods row. That is not a shortcut — the FG row
-	is hardcoded `"inventory_type": "Regular Stock"` with no customer
-	(`manufacturing_operation.py:1118`), so it cannot answer who owns the metal. The consumed rows
-	immediately above it carry real ownership and are, on the merits, the better source: what was
-	actually consumed IS the composition the spec asks for.
+	Driven by the CONSUMED rows, not the finished-goods row — and no longer because the FG row
+	lacks an owner. `_finished_goods_ownership` gives it one, and must, or the delivery could
+	never settle the liability. The reason is that the consumed row and the finished row are the
+	same metal twice, once in and once out; an event on each would move the holding twice for one
+	physical fact. The consumed side also carries the composition the spec asks for — what was
+	actually consumed IS the composition.
 	"""
 
-	def _manufacture(self, batch, qty, fg_item=None):
-		"""A real Manufacture Stock Entry consuming customer metal."""
+	#: Shared with ``TestDispatcherDiagnostics``, which pins the same false-alarm rule for
+	#: returns. Both branches of the dispatcher's unclassified diagnostic are now covered.
+	UNCLASSIFIED = "Customer Gold: unclassified one-sided movement"
+
+	def _manufacture(self, batch, qty, fg_item=None, consume_item=None):
+		"""A real Manufacture Stock Entry consuming customer metal.
+
+		``consume_item`` defaults to ``self.item`` so every existing caller is unchanged. It
+		exists because a batch that has been through a conversion holds the OTHER item, and
+		erpnext rejects a row whose batch does not belong to its item code.
+		"""
 		se = frappe.new_doc("Stock Entry")
 		se.stock_entry_type = MANUFACTURE_SE_TYPE
 		se.purpose = "Manufacture"
@@ -4333,11 +4576,13 @@ class TestProductionEvents(TestCustodyTransfer):
 		se.manufacturer = MANUFACTURER
 		se.posting_date = self.posting_date
 		se.set_posting_time = 1
-		se._customer = CUSTOMER
-		se.append(
-			"items",
+		# NO se._customer. create_manufacturing_entry does not set one, and setting it here
+		# made this fixture kinder than production: create_child_batches falls back to the
+		# header when a row carries no customer, so a header would have masked exactly the
+		# defect these tests exist to catch.
+		consumed = [
 			{
-				"item_code": self.item,
+				"item_code": consume_item or self.item,
 				"qty": qty,
 				"s_warehouse": self.warehouse,
 				"batch_no": batch,
@@ -4346,8 +4591,20 @@ class TestProductionEvents(TestCustodyTransfer):
 				"customer": CUSTOMER,
 				"allow_zero_valuation_rate": 1,
 				"expense_account": self.difference_account,
-			},
+			}
+		]
+		for row in consumed:
+			se.append("items", row)
+
+		# Exactly what create_manufacturing_entry now does: the finished row takes its
+		# ownership from the metal consumed, rather than a hardcoded "Regular Stock".
+		# Calling the real helper keeps this fixture honest -- if production's rule changes,
+		# this changes with it instead of quietly drifting into testing a fiction.
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_finished_goods_ownership,
 		)
+
+		fg_inventory_type, fg_customer = _finished_goods_ownership(consumed)
 		se.append(
 			"items",
 			{
@@ -4358,8 +4615,8 @@ class TestProductionEvents(TestCustodyTransfer):
 				"stock_uom": "Gram",
 				"conversion_factor": 1,
 				"is_finished_item": 1,
-				# Exactly what create_manufacturing_entry hardcodes.
-				"inventory_type": "Regular Stock",
+				"inventory_type": fg_inventory_type,
+				"customer": fg_customer,
 				"allow_zero_valuation_rate": 1,
 				"expense_account": self.difference_account,
 			},
@@ -4382,7 +4639,12 @@ class TestProductionEvents(TestCustodyTransfer):
 		self.assertEqual(events[0].cg_stage, "FG")
 
 	def test_the_finished_goods_row_writes_nothing(self):
-		"""It is hardcoded Regular Stock — reading ownership off it would be wrong."""
+		"""One event for one physical fact.
+
+		The finished row DOES carry an owner now -- ``_finished_goods_ownership`` gives it one,
+		and the settlement depends on that. It writes no event because it is the same metal as
+		the consumed row in another shape, and counting both would double the holding.
+		"""
 		batch = self._stocked_batch(qty=20)
 
 		se = self._manufacture(batch, 6)
@@ -4394,6 +4656,31 @@ class TestProductionEvents(TestCustodyTransfer):
 			len(production),
 			1,
 			"the FG row produced an event; it cannot know whose metal it holds",
+		)
+
+	def test_a_manufacture_logs_no_false_alarm_for_its_finished_row(self):
+		"""The second false alarm of the same shape as the return one, caught the same way.
+
+		Giving the finished row its customer -- required, or a delivery can never settle -- also
+		made it survive the dispatcher's owner check. It is one-sided, so it then fell through to
+		the unclassified diagnostic and logged *"No custody event was written; the holding will
+		not reflect this row"* on EVERY customer-gold manufacture. Nothing was actually missing:
+		the consumed row's Production event already accounts for that metal.
+
+		Found by running the SOP for real, not by a test: 313 of these rows had accumulated on
+		the integration site. A log that cries wolf on the normal path is worse than no log,
+		because the real drift it also carries stops being read.
+		"""
+		batch = self._stocked_batch(qty=20)
+		before = frappe.db.count("Error Log", {"method": self.UNCLASSIFIED})
+
+		self._manufacture(batch, 6)
+
+		self.assertEqual(
+			frappe.db.count("Error Log", {"method": self.UNCLASSIFIED}),
+			before,
+			msg="the finished row logged an unclassified-movement alarm; it is handled, "
+			"not dropped -- the consumed row already wrote the Production event",
 		)
 
 	def test_production_does_not_change_the_holding(self):
@@ -4461,61 +4748,611 @@ class TestProductionEvents(TestCustodyTransfer):
 
 		self.assertEqual(self._events(manufacture.name), [])
 
-	def test_what_actually_happens_to_the_finished_goods_batch(self):
-		"""The finding this class was built to settle, asserted rather than assumed.
+	def test_the_finished_goods_batch_carries_its_customer(self):
+		"""The defect this class was built to settle -- now the other way round.
 
-		`create_manufacturing_entry` hardcodes the FG row `"inventory_type": "Regular Stock"`
-		(`manufacturing_operation.py:1118`). `create_child_batches` mints customer child batches,
-		and its `CUSTOMER_INVENTORY_TYPES` filter applies **only in the mixed-ownership branch**
-		(`batch_rename.py:285`) — in single-lane mode it takes the customer from the row or header
-		regardless of inventory type.
+		WHAT THIS USED TO ASSERT, AND WHY THAT WAS THE WHOLE BUG
+		--------------------------------------------------------
+		Until this fix, ``create_manufacturing_entry`` hardcoded the finished row
+		``"inventory_type": "Regular Stock"`` with no customer, so a piece made entirely from one
+		customer's metal was minted as company stock. Measured on 2026-09-15::
 
-		So the outcome was genuinely uncertain from reading alone. This records what the code
-		actually does, so the next person does not have to guess either.
+		    batch id              CG-TEST-CUSTOMER-A-...-01-A
+		    custom_customer       None
+		    custom_inventory_type Regular Stock
+
+		The batch was NAMED after the customer -- ``create_child_batches`` takes the name from the
+		row -- which is exactly why it went unnoticed: the id looked right while the ownership
+		fields said company stock. ``_batch_owner`` reads the FIELDS, so delivering that finished
+		piece wrote no custody event and released no liability, and SOP Examples C and D could
+		never close for anything manufactured.
+
+		This test recorded that as fact. It now asserts the opposite, which is the point of the
+		change: the finished piece belongs to whoever owned the metal that went into it.
 		"""
 		batch = self._stocked_batch(qty=20)
 		se = self._manufacture(batch, 6)
-
 		fg_row = [r for r in se.items if r.get("is_finished_item")][0]
-		fg_batch = fg_row.batch_no
 
-		if not fg_batch:
-			self.skipTest("this fixture's FG row was minted no batch at all")
+		self.assertEqual(
+			fg_row.inventory_type,
+			"Customer Goods",
+			msg="the finished row was booked as company stock",
+		)
+		self.assertEqual(fg_row.customer, CUSTOMER)
+
+		self.assertTrue(
+			fg_row.batch_no,
+			msg="no batch was minted for the finished row, so ownership cannot be asserted "
+			"-- this used to be a skipTest, which let the whole check pass silently",
+		)
 
 		owner = frappe.db.get_value(
 			"Batch",
-			fg_batch,
+			fg_row.batch_no,
 			["custom_customer", "custom_inventory_type"],
 			as_dict=True,
 		)
+		self.assertEqual(owner.custom_customer, CUSTOMER)
+		self.assertEqual(owner.custom_inventory_type, "Customer Goods")
 
-		# MEASURED, 2026-09-15. The batch is NAMED after the customer — `create_child_batches`
-		# mints it through the single-lane branch, so the id begins with the customer code — but
-		# its ownership fields say company stock:
-		#
-		#     batch id             CG-TEST-CUSTOMER-A-...-01-A
-		#     custom_customer      None
-		#     custom_inventory_type Regular Stock
-		#
-		# The name says one thing and the data says another. That matters because `_batch_owner`
-		# reads the FIELDS, so **delivering this finished piece writes no custody event and
-		# releases no liability** — even though it is made entirely of one customer's gold.
-		#
-		# This test pins the current behaviour rather than asserting a preference. Whether a
-		# finished piece made from customer gold is still the customer's is a business decision,
-		# not one to change quietly inside a ledger commit. It is recorded as a live gap.
-		self.assertIsNone(
-			owner.custom_customer,
-			"FG batch ownership changed — the delivery-side gap may now be closed; "
-			"re-check whether a manufactured piece releases its liability",
+		# And the consequence that actually matters: the ledger can now find an owner for it.
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
 		)
-		self.assertEqual(owner.custom_inventory_type, "Regular Stock")
 
-		# The consumed side is unaffected: the ledger still knows the metal went into FG.
-		production = [
-			e for e in self._events(se.name) if e.cg_event_kind == "Production"
+		self.assertEqual(cgf._batch_owner(fg_row.batch_no), CUSTOMER)
+
+	def test_a_mixed_owner_manufacture_stays_company_stock_and_says_so(self):
+		"""Two customers' metal in one job is a question, not a calculation.
+
+		Apportioning ONE finished piece across two owners -- whose grams does a delivery
+		discharge, and in what ratio -- is a business rule nobody has specified. Guessing it
+		would put a number in a liability account that no one computed, and liability entries
+		are not cheap to unpick. So a mixed job stays company-owned, which is recoverable, and
+		logs loudly rather than failing silently.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_finished_goods_ownership,
+		)
+
+		before = frappe.db.count(
+			"Error Log",
+			{"method": "Customer Gold: mixed-owner manufacture left as company stock"},
+		)
+
+		mixed = [
+			{"inventory_type": "Customer Goods", "customer": CUSTOMER},
+			{"inventory_type": "Customer Goods", "customer": OTHER_CUSTOMER},
 		]
-		self.assertEqual(len(production), 1)
+		self.assertEqual(_finished_goods_ownership(mixed), ("Regular Stock", None))
+
+		self.assertGreater(
+			frappe.db.count(
+				"Error Log",
+				{
+					"method": "Customer Gold: mixed-owner manufacture left as company stock"
+				},
+			),
+			before,
+			msg="a mixed-owner job was silently downgraded to company stock",
+		)
+
+		# The controls, so the rule above is not passing for an unrelated reason.
+		self.assertEqual(
+			_finished_goods_ownership(
+				[{"inventory_type": "Customer Goods", "customer": CUSTOMER}] * 2
+			),
+			("Customer Goods", CUSTOMER),
+			msg="two rows of the SAME customer is one owner, not a mixed job",
+		)
+		self.assertEqual(
+			_finished_goods_ownership(
+				[{"inventory_type": "Regular Stock", "customer": None}]
+			),
+			("Regular Stock", None),
+		)
+		self.assertEqual(_finished_goods_ownership([]), ("Regular Stock", None))
+
+
+class TestManufacturedPieceSettles(TestProductionEvents):
+	"""SOP steps 6-8, end to end -- the leg the whole flow exists for.
+
+	    "Track through manufacturing -> Calculate final ownership split -> Sell and settle.
+	     On Delivery Note submission, clear only the booked customer value included in the
+	     delivered Serial Number."
+
+	THIS COULD NOT PASS BEFORE, AND NOTHING TESTED IT
+	--------------------------------------------------
+	Every settlement proof in this suite delivered the RAW batch the customer handed over --
+	``_stocked_batch`` straight into ``_delivery``. The moment metal was manufactured,
+	``create_manufacturing_entry`` booked the finished row as ``Regular Stock`` with no customer,
+	``_batch_owner`` returned ``None``, ``record_fulfilment`` skipped the row, and
+	``settle_customer_gold_liability`` received an empty list and returned.
+
+	So the liability raised at receipt was **permanent for the only business case the SOP
+	describes**: the gold becomes jewellery, ships, is invoiced, and Customer Gold Liability
+	never moves. The gap was measured and recorded rather than fixed, and this class is what
+	proves it is now closed.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		settings = frappe.get_doc(SETTINGS_DOCTYPE)
+		settings.customer_gold_valuation_policy = "Nominal"
+		settings.save(ignore_permissions=True)
+		frappe.clear_cache(doctype=SETTINGS_DOCTYPE)
+
+	def _settlement_entries(self, voucher):
+		return sorted(
+			{
+				r.cg_settlement_voucher
+				for r in frappe.get_all(
+					"Customer Gold Ledger Entry",
+					filters={
+						"reference_docname": voucher,
+						"cg_settlement_voucher": ["!=", ""],
+					},
+					fields=["cg_settlement_voucher"],
+				)
+				if r.cg_settlement_voucher
+			}
+		)
+
+	def test_the_policy_is_actually_nominal_for_this_class(self):
+		"""Without this, every settlement assertion below could pass by being skipped."""
+		from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+			get_customer_gold_valuation_policy,
+		)
+
+		self.assertEqual(get_customer_gold_valuation_policy(), "Nominal")
+
+	def test_delivering_a_manufactured_piece_writes_a_custody_event(self):
+		"""Step 8, first half. Previously zero events: the FG batch had no owner."""
+		batch = self._stocked_batch(qty=20)
+		se = self._manufacture(batch, 6)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+		self.assertTrue(fg_batch, msg="no FG batch to deliver")
+
+		dn = self._delivery(fg_batch, qty=6)
+		dn.save()
+		dn.submit()
+
+		events = [e for e in self._events(dn.name) if e.cg_event_kind == "Delivery"]
+		self.assertEqual(
+			len(events),
+			1,
+			msg="delivering a piece made of customer gold wrote no custody event -- the "
+			"finished batch is not owned by the customer",
+		)
+		self.assertEqual(events[0].customer, CUSTOMER)
+
+	def test_a_manufactured_delivery_settles_only_the_booked_customer_value(self):
+		"""SOP Example C, and the number the SOP is written around.
+
+		    "On Delivery Note, clear only the booked customer value included in the delivered
+		     Serial Number."
+
+		The finished piece here is made from **6.000 g** of customer 24KT booked at
+		Rs.7,164.83/g, so the settlement must be::
+
+		    6.000 x 7,164.83 = Rs.42,988.98
+
+		which is the SOP's own S1 figure. It is deliberately NOT the finished item's stock
+		value: that also holds company alloy and production cost, which the invoice recovers,
+		and settling it would discharge more obligation than was ever raised.
+
+		Two separate defects had to fall for this to be assertable. The finished batch carried
+		no owner, so no custody event was written and there was nothing to settle from; and once
+		ownership was fixed, the amount still came from the delivery's own
+		``stock_value_difference`` -- the whole FG value. ``_booked_customer_value`` makes it the
+		customer's share, read from ``Batch Component`` and rated at the ORIGINAL receipt's
+		booked rate rather than anything fetched today.
+		"""
+		batch = self._stocked_batch(qty=20)
+		se = self._manufacture(batch, 6)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+
+		dn = self._delivery(fg_batch, qty=6)
+		dn.save()
+		dn.submit()
+
+		events = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"reference_docname": dn.name, "cg_event_kind": "Delivery"},
+			fields=["customer", "cg_carrying_value_delta"],
+		)
+		self.assertEqual(len(events), 1, msg="the delivery wrote no custody event")
+		self.assertEqual(events[0].customer, CUSTOMER)
+		self.assertAlmostEqual(
+			flt(events[0].cg_carrying_value_delta),
+			-42988.98,
+			places=2,
+			msg="the event did not carry the booked customer value 6 x 7,164.83",
+		)
+
+		entries = self._settlement_entries(dn.name)
+		self.assertEqual(
+			len(entries), 1, msg=f"expected one settlement JE, got {entries}"
+		)
+
+		je = frappe.get_doc("Journal Entry", entries[0])
+		self.assertEqual(je.docstatus, 1)
+		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
+		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		self.assertAlmostEqual(
+			debits.get(self.liability_account, 0.0),
+			42988.98,
+			places=2,
+			msg="Dr Customer Gold Liability was not the booked customer value",
+		)
+		self.assertAlmostEqual(
+			credits.get(self.cogs_account, 0.0),
+			42988.98,
+			places=2,
+			msg="Cr Customer Gold COGS Adjustment was not the booked customer value",
+		)
+
+	def test_the_settled_value_is_not_the_finished_items_stock_value(self):
+		"""The distinction the SOP spends a paragraph on, asserted directly.
+
+		S1 settles Rs.42,988.98 against an FG stock value of Rs.43,186.98 -- the Rs.198.00
+		difference being company alloy and production cost. A settlement that tracked the stock
+		ledger would over-discharge by exactly that, and on this fixture the two numbers differ
+		by the whole amount, because the fixture's finished batch is zero-valued.
+		"""
+		batch = self._stocked_batch(qty=20)
+		se = self._manufacture(batch, 6)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+
+		dn = self._delivery(fg_batch, qty=6)
+		dn.save()
+		dn.submit()
+
+		event_value = flt(
+			frappe.db.get_value(
+				"Customer Gold Ledger Entry",
+				{"reference_docname": dn.name, "cg_event_kind": "Delivery"},
+				"cg_carrying_value_delta",
+			)
+		)
+		sle_value = flt(
+			frappe.db.get_value(
+				"Stock Ledger Entry",
+				{"voucher_no": dn.name, "is_cancelled": 0},
+				"stock_value_difference",
+			)
+		)
+
+		self.assertAlmostEqual(event_value, -42988.98, places=2)
+		self.assertNotAlmostEqual(
+			event_value,
+			sle_value,
+			places=2,
+			msg="the settlement is tracking the stock ledger rather than the booked customer "
+			"value -- on a piece with company alloy in it that over-discharges the liability",
+		)
+
+	def test_the_manufactured_delivery_does_not_settle_twice(self):
+		"""SOP section 8: "Do not create duplicate revaluation or settlement entries"."""
+		batch = self._stocked_batch(qty=20)
+		se = self._manufacture(batch, 6)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+
+		dn = self._delivery(fg_batch, qty=6)
+		dn.save()
+		dn.submit()
+		first = self._settlement_entries(dn.name)
+
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
+		)
+
+		cgf.record_fulfilment(frappe.get_doc("Delivery Note", dn.name))
+
+		self.assertEqual(
+			self._settlement_entries(dn.name),
+			first,
+			msg="replaying the hook produced a second settlement",
+		)
+
+
+class TestConvertedPieceSettlesTheSourceValue(TestManufacturedPieceSettles):
+	"""The same settlement, with a purity change in the middle. It over-discharged by 32%.
+
+	``TestManufacturedPieceSettles`` proves the booked value is settled, but every fixture in
+	it manufactures ``self.item`` out of ``self.item``. Real work does not: the customer hands
+	over 24KT and the piece that ships is 18KT, because alloy went in. That is SOP Example B
+	followed by Examples C and the settlement -- the ordinary case, and it appeared in no test.
+
+	FOUND BY RUNNING THE SOP FOR REAL, NOT BY READING THE CODE
+	----------------------------------------------------------
+	On cg-integration.test: receive 10 g of 99.9%, convert 6 g of it to 7.95 g of 75.4%,
+	manufacture, deliver. Expected Rs.42,988.98. Posted::
+
+	    DN-26-00001  Delivery  -7.9500 g   value -56,960.40   ACC-JV-2026-00001
+	    Dr CG Test Customer Gold Liability   56,960.40
+	    Cr CG Test Customer Gold COGS Adj                56,960.40
+
+	Rs.13,971.42 more liability discharged than the customer ever posted -- 32.5% over -- and
+	the excess credited to COGS Adjustment, where it reads as margin.
+
+	``resolve_components`` apportions to the quantity DRAWN, so the component said 7.950 g and
+	named the 24KT receipt batch as its source. ``get_booked_rate`` returned that batch's
+	Rs.7,164.83 per 24KT gram. Multiplying them multiplies 18KT grams by a 24KT rate.
+
+	The three assertions below are the three places the wrong number surfaced -- the custody
+	event, the debit, and the credit. All three are asserted because a fix that corrected the
+	event while leaving the JE alone would be worse than the defect: the ledger and the GL would
+	then disagree about the same delivery.
+	"""
+
+	#: The fixtures' own purities, so every figure below can be rechecked against the masters.
+	SOURCE_PURITY = 99.9
+	CONVERTED_PURITY = 75.4
+	BOOKED_RATE = 7164.83
+
+	SOURCE_QTY = 6.0
+	#: 6.000 g of 99.9% carries 5.994 g of fine gold, which at 75.4% is 7.949602... g. Stock
+	#: quantities persist at 2dp, so what the system can actually hold is 7.95.
+	CONVERTED_QTY = 7.95
+
+	#: What this fixture must settle: 7.95 x 75.4 / 99.9 x 7,164.83, recomputed here from the
+	#: constants above rather than read back from the code under test.
+	EXPECTED_VALUE = 42991.13
+	#: The SOP's S1 figure for 6.000 g. EXPECTED_VALUE sits Rs.2.15 above it, and that gap is
+	#: entirely the 7.949602 -> 7.95 quantity rounding: 0.0004 g of 24KT at Rs.7,164.83. It is
+	#: asserted as a tolerance below, so a real regression cannot hide inside it.
+	SOP_VALUE = 42988.98
+	#: What the defect posted: 7.950 x 7,164.83, the 18KT gram count at the 24KT rate.
+	OVERSTATED_VALUE = 56960.40
+
+	def _convert(self, source_batch):
+		"""A real lane-tagged conversion from the 99.9% item to the 75.4% one."""
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = REPACK_SE_TYPE
+		se.purpose = "Repack"
+		se.company = COMPANY
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		se._customer = CUSTOMER
+		se.append(
+			"items",
+			{
+				"item_code": self.item,
+				"qty": self.SOURCE_QTY,
+				"s_warehouse": self.warehouse,
+				"batch_no": source_batch,
+				"use_serial_batch_fields": 1,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"custom_conversion_lane": f"Customer Goods|{CUSTOMER}",
+				"expense_account": self.difference_account,
+			},
+		)
+		se.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": self.CONVERTED_QTY,
+				"t_warehouse": self.warehouse,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"custom_conversion_lane": f"Customer Goods|{CUSTOMER}",
+				"expense_account": self.difference_account,
+			},
+		)
+		se.flags.ignore_mandatory = True
+		se.save()
+		se.submit()
+		return se.items[1].batch_no
+
+	def _deliver_operating_item(self, batch_no, qty):
+		"""``_delivery`` hardcodes ``self.item``; the converted piece is the other one."""
+		if not frappe.db.exists("Sales Type", SALES_TYPE):
+			frappe.get_doc(
+				{"doctype": "Sales Type", "type": SALES_TYPE, "tax_rate": 0}
+			).insert(ignore_permissions=True)
+		if not frappe.db.exists("Customer Payment Terms", {"customer": CUSTOMER}):
+			frappe.get_doc(
+				{"doctype": "Customer Payment Terms", "customer": CUSTOMER}
+			).insert(ignore_permissions=True)
+
+		so = frappe.new_doc("Sales Order")
+		so.company = COMPANY
+		so.customer = CUSTOMER
+		so.sales_type = SALES_TYPE
+		so.transaction_date = self.posting_date
+		so.delivery_date = self.posting_date
+		so.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": qty,
+				"rate": 0,
+				"delivery_date": self.posting_date,
+				"warehouse": self.warehouse,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+			},
+		)
+		so.flags.ignore_mandatory = True
+		so.save()
+		so.submit()
+
+		dn = frappe.new_doc("Delivery Note")
+		dn.company = COMPANY
+		dn.customer = CUSTOMER
+		dn.posting_date = self.posting_date
+		dn.set_posting_time = 1
+		dn.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": qty,
+				"rate": 0,
+				"warehouse": self.warehouse,
+				"batch_no": batch_no,
+				"use_serial_batch_fields": 1,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"against_sales_order": so.name,
+				"so_detail": so.items[0].name,
+			},
+		)
+		dn.flags.ignore_mandatory = True
+		dn.save()
+		dn.submit()
+		return dn
+
+	def _receipt_convert_manufacture_deliver(self):
+		"""The whole SOP leg, with real documents at every step."""
+		batch = self._stocked_batch(qty=10)
+		converted = self._convert(batch)
+		se = self._manufacture(
+			converted,
+			self.CONVERTED_QTY,
+			fg_item=self.operating_item,
+			consume_item=self.operating_item,
+		)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+		return self._deliver_operating_item(fg_batch, self.CONVERTED_QTY)
+
+	def test_the_component_is_restated_into_the_source_items_grams(self):
+		"""The unit conversion on its own, so a failure says which half broke."""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			_restate_qty,
+		)
+
+		self.assertAlmostEqual(
+			_restate_qty(self.CONVERTED_QTY, self.operating_item, self.item),
+			self.CONVERTED_QTY * self.CONVERTED_PURITY / self.SOURCE_PURITY,
+			places=6,
+			msg="7.95 g of 75.4% is 6.0003 g of 99.9% -- same 5.9943 g of fine gold",
+		)
+		self.assertAlmostEqual(
+			_restate_qty(self.CONVERTED_QTY, self.operating_item, self.item),
+			self.SOURCE_QTY,
+			places=3,
+			msg="and that is the 6.000 g drawn, to the precision quantities are stored at",
+		)
+
+	def test_an_identical_item_restates_to_itself(self):
+		"""The no-op path every same-item fixture in this suite depends on."""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			_restate_qty,
+		)
+
+		self.assertEqual(_restate_qty(6.0, self.item, self.item), 6.0)
+
+	def test_an_unrestatable_component_refuses_rather_than_guessing(self):
+		"""No source item means no defensible rate, so the caller must fall back."""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			_restate_qty,
+		)
+
+		self.assertIsNone(_restate_qty(6.0, self.operating_item, None))
+		self.assertIsNone(_restate_qty(6.0, None, self.item))
+
+	def test_the_custody_event_settles_the_source_value_not_the_converted_grams(self):
+		"""The defect, at the ledger. Rs.42,988.98, never Rs.56,960.40."""
+		dn = self._receipt_convert_manufacture_deliver()
+
+		events = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"reference_docname": dn.name, "cg_event_kind": "Delivery"},
+			fields=["customer", "cg_carrying_value_delta"],
+		)
+		self.assertEqual(len(events), 1, msg="the delivery wrote no custody event")
+		self.assertEqual(events[0].customer, CUSTOMER)
+
+		value = flt(events[0].cg_carrying_value_delta)
+		self.assertNotAlmostEqual(
+			value,
+			-self.OVERSTATED_VALUE,
+			places=2,
+			msg="settled the 18KT gram count at the 24KT rate -- the original defect",
+		)
+		self.assertAlmostEqual(
+			value,
+			-self.EXPECTED_VALUE,
+			places=2,
+			msg="not 7.95 x 75.4 / 99.9 x 7,164.83",
+		)
+		self.assertAlmostEqual(
+			value,
+			-self.SOP_VALUE,
+			delta=3.0,
+			msg="a purity change must not change what the customer posted; only the "
+			"2dp quantity rounding may move it, and that is worth Rs.2.15",
+		)
+
+	def test_the_journal_entry_agrees_with_the_custody_event(self):
+		"""Both legs, because a ledger that disagrees with the GL is worse than either."""
+		dn = self._receipt_convert_manufacture_deliver()
+
+		entries = self._settlement_entries(dn.name)
+		self.assertEqual(
+			len(entries), 1, msg=f"expected one settlement JE, got {entries}"
+		)
+
+		je = frappe.get_doc("Journal Entry", entries[0])
+		self.assertEqual(je.docstatus, 1)
+		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
+		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+
+		self.assertAlmostEqual(
+			debits.get(self.liability_account, 0.0),
+			self.EXPECTED_VALUE,
+			places=2,
+			msg="Dr Customer Gold Liability over-discharged the obligation",
+		)
+		self.assertAlmostEqual(
+			credits.get(self.cogs_account, 0.0),
+			self.EXPECTED_VALUE,
+			places=2,
+			msg="Cr COGS Adjustment credited margin that was never earned",
+		)
+
+	def test_the_fine_gold_is_conserved_across_the_whole_leg(self):
+		"""The independent check: whatever the rupees do, the metal must balance.
+
+		5.994 g of fine gold went into the conversion and 5.994 g shipped, so the customer's
+		fine position returns to what it was before the 6 g was drawn -- the 4 g still in raw
+		custody, and nothing else.
+		"""
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
+		)
+
+		batch = self._stocked_batch(qty=10)
+		after_receipt = cgf.get_customer_gold_fine_position(COMPANY, CUSTOMER)
+
+		converted = self._convert(batch)
+		se = self._manufacture(
+			converted,
+			self.CONVERTED_QTY,
+			fg_item=self.operating_item,
+			consume_item=self.operating_item,
+		)
+		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
+		self._deliver_operating_item(fg_batch, self.CONVERTED_QTY)
+
+		self.assertAlmostEqual(
+			cgf.get_customer_gold_fine_position(COMPANY, CUSTOMER),
+			after_receipt - self.CONVERTED_QTY * self.CONVERTED_PURITY / 100.0,
+			places=3,
+			msg="the fine gold delivered is not the fine gold that was converted",
+		)
 
 
 class TestLossAndRecovery(TestCustodyTransfer):

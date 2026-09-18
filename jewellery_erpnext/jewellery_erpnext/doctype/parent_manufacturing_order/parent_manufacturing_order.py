@@ -736,7 +736,26 @@ class ParentManufacturingOrder(Document):
 							"custom_is_customer_item": i.get("is_customer_item", 0),
 							"custom_sub_setting_type": i.get("sub_setting_type"),
 							"pcs": i.get("pcs"),
-							"custom_inventory_type": "Customer Stock"
+							# ``inventory_type``, NOT ``custom_inventory_type``. Material
+							# Request Item has no field by the latter name -- verified in
+							# tabCustom Field on kg-gk as well as the test site -- and
+							# ``get_valid_dict`` drops unknown child keys without a word, so
+							# this ownership stamp has never once reached the database.
+							# ``custom_is_customer_item`` above IS a real field and did land,
+							# which is why the row looked half-tagged rather than untagged.
+							# "Customer Goods", NOT "Customer Stock". ``inventory_type`` is a
+							# LINK to Inventory Type, so the value has to exist as a record or
+							# the insert hard-throws LinkValidationError. Only kg-gk, alfarsi
+							# and gk were checked, and all three hold exactly two records:
+							# "Customer Goods" and "Regular Stock". "Customer Stock" exists
+							# only on a disposable test site whose fixtures create it.
+							#
+							# This never mattered while the key was ``custom_inventory_type``:
+							# get_valid_dict dropped it before any link check ran. Landing the
+							# stamp makes the value real, so it has to be a real one -- and
+							# "Customer Goods" is what line 718 already stamps on the parent
+							# Material Request, so the header and its rows now agree.
+							"inventory_type": "Customer Goods"
 							if i.get("is_customer_item") == 1
 							else None,
 							"description": i["item_code"]

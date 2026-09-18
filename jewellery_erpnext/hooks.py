@@ -419,6 +419,11 @@ doc_events = {
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_RECON_VALIDATOR],
 		"before_submit": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_RECON_VALIDATOR],
 		"before_cancel": _EOD_LOCK_VALIDATOR,
+		# Reverses the custody event a Customer Gold revaluation wrote. ERPNext already
+		# reverses the stock value and the GL on cancel; without this the ledger kept the
+		# event, overstating the liability the settlement JE is computed from. A no-op for
+		# every Stock Reconciliation that wrote no customer gold events.
+		"on_cancel": "jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.reverse_revaluation",
 	},
 	"Payment Entry": {
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.on_submit",
