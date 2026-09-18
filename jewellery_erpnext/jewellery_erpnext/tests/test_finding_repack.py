@@ -231,14 +231,18 @@ class TestAppendFindingRows(IntegrationTestCase):
 			fr, "normalize_ownership", side_effect=lambda inv, cust, **kw: (inv, cust)
 		):
 			self._minted = []
+			self._batch_sources = []
 			produced = fr._append_finding_rows(
 				se, pairs, METAL, "MSL - GEPL", alloc, ranks_for(owners), 3
 			)
 		return se, produced
 
-	def _fake_batch(self, se, item_code, inventory_type, customer):
+	def _fake_batch(self, se, item_code, inventory_type, customer, sources=None):
 		name = f"BATCH-{item_code}-{len(self._minted)}"
 		self._minted.append(name)
+		# The batch is minted by hand, so nothing downstream can resolve its rate; the
+		# consumed slices have to reach it here or the finding batch is created at rate 0.
+		self._batch_sources.append((name, list(sources or [])))
 		return name
 
 	def test_f20_single_finding_single_batch(self):
@@ -519,3 +523,55 @@ class TestExtraRowsRideTheTransfer(IntegrationTestCase):
 				eir([r]), r, segments, "MSL - GEPL", "MFG - GEPL", extras
 			)
 		self.assertEqual([i["item_code"] for i in se.items], [METAL, FIND_A])
+
+
+class TestFindingBatchRateSources(IntegrationTestCase):
+	"""The consumed slices must reach the minted batch, or it is created at rate 0.
+
+	`_create_finding_batch` builds the Batch by hand before the Stock Entry exists, so
+	`update_inventory_dimentions` can never resolve a voucher row to stamp a rate from. The
+	rate is carried from the consumed batches instead, and that only works if the exact
+	slices each finding was poured from are handed over. MAT-STE-28117 shipped without this
+	and both finding batches were created with Batch Rate 0.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _sources_for(self, pairs, alloc, owners):
+		harness = TestAppendFindingRows()
+		harness._append(pairs, alloc, owners)
+		return harness._batch_sources
+
+	def test_single_source_is_passed_through(self):
+		sources = self._sources_for(
+			[(FIND_A, 2.0)], [("B1", 2.0)], {"B1": COMPANY_OWNER}
+		)
+		self.assertEqual(sources, [("BATCH-%s-0" % FIND_A, [("B1", 2.0)])])
+
+	def test_each_finding_gets_only_its_own_slice(self):
+		"""Two findings off one allocation: the 1.25 g batch must not be told it came from
+		the whole 2.0 g, or its rate would be blended with metal it never used."""
+		sources = self._sources_for(
+			[(FIND_A, 1.25), (FIND_B, 0.75)], [("B1", 2.0)], {"B1": COMPANY_OWNER}
+		)
+		self.assertEqual([s[1] for s in sources], [[("B1", 1.25)], [("B1", 0.75)]])
+
+	def test_multi_batch_slice_is_passed_whole_for_qty_weighting(self):
+		sources = self._sources_for(
+			[(FIND_A, 3.0)],
+			[("B1", 1.0), ("B2", 2.0)],
+			{"B1": COMPANY_OWNER, "B2": COMPANY_OWNER},
+		)
+		self.assertEqual(sources[0][1], [("B1", 1.0), ("B2", 2.0)])
+
+	def test_mixed_ownership_splits_the_sources_with_the_batches(self):
+		"""One batch per owner, and each is told only about its own owner's metal."""
+		sources = self._sources_for(
+			[(FIND_A, 3.0)],
+			[("B1", 1.0), ("B2", 2.0)],
+			{"B1": CUSTOMER_OWNER, "B2": COMPANY_OWNER},
+		)
+		self.assertEqual(len(sources), 2)
+		self.assertEqual(sorted(s[1] for s in sources), [[("B1", 1.0)], [("B2", 2.0)]])

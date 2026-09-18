@@ -20,6 +20,9 @@ from frappe.utils import (
 	time_diff_in_seconds,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
+	carry_rates_from_source_batches,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_current_mop_balance_rows,
@@ -5636,9 +5639,20 @@ def _resolve_unused_loose_item(item_code):
 
 
 def _create_scrap_batch(
-	item_code, employee=None, company=None, inventory_type=None, customer=None
+	item_code,
+	employee=None,
+	company=None,
+	inventory_type=None,
+	customer=None,
+	sources=None,
 ):
 	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Unused/Loose Material'.
+
+	``sources`` is the ``[(batch_no, qty)]`` this material was repacked from; its Batch Rate /
+	Alloy Rate carry onto the new batch. Needed for the same reason the fields below are stamped
+	explicitly -- a hand-built batch has no ``custom_voucher_detail_no``, so the rate stamper in
+	``customization/batch/doc_events/utils`` can never resolve a source row for it. Without this
+	every Unused/Loose Material batch is created at rate 0.
 
 	``employee`` stamps Batch.custom_employee so it can be fetched employee-wise in
 	Unused/Loose Material Refining. The batch is created directly (before any Stock Entry
@@ -5672,6 +5686,7 @@ def _create_scrap_batch(
 	if not frappe.db.get_value("Item", item_code, "batch_number_series"):
 		ts = get_datetime().strftime("%y%m%d%H%M%S")
 		batch.batch_id = f"{item_code}-SCRAP-{ts}-{frappe.generate_hash(length=4)}"
+	carry_rates_from_source_batches(batch, sources)
 	batch.insert(ignore_permissions=True)
 	return batch.name
 
@@ -5799,6 +5814,7 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 			company=se.company,
 			inventory_type=out_type,
 			customer=out_customer,
+			sources=[(item.batch_no, item.qty)],
 		)
 		if not new_batch:
 			if target_item != item.item_code:
