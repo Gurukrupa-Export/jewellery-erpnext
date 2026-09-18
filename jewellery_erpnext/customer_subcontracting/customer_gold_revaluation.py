@@ -157,6 +157,49 @@ def revalue_customer_gold(
 
 	delta = flt((new_rate - flt(booked_rate)) * free, 2)
 
+	# IDENTITY OF THE BUSINESS OPERATION, NOT OF THE DOCUMENT IT CREATES.
+	#
+	# This key used to be built from ``entry`` -- the Stock Reconciliation minted a few lines
+	# below -- so every call produced a fresh name, a fresh key, and a row the UNIQUE index on
+	# ``cg_event_key`` could never collide with. Revaluing the same batch to the same rate twice
+	# therefore posted the delta TWICE. It is not self-correcting either: ``get_booked_rate``
+	# reads ``Receipt`` events only, so the baseline never moves and the second call computes
+	# the same non-zero delta as the first.
+	#
+	# Settlement already had this protection through ``cg_settlement_voucher``; revaluation had
+	# none. Keyed on what actually identifies the operation -- this batch, this rate, this
+	# posting date -- a repeat now collides.
+	#
+	# The rate is formatted at fixed precision so that 7500 and 7500.0 produce one key rather
+	# than two.
+	event_key = build_event_key(
+		company,
+		"Stock Reconciliation",
+		f"{batch_no}|{posting_date}|{flt(new_rate):.6f}",
+		batch_no,
+		EVENT_REVALUATION,
+	)
+
+	# CHECKED BEFORE THE STOCK RECONCILIATION IS BUILT, DELIBERATELY.
+	#
+	# ``_build_revaluation_entry`` submits a document that moves stock value. Letting the
+	# duplicate surface later, as a UNIQUE violation on the ledger insert, would leave that
+	# submitted Stock Reconciliation behind with no custody event to explain it -- a worse
+	# state than the double-post this guards against. The UNIQUE index stays as the backstop
+	# for a genuine race.
+	if frappe.db.exists(LEDGER_DOCTYPE, {"cg_event_key": event_key}):
+		frappe.throw(
+			frappe._(
+				"Batch {0} has already been revalued to {1} on {2}. Revaluing it again "
+				"would post the difference a second time against metal that has not moved."
+			).format(
+				frappe.bold(batch_no),
+				frappe.bold(frappe.utils.fmt_money(new_rate)),
+				frappe.bold(str(posting_date)),
+			),
+			title=frappe._("Customer Gold Already Revalued"),
+		)
+
 	entry = _build_revaluation_entry(
 		company,
 		batch_no,
@@ -169,9 +212,7 @@ def revalue_customer_gold(
 	)
 
 	_write_event(
-		cg_event_key=build_event_key(
-			company, "Stock Reconciliation", entry, batch_no, EVENT_REVALUATION
-		),
+		cg_event_key=event_key,
 		cg_event_kind=EVENT_REVALUATION,
 		cg_stage=STAGE_RM,
 		company=company,
