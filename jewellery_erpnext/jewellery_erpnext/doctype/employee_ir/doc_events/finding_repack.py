@@ -51,6 +51,9 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
+	carry_rates_from_source_batches,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
 )
@@ -337,6 +340,14 @@ def create_finding_repack_for_row(eir, row):
 			).format(row.idx, row.manufacturing_work_order or "-")
 		)
 
+	# The finding is poured from the tree's own metal and inherits its per-gram rate unscaled
+	# (``carry_rates_from_source_batches``), so it has to BE that metal: same type, touch and
+	# purity. An 18KT tree pouring a 22KT-coded finding would carry the 18KT rate onto 22KT
+	# stock. Reuses the tree's own metal guard, which deliberately ignores colour because a
+	# multicolour tree legitimately holds one ledger row per colour.
+	for item_code, _qty in pairs:
+		tree_balance.validate_item_matches_tree_metal(tree, item_code, row_idx=row.idx)
+
 	prec = tree_balance.qty_precision()
 	total = flt(sum(qty for _item, qty in pairs), prec)
 
@@ -437,7 +448,9 @@ def _append_finding_rows(se, pairs, metal_item, msl_wh, consume_alloc, ranks, pr
 				_append_consume_row(
 					se, metal_item, qty, msl_wh, batch_no, inventory_type, customer
 				)
-			batch_no = _create_finding_batch(se, item_code, inventory_type, customer)
+			batch_no = _create_finding_batch(
+				se, item_code, inventory_type, customer, slices
+			)
 			_append_produce_row(
 				se, item_code, produce_qty, msl_wh, batch_no, inventory_type, customer
 			)
@@ -533,8 +546,15 @@ def _append_produce_row(se, item_code, qty, msl_wh, batch_no, inventory_type, cu
 	)
 
 
-def _create_finding_batch(se, item_code, inventory_type, customer):
+def _create_finding_batch(se, item_code, inventory_type, customer, sources=None):
 	"""Mint the finding's batch UP FRONT and return its id (``None`` for a non-batched item).
+
+	``sources`` is the ``[(batch_no, qty)]`` of consumed metal this finding is poured from; its
+	Batch Rate / Alloy Rate carry onto the new batch. Minting by hand is what makes the batch id
+	available in time to put on the produce row, but it also means the batch has no
+	``custom_voucher_detail_no``, so the usual rate stamper in
+	``customization/batch/doc_events/utils`` can never resolve a source row for it -- the rate has
+	to be assigned here or the finding batch is created at rate 0.
 
 	Created here rather than left to the submit-time bundle machinery because the caller has to
 	hand this exact batch to the Material Transfer leg that moves the finding onward; a batch that
@@ -559,6 +579,7 @@ def _create_finding_batch(se, item_code, inventory_type, customer):
 	if inventory_type:
 		batch.custom_inventory_type = inventory_type
 		batch.custom_customer = customer
+	carry_rates_from_source_batches(batch, sources)
 	batch.insert(ignore_permissions=True)
 	return batch.name
 
