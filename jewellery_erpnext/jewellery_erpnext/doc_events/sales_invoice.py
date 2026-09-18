@@ -91,6 +91,24 @@ def before_validate(self, method):
 						update_making_charges(
 							row_s, bom_doc, row, self.gold_rate_with_gst
 						)
+						if row.is_customer_item:
+							# SOP S4: "Customer gold is sold at zero. Only company-owned
+							# material and approved charges are billed."
+							#
+							# ``update_making_charges`` has just set ``rate = 0`` for this row
+							# and priced the SUBCONTRACTING charge into ``making_amount``, which
+							# is billed and is deliberately left alone here. Without this guard
+							# the block below overwrote that zero with the full gold rate two
+							# lines later and recomputed ``amount`` from it, so the saved BOM
+							# carried the customer's own metal at full value.
+							#
+							# ``amount`` is zeroed explicitly: ``update_making_charges`` sets
+							# only ``rate``, so a stale non-zero ``amount`` would otherwise
+							# survive into ``total_metal_amount`` below.
+							row.amount = 0
+							row.wastage_amount = 0
+							continue
+
 						customer_metal_purity = frappe.db.sql(
 							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
 							as_dict=True,
@@ -109,6 +127,24 @@ def before_validate(self, method):
 						update_making_charges(
 							row_s, bom_doc, row, self.gold_rate_with_gst
 						)
+						if row.is_customer_item:
+							# SOP S4: "Customer gold is sold at zero. Only company-owned
+							# material and approved charges are billed."
+							#
+							# ``update_making_charges`` has just set ``rate = 0`` for this row
+							# and priced the SUBCONTRACTING charge into ``making_amount``, which
+							# is billed and is deliberately left alone here. Without this guard
+							# the block below overwrote that zero with the full gold rate two
+							# lines later and recomputed ``amount`` from it, so the saved BOM
+							# carried the customer's own metal at full value.
+							#
+							# ``amount`` is zeroed explicitly: ``update_making_charges`` sets
+							# only ``rate``, so a stale non-zero ``amount`` would otherwise
+							# survive into ``total_metal_amount`` below.
+							row.amount = 0
+							row.wastage_amount = 0
+							continue
+
 						customer_metal_purity = frappe.db.sql(
 							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
 							as_dict=True,
@@ -221,11 +257,11 @@ def validate(self, method):
 			if row.bom:
 				bom_doc = frappe.get_doc("BOM", row.bom)
 				for m in bom_doc.metal_detail:
-					# if not m.is_customer_item:
-					update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
+					if not m.is_customer_item:
+						update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
 				for m in bom_doc.finding_detail:
-					# if not m.is_customer_item:
-					update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
+					if not m.is_customer_item:
+						update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
 				bom_doc.diamond_bom_amount = bom_doc.total_diamond_amount
 				total_bom_amount = round(
 					bom_doc.total_bom_amount
