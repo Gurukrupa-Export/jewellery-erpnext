@@ -90,6 +90,7 @@ DOCTYPE_COLUMNS = {
 	"Serial No and Design Code Order": ["setting_type"],
 	"Titan Design Information Sheet": ["setting_type"],
 	"Revise Making Charge Price": ["setting_type"],
+	"Update Making Charge Price": ["setting_type"],
 	"Serial No and Design Code Order Form Detail": ["setting_type"],
 	"Metal Ratio": ["setting_type"],
 	"Product Return Form Item": ["setting_type"],
