@@ -1822,3 +1822,69 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 		doc.get_doc_before_save = lambda: None
 
 		doc._validate_diamond_grade_policy()
+
+
+class TestMaterialRequestOwnershipStampPersists(IntegrationTestCase):
+	"""``make_manufacturing_order`` tags customer-supplied Material Request rows.
+
+	It wrote the value to ``custom_inventory_type``. Material Request Item has no such
+	field -- confirmed in ``tabCustom Field`` on the live kg-gk site as well as here --
+	and Frappe's ``get_valid_dict`` silently drops child keys it does not recognise. So
+	the stamp had never reached the database on any site, and nothing failed to say so.
+
+	These tests assert the MECHANISM rather than the assignment. A test that checked the
+	dict passed to ``append()`` would have passed happily throughout the defect's life:
+	the code always did set the key, it just set one that goes nowhere.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_material_request_item_has_inventory_type(self):
+		"""The field the fix writes to must exist, or the fix is the same bug again."""
+		self.assertTrue(
+			frappe.get_meta("Material Request Item").has_field("inventory_type"),
+			msg="Material Request Item has no inventory_type field",
+		)
+
+	def test_material_request_item_has_no_custom_inventory_type(self):
+		"""The field the defect wrote to. If this ever starts existing, revisit the fix."""
+		self.assertFalse(
+			frappe.get_meta("Material Request Item").has_field("custom_inventory_type"),
+			msg="custom_inventory_type now exists -- the original write may have been "
+			"intentional after all; re-check before trusting this fix",
+		)
+
+	def test_the_ownership_value_survives_get_valid_dict(self):
+		"""The actual failure mode, reproduced both ways round.
+
+		``get_valid_dict`` is what discards the key, so it is what the test exercises --
+		not a mock of it.
+		"""
+		row = frappe.new_doc("Material Request Item")
+		row.update(
+			{
+				"inventory_type": "Customer Stock",
+				"custom_inventory_type": "Customer Stock",
+			}
+		)
+		valid = row.get_valid_dict()
+
+		self.assertEqual(
+			valid.get("inventory_type"),
+			"Customer Stock",
+			msg="the stamp the fix writes did not survive",
+		)
+		self.assertNotIn(
+			"custom_inventory_type",
+			valid,
+			msg="the key the defect wrote is silently dropped -- this is the whole bug",
+		)
+
+	def test_custom_is_customer_item_does_persist(self):
+		"""Why the row looked half-tagged: the sibling key on the same dict is real."""
+		row = frappe.new_doc("Material Request Item")
+		row.update({"custom_is_customer_item": 1})
+
+		self.assertEqual(row.get_valid_dict().get("custom_is_customer_item"), 1)

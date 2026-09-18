@@ -736,7 +736,14 @@ class ParentManufacturingOrder(Document):
 							"custom_is_customer_item": i.get("is_customer_item", 0),
 							"custom_sub_setting_type": i.get("sub_setting_type"),
 							"pcs": i.get("pcs"),
-							"custom_inventory_type": "Customer Stock"
+							# ``inventory_type``, NOT ``custom_inventory_type``. Material
+							# Request Item has no field by the latter name -- verified in
+							# tabCustom Field on kg-gk as well as the test site -- and
+							# ``get_valid_dict`` drops unknown child keys without a word, so
+							# this ownership stamp has never once reached the database.
+							# ``custom_is_customer_item`` above IS a real field and did land,
+							# which is why the row looked half-tagged rather than untagged.
+							"inventory_type": "Customer Stock"
 							if i.get("is_customer_item") == 1
 							else None,
 							"description": i["item_code"]
