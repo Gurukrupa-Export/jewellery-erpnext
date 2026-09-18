@@ -18,6 +18,9 @@ from frappe.utils import (
 	nowdate,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import set_stamping_no
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
@@ -730,8 +733,17 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 			) or (None, None)
 			if batch_inventory_type:
 				inventory_type = batch_inventory_type
+				# BOTH customer-owned classes, not just Customer Goods.
+				#
+				# "Customer Stock" is a first-class ownership class -- ``row_ownership.py``
+				# defines CUSTOMER_INVENTORY_TYPES as both, and the sibling resolver in
+				# ``manufacturing_operation.py`` already accepts both. Testing only
+				# "Customer Goods" here threw the customer away for a Customer Stock batch,
+				# so metal that belongs to someone was carried into manufacture as unowned.
 				customer = (
-					batch_customer if batch_inventory_type == "Customer Goods" else None
+					batch_customer
+					if batch_inventory_type in CUSTOMER_INVENTORY_TYPES
+					else None
 				)
 
 		row_data.append(
