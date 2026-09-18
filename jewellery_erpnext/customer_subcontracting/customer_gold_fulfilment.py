@@ -1815,6 +1815,42 @@ def reverse_receipt(doc, method=None):
 	_reverse_events(doc, list(STOCK_ENTRY_KINDS), STAGE_RM)
 
 
+def reverse_revaluation(doc, method=None):
+	"""``on_cancel`` for Stock Reconciliation -- the mirror of ``revalue_customer_gold``.
+
+	Until this existed, nothing undid a revaluation. ``hooks.py`` registered no ``on_cancel`` for
+	Stock Reconciliation and ``_reverse_events`` was wired only to the delivery and stock-entry
+	paths, so cancelling a revaluation reversed the stock value and the GL -- ERPNext does that
+	itself -- while the custody event stayed on the ledger.
+
+	That left the two books disagreeing, and not harmlessly. The settlement Journal Entry takes
+	its amount from the ledger, so a phantom Revaluation event inflated what was settled against
+	the customer's liability. It also made the revaluation idempotency key unusable as a record of
+	what is actually posted, which is why ``_resolve_revaluation_event_key`` judges a prior event
+	by its source voucher's docstatus rather than by the row's existence.
+
+	Guarded on SCHEMA and deliberately not on the feature flag, for the same reason
+	``reverse_receipt`` is: a revaluation posted while Customer Gold was enabled must stay
+	reversible after it is switched off.
+
+	The events themselves are the authority -- an ordinary Stock Reconciliation wrote none, the
+	query returns nothing, and this is a no-op for every non-customer-gold document.
+	"""
+	if not is_ledger_schema_ready():
+		if has_customer_gold_events(doc):
+			frappe.throw(
+				frappe._(
+					"{0} {1} carries Customer Gold custody events, but this site's "
+					"Customer Gold Ledger Entry schema is incomplete, so they cannot be "
+					"reversed safely. Complete the schema migration before cancelling."
+				).format(doc.doctype, frappe.bold(doc.name)),
+				title=frappe._("Customer Gold Schema Incomplete"),
+			)
+		return
+
+	_reverse_events(doc, [EVENT_REVALUATION], STAGE_RM)
+
+
 def _reverse_events(doc, kinds, stage):
 	"""Write one Reversal per effective event of ``kinds`` on ``doc``.
 

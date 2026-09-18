@@ -2797,6 +2797,16 @@ class TestNextOrderRevaluation(TestFulfilmentLedger):
 			with self.assertRaises(frappe.PermissionError):
 				get_revaluation_history(COMPANY, CUSTOMER)
 
+	def _carrying_value_total(self):
+		"""Net customer gold carrying value on the ledger, reversals included."""
+		return flt(
+			frappe.db.sql(
+				"""SELECT SUM(cg_carrying_value_delta) FROM `tabCustomer Gold Ledger Entry`
+				   WHERE company=%s AND customer=%s AND docstatus < 2""",
+				(COMPANY, CUSTOMER),
+			)[0][0]
+		)
+
 	def test_revaluing_the_same_batch_twice_is_refused(self):
 		"""The defect: the second call posted the delta again against metal that never moved.
 
@@ -2891,6 +2901,128 @@ class TestNextOrderRevaluation(TestFulfilmentLedger):
 			(7800.00 - 7164.83) * 2,
 			places=2,
 			msg="a revaluation to a NEW rate was blocked; only exact repeats should be",
+		)
+
+	def test_cancelling_the_reconciliation_reverses_the_custody_event(self):
+		"""Cancelling a revaluation must undo it in BOTH books, not just the stock one.
+
+		ERPNext reverses the stock value and the GL itself. Nothing reversed the custody event:
+		``hooks.py`` registered no ``on_cancel`` for Stock Reconciliation and ``_reverse_events``
+		was wired only to the delivery and stock-entry paths. The event stayed, and the settlement
+		Journal Entry takes its amount from the ledger -- so a cancelled revaluation still inflated
+		what was settled against the customer.
+		"""
+		batch = self._stocked_batch(qty=2)
+		before = self._carrying_value_total()
+
+		sr, delta = self._revalue(batch, new_rate=7500.00)
+		self.assertAlmostEqual(delta, 670.34, places=2)
+		self.assertAlmostEqual(self._carrying_value_total(), before + 670.34, places=2)
+
+		frappe.get_doc("Stock Reconciliation", sr).cancel()
+
+		self.assertAlmostEqual(
+			self._carrying_value_total(),
+			before,
+			places=2,
+			msg="the custody ledger still carries a revaluation whose document was cancelled",
+		)
+
+	def test_cancelling_unblocks_the_same_revaluation(self):
+		"""The idempotency guard must not outlive the posting it is guarding.
+
+		The guard refuses on the ledger row. The row survives its Stock Reconciliation being
+		cancelled -- ``Customer Gold Ledger Entry`` is ``is_submittable: 0``, so frappe's
+		``check_if_doc_is_linked`` never blocks that cancel. Judged on the row alone, cancelling a
+		revaluation would permanently bar that batch from ever being revalued to that rate on that
+		date again, with no way out but a manual delete.
+		"""
+		batch = self._stocked_batch(qty=2)
+		sr, _ = self._revalue(batch, new_rate=7500.00)
+
+		# Control: while it is live, the repeat is still refused.
+		with self.assertThrowsContaining("already been revalued"):
+			self._revalue(batch, new_rate=7500.00)
+
+		frappe.get_doc("Stock Reconciliation", sr).cancel()
+
+		_, delta = self._revalue(batch, new_rate=7500.00)
+		self.assertAlmostEqual(
+			delta,
+			670.34,
+			places=2,
+			msg="a legitimate re-revaluation after a cancellation was refused",
+		)
+
+	def test_the_retry_after_a_cancel_posts_the_delta_exactly_once(self):
+		"""The whole point: unblocking the retry must not double-count it.
+
+		Reversal-on-cancel and the retry are two halves of one fix. With only the retry, the
+		cancelled event would still be on the ledger and the liability would carry Rs.670.34 twice
+		for one price change -- the very defect the idempotency guard was added to stop, reached by
+		a different route.
+		"""
+		batch = self._stocked_batch(qty=2)
+		before = self._carrying_value_total()
+
+		sr, _ = self._revalue(batch, new_rate=7500.00)
+		frappe.get_doc("Stock Reconciliation", sr).cancel()
+		self._revalue(batch, new_rate=7500.00)
+
+		self.assertAlmostEqual(
+			self._carrying_value_total(),
+			before + 670.34,
+			places=2,
+			msg="the liability moved twice for one price change",
+		)
+
+	def test_the_retry_is_allocated_its_own_event_key(self):
+		"""``cg_event_key`` is UNIQUE, so the retry cannot reuse the superseded key.
+
+		Reusing it would submit the Stock Reconciliation and then fail the ledger insert on the
+		unique index -- leaving a document that moved stock value with no custody event to explain
+		it. That is the exact state the pre-check exists to prevent, so a dead attempt consumes its
+		key and the retry takes the next slot.
+		"""
+		batch = self._stocked_batch(qty=2)
+		sr, _ = self._revalue(batch, new_rate=7500.00)
+		frappe.get_doc("Stock Reconciliation", sr).cancel()
+		self._revalue(batch, new_rate=7500.00)
+
+		keys = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"batch_no": batch, "cg_event_kind": "Revaluation"},
+			pluck="cg_event_key",
+		)
+		self.assertEqual(
+			len(keys),
+			len(set(keys)),
+			msg="two Revaluation events share an event key; the UNIQUE index would have fired",
+		)
+		self.assertGreaterEqual(len(keys), 2)
+
+	def test_cancelling_an_ordinary_reconciliation_is_a_no_op(self):
+		"""The hook fires for EVERY Stock Reconciliation on the site, not just ours.
+
+		One that wrote no customer gold events must cancel exactly as it did before.
+		"""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			reverse_revaluation,
+		)
+
+		batch = self._stocked_batch(qty=2)
+		sr, _ = self._revalue(batch, new_rate=7500.00)
+		doc = frappe.get_doc("Stock Reconciliation", sr)
+		doc.cancel()
+
+		before = self._carrying_value_total()
+		# Second callback, as a repeated cancellation hook would deliver it.
+		reverse_revaluation(doc)
+		self.assertAlmostEqual(
+			self._carrying_value_total(),
+			before,
+			places=2,
+			msg="a repeated cancellation callback wrote a second reversal",
 		)
 
 	def test_return_and_revaluation_use_opposite_rates(self):
