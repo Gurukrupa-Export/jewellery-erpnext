@@ -51,7 +51,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.company = "Test_Company"
 		man_plan.branch = self.branch
 		if man_plan.setting_type:
-			man_plan.setting_type = "Close"
+			man_plan.setting_type = "Nova Glow"
 
 		# "No" must leave the full pending qty on the manufacturing side.
 		self.assertTrue(man_plan.manufacturing_plan_table)
@@ -109,7 +109,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.branch = self.branch
 		man_plan.company = "Test_Company"
 		if man_plan.setting_type:
-			man_plan.setting_type = "Close"
+			man_plan.setting_type = "Nova Glow"
 
 		# The fetch itself must flag the rows. Asserting this before any manual fix-up is the
 		# point: hand-setting row.subcontracting here is what used to hide the defect.
