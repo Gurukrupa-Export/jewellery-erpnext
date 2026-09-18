@@ -565,8 +565,12 @@ function set_child_table_batch_filter(frm) {
 // MOP Settings.enforce_full_casting_tree_reissue is ticked; this button is shown either way,
 // since assembling the full tree is useful regardless of whether the rule is enforced.
 function set_child_table_item_filter(frm) {
+	// The first argument Frappe passes here is the parent DOC, not the form --
+	// link.js calls get_query((this.frm && this.frm.doc) || this.doc, ...). Naming
+	// it `frm` shadowed the enclosing form and made frm.doc.operation unreachable;
+	// the body only ever used locals[cdt][cdn], so renaming it changes nothing else.
 	frm.fields_dict["manually_book_loss_details"].grid.get_field("item_code").get_query = function (
-		frm,
+		doc,
 		cdt,
 		cdn
 	) {
@@ -576,6 +580,9 @@ function set_child_table_item_filter(frm) {
 			filters: {
 				manufacturing_work_order: d.manufacturing_work_order,
 				manufacturing_operation: d.manufacturing_operation,
+				// Read off the live form, so an operation changed after refresh is
+				// picked up. get_manual_loss_items fails open when this is blank.
+				operation: frm.doc.operation,
 			},
 		};
 	};
