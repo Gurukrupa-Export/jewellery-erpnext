@@ -4377,8 +4377,16 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def _run(self, mop_log_rows, gwt, r_gwt, booking_map=None, category_map=None):
-		doc = _DocStub()
+	def _run(
+		self,
+		mop_log_rows,
+		gwt,
+		r_gwt,
+		booking_map=None,
+		category_map=None,
+		manual_rows=None,
+	):
+		doc = _DocStub(manual_rows=manual_rows)
 		patches = [
 			patch(f"{EIR}.frappe.db.get_all", return_value=mop_log_rows),
 			patch(
@@ -4498,18 +4506,83 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 		self.assertEqual(flt(by_item[CLASP]["proportionally_loss"], 3), 0.286)
 		self.assertEqual(flt(sum(e["proportionally_loss"] for e in result), 3), 1.000)
 
-	def test_all_eligible_rows_blocked_throws(self):
-		"""Nothing left to book against => a clear throw, not a silent empty table."""
+	def test_all_eligible_rows_blocked_books_nothing_without_throwing(self):
+		"""An emptied pool is not an error on the save path.
+
+		This used to throw here, testing the RAW gross_wt - received_gross_wt
+		before ``total_mannual_loss`` had been computed 57 lines further down. A
+		shortfall the operator had already hand-booked in carats therefore could
+		not suppress it and the document could not be saved at all. The
+		submit-time ``validate_loss_gates_left_nothing_to_book`` explains an empty
+		table instead, and stays silent once either loss table is populated.
+		"""
 		rows = [_row_loss(CHAIN, "B-F", 20.0)]
-		with self.assertRaises(ValidationError) as ctx:
-			self._run(
-				rows,
-				gwt=20.0,
-				r_gwt=19.0,
-				booking_map={"Chains": 0},
-				category_map={CHAIN: "Chains"},
+		result = self._run(
+			rows,
+			gwt=20.0,
+			r_gwt=19.0,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+		)
+		self.assertEqual(result, [])
+
+	def test_manual_booking_lets_a_fully_blocked_pool_save(self):
+		"""The regression: 0.010 ct covers a 0.002 g shortfall exactly.
+
+		Mirrors EMP-IR-Labh-2026-12933 -- every eligible row gated out, and the
+		operator has already booked the whole shortfall by hand against a diamond
+		the operation still allows. That must save.
+		"""
+		manual = [
+			frappe._dict(
+				{
+					"item_code": "D-NT-RO-4-+12.5-13",
+					"manufacturing_work_order": "MWO-1",
+					"stock_uom": "Carat",
+					"proportionally_loss": 0.010,
+				}
 			)
-		self.assertIn("Chains", str(ctx.exception))
+		]
+		rows = [_row_loss(CHAIN, "B-F", 20.0)]
+		result = self._run(
+			rows,
+			gwt=4.787,
+			r_gwt=4.785,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+			manual_rows=manual,
+		)
+		self.assertEqual(result, [])
+
+	def test_manual_carat_row_converts_without_stock_uom(self):
+		"""``total_mannual_loss`` keys on the item code, not the fetched UOM.
+
+		``stock_uom`` is a read_only ``fetch_from`` field that is not ``reqd``, so
+		a row written with ``flags.ignore_links`` or straight through
+		``frappe.db.set_value`` carries none. Counting that carat qty as grams
+		would be a silent 5x under-deduction.
+		"""
+		manual = [
+			frappe._dict(
+				{
+					"item_code": "D-NT-RO-4-+12.5-13",
+					"manufacturing_work_order": "MWO-1",
+					"stock_uom": None,
+					"proportionally_loss": 0.500,
+				}
+			)
+		]
+		rows = [_row_loss(METAL, "B-M", 20.0)]
+		# Shortfall 0.200 g. 0.500 ct = 0.100 g, so 0.100 g is left for the metal
+		# row. Read as 0.500 *grams* the residual would be negative and the metal
+		# would book nothing -- the two readings give different answers here, which
+		# is what makes this a real guard.
+		result = self._run(rows, gwt=10.302, r_gwt=10.102, manual_rows=manual)
+		self.assertEqual(
+			flt(sum(e["proportionally_loss"] for e in result), 3),
+			0.100,
+			"a blank stock_uom must not turn 0.500 ct into 0.500 g",
+		)
 
 	def test_gain_on_receive_does_not_throw_when_all_blocked(self):
 		"""r_gwt > gwt is not a shortfall, so there is nothing to attribute."""

@@ -60,8 +60,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_sli
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.material_loss_gate import (
 	get_blocked_loss_variants,
 	get_variant_of_map,
+	validate_loss_gates_left_nothing_to_book,
 	validate_loss_rows_against_material_gate,
-	validate_material_gate_left_nothing_to_book,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.mould_utils import (
 	create_mould,
@@ -83,6 +83,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_cas
 	validate_casting_tree,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
+	get_loss_qty_in_grams,
 	validate_duplication_and_gr_wt,
 	validate_employee_ir_receive_delay,
 	validate_loss_qty,
@@ -137,7 +138,7 @@ class EmployeeIR(Document):
 		# per-material flags are what emptied the automatic loss table, the operator
 		# gets a message naming the flag instead of the generic "no loss details
 		# found".
-		validate_material_gate_left_nothing_to_book(self)
+		validate_loss_gates_left_nothing_to_book(self)
 		validate_loss_tables_required(self)
 		# Re-checked at submit, not just at validate: validate_process_loss and
 		# validate_manually_book_loss_details both early-return once docstatus != 0,
@@ -1043,48 +1044,25 @@ class EmployeeIR(Document):
 			# Keep only the latest qty snapshot per (item_code, batch_no).
 			# qty_after_transaction_batch_based is a running balance so the last
 			# row in creation order is the current stock for that batch.
+			# Neither gate throws here, even when between them they empty the pool.
+			# Saving must always succeed: the operator may still be about to hand-book
+			# the shortfall against a material this operation allows, and refusing the
+			# save would stop them reaching the grid to do it. The submit-time
+			# validate_loss_gates_left_nothing_to_book explains an empty table, and it
+			# stays silent once either loss table is populated.
 			latest_per_batch = {}
-			blocked_categories = set()
 			for child in mop_balance_table:
 				if child["item_code"][0] not in ["M", "F"]:
 					continue
+				# Per-finding-category gate.
 				if is_loss_booking_blocked(
 					child["item_code"], booking_map, category_map
 				):
-					blocked_categories.add(category_map.get(child["item_code"]))
 					continue
-				# Blanket per-material flag: drop the row silently and let the
-				# survivors absorb its share. No throw here even when that empties
-				# the pool — saving must always succeed; the submit-time
-				# validate_material_gate_left_nothing_to_book explains an empty table.
+				# Blanket per-material flag.
 				if variant_map.get(child["item_code"]) in blocked_variants:
 					continue
 				latest_per_batch[(child["item_code"], child["batch_no"])] = child
-
-			# Every eligible row was gated out, so the shortfall has nothing to be
-			# booked against. Fail here naming the cause rather than letting
-			# validate_loss_tables_required raise its generic "no loss details found".
-			# Only a shortfall needs attributing; a receive that gained weight books
-			# no loss rows either way.
-			if (
-				blocked_categories
-				and not latest_per_batch
-				and flt(gwt, 3) > flt(r_gwt, 3)
-			):
-				frappe.throw(
-					_(
-						"Manufacturing Work Order {0}: the receive is short by {1} g but every "
-						"item in the operation balance belongs to a finding category with Loss "
-						"Booking turned off ({2}) on operation <b>{3}</b>. There is nothing left "
-						"to book the loss against — either receive the full issued weight, or "
-						"tick Loss Booking for one of those categories on the Department Operation."
-					).format(
-						mwo,
-						flt(flt(gwt, 3) - flt(r_gwt, 3), 3),
-						", ".join(sorted(c for c in blocked_categories if c)),
-						doc.operation,
-					)
-				)
 
 			total_qty = 0
 			for key, child in latest_per_batch.items():
@@ -1123,16 +1101,21 @@ class EmployeeIR(Document):
 
 			# -------------------------------------------------------------------------
 			# Prepare data and calculation proportionally devide each row based on each qty.
+			# Normalised by item-code prefix, not by row.stock_uom: stock_uom is a
+			# read_only fetch_from field that is not reqd, so a row written with
+			# flags.ignore_links, with a blank item_code, or straight through
+			# frappe.db.set_value carries no UOM — and `!= "Carat"` would then count a
+			# carat qty as grams, a silent 5x under-deduction. get_loss_qty_in_grams
+			# keys on the item_code Link itself, which is reqd, and is already what
+			# validate_loss_tables_required and validate_manually_book_loss_details use
+			# to gate this same document.
 			total_mannual_loss = 0
 			if len(doc.manually_book_loss_details) > 0:
 				for row in doc.manually_book_loss_details:
 					if row.manufacturing_work_order == mwo:
-						loss_qty = (
-							row.proportionally_loss
-							if row.stock_uom != "Carat"
-							else (row.proportionally_loss * 0.2)
+						total_mannual_loss += get_loss_qty_in_grams(
+							row.item_code, row.proportionally_loss
 						)
-						total_mannual_loss += loss_qty
 
 			loss = flt(flt(gwt, 3) - flt(r_gwt, 3) - flt(total_mannual_loss, 3), 3)
 
