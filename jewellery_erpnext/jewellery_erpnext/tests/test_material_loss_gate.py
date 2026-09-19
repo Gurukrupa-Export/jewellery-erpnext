@@ -40,8 +40,8 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.material_loss_gate import (
 	get_blocked_loss_variants,
 	is_variant_loss_blocked,
+	validate_loss_gates_left_nothing_to_book,
 	validate_loss_rows_against_material_gate,
-	validate_material_gate_left_nothing_to_book,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
 	EmployeeIR,
@@ -267,7 +267,7 @@ class TestBookMetalLossMaterialGate(IntegrationTestCase):
 
 		On a metal-only operation with Don't Allow Loss Metal ticked this is the
 		normal case, not an edge case -- throwing here made the document
-		unsaveable. The submit-time validate_material_gate_left_nothing_to_book is
+		unsaveable. The submit-time validate_loss_gates_left_nothing_to_book is
 		what explains the empty table.
 		"""
 		rows = [_mop_row(METAL, "B-M", 20.0)]
@@ -363,16 +363,23 @@ class TestValidateLossRowsAgainstMaterialGate(IntegrationTestCase):
 
 
 class TestMaterialGateLeftNothingToBook(IntegrationTestCase):
-	"""The submit-time explanation for an automatic table the flags emptied."""
+	"""The submit-time explanation for an automatic table the loss gates emptied.
+
+	Covers both gates: the blanket ``dont_allow_loss_*`` flags and the older
+	per-finding-category table. Either can be the half that removed the last
+	eligible row, so the message has to be able to name either or both.
+	"""
 
 	@classmethod
 	def setUpClass(cls):
 		pass
 
-	def _run(self, doc, blocked, balance_items):
+	def _run(self, doc, blocked, balance_items, booking_map=None, category_map=None):
 		patches = [
 			patch(f"{GATE}.get_blocked_loss_variants", return_value=blocked),
 			patch(f"{GATE}.get_variant_of_map", return_value=VARIANTS),
+			patch(f"{GATE}.get_loss_booking_map", return_value=booking_map or {}),
+			patch(f"{GATE}.get_finding_category_map", return_value=category_map or {}),
 			patch(
 				f"{GATE}.frappe.get_all",
 				return_value=[{"item_code": i} for i in balance_items],
@@ -381,7 +388,7 @@ class TestMaterialGateLeftNothingToBook(IntegrationTestCase):
 		for p in patches:
 			p.start()
 			self.addCleanup(p.stop)
-		validate_material_gate_left_nothing_to_book(doc)
+		validate_loss_gates_left_nothing_to_book(doc)
 
 	@staticmethod
 	def _doc(gross=20.0, received=19.0, auto=None, manual=None):
@@ -407,8 +414,51 @@ class TestMaterialGateLeftNothingToBook(IntegrationTestCase):
 		self.assertIn("MWO-1", message)
 		self.assertIn("Manually Book Loss Details", message)
 
-	def test_silent_when_an_eligible_item_survived_the_gate(self):
-		"""Then the empty table has some other cause -- do not blame the flags."""
+	def test_message_quotes_the_carat_equivalent(self):
+		"""The baseline is grams; a D/G manual row is carats. Give them both."""
+		with self.assertRaises(ValidationError) as ctx:
+			self._run(self._doc(gross=4.787, received=4.785), {"M"}, [METAL])
+
+		message = str(ctx.exception)
+		self.assertIn("0.002 g", message)
+		self.assertIn("0.01 ct", message)
+
+	def test_names_the_finding_category_when_that_is_the_cause(self):
+		"""The per-category gate alone must be reported, not just the flags."""
+		with self.assertRaises(ValidationError) as ctx:
+			self._run(
+				self._doc(),
+				set(),
+				[CHAIN],
+				booking_map={"Chains": 0},
+				category_map={CHAIN: "Chains"},
+			)
+
+		message = str(ctx.exception)
+		self.assertIn("Chains", message)
+
+	def test_names_both_gates_when_each_blocked_a_different_item(self):
+		"""The misattribution regression.
+
+		The metal row is removed by a blanket flag and the chain by a finding
+		category. Before this, only the category was named and the ticked flag
+		that removed the last metal row was invisible to the operator.
+		"""
+		with self.assertRaises(ValidationError) as ctx:
+			self._run(
+				self._doc(),
+				{"M"},
+				[METAL, CHAIN],
+				booking_map={"Chains": 0},
+				category_map={CHAIN: "Chains"},
+			)
+
+		message = str(ctx.exception)
+		self.assertIn("Don't Allow Loss Metal", message)
+		self.assertIn("Chains", message)
+
+	def test_silent_when_an_eligible_item_survived_both_gates(self):
+		"""Then the empty table has some other cause -- do not blame the gates."""
 		self._run(self._doc(), {"M"}, [METAL, CHAIN])
 
 	def test_silent_when_loss_was_booked_automatically(self):
@@ -420,7 +470,7 @@ class TestMaterialGateLeftNothingToBook(IntegrationTestCase):
 	def test_silent_when_there_is_no_shortfall(self):
 		self._run(self._doc(gross=20.0, received=20.0), {"M"}, [METAL])
 
-	def test_silent_when_nothing_is_ticked(self):
+	def test_silent_when_no_gate_is_configured(self):
 		self._run(self._doc(), set(), [METAL])
 
 	def test_silent_for_issue(self):
