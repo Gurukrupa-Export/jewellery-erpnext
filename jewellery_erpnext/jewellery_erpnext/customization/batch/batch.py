@@ -274,6 +274,91 @@ def _resolve_metal_purity(item_code):
 		return 0.0
 
 
+def _source_batch_rates(rows):
+	"""``{batch_no: {custom_metal_rate, custom_alloy_rate}}`` for every origin row, in one query."""
+	names = {row.batch_no for row in rows if row.batch_no}
+	if not names:
+		return {}
+
+	return {
+		b.name: b
+		for b in frappe.get_all(
+			"Batch",
+			filters={"name": ("in", list(names))},
+			fields=["name", "custom_metal_rate", "custom_alloy_rate"],
+		)
+	}
+
+
+def _origin_row_rate(row, fieldname, batch_rates):
+	"""The rate to blend for one origin row: the SOURCE BATCH's own pool rate first.
+
+	``row.rate`` is a COPY of ``Serial and Batch Entry.incoming_rate``, frozen by
+	``serial_and_batch_bundle.doc_events.utils.update_parent_batch_id`` on bundle ``after_insert``.
+	It is a read of a value that is not final yet.
+
+	``StockEntry.on_submit`` creates the bundles (``make_bundle_using_old_serial_batch_fields``)
+	BEFORE ``update_stock_ledger`` submits and prices them, and ERPNext does not price a Stock Entry
+	bundle while it is a draft (``serial_and_batch_bundle.py:140-142``). So any produced row that
+	already carries a ``batch_no`` at submit -- which is every batch
+	``customer_subcontracting.batch_rename`` mints for a customer lane, and deliberately NOT what a
+	Regular lane gets -- freezes 0 while the real rate lands milliseconds later. Measured on kg-gk:
+	origin rows written at 12:01:55.032029, the rates they wanted at .156075 and .174223.
+
+	That is why the frozen copy is 0 on every customer-lane origin row on the site while 33,512 of
+	33,784 rows overall are fine: it is per-flow, not per-run, and for conversions it never works.
+
+	The source Batch's maintained rate has no such timing -- it was stamped one voucher earlier and
+	is not written by this transaction. Preferring it also converges this blend with
+	``batch/doc_events/utils.carry_rates_from_source_batches``, which performs the identical
+	two-pool blend for hand-built batches from exactly this input, and which is demonstrably the
+	path that produces correct numbers here.
+
+	The frozen ledger rate stays as the fallback, so a source batch with no maintained rate blends
+	exactly as it does today.
+	"""
+	rate = flt((batch_rates.get(row.batch_no) or {}).get(fieldname))
+	return rate or flt(row.rate)
+
+
+def _stamp_blended_rate(doc, fieldname, value, pool_qty):
+	"""Write a blended pool rate only when the blend actually carries information.
+
+	Two refusals, each of which used to write a 0 over a correct rate:
+
+	* An EMPTY POOL is uncomputable, not zero. ``metal_qty``/``alloy_qty`` count the rows that
+	  landed in the pool, so 0 means the lane consumed nothing of that kind. A metal-only
+	  conversion says nothing about the target's alloy rate and must not erase the one the minting
+	  row stamped.
+	* A pool that BLENDS TO 0 over a rate that is already set is missing information, never a
+	  valuation. The ways to reach it are an unpriced draft bundle (see ``_origin_row_rate``), a
+	  source batch that never got a rate, or a deleted source. In all three the rate
+	  ``batch_rename.create_child_batches`` stamped at ``before_submit`` is the better number.
+
+	Close to ``batch/doc_events/utils._can_stamp_rate``'s contract -- "an empty field is fillable;
+	a set rate is not clobbered" -- but deliberately not a call to it, because that helper is
+	stricter in the one direction this function must stay permissive in: with a rate already
+	stored and the batch no longer new, it refuses EVERY rewrite, including a legitimate non-zero
+	blend. That is right for the ``validate``-time stamper it guards, whose job is to fill a new
+	batch once; it would defeat this one, whose job is to restate the rate from the sources each
+	time they change. Here only an UNINFORMATIVE write is refused.
+
+	(An earlier version of this comment justified the duplication by claiming ``__islocal`` is
+	still set while ``on_update`` runs inside ``insert()``. That is false -- ``db_insert`` clears
+	it at ``base_document.py:802``, before ``run_post_save_methods`` at ``document.py:513`` -- so
+	``is_new()`` is already False here. The real reason is the paragraph above.)
+
+	A non-zero blend still overwrites. Only 0-over-non-zero is refused.
+	"""
+	if not pool_qty:
+		return
+
+	if not flt(value) and flt(doc.get(fieldname)):
+		return
+
+	doc.db_set(fieldname, value)
+
+
 def on_update(doc, method):
 	if not doc.flags.is_update_origin_entries:
 		return
@@ -307,25 +392,32 @@ def on_update(doc, method):
 	# converted to the target purity (Batch Rate = source rate x target_purity / 100),
 	# except when source and target purity match, where the rate is inherited
 	# unchanged. Alloy sources are blended separately into custom_alloy_rate.
+	# Resolved per pool, so an alloy source's rate is read off ``custom_alloy_rate`` and a metal
+	# source's off ``custom_metal_rate`` -- the two pools must not cross-contaminate.
+	batch_rates = _source_batch_rates(doc.custom_origin_entries)
+
 	alloy_value = alloy_qty = 0.0
 	metal_value = metal_qty = 0.0
 
 	for row in doc.custom_origin_entries:
 		row_qty = flt(row.qty) or 1.0
 		if _is_alloy(row.item_code):
-			alloy_value += flt(row.rate) * row_qty
+			alloy_value += (
+				_origin_row_rate(row, "custom_alloy_rate", batch_rates) * row_qty
+			)
 			alloy_qty += row_qty
 		else:
 			source_purity = _resolve_metal_purity(row.item_code)
+			source_rate = _origin_row_rate(row, "custom_metal_rate", batch_rates)
 			if target_purity and abs(source_purity - target_purity) > PURITY_TOLERANCE:
-				converted_rate = (flt(row.rate) * target_purity) / 100
+				converted_rate = (source_rate * target_purity) / 100
 			else:
-				converted_rate = flt(row.rate)
+				converted_rate = source_rate
 			metal_value += converted_rate * row_qty
 			metal_qty += row_qty
 
 	alloy_rate = (alloy_value / alloy_qty) if alloy_qty else 0.0
 	metal_rate = (metal_value / metal_qty) if metal_qty else 0.0
 
-	doc.db_set("custom_alloy_rate", alloy_rate)
-	doc.db_set("custom_metal_rate", metal_rate)
+	_stamp_blended_rate(doc, "custom_alloy_rate", alloy_rate, alloy_qty)
+	_stamp_blended_rate(doc, "custom_metal_rate", metal_rate, metal_qty)
