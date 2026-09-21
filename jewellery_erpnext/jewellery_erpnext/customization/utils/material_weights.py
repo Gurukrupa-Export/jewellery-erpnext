@@ -6,12 +6,42 @@
 Fills six header fields from the item rows, bucketed by the MATERIAL FAMILY each row
 belongs to rather than by the item itself::
 
-    custom_total_metal_weight     <- M, ML      row qty, grams
-    custom_total_finding_weight   <- F, FL      row qty, grams
-    custom_total_diamond_weight   <- D          row qty, carats -> grams
-    custom_total_gemstone_weight  <- G          row qty, carats -> grams
+    custom_total_metal_weight     <- M, ML      row qty, GRAMS
+    custom_total_finding_weight   <- F, FL      row qty, GRAMS
+    custom_total_diamond_weight   <- D          row qty, CARATS
+    custom_total_gemstone_weight  <- G          row qty, CARATS
     custom_total_diamond_pcs      <- D          row pcs
     custom_total_gemstone_pcs     <- G          row pcs
+
+**Each total carries the unit of the rows it sums, and nothing is converted.** Metal and
+finding rows are Gram, so those totals are grams; diamond and gemstone rows are Carat, so
+those totals are carats. A header field is always the plain sum of the grid column above it
+-- add the qty column up by hand and the header number comes back. Reporting 0.564 ct of
+diamond as 0.113 g made the header disagree with every row it claimed to describe, and at
+precision 3 it also threw away a digit: MAT-STE-99993's 0.029 ct landed as 0.006 g.
+
+Four fields, two units, bare labels -- a deliberate repeat of the block they mirror.
+``Stock Entry Detail.custom_bom_diamond_weight`` already carries a carat figure under the
+bare label "Diamond Weight" on this very doctype, and
+``patches/add_fg_serial_bom_weight_fields`` says why: "Units follow the BOM columns these
+mirror: gross/metal/finding are grams, diamond/gemstone are carats." Carat is the PRIMARY
+stored unit for stones app-wide and grams the derived twin -- ``utils.carat_to_gram``, and
+``mop_log.recalculate_manufacturing_operation_weights``, which sums ``diamond_wt`` raw and
+only then derives ``diamond_wt_in_gram`` from the total.
+
+**No uom is read; a D or G row is summed exactly as keyed.** Every carat tally in the app
+already works that way, over this same material: ``mop_log`` does a bare
+``buckets[f"{prefix}_wt"] += qty`` and ``manufacturing_operation.get_material_wt`` a bare
+``diamond_wt += qty``, neither looking at the row's uom. The ``IF(uom = 'Carat', qty * 0.2,
+qty)`` branch does exist -- ``department_ir`` and ``SerialNumberCreator._compute_total_weight``
+-- but every instance of it produces GRAMS. There is no gram -> carat branch anywhere in the
+app and this is not the place to invent one: ``utils.gram_to_carat`` is barred from the use
+in as many words ("never feed the result back into a stored weight"), and its one call site
+is a message string. All 456,861 D and 53,393 G rows on the live site are ``Carat`` on both
+``uom`` and ``stock_uom``, so a D row keyed in Gram contradicts its own ``Item.stock_uom``
+and its Stock Ledger Entry is already wrong. Scaling such a row by 5 here would leave a
+plausible header sitting on a broken ledger; summing it as given leaves a header that still
+equals its grid, and a row that still looks wrong in it.
 
 **Every row counts, whichever side of the entry it is on.** Consume, produce and transfer
 rows all contribute, so a Repack that turns 1.46 g of metal into 1.46 g of findings reports
@@ -30,14 +60,14 @@ bucket on ``item_code[0]``, and copying that here would be a bug: ``MU00122`` an
 start with ``M`` and would be counted as metal. The explicit dict is also what makes ``ML`` /
 ``FL`` a deliberate inclusion rather than an accident of string prefixes.
 
-Carat conversion happens ONCE, on the bucket total, per ``utils.carat_to_gram`` and the drift
-note in ``mop_log.recalculate_manufacturing_operation_weights``: rounding every row before
-summing made 0.497 ct + 0.067 ct come to 0.112 g where the carat total converts to 0.113 g.
+With nothing to convert, ``carat_to_gram``'s "convert once, on the total" rule collapses to
+"ROUND once, on the total" -- the single ``flt`` at the end of :func:`material_totals` is the
+only rounding left in the function. That still bites: ``Stock Entry Detail.qty`` is
+``decimal(21,9)`` however the form displays it, so three 0.1234 ct rows report 0.370, not the
+0.369 that rounding each row before summing would give.
 """
 
 from frappe.utils import cint, flt
-
-from jewellery_erpnext.utils import carat_to_gram
 
 # Whole-value match, never a prefix -- see the module docstring.
 VARIANT_BUCKETS = {
@@ -49,12 +79,21 @@ VARIANT_BUCKETS = {
 	"G": "gemstone",
 }
 
-# The families measured in carats, and therefore the only ones that carry a pcs count.
+# The families measured in carats rather than grams, and therefore the only ones that carry a
+# pcs count. One tuple for both facts because they have one cause: stones are counted as well
+# as weighed, metal and findings are only weighed.
 STONE_BUCKETS = ("diamond", "gemstone")
 
-CARAT_UOM = "Carat"
+# 3 dp for grams and carats alike: Stock Entry Detail.qty displays at 3, and the four weight
+# Custom Fields leave `precision` blank, which resolves to System Settings float_precision --
+# pinned to 3 by patches/ensure_float_precision_three.
 WEIGHT_PRECISION = 3
 
+# NEVER sum these four together. Metal and finding are grams, diamond and gemstone are
+# carats, so `metal + finding + diamond + gemstone` is meaningless. A gross weight is
+# `metal + finding + carat_to_gram(diamond) + carat_to_gram(gemstone)` -- the identity
+# `mop_log.update_wt_detail` and `manufacturing_operation.get_material_wt` both build from
+# the `*_wt_in_gram` twins rather than from the carat figures.
 TARGET_FIELDS = {
 	"metal": "custom_total_metal_weight",
 	"finding": "custom_total_finding_weight",
@@ -83,11 +122,12 @@ def _bucket(row):
 def material_totals(rows):
 	"""``{metal, finding, diamond, gemstone, diamond_pcs, gemstone_pcs}`` for ``rows``.
 
-	Weights are grams at precision 3; pcs are integers. Pure -- no document, no DB read
-	beyond the rounding mode ``flt`` consults -- so the arithmetic can be tested directly.
+	Metal and finding are GRAMS, diamond and gemstone are CARATS -- each bucket in the unit
+	its own rows are keyed in, never converted. Weights are at precision 3; pcs are integers.
+	Pure -- no document, no DB read beyond the rounding mode ``flt`` consults -- so the
+	arithmetic can be tested directly.
 	"""
-	grams = {"metal": 0.0, "finding": 0.0, "diamond": 0.0, "gemstone": 0.0}
-	carats = {"diamond": 0.0, "gemstone": 0.0}
+	weights = {"metal": 0.0, "finding": 0.0, "diamond": 0.0, "gemstone": 0.0}
 	pcs = {"diamond": 0, "gemstone": 0}
 
 	for row in rows or []:
@@ -95,26 +135,19 @@ def material_totals(rows):
 		if not bucket:
 			continue
 
-		qty = flt(_get(row, "qty"))
+		# Taken as keyed, with no look at `uom` -- the module docstring carries the argument
+		# for why there is no gram -> carat branch here and why adding one would be the
+		# app's first.
+		weights[bucket] += flt(_get(row, "qty"))
+
 		if bucket in STONE_BUCKETS:
-			# Diamond and gemstone are Carat on every row on the live site, but a row that
-			# is not carries a weight already -- scaling it by 0.2 would invent a loss.
-			if (_get(row, "uom") or _get(row, "stock_uom")) == CARAT_UOM:
-				carats[bucket] += qty
-			else:
-				grams[bucket] += qty
 			# pcs is a Data field on Stock Entry Detail, so it arrives as a string.
 			# Summed as given: this is a document total, not a running balance, so the
 			# negative-clamping mop_log applies to a ledger has no place here.
 			pcs[bucket] += cint(_get(row, "pcs"))
-		else:
-			grams[bucket] += qty
 
-	# Convert once, on the total -- never per row.
-	for bucket in STONE_BUCKETS:
-		grams[bucket] += carat_to_gram(carats[bucket], WEIGHT_PRECISION)
-
-	totals = {key: flt(value, WEIGHT_PRECISION) for key, value in grams.items()}
+	# Rounded once, on the total, never per row -- see the last docstring paragraph.
+	totals = {key: flt(value, WEIGHT_PRECISION) for key, value in weights.items()}
 	totals["diamond_pcs"] = pcs["diamond"]
 	totals["gemstone_pcs"] = pcs["gemstone"]
 	return totals
