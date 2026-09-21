@@ -195,6 +195,19 @@ def validate(self, method):
 		# payment_terms_data = update_si_data(self )
 		# update_payment_terms(self, payment_terms_data)
 		self.calculate_taxes_and_totals()
+		totals = dict.fromkeys(
+			(
+				"custom_diamond_pcs",
+				"custom_gemstone_pcs",
+				"custom_other_weight",
+				"custom_metal_weight",
+				"custom_finding_weight",
+				"custom_diamond_weight",
+				"custom_gemstone_weight",
+				"custom_gross_weight",
+			),
+			0,
+		)
 		for row_s in self.items:
 			if row_s.bom:
 				bom_doc = frappe.get_doc("BOM", row_s.bom)
@@ -206,20 +219,22 @@ def validate(self, method):
 				row_s.custom_diamond_weight = bom_doc.total_diamond_weight_in_gms
 				row_s.custom_gemstone_weight = bom_doc.total_gemstone_weight_in_gms
 				row_s.custom_gross_weight = bom_doc.gross_weight
-		self.custom_diamond_pcs = sum(flt(r.custom_diamond_pcs) for r in self.items)
-		self.custom_gemstone_pcs = sum(flt(r.custom_gemstone_pcs) for r in self.items)
-		self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
-		self.custom_metal_weight = sum(flt(r.custom_metal_weight) for r in self.items)
-		self.custom_finding_weight = sum(
-			flt(r.custom_finding_weight) for r in self.items
-		)
-		self.custom_diamond_weight = sum(
-			flt(r.custom_diamond_weight) for r in self.items
-		)
-		self.custom_gemstone_weight = sum(
-			flt(r.custom_gemstone_weight) for r in self.items
-		)
-		self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
+			totals["custom_diamond_pcs"] += flt(row_s.custom_diamond_pcs)
+			totals["custom_gemstone_pcs"] += flt(row_s.custom_gemstone_pcs)
+			totals["custom_other_weight"] += flt(row_s.custom_other_weight)
+			totals["custom_metal_weight"] += flt(row_s.custom_metal_weight)
+			totals["custom_finding_weight"] += flt(row_s.custom_finding_weight)
+			totals["custom_diamond_weight"] += flt(row_s.custom_diamond_weight)
+			totals["custom_gemstone_weight"] += flt(row_s.custom_gemstone_weight)
+			totals["custom_gross_weight"] += flt(row_s.custom_gross_weight)
+		self.custom_diamond_pcs = totals["custom_diamond_pcs"]
+		self.custom_gemstone_pcs = totals["custom_gemstone_pcs"]
+		self.custom_other_weight = totals["custom_other_weight"]
+		self.custom_metal_weight = totals["custom_metal_weight"]
+		self.custom_finding_weight = totals["custom_finding_weight"]
+		self.custom_diamond_weight = totals["custom_diamond_weight"]
+		self.custom_gemstone_weight = totals["custom_gemstone_weight"]
+		self.custom_gross_weight = totals["custom_gross_weight"]
 		payment_terms_data = update_si_data(self)
 		update_payment_terms(self, payment_terms_data)
 		return
@@ -229,9 +244,29 @@ def validate(self, method):
 	payment_terms_data = update_si_data(self)
 	update_payment_terms(self, payment_terms_data)
 	customer_group = frappe.db.get_value("Customer", self.customer, "customer_group")
+	bom_cache = {}
+
+	def get_bom(bom_name):
+		if bom_name not in bom_cache:
+			bom_cache[bom_name] = frappe.get_doc("BOM", bom_name)
+		return bom_cache[bom_name]
+
+	totals = dict.fromkeys(
+		(
+			"custom_diamond_pcs",
+			"custom_gemstone_pcs",
+			"custom_other_weight",
+			"custom_metal_weight",
+			"custom_finding_weight",
+			"custom_diamond_weight",
+			"custom_gemstone_weight",
+			"custom_gross_weight",
+		),
+		0,
+	)
 	for row_s in self.items:
 		if row_s.bom:
-			bom_doc = frappe.get_doc("BOM", row_s.bom)
+			bom_doc = get_bom(row_s.bom)
 			row_s.custom_diamond_pcs = bom_doc.total_diamond_pcs
 			row_s.custom_gemstone_pcs = bom_doc.total_gemstone_pcs
 			row_s.custom_other_weight = bom_doc.total_other_weight
@@ -240,14 +275,22 @@ def validate(self, method):
 			row_s.custom_diamond_weight = bom_doc.total_diamond_weight_in_gms
 			row_s.custom_gemstone_weight = bom_doc.total_gemstone_weight_in_gms
 			row_s.custom_gross_weight = bom_doc.gross_weight
-	self.custom_diamond_pcs = sum(flt(r.custom_diamond_pcs) for r in self.items)
-	self.custom_gemstone_pcs = sum(flt(r.custom_gemstone_pcs) for r in self.items)
-	self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
-	self.custom_metal_weight = sum(flt(r.custom_metal_weight) for r in self.items)
-	self.custom_finding_weight = sum(flt(r.custom_finding_weight) for r in self.items)
-	self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
-	self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
-	self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
+		totals["custom_diamond_pcs"] += flt(row_s.custom_diamond_pcs)
+		totals["custom_gemstone_pcs"] += flt(row_s.custom_gemstone_pcs)
+		totals["custom_other_weight"] += flt(row_s.custom_other_weight)
+		totals["custom_metal_weight"] += flt(row_s.custom_metal_weight)
+		totals["custom_finding_weight"] += flt(row_s.custom_finding_weight)
+		totals["custom_diamond_weight"] += flt(row_s.custom_diamond_weight)
+		totals["custom_gemstone_weight"] += flt(row_s.custom_gemstone_weight)
+		totals["custom_gross_weight"] += flt(row_s.custom_gross_weight)
+	self.custom_diamond_pcs = totals["custom_diamond_pcs"]
+	self.custom_gemstone_pcs = totals["custom_gemstone_pcs"]
+	self.custom_other_weight = totals["custom_other_weight"]
+	self.custom_metal_weight = totals["custom_metal_weight"]
+	self.custom_finding_weight = totals["custom_finding_weight"]
+	self.custom_diamond_weight = totals["custom_diamond_weight"]
+	self.custom_gemstone_weight = totals["custom_gemstone_weight"]
+	self.custom_gross_weight = totals["custom_gross_weight"]
 	if not (
 		self.company == "KG GK Jewellers Private Limited"
 		or customer_group == "Internal"
@@ -255,7 +298,7 @@ def validate(self, method):
 		self.total = 0
 		for row in self.items:
 			if row.bom:
-				bom_doc = frappe.get_doc("BOM", row.bom)
+				bom_doc = get_bom(row.bom)
 				for m in bom_doc.metal_detail:
 					if not m.is_customer_item:
 						update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
@@ -1988,9 +2031,11 @@ def update_income_account(self):
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_completed_product_return_orders(doctype, txt, searchfield, start, page_len, filters):
-
-    return frappe.db.sql("""
+def get_completed_product_return_orders(
+	doctype, txt, searchfield, start, page_len, filters
+):
+	return frappe.db.sql(
+		"""
         SELECT pro.name
         FROM `tabProduct Return Order Form` pro
         WHERE pro.docstatus = 1
@@ -2008,9 +2053,10 @@ def get_completed_product_return_orders(doctype, txt, searchfield, start, page_l
           )
         ORDER BY pro.modified DESC
         LIMIT %(start)s, %(page_len)s
-    """, {
-        "txt": f"%{txt}%",
-        "start": start,
-        "page_len": page_len,
-    })
-
+    """,
+		{
+			"txt": f"%{txt}%",
+			"start": start,
+			"page_len": page_len,
+		},
+	)

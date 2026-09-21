@@ -206,6 +206,7 @@ class TestHoistedEinvoiceItemLookups(IntegrationTestCase):
 		self_doc = SimpleNamespace(
 			customer="CUST-1",
 			sales_type="Finished Goods",
+			is_return=False,
 			items=[_row(1, bom="BOM-1"), _row(2, bom="BOM-2")],
 		)
 		appended = []
