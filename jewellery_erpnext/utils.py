@@ -76,7 +76,18 @@ def clamp_negative_balance(qty, pcs=0):
 
 
 @frappe.whitelist()
-def set_items_from_attribute(item_template, item_template_attribute):
+def set_items_from_attribute(item_template, item_template_attribute, stockable=False):
+	"""Resolve (or create) the variant of ``item_template`` carrying these attributes.
+
+	``stockable`` is for loss/dust templates, which are deliberately non-stock
+	themselves (``is_stock_item = 0, has_variants = 1``) while every variant of
+	them must be stocked. ERPNext's ``create_variant`` copies ``is_stock_item``
+	down from the template whenever that field is listed in Item Variant Settings,
+	so without this the row is INSERTED non-stock and only a second save fixes it.
+
+	It defaults to False because this is also the generic variant resolver for
+	ordinary templates, where the template's own flags are the right answer.
+	"""
 	if isinstance(item_template_attribute, str):
 		item_template_attribute = json.loads(item_template_attribute)
 	args = {}
@@ -102,6 +113,15 @@ def set_items_from_attribute(item_template, item_template_attribute):
 		# and avoid a DuplicateEntryError.
 		if frappe.db.exists("Item", variant.item_code):
 			return frappe.get_doc("Item", variant.item_code)
+		if stockable:
+			# Set BEFORE the insert: copy_attributes_to_variant has just stamped the
+			# template's is_stock_item onto this doc, and for a loss template that
+			# is 0. The app's own is_stock_item = 1 safety net in
+			# doc_events/item.py cannot help here -- item_group is reqd, so the
+			# variant inherits the template's group ("Diamond - T"), and that hook
+			# only matches the "* - V" groups.
+			variant.is_stock_item = 1
+			variant.has_variants = 0
 		try:
 			variant.save()
 		except frappe.DuplicateEntryError:
