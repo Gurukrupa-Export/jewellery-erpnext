@@ -124,6 +124,9 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
 			# Last in the list: sees the final item rows, after the e-invoice rebuild above.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
+			# Fills inventory_type / customer from the source batch, so the SLE this row
+			# writes carries a lane instead of NULL. See the module docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.inventory_dimension.set_sales_inventory_type",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
@@ -288,6 +291,10 @@ doc_events = {
 			# Separate hook entry, NOT a call inside sales_invoice.validate: that function
 			# returns early for is_return, which would skip every credit note.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
+			# Fills inventory_type / customer from the source batch. Its own entry for the
+			# same is_return reason as above -- a credit note's INWARD leg is exactly the
+			# row that was being written with a NULL lane. Last: needs the final rows.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.inventory_dimension.set_sales_inventory_type",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
