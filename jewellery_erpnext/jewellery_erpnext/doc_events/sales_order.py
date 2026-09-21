@@ -37,10 +37,11 @@ def after_mapping(self, method=None, source_doc=None):
     """Carry across the Quotation fields `get_mapped_doc` cannot.
 
     `map_fields` only copies a field when the fieldname matches on both sides -- true for
-    `order_type` and `custom_flow_type`, but the Quotation calls its sales type `custom_sales_type`
-    while the Sales Order calls it `sales_type`, so the mapper skips it. Without this the
-    freshly-mapped form showed Order Type and Flow Type but a blank Sales Type, which only filled in
-    on the first save (via `validate_sales_type`, which still re-asserts all of it every save).
+    `order_type`, `custom_flow_type` and `custom_design_type`, but the Quotation calls its sales
+    type `custom_sales_type` while the Sales Order calls it `sales_type`, so the mapper skips it.
+    Without this the freshly-mapped form showed Order Type and Flow Type but a blank Sales Type,
+    which only filled in on the first save (via `validate_sales_type`, which still re-asserts all of
+    it every save).
     """
     if not source_doc or source_doc.doctype != "Quotation":
         return
@@ -49,6 +50,8 @@ def after_mapping(self, method=None, source_doc=None):
         self.sales_type = source_doc.custom_sales_type
     if source_doc.get("custom_flow_type"):
         self.custom_flow_type = source_doc.custom_flow_type
+    if source_doc.get("custom_design_type"):
+        self.custom_design_type = source_doc.custom_design_type
 
 
 def create_new_bom(self):
@@ -374,16 +377,7 @@ def update_snc(self):
                             },
                             fields=["name"],
                         )
-                        making_charge_price_list_with_gold_rate = frappe.get_all(
-                            "Making Charge Price",
-                            filters={
-                                "customer": new_bom.customer,
-                                "setting_type": new_bom.setting_type,
-                                "from_gold_rate": ["<=", new_bom.gold_rate_with_gst],
-                                "to_gold_rate": [">=", new_bom.gold_rate_with_gst],
-                            },
-                            fields=["name"],
-                        )
+
                         if making_charge_price_list:
                             making_charge_price_subcategories = frappe.get_all(
                                 "Making Charge Price Item Subcategory",
@@ -435,17 +429,6 @@ def update_snc(self):
                         matching_subcategory = None
                         if making_charge_price_list:
                             if finding.finding_type:
-                                subcategory_value = frappe.db.get_value(
-                                    "Making Charge Price Finding Subcategory",
-                                    {"subcategory": finding.finding_type},
-                                    [
-                                        "rate_per_gm",
-                                        "wastage",
-                                        "supplier_fg_purchase_rate",
-                                    ],
-                                    order_by="creation DESC",
-                                )
-
                                 making_charge_price_subcategories = frappe.get_all(
                                     "Making Charge Price Item Subcategory",
                                     filters={
@@ -496,31 +479,7 @@ def update_snc(self):
                     new_bom.set("finding_detail", new_bom.finding_detail)
 
                     for gemstone in new_bom.gemstone_detail:
-                        item_code = new_bom.item
                         gemstone.rate = new_bom.gold_rate_with_gst
-                        attributes = frappe.db.sql(
-                            """
-							SELECT attribute, attribute_value
-							FROM `tabItem Variant Attribute`
-							WHERE parent = %s
-							AND attribute IN (
-								'Gemstone Type', 'Stone Shape', 'Cut or Cab',
-								'Gemstone Grade', 'Gemstone Size', 'Gemstone Quality', 'Gemstone PR'
-							)
-							""",
-                            (item_code),
-                            as_dict=True,
-                        )
-                        # Mapping attributes to row
-                        attribute_map = {
-                            "Gemstone Type": "gemstone_type",
-                            "Stone Shape": "stone_shape",
-                            "Cut or Cab": "cut_or_cab",
-                            "Gemstone Grade": "gemstone_grade",
-                            "Gemstone Size": "gemstone_size",
-                            "Gemstone Quality": "gemstone_quality",
-                            "Gemstone PR": "gemstone_pr",
-                        }
                         # for attr in attributes:
                         # 	if attr.get("attribute") in attribute_map:
                         # 		gemstone.attribute_map[attr["attribute"]] = attr["attribute_value"]
@@ -1165,9 +1124,10 @@ def validate_quotation_item(self):
 
 
 def validate_sales_type(self):
-    # custom_flow_type also auto-maps Quotation -> Sales Order (same fieldname on both sides), but
-    # re-asserting it here covers amended and hand-built orders the mapper never touches. sales_type
-    # has to be bridged because the Quotation calls it custom_sales_type.
+    # custom_flow_type and custom_design_type also auto-map Quotation -> Sales Order (same fieldname
+    # on both sides), but re-asserting them here covers amended and hand-built orders the mapper
+    # never touches. sales_type has to be bridged because the Quotation calls it custom_sales_type.
+    # Design type is deliberately not made mandatory below -- only sales_type is.
     seen = {}
     for r in self.items:
         if not r.prevdoc_docname:
@@ -1177,7 +1137,7 @@ def validate_sales_type(self):
                 frappe.db.get_value(
                     "Quotation",
                     r.prevdoc_docname,
-                    ["custom_sales_type", "custom_flow_type"],
+                    ["custom_sales_type", "custom_flow_type", "custom_design_type"],
                     as_dict=True,
                 )
                 or frappe._dict()
@@ -1187,6 +1147,8 @@ def validate_sales_type(self):
             self.sales_type = source.custom_sales_type
         if source.custom_flow_type:
             self.custom_flow_type = source.custom_flow_type
+        if source.custom_design_type:
+            self.custom_design_type = source.custom_design_type
 
     if not self.sales_type:
         frappe.throw("Sales Type is mandatory.")
@@ -1202,14 +1164,6 @@ def update_same_customer_snc(self):
         "Customer", self.customer, "custom_gemstone_price_list_type"
     )
 
-    diamond_price_customer_entries = frappe.get_all(
-        "Diamond Price List",
-        filters={
-            "customer": self.customer,
-            "price_list_type": diamond_price_list_customer,
-        },
-        fields=["name", "price_list_type"],
-    )
     if self.sales_type == "Finished Goods":
         for row in self.items:
             if row.serial_no and row.bom:
@@ -1359,16 +1313,6 @@ def update_same_customer_snc(self):
                             fields=["name"],
                         )
 
-                        making_charge_price_list_with_gold_rate = frappe.get_all(
-                            "Making Charge Price",
-                            filters={
-                                "customer": new_bom.customer,
-                                "setting_type": new_bom.setting_type,
-                                "from_gold_rate": ["<=", new_bom.gold_rate_with_gst],
-                                "to_gold_rate": [">=", new_bom.gold_rate_with_gst],
-                            },
-                            fields=["name"],
-                        )
                         if making_charge_price_list:
                             making_charge_price_subcategories = frappe.get_all(
                                 "Making Charge Price Item Subcategory",
@@ -1417,30 +1361,9 @@ def update_same_customer_snc(self):
                             fields=["name"],
                         )
 
-                        making_charge_price_list_with_gold_rate = frappe.get_all(
-                            "Making Charge Price",
-                            filters={
-                                "customer": new_bom.customer,
-                                "setting_type": new_bom.setting_type,
-                                "from_gold_rate": ["<=", new_bom.gold_rate_with_gst],
-                                "to_gold_rate": [">=", new_bom.gold_rate_with_gst],
-                            },
-                            fields=["name"],
-                        )
                         matching_subcategory = None
                         if making_charge_price_list:
                             if finding.finding_type:
-                                subcategory_value = frappe.db.get_value(
-                                    "Making Charge Price Finding Subcategory",
-                                    {"subcategory": finding.finding_type},
-                                    [
-                                        "rate_per_gm",
-                                        "wastage",
-                                        "supplier_fg_purchase_rate",
-                                    ],
-                                    order_by="creation DESC",
-                                )
-
                                 making_charge_price_subcategories = frappe.get_all(
                                     "Making Charge Price Item Subcategory",
                                     filters={
@@ -1492,23 +1415,7 @@ def update_same_customer_snc(self):
                     new_bom.set("finding_detail", new_bom.finding_detail)
 
                     for gemstone in new_bom.gemstone_detail:
-                        item_code = new_bom.item
                         gemstone.rate = new_bom.gold_rate_with_gst
-
-                        # Fetch variant attributes
-                        attributes = frappe.db.sql(
-                            """
-							SELECT attribute, attribute_value
-							FROM `tabItem Variant Attribute`
-							WHERE parent = %s
-							AND attribute IN (
-								'Gemstone Type', 'Stone Shape', 'Cut or Cab',
-								'Gemstone Grade', 'Gemstone Size', 'Gemstone Quality', 'Gemstone PR'
-							)
-							""",
-                            (item_code),
-                            as_dict=True,
-                        )
 
                         # If needed, map attributes to gemstone fields here
 

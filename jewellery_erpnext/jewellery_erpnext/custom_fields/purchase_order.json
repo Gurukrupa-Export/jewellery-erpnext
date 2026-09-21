@@ -145,6 +145,17 @@
      },
      {
       "dt": "Purchase Order",
+      "fieldname": "custom_design_type",
+      "fieldtype": "Link",
+      "insert_after": "custom_flow_type",
+      "is_system_generated": 1,
+      "label": "Design Type",
+      "module": "Jewellery Erpnext",
+      "options": "Attribute Value",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
       "fetch_from": "supplier_address.gst_category",
       "fieldname": "gst_category",
       "fieldtype": "Data",
