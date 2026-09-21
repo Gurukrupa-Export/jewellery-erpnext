@@ -34,6 +34,11 @@
 "column_break_stayp",
 "allowed_diamond_loss",
 "allowed_gemstone_loss",
+"loss_booking_restrictions_section",
+"dont_allow_loss_metal",
+"dont_allow_loss_diamond",
+"dont_allow_loss_finding",
+"dont_allow_loss_gemstone",
 "finding_loss_booking_section",
 "finding_loss_booking",
 "employee_ir_timing_section",
@@ -222,6 +227,35 @@
 "fieldtype": "Int",
 "label": "Employee IR Receive Delay (Minutes)",
 "non_negative": 1
+},
+{
+"fieldname": "loss_booking_restrictions_section",
+"fieldtype": "Section Break",
+"label": "Loss Booking Restrictions"
+},
+{
+"default": "0",
+"fieldname": "dont_allow_loss_metal",
+"fieldtype": "Check",
+"label": "Don't Allow Loss Metal"
+},
+{
+"default": "0",
+"fieldname": "dont_allow_loss_diamond",
+"fieldtype": "Check",
+"label": "Don't Allow Loss Diamond"
+},
+{
+"default": "0",
+"fieldname": "dont_allow_loss_finding",
+"fieldtype": "Check",
+"label": "Don't Allow Loss Finding"
+},
+{
+"default": "0",
+"fieldname": "dont_allow_loss_gemstone",
+"fieldtype": "Check",
+"label": "Don't Allow Loss Gemstone"
 }
 ],
 "index_web_pages_for_search": 1,
