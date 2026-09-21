@@ -50,6 +50,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_sli
 	cancel_injections_for_eir,
 	inject_extra_metal_for_eir_receive,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.material_loss_gate import (
+	get_blocked_loss_variants,
+	get_variant_of_map,
+	validate_loss_rows_against_material_gate,
+	validate_material_gate_left_nothing_to_book,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.mould_utils import (
 	create_mould,
 )
@@ -120,12 +126,20 @@ class EmployeeIR(Document):
 			validate_employee_ir_receive_delay(self)
 
 	def on_submit(self):
+		# Runs before validate_loss_tables_required so that when the blanket
+		# per-material flags are what emptied the automatic loss table, the operator
+		# gets a message naming the flag instead of the generic "no loss details
+		# found".
+		validate_material_gate_left_nothing_to_book(self)
 		validate_loss_tables_required(self)
 		# Re-checked at submit, not just at validate: validate_process_loss and
 		# validate_manually_book_loss_details both early-return once docstatus != 0,
 		# so a draft saved before the Department Operation flag was flipped would
 		# otherwise submit with stale loss rows on a now-blocked category.
 		validate_loss_rows_against_gate(self)
+		# The blanket per-material flags are submit-only by design, and this is
+		# their ONLY throw for operator-entered rows.
+		validate_loss_rows_against_material_gate(self)
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
@@ -167,6 +181,11 @@ class EmployeeIR(Document):
 		self.validate_process_loss()
 		validate_manually_book_loss_details(self)
 		validate_loss_rows_against_gate(self)
+		# NOTE: no material-gate check here, deliberately. The blanket
+		# dont_allow_loss_* flags must never block a SAVE: book_metal_loss already
+		# drops blocked items from the automatic pool and redistributes their share,
+		# and a manually booked row is only refused at submit
+		# (see validate_loss_rows_against_material_gate in material_loss_gate.py).
 		# valid_reparing_or_next_operation(self)
 		validate_loss_qty(self)
 		validate_casting_tree(self)
@@ -808,6 +827,11 @@ class EmployeeIR(Document):
 		# (the Department Operation actually being received), not on the
 		# {company, department} filter dict used for allowed_loss_percentage above.
 		booking_map = get_loss_booking_map(self.operation)
+		# Blanket per-material loss flags, likewise read once per document. Stashed
+		# on self.flags rather than threaded through book_metal_loss as a parameter:
+		# that method is whitelisted, and a caller posting an empty list would send
+		# the truthy string "[]", silently no-opping the gate for that request.
+		self.flags.blocked_loss_variants = get_blocked_loss_variants(self.operation)
 
 		# Recomputed from scratch on every validate, so the spill collected by the
 		# previous run must not leak into this one.
@@ -900,6 +924,17 @@ class EmployeeIR(Document):
 		# calling this method on its own.
 		if booking_map is None:
 			booking_map = get_loss_booking_map(self.operation)
+		# Same contract for the blanket per-material flags, but carried on flags
+		# rather than as a parameter: this method is whitelisted, and a caller
+		# posting an empty list would send the truthy string "[]" and silently
+		# switch the gate off. Read through getattr so a document that never went
+		# through validate_process_loss (qc.py calls this method on its own) falls
+		# back to resolving the flags itself.
+		blocked_variants = getattr(
+			getattr(self, "flags", None), "blocked_loss_variants", None
+		)
+		if blocked_variants is None:
+			blocked_variants = get_blocked_loss_variants(self.operation)
 		# mnf_opt = frappe.get_doc("Manufacturing Operation", opt)
 
 		# To Check Tollarance which book a loss down side.
@@ -953,6 +988,15 @@ class EmployeeIR(Document):
 				if booking_map
 				else {}
 			)
+			# Blanket per-material gate, same placement and same reason: the skip
+			# happens before total_qty is summed, so the survivors absorb the
+			# blocked row's share. Resolved only when a box is ticked, so the
+			# default path costs zero extra queries.
+			variant_map = (
+				get_variant_of_map([child["item_code"] for child in mop_balance_table])
+				if blocked_variants
+				else {}
+			)
 
 			# Keep only the latest qty snapshot per (item_code, batch_no).
 			# qty_after_transaction_batch_based is a running balance so the last
@@ -966,6 +1010,12 @@ class EmployeeIR(Document):
 					child["item_code"], booking_map, category_map
 				):
 					blocked_categories.add(category_map.get(child["item_code"]))
+					continue
+				# Blanket per-material flag: drop the row silently and let the
+				# survivors absorb its share. No throw here even when that empties
+				# the pool — saving must always succeed; the submit-time
+				# validate_material_gate_left_nothing_to_book explains an empty table.
+				if variant_map.get(child["item_code"]) in blocked_variants:
 					continue
 				latest_per_batch[(child["item_code"], child["batch_no"])] = child
 
@@ -1043,6 +1093,7 @@ class EmployeeIR(Document):
 						total_mannual_loss += loss_qty
 
 			loss = flt(flt(gwt, 3) - flt(r_gwt, 3) - flt(total_mannual_loss, 3), 3)
+
 			ms_consum = 0
 			ms_consum_book = 0
 			if loss < 0:
@@ -1180,19 +1231,11 @@ def _bulk_variant_of(item_codes):
 	"""``{item_code: variant_of}`` in one round-trip.
 
 	Replaces a per-row ``frappe.db.get_value("Item", ..., "variant_of")`` inside the
-	loss append loop.
+	loss append loop. Delegates to ``material_loss_gate.get_variant_of_map`` so the
+	loss append loop and the per-material gate resolve ``variant_of`` through one
+	code path.
 	"""
-	item_codes = sorted({i for i in (item_codes or []) if i})
-	if not item_codes:
-		return {}
-	return {
-		r["name"]: r["variant_of"]
-		for r in frappe.db.get_all(
-			"Item",
-			filters={"name": ["in", item_codes]},
-			fields=["name", "variant_of"],
-		)
-	}
+	return get_variant_of_map(item_codes)
 
 
 def _bulk_no_wastage_batches(batch_nos):

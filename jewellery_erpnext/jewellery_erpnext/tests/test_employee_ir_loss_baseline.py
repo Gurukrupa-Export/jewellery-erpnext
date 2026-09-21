@@ -4281,6 +4281,11 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 				f"{EIR}.get_finding_category_map",
 				return_value=category_map if category_map is not None else {},
 			),
+			# _DocStub carries a real operation name, so without this the blanket
+			# per-material gate would issue a live Department Operation lookup.
+			# An empty set is its fail-open state: these cases exercise the
+			# finding-category gate only.
+			patch(f"{EIR}.get_blocked_loss_variants", return_value=set()),
 		]
 		for p in patches:
 			p.start()
