@@ -415,3 +415,170 @@ class TestRepackProduceRates(IntegrationTestCase):
 		)
 		set_process_loss_produce_rates(se)
 		self.assertAlmostEqual(se.items[1]["basic_rate"], 100.0, places=6)
+
+
+def _cv_produce(item_code, qty, pooled_rate, **fields):
+	"""A Metal Conversion produce row as ERPNext leaves it: priced, and priced WRONG.
+
+	Unlike the loss and finding rows above this one carries no ``set_basic_rate_manually``
+	and a non-zero ``basic_rate`` -- the voucher-wide pooled average from
+	``get_basic_rate_for_repacked_items``. The conversion branch has to replace it.
+	"""
+	row = _produce(item_code, qty, **fields)
+	row["set_basic_rate_manually"] = 0
+	row["basic_rate"] = pooled_rate
+	row["basic_amount"] = round(qty * pooled_rate, 2)
+	return row
+
+
+class TestMetalConversionLaneRates(IntegrationTestCase):
+	"""``Repack-Metal Conversion``: each ownership lane keeps its own value.
+
+	A conversion is multi-lane by design -- ``metal_conversions`` tags every row with
+	``custom_conversion_lane`` because one entry carries several owners at once. ERPNext
+	prices it single-lane: ``get_basic_rate_for_repacked_items`` pools the whole voucher's
+	outgoing cost over total finished qty, so every produced row takes the same blended
+	number regardless of whose metal it came from.
+
+	Measured on MAT-STE-17964: 4 g of a customer's 24KT at 159,000 and 1.5 g of company 24KT
+	at 15,487.41 both produced rows valued at 109,968.61. The company's 1.635 g absorbed
+	179,798.67 against 23,239.48 of its own inputs -- 156,559.19 of the customer's gold --
+	while the customer's own row sat at 0 and 479,463.13 went to Stock Adjustment.
+	"""
+
+	POOLED = 109968.607172644
+
+	def _conversion(self, items, auto_created=1):
+		return _FakeSE(
+			items, stock_entry_type="Repack-Metal Conversion", auto_created=auto_created
+		)
+
+	def _two_lane_rows(self):
+		"""The exact MAT-STE-17964 shape: customer lane, then company lane."""
+		return [
+			_consume(
+				"M-G-24KT-99.9-Y",
+				4,
+				159000.0,
+				inventory_type="Customer Goods",
+				customer="GJCU0009",
+			),
+			_consume("M-Genia-221", 0.36, 62.0),
+			_cv_produce(
+				"M-G-22KT-91.75-Y",
+				4.36,
+				self.POOLED,
+				inventory_type="Customer Goods",
+				customer="GJCU0009",
+			),
+			_consume("M-G-24KT-99.9-Y", 1.5, 15487.405405405),
+			_consume("M-Genia-221", 0.135, 62.0),
+			_cv_produce("M-G-22KT-91.75-Y", 1.635, self.POOLED),
+		]
+
+	def test_each_lane_takes_only_its_own_consumed_value(self):
+		"""The defect, reproduced and fixed: two rows, two rates, not one blended one."""
+		se = self._conversion(self._two_lane_rows())
+		set_process_loss_produce_rates(se)
+
+		# customer lane: (4 x 159000 + 0.36 x 62) / 4.36
+		self.assertAlmostEqual(se.items[2]["basic_rate"], 145876.678899083, places=6)
+		# company lane: (1.5 x 15487.405405405 + 0.135 x 62) / 1.635
+		self.assertAlmostEqual(se.items[5]["basic_rate"], 14213.748078353, places=6)
+
+	def test_the_voucher_is_value_neutral(self):
+		"""No Stock Adjustment write-off: what goes out equals what comes in."""
+		se = self._conversion(self._two_lane_rows())
+		set_process_loss_produce_rates(se)
+
+		out, inc = _totals(se)
+		self.assertEqual(out, inc)
+		self.assertEqual(out, 659261.80)
+
+	def test_the_company_lane_stops_absorbing_the_customers_gold(self):
+		"""156,559.19 of customer metal used to land in company stock. It no longer does."""
+		se = self._conversion(self._two_lane_rows())
+		set_process_loss_produce_rates(se)
+
+		self.assertAlmostEqual(se.items[5]["basic_amount"], 23239.48, places=2)
+		self.assertAlmostEqual(se.items[2]["basic_amount"], 636022.32, places=2)
+
+	def test_the_pooled_rate_is_replaced_not_merely_filled(self):
+		"""Every other branch only fills a zero. This one must overwrite a real number --
+		the wrong number is already there."""
+		se = self._conversion(self._two_lane_rows())
+		before = se.items[5]["basic_rate"]
+		set_process_loss_produce_rates(se)
+
+		self.assertEqual(before, self.POOLED)
+		self.assertNotAlmostEqual(se.items[5]["basic_rate"], self.POOLED, places=2)
+
+	def test_a_single_lane_conversion_still_conserves_value(self):
+		"""The MAT-STE-17890 shape, which was already value-neutral, must stay so."""
+		se = self._conversion(
+			[
+				_consume(
+					"M-G-24KT-99.9-Y",
+					5,
+					159000.0,
+					inventory_type="Customer Goods",
+					customer="GJCU0009",
+				),
+				_consume("M-Genia-221", 0.45, 62.0),
+				_cv_produce(
+					"M-G-22KT-91.75-Y",
+					5.45,
+					self.POOLED,
+					inventory_type="Customer Goods",
+					customer="GJCU0009",
+				),
+			]
+		)
+		set_process_loss_produce_rates(se)
+
+		self.assertAlmostEqual(se.items[2]["basic_rate"], 145876.678899083, places=6)
+		out, inc = _totals(se)
+		self.assertEqual(out, inc)
+
+	def test_a_hand_built_conversion_is_never_repriced(self):
+		"""``auto_created`` confines this to vouchers the app made, as on a plain Repack."""
+		se = self._conversion(self._two_lane_rows(), auto_created=0)
+		set_process_loss_produce_rates(se)
+
+		self.assertEqual(se.items[2]["basic_rate"], self.POOLED)
+		self.assertEqual(se.items[5]["basic_rate"], self.POOLED)
+
+	def test_zero_value_policy_a_customer_only_lane_stays_at_zero(self):
+		"""No policy branch exists, and none is needed: a 0-valued consume row allocates 0."""
+		rows = self._two_lane_rows()
+		rows[0]["basic_rate"] = 0.0
+		rows[0]["basic_amount"] = 0.0
+		rows[1]["inventory_type"] = "Customer Goods"
+		rows[1]["customer"] = "GJCU0009"
+		rows[1]["basic_rate"] = 0.0
+		rows[1]["basic_amount"] = 0.0
+		se = self._conversion(rows)
+		set_process_loss_produce_rates(se)
+
+		self.assertEqual(se.items[2]["basic_rate"], 0.0)
+
+	def test_zero_value_policy_company_alloy_in_the_lane_is_still_conserved(self):
+		"""The one case worth naming: the alloy really cost 22.32, so it is carried, not
+		written off. 22.32 over 4.36 g is 5.1193 -- small, and deliberately not zero."""
+		rows = self._two_lane_rows()
+		rows[0]["basic_rate"] = 0.0
+		rows[0]["basic_amount"] = 0.0
+		se = self._conversion(rows)
+		set_process_loss_produce_rates(se)
+
+		self.assertAlmostEqual(se.items[2]["basic_rate"], 5.119266055, places=6)
+		self.assertAlmostEqual(se.items[2]["basic_amount"], 22.32, places=2)
+
+	def test_other_stock_entry_types_are_untouched(self):
+		for se_type in ("Material Transfer", "Manufacture", "Material Receipt"):
+			with self.subTest(se_type=se_type):
+				se = _FakeSE(
+					self._two_lane_rows(), stock_entry_type=se_type, auto_created=1
+				)
+				set_process_loss_produce_rates(se)
+				self.assertEqual(se.items[2]["basic_rate"], self.POOLED)

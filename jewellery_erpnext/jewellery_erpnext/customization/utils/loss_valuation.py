@@ -48,13 +48,15 @@ Conversions melting loss, Tree Number, Warehouse loss, Main Slip).
 from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	METAL_CONVERSION_SE_TYPE,
 	PROCESS_LOSS_SE_TYPE,
 	REPACK_SE_TYPE,
 )
 
 # The types whose produce rows this module may value. They are NOT treated alike -- see
-# ``_owns_produce_row`` for why a plain Repack only gets the rows nothing else prices.
-VALUED_SE_TYPES = (PROCESS_LOSS_SE_TYPE, REPACK_SE_TYPE)
+# ``_owns_produce_row`` for why a plain Repack only gets the rows nothing else prices, and
+# why a Metal Conversion has its rate REPLACED rather than merely filled.
+VALUED_SE_TYPES = (PROCESS_LOSS_SE_TYPE, REPACK_SE_TYPE, METAL_CONVERSION_SE_TYPE)
 
 
 def _get(row, fieldname):
@@ -239,6 +241,27 @@ def _owns_produce_row(se, se_type, row):
 	"""
 	if se_type == PROCESS_LOSS_SE_TYPE:
 		return True
+
+	if se_type == METAL_CONVERSION_SE_TYPE:
+		# **Metal Conversion: every produce row of an app-built entry, REPLACING the rate
+		# ERPNext already wrote.** This is the one branch that overwrites a non-zero number,
+		# and it has to: ``get_basic_rate_for_repacked_items`` pools the whole voucher's
+		# outgoing cost across every finished row by total finished qty, and a conversion is
+		# explicitly multi-lane -- ``metal_conversions`` tags each row with
+		# ``custom_conversion_lane`` precisely because one entry carries several owners at
+		# once. Pooling therefore blends one customer's gold rate into another lane's batch.
+		#
+		# Measured on MAT-STE-17964: 4 g of a customer's 24KT at 159,000 plus 1.5 g of
+		# company 24KT at 15,487.41 produced two rows that BOTH took 109,968.61, the
+		# voucher-wide average. The company's 1.635 g absorbed 179,798.67 of value against
+		# 23,239.48 of its own inputs -- 156,559.19 of the customer's gold -- while the
+		# customer's own row was left at 0 and 479,463.13 went to Stock Adjustment.
+		#
+		# So "only if still zero" is exactly wrong here: the wrong number is already there.
+		# ``auto_created`` still confines this to entries the app itself built, for the same
+		# reason it does on a plain Repack.
+		return bool(_get(se, "auto_created"))
+
 	return (
 		bool(_get(se, "auto_created"))
 		and bool(_get(row, "set_basic_rate_manually"))
@@ -257,8 +280,26 @@ def set_process_loss_produce_rates(se):
 	so ``valuation_rate``, ``amount`` and the header totals follow automatically.
 
 	``Repack`` is included for the ``finding_repack`` engine, which consumes casting-tree
-	metal and produces finding items under the plain ``Repack`` type; see
-	``_owns_produce_row`` for how the two types differ.
+	metal and produces finding items under the plain ``Repack`` type.
+
+	``Repack-Metal Conversion`` is included because a conversion is multi-lane by design and
+	ERPNext prices it single-lane. ``iter_loss_runs`` already splits the item table into
+	consume/produce runs and ``_allocate`` already apportions by ``(inventory_type,
+	customer)`` -- which is exactly what ``custom_conversion_lane`` encodes -- so each lane
+	ends up carrying the value its own rows gave up, and the voucher stops smearing one
+	customer's gold across another owner's batch. See ``_owns_produce_row`` for how the
+	three types differ.
+
+	Nothing here branches on the Customer Gold valuation policy, and it does not need to.
+	Under **Nominal** a customer's consume row carries the booked rate, so the lane carries
+	it forward. Under **Zero Value** that row carries 0, so a lane fed only by the customer's
+	own metal allocates 0 and its produce row stays 0, as today.
+
+	A Zero-Value lane that ALSO consumes company alloy is the one case worth naming: it comes
+	out at the alloy's value alone, not 0. A 4.36 g lane taking 0.36 g of alloy at 62.00
+	produces 22.32 over 4.36 g = 5.1193. That is the point of value conservation rather than
+	a policy switch -- the company really did put 22.32 into that batch, and the alternative
+	is writing it off to Stock Adjustment.
 	"""
 	se_type = _get(se, "stock_entry_type")
 	if se_type not in VALUED_SE_TYPES:
