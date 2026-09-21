@@ -694,8 +694,13 @@ class TestReceiveStampsTreeOnEirHeader(IntegrationTestCase):
 		pass
 
 	def _receive(self, row_trees):
-		# Rows arrive already pinned, so the resolve loop short-circuits on every one of
-		# them and the test exercises the header summary alone -- no MWO lookups to fake.
+		"""Run pin_tree_numbers_on_receive over rows carrying `row_trees`.
+
+		A row that already has a tree short-circuits the resolve loop. A row that does NOT
+		falls through to ``_row_tree_and_item``, which loads the work order -- so the MWO
+		fetch is faked here rather than assumed away, and answers with a work order that is
+		on no tree either.
+		"""
 		eir = _EIRDoc(
 			name="EIR-1",
 			operation="Casting",
@@ -704,7 +709,12 @@ class TestReceiveStampsTreeOnEirHeader(IntegrationTestCase):
 				for i, tree in enumerate(row_trees)
 			],
 		)
-		tree_casting.pin_tree_numbers_on_receive(eir)
+		with patch.object(
+			tree_casting.frappe,
+			"get_cached_doc",
+			side_effect=lambda _dt, name: _MWODoc(name=name, tree_number=None),
+		):
+			tree_casting.pin_tree_numbers_on_receive(eir)
 		return eir
 
 	def test_one_tree_fills_the_header(self):
