@@ -140,6 +140,7 @@ frappe.ui.form.on("Employee IR", {
 				});
 			}
 			let wo_limit = await get_employee_ir_wo_limit(frm);
+			let tree_number = await scanned_tree_number(frm, scanned);
 			if (wo_limit > 0 && frm.doc.employee_ir_operations.length >= wo_limit) {
 				frappe.throw(
 					__("Only {0} work order(s) allowed per Employee IR for department {1}.", [
@@ -206,8 +207,10 @@ frappe.ui.form.on("Employee IR", {
 									diamond_pcs: values.diamond_pcs,
 									gemstone_wt: values.gemstone_wt,
 									gemstone_pcs: values.gemstone_pcs,
+									tree_number: tree_number,
 								});
 								frm.refresh_field("employee_ir_operations");
+								apply_tree_header(frm);
 								load_repeat_flag(frm);
 							}
 						);
@@ -599,14 +602,47 @@ function toggle_tree_number_column(frm) {
 		grid.toggle_display("tree_number", show);
 		frm.toggle_display("tree_number", show);
 		if (show) describe_multi_tree_receive(frm);
+		return show;
 	};
+	// Cached for scanned_tree_number below, which needs the same answer and must not pay for a
+	// second round trip on every scan. Stored as a PROMISE, not a boolean, so a scan landing
+	// while this one is still in flight awaits the real answer instead of reading undefined.
 	if (!frm.doc.operation) {
-		apply(false);
+		frm.__is_tree_operation = Promise.resolve(apply(false));
 		return;
 	}
-	frappe.db.get_value("Department Operation", frm.doc.operation, "tree_no_reqd").then((r) => {
-		apply(!!(r.message && r.message.tree_no_reqd));
-	});
+	frm.__is_tree_operation = frappe.db
+		.get_value("Department Operation", frm.doc.operation, "tree_no_reqd")
+		.then((r) => apply(!!(r.message && r.message.tree_no_reqd)));
+}
+
+// The casting tree lives on the WORK ORDER and a scan IS a work order code, so this needs no
+// extra callback level: it resolves beside the work-order-limit await at the top of scan_mwo and
+// the row built further down simply carries the answer.
+//
+// Receive only, and only on a tree (casting) operation -- the same two gates
+// tree_casting.resolve_receive_tree_numbers opens with. On an Issue the tree does not exist yet
+// (create_tree_on_issue mints it at submit) and on a re-issue the work order still points at the
+// PREVIOUS tree, so filling it would show last round's tree as this one's.
+//
+// Purely so the tree appears the instant the code is scanned. EmployeeIR.validate re-resolves it
+// from the work order on every save, and that value -- not this one -- is what is ever persisted.
+async function scanned_tree_number(frm, work_order) {
+	if (frm.doc.type !== "Receive") return null;
+	if (!(await frm.__is_tree_operation)) return null;
+	const r = await frappe.db.get_value("Manufacturing Work Order", work_order, "tree_number");
+	return (r && r.message && r.message.tree_number) || null;
+}
+
+// Mirrors tree_casting.single_tree_or_none: one Link can only tell the truth when every row
+// agrees, so a receive spanning several trees blanks the header and lets
+// describe_multi_tree_receive name them in the description instead.
+function apply_tree_header(frm) {
+	const trees = [
+		...new Set((frm.doc.employee_ir_operations || []).map((d) => d.tree_number).filter(Boolean)),
+	];
+	frm.set_value("tree_number", trees.length === 1 ? trees[0] : null);
+	describe_multi_tree_receive(frm);
 }
 
 // The server stamps the header Tree Number only when the whole document belongs to one tree

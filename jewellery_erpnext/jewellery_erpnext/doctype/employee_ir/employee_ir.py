@@ -76,6 +76,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_cas
 	create_tree_on_issue,
 	lock_trees_for_eir,
 	pin_tree_numbers_on_receive,
+	resolve_receive_tree_numbers,
 	unlink_tree_on_issue_cancel,
 	update_tree_on_receive,
 	validate_casting_group_complete,
@@ -196,6 +197,11 @@ class EmployeeIR(Document):
 		# (see validate_loss_rows_against_material_gate in material_loss_gate.py).
 		# valid_reparing_or_next_operation(self)
 		validate_loss_qty(self)
+		# Resolve the casting tree onto the rows BEFORE the receive guard reads them:
+		# validate_casting_receive -> tree_draw_by_tree -> _row_tree_and_item prefers the ROW
+		# value over the live work order, so resolving after it would judge this receive
+		# against whatever tree a PREVIOUS save had resolved.
+		resolve_receive_tree_numbers(self)
 		validate_casting_tree(self)
 		validate_casting_receive(self)
 		validate_finding_repack(self)
@@ -1344,6 +1350,10 @@ def get_manufacturing_operations(source_name, target_doc=None):
 				"gemstone_pcs": operation.get("gemstone_pcs"),
 			},
 		)
+	# No tree_number here, deliberately. frappe's map_docs calls this mapper once per SELECTED
+	# operation, so resolving the tree here would cost two extra queries per row of a dialog
+	# that routinely loads dozens -- to fill a column that EmployeeIR.validate fills correctly
+	# on the very next save. The scan handler, which adds one row at a time, does fill it.
 	return target_doc
 
 
