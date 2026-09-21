@@ -582,3 +582,85 @@ class TestMetalConversionLaneRates(IntegrationTestCase):
 				)
 				set_process_loss_produce_rates(se)
 				self.assertEqual(se.items[2]["basic_rate"], self.POOLED)
+
+	# ------------------------------------------------------------------ released alloy
+
+	def _released_alloy_rows(self, alloy_inventory_type, alloy_customer=None):
+		"""A purity-RAISE lane: customer metal in, customer metal + freed alloy out.
+
+		``metal_conversions`` emits that second produce row with the SAME lane tag and
+		(for the company's share) a DIFFERENT ownership -- see the C09 carve-out at
+		metal_conversions.py:617-644.
+		"""
+		return [
+			_consume(
+				"M-G-22KT-91.75-Y",
+				4.36,
+				145876.678899083,
+				inventory_type="Customer Goods",
+				customer="GJCU0009",
+			),
+			_cv_produce(
+				"M-G-24KT-99.9-Y",
+				4.0,
+				self.POOLED,
+				inventory_type="Customer Goods",
+				customer="GJCU0009",
+			),
+			_cv_produce(
+				"M-Genia-221",
+				0.36,
+				self.POOLED,
+				inventory_type=alloy_inventory_type,
+				customer=alloy_customer,
+			),
+		]
+
+	def test_a_lane_that_releases_company_alloy_is_left_to_erpnext(self):
+		"""The regression this guard exists to stop.
+
+		Owner-matched allocation gives the customer row the whole consumed value, finds no
+		consumed owner for the Regular Stock alloy row, and computes ``leftover`` 0 -- so the
+		alloy would come back at 0 with the company's value left inside the customer's metal.
+		The voucher balances either way, which is why the value-neutrality tests cannot see it.
+		"""
+		se = self._conversion(self._released_alloy_rows("Regular Stock"))
+		set_process_loss_produce_rates(se)
+
+		self.assertEqual(se.items[1]["basic_rate"], self.POOLED)
+		self.assertEqual(se.items[2]["basic_rate"], self.POOLED)
+		self.assertNotEqual(se.items[2]["basic_rate"], 0.0)
+
+	def test_a_released_company_alloy_lane_is_left_alone_under_zero_value_too(self):
+		"""Zero Value makes it starker: the customer's gold is worth 0 and the alloy is not,
+		so zeroing the alloy row would move the company's only value into customer stock."""
+		rows = self._released_alloy_rows("Regular Stock")
+		rows[0]["basic_rate"] = 0.0
+		rows[0]["basic_amount"] = 0.0
+		se = self._conversion(rows)
+		set_process_loss_produce_rates(se)
+
+		self.assertEqual(se.items[2]["basic_rate"], self.POOLED)
+
+	def test_a_lane_releasing_customer_alloy_is_also_left_alone(self):
+		"""The guard keys on ROW COUNT, not owner diversity, and this is why.
+
+		Here both produce rows share an owner, so there is no mismatch to notice -- and
+		``_allocate`` would spread the lane value pro-rata by qty, valuing 0.36 g of alloy
+		like 0.36 g of gold. Wrong for the same reason, with nothing to signal it.
+		"""
+		se = self._conversion(
+			self._released_alloy_rows("Customer Goods", alloy_customer="GJCU0009")
+		)
+		set_process_loss_produce_rates(se)
+
+		self.assertEqual(se.items[1]["basic_rate"], self.POOLED)
+		self.assertEqual(se.items[2]["basic_rate"], self.POOLED)
+
+	def test_a_single_produce_lane_is_still_owned(self):
+		"""The narrowing must not switch the reported fix off. One row in, one row out."""
+		se = self._conversion(self._two_lane_rows())
+		set_process_loss_produce_rates(se)
+
+		self.assertAlmostEqual(se.items[2]["basic_rate"], 145876.678899083, places=6)
+		self.assertAlmostEqual(se.items[5]["basic_rate"], 14213.748078353, places=6)
