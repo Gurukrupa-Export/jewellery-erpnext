@@ -306,6 +306,34 @@ def set_process_loss_produce_rates(se):
 		return
 
 	for consumed, produced in iter_loss_runs(_get(se, "items")):
+		if se_type == METAL_CONVERSION_SE_TYPE and len(produced) > 1:
+			# A LANE THAT PRODUCES MORE THAN ONE ROW IS LEFT TO ERPNEXT, DELIBERATELY.
+			#
+			# ``metal_conversions`` emits a second produce row when raising the purity frees
+			# alloy, and tags it with the SAME lane while giving it DIFFERENT ownership --
+			# its own comment says "Only the OWNERSHIP differs" (metal_conversions.py:631).
+			# So one lane can carry a Customer Goods metal row and a Regular Stock alloy row
+			# whose consumed rows are all customer-owned.
+			#
+			# ``_allocate`` cannot value that correctly, and neither variant of it is safe:
+			#
+			# * owner-matched -- the customer row claims the whole consumed value, the alloy
+			#   row matches no consumed owner, ``leftover`` is 0 and the guard on it means
+			#   the alloy is never given a share. It comes back at 0 and the company's value
+			#   stays inside the customer's metal.
+			# * qty pro-rata (what happens when both rows share an owner) -- the lane's value
+			#   is nearly all gold, so splitting 636,022.32 over 4.00 g of metal and 0.36 g of
+			#   alloy by weight values the alloy near 52,515 instead of 22.32.
+			#
+			# Both are wrong because the rows are different ITEMS of very different worth.
+			# Only the recorded Batch Component provenance can split such a lane, and that is
+			# a separate change. Until then this branch owns only the unambiguous shape: one
+			# lane consumed X, one row carries X.
+			#
+			# Falling through leaves ERPNext's pooling in charge of these rows, which is
+			# exactly what happens today -- inaccurate, but unchanged by this commit.
+			continue
+
 		precision = _amount_precision(produced[0])
 		valued = []
 		unowned = 0
