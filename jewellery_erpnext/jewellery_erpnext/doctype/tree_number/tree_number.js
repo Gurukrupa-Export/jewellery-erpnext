@@ -206,7 +206,6 @@ function render_balance_summary(frm) {
 				<td class="text-right">${format_number(row.receive_qty)}${split_flag}</td>
 				<td class="text-right">${format_number(row.wo_receive_qty)}</td>
 				<td class="text-right">${format_number(row.manual_receive_qty)}</td>
-				<td class="text-right">${format_number(row.wo_received_gross_wt)}</td>
 				<td class="text-right">${format_number(row.loss_qty)}</td>
 				<td class="text-right">${format_number(pending)}${flag}</td>
 			</tr>`;
@@ -219,20 +218,13 @@ function render_balance_summary(frm) {
 				<th>${__("Item")}</th>
 				<th class="text-right">${__("Issued")}</th>
 				<th class="text-right">${__("Received")}</th>
-				<th class="text-right">${__("via Work Order")}</th>
-				<th class="text-right">${__("via Tree Button")}</th>
-				<th class="text-right">${__("Recd Gross Wt (WO)")}</th>
+				<th class="text-right">${__("Receive MWO")}</th>
+				<th class="text-right">${__("Receive unused Material")}</th>
 				<th class="text-right">${__("Loss")}</th>
 				<th class="text-right">${__("Pending")}</th>
 			</tr></thead>
 			<tbody>${body}</tbody>
-		</table></div>
-		<div class="text-muted small" style="margin-top:4px">${__(
-			"Received = metal drawn out of the tree, split by where it came from. " +
-				"Recd Gross Wt (WO) is the full weight the work orders came back " +
-				"weighing - most of it was never on the tree, so it is shown for " +
-				"reference only and is not part of Pending."
-		)}</div>`,
+		</table></div>`,
 		__("Material Balance")
 	);
 }

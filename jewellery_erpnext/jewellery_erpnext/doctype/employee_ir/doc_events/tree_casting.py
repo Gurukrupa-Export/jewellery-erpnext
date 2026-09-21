@@ -16,8 +16,11 @@ drives a Tree Number:
 ``Employee IR Operation.tree_number`` is therefore populated on BOTH sides of a
 casting round trip -- by ``create_tree_on_issue`` on the way out and by
 ``pin_tree_numbers_on_receive`` on the way back -- so either document shows which
-tree it belongs to. The grid column is revealed only for tree (casting)
-operations; ``employee_ir.js`` toggles it off ``Department Operation.tree_no_reqd``.
+tree it belongs to. ``Employee IR.tree_number`` mirrors that on the header for the
+common single-tree case; a receive spanning several trees leaves the header blank
+and is only readable per row. Both the header field and the grid column are revealed
+only for tree (casting) operations; ``employee_ir.js`` toggles them off
+``Department Operation.tree_no_reqd``.
 
 Physical stock and loss still move through the existing EIR engine
 (loss_stock_entry / main_slip_inject / MOP Log / SRE); the Tree Number's
@@ -554,6 +557,10 @@ def create_tree_on_issue(eir):
 		# ``on_submit``, when the document is already submitted.
 		row.db_set("tree_number", tree.name, update_modified=False)
 
+	# ...and on the header, so the tree is visible without scrolling the grid. An Issue
+	# builds exactly one tree, so this can never be ambiguous the way a Receive can.
+	eir.db_set("tree_number", tree.name, update_modified=False)
+
 	return tree.name
 
 
@@ -580,6 +587,11 @@ def unlink_tree_on_issue_cancel(eir):
 					"been received. Cancel the receive Employee IR(s) first."
 				).format(tree_name)
 			)
+
+	# Same reasoning as the per-row stamps below: the tree is force-deleted at the tail of
+	# this function, so a header pointing at it would be left dangling.
+	if eir.get("tree_number") and (not tree_name or eir.tree_number == tree_name):
+		eir.db_set("tree_number", None, update_modified=False)
 
 	for row in eir.employee_ir_operations:
 		if not row.manufacturing_work_order:
@@ -824,6 +836,20 @@ def pin_tree_numbers_on_receive(eir):
 		tree_name, _item = _row_tree_and_item(row)
 		if tree_name:
 			row.db_set("tree_number", tree_name, update_modified=False)
+
+	# Header summary, for the same reason ``_stamp_loss_tree`` keeps one: a single Link can
+	# only tell the truth when the whole document belongs to one tree. Most receives do; the
+	# minority that span two to four are left blank rather than stamped with whichever tree
+	# sorted first, and the grid column below still names each row's own tree.
+	trees = {
+		t
+		for t in (
+			getattr(row, "tree_number", None) for row in eir.employee_ir_operations
+		)
+		if t
+	}
+	if len(trees) == 1:
+		eir.db_set("tree_number", next(iter(trees)), update_modified=False)
 
 
 def update_tree_on_receive(eir, cancel=False):
