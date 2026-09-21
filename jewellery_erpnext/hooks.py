@@ -180,6 +180,10 @@ doc_events = {
 			# t_warehouse there, and validate_customer_gold_receipt (last before_validate
 			# hook) still rewrites inventory_type afterwards. See the function docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.set_target_inventory_dimensions",
+			# Header totals per material family (metal / finding / diamond / gemstone, plus
+			# stone pcs). At `validate` because before_validate's update_batches REPLACES
+			# self.items wholesale, and because the six fields are allow_on_submit = 0.
+			"jewellery_erpnext.jewellery_erpnext.customization.utils.material_weights.set_material_totals",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
 			# Per-role Stock Entry Type whitelist. Fires only on a direct user save of
 			# the Stock Entry itself, never on the dozen cascades that mint one from
