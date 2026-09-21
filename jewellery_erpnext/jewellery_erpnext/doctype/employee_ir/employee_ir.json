@@ -21,6 +21,7 @@
   "emp_ir_id",
   "column_break_lqjl2",
   "subcontracting",
+  "tree_number",
   "section_break_pk7m5",
   "operation",
   "employee",
@@ -164,6 +165,15 @@
    "fieldtype": "Select",
    "label": "Subcontracting",
    "options": "No\nYes"
+  },
+  {
+   "description": "Casting tree this Employee IR issued onto, or drew from. Stamped on submit, and only when the whole document belongs to one tree -- a receive whose work orders came off several trees leaves this blank and names them per row instead.",
+   "fieldname": "tree_number",
+   "fieldtype": "Link",
+   "label": "Tree Number",
+   "no_copy": 1,
+   "options": "Tree Number",
+   "read_only": 1
   },
   {
    "default": "0",
