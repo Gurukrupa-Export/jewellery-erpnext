@@ -260,7 +260,17 @@ def _owns_produce_row(se, se_type, row):
 		# So "only if still zero" is exactly wrong here: the wrong number is already there.
 		# ``auto_created`` still confines this to entries the app itself built, for the same
 		# reason it does on a plain Repack.
-		return bool(_get(se, "auto_created"))
+		#
+		# ``set_basic_rate_manually`` is excluded for the opposite reason. ERPNext skips such a
+		# row before it ever reaches the pooling (``if d.s_warehouse or
+		# d.set_basic_rate_manually: continue``), so the rate on it was put there on purpose
+		# and nothing has overwritten it. Measured on gk: 164 conversion produce rows carry the
+		# flag, every one of them with a real rate between 4,147.49 and 6,595.18, and 151 of
+		# those vouchers already balance. Taking them over would rewrite a deliberate number
+		# and gain nothing -- the same harm the plain Repack branch below guards against.
+		return bool(_get(se, "auto_created")) and not _get(
+			row, "set_basic_rate_manually"
+		)
 
 	return (
 		bool(_get(se, "auto_created"))

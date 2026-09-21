@@ -664,3 +664,21 @@ class TestMetalConversionLaneRates(IntegrationTestCase):
 
 		self.assertAlmostEqual(se.items[2]["basic_rate"], 145876.678899083, places=6)
 		self.assertAlmostEqual(se.items[5]["basic_rate"], 14213.748078353, places=6)
+
+	def test_a_manually_priced_produce_row_is_never_taken_over(self):
+		"""``set_basic_rate_manually`` means someone set that rate on purpose.
+
+		ERPNext skips such a row before the pooling ever reaches it, so the number standing
+		on it is deliberate. Measured on gk: 164 conversion produce rows carry the flag, all
+		with a real rate, and 151 of those vouchers already balance.
+		"""
+		rows = self._two_lane_rows()
+		rows[2]["set_basic_rate_manually"] = 1
+		rows[2]["basic_rate"] = 5123.45
+		rows[5]["set_basic_rate_manually"] = 1
+		rows[5]["basic_rate"] = 6595.18
+		se = self._conversion(rows)
+		set_process_loss_produce_rates(se)
+
+		self.assertEqual(se.items[2]["basic_rate"], 5123.45)
+		self.assertEqual(se.items[5]["basic_rate"], 6595.18)
