@@ -4,7 +4,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
 	stamp_produce_rows_from_consumes,
@@ -768,6 +768,89 @@ def create_metal_loss(doc, item, variant_of, metal_loss, batch_data, mop=None):
 	se.submit()
 
 
+# A loss variant always has to be able to RECEIVE stock; its template never does.
+# The app seeds the loss templates non-stock on purpose (create_test_data seeds ML
+# and FL with is_stock_item = 0, has_variants = 1), and ERPNext copies
+# is_stock_item down from template to variant whenever that field is listed in
+# Item Variant Settings -- which it is by default, since set_default_fields only
+# excludes has_variants, attributes and a handful of naming/price fields. So a
+# loss variant is BORN non-stock, and the only thing that corrects it is the
+# follow-up save in get_item_loss_item below.
+#
+# Worse, Item.on_update -> update_variants re-pushes the template's flags onto
+# every existing variant, and does it in a background job (enqueue_after_commit)
+# once a template has more than 30 variants -- always true for diamonds. So a
+# loss item that was corrected weeks ago silently goes non-stock again the next
+# time anyone saves its template.
+#
+# Without this guard the Process Loss Stock Entry dies inside ERPNext's
+# validate_item with a bare "<item> is not a stock Item", naming an item the
+# operator has never heard of and cannot fix.
+LOSS_ITEM_REQUIRED_FLAGS = {"is_stock_item": 1, "has_variants": 0}
+
+
+def ensure_loss_item_stockable(item_code):
+	"""Guarantee a resolved loss item can actually receive stock.
+
+	Call this at the POINT OF USE -- immediately before a Stock Entry is built
+	from the loss item -- not inside ``get_item_loss_item``. That function already
+	returns a doc it has just saved with ``is_stock_item = 1``, so a check there
+	would be provably redundant; what it cannot cover is the template's
+	``update_variants`` job committing in the gap between resolution and the Stock
+	Entry insert, which is exactly where the live failure happened.
+
+	Returns ``item_code`` unchanged so callers can wrap a resolution expression.
+	A correct item costs exactly one extra read, which is the normal case.
+
+	Repairs through ``frappe.db.set_value`` rather than ``doc.save()`` on purpose:
+	``Item.validate`` -> ``cant_change()`` throws outright when ``is_stock_item``
+	changes on an item that already has linked submitted documents, which would
+	turn a repairable state into a hard failure in the middle of a submit.
+	``update_modified=False`` keeps the repair from bumping ``modified``, so it
+	cannot feed back into the template's own variant push.
+	"""
+	if not item_code:
+		return item_code
+
+	current = frappe.db.get_value(
+		"Item", item_code, ["is_stock_item", "has_variants", "disabled"], as_dict=True
+	)
+	# Best effort, and deliberately so. A missing Item, or any answer that is not
+	# the mapping this asked for, means the flags cannot be read -- and this repair
+	# must never itself be what breaks a submit. Falling through leaves the
+	# pre-existing behaviour intact: the caller's own "could not resolve" guard and
+	# ERPNext's validate_item both report an unusable loss item far more clearly
+	# than a half-read of the Item master would.
+	if not isinstance(current, dict) or not current:
+		return item_code
+
+	if cint(current.get("disabled")):
+		frappe.throw(
+			_(
+				"Loss item <b>{0}</b> is disabled, so process loss cannot be booked "
+				"against it. Re-enable the item, or point the Variant Loss Table at "
+				"a different loss variant."
+			).format(item_code)
+		)
+
+	changed = {
+		field: value
+		for field, value in LOSS_ITEM_REQUIRED_FLAGS.items()
+		if cint(current.get(field)) != value
+	}
+	if not changed:
+		return item_code
+
+	frappe.db.set_value("Item", item_code, changed, update_modified=False)
+	# Logged rather than silent: this repairing repeatedly for the same item means
+	# its template is re-pushing non-stock flags, which is a data fix (drop
+	# is_stock_item from Item Variant Settings), not something code should hide.
+	frappe.logger("jewellery_erpnext").info(
+		f"ensure_loss_item_stockable: repaired {item_code} -> {changed}"
+	)
+	return item_code
+
+
 def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 	if loss_type:
 		variant_name = frappe.db.get_value(
@@ -808,6 +891,10 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 			{"parent": item},
 			["attribute as item_attribute", "attribute_value"],
 		),
+		# Born stockable, rather than inserted with the template's is_stock_item = 0
+		# and corrected by the save below. The correction is still needed for items
+		# that already exist, but a fresh one should never hit the database wrong.
+		stockable=True,
 	)
 
 	if loss_item:

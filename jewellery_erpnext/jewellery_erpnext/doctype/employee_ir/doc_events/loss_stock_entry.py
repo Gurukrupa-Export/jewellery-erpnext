@@ -819,6 +819,7 @@ def _resolve_loss_item(eir, row, table_name):
 		)
 
 	from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
+		ensure_loss_item_stockable,
 		get_item_loss_item,
 	)
 
@@ -832,7 +833,12 @@ def _resolve_loss_item(eir, row, table_name):
 				"variant_of={1}, loss_type={2} ({3} row {4})"
 			).format(eir.name, row.variant_of, loss_type, table_name, row.idx)
 		)
-	return loss_item
+	# Re-checked here even though get_item_loss_item already guarantees it: the
+	# template's update_variants push runs in a background job after commit once a
+	# template has more than 30 variants, so it can flip this item back to
+	# non-stock between resolution and se.insert(). ERPNext's validate_item would
+	# then reject the produce row with a bare "is not a stock Item".
+	return ensure_loss_item_stockable(loss_item)
 
 
 # ---------------------------------------------------------------------------

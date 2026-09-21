@@ -47,7 +47,7 @@
    "fieldname": "wo_receive_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Recd via Work Order",
+   "label": "Receive MWO",
    "read_only": 1,
    "description": "The part of Receive Qty credited by a casting Employee IR receive, i.e. metal drawn out of the tree by a work order. Provenance only: wo_receive_qty + manual_receive_qty = receive_qty, and it is Receive Qty - not this column - that feeds Pending Qty."
   },
@@ -56,18 +56,16 @@
    "fieldname": "manual_receive_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Recd via Tree Button",
+   "label": "Receive unused Material",
    "read_only": 1,
-   "description": "The part of Receive Qty credited by this tree's own Receive Material button (MSL -> Dept RM). Provenance only; see Recd via Work Order."
+   "description": "The part of Receive Qty credited by this tree's own Receive Material button (MSL -> Dept RM). Provenance only; see Receive MWO."
   },
   {
-   "columns": 1,
    "fieldname": "wo_received_gross_wt",
    "fieldtype": "Float",
-   "in_list_view": 1,
    "label": "Recd Gross Wt (WO)",
    "read_only": 1,
-   "description": "Total received gross weight booked by casting Employee IR receives against this tree for this metal item. This is the weight the employee returned - NOT the metal drawn from the tree, which is only the gain over the operation's gross weight (that is Recd via Work Order). Informational: it never enters the ledger arithmetic."
+   "description": "Total received gross weight booked by casting Employee IR receives against this tree for this metal item. This is the weight the employee returned - NOT the metal drawn from the tree, which is only the gain over the operation's gross weight (that is Receive MWO). Informational: it never enters the ledger arithmetic."
   },
   {
    "columns": 1,
