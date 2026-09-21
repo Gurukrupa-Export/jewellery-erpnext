@@ -53,9 +53,18 @@ automatic rows through submit, because Frappe sets ``docstatus = 1`` before
 the draft fixes it and always succeeds. Blocking it instead would mean throwing at
 an operator for an admin's change they had no part in.
 
-``validate_material_gate_left_nothing_to_book`` covers the remaining case: the
-flags emptied the automatic table and nothing was booked by hand, so the operator
-gets a message naming the flag instead of the generic "no loss details found".
+``validate_loss_gates_left_nothing_to_book`` covers the remaining case: the gates
+emptied the automatic table and nothing was booked by hand, so the operator gets a
+message naming the cause instead of the generic "no loss details found". It spans
+BOTH gates — the blanket flags here and ``finding_loss_gate``'s per-category table
+— because on an operation that configures both, either can be the half that
+removed the last eligible row, and naming only one blames the wrong setting.
+
+Neither gate throws from ``book_metal_loss`` any more. The per-category gate used
+to, testing the RAW ``gross_wt - received_gross_wt`` before
+``total_mannual_loss`` had been computed 57 lines further down, so a shortfall the
+operator had already hand-booked in carats could not suppress it and the document
+could not be saved at all. Do not reintroduce a save-time throw in either gate.
 
 Blocked manual rows are thrown on rather than silently dropped at Stock Entry
 creation, for the same reason ``finding_loss_gate`` gives: ``get_employee_ir_loss_map``
@@ -66,6 +75,13 @@ book a MOP Log loss with no matching stock movement.
 import frappe
 from frappe import _
 from frappe.utils import cint, flt
+
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_loss_gate import (
+	get_finding_category_map,
+	get_loss_booking_map,
+	is_loss_booking_blocked,
+)
+from jewellery_erpnext.utils import gram_to_carat
 
 # (Department Operation fieldname, Item.variant_of template, label for messages),
 # in the order the four checkboxes read on the form. This tuple is the single
@@ -182,19 +198,25 @@ def validate_loss_rows_against_material_gate(doc):
 		)
 
 
-def validate_material_gate_left_nothing_to_book(doc):
-	"""Explain an automatic loss table these flags emptied.
+def validate_loss_gates_left_nothing_to_book(doc):
+	"""Explain an automatic loss table the loss gates emptied.
 
-	When every eligible item in the operation balance is blocked, the automatic
-	table comes out empty and ``validate_loss_tables_required`` would raise its
-	generic "no loss details found" — which reads as a data problem and tells the
-	operator to book loss without saying why none was booked. This runs first and
-	names the flag instead.
+	Covers BOTH gates — the blanket ``dont_allow_loss_*`` flags and the older
+	per-finding-category ``finding_loss_booking`` table. Either can empty the
+	automatic pool, and on an operation that configures both, either can be the
+	half that emptied it. Reporting only one would blame the wrong setting: the
+	per-category message used to fire alone even when a ticked blanket flag was
+	what removed the last eligible row.
+
+	When the pool comes out empty and nothing was hand-booked either,
+	``validate_loss_tables_required`` would raise its generic "no loss details
+	found" — which reads as a data problem and tells the operator to book loss
+	without saying why none was booked. This runs first and names every cause.
 
 	Deliberately conservative: it throws ONLY when a re-read of the balance shows
-	every eligible row was blocked. If some eligible row was not blocked, the empty
-	table has a different cause and blaming the flags would mislead, so this stays
-	silent and lets the generic validator speak.
+	every eligible row was blocked by one gate or the other. If some eligible row
+	survived both, the empty table has a different cause and blaming the gates
+	would mislead, so this stays silent and lets the generic validator speak.
 
 	Caller is ``EmployeeIR.on_submit``. The guard clauses are ordered cheapest
 	first, so on the normal path (a populated loss table) it costs nothing.
@@ -220,8 +242,10 @@ def validate_material_gate_left_nothing_to_book(doc):
 	if baseline <= 0 or not pairs:
 		return
 
-	blocked_variants = get_blocked_loss_variants(getattr(doc, "operation", None))
-	if not blocked_variants:
+	operation = getattr(doc, "operation", None)
+	blocked_variants = get_blocked_loss_variants(operation)
+	booking_map = get_loss_booking_map(operation)
+	if not blocked_variants and not booking_map:
 		return
 
 	# One re-read of the balance, only ever on the failure path.
@@ -244,27 +268,54 @@ def validate_material_gate_left_nothing_to_book(doc):
 	if not eligible:
 		return
 
-	variant_map = get_variant_of_map(sorted(eligible))
-	hits = set()
+	variant_map = get_variant_of_map(sorted(eligible)) if blocked_variants else {}
+	category_map = get_finding_category_map(sorted(eligible)) if booking_map else {}
+
+	variant_hits = set()
+	category_hits = set()
 	for item_code in eligible:
 		variant = variant_map.get(item_code)
-		if variant not in blocked_variants:
-			# Something eligible survived the gate, so the flags are not the reason
-			# the table is empty.
-			return
-		hits.add(variant)
+		if variant in blocked_variants:
+			variant_hits.add(variant)
+			continue
+		if is_loss_booking_blocked(item_code, booking_map, category_map):
+			category_hits.add(category_map.get(item_code))
+			continue
+		# Something eligible survived both gates, so they are not the reason the
+		# table is empty.
+		return
+
+	causes = []
+	if variant_hits:
+		causes.append(
+			_("{0} ticked").format(
+				", ".join(
+					sorted(VARIANT_FLAG_LABELS.get(v, v) for v in variant_hits if v)
+				)
+			)
+		)
+	named_categories = sorted(c for c in category_hits if c)
+	if named_categories:
+		causes.append(
+			(
+				_("finding category {0} has Loss Booking turned off")
+				if len(named_categories) == 1
+				else _("finding categories {0} have Loss Booking turned off")
+			).format(", ".join(named_categories))
+		)
 
 	frappe.throw(
 		_(
-			"Manufacturing Work Order {0}: {1} g of loss is unbooked. With {2} ticked "
-			"on operation <b>{3}</b>, nothing in the operation balance could take it "
-			"automatically. Book the shortfall in {4} against an item this operation "
-			"still allows, or receive the full issued weight."
+			"Manufacturing Work Order {0}: {1} g of loss is unbooked. On operation "
+			"<b>{2}</b>, {3}, so nothing in the operation balance could take it "
+			"automatically. Book {1} g — that is {4} ct against a diamond or gemstone "
+			"— in {5}, or receive the full issued weight."
 		).format(
 			", ".join(sorted({p[0] for p in pairs if p[0]})),
 			baseline,
-			", ".join(sorted(VARIANT_FLAG_LABELS.get(v, v) for v in hits if v)),
 			doc.operation,
+			_(" and ").join(causes),
+			gram_to_carat(baseline),
 			MANUAL_TABLE_LABEL,
 		)
 	)
