@@ -77,6 +77,8 @@ import frappe
 from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.batch.batch import (
+	ALLOY_SOURCE_RATE_FIELDS,
+	METAL_SOURCE_RATE_FIELDS,
 	PURITY_TOLERANCE,
 	_resolve_metal_purity,
 )
@@ -111,6 +113,22 @@ def _is_alloy(item_code, cache):
 	return cache[item_code]
 
 
+def _first_rate(source, fieldnames):
+	"""First populated rate field on a source Batch, in preference order.
+
+	Mirrors ``batch._origin_row_rate``'s pool handling so a healed batch gets exactly the rate the
+	live blend would now produce. An alloy source accepts either field because the
+	``custom_is_alloy_group`` master flag decides where the writer stamps and is unset on kg-gk; a
+	metal source accepts ``custom_metal_rate`` only, because ``custom_alloy_rate`` on a metal batch
+	is the alloy blended into it, not its own rate.
+	"""
+	for fieldname in fieldnames:
+		rate = flt(source.get(fieldname))
+		if rate:
+			return rate
+	return 0.0
+
+
 def _blend_from_source_batches(batch, origins, alloy_cache):
 	"""Recovery 1 -- the fixed blend, qty-weighted and purity-converted, per pool."""
 	names = {row.batch_no for row in origins if row.batch_no}
@@ -136,11 +154,11 @@ def _blend_from_source_batches(batch, origins, alloy_cache):
 		source = rates.get(row.batch_no) or {}
 
 		if _is_alloy(row.item_code, alloy_cache):
-			alloy_value += flt(source.get("custom_alloy_rate")) * row_qty
+			alloy_value += _first_rate(source, ALLOY_SOURCE_RATE_FIELDS) * row_qty
 			alloy_qty += row_qty
 			continue
 
-		source_rate = flt(source.get("custom_metal_rate"))
+		source_rate = _first_rate(source, METAL_SOURCE_RATE_FIELDS)
 		source_purity = _resolve_metal_purity(row.item_code)
 		if target_purity and abs(source_purity - target_purity) > PURITY_TOLERANCE:
 			source_rate = (source_rate * target_purity) / 100
