@@ -92,8 +92,29 @@ class _EIROpRow(SimpleNamespace):
 		setattr(self, fieldname, value)
 
 
+class _EIRDoc(SimpleNamespace):
+	"""Employee IR parent that behaves like a real Document.
+
+	Same reasoning as ``_EIROpRow``, one level up. The casting code stamps the resolved
+	tree onto the EIR HEADER as well as onto its rows, and reaches for ``get``/``db_set``
+	to do it -- both of which ``frappe.model.document.Document`` provides and a bare
+	SimpleNamespace does not. Leaving them off made the fake diverge from the thing it
+	stands in for, so the tests blew up on the FAKE instead of exercising the code.
+	"""
+
+	def __init__(self, **kwargs):
+		kwargs.setdefault("tree_number", None)
+		super().__init__(**kwargs)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+	def db_set(self, fieldname, value, **kwargs):
+		setattr(self, fieldname, value)
+
+
 def _eir(rows, op="Casting WO", typ="Issue"):
-	return SimpleNamespace(
+	return _EIRDoc(
 		operation=op,
 		type=typ,
 		employee_ir_operations=[
@@ -419,7 +440,7 @@ class TestCastingIssueQtySeed(IntegrationTestCase):
 			metal_weight=7.657,
 			gross_wt=0.0,  # casting issue: no metal on the operation yet
 		)
-		eir = SimpleNamespace(
+		eir = _EIRDoc(
 			name="EIR-1",
 			company="C",
 			manufacturer="M",
@@ -487,7 +508,7 @@ class TestIssueStampsTreeOnEirRows(IntegrationTestCase):
 			)
 			for name in work_orders
 		}
-		eir = SimpleNamespace(
+		eir = _EIRDoc(
 			name="EIR-1",
 			company="C",
 			manufacturer="M",
@@ -537,6 +558,16 @@ class TestIssueStampsTreeOnEirRows(IntegrationTestCase):
 		eir, _tree = self._issue(["MWO-A"], casting=False)
 		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
 
+	def test_the_header_carries_the_new_tree(self):
+		# An Issue builds exactly one tree, so the header can always be filled -- unlike a
+		# Receive, which may draw from several and has to leave it blank.
+		eir, tree = self._issue(["MWO-A", "MWO-B"])
+		self.assertEqual(eir.tree_number, tree.name)
+
+	def test_a_non_casting_issue_leaves_the_header_blank(self):
+		eir, _tree = self._issue(["MWO-A"], casting=False)
+		self.assertIsNone(eir.tree_number)
+
 	def tearDown(self):
 		return super().tearDown()
 
@@ -553,11 +584,18 @@ class TestUnlinkTreeOnIssueCancel(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def _cancel(self, rows, tree_name="TREE-0001", casting=True):
-		"""rows: [(mwo, row_tree_number, live_mwo_tree_number)]."""
-		eir = SimpleNamespace(
+	def _cancel(
+		self, rows, tree_name="TREE-0001", casting=True, header_tree="TREE-0001"
+	):
+		"""rows: [(mwo, row_tree_number, live_mwo_tree_number)].
+
+		``header_tree`` defaults to the tree being deleted because that is what
+		``create_tree_on_issue`` would have stamped on the way out.
+		"""
+		eir = _EIRDoc(
 			name="EIR-1",
 			operation="Casting",
+			tree_number=header_tree,
 			employee_ir_operations=[
 				_EIROpRow(manufacturing_work_order=mwo, tree_number=row_tree)
 				for mwo, row_tree, _live in rows
@@ -621,6 +659,84 @@ class TestUnlinkTreeOnIssueCancel(IntegrationTestCase):
 	def test_a_non_casting_cancel_touches_nothing(self):
 		eir = self._cancel([("MWO-A", "TREE-0001", "TREE-0001")], casting=False)
 		self.assertEqual(eir.employee_ir_operations[0].tree_number, "TREE-0001")
+		self.assertEqual(eir.tree_number, "TREE-0001")
+
+	def test_the_header_stamp_is_cleared(self):
+		# The tree is force-deleted at the end of the cancel, so a header still pointing
+		# at it would be a dangling link -- the same reason the row stamps come off.
+		eir = self._cancel([("MWO-A", "TREE-0001", "TREE-0001")])
+		self.assertIsNone(eir.tree_number)
+
+	def test_a_header_re_stamped_onto_a_newer_tree_survives(self):
+		# Scoped to the tree being deleted, exactly as the row clear is: a re-issue may
+		# already have moved this EIR's header onto a tree that is still live.
+		eir = self._cancel(
+			[("MWO-A", "TREE-0002", "TREE-0002")], header_tree="TREE-0002"
+		)
+		self.assertEqual(eir.tree_number, "TREE-0002")
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestReceiveStampsTreeOnEirHeader(IntegrationTestCase):
+	"""``pin_tree_numbers_on_receive`` summarises the rows onto the header -- but only
+	when they agree.
+
+	One Link cannot hold two trees, and a receive legitimately spans several (the same
+	reason ``_stamp_loss_tree`` leaves the combined loss Stock Entry unstamped in that
+	case). Filling it with whichever tree sorted first would read as fact, so it stays
+	blank and the per-row column remains the answer.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _receive(self, row_trees):
+		"""Run pin_tree_numbers_on_receive over rows carrying `row_trees`.
+
+		A row that already has a tree short-circuits the resolve loop. A row that does NOT
+		falls through to ``_row_tree_and_item``, which loads the work order -- so the MWO
+		fetch is faked here rather than assumed away, and answers with a work order that is
+		on no tree either.
+		"""
+		eir = _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order="MWO-%d" % i, tree_number=tree)
+				for i, tree in enumerate(row_trees)
+			],
+		)
+		with patch.object(
+			tree_casting.frappe,
+			"get_cached_doc",
+			side_effect=lambda _dt, name: _MWODoc(name=name, tree_number=None),
+		):
+			tree_casting.pin_tree_numbers_on_receive(eir)
+		return eir
+
+	def test_one_tree_fills_the_header(self):
+		eir = self._receive(["TREE-0001", "TREE-0001"])
+		self.assertEqual(eir.tree_number, "TREE-0001")
+
+	def test_several_trees_leave_the_header_blank(self):
+		eir = self._receive(["TREE-0001", "TREE-0002"])
+		self.assertIsNone(eir.tree_number)
+
+	def test_the_rows_keep_their_trees_when_the_header_is_blank(self):
+		# The header abstaining must not cost the per-row answer -- that column is the
+		# whole fallback for a multi-tree receive.
+		eir = self._receive(["TREE-0001", "TREE-0002"])
+		self.assertEqual(
+			[row.tree_number for row in eir.employee_ir_operations],
+			["TREE-0001", "TREE-0002"],
+		)
+
+	def test_a_receive_on_no_tree_at_all_leaves_the_header_blank(self):
+		eir = self._receive([None, None])
+		self.assertIsNone(eir.tree_number)
 
 	def tearDown(self):
 		return super().tearDown()
@@ -1141,7 +1257,7 @@ class TestCastingGroupStamp(IntegrationTestCase):
 	def _stamp(self, mwos):
 		"""Run create_tree_on_issue over `mwos` (dict name->_MWODoc); return {name: updates_dict}."""
 		fake_tree = _FakeTreeDoc()  # .name == "TREE-TEST-0001"
-		eir = SimpleNamespace(
+		eir = _EIRDoc(
 			name="EIR-1",
 			company="C",
 			manufacturer="M",

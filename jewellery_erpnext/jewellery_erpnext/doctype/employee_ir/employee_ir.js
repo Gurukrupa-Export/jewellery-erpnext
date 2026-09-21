@@ -588,19 +588,52 @@ function set_child_table_item_filter(frm) {
 	};
 }
 
-// The Tree Number column is only ever filled for a tree (casting) operation -- see
-// doc_events/tree_casting.py. Showing it everywhere would put a permanently blank
-// column in every other department's grid, so reveal it off the same
-// Department Operation.tree_no_reqd flag the server keys on.
+// The Tree Number header field and grid column are only ever filled for a tree (casting)
+// operation -- see doc_events/tree_casting.py. Showing them everywhere would put a
+// permanently blank field on every other department's form and a permanently blank column
+// in its grid, so reveal both off the same Department Operation.tree_no_reqd flag the
+// server keys on.
 function toggle_tree_number_column(frm) {
 	const grid = frm.fields_dict.employee_ir_operations.grid;
+	const apply = (show) => {
+		grid.toggle_display("tree_number", show);
+		frm.toggle_display("tree_number", show);
+		if (show) describe_multi_tree_receive(frm);
+	};
 	if (!frm.doc.operation) {
-		grid.toggle_display("tree_number", false);
+		apply(false);
 		return;
 	}
 	frappe.db.get_value("Department Operation", frm.doc.operation, "tree_no_reqd").then((r) => {
-		grid.toggle_display("tree_number", !!(r.message && r.message.tree_no_reqd));
+		apply(!!(r.message && r.message.tree_no_reqd));
 	});
+}
+
+// The server stamps the header Tree Number only when the whole document belongs to one tree
+// (pin_tree_numbers_on_receive), because one Link cannot hold two. A receive whose work
+// orders came off several trees therefore arrives here with a blank header and the real
+// answer spread across the rows -- name those trees in the field description rather than
+// leaving the operator staring at an empty field.
+//
+// set_df_property writes through to the shared docfield, so the doctype's own description
+// has to be captured before the first override or it is lost for the rest of the session.
+let tree_number_base_description = null;
+
+function describe_multi_tree_receive(frm) {
+	const df = frm.fields_dict.tree_number.df;
+	if (tree_number_base_description === null) {
+		tree_number_base_description = df.description || "";
+	}
+	const trees = [
+		...new Set((frm.doc.employee_ir_operations || []).map((d) => d.tree_number).filter(Boolean)),
+	];
+	frm.set_df_property(
+		"tree_number",
+		"description",
+		frm.doc.tree_number || trees.length < 2
+			? tree_number_base_description
+			: __("This receive spans {0} trees: {1}", [trees.length, trees.join(", ")])
+	);
 }
 
 const FINDING_REPACK_FIELDS = ["finding_item1", "finding_wt1", "finding_item2", "finding_wt2"];
