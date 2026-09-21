@@ -712,11 +712,17 @@ def _origin(batch_no, item_code, qty, rate):
 _ALLOY_ITEM = "M-Genia-221"
 
 
-def _run_blend(batch, source_rates, se_type="Repack-Metal Conversion"):
+def _run_blend(batch, source_rates, se_type="Repack-Metal Conversion", items=None):
 	"""Drive ``batch_module.on_update`` with the site reads stubbed.
 
 	``source_rates`` maps batch name -> {custom_metal_rate, custom_alloy_rate}, i.e. what the
 	source Batch masters actually hold today.
+
+	``items`` overrides item facts per item code as ``{item_code: (item_group, attribute_count)}``.
+	It exists because the default fixture gives the alloy item BOTH ``item_group == "Alloy"`` AND a
+	single attribute, and every other item neither -- so the two arms of ``_is_alloy`` fire together
+	and deleting either one is invisible. Real data has each arm alone: gk holds 3 items in the Alloy
+	group with no attributes, and 385 one-attribute items outside it.
 	"""
 	db = MagicMock()
 	db.get_value.side_effect = lambda doctype, name=None, fieldname=None, **kw: (
@@ -733,7 +739,14 @@ def _run_blend(batch, source_rates, se_type="Repack-Metal Conversion"):
 			if name in wanted
 		]
 
+	facts = items or {}
+
 	def _get_doc(doctype, item_code=None, *a, **kw):
+		if item_code in facts:
+			group, attribute_count = facts[item_code]
+			return SimpleNamespace(
+				item_group=group, attributes=list(range(attribute_count))
+			)
 		if item_code == _ALLOY_ITEM:
 			return SimpleNamespace(item_group="Alloy", attributes=[1])
 		return SimpleNamespace(item_group="Metal - V", attributes=[1, 2, 3, 4])
@@ -1170,3 +1183,143 @@ class TestAlloyTargetNeverTakesTheMetalBlend(IntegrationTestCase):
 		)
 
 		self.assertAlmostEqual(batch.custom_alloy_rate, 55.0, places=4)
+
+
+class TestBlendPremisesThatNothingElsePinned(IntegrationTestCase):
+	"""Behaviours the blend relies on that no test held, found by mutation testing.
+
+	Each test here corresponds to a mutation that left the whole suite green. They are not new
+	behaviour -- the code is already correct on every one -- but a wrong implementation used to pass.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_the_source_batch_master_wins_over_the_frozen_row_rate(self):
+		"""The premise of ``_origin_row_rate``, and the entire point of preferring the master.
+
+		Every other blend test either sets the frozen ``rate`` to 0 or sets it equal to the source
+		master's rate, so putting the frozen copy FIRST kept the suite green. On gk, 1,129 conversion
+		origin rows carry a non-zero frozen rate and 187 of those differ from their source Batch's
+		``custom_metal_rate`` -- inverting the preference would restamp every one of them.
+		"""
+		batch = _BlendBatch(
+			item="M-G-24KT-99.9-Y",
+			custom_origin_entries=[
+				_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 150000.0)
+			],
+		)
+		_run_blend(
+			batch,
+			{"SRC-24KT": {"custom_metal_rate": 159000.0, "custom_alloy_rate": 0.0}},
+		)
+
+		self.assertAlmostEqual(
+			batch.custom_metal_rate,
+			159000.0,
+			places=4,
+			msg="the frozen ledger copy won over the source Batch's maintained rate",
+		)
+
+	def test_the_item_group_arm_of_is_alloy_stands_alone(self):
+		"""gk holds 3 items in the Alloy group with no attributes at all."""
+		batch = _BlendBatch(
+			custom_origin_entries=[_origin("SRC-ALLOY", "M-AL", 2.0, 0.0)],
+		)
+		_run_blend(
+			batch,
+			{"SRC-ALLOY": {"custom_metal_rate": 0.0, "custom_alloy_rate": 44.0}},
+			items={"M-AL": ("Alloy", 4)},
+		)
+
+		self.assertAlmostEqual(
+			batch.custom_alloy_rate,
+			44.0,
+			places=4,
+			msg="an Alloy-group item with several attributes was not treated as alloy",
+		)
+
+	def test_the_single_attribute_arm_of_is_alloy_stands_alone(self):
+		"""gk holds 385 one-attribute items outside the Alloy group."""
+		batch = _BlendBatch(
+			custom_origin_entries=[_origin("SRC-OTHER", "O-BB", 2.0, 0.0)],
+		)
+		_run_blend(
+			batch,
+			{"SRC-OTHER": {"custom_metal_rate": 0.0, "custom_alloy_rate": 7.5}},
+			items={"O-BB": ("Other Material - V", 1)},
+		)
+
+		self.assertAlmostEqual(
+			batch.custom_alloy_rate,
+			7.5,
+			places=4,
+			msg="a single-attribute item outside the Alloy group was not treated as alloy",
+		)
+
+	def test_alloy_source_with_no_maintained_rate_keeps_the_frozen_rate(self):
+		"""The alloy pool had no fallback test at all; the metal pool has three."""
+		batch = _BlendBatch(
+			custom_origin_entries=[_origin("SRC-ALLOY", _ALLOY_ITEM, 0.899, 62.0)],
+		)
+		_run_blend(
+			batch, {"SRC-ALLOY": {"custom_metal_rate": 0.0, "custom_alloy_rate": 0.0}}
+		)
+
+		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
+
+	def test_a_missing_alloy_source_batch_falls_back_to_the_frozen_rate(self):
+		"""Exercises the ``or {}`` guard on the alloy side; only the metal side had this."""
+		batch = _BlendBatch(
+			custom_origin_entries=[_origin("SRC-GONE", _ALLOY_ITEM, 0.899, 62.0)],
+		)
+		_run_blend(batch, {})
+
+		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
+
+	def test_a_zero_qty_origin_row_still_blends(self):
+		"""``row_qty = flt(row.qty) or 1.0``. 162 of gk's 1,429 conversion origin rows are qty 0/NULL.
+
+		Without the guard the pool is empty, ``_stamp_blended_rate`` returns on its empty-pool check
+		and the Batch Rate is never written -- silently.
+		"""
+		batch = _BlendBatch(
+			item="M-G-22KT-91.75-Y",
+			custom_origin_entries=[_origin("SRC-24KT", "M-G-24KT-99.9-Y", 0.0, 0.0)],
+		)
+		_run_blend(
+			batch,
+			{"SRC-24KT": {"custom_metal_rate": 159000.0, "custom_alloy_rate": 0.0}},
+		)
+
+		self.assertAlmostEqual(batch.custom_metal_rate, 145882.5, places=4)
+
+	def test_an_alloy_target_with_both_pools_still_withholds_the_metal_blend(self):
+		"""The gate must key on the TARGET, not on whether the alloy pool happens to be empty.
+
+		Both existing gate tests are single-pool, so a gate weakened to
+		``if not _is_alloy(doc.item) or alloy_qty:`` passed -- and under it this exact voucher stamps
+		6436.61 onto an alloy batch, the 104x over-valuation the gate exists to prevent.
+		"""
+		batch = _BlendBatch(
+			item=_ALLOY_ITEM,
+			custom_origin_entries=[
+				_origin("SRC-22KT", "M-G-22KT-91.9-Y", 4.17, 6436.61),
+				_origin("SRC-ALLOY", _ALLOY_ITEM, 1.0, 62.0),
+			],
+		)
+		_run_blend(
+			batch,
+			{
+				"SRC-22KT": {"custom_metal_rate": 6436.61, "custom_alloy_rate": 0.0},
+				"SRC-ALLOY": {"custom_metal_rate": 62.0, "custom_alloy_rate": 0.0},
+			},
+		)
+
+		self.assertEqual(
+			batch.custom_metal_rate,
+			0.0,
+			msg="the gate stopped firing once the alloy pool was non-empty",
+		)
+		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
