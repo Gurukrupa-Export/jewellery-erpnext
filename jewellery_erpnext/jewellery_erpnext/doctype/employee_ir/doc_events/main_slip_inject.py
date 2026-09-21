@@ -557,18 +557,36 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 	return transfer_segments + raw_purity
 
 
-def inject_extra_metal_for_eir_receive(eir, row):
+def inject_extra_metal_for_eir_receive(eir, row, extra_transfer_rows=None):
 	"""Per Employee IR Operation row gain, build + submit Stock Entries that
 	push the extra returned metal into the MOP via the MOP Log bridge.
 
+	``extra_transfer_rows`` are already-owned, already-batched rows some other producer wants
+	carried on the SAME Material Transfer (WORK ORDER) leg -- today the finding items poured by
+	``finding_repack.create_finding_repack_for_row``, which minted them into the very MSL
+	warehouse this transfer sources from. They ride the transfer for the same reason the gain
+	metal does: the MOP Log bridge writes a row for every SE line carrying
+	``manufacturing_operation``, so this is what puts their weight on the operation.
+
+	Each is ``{item_code, qty, batch_no, inventory_type, customer}``; the warehouses,
+	``manufacturing_operation`` and ``custom_manufacturing_work_order`` are supplied here so an
+	extra row is indistinguishable from a metal segment once appended.
+
 	Returns a list of created Stock Entry names (empty list if skipped).
 	"""
-	if not cint(getattr(eir, "is_raw_material", 0)):
+	extra_transfer_rows = extra_transfer_rows or []
+
+	# The two gates below decide whether a GAIN is injected. They must not decide whether the
+	# extra rows are carried: a receive that returns exactly what it took out still has findings
+	# to hand over, and dropping them here would strand them in the MSL warehouse.
+	has_gain = (
+		cint(getattr(eir, "is_raw_material", 0))
+		and (flt(row.received_gross_wt) - flt(row.gross_wt)) > 0
+	)
+	if not has_gain and not extra_transfer_rows:
 		return []
 
 	extra = flt(row.received_gross_wt) - flt(row.gross_wt)
-	if extra <= 0:
-		return []
 
 	dept_wh = _resolve_department_warehouse(eir.department)
 	if not dept_wh:
@@ -578,21 +596,117 @@ def inject_extra_metal_for_eir_receive(eir, row):
 			).format(eir.department)
 		)
 
-	if getattr(eir, "main_slip", None):
+	if has_gain and getattr(eir, "main_slip", None):
 		if _existing_injection_se(eir.name, row.name):
 			return []
 		target_items = _resolve_inject_metal_items(row.manufacturing_work_order, extra)
-		return _inject_via_main_slip_batches(eir, row, target_items, dept_wh)
+		created = _inject_via_main_slip_batches(eir, row, target_items, dept_wh)
+		# The Main Slip path mints one Stock Entry per batch segment, so there is no single
+		# transfer to append to; the extra rows get their own, built exactly the same way.
+		created += _transfer_extra_rows_only(eir, row, extra_transfer_rows, dept_wh)
+		return created
 
-	segments = _resolve_fallback_inject_segments(
-		eir, row.manufacturing_work_order, extra, dept_wh
+	segments = (
+		_resolve_fallback_inject_segments(
+			eir, row.manufacturing_work_order, extra, dept_wh
+		)
+		if has_gain
+		else []
 	)
 	existing_types = _existing_injection_se_types(eir.name, row.name)
+	if not segments:
+		return _transfer_extra_rows_only(
+			eir, row, extra_transfer_rows, dept_wh, existing_types
+		)
 	if _fallback_injection_fully_submitted(segments, existing_types):
-		return []
+		# The gain is already posted; anything left is the extra rows, which are only carried by
+		# a transfer this call has not made yet.
+		return _transfer_extra_rows_only(
+			eir, row, extra_transfer_rows, dept_wh, existing_types
+		)
 	return _inject_via_source_warehouse_fallback(
-		eir, row, segments, dept_wh, existing_types
+		eir, row, segments, dept_wh, existing_types, extra_transfer_rows
 	)
+
+
+def _already_transferred_batches(eir_name, row_name):
+	"""``{(item_code, batch_no)}`` already carried by a Material Transfer for this (eir, row).
+
+	Idempotency for the extra rows is keyed on the BATCH, not on "does a transfer exist". The
+	type-level key that guards the metal segments is wrong here in both directions: on the Main
+	Slip path a transfer always exists (one per batch segment) yet carries none of the extra rows,
+	and on a retry after a half-failed submit the extra rows' producer is already idempotent, so
+	a type-level skip would strand them in the MSL warehouse with nothing left to move them.
+
+	Each extra row owns a batch minted for it alone, which makes the pair an exact key.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT sed.item_code, sed.batch_no
+		FROM `tabStock Entry Detail` sed
+		JOIN `tabStock Entry` se ON se.name = sed.parent
+		WHERE se.employee_ir = %(eir)s
+		  AND se.custom_eir_operation_row = %(row)s
+		  AND se.stock_entry_type = %(se_type)s
+		  AND se.docstatus != 2
+		  AND IFNULL(sed.batch_no, '') != ''
+		""",
+		{
+			"eir": eir_name,
+			"row": row_name,
+			"se_type": MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
+		},
+		as_dict=True,
+	)
+	return {(r.item_code, r.batch_no) for r in rows}
+
+
+def _pending_extra_rows(eir_name, row_name, extra_transfer_rows):
+	"""The extra rows no Material Transfer for this (eir, row) is carrying yet."""
+	if not extra_transfer_rows:
+		return []
+	carried = _already_transferred_batches(eir_name, row_name)
+	if not carried:
+		return list(extra_transfer_rows)
+	return [
+		extra
+		for extra in extra_transfer_rows
+		if (extra.get("item_code"), extra.get("batch_no")) not in carried
+	]
+
+
+def _transfer_extra_rows_only(
+	eir, row, extra_transfer_rows, dept_wh, existing_types=None
+):
+	"""One Material Transfer (WORK ORDER) carrying ONLY the extra rows.
+
+	The "create" half of the attach-or-create contract: used when this row produces no gain
+	segments to append to (a flat or short receive), and when the Main Slip path's per-batch
+	entries leave nothing single to attach to.
+
+	``existing_types`` is accepted so callers that already hold it need not re-query, but it is
+	deliberately NOT used to decide whether to build -- see ``_already_transferred_batches``.
+	"""
+	pending = _pending_extra_rows(eir.name, row.name, extra_transfer_rows)
+	if not pending:
+		return []
+
+	source_wh = _resolve_source_warehouse_raw_material(eir)
+	if not source_wh:
+		frappe.throw(
+			_("Main Slip injection: MSL warehouse not configured for {0}").format(
+				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
+			)
+		)
+
+	se = _build_material_transfer_from_segments(
+		eir, row, [], source_wh, dept_wh, pending
+	)
+	se.flags.ignore_permissions = True
+	_apply_fifo_batches_to_stock_entry(se)
+	se.save()
+	se.submit()
+	return [se.name]
 
 
 def cancel_injections_for_eir(eir_name):
@@ -613,6 +727,12 @@ def cancel_injections_for_eir(eir_name):
 				[REPACK_STOCK_ENTRY_TYPE, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE],
 			],
 		},
+		# Newest first, explicitly. A Repack can PRODUCE stock that a later Material Transfer
+		# then moves away (the finding repack does exactly this), so the consumer has to be
+		# reversed before the producer or the producer's cancel hits a warehouse the consumer
+		# has already emptied. Creation order is the dependency order, so reversing it is
+		# always safe; relying on the backend's default ordering here is not.
+		order_by="creation desc, name desc",
 		pluck="name",
 	)
 	for se_name in se_names:
@@ -930,13 +1050,19 @@ def _purity_get(item_code, cache):
 # ---------------------------------------------------------------------------
 
 
-def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh, existing_types):
+def _inject_via_source_warehouse_fallback(
+	eir, row, segments, dept_wh, existing_types, extra_transfer_rows=None
+):
 	"""Submit Stock Entries for the resolved segments.
 
 	The single source is the employee/subcontractor MSL (Raw Material) warehouse;
 	all transfer and repack rows post against this one warehouse. ``existing_types``
 	is the set of stock_entry_types already auto-created for this (eir, row), so
 	this function never re-queries Stock Entry to check idempotency.
+
+	``extra_transfer_rows`` ride the Material Transfer leg built below -- this is the "append to
+	the existing transfer" half of the attach-or-create contract; ``_transfer_extra_rows_only``
+	is the other half, for when no transfer is built here.
 	"""
 	source_wh = _resolve_source_warehouse_raw_material(eir)
 	if not source_wh:
@@ -955,13 +1081,19 @@ def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh, existing_
 	out = []
 	if transfer_segs and MATERIAL_TRANSFER_STOCK_ENTRY_TYPE not in existing_types:
 		se_mt = _build_material_transfer_from_segments(
-			eir, row, transfer_segs, source_wh, dept_wh
+			eir, row, transfer_segs, source_wh, dept_wh, extra_transfer_rows
 		)
 		se_mt.flags.ignore_permissions = True
 		_apply_fifo_batches_to_stock_entry(se_mt)
 		se_mt.save()
 		se_mt.submit()
 		out.append(se_mt.name)
+	elif extra_transfer_rows:
+		# No transfer was built here (no transfer segments, or one already exists for this row),
+		# so the extra rows still need a carrier of their own.
+		out += _transfer_extra_rows_only(
+			eir, row, extra_transfer_rows, dept_wh, existing_types
+		)
 
 	if purity_segs and REPACK_STOCK_ENTRY_TYPE not in existing_types:
 		se_rp = _build_repack_from_purity_segments(
@@ -1177,11 +1309,16 @@ def _stamp_se_header(se, eir, row):
 
 
 def _build_material_transfer_from_segments(
-	eir, row, transfer_segments, source_wh, dept_wh
+	eir, row, transfer_segments, source_wh, dept_wh, extra_transfer_rows=None
 ):
 	"""Fallback path: one Material Transfer (WORK ORDER) SE from merged transfer segments.
 
 	All rows post from the single MSL ``source_wh`` to the MOP department warehouse.
+
+	``extra_transfer_rows`` (see ``inject_extra_metal_for_eir_receive``) are appended in exactly
+	the same shape as a metal segment, so the MOP Log bridge treats them identically -- the only
+	difference is that they already know their batch and its owner, which a metal segment leaves
+	to the FIFO pass.
 	"""
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
@@ -1200,6 +1337,28 @@ def _build_material_transfer_from_segments(
 				"use_serial_batch_fields": 1,
 			},
 		)
+	for extra in extra_transfer_rows or []:
+		item = {
+			"item_code": extra["item_code"],
+			"qty": extra["qty"],
+			"s_warehouse": source_wh,
+			"t_warehouse": dept_wh,
+			"uom": frappe.db.get_value("Item", extra["item_code"], "stock_uom")
+			or "Gram",
+			"manufacturing_operation": row.manufacturing_operation,
+			"custom_manufacturing_work_order": row.manufacturing_work_order,
+			"use_serial_batch_fields": 1,
+		}
+		# The batch is already resolved by the producer, so this row takes
+		# _expand_source_rows_for_fifo's "batch_no already set" early exit -- which is why its
+		# ownership has to travel with it here rather than being stamped by the FIFO pass.
+		if extra.get("batch_no"):
+			item["batch_no"] = extra["batch_no"]
+		if extra.get("inventory_type"):
+			item["inventory_type"] = extra["inventory_type"]
+		if extra.get("customer"):
+			item["customer"] = extra["customer"]
+		se.append("items", item)
 	return se
 
 
