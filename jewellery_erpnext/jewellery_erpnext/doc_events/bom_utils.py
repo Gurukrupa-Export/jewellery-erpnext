@@ -349,20 +349,36 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 		return 0
 
 	# Get Handling Rate of the Diamond if it is a cutomer provided Diamond
+	# rate = (
+	# 	diamond_price_list[0].get("handling_rate")
+	# 	+ (
+	# 		diamond_price_list[0].get("handling_rate")
+	# 		* (diamond_price_list[0].get("custom_outwork_handling_charges_in__") or 0)
+	# 	)
+	# 	+ (diamond_price_list[0].get("custom_outwork_handling_charges_rate_") or 0)
+	# 	if diamond.is_customer_item
+	# 	else diamond_price_list[0].get("rate")
+	# 	+ (
+	# 		diamond_price_list[0].get("rate")
+	# 		* (diamond_price_list[0].get("custom_outright_handling_charges_in_") or 0)
+	# 	)
+	# 	+ (diamond_price_list[0].get("custom_outright_handling_charges_rate") or 0)
+	# )
 	rate = (
-		diamond_price_list[0].get("handling_rate")
-		+ (
-			diamond_price_list[0].get("handling_rate")
-			* (diamond_price_list[0].get("custom_outwork_handling_charges_in__") or 0)
-		)
-		+ (diamond_price_list[0].get("custom_outwork_handling_charges_rate_") or 0)
-		if diamond.is_customer_item
-		else diamond_price_list[0].get("rate")
-		+ (
-			diamond_price_list[0].get("rate")
-			* (diamond_price_list[0].get("custom_outright_handling_charges_in_") or 0)
-		)
-		+ (diamond_price_list[0].get("custom_outright_handling_charges_rate") or 0)
+    (diamond_price_list[0].get("handling_rate") or 0)
+    + (
+        (diamond_price_list[0].get("handling_rate") or 0)
+        * (diamond_price_list[0].get("custom_outwork_handling_charges_in__") or 0)
+    )
+    + (diamond_price_list[0].get("custom_outwork_handling_charges_rate_") or 0)
+    if diamond.is_customer_item
+    else
+    (diamond_price_list[0].get("rate") or 0)
+    + (
+        (diamond_price_list[0].get("rate") or 0)
+        * (diamond_price_list[0].get("custom_outright_handling_charges_in_") or 0)
+    )
+    + (diamond_price_list[0].get("custom_outright_handling_charges_rate") or 0)
 	)
 
 	# Set the rate and total rate for the diamond
