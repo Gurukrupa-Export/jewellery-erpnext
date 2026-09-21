@@ -28,6 +28,18 @@ def carat_to_gram(carats, precision=3):
 	return flt(flt(carats, precision) * CARAT_TO_GRAM, precision)
 
 
+def gram_to_carat(grams, precision=3):
+	"""Convert a gram total back to carats, rounding exactly once.
+
+	The inverse of ``carat_to_gram``, for telling an operator how much to key into
+	a carat-denominated field when the figure they have been given is in grams --
+	the Employee IR loss baseline is grams, while a Diamond/Gemstone loss row is
+	carats. Display only; never feed the result back into a stored weight, because
+	``gram_to_carat(carat_to_gram(x))`` is not exactly ``x`` at precision 3.
+	"""
+	return flt(flt(grams, precision) / CARAT_TO_GRAM, precision)
+
+
 def clamp_negative_balance(qty, pcs=0):
 	"""What a MOP Log ``(item, batch)`` balance contributes to a HEADER tally.
 
