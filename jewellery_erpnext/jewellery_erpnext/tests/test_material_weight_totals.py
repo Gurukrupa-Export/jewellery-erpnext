@@ -9,10 +9,16 @@ had ever written them -- all four pre-existing fields read 0.000 on every one of
 submitted Stock Entries on the live site, which is how MAT-STE-28123 came to move 1.46 g of
 gold and 1.46 g of findings and report nothing.
 
+**Each total is in the unit of the rows it sums**: metal and finding in grams, diamond and
+gemstone in CARATS, with nothing converted anywhere. So every expected weight below is
+reachable by adding the qty values of the rows above it up on paper -- if one is not, the
+test is wrong, not the code. W25 asserts that property itself rather than a literal.
+
 Pure-logic per the suite convention (see test_stock_entry.py): plain-dict rows, no DB.
-``flt(x, 3)`` reaches ``frappe.get_system_settings("rounding_method")``, so the carat cases
-pin it -- otherwise flt swallows the lookup failure into 0.0 and the assertions pass
-vacuously against zeros.
+``flt(x, 3)`` reaches ``frappe.get_system_settings("rounding_method")``, and every case here
+goes through that final round, so all of them pin it -- otherwise flt swallows the lookup
+failure into 0.0 and the assertions pass vacuously against zeros. W00 proves the pin is
+live before any total is trusted.
 """
 
 from types import SimpleNamespace
@@ -20,6 +26,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils import (
 	material_weights as mw,
@@ -59,10 +66,15 @@ def transfer(variant, qty, **extra):
 
 
 def pinned_rounding():
-	"""flt(x, precision) reads the rounding method from system settings -- a real DB read."""
-	return patch.object(
-		frappe, "get_system_settings", return_value="Banker's Rounding (legacy)"
-	)
+	"""flt(x, precision) reads the rounding method from system settings -- a real DB read.
+
+	Pinned to the value the sites actually run ("Banker's Rounding", ties-to-even), not the
+	"(legacy)" variant that rounds ties away from zero. The two differ only at an exact
+	half, which used to be unreachable: carat_to_gram multiplied a 3-dp carat figure by 0.2,
+	and no value in 0-100 ct lands on a .0005 tie that way. Summing carats raw removes that
+	accident, so the pin has to match production rather than merely be deterministic.
+	"""
+	return patch.object(frappe, "get_system_settings", return_value="Banker's Rounding")
 
 
 class _Base(IntegrationTestCase):
@@ -73,6 +85,21 @@ class _Base(IntegrationTestCase):
 	def totals(self, rows):
 		with pinned_rounding():
 			return mw.material_totals(rows)
+
+
+# ---------------------------------------------------------------------------
+# W00: the harness itself -- everything below is worthless without it
+# ---------------------------------------------------------------------------
+class TestRoundingIsPinned(_Base):
+	def test_w00_flt_actually_rounds_under_the_pin(self):
+		"""Without a bound site flt(x, 3) swallows the get_system_settings failure and
+		returns 0.0, which would let every weight assertion below pass vacuously against
+		zeros. Fail here rather than everywhere, silently."""
+		with pinned_rounding():
+			self.assertAlmostEqual(flt(1.0, 3), 1.0, places=3)
+			# Deliberately not a tie: at an exact half the answer depends on the rounding
+			# method, and this test is about flt working at all, not about which method.
+			self.assertAlmostEqual(flt(0.1234, 3), 0.123, places=3)
 
 
 # ---------------------------------------------------------------------------
@@ -177,33 +204,75 @@ class TestExclusions(_Base):
 
 
 # ---------------------------------------------------------------------------
-# W20-W24: carats
+# W20-W26: stones -- carats in the rows, carats in the header, no conversion
 # ---------------------------------------------------------------------------
-class TestCaratConversion(_Base):
-	def test_w20_diamond_converted_to_grams(self):
+class TestStoneWeightsStayInCarats(_Base):
+	def test_w20_diamond_total_is_carats_not_grams(self):
+		"""1 ct in the grid is 1.000 in the header. It used to stamp 0.200."""
 		t = self.totals([row("D", 1.0, uom="Carat", pcs="3")])
-		self.assertAlmostEqual(t["diamond"], 0.2, places=3)
+		self.assertAlmostEqual(t["diamond"], 1.0, places=3)
 
-	def test_w21_converted_once_on_the_total_not_per_row(self):
-		"""0.497 ct + 0.067 ct: per-row rounding gives 0.099 + 0.013 = 0.112, the total
-		converts to 0.113. See the drift note in mop_log."""
+	def test_w21_the_pair_that_used_to_report_0_113_g(self):
+		"""0.497 ct + 0.067 ct -- the numbers the old carat_to_gram path was built around,
+		from the drift note in mop_log. The header is now the carat sum, 0.564."""
 		t = self.totals([row("D", 0.497, uom="Carat"), row("D", 0.067, uom="Carat")])
-		self.assertAlmostEqual(t["diamond"], 0.113, places=3)
+		self.assertAlmostEqual(t["diamond"], 0.564, places=3)
 
-	def test_w22_gemstone_converted_independently(self):
+	def test_w22_diamond_and_gemstone_total_independently(self):
 		t = self.totals([row("D", 1.0, uom="Carat"), row("G", 2.0, uom="Carat")])
-		self.assertAlmostEqual(t["diamond"], 0.2, places=3)
-		self.assertAlmostEqual(t["gemstone"], 0.4, places=3)
+		self.assertAlmostEqual(t["diamond"], 1.0, places=3)
+		self.assertAlmostEqual(t["gemstone"], 2.0, places=3)
 
-	def test_w23_stone_row_already_in_grams_is_not_scaled(self):
-		"""Not present on the live site today, but scaling a gram figure by 0.2 would
-		invent a loss."""
+	def test_w23_stone_row_keyed_in_grams_is_summed_as_given(self):
+		"""Not reachable on the live site -- all 456,861 D and 53,393 G rows are Carat on
+		both uom and stock_uom -- but loss_stock_entry's ``row.stock_uom or "Gram"`` keeps
+		it theoretically live. Such a row contradicts its own Item.stock_uom, so its Stock
+		Ledger Entry is already wrong; multiplying it by 5 here would hide that behind a
+		plausible header instead of leaving the bad row visible in the grid."""
 		t = self.totals([row("D", 0.5, uom="Gram")])
 		self.assertAlmostEqual(t["diamond"], 0.5, places=3)
 
-	def test_w24_falls_back_to_stock_uom_when_uom_is_blank(self):
-		t = self.totals([row("D", 1.0, uom=None, stock_uom="Carat")])
-		self.assertAlmostEqual(t["diamond"], 0.2, places=3)
+	def test_w24_uom_is_not_read_at_all(self):
+		"""The same 2 ct lands the same way whatever the row claims its unit is -- there is
+		no uom branch left to take a wrong turn in. That is the point: every other carat
+		tally in the app (mop_log, manufacturing_operation.get_material_wt) sums raw too,
+		so this header and Manufacturing Operation.diamond_wt cannot disagree."""
+		for uom in ("Carat", "Gram", "Nos", None, ""):
+			with self.subTest(uom=uom):
+				t = self.totals([row("D", 2.0, uom=uom)])
+				self.assertAlmostEqual(t["diamond"], 2.0, places=3)
+
+	def test_w25_every_header_total_equals_its_child_row_sum(self):
+		"""The regression this change is about. Each header weight is the plain sum of the
+		qty column it describes, so an operator adding the grid up by hand gets the header
+		number back. Asserted against the row list itself rather than a literal, so it
+		cannot quietly drift out of agreement with its own fixture."""
+		rows = [
+			row("M", 1.23),
+			produce("ML", 0.523),
+			row("F", 0.015),
+			produce("FL", 0.23),
+			row("D", 0.497, uom="Carat", pcs="12"),
+			row("D", 0.067, uom="Carat", pcs="5"),
+			produce("G", 2.418, uom="Carat", pcs="3"),
+		]
+		t = self.totals(rows)
+		for bucket, variants in (
+			("metal", ("M", "ML")),
+			("finding", ("F", "FL")),
+			("diamond", ("D",)),
+			("gemstone", ("G",)),
+		):
+			expected = sum(r["qty"] for r in rows if r["custom_variant_of"] in variants)
+			self.assertAlmostEqual(t[bucket], expected, places=3, msg=bucket)
+
+	def test_w26_rounded_once_on_the_total_not_per_row(self):
+		"""The surviving half of "convert once, on the total". Stock Entry Detail.qty is
+		decimal(21,9) whatever precision the form displays, so a row really can carry more
+		than 3 dp. Three 0.1234 ct rows are 0.3702 ct -> 0.370; rounding each row to 3 dp
+		first would report 0.369."""
+		t = self.totals([row("D", 0.1234, uom="Carat") for _ in range(3)])
+		self.assertAlmostEqual(t["diamond"], 0.370, places=3)
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +352,9 @@ class TestSetMaterialTotals(_Base):
 			mw.set_material_totals(doc)
 		self.assertAlmostEqual(doc.custom_total_metal_weight, 1.23, places=3)
 		self.assertAlmostEqual(doc.custom_total_finding_weight, 1.23, places=3)
-		self.assertAlmostEqual(doc.custom_total_diamond_weight, 0.4, places=3)
+		# 2 ct of diamond stamps 2.0, the grams pair beside it stays grams -- the two units
+		# sit in adjacent header fields and each keeps its own.
+		self.assertAlmostEqual(doc.custom_total_diamond_weight, 2.0, places=3)
 		self.assertAlmostEqual(doc.custom_total_gemstone_weight, 0.0, places=3)
 		self.assertEqual(doc.custom_total_diamond_pcs, 8)
 		self.assertEqual(doc.custom_total_gemstone_pcs, 0)
