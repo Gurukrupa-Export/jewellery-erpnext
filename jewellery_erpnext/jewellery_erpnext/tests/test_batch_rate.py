@@ -987,3 +987,103 @@ class TestBlendGuard(IntegrationTestCase):
 		)
 
 		self.assertIn(("custom_metal_rate", 0.0), batch.writes)
+
+
+class TestAlloyPoolFieldMismatch(IntegrationTestCase):
+	"""An alloy batch's rate can sit on EITHER rate field, and the blend must find it.
+
+	``batch/doc_events/utils._rate_field_for_item`` decides where to STAMP from the
+	``Item Group.custom_is_alloy_group`` master flag; ``batch._is_alloy`` decides where to READ from
+	the literal item group. That flag is a per-site master -- SET on gk, UNSET on kg-gk -- so the two
+	agree on gk and disagree in production. Where it is unset, every alloy rate is stamped onto
+	``custom_metal_rate`` while the blend looks only at ``custom_alloy_rate`` and reads 0. Measured on
+	kg-gk: 0 of 6 Alloy-group batches carry ``custom_alloy_rate``; all 5 that are priced carry
+	``custom_metal_rate``.
+
+	That is MAT-STE-17967 -- one voucher, two lanes, the same alloy source batch, and the Customer
+	Goods batch minted with Alloy Rate 0.00 while its Regular Stock sibling got 62.00.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_alloy_source_rate_on_the_metal_field_is_still_found(self):
+		"""The kg-gk shape: KG2D082-ML7-04 holds 62 on custom_metal_rate and nothing on alloy."""
+		batch = _BlendBatch(
+			custom_origin_entries=[_origin("SRC-ALLOY", _ALLOY_ITEM, 0.899, 0.0)],
+		)
+		_run_blend(
+			batch, {"SRC-ALLOY": {"custom_metal_rate": 62.0, "custom_alloy_rate": 0.0}}
+		)
+
+		self.assertAlmostEqual(
+			batch.custom_alloy_rate,
+			62.0,
+			places=4,
+			msg="the alloy pool ignored a rate stamped on custom_metal_rate",
+		)
+
+	def test_an_alloy_rate_still_wins_over_the_metal_field(self):
+		"""Preference order, not a free-for-all: where both are set, the alloy field is the answer."""
+		batch = _BlendBatch(
+			custom_origin_entries=[_origin("SRC-ALLOY", _ALLOY_ITEM, 0.45, 0.0)],
+		)
+		_run_blend(
+			batch,
+			{"SRC-ALLOY": {"custom_metal_rate": 999.0, "custom_alloy_rate": 62.0}},
+		)
+
+		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
+
+	def test_a_metal_source_never_borrows_the_alloy_rate(self):
+		"""The asymmetry, and the reason it has to be one.
+
+		On gk, 27 non-alloy batches carry ``custom_alloy_rate`` with ``custom_metal_rate`` at 0. On a
+		metal batch that field holds the alloy blended INTO the metal, not the metal's own rate, so a
+		symmetric fallback would value gold at alloy prices.
+		"""
+		batch = _BlendBatch(
+			item="M-G-24KT-99.9-Y",
+			custom_origin_entries=[_origin("SRC-24KT", "M-G-24KT-99.9-Y", 10.0, 0.0)],
+		)
+		_run_blend(
+			batch, {"SRC-24KT": {"custom_metal_rate": 0.0, "custom_alloy_rate": 62.0}}
+		)
+
+		self.assertEqual(
+			batch.custom_metal_rate,
+			0.0,
+			msg="a metal source borrowed the alloy rate -- gold valued at alloy prices",
+		)
+
+	def test_the_mat_ste_17967_shape_end_to_end(self):
+		"""Both sources keep their rate on custom_metal_rate, exactly as kg-gk holds them."""
+		batch = _BlendBatch(
+			item="M-G-22KT-91.75-Y",
+			custom_origin_entries=[
+				_origin(
+					"GJCU0009-2F09-M-G-24KT-99.9-Y-05", "M-G-24KT-99.9-Y", 10.0, 0.0
+				),
+				_origin("KG2D082-ML7-04", _ALLOY_ITEM, 0.899, 0.0),
+			],
+		)
+		_run_blend(
+			batch,
+			{
+				"GJCU0009-2F09-M-G-24KT-99.9-Y-05": {
+					"custom_metal_rate": 159000.0,
+					"custom_alloy_rate": 0.0,
+				},
+				"KG2D082-ML7-04": {"custom_metal_rate": 62.0, "custom_alloy_rate": 0.0},
+			},
+		)
+
+		# 159000 x 91.75 / 100 -- the Batch Rate the voucher actually produced
+		self.assertAlmostEqual(batch.custom_metal_rate, 145882.5, places=4)
+		self.assertAlmostEqual(
+			batch.custom_alloy_rate,
+			62.0,
+			places=4,
+			msg="the Customer Goods batch came out with Alloy Rate 0.00 again",
+		)

@@ -274,6 +274,12 @@ def _resolve_metal_purity(item_code):
 		return 0.0
 
 
+# Which Batch fields may hold a source row's own rate, in preference order. See
+# ``_origin_row_rate`` for why the alloy side takes two and the metal side one.
+ALLOY_SOURCE_RATE_FIELDS = ("custom_alloy_rate", "custom_metal_rate")
+METAL_SOURCE_RATE_FIELDS = ("custom_metal_rate",)
+
+
 def _source_batch_rates(rows):
 	"""``{batch_no: {custom_metal_rate, custom_alloy_rate}}`` for every origin row, in one query."""
 	names = {row.batch_no for row in rows if row.batch_no}
@@ -290,8 +296,8 @@ def _source_batch_rates(rows):
 	}
 
 
-def _origin_row_rate(row, fieldname, batch_rates):
-	"""The rate to blend for one origin row: the SOURCE BATCH's own pool rate first.
+def _origin_row_rate(row, fieldnames, batch_rates):
+	"""The rate to blend for one origin row: the SOURCE BATCH's own rate first.
 
 	``row.rate`` is a COPY of ``Serial and Batch Entry.incoming_rate``, frozen by
 	``serial_and_batch_bundle.doc_events.utils.update_parent_batch_id`` on bundle ``after_insert``.
@@ -314,11 +320,32 @@ def _origin_row_rate(row, fieldname, batch_rates):
 	two-pool blend for hand-built batches from exactly this input, and which is demonstrably the
 	path that produces correct numbers here.
 
-	The frozen ledger rate stays as the fallback, so a source batch with no maintained rate blends
-	exactly as it does today.
+	``fieldnames`` is a PREFERENCE ORDER, not one field, because the writer and this reader do not
+	agree on what "alloy" means. ``batch/doc_events/utils.py`` picks the field to stamp from
+	``Item Group.custom_is_alloy_group`` (and ``variant_of in ("M", "F")``); ``_is_alloy`` below asks
+	whether the item group is literally ``"Alloy"`` or the item carries a single attribute. Where that
+	flag is unset the two disagree, and the flag is a per-site master: it is SET on gk and UNSET on
+	kg-gk. So on kg-gk the writer stamps an alloy batch's rate onto ``custom_metal_rate`` while this
+	blend looks for it on ``custom_alloy_rate`` and reads 0 -- measured there, 0 of 6 Alloy-group
+	batches carry ``custom_alloy_rate`` and all 5 that are priced carry ``custom_metal_rate``. That is
+	why MAT-STE-17967 minted a Customer Goods batch with Alloy Rate 0 while its Regular Stock sibling,
+	blended off the same source batch, got 62.
+
+	An ALLOY source therefore accepts either field: the batch holds nothing but alloy, so whichever
+	field is populated describes alloy. A METAL source accepts ``custom_metal_rate`` ONLY. The
+	asymmetry is load-bearing, not tidiness -- on gk, 27 non-alloy batches carry ``custom_alloy_rate``
+	with ``custom_metal_rate`` at 0, and on a metal batch that field holds the alloy blended INTO the
+	metal, a different quantity. Accepting it as a metal rate would value gold at alloy prices.
+
+	The frozen ledger rate stays as the last fallback, so a source batch with no maintained rate
+	blends exactly as it does today.
 	"""
-	rate = flt((batch_rates.get(row.batch_no) or {}).get(fieldname))
-	return rate or flt(row.rate)
+	source = batch_rates.get(row.batch_no) or {}
+	for fieldname in fieldnames:
+		rate = flt(source.get(fieldname))
+		if rate:
+			return rate
+	return flt(row.rate)
 
 
 def _stamp_blended_rate(doc, fieldname, value, pool_qty):
@@ -403,12 +430,12 @@ def on_update(doc, method):
 		row_qty = flt(row.qty) or 1.0
 		if _is_alloy(row.item_code):
 			alloy_value += (
-				_origin_row_rate(row, "custom_alloy_rate", batch_rates) * row_qty
+				_origin_row_rate(row, ALLOY_SOURCE_RATE_FIELDS, batch_rates) * row_qty
 			)
 			alloy_qty += row_qty
 		else:
 			source_purity = _resolve_metal_purity(row.item_code)
-			source_rate = _origin_row_rate(row, "custom_metal_rate", batch_rates)
+			source_rate = _origin_row_rate(row, METAL_SOURCE_RATE_FIELDS, batch_rates)
 			if target_purity and abs(source_purity - target_purity) > PURITY_TOLERANCE:
 				converted_rate = (source_rate * target_purity) / 100
 			else:
