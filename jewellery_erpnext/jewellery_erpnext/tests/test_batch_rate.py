@@ -1087,3 +1087,86 @@ class TestAlloyPoolFieldMismatch(IntegrationTestCase):
 			places=4,
 			msg="the Customer Goods batch came out with Alloy Rate 0.00 again",
 		)
+
+
+class TestAlloyTargetNeverTakesTheMetalBlend(IntegrationTestCase):
+	"""A conversion that PRODUCES an alloy item must not stamp the gold blend onto it.
+
+	Nothing validates against a Repack-Metal Conversion producing an alloy item, and gk holds three
+	such batches -- GE2D082-ML7-14, GE2D082-ML7-15 (M-Genia-221) and GE2D082-MAL-03 (M-AL), all
+	Nov-Dec 2024. ``on_update`` classifies only the SOURCE rows, never ``doc.item``, so such a batch
+	would be stamped with the blended rate of the gold it was made from.
+
+	That is the single way an alloy batch can hold a ``custom_metal_rate`` that is not its own rate
+	-- and it is exactly the case ``ALLOY_SOURCE_RATE_FIELDS`` cannot tell apart, because a later
+	conversion consuming that batch as an alloy source would read the gold rate as the alloy price.
+	Replayed on the GE2D082-ML7-14 shape: 6436.61 instead of 62.00, a 104x over-valuation.
+
+	The shape has 0 instances on gk, kg-gk and alfarsi today, so this closes the precondition rather
+	than repairing data.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_an_alloy_target_is_not_stamped_with_the_metal_blend(self):
+		"""The GE2D082-ML7-14 shape: alloy item produced from a 22KT gold source."""
+		batch = _BlendBatch(
+			item=_ALLOY_ITEM,
+			custom_origin_entries=[
+				_origin("SRC-22KT", "M-G-22KT-91.9-Y", 4.17, 6436.61)
+			],
+		)
+		_run_blend(
+			batch,
+			{"SRC-22KT": {"custom_metal_rate": 6436.61, "custom_alloy_rate": 0.0}},
+		)
+
+		self.assertEqual(
+			batch.custom_metal_rate,
+			0.0,
+			msg="an alloy batch was stamped with the gold blend",
+		)
+		self.assertNotIn(
+			"custom_metal_rate",
+			[field for field, _ in batch.writes],
+			msg="the metal blend was written onto an alloy target",
+		)
+
+	def test_a_metal_target_still_takes_both_rates(self):
+		"""The gate is NOT symmetric, and this is the test that says so.
+
+		MAT-STE-17967's 22KT batch legitimately carries its own metal rate AND the rate of the alloy
+		blended into it. Gating the alloy stamp as well would break the ordinary conversion.
+		"""
+		batch = _BlendBatch(
+			item="M-G-22KT-91.75-Y",
+			custom_origin_entries=[
+				_origin("SRC-24KT", "M-G-24KT-99.9-Y", 10.0, 0.0),
+				_origin("SRC-ALLOY", _ALLOY_ITEM, 0.899, 0.0),
+			],
+		)
+		_run_blend(
+			batch,
+			{
+				"SRC-24KT": {"custom_metal_rate": 159000.0, "custom_alloy_rate": 0.0},
+				"SRC-ALLOY": {"custom_metal_rate": 62.0, "custom_alloy_rate": 0.0},
+			},
+		)
+
+		self.assertAlmostEqual(batch.custom_metal_rate, 145882.5, places=4)
+		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
+
+	def test_an_alloy_target_still_gets_its_own_alloy_blend(self):
+		"""The gate blocks only the metal pool; a genuine alloy-from-alloy blend still lands."""
+		batch = _BlendBatch(
+			item=_ALLOY_ITEM,
+			custom_origin_entries=[_origin("SRC-ALLOY", _ALLOY_ITEM, 2.0, 0.0)],
+		)
+		_run_blend(
+			batch,
+			{"SRC-ALLOY": {"custom_metal_rate": 0.0, "custom_alloy_rate": 55.0}},
+		)
+
+		self.assertAlmostEqual(batch.custom_alloy_rate, 55.0, places=4)

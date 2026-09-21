@@ -447,4 +447,19 @@ def on_update(doc, method):
 	metal_rate = (metal_value / metal_qty) if metal_qty else 0.0
 
 	_stamp_blended_rate(doc, "custom_alloy_rate", alloy_rate, alloy_qty)
-	_stamp_blended_rate(doc, "custom_metal_rate", metal_rate, metal_qty)
+
+	# An ALLOY target never takes the metal blend. Nothing stops a conversion from producing an
+	# alloy item -- gk holds three such batches (GE2D082-ML7-14, -15, GE2D082-MAL-03, all Nov-Dec
+	# 2024) and no validation blocks it -- and without this gate such a batch would be stamped with
+	# the blended rate of the GOLD it was made from. That is the one way an alloy batch can acquire a
+	# ``custom_metal_rate`` that is not its own rate, which is precisely the case
+	# ``ALLOY_SOURCE_RATE_FIELDS`` cannot distinguish: a later conversion consuming that batch as an
+	# alloy source would read the gold rate as the alloy's price. Replayed on the GE2D082-ML7-14
+	# shape that is 6436.61 instead of 62.00, a 104x over-valuation.
+	#
+	# NOT symmetric. A METAL target legitimately carries both: ``custom_metal_rate`` is its own
+	# value and ``custom_alloy_rate`` is the alloy blended into it. MAT-STE-17967's 22KT batch is
+	# exactly that -- 145882.50 and 62.00 -- so gating the alloy stamp too would break the ordinary
+	# case this module exists to serve.
+	if not _is_alloy(doc.item):
+		_stamp_blended_rate(doc, "custom_metal_rate", metal_rate, metal_qty)
