@@ -508,3 +508,53 @@ class TestBackfillCascade(_BackfillTestCase):
 			_run(site)
 
 		self.assertEqual(_healed(site), {"ROOT"})
+
+
+class TestAlloyTargetIsNotHealedToAMetalRate(_BackfillTestCase):
+	"""The repair path honours the same alloy-target gate as ``batch.on_update``.
+
+	Worse here than at runtime: a repair run can CREATE the precondition and consume it in the same
+	pass -- heal an alloy batch to a gold rate, then blend that rate into a dependent's alloy pool,
+	because ``ALLOY_SOURCE_RATE_FIELDS`` accepts ``custom_metal_rate`` for an alloy source.
+
+	Latent on today's data (no alloy-item batch is a candidate on gk, kg-gk or alfarsi), but the
+	shape is real: gk holds GE2D082-ML7-14, -15 and GE2D082-MAL-03, conversion-produced alloy
+	batches, and only their 2024 creation date keeps them below BLEND_INTRODUCED.
+	"""
+
+	def _site(self, target_item):
+		return _Site(
+			batches={
+				"TGT": {
+					"item": target_item,
+					"custom_metal_rate": 0,
+					"reference_name": "SE-1",
+					"custom_voucher_detail_no": "ROW-1",
+				},
+				"SRC": {"item": "M-G-24KT-99.9-Y", "custom_metal_rate": 159000.0},
+			},
+			origins={
+				"TGT": [{"batch_no": "SRC", "item_code": "M-G-24KT-99.9-Y", "qty": 1.0}]
+			},
+			roots=["TGT"],
+		)
+
+	def test_an_alloy_target_is_not_given_a_metal_rate(self):
+		site = _run(self._site(ALLOY_ITEM))
+
+		self.assertEqual(
+			_rates_written(site),
+			[],
+			msg="the repair wrote a gold rate onto an alloy batch",
+		)
+		self.assertEqual(
+			site.mirror_updates,
+			[],
+			msg="a gold rate was mirrored onto Stock Entry Detail for an alloy batch",
+		)
+
+	def test_a_metal_target_is_still_healed(self):
+		"""The gate must not turn the patch into a no-op."""
+		site = _run(self._site("M-G-22KT-91.75-Y"))
+
+		self.assertAlmostEqual(_rates_written(site)[0], 145882.5, places=4)

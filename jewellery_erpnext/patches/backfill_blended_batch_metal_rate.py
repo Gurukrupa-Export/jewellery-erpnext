@@ -315,6 +315,20 @@ def _repair_one(name, alloy_cache, sources_used):
 	if not metal_rate:
 		return 0.0
 
+	# An ALLOY target never takes the metal blend -- the same gate ``batch.on_update`` applies. The
+	# runtime refuses it because ``ALLOY_SOURCE_RATE_FIELDS`` would later read that stray
+	# ``custom_metal_rate`` as the alloy's own price; this path is worse, because the repair run can
+	# CREATE the precondition and then consume it within the same pass -- heal an alloy batch to a
+	# gold rate, then blend that rate into a dependent's alloy pool. Demonstrated on the test
+	# harness: an alloy target healed to 159000.0, and a consumer's ``custom_alloy_rate`` written
+	# 159000.0 against a true alloy price of 62.00.
+	#
+	# Returning 0.0 rather than skipping just the write is deliberate: the dependency walk keys on
+	# batches that received a rate, and an alloy batch that was refused one must not become a
+	# healed root that drags its dependents along behind a value we declined to write.
+	if _is_alloy(batch.item, alloy_cache):
+		return 0.0
+
 	frappe.db.set_value(
 		"Batch", name, "custom_metal_rate", metal_rate, update_modified=False
 	)
