@@ -28,6 +28,9 @@ def update_batch_details(self):
 	# shared across rows so the same batch is not double-allocated when multiple
 	# rows draw from the same item/warehouse (see get_fifo_batches)
 	consumed = {}
+	# Shared across rows so get_fifo_batches' candidate-batch fetch is memoized
+	# per (item_code, warehouse) instead of re-run for every row (see se_utils.py).
+	batch_cache = {}
 	for row in child_table:
 		warehouse = row.get("s_warehouse") or self.get("source_warehouse")
 		if row.get("batch") and get_batch_qty(row.batch, warehouse) >= row.qty:
@@ -35,7 +38,7 @@ def update_batch_details(self):
 			temp_row.batch_no = temp_row.batch
 			rows_to_append += [temp_row]
 		else:
-			rows_to_append += get_fifo_batches(self, row, consumed)
+			rows_to_append += get_fifo_batches(self, row, consumed, batch_cache)
 
 	if rows_to_append:
 		if self.doctype == "Diamond Conversion":

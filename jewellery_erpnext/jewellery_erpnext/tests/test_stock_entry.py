@@ -1196,7 +1196,7 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 				return {n: frappe._dict(dept_map.get(n, {})) for n in names}
 			return {n: frappe._dict(batch_map.get(n, {})) for n in names}
 
-		def _fifo(se, row, consumed):
+		def _fifo(se, row, consumed, batch_cache=None):
 			fifo_calls.append((row, dict(consumed)))
 			return list(fifo_result or [])
 
@@ -1370,47 +1370,68 @@ class TestCustomStockEntryValidateWithMaterialRequest(_StockEntryTestCase):
 			ste_detail=None,
 		)
 
+	@staticmethod
+	def _fake_bulk_map(ste_map=None, mri_map=None):
+		"""Stand-in for ``bulk_map``, keyed by doctype the way the real prefetch calls it."""
+		ste_map = ste_map or {}
+		mri_map = mri_map or {}
+
+		def _bulk_map(doctype, names, fields):
+			if doctype == "Stock Entry Detail":
+				return ste_map
+			if doctype == "Material Request Item":
+				return mri_map
+			raise AssertionError(f"unexpected bulk_map doctype {doctype!r}")
+
+		return _bulk_map
+
 	def test_matching_item_passes(self):
 		cse = self._cse(items=[self._mr_item_row()])
-		with patch.object(cse_mod.frappe, "get_value", return_value=None), patch.object(
-			cse_mod.frappe.db,
-			"get_value",
-			return_value=frappe._dict(
+		mri_map = {
+			"MRI-1": frappe._dict(
 				item_code="M-G-18KT",
 				custom_alternative_item=None,
 				warehouse="WH-1",
 				idx=1,
-			),
+				parent="MR-1",
+			)
+		}
+		with patch.object(
+			cse_mod, "bulk_map", side_effect=self._fake_bulk_map(mri_map=mri_map)
 		), patch.object(cse_mod.frappe, "throw") as throw:
 			cse.validate_with_material_request()
 		throw.assert_not_called()
 
 	def test_alternative_item_matches(self):
 		cse = self._cse(items=[self._mr_item_row(item_code="ALT-1")])
-		with patch.object(cse_mod.frappe, "get_value", return_value=None), patch.object(
-			cse_mod.frappe.db,
-			"get_value",
-			return_value=frappe._dict(
+		mri_map = {
+			"MRI-1": frappe._dict(
 				item_code="M-G-18KT",
 				custom_alternative_item="ALT-1",
 				warehouse="WH-1",
 				idx=1,
-			),
+				parent="MR-1",
+			)
+		}
+		with patch.object(
+			cse_mod, "bulk_map", side_effect=self._fake_bulk_map(mri_map=mri_map)
 		), patch.object(cse_mod.frappe, "throw") as throw:
 			cse.validate_with_material_request()
 		throw.assert_not_called()
 
 	def test_mismatched_item_raises_mapping_mismatch(self):
 		cse = self._cse(items=[self._mr_item_row(item_code="M-OTHER")])
-		with patch.object(cse_mod.frappe, "get_value", return_value=None), patch.object(
-			cse_mod.frappe.db,
-			"get_value",
-			return_value=frappe._dict(
+		mri_map = {
+			"MRI-1": frappe._dict(
 				item_code="M-G-18KT",
 				custom_alternative_item=None,
 				warehouse="WH-1",
 				idx=1,
-			),
+				parent="MR-1",
+			)
+		}
+		with patch.object(
+			cse_mod, "bulk_map", side_effect=self._fake_bulk_map(mri_map=mri_map)
 		), patch.object(
 			cse_mod.frappe, "throw", side_effect=frappe.MappingMismatchError
 		) as throw:
@@ -1423,46 +1444,66 @@ class TestCustomStockEntryValidateWithMaterialRequest(_StockEntryTestCase):
 		row.ste_detail = "SED-9"
 		cse = self._cse(outgoing_stock_entry="SE-OUT", items=[row])
 
-		def _get_value(doctype, *args, **kwargs):
-			if doctype == "Stock Entry Detail":
-				return frappe._dict(
-					material_request="MR-PARENT", material_request_item="MRI-PARENT"
-				)
-			return None
-
-		with patch.object(
-			cse_mod.frappe, "get_value", side_effect=_get_value
-		), patch.object(
-			cse_mod.frappe.db,
-			"get_value",
-			return_value=frappe._dict(
+		ste_map = {
+			"SED-9": frappe._dict(
+				material_request="MR-PARENT", material_request_item="MRI-PARENT"
+			)
+		}
+		mri_map = {
+			"MRI-PARENT": frappe._dict(
 				item_code="M-G-18KT",
 				custom_alternative_item=None,
 				warehouse="WH-1",
 				idx=1,
-			),
-		) as db_get_value, patch.object(cse_mod.frappe, "throw") as throw:
+				parent="MR-PARENT",
+			)
+		}
+		bulk_map_mock = MagicMock(
+			side_effect=self._fake_bulk_map(ste_map=ste_map, mri_map=mri_map)
+		)
+		with patch.object(cse_mod, "bulk_map", bulk_map_mock), patch.object(
+			cse_mod.frappe, "throw"
+		) as throw:
 			cse.validate_with_material_request()
 		throw.assert_not_called()
-		# the Material Request Item lookup used the parent SE detail's MR fields
-		filters = db_get_value.call_args[0][1]
-		self.assertEqual(filters["name"], "MRI-PARENT")
-		self.assertEqual(filters["parent"], "MR-PARENT")
+		# the Material Request Item prefetch was keyed off the parent SE detail's MRI
+		mri_call = next(
+			c
+			for c in bulk_map_mock.call_args_list
+			if c.args[0] == "Material Request Item"
+		)
+		self.assertIn("MRI-PARENT", list(mri_call.args[1]))
 
 	def test_add_to_transit_continues(self):
 		cse = self._cse(add_to_transit=True, items=[self._mr_item_row()])
-		with patch.object(cse_mod.frappe, "get_value", return_value=None), patch.object(
-			cse_mod.frappe.db,
-			"get_value",
-			return_value=frappe._dict(
+		mri_map = {
+			"MRI-1": frappe._dict(
 				item_code="M-G-18KT",
 				custom_alternative_item=None,
 				warehouse="WH-1",
 				idx=1,
-			),
+				parent="MR-1",
+			)
+		}
+		with patch.object(
+			cse_mod, "bulk_map", side_effect=self._fake_bulk_map(mri_map=mri_map)
 		), patch.object(cse_mod.frappe, "throw") as throw:
 			cse.validate_with_material_request()
 		throw.assert_not_called()
+
+	def test_missing_material_request_item_raises_mapping_mismatch(self):
+		"""A material_request set with no matching Material Request Item row is
+		a mismatch, not something to pass silently -- same as the old code's
+		(crash-prone) behaviour when frappe.db.get_value found nothing."""
+		cse = self._cse(items=[self._mr_item_row()])
+		with patch.object(
+			cse_mod, "bulk_map", side_effect=self._fake_bulk_map()
+		), patch.object(
+			cse_mod.frappe, "throw", side_effect=frappe.MappingMismatchError
+		) as throw:
+			with self.assertRaises(frappe.MappingMismatchError):
+				cse.validate_with_material_request()
+		self.assertIn("Item for row", throw.call_args[0][0])
 
 
 # --------------------------------------------------- customization before_validate chain

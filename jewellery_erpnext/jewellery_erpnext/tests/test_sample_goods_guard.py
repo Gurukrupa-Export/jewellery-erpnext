@@ -39,8 +39,14 @@ class _Doc(SimpleNamespace):
 class _Row(_Doc):
 	"""Stock Entry / FIFO row: adds ``.db_set`` and ``.as_dict``."""
 
-	def db_set(self, key, value):
-		setattr(self, key, value)
+	def db_set(self, key, value=None):
+		"""Mirror real ``Document.db_set``: ``key`` may be a single fieldname or a
+		``{field: value}`` dict (get_fifo_batches now writes rows that way)."""
+		if isinstance(key, dict):
+			for k, v in key.items():
+				setattr(self, k, v)
+		else:
+			setattr(self, key, value)
 
 	def as_dict(self):
 		return dict(self.__dict__)
@@ -358,7 +364,9 @@ class TestSampleFifoExclusion(IntegrationTestCase):
 		with patch.object(
 			se_utils, "get_auto_batch_nos", return_value=batch_data
 		), patch.object(
-			se_utils, "is_customer_sample_batch", side_effect=lambda b: b == "B-SAMPLE"
+			se_utils,
+			"get_sample_batches",
+			side_effect=lambda names: {"B-SAMPLE"} & set(names),
 		), patch.object(se_utils, "bulk_map", side_effect=_bulk_map), patch(
 			"frappe.db.get_value", side_effect=_get_value
 		):
