@@ -977,9 +977,15 @@ def _stamp_loss_tree(se, eir):
 
 	Unlike the per-row injection Stock Entries, this is ONE Repack spanning every loss row on the
 	Employee IR, so a single header field can only tell the truth when the whole document belongs
-	to one casting tree. On live data most IRs do (a minority span two to four), and stamping a
-	multi-tree IR with whichever tree happened to sort first would be worse than leaving it blank:
-	the tree netting would then subtract another tree's loss from this one's pool.
+	to one casting tree. A CASTING Receive now always does -- a work order from a second tree is
+	rejected by ``tree_casting.validate_single_casting_tree`` -- so for those this always
+	resolves.
+
+	The abstain stays for everything outside that invariant: NON-casting receives (a finding
+	repack keeps its tree past casting, so one can legitimately span several), documents created
+	before the rule, and submits that skipped ``validate``. Stamping one of those with whichever
+	tree happened to sort first would be worse than leaving it blank -- the tree netting would
+	then subtract another tree's loss from this one's pool.
 	"""
 	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 		row_tree_name,
