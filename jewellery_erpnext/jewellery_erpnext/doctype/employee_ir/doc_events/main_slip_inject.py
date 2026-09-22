@@ -1299,8 +1299,9 @@ def _stamp_se_header(se, eir, row):
 	an operation pulls out of the employee's MSL warehouse is invisible to the tree that put it
 	there -- the tree's own netting then over-states what it is still owed, because the draws that
 	legitimately consumed it never appear. Resolved through ``row_tree_name`` rather than read off
-	``row.tree_number``: ``pin_tree_numbers_on_receive`` runs after this loop has already submitted
-	its Stock Entries, so the row field is still empty here and only the ``MWO`` fallback answers.
+	``row.tree_number`` directly: on a casting Receive ``resolve_receive_tree_numbers`` has already
+	filled the row in ``validate`` and the helper short-circuits on it, but a non-casting operation
+	that still carries a tree (a finding repack) is answered only by its ``MWO`` fallback.
 
 	Imported inside the function to keep this module's import graph free of ``tree_casting``.
 	"""

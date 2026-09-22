@@ -14,12 +14,18 @@ drives a Tree Number:
               status Issued -> Partially Received -> Received.
 
 ``Employee IR Operation.tree_number`` is therefore populated on BOTH sides of a
-casting round trip -- by ``create_tree_on_issue`` on the way out and by
-``pin_tree_numbers_on_receive`` on the way back -- so either document shows which
-tree it belongs to. ``Employee IR.tree_number`` mirrors that on the header for the
-common single-tree case; a receive spanning several trees leaves the header blank
-and is only readable per row. Both the header field and the grid column are revealed
-only for tree (casting) operations; ``employee_ir.js`` toggles them off
+casting round trip, so either document shows which tree it belongs to:
+
+  * Issue   -> ``create_tree_on_issue``, at submit, when the tree is minted.
+  * Receive -> ``resolve_receive_tree_numbers`` from ``EmployeeIR.validate``, on every
+              save including the draft ones, so the operator sees the tree while
+              scanning; ``pin_tree_numbers_on_receive`` at submit is the backstop that
+              pins it against a later re-issue.
+
+``Employee IR.tree_number`` mirrors that on the header for the common single-tree
+case; a receive spanning several trees leaves the header blank and is only readable
+per row (``single_tree_or_none``). Both the header field and the grid column are
+revealed only for tree (casting) operations; ``employee_ir.js`` toggles them off
 ``Department Operation.tree_no_reqd``.
 
 Physical stock and loss still move through the existing EIR engine
@@ -614,6 +620,8 @@ def unlink_tree_on_issue_cancel(eir):
 			)
 
 	if tree_name:
+		_scrub_draft_tree_stamps(tree_name)
+
 		# The Issue Material button may have created physical Dept->MSL Stock Entries stamped
 		# with this tree; cancel them so they aren't orphaned when the tree is deleted.
 		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_stock_entry import (
@@ -622,6 +630,49 @@ def unlink_tree_on_issue_cancel(eir):
 
 		cancel_tree_stock_entries(tree_name)
 		frappe.delete_doc("Tree Number", tree_name, ignore_permissions=True, force=True)
+
+
+def _scrub_draft_tree_stamps(tree_name):
+	"""Clear this tree off every OTHER document's draft rows before it is force-deleted.
+
+	``resolve_receive_tree_numbers`` stamps the tree on a Receive while it is still a draft, so
+	by the time the casting Issue is cancelled other documents can be pointing at this tree --
+	and the cancel is allowed to proceed, because a draft receive has drawn nothing from it.
+
+	The tree is force-deleted moments later, which bypasses frappe's own link check
+	(``delete_doc.py``), and ``_validate_links`` runs BEFORE ``validate``
+	(``document.py``: ``_validate_links`` then ``run_before_save_methods``). A left-behind stamp
+	could therefore never be re-resolved away: the next save of that draft would die on
+	"Could not find Row #n: Tree Number: <name>", on a read_only field the operator has no way
+	to clear. So it is scrubbed here, while the tree is still known to be going away.
+
+	Scoped to ``docstatus = 0``. A SUBMITTED receive's stamp is the pin its own cancel reverses
+	against and must never be touched -- and such a receive blocks this cancel anyway.
+
+	Raw SQL rather than ``set_value`` with a filter dict: this is a cross-parent sweep over an
+	unbounded set of documents, and it must not drag arbitrary draft Employee IRs through
+	``validate()`` in the middle of a cancel.
+	"""
+	frappe.db.sql(
+		"""
+		UPDATE `tabEmployee IR Operation` eiro
+		INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+		SET eiro.tree_number = NULL
+		WHERE eiro.parenttype = 'Employee IR'
+		  AND eiro.tree_number = %(tree)s
+		  AND eir.docstatus = 0
+		""",
+		{"tree": tree_name},
+	)
+	frappe.db.sql(
+		"""
+		UPDATE `tabEmployee IR`
+		SET tree_number = NULL
+		WHERE tree_number = %(tree)s
+		  AND docstatus = 0
+		""",
+		{"tree": tree_name},
+	)
 
 
 # ---------------------------------------------------------------------------
@@ -654,9 +705,11 @@ def row_tree_name(row):
 	Entry, say) should not pay for ``_metal_item``'s attribute resolution, nor inherit its failure
 	modes on a work order whose metal attributes are incomplete.
 
-	The row value is empty for most of a Receive: ``pin_tree_numbers_on_receive`` runs after the
-	operation loop has already built and submitted its Stock Entries, so the ``MWO`` fallback is
-	what actually resolves the tree at stamping time.
+	On a casting Receive the row value is already there: ``resolve_receive_tree_numbers`` fills it
+	in ``validate``, on the submit save too, so this short-circuits on the row and returns exactly
+	what the ``MWO`` fallback would have answered. The fallback still does the work for a
+	non-casting operation (a finding repack keeps its tree past casting) and for a submit that
+	skipped validate.
 
 	Reads a single field with ``get_cached_value`` rather than loading the work order, and so
 	returns ``None`` for a work order that no longer exists instead of raising. That tolerance is
@@ -828,8 +881,33 @@ def _credit_wo_received_gross(tree_name, item_totals, cancel, prec):
 		)
 
 
+def single_tree_or_none(names):
+	"""The one Tree Number every row agrees on, or ``None``.
+
+	A single Link can only tell the truth when the whole document belongs to one tree. Most
+	receives do; the minority that span two to four abstain rather than name whichever tree
+	sorted first, and the per-row grid column stays the answer -- ``employee_ir.js`` names them
+	in the field description instead.
+
+	Extracted because the rule is stated in four places -- the draft resolve below, the submit
+	pin, the combined loss Stock Entry stamp in ``loss_stock_entry._stamp_loss_tree`` and the
+	client-side header -- and a divergence would surface as a header naming a tree the grid
+	does not.
+	"""
+	trees = {name for name in names if name}
+	return next(iter(trees)) if len(trees) == 1 else None
+
+
 def pin_tree_numbers_on_receive(eir):
-	"""Stamp the resolved tree onto each operation row so cancel reverses the right one."""
+	"""Stamp the resolved tree onto each operation row so cancel reverses the right one.
+
+	Normally a no-op now: ``resolve_receive_tree_numbers`` runs in ``EmployeeIR.validate`` on the
+	submit save itself and has already written both the rows and the header. Kept as the backstop
+	for a submit that skips validate (``flags.ignore_validate``) and for rows appended
+	server-side after it, because the pin is what makes a later cancel reverse THIS voucher's
+	tree even once a re-issue has repointed ``MWO.tree_number`` at a brand-new one -- it must not
+	depend on validate having run. ``db_set`` because the document is already submitted here.
+	"""
 	for row in eir.employee_ir_operations:
 		if getattr(row, "tree_number", None):
 			continue
@@ -837,19 +915,68 @@ def pin_tree_numbers_on_receive(eir):
 		if tree_name:
 			row.db_set("tree_number", tree_name, update_modified=False)
 
-	# Header summary, for the same reason ``_stamp_loss_tree`` keeps one: a single Link can
-	# only tell the truth when the whole document belongs to one tree. Most receives do; the
-	# minority that span two to four are left blank rather than stamped with whichever tree
-	# sorted first, and the grid column below still names each row's own tree.
-	trees = {
-		t
-		for t in (
-			getattr(row, "tree_number", None) for row in eir.employee_ir_operations
-		)
-		if t
+	header = single_tree_or_none(
+		getattr(row, "tree_number", None) for row in eir.employee_ir_operations
+	)
+	if header:
+		eir.db_set("tree_number", header, update_modified=False)
+
+
+def resolve_receive_tree_numbers(eir):
+	"""Fill ``tree_number`` on a casting Receive's rows (and header) from the live work orders.
+
+	Called from ``EmployeeIR.validate`` so the operator can see which tree each scanned work
+	order is coming off while the document is still a DRAFT, instead of finding out only after
+	submit. ``employee_ir.js`` fills the same value the instant a code is scanned; this is the
+	authoritative recompute, the same stance ``set_repeat_receive_flag`` takes -- a read_only
+	field is never trusted from the client.
+
+	OVERWRITES rather than fills-if-empty, and is gated on type and operation but deliberately
+	NOT on docstatus, so it runs on the submit save too. Nothing is pinned before submit, so an
+	already-present value is only ever an EARLIER save's answer; keeping it would let this
+	receive draw from a tree the work order has since left. Re-resolving on every save --
+	including the one that submits -- is what makes the value every submit-time consumer reads
+	(``_row_tree_and_item``, ``row_tree_name``, ``tree_draw_by_tree``, ``update_tree_on_receive``
+	and its cancel path, ``lock_trees_for_eir``, the Stock Entry stampers) byte-identical to the
+	``MWO`` fallback they used before this existed. The ledger arithmetic therefore cannot move.
+
+	Issue is untouched: its tree does not exist until ``create_tree_on_issue`` mints it at submit,
+	and on a RE-issue the work order still points at the OLD tree until then -- filling it here
+	would display last round's tree as if it were this one's.
+
+	One batched read for the whole grid rather than ``_row_tree_and_item``'s per-row
+	``get_cached_doc``: this runs on every save of a document that routinely carries dozens of
+	rows, and only the tree name is wanted, not the metal attributes.
+	"""
+	if eir.type != "Receive" or not is_casting_eir(eir):
+		return
+
+	names = {
+		row.manufacturing_work_order
+		for row in eir.employee_ir_operations
+		if row.manufacturing_work_order
 	}
-	if len(trees) == 1:
-		eir.db_set("tree_number", next(iter(trees)), update_modified=False)
+	trees = (
+		dict(
+			frappe.get_all(
+				"Manufacturing Work Order",
+				{"name": ["in", list(names)]},
+				["name", "tree_number"],
+				as_list=True,
+			)
+		)
+		if names
+		else {}
+	)
+
+	for row in eir.employee_ir_operations:
+		row.tree_number = trees.get(row.manufacturing_work_order) or None
+
+	# Unconditional, unlike the submit-time pin above: a draft loses rows as well as gaining
+	# them, so a header left over from a previous save has to be able to go back to blank.
+	eir.tree_number = single_tree_or_none(
+		row.tree_number for row in eir.employee_ir_operations
+	)
 
 
 def update_tree_on_receive(eir, cancel=False):
