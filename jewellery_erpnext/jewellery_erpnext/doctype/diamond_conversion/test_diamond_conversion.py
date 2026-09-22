@@ -42,7 +42,26 @@ def _attribute_value(name, height=0.0, weight=0.0, is_range=1):
 	)
 
 
-class TestDiamondConversionSieveBand(IntegrationTestCase):
+class DiamondConversionUnitTestCase(IntegrationTestCase):
+	"""Base for the fully-mocked cases below -- no fixtures, so no test-record generation.
+
+	``IntegrationTestCase.setUpClass`` infers the doctype from the module path and calls
+	``make_test_records("Diamond Conversion")``, which walks every link field and tries to build
+	records for Employee, Company, Warehouse, Batch and the rest. On CI that import chain reaches
+	``erpnext.setup.doctype.employee.test_employee`` -> ``erpnext.tests.utils``, which runs
+	``BootStrapTestData()`` at module scope and blows up before any of our assertions run.
+
+	These cases mock every query they make, so they need none of those records. Stubbing
+	``setUpClass`` is the same thing ``TestDiamondConversion`` below already does for the
+	``validate_purity`` cases.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+
+class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):
 	"""``validate_sieve_size_band`` -- the "Sieve Size to Sieve Size" band containment rule."""
 
 	def _doc(self, sources, targets, conversion_type=SIEVE_TO_SIEVE):
@@ -328,7 +347,7 @@ class TestDiamondConversionSieveBand(IntegrationTestCase):
 				self.assertIsNone(_parse_sieve_bounds(malformed))
 
 
-class TestDiamondConversionSourceBatches(IntegrationTestCase):
+class TestDiamondConversionSourceBatches(DiamondConversionUnitTestCase):
 	"""``validate_source_batches`` -- conversion output may not be conversion input."""
 
 	def _doc(self, rows, conversion_type=SIEVE_TO_SIEVE):
@@ -381,7 +400,7 @@ class TestDiamondConversionSourceBatches(IntegrationTestCase):
 		mock_provenance.assert_not_called()
 
 
-class TestDiamondConversionBatchProvenance(IntegrationTestCase):
+class TestDiamondConversionBatchProvenance(DiamondConversionUnitTestCase):
 	"""``get_diamond_conversion_target_batches`` -- the two-hop Batch -> SE -> conversion walk."""
 
 	def _side_effect(self, batches, details, stock_entries):
