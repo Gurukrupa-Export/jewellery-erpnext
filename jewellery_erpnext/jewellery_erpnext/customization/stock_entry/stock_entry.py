@@ -115,6 +115,11 @@ class CustomStockEntry(StockEntry):
 			# rows (via get_fifo_batches) and already-filled rows kept below record
 			# their consumption here.
 			consumed = {}
+			# Shared across rows for the same reason: several rows commonly draw the
+			# same item from the same source warehouse to different target
+			# departments, and get_fifo_batches memoizes its candidate-batch fetch
+			# on this dict so that shape only re-fetches once instead of per row.
+			batch_cache = {}
 			# Prefetch the Item / Department fields read per row below (and again in
 			# the rebuild loop) so the loops issue one query each instead of O(rows).
 			# get_fifo_batches only splits a source row into more rows of the SAME
@@ -165,7 +170,9 @@ class CustomStockEntry(StockEntry):
 							temp_row = copy.deepcopy(row)
 							rows_to_append += [temp_row]
 						else:
-							rows_to_append += get_fifo_batches(self, row, consumed)
+							rows_to_append += get_fifo_batches(
+								self, row, consumed, batch_cache
+							)
 					elif row.t_warehouse:
 						rows_to_append += [row.__dict__]
 				else:
@@ -242,31 +249,59 @@ class CustomStockEntry(StockEntry):
 				self.db_update()
 
 	def validate_with_material_request(self):
-		for item in self.get("items"):
+		# Prefetch both lookups the loop below needs (Stock Entry Detail for the
+		# outgoing_stock_entry legs, then Material Request Item for whatever
+		# material_request that resolves to) so it issues at most 2 queries total
+		# instead of up to 2 per item row -- same bulk_map pattern as
+		# update_batches above. The Stock Entry Detail fetch is doc-level gated,
+		# same as the condition it replaces, so non-transfer entries skip it.
+		# Rows are carried as a plain list, kept in step with ``items`` by
+		# position, rather than keyed by ``item.name`` -- draft rows in some
+		# call sites don't have a name assigned yet.
+		is_outgoing_transfer = (
+			self.purpose == "Material Transfer" and self.outgoing_stock_entry
+		)
+		items = list(self.get("items"))
+		ste_detail_map = (
+			bulk_map(
+				"Stock Entry Detail",
+				[item.ste_detail for item in items],
+				["material_request", "material_request_item"],
+			)
+			if is_outgoing_transfer
+			else {}
+		)
+
+		resolved = []
+		for item in items:
 			material_request = item.material_request or None
 			material_request_item = item.material_request_item or None
-			if self.purpose == "Material Transfer" and self.outgoing_stock_entry:
-				parent_se = frappe.get_value(
-					"Stock Entry Detail",
-					item.ste_detail,
-					["material_request", "material_request_item"],
-					as_dict=True,
-				)
+			if is_outgoing_transfer:
+				parent_se = ste_detail_map.get(item.ste_detail)
 				if parent_se:
 					material_request = parent_se.material_request
 					material_request_item = parent_se.material_request_item
+			resolved.append((material_request, material_request_item))
 
+		mreq_item_map = bulk_map(
+			"Material Request Item",
+			[mri for _, mri in resolved],
+			["item_code", "custom_alternative_item", "warehouse", "idx", "parent"],
+		)
+
+		for item, (material_request, material_request_item) in zip(items, resolved):
 			if material_request:
-				mreq_item = frappe.db.get_value(
-					"Material Request Item",
-					{"name": material_request_item, "parent": material_request},
-					["item_code", "custom_alternative_item", "warehouse", "idx"],
-					as_dict=True,
-				)
-				if item.item_code not in [
-					mreq_item.item_code,
-					mreq_item.custom_alternative_item,
-				]:
+				mreq_item = mreq_item_map.get(material_request_item)
+				# A missing row, or one that resolved to a different parent than
+				# the material_request just derived above, is the same "doesn't
+				# match" case the item-code check below throws for -- not a
+				# silently-ignorable state.
+				if (
+					not mreq_item
+					or mreq_item.parent != material_request
+					or item.item_code
+					not in [mreq_item.item_code, mreq_item.custom_alternative_item]
+				):
 					frappe.throw(
 						_("Item for row {0} does not match Material Request").format(
 							item.idx

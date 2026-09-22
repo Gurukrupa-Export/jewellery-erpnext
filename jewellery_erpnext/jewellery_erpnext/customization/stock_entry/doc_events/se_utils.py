@@ -26,7 +26,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.bom_weights import 
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
 	SAMPLE_ALLOWED_SE_TYPES,
-	is_customer_sample_batch,
+	get_sample_batches,
 )
 from jewellery_erpnext.utils import bulk_map
 
@@ -119,7 +119,7 @@ def validate_inventory_dimention(self):
 							)
 
 
-def get_fifo_batches(self, row, consumed=None):
+def get_fifo_batches(self, row, consumed=None, batch_cache=None):
 	rows_to_append = []
 	# `consumed` tracks how much has already been allocated per (warehouse, batch)
 	# across all rows of the same document. Callers that process multiple rows for
@@ -128,35 +128,62 @@ def get_fifo_batches(self, row, consumed=None):
 	# single-row callers behave exactly as before.
 	if consumed is None:
 		consumed = {}
+	# `batch_cache` memoizes the raw candidate-batch fetch (get_auto_batch_nos /
+	# get_batch_data_from_msl) per (item_code, warehouse[, msl]) within one
+	# update_batches() run. That fetch is the single most expensive part of this
+	# function -- profiled at ~100-140ms per row, largely core ERPNext SQL -- and a
+	# Department transfer commonly has several rows drawing the SAME item from the
+	# SAME source warehouse to different target departments, which previously
+	# re-ran the identical fetch once per row. Each caller gets its own fresh copy
+	# via deepcopy below, since the loop mutates `batch.qty` in place per row.
+	if batch_cache is None:
+		batch_cache = {}
 	row.batch_no = None
 	total_qty = row.qty
 	existing_updated = False
 
 	msl = self.get("main_slip") or self.get("to_main_slip")
 	warehouse = row.get("s_warehouse") or self.get("source_warehouse")
-	if (
+	use_msl = (
 		msl
 		and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse")
 		== row.s_warehouse
-	):
+	)
+	if use_msl:
 		main_slip = self.main_slip or self.to_main_slip
-		batch_data = get_batch_data_from_msl(row.item_code, main_slip, row.s_warehouse)
+		cache_key = ("msl", row.item_code, main_slip, row.s_warehouse)
 	else:
-		# NOTE: do not pass "qty" here. get_auto_batch_nos truncates the result to
-		# just enough FIFO batches to cover the requested qty, which can drop the
-		# Customer Goods / customer-specific batches before the inventory-type and
-		# customer filtering below runs. Fetch all available batches and let the
-		# loop pick the matching ones up to total_qty.
-		batch_data = get_auto_batch_nos(
-			frappe._dict(
-				{
-					"posting_time": self.get("posting_time"),
-					"posting_date": self.get("posting_date"),
-					"item_code": row.item_code,
-					"warehouse": warehouse,
-				}
-			)
+		main_slip = None
+		cache_key = (
+			"auto",
+			self.get("posting_time"),
+			self.get("posting_date"),
+			row.item_code,
+			warehouse,
 		)
+
+	if cache_key not in batch_cache:
+		if use_msl:
+			batch_cache[cache_key] = get_batch_data_from_msl(
+				row.item_code, main_slip, row.s_warehouse
+			)
+		else:
+			# NOTE: do not pass "qty" here. get_auto_batch_nos truncates the result to
+			# just enough FIFO batches to cover the requested qty, which can drop the
+			# Customer Goods / customer-specific batches before the inventory-type and
+			# customer filtering below runs. Fetch all available batches and let the
+			# loop pick the matching ones up to total_qty.
+			batch_cache[cache_key] = get_auto_batch_nos(
+				frappe._dict(
+					{
+						"posting_time": self.get("posting_time"),
+						"posting_date": self.get("posting_date"),
+						"item_code": row.item_code,
+						"warehouse": warehouse,
+					}
+				)
+			)
+	batch_data = copy.deepcopy(batch_cache[cache_key])
 
 	customer_item_data = frappe._dict({})
 	manufacturer_data = frappe._dict({})
@@ -217,6 +244,18 @@ def get_fifo_batches(self, row, consumed=None):
 			[batch.batch_no for batch in batch_data],
 			["custom_inventory_type", "custom_customer"],
 		)
+	# Same reason as batch_info above: is_customer_sample_batch used frappe.get_cached_value
+	# per candidate batch, which loads the whole Batch doc on any cache miss -- e.g. batches
+	# minted in this same request, or a cold Redis. Profiled at ~20-80ms per call across the
+	# FIFO scan of a single row. get_sample_batches does the equivalent check for every
+	# candidate batch in one query, gated behind the same allowed-type condition so the
+	# ordinary Customer Goods flows (where sample stock is legitimately used) still skip it.
+	sample_batches = (
+		get_sample_batches([batch.batch_no for batch in batch_data])
+		if self.get("stock_entry_type")
+		and self.get("stock_entry_type") not in SAMPLE_ALLOWED_SE_TYPES
+		else set()
+	)
 	for batch in batch_data:
 		# reduce this batch's availability by what earlier rows already took
 		batch_key = (warehouse, batch.batch_no)
@@ -229,11 +268,7 @@ def get_fifo_batches(self, row, consumed=None):
 		# stock_entry_type truthiness gate leaves non-Stock-Entry callers (e.g. Metal /
 		# Diamond Conversion, whose doc has no stock_entry_type) untouched. The loud block
 		# for a hand-typed sample batch is validate_sample_goods_not_consumed.
-		if (
-			self.get("stock_entry_type")
-			and self.get("stock_entry_type") not in SAMPLE_ALLOWED_SE_TYPES
-			and is_customer_sample_batch(batch.batch_no)
-		):
+		if batch.batch_no in sample_batches:
 			continue
 		if (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
@@ -244,12 +279,19 @@ def get_fifo_batches(self, row, consumed=None):
 		):
 			if total_qty > 0 and batch.qty > 0:
 				if not existing_updated:
-					row.db_set("qty", min(total_qty, batch.qty))
+					# Single UPDATE instead of 2-3 sequential ones: db_set accepts a
+					# {field: value} dict and writes it in one query. transfer_qty must
+					# still equal the qty just computed (previously read back via
+					# row.qty after the first db_set landed it) -- capture it in
+					# new_qty rather than relying on that in-memory round trip.
+					new_qty = min(total_qty, batch.qty)
+					update_values = {"qty": new_qty}
 					if self.get("date"):
-						row.db_set("batch", batch.batch_no)
+						update_values["batch"] = batch.batch_no
 					else:
-						row.db_set("transfer_qty", row.qty)
-						row.db_set("batch_no", batch.batch_no)
+						update_values["transfer_qty"] = new_qty
+						update_values["batch_no"] = batch.batch_no
+					row.db_set(update_values)
 					consumed[batch_key] = consumed.get(batch_key, 0) + min(
 						total_qty, batch.qty
 					)
@@ -277,12 +319,19 @@ def get_fifo_batches(self, row, consumed=None):
 		):
 			if total_qty > 0 and batch.qty > 0:
 				if not existing_updated:
-					row.db_set("qty", min(total_qty, batch.qty))
+					# Single UPDATE instead of 2-3 sequential ones: db_set accepts a
+					# {field: value} dict and writes it in one query. transfer_qty must
+					# still equal the qty just computed (previously read back via
+					# row.qty after the first db_set landed it) -- capture it in
+					# new_qty rather than relying on that in-memory round trip.
+					new_qty = min(total_qty, batch.qty)
+					update_values = {"qty": new_qty}
 					if self.get("date"):
-						row.db_set("batch", batch.batch_no)
+						update_values["batch"] = batch.batch_no
 					else:
-						row.db_set("transfer_qty", row.qty)
-						row.db_set("batch_no", batch.batch_no)
+						update_values["transfer_qty"] = new_qty
+						update_values["batch_no"] = batch.batch_no
+					row.db_set(update_values)
 					consumed[batch_key] = consumed.get(batch_key, 0) + min(
 						total_qty, batch.qty
 					)
@@ -310,12 +359,19 @@ def get_fifo_batches(self, row, consumed=None):
 
 			if total_qty > 0 and batch.qty > 0:
 				if not existing_updated:
-					row.db_set("qty", min(total_qty, batch.qty))
+					# Single UPDATE instead of 2-3 sequential ones: db_set accepts a
+					# {field: value} dict and writes it in one query. transfer_qty must
+					# still equal the qty just computed (previously read back via
+					# row.qty after the first db_set landed it) -- capture it in
+					# new_qty rather than relying on that in-memory round trip.
+					new_qty = min(total_qty, batch.qty)
+					update_values = {"qty": new_qty}
 					if self.get("date"):
-						row.db_set("batch", batch.batch_no)
+						update_values["batch"] = batch.batch_no
 					else:
-						row.db_set("transfer_qty", row.qty)
-						row.db_set("batch_no", batch.batch_no)
+						update_values["transfer_qty"] = new_qty
+						update_values["batch_no"] = batch.batch_no
+					row.db_set(update_values)
 					consumed[batch_key] = consumed.get(batch_key, 0) + min(
 						total_qty, batch.qty
 					)
