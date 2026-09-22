@@ -31,11 +31,24 @@ PREC = 3
 EPS = 0.0005
 
 
-def recv_row(mwo="MWO-A", gross=2.0, received=3.0, pinned=TREE, raw=1, subcon="No"):
-	"""One row as ``_receive_rows`` returns it."""
+def recv_row(
+	mwo="MWO-A",
+	gross=2.0,
+	received=3.0,
+	pinned=TREE,
+	raw=1,
+	subcon="No",
+	issue_tree=None,
+):
+	"""One row as ``_receive_rows`` returns it.
+
+	``issue_tree`` stands in for the correlated sub-select that reconstructs an unpinned
+	row's tree from the casting Issue that owned the work order.
+	"""
 	return frappe._dict(
-		tree_number=pinned or TREE,
+		tree_number=pinned or issue_tree or TREE,
 		pinned_tree_number=pinned,
+		issue_tree_number=issue_tree,
 		manufacturing_work_order=mwo,
 		gross_wt=gross,
 		received_gross_wt=received,
@@ -63,7 +76,7 @@ class _BackfillHarness(IntegrationTestCase):
 
 	def split(self, rows, ledger, items=None):
 		"""Run _split_chunk over ``rows``; returns ({row name: written dict}, stats)."""
-		stats = {"fallback_rows": 0, "unresolved_items": 0}
+		stats = {"reconstructed_rows": 0, "fallback_rows": 0, "unresolved_items": 0}
 		written = {}
 		db = MagicMock()
 		db.set_value.side_effect = lambda dt, name, values, **k: written.__setitem__(
@@ -210,12 +223,45 @@ class TestTheSplitMirrorsTheLiveArithmetic(_BackfillHarness):
 class TestTheCaveatsAreCounted(_BackfillHarness):
 	"""Coverage gaps must surface in the summary, not vanish into a success message."""
 
-	def test_a_pre_pinning_row_is_counted_as_a_fallback(self):
+	def test_a_pre_pinning_row_with_no_issue_record_is_counted_as_a_fallback(self):
+		"""Nothing submitted names this work order, so the live MWO tree is a guess."""
 		_, stats = self.split([recv_row(pinned=None)], [ledger_row(receive_qty=1.0)])
 		self.assertEqual(stats["fallback_rows"], 1)
+		self.assertEqual(stats["reconstructed_rows"], 0)
 
-	def test_a_pinned_row_is_not_counted_as_a_fallback(self):
+	def test_a_pre_pinning_row_reconstructed_from_the_issue_is_not_a_guess(self):
+		"""``Tree Number.employee_ir`` names the casting Issue, and that Issue's own rows
+		name the work order -- both submitted, so unlike ``MWO.tree_number`` they do not
+		move when the work order is later re-issued. That is evidence, not a guess, and it
+		must not be reported as one."""
+		_, stats = self.split(
+			[recv_row(pinned=None, issue_tree=TREE)], [ledger_row(receive_qty=1.0)]
+		)
+		self.assertEqual(stats["reconstructed_rows"], 1)
+		self.assertEqual(stats["fallback_rows"], 0)
+
+	def test_a_reconstructed_row_still_contributes_its_quantities(self):
+		"""Counting it separately must not change what it is worth to the split."""
+		written, _ = self.split(
+			[recv_row(pinned=None, issue_tree=TREE, gross=2.0, received=3.0)],
+			[ledger_row(receive_qty=4.0)],
+		)
+		self.assertAlmostEqual(written["TMD-1"]["wo_receive_qty"], 1.0, places=3)
+		self.assertAlmostEqual(written["TMD-1"]["wo_received_gross_wt"], 3.0, places=3)
+
+	def test_a_pinned_row_is_neither_a_fallback_nor_a_reconstruction(self):
 		_, stats = self.split([recv_row()], [ledger_row(receive_qty=1.0)])
+		self.assertEqual(stats["fallback_rows"], 0)
+		self.assertEqual(stats["reconstructed_rows"], 0)
+
+	def test_the_pin_wins_over_a_reconstruction(self):
+		"""Order of evidence: the pin is immutable and already attributed, so a row that
+		has one is never re-derived from the Issue."""
+		_, stats = self.split(
+			[recv_row(pinned=TREE, issue_tree="TREE-OTHER")],
+			[ledger_row(receive_qty=1.0)],
+		)
+		self.assertEqual(stats["reconstructed_rows"], 0)
 		self.assertEqual(stats["fallback_rows"], 0)
 
 	def test_an_unresolvable_metal_item_is_counted_and_contributes_nothing(self):

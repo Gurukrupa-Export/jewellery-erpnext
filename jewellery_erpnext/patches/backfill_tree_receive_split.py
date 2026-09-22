@@ -93,19 +93,49 @@ def _receive_rows(tree_names):
 	tree-button return, the exact inverse of the truth. The halves still sum, so the
 	dashboard's "unsplit" check cannot catch it either.
 
-	The fallback is applied ONLY where the pin is NULL, which is what keeps the module
-	docstring's re-issue concern intact: a re-issue overwrites ``MWO.tree_number``, so
-	following it blindly would credit a receive to whichever tree the work order sits on
-	today. But a row with no pin necessarily predates pinning, so there is no pinned
-	value being overridden -- the work order's tree is the only evidence left. Rows
-	resolved that way are counted and logged rather than silently absorbed, because on a
-	work order that HAS since been re-issued the fallback is a best guess.
+	A row with no pin necessarily predates pinning, and for those the live
+	``MWO.tree_number`` is NOT reliable: a re-issue overwrites it, so following it blindly
+	credits an old receive to whichever tree the work order sits on today. Three sources are
+	therefore tried in order of how well each can be proven.
+
+	  1. ``Employee IR Operation.tree_number`` -- the pin. Immutable once submitted.
+	  2. The casting ISSUE that put this work order on a tree. ``create_tree_on_issue`` sets
+	     ``Tree Number.employee_ir`` to the Issue EIR, and that document's own rows name every
+	     work order cast on it. Both are submitted records, so unlike ``MWO.tree_number`` they
+	     do not move when the work order is later re-issued. Where a work order has been cast
+	     more than once, the most recent tree created at or before this receive is the one it
+	     was on at the time -- which is precisely the re-issue case the fallback got wrong.
+	  3. ``MWO.tree_number``, only when no issue record names the work order at all. Still a
+	     best guess, still counted and logged separately, but now reached only by rows for
+	     which no submitted evidence survives.
+
+	Leaving an unresolved row out entirely is NOT an option, and is worse than a guess:
+	``manual_receive_qty`` is derived as ``receive_qty - wo_receive_qty``
+	(``tree_material_balance.derive_manual_receive``), so a row that is skipped does not
+	abstain -- its whole quantity lands in ``manual_receive_qty``, labelling a work-order
+	receive as a tree-button return. There is no third bucket to park it in.
 	"""
+	# The casting issue that put this work order on a tree, as of this receive. Correlated
+	# rather than joined: it must be evaluated per row against that row's own receive date,
+	# and it only ever runs for the minority of rows with no pin.
+	issue_tree = """(
+			SELECT t.name
+			FROM `tabTree Number` t
+			INNER JOIN `tabEmployee IR Operation` ti
+				ON ti.parent = t.employee_ir
+			   AND ti.parenttype = 'Employee IR'
+			WHERE ti.manufacturing_work_order = eiro.manufacturing_work_order
+			  AND t.creation <= eir.modified
+			ORDER BY t.creation DESC
+			LIMIT 1
+		)"""
+
 	return frappe.db.sql(
 		"""
 		SELECT
-			COALESCE(eiro.tree_number, mwo.tree_number) AS tree_number,
+			COALESCE(eiro.tree_number, {issue_tree}, mwo.tree_number) AS tree_number,
 			eiro.tree_number AS pinned_tree_number,
+			{issue_tree} AS issue_tree_number,
 			eiro.manufacturing_work_order,
 			eiro.gross_wt,
 			eiro.received_gross_wt,
@@ -120,8 +150,8 @@ def _receive_rows(tree_names):
 		  AND eir.docstatus = 1
 		  AND eir.type = 'Receive'
 		  AND dop.tree_no_reqd = 1
-		  AND COALESCE(eiro.tree_number, mwo.tree_number) IN %(trees)s
-		""",
+		  AND COALESCE(eiro.tree_number, {issue_tree}, mwo.tree_number) IN %(trees)s
+		""".format(issue_tree=issue_tree),
 		{"trees": tuple(tree_names)},
 		as_dict=True,
 	)
@@ -167,8 +197,12 @@ def _split_chunk(tree_names, prec, eps, item_cache, stats):
 		if not row.manufacturing_work_order:
 			continue
 		if not row.pinned_tree_number:
-			# Attributed through the work order because the row predates pinning.
-			stats["fallback_rows"] += 1
+			if row.issue_tree_number:
+				# Reconstructed from the casting Issue that owned this work order.
+				stats["reconstructed_rows"] += 1
+			else:
+				# No submitted issue names it; the live work order tree is all that is left.
+				stats["fallback_rows"] += 1
 		item = _metal_item(row.manufacturing_work_order, item_cache)
 		if not item:
 			stats["unresolved_items"] += 1
@@ -222,7 +256,7 @@ def execute(from_date=None, to_date=None):
 	prec = tree_balance.qty_precision()
 	eps = tree_balance.pending_eps()
 	item_cache = {}
-	stats = {"fallback_rows": 0, "unresolved_items": 0}
+	stats = {"reconstructed_rows": 0, "fallback_rows": 0, "unresolved_items": 0}
 
 	# Chunked so neither IN clause grows without bound on a large site, and so a long
 	# run commits as it goes instead of holding one enormous transaction.
@@ -233,14 +267,17 @@ def execute(from_date=None, to_date=None):
 		)
 		frappe.db.commit()
 
-	# Never let the coverage caveats vanish into a success message: a fallback-attributed
-	# row is a best guess, and an unresolved metal item is a receive that could not be
-	# split at all (its draw stays in manual_receive_qty).
+	# Never let the coverage caveats vanish into a success message. A reconstructed row is
+	# attributed from submitted evidence; a fallback row is still a best guess; an unresolved
+	# metal item is a receive that could not be split at all (its draw stays in
+	# manual_receive_qty).
 	summary = (
 		f"backfill_tree_receive_split: split {updated} ledger row(s) "
 		f"across {len(tree_names)} tree(s); "
-		f"{stats['fallback_rows']} pre-pinning row(s) attributed via "
-		f"Manufacturing Work Order.tree_number; "
+		f"{stats['reconstructed_rows']} pre-pinning row(s) reconstructed from the "
+		f"casting Issue; "
+		f"{stats['fallback_rows']} row(s) attributed via "
+		f"Manufacturing Work Order.tree_number (best guess); "
 		f"{stats['unresolved_items']} row(s) had no resolvable metal item"
 	)
 	frappe.logger().info(summary)
