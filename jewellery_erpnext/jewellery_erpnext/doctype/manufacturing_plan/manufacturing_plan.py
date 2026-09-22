@@ -722,12 +722,21 @@ def create_manufacturing_order(doc, row, cache_data=None):
 				"metal_touch"
 			)
 
+	# The customer this row is actually graded against -- the ref customer the parent chain
+	# resolved, else the ordering customer. Resolved BEFORE the internal-customer gate below,
+	# not inside it: the gate and the grade lookup have to describe the SAME customer. Reading
+	# the flag off row.customer while grading the ref customer let an internal ordering customer
+	# with an external ref customer skip the resolver entirely, and the PMO -- which resolves
+	# through ref_customer -- then produced a grade the plan never did. That is precisely the
+	# plan/PMO disagreement this resolver exists to remove.
+	effective_customer = ref_customer_map.get(row.docname) or row.customer
+
 	# Check for internal customer
-	customer_info = customer_data_map.get(row.customer)
+	customer_info = customer_data_map.get(effective_customer)
 	is_internal_customer = (
 		customer_info.get("is_internal_customer")
 		if customer_info
-		else frappe.db.get_value("Customer", row.customer, "is_internal_customer")
+		else frappe.db.get_value("Customer", effective_customer, "is_internal_customer")
 	)
 
 	if row.diamond_quality and not is_internal_customer:
@@ -735,7 +744,6 @@ def create_manufacturing_order(doc, row, cache_data=None):
 		# before_save. This used to be a second implementation that graded against row.customer
 		# and fell back to diamond_grade_1, so a plan could throw on a row the PMO would have
 		# resolved -- or hand it a grade the PMO then quietly replaced.
-		effective_customer = ref_customer_map.get(row.docname) or row.customer
 		is_customer_diamond = is_customer_diamond_flag(row.customer_diamond)
 		grade_row = customer_diamond_grade_map.get(
 			(effective_customer, row.diamond_quality)

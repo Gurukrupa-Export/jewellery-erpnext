@@ -277,11 +277,20 @@ class ParentManufacturingOrder(Document):
 			# Must stay AFTER update_parent_details: that resolves ref_customer, which the grade
 			# is resolved against.
 			self._set_diamond_grade()
+			# ...and so must the policy check. ``validate`` runs BEFORE this hook, so the copy
+			# it judged was the ref_customer as STORED, not the one resolved a moment ago. In
+			# custom-grade mode _set_diamond_grade returns without touching the grade, so
+			# without this the document persists a new customer beside a grade only the old
+			# one ever allowed. No-op when ignore_validations is set; the callee checks it.
+			self._validate_diamond_grade_policy()
 			return
 		update_parent_details(self)
 		# Must stay AFTER update_parent_details: that refreshes ref_customer, which the grade is
 		# resolved against.
 		self._set_diamond_grade()
+		# Same reason as the insert branch above: re-judge against the ref_customer this save
+		# will persist, not the one ``validate`` saw before it was refreshed.
+		self._validate_diamond_grade_policy()
 		if not self.diamond_grade and not frappe.db.get_value(
 			"Item", self.item_code, "has_batch_no"
 		):
@@ -293,6 +302,10 @@ class ParentManufacturingOrder(Document):
 		# to be resolved here too: without it a PMO that reached submit without a stored grade
 		# silently skips the tracking BOM update below.
 		self._set_diamond_grade()
+		# The grade about to be stamped onto the tracking BOM is the one that has to be legal,
+		# and _set_diamond_grade may have just changed it. Cheap: the guard above already ran
+		# this document's checks on validate, and re-running them costs one master read.
+		self._validate_diamond_grade_policy()
 		if self.diamond_grade and self.custom_tracking_bom:
 			frappe.db.sql(
 				"""
@@ -303,9 +316,10 @@ class ParentManufacturingOrder(Document):
 				(self.diamond_grade, self.custom_tracking_bom),
 			)
 
-	# What the stored grade depends on. A save that touches none of these leaves a PMO created
+	# What the stored grade depends on. A DRAFT save touching none of these leaves a PMO created
 	# before the policy existed editable for unrelated reasons, rather than dead until someone
-	# reconciles its customer master.
+	# reconciles its customer master. Submit is not covered by that leniency -- see
+	# _validate_diamond_grade_policy.
 	GRADE_POLICY_FIELDS = (
 		"diamond_grade",
 		"use_custom_diamond_grade",
@@ -335,7 +349,20 @@ class ParentManufacturingOrder(Document):
 		copies this grade onto the tracking BOM and it also selects the diamond item variant, a
 		wrong value here is silent and durable -- so the rule has to live on the save path.
 		"""
-		if self.flags.ignore_validations or not self._grade_policy_inputs_changed():
+		if self.flags.ignore_validations:
+			return
+
+		# SUBMIT always judges, whatever the document did or did not change. The
+		# inputs-changed guard exists so an unrelated DRAFT save leaves a PMO created before
+		# this policy alone; it must not extend to submit, because the allowed grade depends
+		# on master data this document does not hold -- the customer's Customer Diamond Grade
+		# rows and each grade's Attribute Value.is_customer_diamond_quality. Either can move
+		# between the last save and the submit, and ``before_submit`` copies the grade onto
+		# the tracking BOM, so skipping here makes a now-invalid grade durable.
+		#
+		# ``docstatus`` is already 1 here on a submit: frappe's ``_submit`` assigns it and
+		# then saves, and ``validate`` runs inside that save.
+		if self.docstatus == 0 and not self._grade_policy_inputs_changed():
 			return
 
 		expected = sales_type_expects(self.sales_type)

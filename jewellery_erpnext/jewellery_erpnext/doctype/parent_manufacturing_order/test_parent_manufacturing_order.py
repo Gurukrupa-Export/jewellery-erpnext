@@ -1,7 +1,7 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
@@ -1636,6 +1636,65 @@ class FakePMOPolicy(FakePMO):
 	)
 
 
+class TestGradePolicyJudgesThePersistedCustomer(UnitTestCase):
+	"""The customer the policy judges must be the one the same save persists.
+
+	``validate`` runs BEFORE ``before_save`` (frappe's run_before_save_methods), so the copy it
+	judged is ``ref_customer`` as STORED. ``before_save`` then calls ``update_parent_details``,
+	which can resolve a DIFFERENT ref customer, and in custom-grade mode ``_set_diamond_grade``
+	returns without touching the grade -- so the document could persist customer B beside a
+	grade only customer A ever allowed. ``before_save`` therefore re-judges at the end.
+	"""
+
+	def _calls(self, is_new):
+		"""Record the order of the three lifecycle steps for one before_save()."""
+		manager = MagicMock()
+		doc = ParentManufacturingOrder.__new__(ParentManufacturingOrder)
+		doc.flags = frappe._dict(ignore_validations=False)
+		doc.diamond_grade = "PLAIN"
+		doc.item_code = "ITEM"
+
+		with (
+			patch.object(ParentManufacturingOrder, "is_new", return_value=is_new),
+			patch(f"{PMO_MODULE}.update_parent_details", manager.update_parent_details),
+			patch.object(
+				ParentManufacturingOrder, "_set_diamond_grade", manager.set_grade
+			),
+			patch.object(
+				ParentManufacturingOrder,
+				"_validate_diamond_grade_policy",
+				manager.validate_policy,
+			),
+			patch.object(ParentManufacturingOrder, "metal_details", manager.metal),
+			patch.object(frappe.db, "get_value", return_value=1),
+		):
+			doc.before_save()
+
+		return [c[0] for c in manager.mock_calls]
+
+	def test_the_policy_is_rejudged_after_the_ref_customer_resolves(self):
+		calls = self._calls(is_new=False)
+		self.assertIn("validate_policy", calls)
+		self.assertLess(
+			calls.index("update_parent_details"),
+			calls.index("validate_policy"),
+			"the policy must be judged AFTER update_parent_details resolves ref_customer",
+		)
+
+	def test_the_grade_is_resolved_before_it_is_judged(self):
+		calls = self._calls(is_new=False)
+		self.assertLess(calls.index("set_grade"), calls.index("validate_policy"))
+
+	def test_an_insert_is_rejudged_too(self):
+		"""On insert the walk runs inside before_save as well, so validate() judged a blank
+		ref_customer -- the same gap, reached a different way."""
+		calls = self._calls(is_new=True)
+		self.assertIn("validate_policy", calls)
+		self.assertLess(
+			calls.index("update_parent_details"), calls.index("validate_policy")
+		)
+
+
 class TestDiamondGradePolicyValidation(UnitTestCase):
 	"""The grade rules have to hold on the save path, not only in the dropdown.
 
@@ -1647,8 +1706,14 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 
 	FILTERS_IN_PMO = f"{PMO_MODULE}.customer_grades"
 
-	def _validate(self, before=_UNSET, configured=("PLAIN", "CUSTOMER"), **fields):
+	def _validate(
+		self, before=_UNSET, configured=("PLAIN", "CUSTOMER"), docstatus=0, **fields
+	):
+		# Explicitly a DRAFT unless a test says otherwise: the inputs-changed leniency is
+		# scoped to drafts, and frappe._dict would resolve a missing docstatus to None,
+		# which is not 0 and would quietly make every case behave like a submit.
 		doc = FakePMOPolicy(
+			docstatus=docstatus,
 			customer="CUST",
 			ref_customer=None,
 			diamond_quality="VVS",
@@ -1808,6 +1873,72 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 			with self.subTest(field=field):
 				with self.assertRaises(frappe.ValidationError):
 					self._validate(before=before, **fields)
+
+	# --- F1: submit judges the current masters, not the diff ---
+
+	def test_submit_revalidates_even_when_nothing_on_the_pmo_changed(self):
+		"""The allowed grade depends on master data the PMO does not hold -- the customer's
+		Customer Diamond Grade rows and each grade's Attribute Value flag. Either can move
+		between the last draft save and the submit, and before_submit copies the grade onto
+		the tracking BOM, so submit must re-judge whatever the document says."""
+		before = frappe._dict(
+			customer="CUST",
+			ref_customer=None,
+			diamond_quality="VVS",
+			sales_type="Outright",
+			is_customer_diamond=1,
+			use_custom_diamond_grade=1,
+			diamond_grade="CUSTOMER",
+		)
+		# Identical on both sides: nothing on the PMO changed, only the masters did.
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(
+				before=before,
+				docstatus=1,
+				sales_type="Outright",
+				is_customer_diamond=1,
+				use_custom_diamond_grade=1,
+				diamond_grade="CUSTOMER",
+			)
+
+	def test_the_draft_leniency_is_not_extended_to_submit(self):
+		"""Same document, same unchanged inputs -- a draft save is let through and a submit
+		is not. This pair is the whole of the F1 fix."""
+		before = frappe._dict(
+			customer="CUST",
+			ref_customer=None,
+			diamond_quality="VVS",
+			sales_type="Outright",
+			is_customer_diamond=1,
+			use_custom_diamond_grade=1,
+			diamond_grade="CUSTOMER",
+		)
+		fields = dict(
+			sales_type="Outright",
+			is_customer_diamond=1,
+			use_custom_diamond_grade=1,
+			diamond_grade="CUSTOMER",
+		)
+		self._validate(before=before, docstatus=0, **fields)  # draft: no throw
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(before=before, docstatus=1, **fields)
+
+	def test_ignore_validations_still_wins_on_submit(self):
+		"""The escape hatch must not be narrowed by the submit rule."""
+		doc = FakePMOPolicy(
+			docstatus=1,
+			customer="CUST",
+			diamond_quality="VVS",
+			sales_type="Outright",
+			is_customer_diamond=1,
+			use_custom_diamond_grade=0,
+			diamond_grade=None,
+			flags=frappe._dict(ignore_validations=True),
+		)
+		doc.get_doc_before_save = lambda: frappe._dict(
+			sales_type="Outright", is_customer_diamond=1
+		)
+		doc._validate_diamond_grade_policy()
 
 	def test_ignore_validations_is_still_an_escape_hatch(self):
 		doc = FakePMOPolicy(
