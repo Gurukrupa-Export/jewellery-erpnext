@@ -1,6 +1,34 @@
 import frappe
 from frappe.utils import flt
 
+_EARRING_CATEGORY = "Earrings"
+_EARRING_UNITS = 2
+
+
+def earring_units(row):
+	"""How many billable pieces one Exploded Product Details row stands for.
+
+	An earring pair is one row but two pieces, so it takes two shares of the entered total and
+	counts twice on the service Purchase Order -- the same convention
+	``doc_events/sales_order.py`` uses to bill hallmarking per piece, where an
+	``item_category == "Earrings"`` BOM counts twice. Every other row is worth one.
+
+	Read off the exploded row's own ``category``, which fetches from ``item_code.item_category``
+	(and, on the Hall Marking branch, is copied down from the Product Details row by
+	``get_exploded_table``). Applies to all four service types. Fire Assy and XRF are inert in
+	practice rather than by rule: their rows carry the *metal* item, whose category is never
+	"Earrings".
+
+	Lives here, not beside its caller in ``product_certification.py``, because that module
+	imports ``create_po`` from this one -- so this is the only direction the dependency can run.
+	"""
+	return _EARRING_UNITS if row.get("category") == _EARRING_CATEGORY else 1
+
+
+def billable_units(rows):
+	"""Total pieces across an Exploded Product Details table."""
+	return sum(earring_units(row) for row in rows)
+
 
 def get_item_for_certification(department, service_type):
 	"""Charge item + rate for a certification service, from the Manufacturing Setting of
@@ -139,7 +167,10 @@ def create_po(self):
 		return
 
 	total_gross_wt = sum(row.gross_weight for row in self.exploded_product_details)
-	total_qty = len(self.exploded_product_details)
+	# Pieces, not rows: an Earrings row is one row and two pieces, and every certification
+	# service is billed per piece -- the same count distribute_amount splits the amount by.
+	# It used to be len(), which under-billed the supplier by one unit for every pair.
+	total_qty = billable_units(self.exploded_product_details)
 	po_doc = frappe.new_doc("Purchase Order")
 
 	po_doc.product_certification = self.name
