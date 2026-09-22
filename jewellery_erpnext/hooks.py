@@ -11,6 +11,16 @@ app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
 # after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
+# Deliberately NOT the line above, which would apply every custom_fields/*.json in the app.
+# This re-asserts one form layout that no earlier hook can hold on to: install.sh installs
+# jewellery_erpnext BEFORE gke_customization, so after_sync settles the Material Request
+# layout and gke's fixture import then resets the two anchors it owns. migrate.py runs
+# after_migrate at the end of post_schema_updates, after sync_fixtures, so it is the only
+# hook that sees the finished site. Idempotent, and swallows its own errors.
+after_migrate = (
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
+)
+
 # Provisions this app's custom fields, BEFORE fixtures import (installer.py:360 vs :367).
 # That direction is required: a fixture's Dynamic Link record needs its target Link field to
 # exist already. It is also what lets a fixture claiming the same (dt, fieldname) under a

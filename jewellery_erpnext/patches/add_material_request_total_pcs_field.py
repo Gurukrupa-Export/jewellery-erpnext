@@ -160,6 +160,10 @@ def _ensure_insert_after_property_setter(fieldname, value):
 			"property_type": "Data",
 		},
 		is_system_generated=False,
+		# This runs from after_sync/after_migrate, when a sibling app's fields may not exist
+		# yet. The default True re-validates every field on the doctype and can throw for
+		# reasons that have nothing to do with this Property Setter.
+		validate_fields_for_doctype=False,
 	)
 	return "created"
 
@@ -206,6 +210,9 @@ def _ensure_field_order_property_setter():
 			"property_type": "Data",
 		},
 		is_system_generated=False,
+		# See the sibling helper: validating every field on a half-built site can throw,
+		# and this helper's caller swallows exceptions, so that would fail silently.
+		validate_fields_for_doctype=False,
 	)
 	return "seeded"
 
@@ -248,6 +255,34 @@ def apply():
 		"add_material_request_total_pcs_field: "
 		+ ", ".join(f"{k}={v}" for k, v in results.items())
 	)
+
+
+def after_migrate():
+	"""Re-assert the layout at the very end of every migrate. Wired from ``hooks.py``.
+
+	``after_sync`` alone is not enough, because it fires during THIS app's install and the
+	install order works against it: ``install.sh`` runs ``install-app jewellery_erpnext``
+	BEFORE ``install-app gke_customization``, so the layout is settled first and
+	``gke_customization``'s fixture import then delete+re-inserts
+	``Material Request-custom_total_quantity`` and ``-custom_order_details`` back to their
+	old anchors. Nothing re-asserted after that, and the final ``bench migrate``
+	re-imported the same fixture again.
+
+	``after_migrate`` is the last word: ``migrate.py`` runs it at the end of
+	``post_schema_updates``, after ``sync_fixtures()``, so it is the only hook guaranteed to
+	see the finished site whatever order the apps were installed in.
+
+	Deliberately non-fatal: a form-layout problem must never be the thing that fails a
+	migrate. Note that this makes failures silent, which is why the two Property Setter
+	helpers above pass ``validate_fields_for_doctype=False`` rather than risk throwing.
+	"""
+	try:
+		apply()
+	except Exception:
+		frappe.log_error(
+			title="after_migrate: Material Request Total Pcs layout",
+			message=frappe.get_traceback(),
+		)
 
 
 def execute():
