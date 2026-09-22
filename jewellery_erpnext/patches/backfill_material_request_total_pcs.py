@@ -10,22 +10,35 @@ at save time since day one, so the asymmetry reads as a bug to anyone comparing 
 
 WHAT IT COMPUTES
 ----------------
-``SUM(cint(pcs))`` over the request's item rows -- deliberately the same population and the
-same cast as ``update_pure_qty``, so a backfilled value and a re-saved value agree. ``pcs``
-is a Data column (varchar(140)), hence the CAST.
+``sum(cint(row.pcs))`` over the request's item rows, in PYTHON, calling the very same
+``frappe.utils.cint`` that ``update_pure_qty`` calls. That is the whole point: a backfilled
+value and the value the next save computes are then equal by construction rather than by
+argument, so this patch can never drift from the runtime calculation.
 
-``NULLIF(pcs, '')`` because an empty string is not NULL: ``SUM`` skips NULL, and a request
-with no pcs at all then aggregates to NULL, which ``COALESCE`` turns into 0 -- matching
-``cint(None) == 0``.
+An earlier revision aggregated in SQL with ``SUM(CAST(NULLIF(pcs, '') AS SIGNED))``, which is
+far cheaper but is NOT the same function. ``pcs`` is a Data column (varchar(140)) holding free
+text, and the two engines disagree on real inputs -- measured, both ways:
 
-``SIGNED`` and not ``UNSIGNED``: MariaDB wraps a negative string cast to UNSIGNED round to
-18446744073709551615, which would write garbage. ``SIGNED`` matches ``cint`` on negatives.
-No negative values exist on this bench (checked), but the field is free text and a future
-row could carry one.
+===========  ==========================  ==========
+value        ``CAST(... AS SIGNED)``     ``cint``
+===========  ==========================  ==========
+``'12abc'``  12                          **0**
+``'1e3'``    1                           **1000**
+``'1.9'``    1                           1
+``' 5 '``    5                           5
+``'-3'``     -3                          -3
+``'abc'``    0                           0
+``''``       NULL -> 0                   0
+NULL         NULL -> 0                   0
+===========  ==========================  ==========
 
-The one place SQL and ``cint`` disagree is a half-numeric string -- ``CAST('12abc')`` is 12
-in MariaDB where ``cint('12abc')`` is 0. Zero rows of 28,976 are anything but plain digits,
-so nothing is affected today; a row like that would simply be corrected on its next save.
+Only the first two rows diverge, and no such value exists on this bench today (0 of 29,087).
+But this patch runs against production, which is far larger, and the failure is silent: the
+backfilled total would simply disagree with the total the document reports after its next
+save. Paying a full table scan to remove that class of bug is the right trade.
+
+Cancelled requests are included: the field is informational, and leaving a cancelled request
+reading 0 beside a populated Total Quantity is the very inconsistency this patch removes.
 
 WHY RAW SQL AND NOT ``frappe.db.set_value``
 --------------------------------------------
@@ -34,19 +47,17 @@ the site look edited -- and ``modified`` is what the fixture/sync machinery and 
 reports key off. And it is per-document: 10,208 round trips against ~16k rows here, and
 roughly 22x that on the production site.
 
-Instead the delta is computed in one query and applied grouped BY VALUE -- 174 distinct
-totals cover all 10,208 rows here -- with the names chunked into IN lists. Cancelled
-requests are included: the field is informational, and leaving a cancelled request reading 0
-beside a populated Total Quantity is the very inconsistency this patch removes.
+Instead the delta is computed first and applied grouped BY VALUE -- 174 distinct totals cover
+all 10,208 rows here -- with the names chunked into IN lists.
 
-Idempotent by construction: the driving query only returns rows whose stored value already
-differs from the computed one, so a second run finds nothing and writes nothing. Ad-hoc
-entry point::
+Idempotent by construction: only requests whose stored value already differs from the computed
+one are written, so a second run finds nothing and writes nothing. Ad-hoc entry point::
 
     bench --site <site> execute jewellery_erpnext.patches.backfill_material_request_total_pcs.execute
 """
 
 import frappe
+from frappe.utils import cint
 
 DOCTYPE = "Material Request"
 CHILD_DOCTYPE = "Material Request Item"
@@ -56,25 +67,86 @@ FIELDNAME = "custom_total_pcs"
 # stay well inside max_allowed_packet at ~30 bytes a name.
 CHUNK_SIZE = 5_000
 
-# Requests whose stored total already differs from what the rows add up to. The
-# parenttype/parentfield pair is pinned rather than assumed: filtering on ``parent`` alone
-# would count a stray row from another table that happened to share a name.
-PENDING_QUERY = """
-	SELECT mr.name AS name, COALESCE(agg.total_pcs, 0) AS want
-	FROM `tabMaterial Request` mr
-	LEFT JOIN (
-		SELECT parent, SUM(CAST(NULLIF(pcs, '') AS SIGNED)) AS total_pcs
-		FROM `tabMaterial Request Item`
-		WHERE parenttype = 'Material Request' AND parentfield = 'items'
-		GROUP BY parent
-	) agg ON agg.parent = mr.name
-	WHERE mr.{fieldname} <> COALESCE(agg.total_pcs, 0)
+# Rows per SELECT while scanning. The scan is keyset-paged on ``name`` rather than OFFSET so
+# the cost stays flat: ~29k child rows here, ~640k on production.
+SCAN_SIZE = 20_000
+
+# The parenttype/parentfield pair is pinned rather than assumed: filtering on ``parent``
+# alone would count a stray row from another child table that happened to share a name.
+ITEM_SCAN_QUERY = """
+	SELECT name, parent, pcs
+	FROM `tabMaterial Request Item`
+	WHERE parenttype = 'Material Request' AND parentfield = 'items' AND name > %(after)s
+	ORDER BY name
+	LIMIT %(limit)s
+"""
+
+PARENT_SCAN_QUERY = """
+	SELECT name, `{fieldname}` AS stored
+	FROM `tabMaterial Request`
+	WHERE name > %(after)s
+	ORDER BY name
+	LIMIT %(limit)s
 """
 
 
 def _chunks(items, size):
 	for start in range(0, len(items), size):
 		yield items[start : start + size]
+
+
+def _scan(query, **params):
+	"""Yield every row of ``query``, keyset-paged on ``name``.
+
+	Paged rather than fetched whole: this runs over every Material Request Item on the site,
+	and OFFSET paging would re-walk the index on each page.
+
+	The cursor must strictly advance or the loop stops. Against the database it always does
+	-- ``name`` is the primary key and the query is ``ORDER BY name`` -- but a caller that
+	stubs ``frappe.db.sql`` with a fixed result set would otherwise spin forever, which is a
+	hang rather than a failed assertion and costs far more to diagnose than this guard.
+	"""
+	after = ""
+	while True:
+		rows = frappe.db.sql(
+			query, {"after": after, "limit": SCAN_SIZE, **params}, as_dict=True
+		)
+		if not rows:
+			return
+
+		yield from rows
+
+		last = rows[-1].name
+		if last <= after:
+			return
+		after = last
+
+
+def computed_totals():
+	"""``{material_request: sum(cint(pcs))}`` for every request that has item rows.
+
+	``cint`` and not SQL ``CAST``: see the module docstring for the inputs on which the two
+	disagree. This is the function ``update_pure_qty`` uses, which is what makes the
+	backfilled value and the next-save value the same number.
+	"""
+	totals = {}
+	for row in _scan(ITEM_SCAN_QUERY):
+		totals[row.parent] = totals.get(row.parent, 0) + cint(row.pcs)
+	return totals
+
+
+def pending_updates(totals):
+	"""``{wanted_total: [material_request, ...]}`` for requests whose stored value is wrong.
+
+	Grouped by value on the way out so the write path issues one UPDATE per distinct total
+	rather than one per document. A request with no item rows wants 0.
+	"""
+	by_value = {}
+	for row in _scan(PARENT_SCAN_QUERY.format(fieldname=FIELDNAME)):
+		want = totals.get(row.name, 0)
+		if cint(row.stored) != want:
+			by_value.setdefault(want, []).append(row.name)
+	return by_value
 
 
 def backfill():
@@ -88,15 +160,9 @@ def backfill():
 		)
 		return 0
 
-	pending = frappe.db.sql(PENDING_QUERY.format(fieldname=FIELDNAME), as_dict=True)
-	if not pending:
+	by_value = pending_updates(computed_totals())
+	if not by_value:
 		return 0
-
-	# Grouped by value so the row count drives the work, not the statement count: every
-	# request sharing a total is corrected by one UPDATE.
-	by_value = {}
-	for row in pending:
-		by_value.setdefault(int(row.want), []).append(row.name)
 
 	updated = 0
 	for value, names in by_value.items():

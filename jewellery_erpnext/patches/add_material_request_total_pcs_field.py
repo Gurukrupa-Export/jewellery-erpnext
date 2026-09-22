@@ -65,6 +65,19 @@ reason: ``migrate.py`` runs it at the end of ``post_schema_updates``, after
 ``sync_fixtures()``, which is the only point at which the anchors the gke fixture resets on
 every migrate can be put back.
 
+The two reasons apply to different environments, and conflating them wastes debugging time:
+
+* **CI** needs the hook only for the first reason. ``install.sh`` moves
+  ``gke_customization/fixtures`` to ``fixtures_disabled`` before installing any app and never
+  restores it, so no gke fixture is ever imported there and no anchor is ever reset.
+* **Production** needs it for both. The fixtures are live, ``sync_fixtures()`` re-imports
+  ``Material Request-custom_total_quantity`` and ``-custom_order_details`` with ``force=True``
+  on every migrate, and this hook is what puts them back afterwards.
+
+Because CI cannot reach the second path, it is covered by a test that performs the reset by
+hand -- ``TestTotalPcsFieldLayout.test_layout_recovers_after_a_fixture_reset`` in
+``tests/test_material_request_customizations``.
+
 Note for whoever debugs this later: clicking **Reset Layout** in Customize Form on Material
 Request deletes every ``field_order`` and ``insert_after`` Property Setter for the doctype
 (``customize_form.py`` ``reset_layout``), which undoes this entire scheme. Re-run the patch
@@ -164,6 +177,11 @@ def _ensure_insert_after_property_setter(fieldname, value):
 			"property_type": "Data",
 		},
 		is_system_generated=False,
+		# This runs from after_migrate, when a sibling app's fields may not all exist yet.
+		# The default True re-validates every field on the doctype and can throw for reasons
+		# that have nothing to do with this Property Setter -- and after_migrate swallows
+		# exceptions, so that would fail silently.
+		validate_fields_for_doctype=False,
 	)
 	return "created"
 
@@ -210,6 +228,9 @@ def _ensure_field_order_property_setter():
 			"property_type": "Data",
 		},
 		is_system_generated=False,
+		# See the sibling helper: validating every field on a half-built site can throw, and
+		# the caller swallows exceptions, so that would fail silently.
+		validate_fields_for_doctype=False,
 	)
 	return "seeded"
 
@@ -264,13 +285,18 @@ def after_migrate():
 	this branch nothing else creates the fields, because there is no ``install.py`` applying
 	``custom_fields/*.json``.
 
-	``after_migrate`` also lands in the right place for the second problem: ``migrate.py``
-	runs it at the END of ``post_schema_updates``, well after ``sync_fixtures()``, so it
-	re-asserts the two anchors that ``gke_customization``'s fixture re-import resets on every
-	single migrate rather than relying solely on the Property Setters to out-rank them.
+	``after_migrate`` also lands in the right place for a second problem, this one specific to
+	PRODUCTION: ``migrate.py`` runs it at the END of ``post_schema_updates``, well after
+	``sync_fixtures()``, so it re-asserts the two anchors that ``gke_customization``'s fixture
+	re-import resets on every single migrate rather than relying solely on the Property
+	Setters to out-rank them. CI never exercises that second path -- ``install.sh`` moves
+	``gke_customization/fixtures`` aside before installing anything and never restores it --
+	which is why ``test_material_request_customizations`` simulates the reset directly.
 
 	Deliberately non-fatal: a form-layout problem must never be the thing that fails a
-	migrate.
+	migrate. But not silent either -- a swallowed exception here leaves the feature shipped
+	in a broken UI state with a green migrate, so it is printed as well as logged. The
+	Error Log row is what the layout test asserts the absence of.
 	"""
 	try:
 		apply()
@@ -278,6 +304,15 @@ def after_migrate():
 		frappe.log_error(
 			title="after_migrate: Material Request Total Pcs layout",
 			message=frappe.get_traceback(),
+		)
+		# Printed, not just logged: this runs inside `bench migrate`, whose output is what a
+		# deploy or a CI run actually shows anyone.
+		print(
+			"WARNING: Material Request Total Pcs layout could not be applied. "
+			"The migrate itself succeeded; see Error Log "
+			'"after_migrate: Material Request Total Pcs layout". '
+			"Re-run with: bench --site <site> execute "
+			"jewellery_erpnext.patches.add_material_request_total_pcs_field.execute"
 		)
 
 

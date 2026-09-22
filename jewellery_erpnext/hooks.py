@@ -12,12 +12,22 @@ app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dial
 # after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
 # Deliberately NOT the line above, which would apply every custom_fields/*.json in the app.
-# This re-asserts one form layout that patches.txt cannot reach: `bench install-app` marks
-# every patch as completed without running it (frappe/installer.py:358), so a site built by
-# install-app + migrate -- which is what CI does -- never executes the patch that creates
-# these fields. migrate.py runs after_migrate at the end of post_schema_updates, i.e. after
-# sync_fixtures, which is also the only point at which the anchors gke_customization's
-# fixture resets can be put back. Idempotent, and swallows its own errors.
+# This re-asserts one form layout, for two reasons that apply to different environments:
+#
+#   CI         `bench install-app` marks every patches.txt entry completed without running it
+#              (frappe/installer.py:358), so the following `bench migrate` skips the patch
+#              that creates these fields and the form has no Total Pcs at all.
+#   Production the same, PLUS sync_fixtures re-imports gke_customization's Custom Field rows
+#              on every migrate and resets two anchors this layout depends on. migrate.py
+#              runs after_migrate at the end of post_schema_updates, after sync_fixtures, so
+#              this is the only hook that can put them back.
+#
+# Only the first reason is reachable in CI: install.sh moves gke_customization/fixtures aside
+# before installing anything and never restores it. The fixture-reset path is covered instead
+# by TestTotalPcsFieldLayout in tests/test_material_request_customizations.
+#
+# Idempotent. Non-fatal by design, but it prints as well as logging, so a failure is visible
+# in the migrate output rather than only in the Error Log.
 after_migrate = (
 	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
 )

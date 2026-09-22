@@ -606,6 +606,11 @@ class TestTotalPcsFieldLayout(IntegrationTestCase):
 	patch on a migrated site, ``install.after_sync`` on a fresh one -- and an earlier
 	revision of this change was correct on a migrated site while landing Total Pcs in the
 	Terms tab on a fresh install. Only a meta-level assertion catches that.
+
+	The last test here covers something CI structurally cannot: ``install.sh`` moves
+	``gke_customization/fixtures`` aside before installing any app, so the fixture re-import
+	that resets this layout on every production migrate never happens on a test site. It is
+	simulated by hand instead.
 	"""
 
 	EXPECTED = [
@@ -643,6 +648,73 @@ class TestTotalPcsFieldLayout(IntegrationTestCase):
 		self.assertTrue(df.read_only)
 		# allow_on_submit stays off: update_pure_qty only runs up to submit.
 		self.assertFalse(df.allow_on_submit)
+
+	def test_layout_recovers_after_a_fixture_reset(self):
+		"""The production condition CI cannot reach, performed by hand.
+
+		On a real site ``sync_fixtures()`` re-imports gke_customization's Custom Field rows
+		on every migrate, putting ``custom_total_quantity`` back on ``items`` and
+		``custom_order_details`` back on ``custom_total_quantity``. ``after_migrate`` runs
+		afterwards and is what repairs it. CI never sees this because ``install.sh`` disables
+		those fixtures, so without this test the repair path is only ever exercised on
+		production -- the worst possible place to discover it does not work.
+
+		Everything written here is rolled back by the harness at class teardown; the explicit
+		re-apply below also leaves the site correct for any test that runs after it, since
+		Property Setter changes escape the meta cache.
+		"""
+		from jewellery_erpnext.patches.add_material_request_total_pcs_field import (
+			after_migrate,
+		)
+
+		def order():
+			frappe.clear_cache(doctype="Material Request")
+			fields = [df.fieldname for df in frappe.get_meta("Material Request").fields]
+			start = fields.index("items")
+			return fields[start : start + len(self.EXPECTED)]
+
+		self.addCleanup(after_migrate)
+
+		# What the gke fixture restores, plus the Property Setters a Customize Form "Reset
+		# Layout" would remove -- together, the worst state the hook has to recover from.
+		frappe.db.delete(
+			"Property Setter",
+			{"doc_type": "Material Request", "property": "field_order"},
+		)
+		frappe.db.delete(
+			"Property Setter",
+			{"doc_type": "Material Request", "property": "insert_after"},
+		)
+		frappe.db.set_value(
+			"Custom Field",
+			"Material Request-custom_total_quantity",
+			"insert_after",
+			"items",
+		)
+		frappe.db.set_value(
+			"Custom Field",
+			"Material Request-custom_order_details",
+			"insert_after",
+			"custom_total_quantity",
+		)
+
+		self.assertNotEqual(
+			order(), self.EXPECTED, msg="the reset did not break the layout"
+		)
+
+		before = frappe.db.count(
+			"Error Log", {"method": ["like", "%Total Pcs layout%"]}
+		)
+		after_migrate()
+
+		self.assertEqual(order(), self.EXPECTED)
+		# after_migrate swallows exceptions, so a silent failure would otherwise look like a
+		# pass on a site that happened to already be correct.
+		self.assertEqual(
+			frappe.db.count("Error Log", {"method": ["like", "%Total Pcs layout%"]}),
+			before,
+			msg="after_migrate logged an error instead of applying the layout",
+		)
 
 
 class TestValidateWarehouse(IntegrationTestCase):
