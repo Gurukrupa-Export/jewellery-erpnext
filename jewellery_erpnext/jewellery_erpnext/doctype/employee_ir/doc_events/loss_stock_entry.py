@@ -983,11 +983,14 @@ def _stamp_loss_tree(se, eir):
 	"""
 	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 		row_tree_name,
+		single_tree_or_none,
 	)
 
-	trees = {t for t in (row_tree_name(row) for row in eir.employee_ir_operations) if t}
-	if len(trees) == 1:
-		se.custom_tree_number = next(iter(trees))
+	tree_name = single_tree_or_none(
+		row_tree_name(row) for row in eir.employee_ir_operations
+	)
+	if tree_name:
+		se.custom_tree_number = tree_name
 
 
 def _build_combined_loss_se(eir, pending):
