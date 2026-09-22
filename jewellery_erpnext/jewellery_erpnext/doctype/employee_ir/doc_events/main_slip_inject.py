@@ -1293,6 +1293,22 @@ def _resolve_department_warehouse(department):
 
 
 def _stamp_se_header(se, eir, row):
+	"""Common header for every injection Stock Entry, including casting tree provenance.
+
+	``custom_tree_number`` records which casting tree this draw belongs to. Without it the metal
+	an operation pulls out of the employee's MSL warehouse is invisible to the tree that put it
+	there -- the tree's own netting then over-states what it is still owed, because the draws that
+	legitimately consumed it never appear. Resolved through ``row_tree_name`` rather than read off
+	``row.tree_number`` directly: on a casting Receive ``resolve_receive_tree_numbers`` has already
+	filled the row in ``validate`` and the helper short-circuits on it, but a non-casting operation
+	that still carries a tree (a finding repack) is answered only by its ``MWO`` fallback.
+
+	Imported inside the function to keep this module's import graph free of ``tree_casting``.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
+		row_tree_name,
+	)
+
 	se.company = eir.company
 	se.manufacturing_order = frappe.get_cached_value(
 		"Manufacturing Work Order", row.manufacturing_work_order, "manufacturing_order"
@@ -1302,6 +1318,9 @@ def _stamp_se_header(se, eir, row):
 	se.employee_ir = eir.name
 	se.custom_eir_operation_row = row.name
 	se.auto_created = 1
+	tree_name = row_tree_name(row)
+	if tree_name:
+		se.custom_tree_number = tree_name
 	if eir.subcontracting == "Yes":
 		se.subcontractor = eir.subcontractor
 	else:
