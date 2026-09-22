@@ -82,6 +82,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_cas
 	validate_casting_group_complete,
 	validate_casting_receive,
 	validate_casting_tree,
+	validate_single_casting_tree,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	get_loss_qty_in_grams,
@@ -202,6 +203,10 @@ class EmployeeIR(Document):
 		# value over the live work order, so resolving after it would judge this receive
 		# against whatever tree a PREVIOUS save had resolved.
 		resolve_receive_tree_numbers(self)
+		# One EIR = one casting tree. Straight after the resolve so it judges the tree each
+		# work order is on NOW, and before the two casting validators below so the operator
+		# gets the cause rather than a same-metal / tree-balance symptom derived from it.
+		validate_single_casting_tree(self)
 		validate_casting_tree(self)
 		validate_casting_receive(self)
 		validate_finding_repack(self)

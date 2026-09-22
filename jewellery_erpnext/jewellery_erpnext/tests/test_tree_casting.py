@@ -3171,6 +3171,95 @@ class TestResolveReceiveTreeNumbers(IntegrationTestCase):
 		self.assertEqual(self.get_all.call_count, 1)
 
 
+class TestValidateSingleCastingTree(IntegrationTestCase):
+	"""One Employee IR = one casting tree, enforced on the Receive side.
+
+	``employee_ir.js`` refuses the code at the scanner, but every other way a row can appear --
+	the Get Operations dialog, a grid bulk edit, Data Import, the REST API -- reaches the server
+	unguarded. This is the twin that actually enforces the rule, the same relationship the
+	duplicate-work-order check has with ``validation_utils.validate_duplication_and_gr_wt``.
+
+	Placed after TestResolveReceiveTreeNumbers because that function produces the row values
+	this one judges, and ``EmployeeIR.validate`` runs them in exactly that order.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _validate(self, row_trees, typ="Receive", casting=True, docstatus=0):
+		"""Run the guard over one row per entry in `row_trees`."""
+		eir = _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			type=typ,
+			docstatus=docstatus,
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order="MWO-%d" % i, tree_number=tree)
+				for i, tree in enumerate(row_trees)
+			],
+		)
+		with patch.object(
+			tree_casting.frappe.db, "get_value", return_value=1 if casting else 0
+		):
+			tree_casting.validate_single_casting_tree(eir)
+		return eir
+
+	def test_one_tree_passes(self):
+		self._validate(["TREE-0001", "TREE-0001"])  # no throw
+
+	def test_two_trees_on_one_receive_are_rejected(self):
+		with self.assertRaises(ValidationError):
+			self._validate(["TREE-0001", "TREE-0002"])
+
+	def test_the_message_names_both_work_orders_and_both_trees(self):
+		"""The text IS the user-visible contract -- it has to say which row to take off."""
+		with self.assertRaises(ValidationError) as cm:
+			self._validate(["TREE-0001", "TREE-0002"])
+		message = str(cm.exception)
+		for token in ("MWO-0", "MWO-1", "TREE-0001", "TREE-0002"):
+			self.assertIn(token, message)
+
+	def test_it_names_the_first_disagreement_not_the_last(self):
+		with self.assertRaises(ValidationError) as cm:
+			self._validate(["TREE-0001", "TREE-0001", "TREE-0002"])
+		message = str(cm.exception)
+		self.assertIn("MWO-2", message)
+		self.assertIn("MWO-0", message)
+
+	def test_rows_without_a_tree_are_not_a_second_tree(self):
+		"""Get Operations deliberately resolves no tree, so its rows arrive blank and stay
+		blank until the next save; throwing on those would block the repair."""
+		self._validate(["TREE-0001", None, "TREE-0001"])  # no throw
+
+	def test_a_receive_on_no_tree_at_all_passes(self):
+		"""Work orders from before the Tree Number feature, or whose Issue was cancelled
+		underneath the operator."""
+		self._validate([None, None])  # no throw
+
+	def test_an_issue_is_untouched(self):
+		"""``create_tree_on_issue`` mints ONE tree for the whole document at submit, so an
+		Issue is one-tree by construction; until then its rows still carry last round's."""
+		self._validate(["TREE-0001", "TREE-0002"], typ="Issue")  # no throw
+
+	def test_a_non_casting_receive_may_still_span_trees(self):
+		"""``row_tree_name`` falls back to ``MWO.tree_number``, which survives past casting, so
+		a finding repack legitimately draws from trees its own operation flag says nothing about
+		(``finding_repack.lock_finding_repack_trees``). Casting's rule must not leak onto it."""
+		self._validate(["TREE-0001", "TREE-0002"], casting=False)  # no throw
+
+	def test_the_guard_also_runs_on_the_submit_save(self):
+		"""NOT gated on docstatus, deliberately: ``before_validate`` returns early on
+		``docstatus != 0`` and ``submit()`` sets docstatus BEFORE saving, so a draft assembled
+		before this rule shipped must not walk past it by being submitted without an
+		intervening save."""
+		with self.assertRaises(ValidationError):
+			self._validate(["TREE-0001", "TREE-0002"], docstatus=1)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
 class TestDraftResolveMatchesTheSubmitPin(IntegrationTestCase):
 	"""The display fix must not move a gram.
 
