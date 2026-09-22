@@ -11,6 +11,17 @@ app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
 # after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
+# Deliberately NOT the line above, which would apply every custom_fields/*.json in the app.
+# This re-asserts one form layout that patches.txt cannot reach: `bench install-app` marks
+# every patch as completed without running it (frappe/installer.py:358), so a site built by
+# install-app + migrate -- which is what CI does -- never executes the patch that creates
+# these fields. migrate.py runs after_migrate at the end of post_schema_updates, i.e. after
+# sync_fixtures, which is also the only point at which the anchors gke_customization's
+# fixture resets can be put back. Idempotent, and swallows its own errors.
+after_migrate = (
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
+)
+
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
 	"Customer": "public/js/doctype_js/customer.js",

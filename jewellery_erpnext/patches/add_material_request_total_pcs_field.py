@@ -51,21 +51,19 @@ what keeps the layout correct across a migrate.
 per-site Custom Field ``idx``, so the new fields would sort differently on different
 installs. Chaining it onto ``custom_total_pcs`` removes the tie.
 
-MIGRATE IS THE ONLY ENTRY POINT ON THIS BRANCH
------------------------------------------------
-A patch does not reach a FRESH install: ``frappe/installer.py:358`` calls
-``set_all_patches_as_completed`` before anything else, so every entry in ``patches.txt`` is
-logged as done WITHOUT being run. On the uat line that gap is covered by re-calling
-``apply()`` from ``install.after_sync`` (``installer.py:371``, the first point at which the
-site is whole). This branch ships no ``install.py`` and declares neither ``after_install``
-nor ``after_sync``, so there is nothing to hang that on -- and the gap is not specific to
-this patch: every entry in ``patches.txt`` is skipped the same way, so a fresh install of
-this branch is already incomplete by design and is only ever brought up by ``bench
-migrate``.
+WHY ``apply()`` IS ALSO WIRED TO ``after_migrate``
+--------------------------------------------------
+``patches.txt`` alone never reaches a site built by ``bench install-app``:
+``frappe/installer.py:358`` calls ``set_all_patches_as_completed`` before anything else, so
+every entry is logged as done WITHOUT being run, and the following ``bench migrate`` then
+skips it as already applied. That is exactly the CI sequence, and on this branch nothing
+else creates these fields -- there is no ``install.py`` applying ``custom_fields/*.json``,
+so the form simply had no Total Pcs at all.
 
-``apply()`` is kept as a separate entry point anyway, so this file stays textually identical
-to its uat counterpart and the two do not drift when the branches are reconciled. If an
-``after_install``/``after_sync`` hook is ever added here, wire it to ``apply()``.
+``after_migrate`` (wired in ``hooks.py``) closes that, and it is the right hook for a second
+reason: ``migrate.py`` runs it at the end of ``post_schema_updates``, after
+``sync_fixtures()``, which is the only point at which the anchors the gke fixture resets on
+every migrate can be put back.
 
 Note for whoever debugs this later: clicking **Reset Layout** in Customize Form on Material
 Request deletes every ``field_order`` and ``insert_after`` Property Setter for the doctype
@@ -77,6 +75,8 @@ to the same values on a re-run. Ad-hoc entry point::
 
     bench --site <site> execute jewellery_erpnext.patches.add_material_request_total_pcs_field.execute
 """
+
+import json
 
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
@@ -168,10 +168,56 @@ def _ensure_insert_after_property_setter(fieldname, value):
 	return "created"
 
 
+def _ensure_field_order_property_setter():
+	"""Guarantee a DocType-level ``field_order`` Property Setter exists, seeding one if not.
+
+	Without it, ``Meta.sort_fields`` resolves the layout from ``insert_after`` -- and
+	``meta.py``'s Section/Column Break special case then RELOCATES ``custom_total_section``.
+	It walks forward from the anchor until it meets a Section Break or a field matching the
+	ANCHOR's own fieldtype (``Table``), which on a stock Material Request means it sails past
+	``terms_tab`` and drops the whole block into the Terms tab. Measured, not theorised: a
+	site with no such Property Setter resolves to
+	``items, terms_tab, custom_total_section, custom_total_quantity, ...``.
+
+	That special case only fires when the anchor is in ``field_order`` -- i.e. when it is a
+	standard field, which ``items`` is. There is no way to anchor a Section Break directly
+	after the items grid and avoid it, so the fix is to make ``field_order`` authoritative:
+	rule 1 of ``sort_fields`` outranks ``insert_after`` entirely.
+
+	Seeded from the CURRENT resolved order, relocation and all. That is safe because
+	``rewrite_field_order`` then splices the block in at the position of its earliest member
+	-- ``custom_total_quantity``, which is still sitting correctly after ``items`` -- so the
+	displaced fields are pulled back up with it.
+
+	Only ever creates; a site that already has one (anything customised through Customize
+	Form, which includes production) is left completely alone.
+	"""
+	if frappe.db.exists(
+		"Property Setter",
+		{"doc_type": DOCTYPE, "property": "field_order", "doctype_or_field": "DocType"},
+	):
+		return "already present"
+
+	frappe.clear_cache(doctype=DOCTYPE)
+	order = [df.fieldname for df in frappe.get_meta(DOCTYPE).fields]
+
+	frappe.make_property_setter(
+		{
+			"doctype": DOCTYPE,
+			"doctype_or_field": "DocType",
+			"property": "field_order",
+			"value": json.dumps(order),
+			"property_type": "Data",
+		},
+		is_system_generated=False,
+	)
+	return "seeded"
+
+
 def apply():
 	"""Create the fields and put the block where it belongs. Safe to run repeatedly.
 
-	Shared by ``execute`` (migrate / ad-hoc) and ``install.after_sync`` (fresh install).
+	Shared by ``execute`` (patches.txt / ad-hoc) and ``after_migrate`` (every migrate).
 	"""
 	create_custom_fields({DOCTYPE: list(NEW_FIELDS)}, ignore_validate=True)
 
@@ -187,6 +233,10 @@ def apply():
 			},
 		)
 
+	# Must come BEFORE rewrite_field_order, which is a no-op when there is nothing to
+	# splice into, and before the chain, so the seed reflects the pre-chain order.
+	seeded = _ensure_field_order_property_setter()
+
 	# What a customized site renders by, and what a fresh install renders by.
 	rewrite_field_order(DOCTYPE, BLOCK)
 	rewrite_insert_after_chain(DOCTYPE, BLOCK, ANCHOR)
@@ -195,12 +245,40 @@ def apply():
 		fieldname: _ensure_insert_after_property_setter(fieldname, value)
 		for fieldname, value in PINNED_ANCHORS
 	}
+	results["field_order"] = seeded
 
 	frappe.clear_cache(doctype=DOCTYPE)
 	frappe.logger().info(
 		"add_material_request_total_pcs_field: "
 		+ ", ".join(f"{k}={v}" for k, v in results.items())
 	)
+
+
+def after_migrate():
+	"""Re-assert the layout on every migrate. Wired from ``hooks.py``.
+
+	``patches.txt`` alone is not enough: ``bench install-app`` calls
+	``set_all_patches_as_completed`` (``frappe/installer.py:358``), which logs EVERY entry in
+	``patches.txt`` as done without running it. A site built by ``install-app`` followed by
+	``bench migrate`` -- exactly what CI does -- therefore never executes this patch, and on
+	this branch nothing else creates the fields, because there is no ``install.py`` applying
+	``custom_fields/*.json``.
+
+	``after_migrate`` also lands in the right place for the second problem: ``migrate.py``
+	runs it at the END of ``post_schema_updates``, well after ``sync_fixtures()``, so it
+	re-asserts the two anchors that ``gke_customization``'s fixture re-import resets on every
+	single migrate rather than relying solely on the Property Setters to out-rank them.
+
+	Deliberately non-fatal: a form-layout problem must never be the thing that fails a
+	migrate.
+	"""
+	try:
+		apply()
+	except Exception:
+		frappe.log_error(
+			title="after_migrate: Material Request Total Pcs layout",
+			message=frappe.get_traceback(),
+		)
 
 
 def execute():
