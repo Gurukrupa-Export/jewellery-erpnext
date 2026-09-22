@@ -7,10 +7,17 @@ A "casting" operation is any Department Operation flagged ``tree_no_reqd`` (the
 same flag Main Slip uses via ``is_tree_reqd``). For those operations the EIR
 drives a Tree Number:
 
-  * Issue   -> auto-create ONE Tree Number, link every MWO in the EIR to it, and
-              seed the Material Details ledger with the issued metal per item.
+  * Issue   -> auto-create ONE Tree Number, link every MWO in the EIR to it,
+              stamp the tree back onto the EIR's own operation rows, and seed the
+              Material Details ledger with the issued metal per item.
   * Receive -> add received / loss metal to the same ledger and move the tree
               status Issued -> Partially Received -> Received.
+
+``Employee IR Operation.tree_number`` is therefore populated on BOTH sides of a
+casting round trip -- by ``create_tree_on_issue`` on the way out and by
+``pin_tree_numbers_on_receive`` on the way back -- so either document shows which
+tree it belongs to. The grid column is revealed only for tree (casting)
+operations; ``employee_ir.js`` toggles it off ``Department Operation.tree_no_reqd``.
 
 Physical stock and loss still move through the existing EIR engine
 (loss_stock_entry / main_slip_inject / MOP Log / SRE); the Tree Number's
@@ -510,6 +517,9 @@ def create_tree_on_issue(eir):
 				"item_code": item,
 				"issue_qty": 0,
 				"receive_qty": 0,
+				"wo_receive_qty": 0,
+				"manual_receive_qty": 0,
+				"wo_received_gross_wt": 0,
 				"loss_qty": 0,
 				"pending_qty": 0,
 			},
@@ -533,11 +543,16 @@ def create_tree_on_issue(eir):
 		)
 		or tree.name
 	)
-	for _row, mwo in rows:
+	for row, mwo in rows:
 		updates = {"tree_number": tree.name}
 		if mwo.get("casting_group") != group_id:
 			updates["casting_group"] = group_id
 		frappe.db.set_value("Manufacturing Work Order", mwo.name, updates)
+		# Stamp the Issue EIR's own row too, so the operator sees which tree the
+		# work orders went onto without opening each one. ``db_set`` writes
+		# straight through, which is what makes it usable here: this runs from
+		# ``on_submit``, when the document is already submitted.
+		row.db_set("tree_number", tree.name, update_modified=False)
 
 	return tree.name
 
@@ -569,6 +584,12 @@ def unlink_tree_on_issue_cancel(eir):
 	for row in eir.employee_ir_operations:
 		if not row.manufacturing_work_order:
 			continue
+		# The tree is force-deleted at the tail of this function, so the stamp
+		# ``create_tree_on_issue`` put on this row has to come off with it —
+		# otherwise the row is left pointing at a document that no longer exists.
+		# Scoped to THIS tree: on a re-issue the row may already carry a newer one.
+		if row.get("tree_number") and (not tree_name or row.tree_number == tree_name):
+			row.db_set("tree_number", None, update_modified=False)
 		current = frappe.db.get_value(
 			"Manufacturing Work Order", row.manufacturing_work_order, "tree_number"
 		)
@@ -681,6 +702,106 @@ def tree_draw_by_tree(eir):
 	return trees
 
 
+def tree_received_gross_by_tree(eir):
+	"""``{tree_name: {metal_item: sum of received_gross_wt}}`` — what the work orders
+	on each tree actually came back weighing.
+
+	This is NOT ``tree_draw_by_tree``. That one reports the *gain*
+	(``received_gross_wt - gross_wt``), the sliver of metal the receive actually pulls
+	out of the tree's MSL pool, and it is the only figure the ledger arithmetic may
+	use. This one reports the whole received gross weight, which is what the shop
+	floor means by "the weight received against this work order" — most of it was
+	never on the tree at all. It feeds the informational
+	``wo_received_gross_wt`` column and nothing else.
+
+	Two deliberate differences from ``tree_draw_by_tree``:
+
+	  * NOT gated on ``is_raw_material`` / ``subcontracting``. Those decide whether
+	    metal physically leaves the tree's pool; the work order was received against
+	    the tree either way, and hiding the weight for a subcontracted casting would
+	    make the column silently wrong exactly where it is most looked at.
+	  * Rows with no gain are INCLUDED. A receive that returns less than it took out
+	    draws nothing from the tree but still has a received gross weight.
+	"""
+	prec = _se_precision()
+	out = {}
+	for row in eir.employee_ir_operations:
+		tree_name, item = _row_tree_and_item(row)
+		if not tree_name or not item:
+			continue
+		weight = flt(row.received_gross_wt, prec)
+		if weight <= 0:
+			continue
+		bucket = out.setdefault(tree_name, {})
+		bucket[item] = flt(bucket.get(item, 0.0) + weight, prec)
+	return out
+
+
+def _find_ledger_row(tree, item_code):
+	"""The one ``material_details`` row for ``item_code``, or ``None``.
+
+	The non-throwing twin of ``_tree_ledger_row``. That one throws because the metal
+	really was drawn from the tree and MUST be recorded somewhere; this one backs the
+	informational gross-weight column, which may never abort a receive that is
+	otherwise valid. An ambiguous (duplicated) item resolves to ``None`` rather than
+	guessing — ``_tree_ledger_row`` rejects that case outright, so the two agree on
+	what "unattributable" means.
+	"""
+	matches = [md for md in tree.material_details if md.item_code == item_code]
+	return matches[0] if len(matches) == 1 else None
+
+
+def _credit_wo_received_gross(tree_name, item_totals, cancel, prec):
+	"""Add (or reverse) received gross weight on a tree we are NOT otherwise saving.
+
+	KNOWN LIMITATION (informational column only, ledger unaffected): the "row missing ->
+	skip" decision is evaluated against the ledger as it stands at the time of the call,
+	and the ledger is not frozen between a forward credit and its cancel -- the Issue
+	Material button appends a row for any newly issued item, and a multicolour tree
+	legitimately gains rows over time. So a forward credit that found no row for an item
+	records nothing, while its cancel, run after that row exists, does find it and
+	subtracts the full weight, flooring at 0 and eating whatever other Employee IRs had
+	credited there. Making this exact would mean tracking each voucher's contribution
+	per row rather than accumulating a total; that is not worth the storage for a
+	reference figure, but it is why this column must never be treated as authoritative.
+
+	Writes the child rows directly instead of loading and saving the Tree Number.
+	That is the whole point: this column is informational, so crediting it must not
+	drag a tree through ``TreeNumber.validate``, recompute its status, take its row
+	lock, or trip the "tree is submitted" guard. A receive that draws nothing from a
+	tree behaved this way before the column existed and must keep behaving that way.
+	"""
+	rows = frappe.get_all(
+		"Tree Material Detail",
+		filters={
+			"parent": tree_name,
+			"parenttype": "Tree Number",
+			"item_code": ["in", list(item_totals)],
+		},
+		fields=["name", "item_code", "wo_received_gross_wt"],
+	)
+	by_item = {}
+	for row in rows:
+		# A duplicated item is unattributable; skip it rather than pick one.
+		by_item[row.item_code] = None if row.item_code in by_item else row
+
+	sign = -1 if cancel else 1
+	for item, weight in item_totals.items():
+		row = by_item.get(item)
+		if not row:
+			continue
+		updated = max(
+			0.0, flt(flt(row.wo_received_gross_wt) + sign * flt(weight), prec)
+		)
+		frappe.db.set_value(
+			"Tree Material Detail",
+			row.name,
+			"wo_received_gross_wt",
+			updated,
+			update_modified=False,
+		)
+
+
 def pin_tree_numbers_on_receive(eir):
 	"""Stamp the resolved tree onto each operation row so cancel reverses the right one."""
 	for row in eir.employee_ir_operations:
@@ -697,12 +818,26 @@ def update_tree_on_receive(eir, cancel=False):
 	Only ``receive_qty`` is written. ``issue_qty`` stays button-owned and ``loss_qty`` belongs to
 	the tree's own Receive/Submit legs, which already cap themselves at pending — so reversal is
 	exact and the two paths can never double-count each other.
+
+	``wo_receive_qty`` moves in lockstep with ``receive_qty`` here, and
+	``manual_receive_qty`` in lockstep with it on the button path, so the pair always
+	adds back up to ``receive_qty``: same value, split by provenance. Neither is read
+	by the arithmetic.
+
+	``wo_received_gross_wt`` is a third, independent figure — the whole received gross
+	weight, most of which never touched the tree. Trees this receive genuinely draws
+	from get it written inside the save below; trees it only *reports* against are
+	credited afterwards by ``_credit_wo_received_gross``, which touches nothing but
+	that one column. Keeping those apart is what stops a purely informational number
+	from locking, re-validating or re-statusing a tree the receive would otherwise
+	have left alone.
 	"""
 	if not is_casting_eir(eir):
 		return
 
 	trees = tree_draw_by_tree(eir)
-	if not trees:
+	gross = tree_received_gross_by_tree(eir)
+	if not trees and not gross:
 		return
 
 	prec = _se_precision()
@@ -728,15 +863,36 @@ def update_tree_on_receive(eir, cancel=False):
 				# back to the tree is a credit, never a draw.
 				md = _tree_ledger_row(tree, item)
 				md.receive_qty = max(0.0, flt(flt(md.receive_qty) - flt(draw), prec))
+				md.wo_receive_qty = max(
+					0.0, flt(flt(md.wo_receive_qty) - flt(draw), prec)
+				)
 			else:
 				md = _check_tree_draw(eir, tree, item, draw)
 				if md is None:
 					continue
 				md.receive_qty = flt(flt(md.receive_qty) + flt(draw), prec)
+				md.wo_receive_qty = flt(flt(md.wo_receive_qty) + flt(draw), prec)
+
+		# Same document, same save — the direct-write path below would be overwritten by
+		# this ``tree.save()`` if it ran first, so trees being saved here are handled here.
+		sign = -1 if cancel else 1
+		for item, weight in (gross.pop(tree_name, None) or {}).items():
+			md = _find_ledger_row(tree, item)
+			if md is None:
+				continue
+			md.wo_received_gross_wt = max(
+				0.0,
+				flt(flt(md.wo_received_gross_wt) + sign * flt(weight), prec),
+			)
 
 		tree.status = _tree_status(tree)
 		tree.flags.ignore_permissions = True
 		tree.save()
+
+	# Whatever is left in ``gross`` belongs to trees this receive reports against but
+	# draws nothing from. Credit the informational column alone, with no parent save.
+	for tree_name in sorted(gross):
+		_credit_wo_received_gross(tree_name, gross[tree_name], cancel, prec)
 
 
 def lock_tree(tree_name):

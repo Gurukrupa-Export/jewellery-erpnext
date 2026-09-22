@@ -69,6 +69,12 @@ def make_tree(issue=0.0, receive=0.0, loss=0.0, status="Issued", name=TREE, rows
 				item_code=item,
 				issue_qty=i,
 				receive_qty=r,
+				# Provenance split of receive_qty + the informational gross weight.
+				# A pre-split fixture starts the work-order half at the whole of
+				# receive_qty, which is what the backfill patch derives too.
+				wo_receive_qty=r,
+				manual_receive_qty=0.0,
+				wo_received_gross_wt=0.0,
 				loss_qty=lo,
 				pending_qty=i - r - lo,
 			)
@@ -77,9 +83,14 @@ def make_tree(issue=0.0, receive=0.0, loss=0.0, status="Issued", name=TREE, rows
 	)
 
 	def _save(*a, **k):
-		# Mirror TreeNumber.calculate_material_pending: single unfloored writer.
+		# Mirror TreeNumber.calculate_material_pending exactly: the single unfloored
+		# writer of pending_qty AND the single writer of the derived provenance half.
+		# The fake has to derive manual_receive_qty for the same reason the real
+		# document does - if it did not, these tests would keep asserting on an
+		# accumulated value that production no longer maintains.
 		for md in tree.material_details:
 			md.pending_qty = md.issue_qty - md.receive_qty - md.loss_qty
+			md.manual_receive_qty = max(0.0, md.receive_qty - md.wo_receive_qty)
 		tree.saves = getattr(tree, "saves", 0) + 1
 
 	tree.save = _save
@@ -140,7 +151,13 @@ class _TreeReceiveHarness(IntegrationTestCase):
 		super().setUp()
 		frappe.get_system_settings("rounding_method")
 
-	def run_update(self, eir, tree, cancel=False, mwos=None):
+	def run_update(self, eir, tree, cancel=False, mwos=None, child_rows=None):
+		"""Run update_tree_on_receive against the fake tree; returns the frappe.db mock.
+
+		``child_rows`` is what ``_credit_wo_received_gross`` should find when it reads
+		the ledger straight from the database — the path taken for a tree this receive
+		reports against but draws nothing from. Defaults to nothing found.
+		"""
 		mwos = mwos or {
 			r.manufacturing_work_order: _MWODoc(r.manufacturing_work_order)
 			for r in eir.employee_ir_operations
@@ -157,8 +174,13 @@ class _TreeReceiveHarness(IntegrationTestCase):
 			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
 			patch.object(tree_casting.frappe, "get_precision", return_value=3),
 			patch.object(tree_casting, "get_item_from_attribute", return_value=ITEM),
+			# _credit_wo_received_gross reads child rows directly for any tree this
+			# receive only REPORTS against (no draw). Nothing to find here, and the
+			# real DB is off limits in these unit tests.
+			patch.object(tree_casting.frappe, "get_all", return_value=child_rows or []),
 		):
 			tree_casting.update_tree_on_receive(eir, cancel=cancel)
+		return db
 
 	def run_validate(self, eir, tree, mwos=None):
 		mwos = mwos or {
@@ -498,3 +520,230 @@ class TestAgreedWorkedExample(_TreeReceiveHarness):
 		self.run_update(eir, tree, cancel=True)
 		self.assertAlmostEqual(self.row(tree).receive_qty, 0.0, places=3)
 		self.assertAlmostEqual(self.row(tree).pending_qty, 2.0, places=3)
+
+
+class TestReceiveProvenanceSplit(_TreeReceiveHarness):
+	"""``receive_qty`` splits by provenance, and the received GROSS weight is recorded
+	beside it.
+
+	Two different numbers, deliberately kept apart:
+
+	  * ``wo_receive_qty`` is a strict share of ``receive_qty`` -- the same draw, tagged
+	    with where it came from. It moves in lockstep with ``receive_qty``, so
+	    ``wo_receive_qty + manual_receive_qty`` always adds back up and nothing the
+	    ledger arithmetic reads is disturbed.
+	  * ``wo_received_gross_wt`` is the whole weight the work orders came back weighing.
+	    Most of it never touched the tree, so it is informational only -- and, unlike the
+	    draw, it is recorded even when no metal leaves the tree's pool at all.
+	"""
+
+	def test_gain_credits_wo_receive_alongside_receive(self):
+		tree = make_tree(issue=2.0, receive=0.0)
+		tree.material_details[0].wo_receive_qty = 0.0
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		self.run_update(eir, tree)
+		self.assertAlmostEqual(self.row(tree).receive_qty, 1.0, places=3)
+		self.assertAlmostEqual(self.row(tree).wo_receive_qty, 1.0, places=3)
+
+	def test_the_two_halves_add_back_up_to_receive_qty(self):
+		# The tree button had already returned 0.5 before this receive drew its 1.0.
+		tree = make_tree(issue=5.0, receive=0.5)
+		tree.material_details[0].wo_receive_qty = 0.0
+		tree.material_details[0].manual_receive_qty = 0.5
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		self.run_update(eir, tree)
+		row = self.row(tree)
+		self.assertAlmostEqual(
+			row.wo_receive_qty + row.manual_receive_qty, row.receive_qty, places=3
+		)
+		self.assertAlmostEqual(row.wo_receive_qty, 1.0, places=3)
+		self.assertAlmostEqual(row.manual_receive_qty, 0.5, places=3)
+
+	def test_cancel_reverses_wo_receive_with_receive(self):
+		tree = make_tree(issue=5.0, receive=1.0)
+		tree.material_details[0].wo_receive_qty = 1.0
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		self.run_update(eir, tree, cancel=True)
+		self.assertAlmostEqual(self.row(tree).receive_qty, 0.0, places=3)
+		self.assertAlmostEqual(self.row(tree).wo_receive_qty, 0.0, places=3)
+
+	def test_cancel_never_drives_wo_receive_negative(self):
+		tree = make_tree(issue=5.0, receive=0.4)
+		tree.material_details[0].wo_receive_qty = 0.4
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		self.run_update(eir, tree, cancel=True)
+		self.assertGreaterEqual(self.row(tree).wo_receive_qty, 0.0)
+
+	def test_records_the_full_received_gross_weight_not_the_draw(self):
+		# Draw is 1.0 (3.9 - 2.9), but the work order came back weighing 3.9.
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		self.run_update(eir, tree)
+		self.assertAlmostEqual(self.row(tree).receive_qty, 1.0, places=3)
+		self.assertAlmostEqual(self.row(tree).wo_received_gross_wt, 3.9, places=3)
+
+	def test_gross_weight_sums_across_work_orders(self):
+		tree = make_tree(issue=10.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9), ("MWO-B", 1.0, 2.0)])
+		self.run_update(eir, tree)
+		self.assertAlmostEqual(self.row(tree).wo_received_gross_wt, 5.9, places=3)
+
+	def test_cancel_reverses_the_gross_weight(self):
+		tree = make_tree(issue=5.0, receive=1.0)
+		tree.material_details[0].wo_receive_qty = 1.0
+		tree.material_details[0].wo_received_gross_wt = 3.9
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		self.run_update(eir, tree, cancel=True)
+		self.assertAlmostEqual(self.row(tree).wo_received_gross_wt, 0.0, places=3)
+
+
+class TestGrossWeightWithoutADraw(_TreeReceiveHarness):
+	"""A receive that draws NOTHING from the tree still has a received gross weight.
+
+	This is the case ``tree_draw_by_tree`` deliberately reports nothing for -- no gain,
+	no Main Slip to source one, or a subcontracted receive sourcing from a pool the tree
+	never owned. The weight is still what came back against the work order, so the
+	informational column records it; the ledger is untouched, and crucially the tree is
+	NOT loaded, locked, re-statused or saved, exactly as before the column existed.
+	"""
+
+	def _ledger_row(self, wo_received_gross_wt=0.0):
+		return [
+			frappe._dict(
+				name="TMD-1",
+				item_code=ITEM,
+				wo_received_gross_wt=wo_received_gross_wt,
+			)
+		]
+
+	def _written(self, db):
+		"""The wo_received_gross_wt writes _credit_wo_received_gross made."""
+		return [
+			c.args
+			for c in db.set_value.call_args_list
+			if c.args and c.args[0] == "Tree Material Detail"
+		]
+
+	def test_no_gain_receive_still_records_the_gross_weight(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
+		db = self.run_update(eir, tree, child_rows=self._ledger_row())
+
+		written = self._written(db)
+		self.assertEqual(len(written), 1)
+		self.assertEqual(written[0][1], "TMD-1")
+		self.assertEqual(written[0][2], "wo_received_gross_wt")
+		self.assertAlmostEqual(written[0][3], 2.0, places=3)
+
+	def test_a_no_draw_receive_never_saves_the_tree(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
+		self.run_update(eir, tree, child_rows=self._ledger_row())
+		# The informational column must not drag the tree through validate/status.
+		self.assertEqual(tree.saves, 0)
+		self.assertAlmostEqual(self.row(tree).receive_qty, 0.0, places=3)
+
+	def test_recorded_even_without_a_main_slip_to_source_the_gain(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)], is_raw_material=0)
+		db = self.run_update(eir, tree, child_rows=self._ledger_row())
+
+		written = self._written(db)
+		self.assertEqual(len(written), 1)
+		self.assertAlmostEqual(written[0][3], 3.9, places=3)
+		self.assertEqual(tree.saves, 0)
+
+	def test_recorded_for_a_subcontracted_receive(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)], subcontracting="Yes")
+		db = self.run_update(eir, tree, child_rows=self._ledger_row())
+
+		written = self._written(db)
+		self.assertEqual(len(written), 1)
+		self.assertAlmostEqual(written[0][3], 3.9, places=3)
+
+	def test_accumulates_onto_what_the_row_already_holds(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
+		db = self.run_update(
+			eir, tree, child_rows=self._ledger_row(wo_received_gross_wt=5.0)
+		)
+		self.assertAlmostEqual(self._written(db)[0][3], 7.0, places=3)
+
+	def test_cancel_subtracts_and_never_goes_negative(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
+		db = self.run_update(
+			eir,
+			tree,
+			cancel=True,
+			child_rows=self._ledger_row(wo_received_gross_wt=0.5),
+		)
+		self.assertEqual(self._written(db)[0][3], 0.0)
+
+	def test_a_missing_ledger_row_is_skipped_not_thrown(self):
+		# The informational column may never abort a receive that is otherwise valid.
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
+		db = self.run_update(eir, tree, child_rows=[])
+		self.assertEqual(self._written(db), [])
+
+	def test_a_zero_weight_receive_records_nothing(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 0.0)])
+		db = self.run_update(eir, tree, child_rows=self._ledger_row())
+		self.assertEqual(self._written(db), [])
+
+
+class TestProvenanceInvariantHolds(_TreeReceiveHarness):
+	"""wo_receive_qty + manual_receive_qty == receive_qty, unconditionally.
+
+	manual_receive_qty is DERIVED on every save rather than accumulated, so the two
+	halves cannot drift apart. These pin the cases where independent accumulation used
+	to break: an asymmetric clamp on cancel, and a row whose work-order half under-states
+	the truth (what an unattributable legacy row looks like after the backfill).
+	"""
+
+	def _sums(self, tree):
+		row = self.row(tree)
+		return row.wo_receive_qty + row.manual_receive_qty, row.receive_qty
+
+	def test_holds_after_a_forward_receive(self):
+		tree = make_tree(issue=5.0, receive=0.5)
+		tree.material_details[0].wo_receive_qty = 0.0
+		self.run_update(make_recv_eir([("MWO-A", 2.9, 3.9)]), tree)
+		halves, total = self._sums(tree)
+		self.assertAlmostEqual(halves, total, places=3)
+
+	def test_holds_after_a_cancel_that_clamps_asymmetrically(self):
+		# The legacy shape: receive_qty carries a draw the backfill could not attribute,
+		# so wo_receive_qty under-states it. The cancel debits the full draw from
+		# receive_qty while wo_receive_qty floors at 0 - which used to leave the halves
+		# permanently out of step.
+		tree = make_tree(issue=10.0, receive=7.0)
+		tree.material_details[0].wo_receive_qty = 3.0
+		tree.material_details[0].manual_receive_qty = 4.0
+		self.run_update(make_recv_eir([("MWO-A", 2.9, 6.9)]), tree, cancel=True)
+
+		row = self.row(tree)
+		self.assertEqual(row.wo_receive_qty, 0.0)  # floored
+		halves, total = self._sums(tree)
+		self.assertAlmostEqual(halves, total, places=3)
+
+	def test_holds_when_the_work_order_half_exceeds_receive_qty(self):
+		# An over-drawn row: the derived half floors at 0 rather than going negative.
+		tree = make_tree(issue=1.0, receive=1.0)
+		tree.material_details[0].wo_receive_qty = 5.0
+		self.run_update(make_recv_eir([("MWO-A", 2.9, 2.9)]), tree)
+		self.assertGreaterEqual(self.row(tree).manual_receive_qty, 0.0)
+
+	def test_derivation_survives_a_fractional_interleaving(self):
+		# The rounding-drift case: the button used to add its raw payload while the
+		# Employee IR path re-rounded receive_qty, stranding a residue every time.
+		tree = make_tree(issue=20.0, receive=0.5004)
+		tree.material_details[0].wo_receive_qty = 0.0
+		for _ in range(3):
+			self.run_update(make_recv_eir([("MWO-A", 2.9, 3.9)]), tree)
+		halves, total = self._sums(tree)
+		# Well inside the 0.0005 eps the dashboard's "unsplit" pill checks.
+		self.assertLess(abs(halves - total), 0.0005)

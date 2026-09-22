@@ -15,6 +15,7 @@ frappe.ui.form.on("Employee IR", {
 		add_load_full_casting_tree_button(frm);
 		toggle_finding_repack_columns(frm);
 		set_finding_repack_item_filters(frm);
+		toggle_tree_number_column(frm);
 		// Auto-load subcategory-driven FG BOM fields for a Receive (only if empty,
 		// so user-entered values are never wiped on a refresh).
 		if (frm.doc.docstatus == 0 && frm.doc.type == "Receive") {
@@ -117,6 +118,8 @@ frappe.ui.form.on("Employee IR", {
 		load_repeat_flag(frm);
 		// ...and so does whether it repacks tree metal into findings.
 		toggle_finding_repack_columns(frm);
+		// Whether this is a casting (tree) operation changes with it.
+		toggle_tree_number_column(frm);
 	},
 	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
@@ -610,6 +613,21 @@ function set_finding_repack_item_filters(frm) {
 		const field = grid.get_field(fieldname);
 		if (!field) return;
 		field.get_query = () => ({ filters: { variant_of: "F", disabled: 0 } });
+	});
+}
+
+// The Tree Number column is only ever filled for a tree (casting) operation -- see
+// doc_events/tree_casting.py. Showing it everywhere would put a permanently blank
+// column in every other department's grid, so reveal it off the same
+// Department Operation.tree_no_reqd flag the server keys on.
+function toggle_tree_number_column(frm) {
+	const grid = frm.fields_dict.employee_ir_operations.grid;
+	if (!frm.doc.operation) {
+		grid.toggle_display("tree_number", false);
+		return;
+	}
+	frappe.db.get_value("Department Operation", frm.doc.operation, "tree_no_reqd").then((r) => {
+		grid.toggle_display("tree_number", !!(r.message && r.message.tree_no_reqd));
 	});
 }
 
