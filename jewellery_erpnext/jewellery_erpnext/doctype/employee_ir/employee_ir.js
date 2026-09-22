@@ -13,6 +13,8 @@ frappe.ui.form.on("Employee IR", {
 			});
 		}
 		add_load_full_casting_tree_button(frm);
+		toggle_finding_repack_columns(frm);
+		set_finding_repack_item_filters(frm);
 		// Auto-load subcategory-driven FG BOM fields for a Receive (only if empty,
 		// so user-entered values are never wiped on a refresh).
 		if (frm.doc.docstatus == 0 && frm.doc.type == "Receive") {
@@ -113,6 +115,8 @@ frappe.ui.form.on("Employee IR", {
 		// can flip the answer even with the same rows loaded.
 		clear_operations_table(frm);
 		load_repeat_flag(frm);
+		// ...and so does whether it repacks tree metal into findings.
+		toggle_finding_repack_columns(frm);
 	},
 	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
@@ -545,8 +549,12 @@ function set_child_table_batch_filter(frm) {
 // MOP Settings.enforce_full_casting_tree_reissue is ticked; this button is shown either way,
 // since assembling the full tree is useful regardless of whether the rule is enforced.
 function set_child_table_item_filter(frm) {
+	// The first argument Frappe passes here is the parent DOC, not the form --
+	// link.js calls get_query((this.frm && this.frm.doc) || this.doc, ...). Naming
+	// it `frm` shadowed the enclosing form and made frm.doc.operation unreachable;
+	// the body only ever used locals[cdt][cdn], so renaming it changes nothing else.
 	frm.fields_dict["manually_book_loss_details"].grid.get_field("item_code").get_query = function (
-		frm,
+		doc,
 		cdt,
 		cdn
 	) {
@@ -556,9 +564,53 @@ function set_child_table_item_filter(frm) {
 			filters: {
 				manufacturing_work_order: d.manufacturing_work_order,
 				manufacturing_operation: d.manufacturing_operation,
+				// Read off the live form, so an operation changed after refresh is
+				// picked up. get_manual_loss_items fails open when this is blank.
+				operation: frm.doc.operation,
 			},
 		};
 	};
+}
+
+const FINDING_REPACK_FIELDS = ["finding_item1", "finding_wt1", "finding_item2", "finding_wt2"];
+
+// The finding item/weight pairs only mean anything on an operation that repacks tree metal
+// into findings -- see doc_events/finding_repack.py. Reveal them off the same
+// Department Operation.is_finding_repack_requirement flag the server keys on, the way
+// add_load_full_casting_tree_button reads tree_no_reqd for casting.
+//
+// The flag is read from Department Operation rather than from the mirrored
+// Employee IR.is_finding_repack_reqd: on an operation change the mirror is filled by an
+// asynchronous fetch_from that has not necessarily landed when this runs, so reading it here
+// would toggle off a stale value. The mirror exists for the child rows' depends_on (which the
+// refresh_field below re-evaluates once the fetch settles), not for this.
+function toggle_finding_repack_columns(frm) {
+	const grid = frm.fields_dict.employee_ir_operations.grid;
+	const apply = (show) => {
+		FINDING_REPACK_FIELDS.forEach((fieldname) => grid.toggle_display(fieldname, show));
+		frm.refresh_field("employee_ir_operations");
+	};
+	if (!frm.doc.operation) {
+		apply(false);
+		return;
+	}
+	frappe.db
+		.get_value("Department Operation", frm.doc.operation, "is_finding_repack_requirement")
+		.then((r) => {
+			apply(!!(r.message && r.message.is_finding_repack_requirement));
+		});
+}
+
+// Only F- variants can be repacked into: MOP Log buckets a weight by the item code's first
+// character (FIELD_MAP in mop_log.py), so anything else would land in the wrong bucket on the
+// Manufacturing Operation. Convenience only -- validate_finding_repack rejects it server-side.
+function set_finding_repack_item_filters(frm) {
+	const grid = frm.fields_dict.employee_ir_operations.grid;
+	["finding_item1", "finding_item2"].forEach((fieldname) => {
+		const field = grid.get_field(fieldname);
+		if (!field) return;
+		field.get_query = () => ({ filters: { variant_of: "F", disabled: 0 } });
+	});
 }
 
 // Casting re-issue is all-or-nothing (see doc_events/tree_casting.py). This button pulls in the

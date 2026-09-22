@@ -13,19 +13,19 @@ against ``SimpleNamespace`` docs with ``frappe.db`` mocked.
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-import frappe
 
+import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.customer_subcontracting import batch_rename
+from jewellery_erpnext.jewellery_erpnext.customization.batch import (
+	batch as batch_module,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events import (
 	utils as batch_utils,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils import (
 	party_link as party_link_utils,
-)
-from jewellery_erpnext.jewellery_erpnext.customization.batch import (
-	batch as batch_module,
 )
 
 
@@ -566,3 +566,109 @@ class TestBatchCompanyAbbr(IntegrationTestCase):
 		with _Ctx(companies=["Company A", "Company B"]):
 			with self.assertRaises(frappe.ValidationError):
 				batch_module.get_batch_company_abbr(_doc())
+
+
+class TestCarryRatesFromSourceBatches(IntegrationTestCase):
+	"""Batch Rate for a HAND-BUILT batch, minted before its Stock Entry exists.
+
+	`update_inventory_dimentions` can only stamp a rate from inside
+	`if frappe.db.exists(row.options, self.custom_voucher_detail_no)`. A batch created by
+	`finding_repack._create_finding_batch` or `manufacturing_operation._create_scrap_batch`
+	has no `custom_voucher_detail_no` to resolve, so that stamper never fires -- which is why
+	all 241 batches ever minted by a plain `Repack` sat at rate 0. The rate has to be carried
+	from the consumed batches explicitly.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _db_with_batches(self, batches):
+		"""frappe.db stand-in whose get_value answers Batch rate lookups by batch name."""
+		db = MagicMock()
+		db.get_value.side_effect = lambda doctype, name=None, fieldname=None, **kw: (
+			batches.get(name) if doctype == "Batch" else None
+		)
+		return db
+
+	def test_single_source_carries_both_pools(self):
+		batch = _batch(
+			item="F-G-22KT-91.75-Y-SW", custom_metal_rate=0, custom_alloy_rate=0
+		)
+		db = self._db_with_batches(
+			{"SRC-1": {"custom_metal_rate": 14546.9625, "custom_alloy_rate": 62.0}}
+		)
+		with patch.object(frappe, "db", db):
+			batch_utils.carry_rates_from_source_batches(batch, [("SRC-1", 1.23)])
+		self.assertAlmostEqual(batch.custom_metal_rate, 14546.9625, places=4)
+		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
+
+	def test_several_sources_are_qty_weighted(self):
+		batch = _batch(custom_metal_rate=0, custom_alloy_rate=0)
+		db = self._db_with_batches(
+			{
+				"SRC-1": {"custom_metal_rate": 100.0, "custom_alloy_rate": 10.0},
+				"SRC-2": {"custom_metal_rate": 200.0, "custom_alloy_rate": 20.0},
+			}
+		)
+		with patch.object(frappe, "db", db):
+			batch_utils.carry_rates_from_source_batches(
+				batch, [("SRC-1", 1.0), ("SRC-2", 3.0)]
+			)
+		# (100*1 + 200*3) / 4 = 175 ; (10*1 + 20*3) / 4 = 17.5
+		self.assertAlmostEqual(batch.custom_metal_rate, 175.0, places=6)
+		self.assertAlmostEqual(batch.custom_alloy_rate, 17.5, places=6)
+
+	def test_unvalued_source_dilutes_rather_than_being_dropped(self):
+		"""Same "no invented value" policy loss_valuation states: a 0-valued input must pull
+		the result down, not be skipped so the rest looks fully valued."""
+		batch = _batch(custom_metal_rate=0, custom_alloy_rate=0)
+		db = self._db_with_batches(
+			{
+				"SRC-1": {"custom_metal_rate": 100.0, "custom_alloy_rate": 0.0},
+				"SRC-2": {"custom_metal_rate": 0.0, "custom_alloy_rate": 0.0},
+			}
+		)
+		with patch.object(frappe, "db", db):
+			batch_utils.carry_rates_from_source_batches(
+				batch, [("SRC-1", 1.0), ("SRC-2", 1.0)]
+			)
+		self.assertAlmostEqual(batch.custom_metal_rate, 50.0, places=6)
+
+	def test_no_sources_leaves_the_batch_untouched(self):
+		batch = _batch(custom_metal_rate=0, custom_alloy_rate=0)
+		db = self._db_with_batches({})
+		with patch.object(frappe, "db", db):
+			batch_utils.carry_rates_from_source_batches(batch, [])
+			batch_utils.carry_rates_from_source_batches(batch, None)
+			batch_utils.carry_rates_from_source_batches(batch, [(None, 1.0)])
+		self.assertEqual(batch.custom_metal_rate, 0)
+		self.assertEqual(batch.custom_alloy_rate, 0)
+
+	def test_existing_rate_is_not_clobbered_on_a_later_save(self):
+		"""_can_stamp_rate lets a non-zero rate be rewritten only while the batch is new; a
+		batch already saved must keep the rate it carries."""
+		batch = _batch(custom_metal_rate=999.0, custom_alloy_rate=88.0)
+		batch.is_new = lambda: False
+		db = self._db_with_batches(
+			{"SRC-1": {"custom_metal_rate": 1.0, "custom_alloy_rate": 2.0}}
+		)
+		with patch.object(frappe, "db", db):
+			batch_utils.carry_rates_from_source_batches(batch, [("SRC-1", 1.0)])
+		self.assertEqual(batch.custom_metal_rate, 999.0)
+		self.assertEqual(batch.custom_alloy_rate, 88.0)
+
+	def test_zero_qty_sources_fall_back_to_a_plain_mean(self):
+		"""Guards against ZeroDivisionError when every source came through at qty 0."""
+		batch = _batch(custom_metal_rate=0, custom_alloy_rate=0)
+		db = self._db_with_batches(
+			{
+				"SRC-1": {"custom_metal_rate": 100.0, "custom_alloy_rate": 0.0},
+				"SRC-2": {"custom_metal_rate": 200.0, "custom_alloy_rate": 0.0},
+			}
+		)
+		with patch.object(frappe, "db", db):
+			batch_utils.carry_rates_from_source_batches(
+				batch, [("SRC-1", 0), ("SRC-2", 0)]
+			)
+		self.assertAlmostEqual(batch.custom_metal_rate, 150.0, places=6)
