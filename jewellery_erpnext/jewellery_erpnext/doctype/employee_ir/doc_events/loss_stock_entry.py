@@ -972,6 +972,33 @@ def _validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name):
 # ---------------------------------------------------------------------------
 
 
+def _stamp_loss_tree(se, eir):
+	"""Stamp ``custom_tree_number`` on the combined loss SE -- only when it is unambiguous.
+
+	Unlike the per-row injection Stock Entries, this is ONE Repack spanning every loss row on the
+	Employee IR, so a single header field can only tell the truth when the whole document belongs
+	to one casting tree. A CASTING Receive now always does -- a work order from a second tree is
+	rejected by ``tree_casting.validate_single_casting_tree`` -- so for those this always
+	resolves.
+
+	The abstain stays for everything outside that invariant: NON-casting receives (a finding
+	repack keeps its tree past casting, so one can legitimately span several), documents created
+	before the rule, and submits that skipped ``validate``. Stamping one of those with whichever
+	tree happened to sort first would be worse than leaving it blank -- the tree netting would
+	then subtract another tree's loss from this one's pool.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
+		row_tree_name,
+		single_tree_or_none,
+	)
+
+	tree_name = single_tree_or_none(
+		row_tree_name(row) for row in eir.employee_ir_operations
+	)
+	if tree_name:
+		se.custom_tree_number = tree_name
+
+
 def _build_combined_loss_se(eir, pending):
 	"""Build ONE Repack SE with consume+produce row pairs for all loss entries."""
 	first = pending[0]
@@ -988,6 +1015,7 @@ def _build_combined_loss_se(eir, pending):
 	se.manufacturing_work_order = mwo
 	se.department = eir.department
 	se.to_department = eir.department
+	_stamp_loss_tree(se, eir)
 
 	if eir.subcontracting == "Yes":
 		se.subcontractor = eir.subcontractor

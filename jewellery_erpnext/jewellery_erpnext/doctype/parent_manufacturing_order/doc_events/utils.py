@@ -2,122 +2,198 @@ import frappe
 
 
 def update_parent_details(self):
-	parents = _set_parent_chain(self)
-	# Deliberately outside the walk: every guard in _set_parent_chain returns early, and
-	# ref_customer must survive a break in any of them.
-	_resolve_ref_customer(self, parents)
+	chain = resolve_parent_chains([self.sales_order_item]).get(self.sales_order_item)
+	if not chain:
+		return
+
+	_apply_parent_chain(self, chain)
 
 
-def _set_parent_chain(self):
-	"""Fill parent_quotation / parent_sales_order / parent_mp on the document.
+def _fetch_map(doctype, names, fields):
+	names = {n for n in names if n}
+	if not names:
+		return {}
 
-	Return a dict of what THIS walk established, blank on every link it did not reach:
+	return {
+		d.name: d
+		for d in frappe.get_all(
+			doctype, filters={"name": ["in", list(names)]}, fields=fields
+		)
+	}
 
-	        purchase_order  the Purchase Order behind the sales order line
-	        quotation       mirrors self.parent_quotation
-	        sales_order     mirrors self.parent_sales_order
 
-	It is not a full picture of the walk -- parent_mp is set on the document only, because no
-	Ref Customer is derived from it. Anything added here should be added for a reader of the
-	return value, not to make the two lists match.
+def resolve_parent_chains(sales_order_items):
+	"""Walk every line's parent chain at once and pick each one's Ref Customer.
 
-	The return value exists so _resolve_ref_customer never re-reads these off the document: all
-	three parent fields keep whatever an earlier save stored when the walk exits early, and none
-	of them is read-only, so a stale or hand-typed link must not outrank what this walk found.
+	THE single implementation of that walk. It used to exist twice -- once here for the PMO and
+	once inside Manufacturing Plan's grade pre-resolution -- and the copies disagreed about which
+	line to climb from, so a plan could grade a row against one customer and the PMO it created
+	against another.
+
+	The climb is not obvious: a line's ``custom_po_details`` leads to the Purchase Order Item
+	raised by the PREVIOUS manufacturing plan, whose ``custom_m_plan_details`` points at that
+	plan's row and so at ITS sales order line. The quotation that records the customer behind an
+	internal order is the parent line's, not this line's -- this line's own quotation is only the
+	last resort. Resolving from the current line alone, as the Manufacturing Plan copy did,
+	silently used the bottom rung as if it were the top.
+
+	Returns {sales_order_item: chain}, where a chain carries the links the walk reached plus the
+	resolved ``ref_customer``. Every stage is one query for the whole batch, so a plan with a
+	thousand rows costs the same seven queries as a single PMO save.
 	"""
-	parents = frappe._dict(purchase_order=None, quotation=None, sales_order=None)
-
-	if not self.sales_order_item:
-		return parents
-
-	po_row = frappe.db.get_value(
-		"Sales Order Item", self.sales_order_item, "custom_po_details"
+	# This line: the Purchase Order link to climb, and its own quotation (the last rung, which
+	# the PMO also holds as its fetch_from `quotation` field).
+	lines = _fetch_map(
+		"Sales Order Item",
+		sales_order_items,
+		["name", "custom_po_details", "prevdoc_docname"],
 	)
-	if not po_row:
-		return parents
 
-	# Both fields in one read: the parent is only needed on the fallback path, but fetching it
-	# here costs nothing and saves a round trip when the m-plan link turns out to be missing.
-	po_item = (
-		frappe.db.get_value(
-			"Purchase Order Item",
-			po_row,
-			["parent", "custom_m_plan_details"],
-			as_dict=True,
-		)
-		or frappe._dict()
+	# The Purchase Order behind the line, and the manufacturing plan row behind that.
+	po_items = _fetch_map(
+		"Purchase Order Item",
+		[d.custom_po_details for d in lines.values()],
+		["name", "parent", "custom_m_plan_details"],
 	)
-	parents.purchase_order = po_item.get("parent")
 
-	m_plan_row = po_item.get("custom_m_plan_details")
-	if not m_plan_row:
-		return parents
-
-	mfg_plan_details = frappe.db.get_value(
+	# The parent plan row: its plan, its sales order, and the line it was raised for.
+	mp_rows = _fetch_map(
 		"Manufacturing Plan Table",
-		m_plan_row,
-		["parent", "sales_order", "docname"],
-		as_dict=1,
+		[d.custom_m_plan_details for d in po_items.values()],
+		["name", "parent", "sales_order", "docname"],
 	)
 
-	if not mfg_plan_details:
-		return parents
+	# The parent line's quotation.
+	parent_lines = _fetch_map(
+		"Sales Order Item",
+		[d.docname for d in mp_rows.values()],
+		["name", "prevdoc_docname"],
+	)
 
-	if mfg_plan_details.get("docname"):
-		quotation = frappe.db.get_value(
-			"Sales Order Item", mfg_plan_details["docname"], "prevdoc_docname"
+	chains = {}
+	for name in lines:
+		chains[name] = _build_chain(name, lines, po_items, mp_rows, parent_lines)
+
+	quotation_refs = _fetch_map(
+		"Quotation",
+		[c.quotation for c in chains.values()]
+		+ [c.own_quotation for c in chains.values()],
+		["name", "ref_customer"],
+	)
+	sales_order_customers = _fetch_map(
+		"Sales Order", [c.sales_order for c in chains.values()], ["name", "customer"]
+	)
+	purchase_order_refs = _fetch_map(
+		"Purchase Order",
+		[c.purchase_order for c in chains.values()],
+		["name", "ref_customer"],
+	)
+
+	for chain in chains.values():
+		chain.ref_customer = _pick_ref_customer(
+			chain, quotation_refs, sales_order_customers, purchase_order_refs
 		)
-		self.parent_quotation = quotation
-		parents.quotation = quotation
 
-	self.parent_sales_order = mfg_plan_details.get("sales_order")
-	self.parent_mp = mfg_plan_details.get("parent")
-	parents.sales_order = self.parent_sales_order
-
-	return parents
+	return chains
 
 
-def _resolve_ref_customer(self, parents):
-	"""Take Ref Customer from the nearest source this walk reached.
+def _build_chain(name, lines, po_items, mp_rows, parent_lines):
+	"""The links one line's walk reached, blank on every link it did not.
 
-	Ref Customer belongs to the quotation the parent sales order line was raised against -- that is
-	where the real customer behind an internal order is recorded. The rungs below it are
+	``reached_*`` records that a stage was walked, separately from what it held: the PMO writes
+	parent_sales_order even when the plan row carried none, and collapsing the two would turn a
+	blank into "leave whatever an earlier save stored".
+	"""
+	line = lines.get(name) or frappe._dict()
+	chain = frappe._dict(
+		purchase_order=None,
+		quotation=None,
+		sales_order=None,
+		mp=None,
+		own_quotation=line.get("prevdoc_docname"),
+		reached_mp_row=False,
+		reached_parent_line=False,
+		ref_customer=None,
+	)
+
+	po_item = po_items.get(line.get("custom_po_details")) or frappe._dict()
+	chain.purchase_order = po_item.get("parent")
+
+	mp_row = mp_rows.get(po_item.get("custom_m_plan_details"))
+	if not mp_row:
+		return chain
+
+	chain.reached_mp_row = True
+	chain.sales_order = mp_row.get("sales_order")
+	chain.mp = mp_row.get("parent")
+
+	if mp_row.get("docname"):
+		chain.reached_parent_line = True
+		parent_line = parent_lines.get(mp_row["docname"]) or frappe._dict()
+		chain.quotation = parent_line.get("prevdoc_docname")
+
+	return chain
+
+
+def _pick_ref_customer(
+	chain, quotation_refs, sales_order_customers, purchase_order_refs
+):
+	"""Take Ref Customer from the nearest source the walk reached.
+
+	Ref Customer belongs to the quotation the parent sales order line was raised against -- that
+	is where the real customer behind an internal order is recorded. The rungs below it are
 	progressively coarser: a Purchase Order or a Quotation can cover rows for more than one
 	customer, and carries only one value. So the per-line sources always win, and the coarse ones
 	only speak where the walk found nothing at all.
-
-	Reads ``parents``, never self.parent_*: those fields keep whatever an earlier save stored when
-	the walk exits early, and a stale one must not outrank a link the current walk did find.
-
-	Assigns only when a rung produces a value. Leaving a blank alone rather than writing None keeps
-	a save from wiping a Ref Customer someone set by hand -- the field is not read-only.
 	"""
-	ref_customer = None
-
-	if parents.quotation:
-		ref_customer = frappe.db.get_value(
-			"Quotation", parents.quotation, "ref_customer"
+	if chain.quotation:
+		ref = (quotation_refs.get(chain.quotation) or frappe._dict()).get(
+			"ref_customer"
 		)
+		if ref:
+			return ref
 
-	if not ref_customer and parents.sales_order:
-		ref_customer = frappe.db.get_value(
-			"Sales Order", parents.sales_order, "customer"
+	if chain.sales_order:
+		ref = (sales_order_customers.get(chain.sales_order) or frappe._dict()).get(
+			"customer"
 		)
+		if ref:
+			return ref
 
 	# The walk reached the Purchase Order but not the manufacturing plan row behind it -- Purchase
 	# Order Items raised before custom_m_plan_details existed have no link to follow.
-	if not ref_customer and parents.purchase_order:
-		ref_customer = frappe.db.get_value(
-			"Purchase Order", parents.purchase_order, "ref_customer"
+	if chain.purchase_order:
+		ref = (purchase_order_refs.get(chain.purchase_order) or frappe._dict()).get(
+			"ref_customer"
 		)
+		if ref:
+			return ref
 
-	# Last resort: this order's own quotation, which the framework fetches from
-	# sales_order_item.prevdoc_docname. Reached when the sales order line was never tied back to a
-	# Purchase Order Item, so the walk stopped at its first guard. Read off self on purpose -- it is
-	# this document's own field, moving with sales_order_item, not a parent link the walk derives,
-	# so it is not exposed to the staleness the rungs above guard against.
-	if not ref_customer and self.get("quotation"):
-		ref_customer = frappe.db.get_value("Quotation", self.quotation, "ref_customer")
+	# Last resort: this line's own quotation. Reached when the line was never tied back to a
+	# Purchase Order Item, so the walk stopped at its first guard.
+	if chain.own_quotation:
+		ref = (quotation_refs.get(chain.own_quotation) or frappe._dict()).get(
+			"ref_customer"
+		)
+		if ref:
+			return ref
 
-	if ref_customer:
-		self.ref_customer = ref_customer
+	return None
+
+
+def _apply_parent_chain(self, chain):
+	"""Write the walk's findings onto the document.
+
+	Assigns only what the walk reached. Leaving a blank alone rather than writing None keeps a
+	save from wiping a Ref Customer someone set by hand -- the field is not read-only -- and keeps
+	the parent links a previous save stored when this walk exits early.
+	"""
+	if chain.reached_parent_line:
+		self.parent_quotation = chain.quotation
+
+	if chain.reached_mp_row:
+		self.parent_sales_order = chain.sales_order
+		self.parent_mp = chain.mp
+
+	if chain.ref_customer:
+		self.ref_customer = chain.ref_customer
