@@ -167,7 +167,7 @@
    "options": "No\nYes"
   },
   {
-   "description": "Casting tree this Employee IR issued onto, or drew from. Stamped on submit, and only when the whole document belongs to one tree -- a receive whose work orders came off several trees leaves this blank and names them per row instead.",
+   "description": "Casting tree this Employee IR issued onto, or drew from. A Receive fills it on every save (and as work orders are scanned), an Issue at submit. One Employee IR is one casting tree: a Receive whose work orders come off different trees is rejected. Documents created before that rule may still span several trees; those leave this blank and are readable per row.",
    "fieldname": "tree_number",
    "fieldtype": "Link",
    "label": "Tree Number",

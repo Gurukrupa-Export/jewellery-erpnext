@@ -364,6 +364,30 @@ def after_sync():
 	fixtures, customizations and dashboards, which is the only point at which the site is whole.
 	"""
 	reconcile_cross_app_fixtures()
+	apply_material_request_total_pcs_layout()
+
+
+def apply_material_request_total_pcs_layout():
+	"""Re-apply the Material Request Total Pcs block after fixtures have landed.
+
+	``patches.txt`` alone cannot do this on a fresh install: ``installer.py:358`` marks every
+	patch as completed WITHOUT running it. And the block cannot be left to the Custom Field
+	``insert_after`` values either -- ``sync_fixtures`` (``:367``) delete+re-inserts
+	``Material Request-custom_total_quantity`` and ``-custom_order_details`` from
+	``gke_customization``'s fixture, restoring their old anchors. Running here, after both,
+	is what makes a fresh site match a migrated one.
+
+	Deliberately non-fatal: a layout problem must never be the thing that fails an install.
+	"""
+	from jewellery_erpnext.patches.add_material_request_total_pcs_field import apply
+
+	try:
+		apply()
+	except Exception:
+		frappe.log_error(
+			title="after_sync: Material Request Total Pcs layout",
+			message=frappe.get_traceback(),
+		)
 
 
 def reconcile_cross_app_fixtures(verbose=True):

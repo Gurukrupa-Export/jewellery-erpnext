@@ -751,6 +751,17 @@ def scan_mwo_eir(doc):
 		as_dict=True,
 	)
 
+	# Same two gates as the client's scanned_tree_number: a Receive on a tree (casting)
+	# operation shows the tree the instant the code is scanned. An Issue's tree does not exist
+	# until submit, and a non-casting operation has no column to show it in.
+	tree_number = None
+	if doc.type == "Receive" and frappe.db.get_value(
+		"Department Operation", doc.operation, "tree_no_reqd"
+	):
+		tree_number = frappe.db.get_value(
+			"Manufacturing Work Order", values.manufacturing_work_order, "tree_number"
+		)
+
 	doc.append(
 		"employee_ir_operations",
 		{
@@ -759,6 +770,7 @@ def scan_mwo_eir(doc):
 			"qc": qc.name if qc else None,
 			"received_gross_wt": qc.received_gross_wt if qc else 0,
 			"rpt_wt_issue": 0,
+			"tree_number": tree_number,
 		},
 	)
 

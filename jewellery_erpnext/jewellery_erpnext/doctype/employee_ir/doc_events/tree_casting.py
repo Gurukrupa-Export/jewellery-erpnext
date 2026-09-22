@@ -14,12 +14,21 @@ drives a Tree Number:
               status Issued -> Partially Received -> Received.
 
 ``Employee IR Operation.tree_number`` is therefore populated on BOTH sides of a
-casting round trip -- by ``create_tree_on_issue`` on the way out and by
-``pin_tree_numbers_on_receive`` on the way back -- so either document shows which
-tree it belongs to. ``Employee IR.tree_number`` mirrors that on the header for the
-common single-tree case; a receive spanning several trees leaves the header blank
-and is only readable per row. Both the header field and the grid column are revealed
-only for tree (casting) operations; ``employee_ir.js`` toggles them off
+casting round trip, so either document shows which tree it belongs to:
+
+  * Issue   -> ``create_tree_on_issue``, at submit, when the tree is minted.
+  * Receive -> ``resolve_receive_tree_numbers`` from ``EmployeeIR.validate``, on every
+              save including the draft ones, so the operator sees the tree while
+              scanning; ``pin_tree_numbers_on_receive`` at submit is the backstop that
+              pins it against a later re-issue.
+
+``Employee IR.tree_number`` mirrors that on the header. A casting Receive carries
+exactly ONE tree -- ``validate_single_casting_tree`` rejects a work order from a
+second one -- so on those the header is always the answer. Documents created before
+that rule, and NON-casting receives (a finding repack keeps its tree past casting),
+may still span several trees; those leave the header blank and are readable only
+per row (``single_tree_or_none``). Both the header field and the grid column are
+revealed only for tree (casting) operations; ``employee_ir.js`` toggles them off
 ``Department Operation.tree_no_reqd``.
 
 Physical stock and loss still move through the existing EIR engine
@@ -29,6 +38,9 @@ create any parallel stock entries.
 
 Grouping rules (confirmed with user):
   * One Tree == exactly the MWO set in one Casting Issue EIR.
+  * One casting Receive EIR == exactly one Tree. A work order from a second tree is
+    rejected at the scanner (``employee_ir.js``) and again in ``validate``
+    (``validate_single_casting_tree``). Not gated by any setting.
   * All MWOs on one tree must share metal type / touch / purity / colour.
   * A casting group is re-issued all-or-nothing: an Issue EIR that touches a tree's
     ``casting_group`` must carry EVERY work order cast together. This is enforced at
@@ -614,6 +626,8 @@ def unlink_tree_on_issue_cancel(eir):
 			)
 
 	if tree_name:
+		_scrub_draft_tree_stamps(tree_name)
+
 		# The Issue Material button may have created physical Dept->MSL Stock Entries stamped
 		# with this tree; cancel them so they aren't orphaned when the tree is deleted.
 		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_stock_entry import (
@@ -622,6 +636,49 @@ def unlink_tree_on_issue_cancel(eir):
 
 		cancel_tree_stock_entries(tree_name)
 		frappe.delete_doc("Tree Number", tree_name, ignore_permissions=True, force=True)
+
+
+def _scrub_draft_tree_stamps(tree_name):
+	"""Clear this tree off every OTHER document's draft rows before it is force-deleted.
+
+	``resolve_receive_tree_numbers`` stamps the tree on a Receive while it is still a draft, so
+	by the time the casting Issue is cancelled other documents can be pointing at this tree --
+	and the cancel is allowed to proceed, because a draft receive has drawn nothing from it.
+
+	The tree is force-deleted moments later, which bypasses frappe's own link check
+	(``delete_doc.py``), and ``_validate_links`` runs BEFORE ``validate``
+	(``document.py``: ``_validate_links`` then ``run_before_save_methods``). A left-behind stamp
+	could therefore never be re-resolved away: the next save of that draft would die on
+	"Could not find Row #n: Tree Number: <name>", on a read_only field the operator has no way
+	to clear. So it is scrubbed here, while the tree is still known to be going away.
+
+	Scoped to ``docstatus = 0``. A SUBMITTED receive's stamp is the pin its own cancel reverses
+	against and must never be touched -- and such a receive blocks this cancel anyway.
+
+	Raw SQL rather than ``set_value`` with a filter dict: this is a cross-parent sweep over an
+	unbounded set of documents, and it must not drag arbitrary draft Employee IRs through
+	``validate()`` in the middle of a cancel.
+	"""
+	frappe.db.sql(
+		"""
+		UPDATE `tabEmployee IR Operation` eiro
+		INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+		SET eiro.tree_number = NULL
+		WHERE eiro.parenttype = 'Employee IR'
+		  AND eiro.tree_number = %(tree)s
+		  AND eir.docstatus = 0
+		""",
+		{"tree": tree_name},
+	)
+	frappe.db.sql(
+		"""
+		UPDATE `tabEmployee IR`
+		SET tree_number = NULL
+		WHERE tree_number = %(tree)s
+		  AND docstatus = 0
+		""",
+		{"tree": tree_name},
+	)
 
 
 # ---------------------------------------------------------------------------
@@ -654,9 +711,11 @@ def row_tree_name(row):
 	Entry, say) should not pay for ``_metal_item``'s attribute resolution, nor inherit its failure
 	modes on a work order whose metal attributes are incomplete.
 
-	The row value is empty for most of a Receive: ``pin_tree_numbers_on_receive`` runs after the
-	operation loop has already built and submitted its Stock Entries, so the ``MWO`` fallback is
-	what actually resolves the tree at stamping time.
+	On a casting Receive the row value is already there: ``resolve_receive_tree_numbers`` fills it
+	in ``validate``, on the submit save too, so this short-circuits on the row and returns exactly
+	what the ``MWO`` fallback would have answered. The fallback still does the work for a
+	non-casting operation (a finding repack keeps its tree past casting) and for a submit that
+	skipped validate.
 
 	Reads a single field with ``get_cached_value`` rather than loading the work order, and so
 	returns ``None`` for a work order that no longer exists instead of raising. That tolerance is
@@ -828,8 +887,41 @@ def _credit_wo_received_gross(tree_name, item_totals, cancel, prec):
 		)
 
 
+def single_tree_or_none(names):
+	"""The one Tree Number every row agrees on, or ``None``.
+
+	A single Link can only tell the truth when the whole document belongs to one tree. A CASTING
+	Receive now always does -- ``validate_single_casting_tree`` rejects a work order from a
+	second tree -- so this is the reader for everything OUTSIDE that invariant: documents created
+	before the rule, NON-casting receives (a finding repack keeps its tree past casting, see
+	``finding_repack.lock_finding_repack_trees``), and submits that skipped ``validate``. Those
+	abstain rather than name whichever tree sorted first, and the per-row grid column stays the
+	answer.
+
+	The abstain stays even though the guard makes it unreachable for a NEW casting Receive: it is
+	the only thing between such a document and a header -- or a combined loss Stock Entry, via
+	``loss_stock_entry._stamp_loss_tree`` -- stamped with an arbitrary tree, which would make the
+	tree netting subtract another tree's loss from this one's pool.
+
+	Extracted because the rule is stated in four places -- the draft resolve below, the submit
+	pin, the combined loss Stock Entry stamp in ``loss_stock_entry._stamp_loss_tree`` and the
+	client-side header in ``employee_ir.js`` -- and a divergence would surface as a header naming
+	a tree the grid does not.
+	"""
+	trees = {name for name in names if name}
+	return next(iter(trees)) if len(trees) == 1 else None
+
+
 def pin_tree_numbers_on_receive(eir):
-	"""Stamp the resolved tree onto each operation row so cancel reverses the right one."""
+	"""Stamp the resolved tree onto each operation row so cancel reverses the right one.
+
+	Normally a no-op now: ``resolve_receive_tree_numbers`` runs in ``EmployeeIR.validate`` on the
+	submit save itself and has already written both the rows and the header. Kept as the backstop
+	for a submit that skips validate (``flags.ignore_validate``) and for rows appended
+	server-side after it, because the pin is what makes a later cancel reverse THIS voucher's
+	tree even once a re-issue has repointed ``MWO.tree_number`` at a brand-new one -- it must not
+	depend on validate having run. ``db_set`` because the document is already submitted here.
+	"""
 	for row in eir.employee_ir_operations:
 		if getattr(row, "tree_number", None):
 			continue
@@ -837,19 +929,126 @@ def pin_tree_numbers_on_receive(eir):
 		if tree_name:
 			row.db_set("tree_number", tree_name, update_modified=False)
 
-	# Header summary, for the same reason ``_stamp_loss_tree`` keeps one: a single Link can
-	# only tell the truth when the whole document belongs to one tree. Most receives do; the
-	# minority that span two to four are left blank rather than stamped with whichever tree
-	# sorted first, and the grid column below still names each row's own tree.
-	trees = {
-		t
-		for t in (
-			getattr(row, "tree_number", None) for row in eir.employee_ir_operations
-		)
-		if t
+	header = single_tree_or_none(
+		getattr(row, "tree_number", None) for row in eir.employee_ir_operations
+	)
+	if header:
+		eir.db_set("tree_number", header, update_modified=False)
+
+
+def resolve_receive_tree_numbers(eir):
+	"""Fill ``tree_number`` on a casting Receive's rows (and header) from the live work orders.
+
+	Called from ``EmployeeIR.validate`` so the operator can see which tree each scanned work
+	order is coming off while the document is still a DRAFT, instead of finding out only after
+	submit. ``employee_ir.js`` fills the same value the instant a code is scanned; this is the
+	authoritative recompute, the same stance ``set_repeat_receive_flag`` takes -- a read_only
+	field is never trusted from the client.
+
+	OVERWRITES rather than fills-if-empty, and is gated on type and operation but deliberately
+	NOT on docstatus, so it runs on the submit save too. Nothing is pinned before submit, so an
+	already-present value is only ever an EARLIER save's answer; keeping it would let this
+	receive draw from a tree the work order has since left. Re-resolving on every save --
+	including the one that submits -- is what makes the value every submit-time consumer reads
+	(``_row_tree_and_item``, ``row_tree_name``, ``tree_draw_by_tree``, ``update_tree_on_receive``
+	and its cancel path, ``lock_trees_for_eir``, the Stock Entry stampers) byte-identical to the
+	``MWO`` fallback they used before this existed. The ledger arithmetic therefore cannot move.
+
+	Issue is untouched: its tree does not exist until ``create_tree_on_issue`` mints it at submit,
+	and on a RE-issue the work order still points at the OLD tree until then -- filling it here
+	would display last round's tree as if it were this one's.
+
+	One batched read for the whole grid rather than ``_row_tree_and_item``'s per-row
+	``get_cached_doc``: this runs on every save of a document that routinely carries dozens of
+	rows, and only the tree name is wanted, not the metal attributes.
+	"""
+	if eir.type != "Receive" or not is_casting_eir(eir):
+		return
+
+	names = {
+		row.manufacturing_work_order
+		for row in eir.employee_ir_operations
+		if row.manufacturing_work_order
 	}
-	if len(trees) == 1:
-		eir.db_set("tree_number", next(iter(trees)), update_modified=False)
+	trees = (
+		dict(
+			frappe.get_all(
+				"Manufacturing Work Order",
+				{"name": ["in", list(names)]},
+				["name", "tree_number"],
+				as_list=True,
+			)
+		)
+		if names
+		else {}
+	)
+
+	for row in eir.employee_ir_operations:
+		row.tree_number = trees.get(row.manufacturing_work_order) or None
+
+	# Unconditional, unlike the submit-time pin above: a draft loses rows as well as gaining
+	# them, so a header left over from a previous save has to be able to go back to blank.
+	eir.tree_number = single_tree_or_none(
+		row.tree_number for row in eir.employee_ir_operations
+	)
+
+
+def validate_single_casting_tree(eir):
+	"""One Employee IR = one casting tree: reject a Receive whose rows span several.
+
+	``employee_ir.js`` refuses the scan, but the scanner is only one of the ways a row can
+	appear -- the Get Operations dialog (``get_manufacturing_operations``, which deliberately
+	resolves no tree), a grid bulk edit, Data Import and the REST API have no guard at all until
+	here. Same stance as the duplicate-work-order twin in
+	``validation_utils.validate_duplication_and_gr_wt``: a client guard without a server twin is
+	a suggestion.
+
+	Called from ``EmployeeIR.validate`` immediately AFTER ``resolve_receive_tree_numbers``, so it
+	judges the tree each work order is on NOW rather than whatever an earlier save resolved, and
+	BEFORE ``validate_casting_tree`` / ``validate_casting_receive``, so the operator is told the
+	cause ("two trees") instead of a same-metal or tree-balance error derived from it -- and so a
+	document that is going to be rejected never pays for those two's per-tree
+	``frappe.get_doc("Tree Number", ...)`` reads.
+
+	NOT gated on docstatus, deliberately. ``EmployeeIR.before_validate`` returns early on
+	``docstatus != 0`` and ``submit()`` sets docstatus BEFORE saving, so a guard placed there --
+	beside the duplicate twin, the otherwise obvious home -- would be skipped by the submit save
+	and a draft assembled before this shipped could walk straight past it. This one runs on that
+	save. It stays harmless to history either way: frappe runs no ``validate`` for cancel or for
+	update-after-submit, so no submitted document is ever re-judged and every pre-rule multi-tree
+	receive still cancels and reverses each of its trees.
+
+	Scoped to CASTING receives. A non-casting receive may legitimately span trees:
+	``row_tree_name`` falls back to ``MWO.tree_number``, which survives past casting, so a
+	finding repack draws from a tree its own operation flag says nothing about (see
+	``finding_repack.lock_finding_repack_trees``). Imposing casting's rule there would block a
+	flow that is correct today.
+
+	A row with NO tree is not a SECOND tree -- the same rule ``single_tree_or_none`` applies.
+	Get Operations rows carry none until the next save, and ``resolve_receive_tree_numbers``
+	blanks a row whose casting Issue was cancelled underneath the operator; throwing on those
+	would make the draft unsaveable while it is being repaired.
+	"""
+	if eir.type != "Receive" or not is_casting_eir(eir):
+		return
+
+	first_tree = first_wo = None
+	for row in eir.employee_ir_operations:
+		tree = getattr(row, "tree_number", None)
+		if not tree:
+			continue
+		if first_tree is None:
+			first_tree, first_wo = tree, row.manufacturing_work_order
+			continue
+		if tree != first_tree:
+			frappe.throw(
+				_(
+					"One Employee IR can receive only ONE casting tree. Work order <b>{0}</b> "
+					"is on tree <b>{1}</b>, but work order <b>{2}</b> on this Employee IR is on "
+					"tree <b>{3}</b>. Receive each tree on its own Employee IR."
+				).format(row.manufacturing_work_order, tree, first_wo, first_tree),
+				title=_("Different Casting Tree"),
+			)
 
 
 def update_tree_on_receive(eir, cancel=False):
@@ -884,6 +1083,11 @@ def update_tree_on_receive(eir, cancel=False):
 
 	# Deterministic order (lock_order RULE A) so two concurrent receives touching the same trees
 	# take them in the same sequence.
+	#
+	# Do NOT collapse this loop to a single tree on the strength of validate_single_casting_tree.
+	# That guard runs in validate(), and frappe runs no validate() for cancel -- so this loop is
+	# the ONLY thing that reverses every tree of a multi-tree receive submitted before the rule.
+	# Collapsing it would silently strand half of each such reversal.
 	for tree_name in sorted(trees):
 		lock_tree(tree_name)
 		tree = frappe.get_doc("Tree Number", tree_name)

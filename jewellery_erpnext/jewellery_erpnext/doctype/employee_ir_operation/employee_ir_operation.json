@@ -207,14 +207,14 @@
   },
   {
    "columns": 1,
+   "description": "Casting tree this row is attached to - resolved from the work order on every save of a draft Receive, so it is visible while scanning, and pinned at submit so a cancel reverses the same tree even if the work order has since been re-issued onto a new one. The grid column is shown only for tree (casting) operations.",
    "fieldname": "tree_number",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Tree Number",
    "no_copy": 1,
    "options": "Tree Number",
-   "read_only": 1,
-   "description": "Casting tree this row is attached to - stamped on the Issue that creates the tree, and again on the Receive that draws from it. Pinned at submit so a cancel reverses the same tree even if the work order has since been re-issued onto a new one. The grid column is shown only for tree (casting) operations."
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,

@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.bom_weights import (
 	get_weights_for_serials,
@@ -26,6 +26,7 @@ def _is_pure_qty_row(self, row):
 
 def update_pure_qty(self):
 	self.custom_total_quantity = 0
+	self.custom_total_pcs = 0
 	pure_item_purity = None
 
 	# One query for every purity this document needs, rather than one per distinct item.
@@ -39,6 +40,15 @@ def update_pure_qty(self):
 	)
 
 	for row in self.items:
+		# Accumulated at the top of the loop, deliberately unlike custom_total_quantity
+		# below: the ``continue`` in the branch that follows skips the rest of this
+		# iteration, so a metal/findings row whose item carries no purity percentage
+		# drops out of custom_total_quantity. Total Pcs is a plain count of what the
+		# grid holds and must not inherit that. ``cint`` because ``pcs`` is a Data
+		# field and arrives as a string -- the same cast material_weights applies to
+		# Stock Entry Detail.pcs.
+		self.custom_total_pcs += cint(row.pcs)
+
 		if _is_pure_qty_row(self, row):
 			if not pure_item_purity:
 				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
