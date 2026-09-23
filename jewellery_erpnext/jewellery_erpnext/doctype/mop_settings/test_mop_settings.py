@@ -58,8 +58,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_mark_all_mwo_mop_logs_synced,
 	_mop_manufacturer_label,
 	_mwo_realized_by_artifact,
+	_pick_eod_source_warehouse,
 	_pick_shortfall_warehouse,
 	_plan_mwo_group,
+	_preload_active_sre_warehouse_map,
 	_preload_sre_warehouse_map,
 	_process_mwo_group,
 	_reconcile_reservations_bulk,
@@ -1217,6 +1219,191 @@ class TestBuildEodSeRows(IntegrationTestCase):
 		self.assertEqual(len(rows), 1)
 		self.assertEqual(rows[0]["s_warehouse"], "WH-A")
 		self.assertEqual(skipped, [])
+
+
+# ---------------------------------------------------------------------------
+# TestEodNoopNeedsOwnership — the shared-pool batch that made "already at target"
+# lie. Guards _pick_eod_source_warehouse step 0.
+# ---------------------------------------------------------------------------
+
+
+class TestEodNoopNeedsOwnership(IntegrationTestCase):
+	"""A live reservation elsewhere must beat stock sitting at the target.
+
+	Reproduces EMP-IR-Labh-2026-35766: batch KG2F092-MGL229175Y0-0D4Y1 is a shared pool
+	holding 70.897 g at ``Diamond Setting WO`` for other work orders while THIS MWO's
+	0.595 g was still reserved at ``Pre Polish WIP WH 2``. The old picker read the
+	stranger's stock as a completed transfer, moved nothing, and buried the MOP Logs.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _logs(qty=0.595):
+		return [
+			_log(
+				item_code="M-1",
+				batch_no="B1",
+				qty_after_transaction_batch_based=qty,
+				to_warehouse="WH-DEPT",
+			)
+		]
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_live_reservation_elsewhere_beats_stock_at_target(self, mock_phys):
+		# Target is full of OTHER MWOs' metal; this MWO's reservation still holds its
+		# own qty at WH-PREV. A real transfer row must be built.
+		mock_phys.side_effect = lambda i, b, w: {
+			"WH-DEPT": 70.897,
+			"WH-PREV": 0.595,
+		}.get(w, 0.0)
+		sre_map = {("M-1", "B1"): ["WH-PREV"]}
+		active_map = {("M-1", "B1"): {"WH-PREV": 0.595}}
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1", "MOP-A", self._logs(), "WH-DEPT", sre_map, active_map
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["s_warehouse"], "WH-PREV")
+		self.assertEqual(rows[0]["t_warehouse"], "WH-DEPT")
+		self.assertEqual(skipped, [])
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_partial_reservation_at_target_moves_only_the_shortfall(self, mock_phys):
+		# EMP-IR-Labh-2026-35766 exactly: balance 0.615, of which only 0.020 is reserved
+		# at the department; 0.595 is still reserved at the previous operation while the
+		# shared batch shows 13.074 physically at the department. A partial share at the
+		# target must NOT read as "arrived" -- move the 0.595 shortfall, not the balance.
+		mock_phys.side_effect = lambda i, b, w: {
+			"WH-DEPT": 13.074,
+			"WH-PREV": 0.595,
+		}.get(w, 0.0)
+		sre_map = {("M-1", "B1"): ["WH-DEPT", "WH-PREV"]}
+		active_map = {("M-1", "B1"): {"WH-DEPT": 0.020, "WH-PREV": 0.595}}
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1", "MOP-A", self._logs(0.615), "WH-DEPT", sre_map, active_map
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["s_warehouse"], "WH-PREV")
+		self.assertEqual(rows[0]["qty"], 0.595)
+		self.assertEqual(skipped, [])
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_reservation_fully_at_target_is_a_noop_without_touching_stock(
+		self, mock_phys
+	):
+		# Ownership, not batch stock, decides: the target reserves the whole balance, so
+		# nothing moves even though no warehouse physically holds the batch at all.
+		mock_phys.side_effect = lambda i, b, w: 0.0
+		sre_map = {("M-1", "B1"): ["WH-DEPT"]}
+		active_map = {("M-1", "B1"): {"WH-DEPT": 0.615}}
+		noop_rows = []
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1",
+			"MOP-A",
+			self._logs(0.615),
+			"WH-DEPT",
+			sre_map,
+			active_map,
+			noop_rows,
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+		self.assertEqual(len(noop_rows), 1)
+		self.assertEqual(noop_rows[0]["qty"], 0.615)
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_stale_reservation_still_yields_the_noop(self, mock_phys):
+		# The MOP-EOD-SYNC-2026-03647 case must not regress: the reservation warehouse
+		# has been emptied, so the stock really did move to the target.
+		mock_phys.side_effect = lambda i, b, w: 5.0 if w == "WH-DEPT" else 0.0
+		sre_map = {("M-1", "B1"): ["WH-STALE"]}
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1", "MOP-A", self._logs(2.065), "WH-DEPT", sre_map, {}
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_live_reservation_at_target_is_still_a_noop(self, mock_phys):
+		# The reservation DID follow the metal: source == target, clean no-op.
+		mock_phys.side_effect = lambda i, b, w: 5.0 if w == "WH-DEPT" else 0.0
+		sre_map = {("M-1", "B1"): ["WH-DEPT"]}
+		active_map = {("M-1", "B1"): {"WH-DEPT": 0.595}}
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1", "MOP-A", self._logs(), "WH-DEPT", sre_map, active_map
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_live_reservation_without_stock_falls_through(self, mock_phys):
+		# Reservation is live but its warehouse is empty — not evidence the metal is
+		# still there. The target's stock wins and the no-op stands.
+		mock_phys.side_effect = lambda i, b, w: 5.0 if w == "WH-DEPT" else 0.0
+		sre_map = {("M-1", "B1"): ["WH-PREV"]}
+		active_map = {("M-1", "B1"): {"WH-PREV": 0.595}}
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1", "MOP-A", self._logs(), "WH-DEPT", sre_map, active_map
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_noop_rows_are_collected_for_the_sync_log(self, mock_phys):
+		# The decision to mark logs synced must be auditable: the dropped row is named.
+		mock_phys.side_effect = lambda i, b, w: 5.0 if w == "WH-DEPT" else 0.0
+		sre_map = {("M-1", "B1"): ["WH-DEPT"]}
+		noop_rows = []
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1", "MOP-A", self._logs(), "WH-DEPT", sre_map, {}, noop_rows
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+		self.assertEqual(len(noop_rows), 1)
+		self.assertEqual(noop_rows[0]["item_code"], "M-1")
+		self.assertEqual(noop_rows[0]["batch_no"], "B1")
+		self.assertEqual(noop_rows[0]["qty"], 0.595)
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_non_batch_line_ignores_active_map(self, mock_phys):
+		# Non-batch lines short-circuit to the first candidate before any physical or
+		# ownership check — the active map must not change that.
+		mock_phys.side_effect = lambda i, b, w: 99.0
+		self.assertEqual(
+			_pick_eod_source_warehouse("M-1", None, 5.0, ["WH-A"], "WH-DEPT", ["WH-B"]),
+			"WH-A",
+		)
+
+	@patch(f"{_MOD}.frappe.db.sql")
+	def test_active_map_carries_reserved_qty_per_warehouse(self, mock_sql):
+		mock_sql.return_value = [
+			frappe._dict(
+				item_code="M-1", batch_no="B1", warehouse="WH-PREV", reserved_qty=0.595
+			),
+			frappe._dict(
+				item_code="M-1", batch_no="B1", warehouse="WH-DEPT", reserved_qty=0.020
+			),
+			frappe._dict(
+				item_code="M-1", batch_no="B2", warehouse="WH-DEPT", reserved_qty=2.980
+			),
+			frappe._dict(
+				item_code="M-1", batch_no="B2", warehouse=None, reserved_qty=9.0
+			),
+		]
+		result = _preload_active_sre_warehouse_map("MWO-1")
+		self.assertEqual(
+			result,
+			{
+				("M-1", "B1"): {"WH-PREV": 0.595, "WH-DEPT": 0.020},
+				("M-1", "B2"): {"WH-DEPT": 2.980},
+			},
+		)
+		# Only live reservations count — the query must exclude spent ones.
+		sql_text = mock_sql.call_args[0][0]
+		self.assertIn("NOT IN ('Delivered', 'Cancelled')", sql_text)
+		self.assertIn("sbe.delivered_qty", sql_text)
 
 
 # ---------------------------------------------------------------------------

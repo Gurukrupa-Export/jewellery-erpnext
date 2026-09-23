@@ -1000,10 +1000,13 @@ def _plan_mwo_group(
 				)
 		return None
 
-	# One query for all (item_code, batch_no) → warehouse for this MWO
+	# One query for all (item_code, batch_no) → warehouse for this MWO, plus the live
+	# subset that tells _pick_eod_source_warehouse the metal has not moved yet.
 	sre_map = _preload_sre_warehouse_map(mwo)
+	active_map = _preload_active_sre_warehouse_map(mwo)
+	noop_rows = []
 	items, skipped_rows = _build_eod_se_rows(
-		mwo, last_mop_name, last_logs, t_warehouse, sre_map
+		mwo, last_mop_name, last_logs, t_warehouse, sre_map, active_map, noop_rows
 	)
 
 	if skipped_rows and _heal_missing_sre_in_plan(
@@ -1011,8 +1014,10 @@ def _plan_mwo_group(
 	):
 		# At least one reservation was created; re-resolve once with the new SREs.
 		sre_map = _preload_sre_warehouse_map(mwo)
+		active_map = _preload_active_sre_warehouse_map(mwo)
+		noop_rows = []
 		items, skipped_rows = _build_eod_se_rows(
-			mwo, last_mop_name, last_logs, t_warehouse, sre_map
+			mwo, last_mop_name, last_logs, t_warehouse, sre_map, active_map, noop_rows
 		)
 
 	# Missing-SRE rows have no source warehouse and cannot be transferred or even placed
@@ -1141,9 +1146,22 @@ def _plan_mwo_group(
 	if not items:
 		# Genuine no-op: every row was same-warehouse or non-positive qty — nothing to
 		# move. Safe to mark the MWO's logs synced.
+		#
+		# "Same warehouse" is only trustworthy because _pick_eod_source_warehouse now
+		# refuses to call it that while a live reservation for this MWO still holds the
+		# batch elsewhere. Marking logs synced is irreversible in practice (a synced log is
+		# never re-gathered), so the rows behind the decision are named in the sync log
+		# line rather than left blank.
+		noop_detail = "; ".join(
+			"{0} / {1} = {2}".format(
+				row.get("item_code"), row.get("batch_no"), flt(row.get("qty"), 3)
+			)
+			for row in (noop_rows or [])
+		)
 		frappe.logger().info(
-			"MOP EOD Sync MWO %s: no SE rows to create (same WH); marking logs synced.",
+			"MOP EOD Sync MWO %s: no SE rows to create (same WH); marking logs synced. %s",
 			mwo,
+			noop_detail or "no positive-qty rows",
 		)
 		_mark_all_mwo_mop_logs_synced([mwo], selective=selective)
 		stats["processed_mwos"] += 1
@@ -1161,6 +1179,7 @@ def _plan_mwo_group(
 				"sync_stage": "Completed",
 				"error_message": (
 					"Stock already at the target warehouse; no Material Transfer needed."
+					+ (f" Rows: {noop_detail}." if noop_detail else "")
 				),
 				"completed_on": now_datetime(),
 			},
@@ -3184,6 +3203,55 @@ def _preload_sre_warehouse_map(mwo):
 	return sre_map
 
 
+def _preload_active_sre_warehouse_map(mwo):
+	"""``{(item_code, batch_no): {warehouse: live_reserved_qty}}`` for ``mwo``.
+
+	``_preload_sre_warehouse_map`` returns EVERY submitted SRE's warehouse with the active
+	ones merely ordered first, because it feeds a physical-stock choice where a stale
+	warehouse is still a usable fallback. ``_build_eod_se_rows`` needs the stricter
+	question — *how much does this MWO still hold reserved here?* — which is the only
+	evidence of where its metal actually is. Kept as its own query rather than folded into
+	the map above because that map's shape is patched wholesale by the sync tests; a second
+	key would silently vanish under them.
+
+	The QTY, not just the warehouse, is load-bearing. A reservation split across warehouses
+	(part already at the department, the rest left behind at the previous operation) is the
+	normal state, and treating the department's partial share as "the metal has arrived"
+	is exactly the bug this map exists to prevent: on a batch shared by 87 work orders the
+	department warehouse then looked full enough to satisfy any physical check.
+
+	"Live" means ``docstatus = 1``, status not Delivered/Cancelled, and undelivered batch
+	qty still outstanding — the same shape ``_free_batch_qty_to_reserve`` and
+	``_get_sre_undelivered_batch_qty`` use, so the readers cannot drift. Batch lines only:
+	a non-batch line never reaches the physical checks this feeds.
+	"""
+	rows = frappe.db.sql(
+		"""
+        SELECT sre.item_code, sbe.batch_no, sre.warehouse,
+               SUM(sbe.qty - IFNULL(sbe.delivered_qty, 0)) AS reserved_qty
+        FROM `tabStock Reservation Entry` sre
+        INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
+        WHERE sre.manufacturing_work_order = %s
+          AND sre.docstatus = 1
+          AND sre.status NOT IN ('Delivered', 'Cancelled')
+          AND sre.reservation_based_on = 'Serial and Batch'
+          AND (sbe.qty - IFNULL(sbe.delivered_qty, 0)) > 0
+        GROUP BY sre.item_code, sbe.batch_no, sre.warehouse
+        ORDER BY reserved_qty DESC
+        """,
+		(mwo,),
+		as_dict=True,
+	)
+
+	active = {}
+	for row in rows:
+		if not row.warehouse:
+			continue
+		bucket = active.setdefault((row.item_code, row.batch_no), {})
+		bucket[row.warehouse] = flt(bucket.get(row.warehouse)) + flt(row.reserved_qty)
+	return active
+
+
 # ---------------------------------------------------------------------------
 # SRE relocation (release reservation at source so the transfer can consume,
 # then re-reserve at the target where the stock physically lands)
@@ -4352,15 +4420,24 @@ def _allocate_bucket_by_physical_stock(main_mwos):
 
 
 def _pick_eod_source_warehouse(
-	item_code, batch_no, required_qty, candidates, t_warehouse
+	item_code, batch_no, required_qty, candidates, t_warehouse, active_warehouses=None
 ):
 	"""Choose the EOD source warehouse by PHYSICAL batch stock (the SRE is only logical).
 
 	``candidates`` is the ordered list of SRE-derived source warehouses for the (item,
 	batch) — active-SRE warehouses first (see ``_preload_sre_warehouse_map``).
+	``active_warehouses`` is where this MWO still holds a LIVE reservation, EXCLUDING the
+	target: ``_build_eod_se_rows`` has already netted out the target's own reserved share
+	and passes the shortfall as ``required_qty``, so anything listed here is by definition
+	metal that has not arrived. Callers outside EOD omit it and get the physical-only
+	resolution below.
 
 	  * Non-batch line: first candidate (legacy behaviour), else ``None``.
 	  * Batch line, in order:
+	      0. a warehouse where this MWO still holds a LIVE reservation AND the batch
+	         physically covers ``required_qty`` -> that warehouse. A live reservation away
+	         from the target is the only evidence that this MWO's metal has NOT yet moved
+	         to the department warehouse, and it outranks step 1 — see below.
 	      1. the target physically covers ``required_qty`` -> return the target. The stock
 	         has already moved to the department warehouse, so the caller turns this into a
 	         completed no-op (source == target). This is exactly what an out-of-band
@@ -4374,6 +4451,22 @@ def _pick_eod_source_warehouse(
 	         department itself) it stays a clean source == target no-op.
 	      4. else ``None`` (no candidate at all) -> reported as no_sre_warehouse.
 
+	**Why step 0 exists.** ``_eod_physical_batch_qty`` asks "is there enough of this batch
+	at the target?", not "is THIS MWO's metal there". Metal batches here are shared pools —
+	``KG2F092-MGL229175Y0-0D4Y1`` is live-reserved by 87 work orders — so the department
+	warehouse almost always holds some of it on someone else's behalf. Without step 0,
+	step 1 read that stranger's stock as proof the transfer had already happened, returned
+	the target, and the caller marked the MOP Logs synced having moved nothing (2,035 such
+	no-ops across 1,554 MWOs before this guard). The reservation stayed at the previous
+	operation's warehouse while the virtual ledger advanced, and the divergence was
+	permanent because a synced log is never re-gathered. It surfaced much later as Employee
+	IR Process Loss failing with "loss qty cannot be covered by any single Stock
+	Reservation Entry".
+
+	Step 0 only fires when the reservation warehouse STILL physically holds the qty, so the
+	genuine case step 1 was written for — a stale reservation whose warehouse has been
+	emptied because the stock really did move — is untouched and still lands on the no-op.
+
 	The target is returned as a no-op ONLY when it physically covers the qty (step 1); a
 	batch missing at the target falls through to the candidate path, so a genuinely missing
 	batch is never mistaken for a completed transfer.
@@ -4382,18 +4475,28 @@ def _pick_eod_source_warehouse(
 		return candidates[0] if candidates else None
 
 	tol = 1e-6
+
+	def _covers(warehouse):
+		if not warehouse:
+			return False
+		return (
+			flt(_eod_physical_batch_qty(item_code, batch_no, warehouse) or 0) + tol
+			>= required_qty
+		)
+
+	# 0. A live reservation still physically holding the qty outranks the target: the metal
+	# has not moved yet, whatever else is sitting at the department warehouse. The caller
+	# excludes the target from this list, so a reservation that HAS reached the department
+	# was already netted out of required_qty and cannot be re-sourced here.
+	for wh in active_warehouses or ():
+		if wh and wh != t_warehouse and _covers(wh):
+			return wh
 	# 1. Physically already at the target department warehouse -> completed no-op.
-	if (
-		flt(_eod_physical_batch_qty(item_code, batch_no, t_warehouse) or 0) + tol
-		>= required_qty
-	):
+	if _covers(t_warehouse):
 		return t_warehouse
 	# 2. First candidate warehouse that physically covers the qty.
 	for wh in candidates:
-		if (
-			flt(_eod_physical_batch_qty(item_code, batch_no, wh) or 0) + tol
-			>= required_qty
-		):
+		if _covers(wh):
 			return wh
 	# 3/4. Nothing covers it: keep the first (active-ordered) candidate so batch_short fires
 	# with real numbers; only the genuine "no candidate at all" case is left unresolved.
@@ -4459,8 +4562,29 @@ def _stamp_eod_row_ownership(row, ownership):
 	return row
 
 
-def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse, sre_map):
-	"""Build Stock Entry item rows for the EOD material transfer."""
+def _build_eod_se_rows(
+	mwo, last_mop_name, last_logs, t_warehouse, sre_map, active_map=None, noop_rows=None
+):
+	"""Build Stock Entry item rows for the EOD material transfer.
+
+	``active_map`` is ``_preload_active_sre_warehouse_map``'s output
+	(``{(item, batch): {warehouse: reserved_qty}}``); omitting it falls back to
+	physical-only source resolution (see ``_pick_eod_source_warehouse``).
+
+	**Only the shortfall moves.** The qty this MWO already holds reserved AT the target is
+	netted out of the MOP Log balance, and just the remainder is transferred. A reservation
+	split across warehouses — part already at the department, the rest still at the previous
+	operation — is normal, and both halves of the naive readings are wrong: treating the
+	target's partial share as "arrived" strands the rest (the bug), while moving the whole
+	balance from the other warehouse asks it for stock it never had and fails the MWO on a
+	phantom ``batch_short``.
+
+	``noop_rows``, when a list is passed, collects the rows dropped because the target's own
+	reservation already covers the balance. The caller needs them to name what it decided
+	not to move: an empty ``items`` is what triggers marking the MWO's logs synced, and for
+	2,035 runs that decision was recorded as a blank sync log line with no item, batch or
+	qty, which is why a whole class of silent divergence stayed invisible.
+	"""
 	rows = []
 	skipped = []
 	ownership = _eod_batch_ownership(log.batch_no for log in last_logs)
@@ -4474,24 +4598,57 @@ def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse, sre_map):
 			if c not in candidates:
 				candidates.append(c)
 
+		# What this MWO already holds reserved at the target has arrived; only the rest
+		# still needs a transfer. Reservations elsewhere are the candidate sources for it.
+		reserved_by_wh = (active_map or {}).get((log.item_code, log.batch_no)) or {}
+		at_target = flt(reserved_by_wh.get(t_warehouse), 3)
+		move_qty = flt(qty - at_target, 3)
+
+		if move_qty <= 0:
+			# The target's own reservation covers the balance — a real completed no-op,
+			# established from ownership rather than from batch stock that may belong to
+			# any of the other work orders sharing this batch.
+			if noop_rows is not None:
+				noop_rows.append(
+					{
+						"item_code": log.item_code,
+						"batch_no": log.batch_no,
+						"qty": qty,
+					}
+				)
+			continue
+
 		s_warehouse = _pick_eod_source_warehouse(
-			log.item_code, log.batch_no, qty, candidates, t_warehouse
+			log.item_code,
+			log.batch_no,
+			move_qty,
+			candidates,
+			t_warehouse,
+			[wh for wh in reserved_by_wh if wh != t_warehouse],
 		)
 		if not s_warehouse:
 			# qty travels with the skip so the reservation healer knows how much to
 			# cover without re-deriving it from the MOP Log.
 			skipped.append(
-				{"item_code": log.item_code, "batch_no": log.batch_no, "qty": qty}
+				{"item_code": log.item_code, "batch_no": log.batch_no, "qty": move_qty}
 			)
 			continue
 
 		if s_warehouse == t_warehouse:
 			# Stock already sits at the target — nothing to transfer (completed no-op).
+			if noop_rows is not None:
+				noop_rows.append(
+					{
+						"item_code": log.item_code,
+						"batch_no": log.batch_no,
+						"qty": move_qty,
+					}
+				)
 			continue
 
 		row = {
 			"item_code": log.item_code,
-			"qty": qty,
+			"qty": move_qty,
 			"s_warehouse": s_warehouse,
 			"t_warehouse": t_warehouse,
 			"manufacturing_operation": last_mop_name,

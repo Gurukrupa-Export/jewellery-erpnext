@@ -1084,7 +1084,9 @@ class EmployeeIR(Document):
 			ownership = batch_priority_map(
 				[e["batch_no"] for e in data], with_no_wastage=True
 			)
-			headroom = get_batch_sre_headroom(mwo, [e["batch_no"] for e in data])
+			# `opt` is the operation these loss rows carry, so the cap is resolved in the
+			# same warehouse _find_sre will confine itself to at submit time.
+			headroom = get_batch_sre_headroom(mwo, [e["batch_no"] for e in data], opt)
 			for entry in data:
 				meta = ownership.get(entry["batch_no"])
 				entry["_inventory_type"] = meta.get("inventory_type") if meta else None

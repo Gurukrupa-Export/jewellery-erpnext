@@ -501,7 +501,7 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
 	return rows
 
 
-def get_batch_sre_headroom(mwo, batch_nos):
+def get_batch_sre_headroom(mwo, batch_nos, operation=None):
 	"""``{(item_code, batch_no): largest single remaining SRE}`` for ``mwo``.
 
 	The most loss ``_validate_sre_qty`` will let a single row book against a batch.
@@ -516,6 +516,18 @@ def get_batch_sre_headroom(mwo, batch_nos):
 	SREs (see ``_find_sre``). Capping the tier's capacity here makes the excess
 	spill to the next tier instead of failing an Employee IR that submits today.
 
+	**The cap is confined to ONE warehouse, mirroring ``_find_sre``.** That resolver
+	never deducts across physical locations: it picks the operation-matched SRE's
+	warehouse, else the warehouse of the SRE with the largest remaining reservation,
+	and then only considers candidates there. A cap taken as ``MAX`` over every
+	warehouse therefore promised headroom the validation would refuse -- a batch whose
+	reservation had been left behind at the previous operation's warehouse was capped
+	at that stranded figure, the allocator handed the row a share sized by it, and the
+	submit died in ``_validate_sre_qty`` against the much smaller reservation actually
+	present at this operation. ``operation`` is the loss row's
+	``manufacturing_operation``; omit it and the selection falls back to the
+	largest-remaining warehouse, the same as ``_find_sre`` with an untagged row.
+
 	One round-trip for the whole document. A batch with no batch-level SRE (the
 	Qty-based fallback) is absent from the result, and the caller then applies no
 	cap -- preserving today's behaviour rather than guessing.
@@ -529,27 +541,66 @@ def get_batch_sre_headroom(mwo, batch_nos):
         SELECT
             sre.item_code AS item_code,
             sbe.batch_no AS batch_no,
-            MAX(
+            sre.warehouse AS warehouse,
+            sre.manufacturing_operation AS manufacturing_operation,
+            (
                 sre.reserved_qty
                 - IFNULL(sre.delivered_qty, 0)
                 - IFNULL(sre.transferred_qty, 0)
                 - IFNULL(sre.consumed_qty, 0)
-            ) AS headroom
+            ) AS remaining
         FROM `tabStock Reservation Entry` sre
         INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
         WHERE sre.manufacturing_work_order = %(mwo)s
           AND sre.docstatus = 1
           AND sbe.batch_no IN %(batches)s
-        GROUP BY sre.item_code, sbe.batch_no
+          AND (
+                sre.reserved_qty
+                - IFNULL(sre.delivered_qty, 0)
+                - IFNULL(sre.transferred_qty, 0)
+                - IFNULL(sre.consumed_qty, 0)
+          ) > %(tolerance)s
+        ORDER BY sre.warehouse, sre.name
         """,
-		{"mwo": mwo, "batches": batch_nos},
+		{"mwo": mwo, "batches": batch_nos, "tolerance": TOLERANCE},
 		as_dict=True,
 	)
-	return {
-		(r["item_code"], r["batch_no"]): flt(r["headroom"], 3)
-		for r in rows
-		if flt(r["headroom"]) > TOLERANCE
-	}
+
+	by_key = {}
+	for row in rows:
+		by_key.setdefault((row["item_code"], row["batch_no"]), []).append(row)
+
+	headroom = {}
+	for key, entries in by_key.items():
+		# Per-warehouse ceiling: the largest single reservation there, which is what
+		# _validate_sre_qty compares the row against once _find_sre has confined
+		# itself to that warehouse.
+		per_wh = {}
+		for entry in entries:
+			wh = entry["warehouse"]
+			per_wh[wh] = max(flt(per_wh.get(wh)), flt(entry["remaining"]))
+
+		op_warehouses = sorted(
+			{
+				entry["warehouse"]
+				for entry in entries
+				if operation and entry["manufacturing_operation"] == operation
+			}
+		)
+		if op_warehouses:
+			# _find_sre takes the operation-matched SRE's warehouse. When the tag spans
+			# several warehouses its choice among them depends on row order, so take the
+			# smallest ceiling: a cap that is too tight only shifts loss onto other
+			# batches, while one that is too loose fails the submit.
+			chosen = min(per_wh[wh] for wh in op_warehouses)
+		else:
+			# No operation tag: _find_sre falls back to the warehouse holding the SRE
+			# with the largest remaining reservation.
+			chosen = max(per_wh.values())
+
+		if flt(chosen) > TOLERANCE:
+			headroom[key] = flt(chosen, 3)
+	return headroom
 
 
 def _find_sre(eir, row, mwo, table_name, qty):
