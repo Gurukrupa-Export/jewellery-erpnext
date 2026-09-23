@@ -30,6 +30,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.entered_metal_rate 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.loss_valuation import (
 	set_process_loss_produce_rates,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
+	release_derived_outputs,
+	settle_derived_outputs,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
 	custom_get_scrap_items_from_job_card,
@@ -300,10 +304,18 @@ class CustomStockEntry(StockEntry):
 		``basic_rate`` on every allow-zero-valuation row, which is why those batches
 		were created rate-less. See ``utils/entered_metal_rate``; the ledger's
 		valuation is deliberately left at 0.
+
+		``release_derived_outputs`` runs first: a customer-owned finished good or secondary row that
+		ERPNext derives must not carry the allow-zero flag into super(), or ERPNext zeroes the value
+		it computed on the previous pass (F3 -- ``utils/zero_valuation``). It runs ahead of the
+		capture so a derived rate is never parked as if the user had typed it (F8). This is the
+		override, not ``before_validate``, because a repost re-runs this method and nothing else.
 		"""
+		released = release_derived_outputs(self)
 		entered_rates = capture_entered_metal_rates(self)
 		super().set_basic_rate(reset_outgoing_rate, raise_error_if_no_rate)
 		restore_entered_metal_rates(entered_rates)
+		settle_derived_outputs(released)
 		set_process_loss_produce_rates(self)
 
 
