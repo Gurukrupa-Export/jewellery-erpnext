@@ -920,16 +920,26 @@ STOCK_ENTRY_KINDS = (
 )
 
 
+#: erpnext's own warehouse classification, mapped to custody stages. Anything not listed --
+#: Raw Material, Reserve, Consumables -- is metal not yet on the floor.
+STAGE_BY_WAREHOUSE_TYPE = {
+	"Transit": STAGE_TRANSIT,
+	"Manufacturing": STAGE_WIP,
+	"Finished Goods": STAGE_FG,
+	"Scrap": STAGE_RECOVERABLE_SCRAP,
+}
+
+
 def warehouse_stage(warehouse):
 	"""Which custody stage a warehouse represents, from the warehouse's own metadata.
 
 	Derived, never configured separately -- a second mapping of warehouse to stage would drift
 	from the first one the day somebody adds a warehouse.
 
-	* ``warehouse_type == "Transit"`` -> ``Transit``. erpnext's own classification.
-	* a ``department`` set           -> ``WIP``. This app adds that field precisely to mark a
-	  shop-floor warehouse (``install.py`` asserts it as a required field).
-	* otherwise                      -> ``RM``.
+	From ``warehouse_type`` (F28). This used to key on ``department``, which is set on raw
+	material warehouses too: on kg-gk 13 KGJPL Raw Material warehouses carry a department and
+	read as WIP, while 165 Manufacturing warehouses carry none and read as RM. A warehouse with
+	no type falls back to the old rule.
 
 	Returns ``None`` for no warehouse, which is what an issue row's missing target looks like.
 	"""
@@ -942,8 +952,8 @@ def warehouse_stage(warehouse):
 	if not info:
 		return None
 
-	if info.warehouse_type == "Transit":
-		return STAGE_TRANSIT
+	if info.warehouse_type:
+		return STAGE_BY_WAREHOUSE_TYPE.get(info.warehouse_type, STAGE_RM)
 
 	return STAGE_WIP if info.department else STAGE_RM
 
