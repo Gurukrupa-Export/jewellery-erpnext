@@ -108,6 +108,21 @@ class TestAtomicBatches(_ComponentsTestCase):
 		out = cgc.resolve_components("B-CG", 40.0)
 		self.assertAlmostEqual(out[0]["pure_qty"], 39.96, places=3)
 
+	def test_a_batch_with_no_recorded_fine_takes_it_from_the_item_purity(self):
+		"""F18: the stored fine quantity is 0 on every batch, so apportioning it gave 0 fine grams.
+		The item's purity -- the ledger's own helper -- is the fallback: 40 g of 99.9% is 39.96 fine."""
+		self.identities["B-NOFINE"] = {
+			"custom_inventory_type": cgc.CUSTOMER_GOODS,
+			"custom_customer": CUSTOMER,
+			"custom_pure_metal_qty": 0,
+			"batch_qty": 100.0,
+			"item": "M-G-24KT",
+		}
+		with patch.object(cgc, "get_purity_percentage", return_value=99.9) as purity:
+			out = cgc.resolve_components("B-NOFINE", 40.0)
+		purity.assert_called_once_with("M-G-24KT")
+		self.assertAlmostEqual(out[0]["pure_qty"], 39.96, places=3)
+
 	def test_drawing_nothing_resolves_to_nothing(self):
 		self.assertEqual(cgc.resolve_components("B-CG", 0), [])
 		self.assertEqual(cgc.resolve_components("B-CG", -5), [])
