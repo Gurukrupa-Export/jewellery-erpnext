@@ -2165,6 +2165,18 @@ def consume_stock_reservation_entry(sre_doc, update_bin=True):
 	# Explicitly set status to "Delivered"
 	sre_doc.update_status(status="Delivered")
 
+	# F30: the order's reserved quantity is summed from its live reservations, so it has to be
+	# recomputed now -- ERPNext does this on submit and cancel, and consumption skipped it (946
+	# Sales Order rows on kg-gk still show stock reserved that was consumed long ago).
+	sre_doc.update_reserved_qty_in_voucher(update_modified=False)
+
+	# F29: give the customer's gold back to the free quantity, as a cancel would.
+	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+		release_consumed_allocation,
+	)
+
+	release_consumed_allocation(sre_doc)
+
 	# Refresh bin reserved stock so the physical stock becomes available
 	if update_bin:
 		bin_name = get_or_make_bin(sre_doc.item_code, sre_doc.warehouse)
