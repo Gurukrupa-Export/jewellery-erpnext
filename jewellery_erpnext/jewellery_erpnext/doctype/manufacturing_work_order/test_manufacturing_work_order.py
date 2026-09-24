@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
 	manufacturing_work_order as mwo_mod,
@@ -192,6 +193,150 @@ class TestCreateMrForSplitWorkOrder(UnitTestCase):
 		self.assertTrue(new_mr.flags.ignore_mandatory)
 		self.assertTrue(new_mr.flags.ignore_validate)
 		new_mr.save.assert_called_once()
+
+
+class _ReachedOpenOperationsCheck(Exception):
+	"""Raised by the stubbed frappe.get_all: reaching it means the eligibility gate and the
+	split-count check both passed and create_split_work_order moved on to its open-operations
+	query, before anything was written."""
+
+
+MPM_LINK = "Manufacturing Plan & Management  - KGJPL"
+
+
+class TestSplitWorkOrderEligibility(UnitTestCase):
+	"""``create_split_work_order`` may only split a submitted, not-yet-split MWO that sits in
+	Manufacturing Plan & Management with zero gross weight on both its header and its
+	current Manufacturing Operation.
+
+	Mock-only for the same reason as TestCreateMrForSplitWorkOrder. frappe.db.get_value is
+	stubbed with a keyed side_effect (never a blanket return, which would also answer
+	DocType meta reads), and flt's rounding method is pinned: without a bound site
+	flt(x, 3) returns 0.0, which would make every "weight blocks" case pass vacuously.
+	"""
+
+	def _run(
+		self,
+		*,
+		docstatus=1,
+		has_split_mwo=0,
+		department=MPM_LINK,
+		department_name="Manufacturing Plan & Management",
+		gross_wt=0,
+		mop="MOP-1",
+		mop_gross_wt=0,
+		count=1,
+		limit=0,
+	):
+		calls = []
+
+		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
+			calls.append((doctype, filters, fieldname))
+			if doctype == "Manufacturing Work Order" and isinstance(fieldname, list):
+				return frappe._dict(
+					docstatus=docstatus,
+					has_split_mwo=has_split_mwo,
+					department=department,
+					gross_wt=gross_wt,
+					manufacturing_operation=mop,
+				)
+			if doctype == "Department" and fieldname == "department_name":
+				return department_name
+			if doctype == "Manufacturing Operation" and fieldname == "gross_wt":
+				return mop_gross_wt
+			if doctype == "Manufacturing Setting" and fieldname == "wo_split_limit":
+				return limit
+			return None
+
+		with (
+			patch("frappe.db.get_value", side_effect=_gv),
+			patch.object(
+				frappe, "get_system_settings", return_value="Banker's Rounding"
+			),
+			patch("frappe.get_all", side_effect=_ReachedOpenOperationsCheck) as get_all,
+			patch("frappe.db.set_value") as set_value,
+			patch.object(mwo_mod, "get_mapped_doc") as mapped,
+		):
+			try:
+				mwo_mod.create_split_work_order("MWO-1", "Test_Company", "Labh", count)
+			finally:
+				set_value.assert_not_called()
+				mapped.assert_not_called()
+				self.calls = calls
+				self.get_all = get_all
+
+	def assert_allowed(self, **kwargs):
+		with self.assertRaises(_ReachedOpenOperationsCheck):
+			self._run(**kwargs)
+
+	def assert_blocked(self, pattern, **kwargs):
+		with self.assertRaisesRegex(frappe.ValidationError, pattern):
+			self._run(**kwargs)
+		self.get_all.assert_not_called()
+
+	def test_00_flt_actually_rounds_under_the_pin(self):
+		with patch.object(
+			frappe, "get_system_settings", return_value="Banker's Rounding"
+		):
+			self.assertAlmostEqual(flt(0.034, 3), 0.034, places=3)
+			self.assertAlmostEqual(flt(0.1234, 3), 0.123, places=3)
+
+	def test_mpm_with_zero_weight_is_allowed(self):
+		self.assert_allowed()
+		self.assertIn(("Department", MPM_LINK, "department_name"), self.calls)
+		self.assertIn(("Manufacturing Operation", "MOP-1", "gross_wt"), self.calls)
+
+	def test_existing_split_count_check_still_runs(self):
+		self.assert_blocked("Invalid split count", count=0)
+
+	def test_other_department_is_blocked_before_split_count_check(self):
+		self.assert_blocked(
+			"can be split only in",
+			department="Waxing - KGJPL",
+			department_name="Waxing",
+			count=0,
+		)
+		self.assertFalse([c for c in self.calls if c[0] == "Manufacturing Setting"])
+
+	def test_department_matched_on_department_name_not_link(self):
+		self.assert_blocked(
+			"can be split only in",
+			department="Manufacturing Plan & Management - KGJPL",
+			department_name="Casting",
+		)
+
+	def test_missing_department_is_blocked(self):
+		self.assert_blocked("no department", department=None, department_name=None)
+		self.assertFalse([c for c in self.calls if c[0] == "Department"])
+
+	def test_header_gross_wt_blocks(self):
+		self.assert_blocked("Gross Wt is 0", gross_wt=0.034)
+
+	def test_mop_gross_wt_blocks(self):
+		"""The live case: 0.171 ct of diamond issued onto an MPM operation while the MWO
+		header still reads 0."""
+		self.assert_blocked(
+			"MOP-2609-ER55V4", mop="MOP-2609-ER55V4", mop_gross_wt=0.034
+		)
+
+	def test_smallest_rounded_weight_blocks(self):
+		self.assert_blocked("Gross Wt is 0", mop_gross_wt=0.001)
+
+	def test_negative_weight_blocks(self):
+		self.assert_blocked("Gross Wt is 0", mop_gross_wt=-0.01)
+
+	def test_sub_precision_weight_is_treated_as_zero(self):
+		self.assert_allowed(gross_wt=1e-7, mop_gross_wt=0.0004)
+
+	def test_missing_operation_is_treated_as_zero(self):
+		self.assert_allowed(mop=None)
+		self.assertFalse([c for c in self.calls if c[0] == "Manufacturing Operation"])
+
+	def test_already_split_is_blocked(self):
+		self.assert_blocked("already been split", has_split_mwo=1)
+
+	def test_draft_is_blocked(self):
+		self.assert_blocked("must be submitted", docstatus=0)
 
 
 def create_pmo(self):

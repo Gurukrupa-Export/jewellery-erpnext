@@ -1126,8 +1126,92 @@ def create_manufacturing_operation(doc):
 		create_snc_from_mwo_submit(doc.name)
 
 
+# Compared against Department.department_name, not the link: the Department's name
+# carries the company suffix (and on live data a double space before it), e.g.
+# "Manufacturing Plan & Management  - KGJPL".
+SPLIT_ALLOWED_DEPARTMENT = "Manufacturing Plan & Management"
+
+
+def validate_split_eligibility(docname):
+	"""A work order may be split only while it is still in planning with no material on it.
+
+	The weight is checked on the current Manufacturing Operation as well as on the MWO
+	header: the header gross_wt is only ever written for FG work orders (sync_mwo_weights),
+	so on every other MWO it reads 0 regardless of what has been issued. Material sitting
+	on the parent's MOP is not carried to the split children -- they start from the
+	parent's header weights -- so splitting it would strand that weight on a closed MWO.
+	"""
+	mwo = frappe.db.get_value(
+		"Manufacturing Work Order",
+		docname,
+		[
+			"docstatus",
+			"has_split_mwo",
+			"department",
+			"gross_wt",
+			"manufacturing_operation",
+		],
+		as_dict=True,
+	)
+	if not mwo or cint(mwo.docstatus) != 1:
+		frappe.throw(
+			_("Work Order {0} must be submitted before it can be split.").format(
+				docname
+			)
+		)
+
+	# A split parent keeps its department and zero weight, and its pending operations are
+	# marked Finished, so without this it would pass every check below a second time.
+	if cint(mwo.has_split_mwo):
+		frappe.throw(_("Work Order {0} has already been split.").format(docname))
+
+	department_name = (
+		frappe.db.get_value("Department", mwo.department, "department_name")
+		if mwo.department
+		else None
+	)
+	if department_name != SPLIT_ALLOWED_DEPARTMENT:
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only in {1} department. It is currently in {2}."
+			).format(
+				docname,
+				frappe.bold(SPLIT_ALLOWED_DEPARTMENT),
+				frappe.bold(mwo.department or _("no department")),
+			)
+		)
+
+	if flt(mwo.gross_wt, 3):
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only when Gross Wt is 0. Current Gross Wt: {1}"
+			).format(docname, flt(mwo.gross_wt, 3))
+		)
+
+	mop_gross_wt = (
+		frappe.db.get_value(
+			"Manufacturing Operation", mwo.manufacturing_operation, "gross_wt"
+		)
+		if mwo.manufacturing_operation
+		else 0
+	)
+	if flt(mop_gross_wt, 3):
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only when Gross Wt is 0. Current Gross Wt: {1} on Manufacturing Operation {2}"
+			).format(
+				docname,
+				flt(mop_gross_wt, 3),
+				get_link_to_form(
+					"Manufacturing Operation", mwo.manufacturing_operation
+				),
+			)
+		)
+
+
 @frappe.whitelist()
 def create_split_work_order(docname, company, manufacturer, count=1):
+	validate_split_eligibility(docname)
 	# limit = cint(frappe.db.get_value("Manufacturing Setting", {"company", company}, "wo_split_limit"))
 	limit = cint(
 		frappe.db.get_value(
