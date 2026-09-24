@@ -164,6 +164,11 @@ class TestCreateMrForSplitWorkOrder(UnitTestCase):
 		self.assertIsNone(new_mr.custom_reserve_se)
 		self.assertIsNone(new_mr.custom_mop_se)
 		self.assertIsNone(new_mr.custom_department_transfer_se)
+		# Carried over as "Done", these made MR.on_submit skip the new MR's own
+		# "Material Transfer From Reserve", leaving its stock in the reserve warehouse.
+		self.assertIsNone(new_mr.custom_transfer_se)
+		self.assertIsNone(new_mr.custom_transfer_se_state)
+		self.assertIsNone(new_mr.custom_transfer_se_error)
 
 	def test_manufacturing_operation_left_blank_for_manual_selection(self):
 		"""custom_manufacturing_operation is a manual field the user picks from the dropdown
@@ -236,11 +241,19 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 		mop_gross_wt=0,
 		count=1,
 		limit=0,
+		split_from=None,
+		split_mrs=(),
+		moved=(),
 	):
 		calls = []
 
 		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
 			calls.append((doctype, filters, fieldname))
+			if doctype == "Manufacturing Work Order" and fieldname == [
+				"manufacturing_order",
+				"split_from",
+			]:
+				return ("PMO-1", split_from)
 			if doctype == "Manufacturing Work Order" and isinstance(fieldname, list):
 				return frappe._dict(
 					docstatus=docstatus,
@@ -258,6 +271,8 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 			return None
 
 		open_operation_queries = []
+		mr_queries = []
+		stock_queries = []
 		real_get_all = frappe.get_all
 
 		def _ga(doctype, *args, **kwargs):
@@ -266,6 +281,12 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 			if doctype == "Manufacturing Operation":
 				open_operation_queries.append(kwargs)
 				raise _ReachedOpenOperationsCheck
+			if doctype == "Material Request":
+				mr_queries.append(kwargs)
+				return list(split_mrs)
+			if doctype == "Stock Entry Detail":
+				stock_queries.append(kwargs)
+				return [frappe._dict(row) for row in moved]
 			return real_get_all(doctype, *args, **kwargs)
 
 		with (
@@ -284,15 +305,18 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 				mapped.assert_not_called()
 				self.calls = calls
 				self.open_operation_queries = open_operation_queries
+				self.mr_queries = mr_queries
+				self.stock_queries = stock_queries
 
 	def assert_allowed(self, **kwargs):
 		with self.assertRaises(_ReachedOpenOperationsCheck):
 			self._run(**kwargs)
 
 	def assert_blocked(self, pattern, **kwargs):
-		with self.assertRaisesRegex(frappe.ValidationError, pattern):
+		with self.assertRaisesRegex(frappe.ValidationError, pattern) as ctx:
 			self._run(**kwargs)
 		self.assertFalse(self.open_operation_queries)
+		return ctx.exception
 
 	def test_00_flt_actually_rounds_under_the_pin(self):
 		with patch.object(
@@ -357,6 +381,154 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 
 	def test_draft_is_blocked(self):
 		self.assert_blocked("must be submitted", docstatus=0)
+
+	def test_split_child_with_stock_on_its_own_mr_is_blocked(self):
+		"""The live case: a split child whose own MR already moved stock. Cancelling that MR
+		by writing docstatus would strand the stock, so the split is refused -- before the
+		split-count check and before anything is written."""
+		exc = self.assert_blocked(
+			"already moved stock",
+			split_from="MWO-0",
+			split_mrs=["MR-B"],
+			moved=[{"material_request": "MR-B", "parent": "STE-1"}],
+			count=0,
+		)
+		self.assertIn("MR-B", str(exc))
+		self.assertIn("STE-1", str(exc))
+		self.assertEqual(
+			self.mr_queries[0]["filters"],
+			{"custom_manufacturing_work_order": "MWO-1", "docstatus": ["!=", 2]},
+		)
+		self.assertFalse([c for c in self.calls if c[0] == "Manufacturing Setting"])
+
+	def test_original_with_stock_on_the_pmo_mrd_is_blocked(self):
+		self.assert_blocked(
+			"already moved stock",
+			split_mrs=["MR-ORIG"],
+			moved=[{"material_request": "MR-ORIG", "parent": "STE-9"}],
+		)
+		self.assertEqual(
+			self.mr_queries[0]["filters"],
+			{
+				"manufacturing_order": "PMO-1",
+				"title": ["like", "MRD%"],
+				"custom_manufacturing_work_order": ["is", "not set"],
+				"docstatus": ["!=", 2],
+			},
+		)
+
+	def test_mrs_without_moved_stock_are_allowed(self):
+		self.assert_allowed(split_from="MWO-0", split_mrs=["MR-B"])
+		self.assertEqual(
+			self.stock_queries[0]["filters"],
+			{"material_request": ["in", ["MR-B"]], "docstatus": 1},
+		)
+
+	def test_no_mrs_skips_the_stock_query(self):
+		self.assert_allowed()
+		self.assertFalse(self.stock_queries)
+
+
+class TestSplitCancelsMaterialRequests(UnitTestCase):
+	"""Which Material Requests ``create_split_work_order`` cancels once the split goes ahead.
+
+	The bug this closed: the cancel only matched MRDs with no custom_manufacturing_work_order,
+	so splitting a split child left the MR minted for it (stamped with its own name) open.
+	The eligibility gate is patched out -- TestSplitWorkOrderEligibility covers it.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# See TestSplitWorkOrderEligibility.setUpClass: build the translation cache unpatched.
+		frappe._("Work Order")
+
+	def _run(self, *, split_from=None, split_mrs=("MR-1", "MR-2")):
+		mr_queries = []
+		real_get_all = frappe.get_all
+
+		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Manufacturing Setting" and fieldname == "wo_split_limit":
+				return 0
+			if doctype == "Manufacturing Work Order" and fieldname == [
+				"manufacturing_order",
+				"split_from",
+			]:
+				return ("PMO-1", split_from)
+			return None
+
+		def _ga(doctype, *args, **kwargs):
+			if doctype == "Manufacturing Operation":
+				# The open-operations query (or_filters) finds nothing blocking; the pending
+				# query returns one operation for the split to mark Finished.
+				return [] if "or_filters" in kwargs else ["MOP-P1"]
+			if doctype == "Material Request":
+				mr_queries.append(kwargs)
+				return list(split_mrs)
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch.object(mwo_mod, "validate_split_eligibility"),
+			patch("frappe.db.get_value", side_effect=_gv),
+			patch("frappe.get_all", side_effect=_ga),
+			patch.object(mwo_mod, "get_mapped_doc") as mapped,
+			patch.object(mwo_mod, "set_values_in_bulk") as bulk,
+			patch("frappe.db.set_value") as set_value,
+		):
+			mwo_mod.create_split_work_order("MWO-B", "Test_Company", "Labh", 2)
+
+		self.mr_queries = mr_queries
+		self.mapped = mapped
+		self.bulk = bulk
+		return [c.args for c in set_value.call_args_list]
+
+	def test_split_child_cancels_the_mr_stamped_with_it(self):
+		writes = self._run(split_from="MWO-A")
+		self.assertEqual(
+			self.mr_queries[0],
+			{
+				"filters": {
+					"custom_manufacturing_work_order": "MWO-B",
+					"docstatus": ["!=", 2],
+				},
+				"pluck": "name",
+			},
+		)
+		cancelled = {"docstatus": 2, "workflow_state": "Cancelled"}
+		self.assertIn(("Material Request", "MR-1", cancelled), writes)
+		self.assertIn(("Material Request", "MR-2", cancelled), writes)
+
+	def test_original_cancels_the_unclaimed_pmo_mrds(self):
+		self._run()
+		self.assertEqual(
+			self.mr_queries[0]["filters"],
+			{
+				"manufacturing_order": "PMO-1",
+				"title": ["like", "MRD%"],
+				"custom_manufacturing_work_order": ["is", "not set"],
+				"docstatus": ["!=", 2],
+			},
+		)
+
+	def test_nothing_to_cancel_only_closes_the_work_order(self):
+		writes = self._run(split_from="MWO-A", split_mrs=())
+		self.assertEqual(
+			writes,
+			[
+				(
+					"Manufacturing Work Order",
+					"MWO-B",
+					{"has_split_mwo": 1, "status": "Closed"},
+				)
+			],
+		)
+
+	def test_children_created_and_pending_operations_finished(self):
+		self._run()
+		self.assertEqual(self.mapped.call_count, 2)
+		self.bulk.assert_called_once_with(
+			"Manufacturing Operation", ["MOP-P1"], {"status": "Finished"}
+		)
 
 
 def create_pmo(self):
