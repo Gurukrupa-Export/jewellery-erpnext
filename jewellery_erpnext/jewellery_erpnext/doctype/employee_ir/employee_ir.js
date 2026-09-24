@@ -84,6 +84,8 @@ frappe.ui.form.on("Employee IR", {
 			var filters = {
 				department: frm.doc.department,
 				operation: ["is", "not set"],
+				// Operations left behind by a cancelled IR are marked Revert; the scanner skips them too.
+				department_ir_status: ["!=", "Revert"],
 			};
 			if (doc.subcontracting == "Yes") {
 				filters["employee"] = ["is", "not set"];
