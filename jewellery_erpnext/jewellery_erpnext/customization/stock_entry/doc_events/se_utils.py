@@ -498,7 +498,11 @@ def set_gross_wt(self):
 			gross_weight = frappe.db.get_value(
 				"Serial No", row.serial_no, "custom_gross_wt"
 			)
-			row.gross_weight = gross_weight
+			# F22: a finished piece's serial is weighed after this entry is built, so its
+			# serial reads nothing yet. Blanking the row then erased the weight the builder
+			# had set; keep it unless the serial actually carries one.
+			if gross_weight:
+				row.gross_weight = gross_weight
 
 
 def set_fg_bom_weights(self):
