@@ -66,6 +66,9 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
+	get_purity_percentage,
+)
 
 COMPONENT_TABLE = "custom_batch_components"
 COMPONENT_DOCTYPE = "Batch Component"
@@ -371,11 +374,22 @@ def _atomic_component(batch_no, drawn_qty):
 	# recorded as D04, where the same configured item reads 100.0 one way and 99.9 the other.
 	batch_qty = flt(identity.get("batch_qty"))
 	fine = flt(identity.get("custom_pure_metal_qty"))
-	pure_qty = (
-		flt(fine * (drawn_qty / batch_qty), QTY_PRECISION)
-		if batch_qty and fine
-		else 0.0
-	)
+	if batch_qty and fine:
+		pure_qty = flt(fine * (drawn_qty / batch_qty), QTY_PRECISION)
+	else:
+		# F18: ``custom_pure_metal_qty`` is computed in ``Batch.validate`` before ERPNext has
+		# written ``batch_qty``, so it is 0 on every batch (13,898 of 13,898 on kg-gk) and the
+		# apportionment above never runs. Fall back to the item's purity through the SAME helper
+		# the custody ledger measures fine gold with (``quantity_basis``), so a component's fine
+		# grams agree with the ledger's rather than reading 0.
+		purity = (
+			get_purity_percentage(identity.get("item"))
+			if identity.get("item")
+			else None
+		)
+		pure_qty = (
+			flt(flt(drawn_qty) * flt(purity) / 100.0, QTY_PRECISION) if purity else 0.0
+		)
 
 	return {
 		"item_code": identity.get("item"),
