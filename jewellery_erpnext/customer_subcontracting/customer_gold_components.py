@@ -58,6 +58,7 @@ under Nominal precisely so that discriminator exists somewhere.
 """
 
 import frappe
+from frappe.query_builder.functions import Sum
 from frappe.utils import flt
 
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
@@ -78,6 +79,11 @@ REGULAR_STOCK = "Regular Stock"
 MAX_DEPTH = 10
 
 QTY_PRECISION = 3
+
+#: Stock Entry purposes that MAKE a batch's contents. A component table describes what one of
+#: these put into the batch. Transfers, returns and reconciliations move a batch or restate it;
+#: they never make it, so they must not move the denominator.
+PRODUCING_PURPOSES = ("Manufacture", "Repack", "Material Receipt")
 
 
 def is_component_schema_ready():
@@ -178,15 +184,23 @@ def _recorded_components(batch_no):
 
 
 def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
-	"""What ``drawn_qty`` grams taken out of ``batch_no`` is actually made of.
+	"""What ``drawn_qty`` taken out of ``batch_no`` is actually made of.
 
-	Returns a list of component dicts whose ``qty`` sums to ``drawn_qty``. This is the
-	transitive answer CG-T083 needs: if the batch is itself mixed, its components are
-	apportioned pro rata and returned instead of a single row naming the batch.
+	Returns a list of component dicts, each ``qty`` in its OWN item's units -- a customer's 24KT
+	component in 24KT grams, however many conversions sit between it and ``batch_no``. This is the
+	transitive answer CG-T083 needs: if the batch is itself mixed, its components are apportioned
+	pro rata and returned instead of a single row naming the batch.
 
 	``drawn_qty`` is apportioned, never passed through whole -- that is gap 3 in the
 	``Batch Component`` docstring, where the existing origin-entry writer hands the FULL lane
 	source list to every inward row and double-counts.
+
+	The apportioning denominator is :func:`attribution_basis`, not the component total. The two
+	agree whenever the batch is exactly what its components say, and then the result sums to
+	``drawn_qty`` as it always did. They part company in two cases, and the total was wrong in
+	both: a finished piece counted in Nos, whose components are grams and carats; and a conversion
+	whose alloy was never recorded as a component, where 6.000 g of 99.9% became 7.950 g of 75.4%
+	and dividing by 6.000 attributed all 7.950 g to the customer as 24KT.
 	"""
 	drawn_qty = flt(drawn_qty, QTY_PRECISION)
 	if not batch_no or drawn_qty <= 0:
@@ -206,9 +220,11 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 	if total <= 0:
 		return [_atomic_component(batch_no, drawn_qty)]
 
+	basis = attribution_basis(batch_no, components) or total
+
 	resolved = []
 	for component in components:
-		share = flt(flt(component["qty"]) / total * drawn_qty, QTY_PRECISION)
+		share = flt(flt(component["qty"]) / basis * drawn_qty, QTY_PRECISION)
 		if share <= 0:
 			continue
 
@@ -257,6 +273,92 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 		)
 
 	return resolved or [_atomic_component(batch_no, drawn_qty)]
+
+
+def produced_qty(batch_no):
+	"""How much the producing Stock Entries put into ``batch_no``, or 0.0 when none is recorded.
+
+	The fixed denominator for any draw on the batch. ``Batch.batch_qty`` is the wrong one: it is
+	the LIVE balance and falls with every delivery, so the second of three instalments divided by
+	two instead of three and the three together released 166.7% of the booked value (K45).
+
+	Read from the batch's inward Serial and Batch Entries, because in v16 the batch lives in the
+	bundle and ``Stock Ledger Entry.batch_no`` is normally empty.
+	"""
+	if not batch_no:
+		return 0.0
+
+	sbe = frappe.qb.DocType("Serial and Batch Entry")
+	sbb = frappe.qb.DocType("Serial and Batch Bundle")
+	se = frappe.qb.DocType("Stock Entry")
+	rows = (
+		frappe.qb.from_(sbe)
+		.join(sbb)
+		.on(sbe.parent == sbb.name)
+		.join(se)
+		.on(se.name == sbb.voucher_no)
+		.select(Sum(sbe.qty))
+		.where(
+			(sbe.batch_no == batch_no)
+			& (sbb.voucher_type == "Stock Entry")
+			& (sbb.type_of_transaction == "Inward")
+			& (sbb.is_cancelled == 0)
+			& (sbb.docstatus == 1)
+			& (se.docstatus == 1)
+			& (se.purpose.isin(PRODUCING_PURPOSES))
+		)
+	).run()
+
+	return flt(rows[0][0] if rows and rows[0][0] else 0.0, QTY_PRECISION)
+
+
+def _shares_one_unit(batch_no, components):
+	"""Whether the batch and every component are counted in the same stock UOM."""
+	item = frappe.db.get_value("Batch", batch_no, "item")
+	uom = frappe.get_cached_value("Item", item, "stock_uom") if item else None
+	if not uom:
+		return False
+
+	return all(
+		frappe.get_cached_value("Item", component.get("item_code"), "stock_uom") == uom
+		for component in components
+	)
+
+
+def attribution_basis(batch_no, components):
+	"""The quantity of ``batch_no`` that ``components`` describe, in the batch's own units.
+
+	Every draw is apportioned as ``component qty x drawn / basis``, so the result stays in the
+	component's own units -- source grams -- whatever the batch itself is counted in.
+
+	* **Different units** -- a finished piece in Nos made of grams of gold and carats of diamond.
+	  The component total adds grams to carats and means nothing; the pieces produced are the
+	  only denominator, and delivering 1 of 1 settles every component whole.
+	* **Same units** -- the larger of the component total and the quantity produced:
+
+	  - more produced than recorded: something joined the batch that is not a component (alloy
+	    added without a consumed row). Dividing by the total would count that unrecorded metal
+	    as the customer's.
+	  - more recorded than produced: grams were lost in making it. Dividing by the total keeps
+	    the loss where it happened, so a delivery releases only the customer metal physically
+	    in the piece and the lost part stays owed until someone approves writing it off (§5.5,
+	    §8.2). Dividing by the produced quantity would write it off silently.
+
+	Returns ``None`` when the units differ and no production is recorded: there is then no
+	defensible denominator. With the same units and no production record it falls back to the
+	component total, the behaviour before this existed.
+	"""
+	total = flt(sum(flt(c.get("qty")) for c in components), QTY_PRECISION)
+	produced = produced_qty(batch_no)
+	same_unit = _shares_one_unit(batch_no, components)
+
+	if produced <= 0:
+		return total if same_unit and total > 0 else None
+
+	if not same_unit:
+		return produced
+
+	return max(total, produced)
 
 
 def _atomic_component(batch_no, drawn_qty):
