@@ -80,6 +80,17 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_components
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_fulfilment
           bench --site test_site run-tests --module jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.test_subcontracting_settings
+          # F1-F6 (KLHGX62F1119), added 2026-09-24. Pure-logic; none writes a document.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_fg_valuation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_settlement_lineage
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_settlement_accounts
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_rate_check
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_company_material_ownership
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_design_tolerance
+          # Secondary KLHGX62F1119 findings (F28, F29, F11). Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_stage
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_reservation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_diamond_substitution
           # NOT registered here on purpose: tests.test_customer_gold_integration. It requires the
           # disposable site's masters (company, warehouses, Gold Rates, accounts) and exercises the
           # Nominal valuation policy, which must never run against a shared CI site. It runs with:

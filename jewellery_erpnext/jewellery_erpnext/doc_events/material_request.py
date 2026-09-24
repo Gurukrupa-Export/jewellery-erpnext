@@ -926,7 +926,10 @@ def create_stock_entry(self, method):
 
 	se_doc.stock_entry_type = stock_entry_type
 	se_doc.purpose = "Material Transfer"
-	se_doc.add_to_transit = True
+	# Every row lands in the department's Reserve warehouse, never a Transit one, and
+	# ERPNext rejects add_to_transit on a non-Transit target. Nothing reads this entry as
+	# an outgoing transit leg either: the follow-up transfers copy it and re-route rows.
+	se_doc.add_to_transit = 0
 
 	# Rows nearly always share a handful of source warehouses, so each distinct one is
 	# resolved once rather than costing two queries on every row. The two lookups are
@@ -1102,4 +1105,83 @@ def get_item_details(args, for_update=False):
 			"sample_quantity": item.sample_quantity,
 			"expense_account": item.expense_account,
 		}
+	)
+
+
+#: May submit a customer-diamond order's Material Request for a grade other than the one ordered.
+#: Created by ``patches.add_mr_diamond_substitution_fields``.
+DIAMOND_SUBSTITUTION_APPROVER_ROLE = "Diamond Substitution Approver"
+
+
+def validate_customer_diamond_grade(doc, method=None):
+	"""``before_submit``: a customer-diamond order gets the grade it ordered, or an approved substitute (F11).
+
+	KLHGX62F1119's PMO is a customer-diamond order for grade MH12A. Its diamond Material Request
+	was edited to the company's 6B before submit -- the customer was charged for a company stone
+	at a mark-up -- and nothing recorded who allowed it. On kg-gk 3 submitted Material Requests on
+	customer-diamond orders carry a grade other than the order's.
+
+	A diamond row whose Diamond Grade differs from ``Parent Manufacturing Order.diamond_grade``
+	is refused unless a Diamond Substitution Approver records a reason, and the approver is
+	stamped on the request. Ownership of the stone that is then issued is a separate question,
+	answered by its batch (F5).
+	"""
+	pmo = doc.get("manufacturing_order")
+	if not pmo:
+		return
+
+	order = frappe.db.get_value(
+		"Parent Manufacturing Order",
+		pmo,
+		["is_customer_diamond", "diamond_grade"],
+		as_dict=True,
+	)
+	doc.custom_diamond_substitution_by = None
+	if not order or not order.is_customer_diamond or not order.diamond_grade:
+		return
+
+	item_codes = {row.item_code for row in doc.get("items") or [] if row.item_code}
+	grades = (
+		{
+			attr.parent: attr.attribute_value
+			for attr in frappe.get_all(
+				"Item Variant Attribute",
+				filters={
+					"parent": ["in", list(item_codes)],
+					"attribute": "Diamond Grade",
+				},
+				fields=["parent", "attribute_value"],
+			)
+		}
+		if item_codes
+		else {}
+	)
+
+	substituted = [
+		(row.idx, row.item_code, grades[row.item_code])
+		for row in doc.get("items") or []
+		if grades.get(row.item_code) and grades[row.item_code] != order.diamond_grade
+	]
+	if not substituted:
+		return
+
+	reason = (doc.get("custom_diamond_substitution_reason") or "").strip()
+	if reason and DIAMOND_SUBSTITUTION_APPROVER_ROLE in frappe.get_roles():
+		doc.custom_diamond_substitution_by = frappe.session.user
+		return
+
+	frappe.throw(
+		_(
+			"{0} is a customer-diamond order for grade {1}, but this request asks for {2}. A {3} "
+			"may submit it after entering a Diamond Substitution Reason."
+		).format(
+			frappe.bold(pmo),
+			frappe.bold(order.diamond_grade),
+			", ".join(
+				_("row {0}: {1} ({2})").format(idx, item, grade)
+				for idx, item, grade in substituted
+			),
+			frappe.bold(DIAMOND_SUBSTITUTION_APPROVER_ROLE),
+		),
+		title=_("Customer Diamond Substituted"),
 	)
