@@ -281,8 +281,15 @@ class TestCustomerGoldFinishedGoodValuation(IntegrationTestCase):
 		self.assertEqual(flt(_fg(se).basic_rate), 0.0)
 		self.assertEqual(_fg(se).allow_zero_valuation_rate, 1)
 
-	def test_a_customer_secondary_row_is_valued_not_zeroed(self):
-		"""F3-07: a secondary output ERPNext values must survive the second pass too."""
+	def test_a_customer_secondary_row_keeps_its_old_behaviour(self):
+		"""Secondary / scrap rows are deliberately NOT governed.
+
+		ERPNext prices them from the target warehouse, not from the inputs. Refining returns a
+		customer's own stones as Customer Goods scrap that must land at zero value; releasing the flag
+		there valued them at a company rate, or threw "Valuation Rate Missing" when the warehouse had
+		none. So a customer scrap row keeps the flag and ERPNext's existing cycle, exactly like company
+		scrap below.
+		"""
 		se = _entry(
 			"Manufacture",
 			[
@@ -299,27 +306,113 @@ class TestCustomerGoldFinishedGoodValuation(IntegrationTestCase):
 					0.01,
 					t_warehouse="SCRAP",
 					secondary_item_type="Scrap",
-					basic_rate=GOLD_RATE,
 					inventory_type=CUSTOMER_GOODS,
 				),
 			],
 		)
 		scrap = se.items[2]
-		# Checked after EVERY pass: with the flag set the row oscillates, 0 -> value -> 0, so a
-		# single check after an even number of passes can land on the non-zero phase and pass.
 		values = []
 		with patch(
 			"erpnext.stock.doctype.stock_entry.stock_entry.StockEntry.get_row_valuation_rate",
 			return_value=GOLD_RATE,
 		):
-			for _ in range(3):
+			for _ in range(2):
 				_pass(se)
 				values.append(flt(scrap.basic_rate, 6))
 		self.assertEqual(
-			values,
-			[flt(GOLD_RATE, 6)] * 3,
-			msg=f"a customer secondary row was zeroed: {values}",
+			scrap.allow_zero_valuation_rate, 1, "customer scrap lost its flag"
 		)
+		self.assertEqual(values, [flt(GOLD_RATE, 6), 0.0])
+
+	def test_a_negative_derivation_is_held_at_zero(self):
+		"""Customer refining under Zero Value: inputs cost 0, returned scrap is priced above that.
+
+		ERPNext derives (0 - scrap) / qty, a negative rate, and would accept it. The old flag zeroed it
+		on the second pass; the governed row is held at 0 and flagged on every pass instead.
+		"""
+		se = _entry(
+			"Manufacture",
+			[
+				_consumed(
+					"M-G-22KT-91.75-Y",
+					GOLD_QTY,
+					0.0,
+					CUSTOMER_GOODS,
+					customer="GJCU0009",
+				),
+				_finished(),
+				_row(
+					"D-NT-RO-6B-+6.5-7",
+					DIAMOND_QTY,
+					t_warehouse="SCRAP",
+					secondary_item_type="Scrap",
+					inventory_type=CUSTOMER_GOODS,
+				),
+			],
+		)
+		rates = []
+		with patch(
+			"erpnext.stock.doctype.stock_entry.stock_entry.StockEntry.get_row_valuation_rate",
+			return_value=DIAMOND_RATE,
+		):
+			for _ in range(3):
+				_pass(se)
+				rates.append(flt(_fg(se).basic_rate, 6))
+		self.assertEqual(
+			rates, [0.0, 0.0, 0.0], f"a negative finished-good rate: {rates}"
+		)
+		self.assertEqual(_fg(se).allow_zero_valuation_rate, 1)
+		self.assertEqual(flt(_fg(se).basic_amount), 0.0)
+
+	def test_the_flag_follows_the_rate_the_lane_pricer_leaves(self):
+		"""A conversion lane is re-priced after ERPNext; the flag must be decided on the final rate.
+
+		Deciding it first left a pooled rate's "unflagged" on a row the pricer then set to 0, and the
+		ledger substitutes a fallback rate for an unflagged zero.
+		"""
+		se = _entry(
+			"Repack",
+			[
+				_consumed(
+					"M-G-24KT-99.9-Y",
+					10.0,
+					159000.0,
+					CUSTOMER_GOODS,
+					customer="GJCU0009",
+				),
+				_finished("M-G-22KT-91.75-Y", 10.899),
+			],
+		)
+
+		def price_lane_to_zero(entry):
+			_fg(entry).basic_rate = 0.0
+			_fg(entry).basic_amount = 0.0
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.set_process_loss_produce_rates",
+			side_effect=price_lane_to_zero,
+		):
+			_pass(se)
+		self.assertEqual(flt(_fg(se).basic_rate), 0.0)
+		self.assertEqual(_fg(se).allow_zero_valuation_rate, 1)
+
+	def test_customer_stock_rows_are_not_newly_stamped(self):
+		"""The old stamp covered "Customer Goods" only, and still does."""
+		se = _entry(
+			"Manufacture",
+			[
+				_consumed(
+					"M-G-22KT-91.75-Y",
+					GOLD_QTY,
+					GOLD_RATE,
+					"Customer Stock",
+					customer="C",
+				),
+				_finished(),
+			],
+		)
+		allow_zero_valuation(se)
+		self.assertFalse(se.items[0].allow_zero_valuation_rate)
 
 	def test_company_scrap_rows_behave_exactly_as_before(self):
 		"""F3-04: ``doc_events/stock_entry.py`` flags company scrap unconditionally; that stays untouched.
