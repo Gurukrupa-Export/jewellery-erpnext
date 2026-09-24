@@ -1437,3 +1437,25 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 		with patch(f"{_SNC_MODULE}._active_sres_for", side_effect=_ReachedPriorityOne):
 			with self.assertRaises(_ReachedPriorityOne):
 				to_prepare_data_for_make_mnf_stock_entry(self._doc(3.186))
+
+
+class TestAsBuiltBomIsNotTheDefault(IntegrationTestCase):
+	"""F21: an as-built FG BOM describes one piece and must not become the item's default BOM."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_copy_doc_hands_a_new_bom_is_default_1(self):
+		"""Why the helper is needed: is_default is no_copy with default 1 on BOM."""
+		field = frappe.get_meta("BOM").get_field("is_default")
+		self.assertEqual((field.no_copy, str(field.default)), (1, "1"))
+
+	def test_the_as_built_bom_is_not_marked_default(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_keep_as_built_bom_off_default,
+		)
+
+		bom = frappe._dict(is_default=1)
+		_keep_as_built_bom_off_default(bom)
+		self.assertEqual(bom.is_default, 0)
