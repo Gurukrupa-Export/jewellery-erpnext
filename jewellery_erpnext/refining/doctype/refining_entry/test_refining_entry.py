@@ -2808,3 +2808,70 @@ class TestExternalPoBillableItem(IntegrationTestCase):
 			)
 			self.assertIn("Nos", uoms, f"{item_code} cannot bill a flat charge")
 			self.assertIn("Gram", uoms, f"{item_code} cannot bill a per-gram charge")
+
+
+class TestDustReceiptDifferenceAccount(IntegrationTestCase):
+	"""The dust opening receipt never carries a Stock account as its Difference Account.
+
+	ERPNext fills a blank one from the item / item group default expense account, and on
+	prod the Refining Scrap default was the scrap warehouse's Stock account -- so every
+	Refining Entry with a dust shortfall died in on_submit. DB-free: every read is patched.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _account_for(self, item_default=None, group_default=None, preset=None):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		account_types = {
+			"Refining Scrap - T": "Stock",
+			"Refining Gain - T": "Income Account",
+		}
+
+		def _cached(doctype, name, field):
+			if doctype == "Company":
+				return "Stock Adjustment - T"
+			return account_types.get(name)
+
+		row = SimpleNamespace(item_code="REF-CF-001", expense_account=preset)
+		entry = SimpleNamespace(company="Test_Company")
+		with (
+			patch("frappe.get_cached_value", side_effect=_cached),
+			patch(
+				"erpnext.stock.doctype.item.item.get_item_defaults",
+				return_value={"expense_account": item_default},
+			),
+			patch(
+				"erpnext.setup.doctype.item_group.item_group.get_item_group_defaults",
+				return_value={"expense_account": group_default},
+			),
+		):
+			RefiningEntry.set_dust_receipt_difference_account(
+				entry, SimpleNamespace(items=[row])
+			)
+		return row.expense_account
+
+	def test_stock_type_default_falls_back_to_stock_adjustment(self):
+		self.assertEqual(
+			self._account_for(group_default="Refining Scrap - T"),
+			"Stock Adjustment - T",
+		)
+
+	def test_usable_configured_account_is_kept(self):
+		self.assertEqual(
+			self._account_for(item_default="Refining Gain - T"), "Refining Gain - T"
+		)
+
+	def test_no_default_uses_stock_adjustment(self):
+		self.assertEqual(self._account_for(), "Stock Adjustment - T")
+
+	def test_explicit_account_is_left_alone(self):
+		self.assertEqual(
+			self._account_for(preset="Refining Gain - T"), "Refining Gain - T"
+		)
