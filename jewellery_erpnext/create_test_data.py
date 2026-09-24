@@ -3233,6 +3233,12 @@ def create_test_data():
 			)
 
 			_ensure_customer_gold_rate_fields()
+			# Same for the rate CHECK fields and the approver role (F1).
+			from jewellery_erpnext.patches.add_customer_gold_rate_check_fields import (
+				execute as _ensure_customer_gold_rate_check_fields,
+			)
+
+			_ensure_customer_gold_rate_check_fields()
 
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:
