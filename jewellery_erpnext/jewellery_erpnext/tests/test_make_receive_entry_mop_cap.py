@@ -1235,6 +1235,69 @@ class TestCreateMrWoStockEntryPcsValidation(IntegrationTestCase):
 			appended[0]["pcs"], 0, f"Server must force pcs=0 for {item_code}"
 		)
 
+	def _receive_one_row(self, **row_fields):
+		"""Run one M row through create_mr_wo_stock_entry with the call's default target
+		(the department RM warehouse, "WH-Raw") and return (appended rows, stock entry)."""
+		sre = frappe._dict(
+			{
+				"name": "SRE-TW",
+				"docstatus": 1,
+				"item_code": "M-G-22KT-91.75-Y",
+				"warehouse": "WH-Src",
+				"reserved_qty": 5.0,
+				"delivered_qty": 0.0,
+				"stock_uom": "Gram",
+				"has_batch_no": 0,
+				"reservation_based_on": "Qty",
+				"manufacturing_work_order": "MWO-1",
+			}
+		)
+		new_doc_mock = self._patches(sre, mop_balance_map={})[-1]
+		stock_entry = MagicMock()
+		stock_entry.doctype = "Stock Entry"
+		stock_entry.name = "STE-TW"
+		appended = []
+		stock_entry.append.side_effect = lambda table, values: appended.append(values)
+
+		def _update_setattr(values):
+			for k, v in values.items():
+				setattr(stock_entry, k, v)
+
+		stock_entry.update.side_effect = _update_setattr
+		new_doc_mock.return_value = stock_entry
+		create_mr_wo_stock_entry(
+			{
+				"manufacturing_operation": "MOP-1",
+				"receive_items": [
+					{
+						"stock_reservation_entry": "SRE-TW",
+						"qty": 1.0,
+						"idx": 1,
+						**row_fields,
+					}
+				],
+			},
+			request_id="t-row-target",
+		)
+		return appended, stock_entry
+
+	def test_row_without_own_target_uses_the_call_target(self):
+		appended, stock_entry = self._receive_one_row()
+		self.assertEqual(appended[0]["t_warehouse"], "WH-Raw")
+		self.assertEqual(stock_entry.to_warehouse, "WH-Raw")
+
+	def test_row_own_target_warehouse_is_honoured(self):
+		# Create SNC lands each borrowed row where its settlement draws from.
+		appended, stock_entry = self._receive_one_row(t_warehouse="WH-Own")
+		self.assertEqual(appended[0]["t_warehouse"], "WH-Own")
+		self.assertEqual(stock_entry.to_warehouse, "WH-Own")
+
+	def test_row_own_target_equal_to_its_source_is_rejected(self):
+		with self.assertRaisesRegex(
+			frappe.exceptions.ValidationError, "cannot be the same \\(WH-Src\\)"
+		):
+			self._receive_one_row(t_warehouse="WH-Src")
+
 	def test_t13_d_item_negative_pcs_rejected(self):
 		"""T13 — D item: receive_pcs < 0 server-rejected."""
 

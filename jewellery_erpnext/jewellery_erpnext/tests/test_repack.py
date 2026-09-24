@@ -1,16 +1,16 @@
 # Copyright (c) 2026, Nirali and contributors
 # See license.txt
 
+from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
-from contextlib import ExitStack, contextmanager
-import frappe
 
+import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.customer_subcontracting.sub_utils import (
-	repack,
 	cg_settle,
+	repack,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events import (
 	utils as batch_utils,
@@ -304,6 +304,51 @@ class TestRepackAutomation(IntegrationTestCase):
 			return_value="Customer Goods Transfer",
 		):
 			self.assertFalse(batch_utils.is_subcontracting_gold_repack(batch))
+
+	def _snc_batch(self, customer="GJCU0009"):
+		return SimpleNamespace(
+			reference_doctype="Stock Entry",
+			reference_name="MAT-STE-RMC",
+			custom_customer=customer,
+			item="F-G-22KT-91.75-Y-HG-RBH-2.70 MM",
+		)
+
+	def test_snc_settlement_conversion_is_exempt_from_the_item_flag(self):
+		se = frappe._dict(
+			stock_entry_type="Repack-Metal Conversion",
+			auto_created=1,
+			manufacturing_work_order="MWO-1",
+		)
+		with patch.object(batch_utils.frappe.db, "get_value", return_value=se):
+			self.assertTrue(batch_utils.is_snc_settlement_conversion(self._snc_batch()))
+
+	def test_metal_conversions_doctype_entry_stays_guarded(self):
+		# Same Stock Entry type, auto-created, but no work order: Metal Conversions.
+		se = frappe._dict(
+			stock_entry_type="Repack-Metal Conversion",
+			auto_created=1,
+			manufacturing_work_order=None,
+		)
+		with patch.object(batch_utils.frappe.db, "get_value", return_value=se):
+			self.assertFalse(
+				batch_utils.is_snc_settlement_conversion(self._snc_batch())
+			)
+
+	def test_snc_exemption_requires_a_customer_and_the_conversion_type(self):
+		with patch.object(batch_utils.frappe.db, "get_value") as get_value:
+			self.assertFalse(
+				batch_utils.is_snc_settlement_conversion(self._snc_batch(customer=None))
+			)
+		get_value.assert_not_called()
+		se = frappe._dict(
+			stock_entry_type="Material Transfer (WORK ORDER)",
+			auto_created=1,
+			manufacturing_work_order="MWO-1",
+		)
+		with patch.object(batch_utils.frappe.db, "get_value", return_value=se):
+			self.assertFalse(
+				batch_utils.is_snc_settlement_conversion(self._snc_batch())
+			)
 
 	def test_repair_unpack_allows_customer_goods_at_mint_via_voucher_type(self):
 		# The unpack mints each component's Batch BEFORE the Stock Entry exists, so at the
@@ -925,11 +970,13 @@ class TestConvertBatchStamping(IntegrationTestCase):
 	def test_target_batch_is_stamped_and_returned_without_query(self):
 		out, appended, gv = self._run_convert(MR_BATCH)
 		self.assertEqual(out, MR_BATCH)
-		
+
 		# no need to look up the produced batch
-		se_calls = [c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"]
+		se_calls = [
+			c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"
+		]
 		self.assertEqual(len(se_calls), 0)
-		
+
 		self.assertEqual(
 			appended[1]["batch_no"], MR_BATCH
 		)  # stamped on the produced row
@@ -937,10 +984,12 @@ class TestConvertBatchStamping(IntegrationTestCase):
 	def test_no_target_batch_falls_back_to_the_auto_minted_batch(self):
 		out, appended, gv = self._run_convert(None, produced_query="AUTO-A-A")
 		self.assertEqual(out, "AUTO-A-A")
-		
-		se_calls = [c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"]
+
+		se_calls = [
+			c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"
+		]
 		self.assertEqual(len(se_calls), 1)
-		
+
 		self.assertNotIn("batch_no", appended[1])
 
 	def tearDown(self):

@@ -114,6 +114,7 @@ def update_inventory_dimentions(self):
 		not item_allows_customer_goods
 		and is_customer_inventory
 		and not is_subcontracting_gold_repack(self)
+		and not is_snc_settlement_conversion(self)
 		and not is_process_loss_repack(self)
 		and not is_repair_unpack(self)
 	):
@@ -395,6 +396,42 @@ def is_subcontracting_gold_repack(batch):
 			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
 		)
 		== "Subcontracting Repack"
+	)
+
+
+def is_snc_settlement_conversion(batch):
+	"""Exempt the batch a Create SNC settlement conversion mints for a customer.
+
+	Create SNC (customer_subcontracting/sub_utils/snc.py) settles a customer-gold work
+	order that used company gold or a company finding by converting the customer's own
+	metal into that item -- so the produced batch is the customer's by construction, not
+	by the Item's ``custom_inventory_type_can_be_customer_goods`` flag. Most finding
+	variants do not carry that flag, and the batch is re-saved (re-validated) on submit by
+	``update_parent_batch_id``, so without this exemption the settlement throws "Item ...
+	is not allowed as Customer Goods" and the FG work order stays blocked.
+
+	Scoped to the SNC's own entries: a ``Repack-Metal Conversion`` that is auto-created
+	AND linked to a Manufacturing Work Order. The Metal Conversions doctype builds the
+	same Stock Entry type without a work order, so it stays guarded. Mirrors
+	``is_subcontracting_gold_repack``: only batches that actually carry a customer.
+	"""
+	if getattr(batch, "reference_doctype", None) != "Stock Entry":
+		return False
+
+	if not getattr(batch, "custom_customer", None):
+		return False
+
+	se = frappe.db.get_value(
+		"Stock Entry",
+		getattr(batch, "reference_name", None),
+		["stock_entry_type", "auto_created", "manufacturing_work_order"],
+		as_dict=True,
+	)
+	return bool(
+		se
+		and se.stock_entry_type == "Repack-Metal Conversion"
+		and se.auto_created
+		and se.manufacturing_work_order
 	)
 
 
