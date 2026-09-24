@@ -58,7 +58,7 @@ under Nominal precisely so that discriminator exists somewhere.
 """
 
 import frappe
-from frappe.query_builder.functions import Sum
+from frappe.query_builder.functions import Max, Sum
 from frappe.utils import flt
 
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
@@ -279,11 +279,15 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 
 
 def produced_qty(batch_no):
-	"""How much the producing Stock Entries put into ``batch_no``, or 0.0 when none is recorded.
+	"""What the batch's LATEST producing Stock Entry put into it, or 0.0 when none is recorded.
 
 	The fixed denominator for any draw on the batch. ``Batch.batch_qty`` is the wrong one: it is
 	the LIVE balance and falls with every delivery, so the second of three instalments divided by
 	two instead of three and the three together released 166.7% of the booked value (K45).
+
+	The latest production only, because ``record_batch_components`` REPLACES the component table
+	on each one: a batch refining tops up twice (5 g, then 3 g) has components describing the 3 g,
+	and dividing them by all 8 g would hand 5/8 of the customer's metal to the company.
 
 	Read from the batch's inward Serial and Batch Entries, because in v16 the batch lives in the
 	bundle and ``Stock Ledger Entry.batch_no`` is normally empty.
@@ -300,7 +304,7 @@ def produced_qty(batch_no):
 		.on(sbe.parent == sbb.name)
 		.join(se)
 		.on(se.name == sbb.voucher_no)
-		.select(Sum(sbe.qty))
+		.select(sbb.voucher_no, Sum(sbe.qty), Max(sbb.posting_datetime))
 		.where(
 			(sbe.batch_no == batch_no)
 			& (sbb.voucher_type == "Stock Entry")
@@ -310,9 +314,12 @@ def produced_qty(batch_no):
 			& (se.docstatus == 1)
 			& (se.purpose.isin(PRODUCING_PURPOSES))
 		)
+		.groupby(sbb.voucher_no)
+		.orderby(Max(sbb.posting_datetime), order=frappe.qb.desc)
+		.limit(1)
 	).run()
 
-	return flt(rows[0][0] if rows and rows[0][0] else 0.0, QTY_PRECISION)
+	return flt(rows[0][1] if rows and rows[0][1] else 0.0, QTY_PRECISION)
 
 
 def _shares_one_unit(batch_no, components):
