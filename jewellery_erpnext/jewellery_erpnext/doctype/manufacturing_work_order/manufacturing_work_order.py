@@ -1126,8 +1126,143 @@ def create_manufacturing_operation(doc):
 		create_snc_from_mwo_submit(doc.name)
 
 
+# Compared against Department.department_name, not the link: the Department's name
+# carries the company suffix (and on live data a double space before it), e.g.
+# "Manufacturing Plan & Management  - KGJPL".
+SPLIT_ALLOWED_DEPARTMENT = "Manufacturing Plan & Management"
+
+
+def validate_split_eligibility(docname):
+	"""A work order may be split only while it is still in planning with no material on it.
+
+	The weight is checked on the current Manufacturing Operation as well as on the MWO
+	header: the header gross_wt is only ever written for FG work orders (sync_mwo_weights),
+	so on every other MWO it reads 0 regardless of what has been issued. Material sitting
+	on the parent's MOP is not carried to the split children -- they start from the
+	parent's header weights -- so splitting it would strand that weight on a closed MWO.
+	"""
+	mwo = frappe.db.get_value(
+		"Manufacturing Work Order",
+		docname,
+		[
+			"docstatus",
+			"has_split_mwo",
+			"department",
+			"gross_wt",
+			"manufacturing_operation",
+		],
+		as_dict=True,
+	)
+	if not mwo or cint(mwo.docstatus) != 1:
+		frappe.throw(
+			_("Work Order {0} must be submitted before it can be split.").format(
+				docname
+			)
+		)
+
+	# A split parent keeps its department and zero weight, and its pending operations are
+	# marked Finished, so without this it would pass every check below a second time.
+	if cint(mwo.has_split_mwo):
+		frappe.throw(_("Work Order {0} has already been split.").format(docname))
+
+	department_name = (
+		frappe.db.get_value("Department", mwo.department, "department_name")
+		if mwo.department
+		else None
+	)
+	if department_name != SPLIT_ALLOWED_DEPARTMENT:
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only in {1} department. It is currently in {2}."
+			).format(
+				docname,
+				frappe.bold(SPLIT_ALLOWED_DEPARTMENT),
+				frappe.bold(mwo.department or _("no department")),
+			)
+		)
+
+	if flt(mwo.gross_wt, 3):
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only when Gross Wt is 0. Current Gross Wt: {1}"
+			).format(docname, flt(mwo.gross_wt, 3))
+		)
+
+	mop_gross_wt = (
+		frappe.db.get_value(
+			"Manufacturing Operation", mwo.manufacturing_operation, "gross_wt"
+		)
+		if mwo.manufacturing_operation
+		else 0
+	)
+	if flt(mop_gross_wt, 3):
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only when Gross Wt is 0. Current Gross Wt: {1} on Manufacturing Operation {2}"
+			).format(
+				docname,
+				flt(mop_gross_wt, 3),
+				get_link_to_form(
+					"Manufacturing Operation", mwo.manufacturing_operation
+				),
+			)
+		)
+
+	# The split cancels these Material Requests by writing docstatus directly, which does
+	# not reverse their Stock Entries -- any stock they already moved would be left in the
+	# reserve/department warehouse against a cancelled MR and a closed work order.
+	# Ownership is read from the Stock Entry rows, not the MR's custom_*_se links: those
+	# links are copied between MRs (copy_doc, desk Duplicate) and can point at another
+	# MR's entry.
+	material_requests = _get_split_material_requests(docname)
+	if material_requests:
+		moved = frappe.get_all(
+			"Stock Entry Detail",
+			filters={"material_request": ["in", material_requests], "docstatus": 1},
+			fields=["material_request", "parent"],
+			limit=1,
+		)
+		if moved:
+			frappe.throw(
+				_(
+					"Material Request {0} has already moved stock through Stock Entry {1}. Reverse that stock before splitting Work Order {2}."
+				).format(
+					get_link_to_form("Material Request", moved[0].material_request),
+					get_link_to_form("Stock Entry", moved[0].parent),
+					docname,
+				)
+			)
+
+
+def _get_split_material_requests(docname):
+	"""The open Material Requests that splitting this work order cancels.
+
+	An original work order's MRs are the PMO-level MRDs no split has claimed yet
+	(custom_manufacturing_work_order not set). A split child's MR is the one minted for
+	it on submit (create_mr_for_split_work_order), stamped with its own name: its PMO's
+	originals were cancelled when its parent was split, and an unstamped MRD still open
+	in that PMO is an amendment issuing stock to a sibling, not this work order's MR.
+	"""
+	pmo, split_from = frappe.db.get_value(
+		"Manufacturing Work Order", docname, ["manufacturing_order", "split_from"]
+	)
+	if split_from:
+		filters = {"custom_manufacturing_work_order": docname}
+	else:
+		filters = {
+			"manufacturing_order": pmo,
+			"title": ["like", "MRD%"],
+			"custom_manufacturing_work_order": ["is", "not set"],
+		}
+	filters["docstatus"] = ["!=", 2]
+	# get_all, not get_list: this is the split's own clean-up, and a permission-scoped
+	# list would silently leave an MR open (or let it slip past the stock check above).
+	return frappe.get_all("Material Request", filters=filters, pluck="name")
+
+
 @frappe.whitelist()
 def create_split_work_order(docname, company, manufacturer, count=1):
+	validate_split_eligibility(docname)
 	# limit = cint(frappe.db.get_value("Manufacturing Setting", {"company", company}, "wo_split_limit"))
 	limit = cint(
 		frappe.db.get_value(
@@ -1174,24 +1309,10 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 		"Manufacturing Work Order", docname, {"has_split_mwo": 1, "status": "Closed"}
 	)
 	# frappe.db.set_value("Manufacturing Work Order", docname, "status", "Closed")
-	pmo = frappe.db.get_value(
-		"Manufacturing Work Order", docname, "manufacturing_order"
-	)
-	mr_list = frappe.db.get_list(
-		"Material Request",
-		filters={
-			"manufacturing_order": pmo,
-			"title": ["like", "MRD%"],
-			"custom_manufacturing_work_order": ["is", "not set"],
-		},
-		fields=["name"],
-	)
-	if mr_list:
-		for mr in mr_list:
-			frappe.db.set_value("Material Request", mr.name, "docstatus", "2")
-			frappe.db.set_value(
-				"Material Request", mr.name, "workflow_state", "Cancelled"
-			)
+	for mr in _get_split_material_requests(docname):
+		frappe.db.set_value(
+			"Material Request", mr, {"docstatus": 2, "workflow_state": "Cancelled"}
+		)
 
 
 @frappe.whitelist()
@@ -1248,9 +1369,15 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 	# split MR thinks it already has a Reserve/MOP/Department Transfer Stock Entry -- the
 	# old_mr's -- and later re-copies that stale entry instead of making its own, which
 	# fails once old_mr is cancelled (its rows still link to old_mr, now a cancelled doc).
+	# The same goes for the "Material Transfer From Reserve" stamp: carried over as "Done",
+	# MR.on_submit takes it as this MR's own transfer and never creates one, so the stock
+	# the new MR reserves stays in the reserve warehouse.
 	new_mr.custom_reserve_se = None
 	new_mr.custom_mop_se = None
 	new_mr.custom_department_transfer_se = None
+	new_mr.custom_transfer_se = None
+	new_mr.custom_transfer_se_state = None
+	new_mr.custom_transfer_se_error = None
 	# custom_manufacturing_operation is a manual field the user picks from the dropdown
 	# themselves -- clear the value copy_doc carried over from old_mr so it actually starts
 	# blank on the new split MR instead of silently inheriting the previous MWO's operation.
