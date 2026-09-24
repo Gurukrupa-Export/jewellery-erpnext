@@ -215,6 +215,15 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 	flt(x, 3) returns 0.0, which would make every "weight blocks" case pass vacuously.
 	"""
 
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# The first _() in a process builds the merged translation cache, and that build
+		# reads the Translation table through frappe.get_all under suppress(Exception).
+		# Left to happen inside _run, it would hit the stubbed get_all and cache an
+		# incomplete map for the rest of the test run -- so build it here, unpatched.
+		frappe._("Work Order")
+
 	def _run(
 		self,
 		*,
@@ -248,12 +257,23 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 				return limit
 			return None
 
+		open_operation_queries = []
+		real_get_all = frappe.get_all
+
+		def _ga(doctype, *args, **kwargs):
+			# Only the open-operations query is the sentinel; anything the framework itself
+			# reads (e.g. Translation) goes to the real get_all.
+			if doctype == "Manufacturing Operation":
+				open_operation_queries.append(kwargs)
+				raise _ReachedOpenOperationsCheck
+			return real_get_all(doctype, *args, **kwargs)
+
 		with (
 			patch("frappe.db.get_value", side_effect=_gv),
 			patch.object(
 				frappe, "get_system_settings", return_value="Banker's Rounding"
 			),
-			patch("frappe.get_all", side_effect=_ReachedOpenOperationsCheck) as get_all,
+			patch("frappe.get_all", side_effect=_ga),
 			patch("frappe.db.set_value") as set_value,
 			patch.object(mwo_mod, "get_mapped_doc") as mapped,
 		):
@@ -263,7 +283,7 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 				set_value.assert_not_called()
 				mapped.assert_not_called()
 				self.calls = calls
-				self.get_all = get_all
+				self.open_operation_queries = open_operation_queries
 
 	def assert_allowed(self, **kwargs):
 		with self.assertRaises(_ReachedOpenOperationsCheck):
@@ -272,7 +292,7 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 	def assert_blocked(self, pattern, **kwargs):
 		with self.assertRaisesRegex(frappe.ValidationError, pattern):
 			self._run(**kwargs)
-		self.get_all.assert_not_called()
+		self.assertFalse(self.open_operation_queries)
 
 	def test_00_flt_actually_rounds_under_the_pin(self):
 		with patch.object(
