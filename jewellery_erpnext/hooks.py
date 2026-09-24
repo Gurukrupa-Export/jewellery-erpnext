@@ -409,6 +409,8 @@ doc_events = {
 		],
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_update_after_submit",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.create_stock_entry",
+		# F11: a customer-diamond order gets the grade it ordered, or an approved substitute.
+		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.validate_customer_diamond_grade",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.on_submit",
 	},
 	"Serial and Batch Bundle": {

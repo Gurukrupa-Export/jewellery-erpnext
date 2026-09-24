@@ -3245,6 +3245,12 @@ def create_test_data():
 			)
 
 			_ensure_snc_tolerance_override_fields()
+			# And the Material Request diamond-substitution fields and role (F11).
+			from jewellery_erpnext.patches.add_mr_diamond_substitution_fields import (
+				execute as _ensure_mr_diamond_substitution_fields,
+			)
+
+			_ensure_mr_diamond_substitution_fields()
 
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:

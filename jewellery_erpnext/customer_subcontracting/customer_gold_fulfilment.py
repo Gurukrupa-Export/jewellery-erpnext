@@ -920,16 +920,26 @@ STOCK_ENTRY_KINDS = (
 )
 
 
+#: erpnext's own warehouse classification, mapped to custody stages. Anything not listed --
+#: Raw Material, Reserve, Consumables -- is metal not yet on the floor.
+STAGE_BY_WAREHOUSE_TYPE = {
+	"Transit": STAGE_TRANSIT,
+	"Manufacturing": STAGE_WIP,
+	"Finished Goods": STAGE_FG,
+	"Scrap": STAGE_RECOVERABLE_SCRAP,
+}
+
+
 def warehouse_stage(warehouse):
 	"""Which custody stage a warehouse represents, from the warehouse's own metadata.
 
 	Derived, never configured separately -- a second mapping of warehouse to stage would drift
 	from the first one the day somebody adds a warehouse.
 
-	* ``warehouse_type == "Transit"`` -> ``Transit``. erpnext's own classification.
-	* a ``department`` set           -> ``WIP``. This app adds that field precisely to mark a
-	  shop-floor warehouse (``install.py`` asserts it as a required field).
-	* otherwise                      -> ``RM``.
+	From ``warehouse_type`` (F28). This used to key on ``department``, which is set on raw
+	material warehouses too: on kg-gk 13 KGJPL Raw Material warehouses carry a department and
+	read as WIP, while 165 Manufacturing warehouses carry none and read as RM. A warehouse with
+	no type falls back to the old rule.
 
 	Returns ``None`` for no warehouse, which is what an issue row's missing target looks like.
 	"""
@@ -942,8 +952,8 @@ def warehouse_stage(warehouse):
 	if not info:
 		return None
 
-	if info.warehouse_type == "Transit":
-		return STAGE_TRANSIT
+	if info.warehouse_type:
+		return STAGE_BY_WAREHOUSE_TYPE.get(info.warehouse_type, STAGE_RM)
 
 	return STAGE_WIP if info.department else STAGE_RM
 
@@ -1332,7 +1342,22 @@ def release_allocation(doc, method=None):
 	_write_reservation_events(doc, EVENT_RELEASE, -1)
 
 
-def _write_reservation_events(doc, kind, sign):
+def release_consumed_allocation(doc):
+	"""A consumed reservation gives the customer's gold back to the free quantity too (F29).
+
+	``consume_stock_reservation_entry`` marks a reservation Delivered rather than cancelling it,
+	and ERPNext itself records delivery with ``db_set``/``qb.update``, so no document event fires
+	and ``release_allocation`` never ran. Every consumed reservation stayed "reserved", and
+	GJCU0009's free quantity on kg-gk went negative.
+
+	Same event key as the cancel path, so consuming and later cancelling release once. Written
+	only for entries that recorded an Allocation: a reservation made before the ledger existed
+	has nothing to release, and a Release alone would overstate the free quantity.
+	"""
+	_write_reservation_events(doc, EVENT_RELEASE, -1, only_allocated=True)
+
+
+def _write_reservation_events(doc, kind, sign, only_allocated=False):
 	"""One event per reserved batch, because one reservation can span several.
 
 	Guarded on schema and not on the feature flag for the release direction, for the same reason
@@ -1360,6 +1385,16 @@ def _write_reservation_events(doc, kind, sign):
 
 		customer = _batch_owner(batch_no)
 		if not customer:
+			continue
+
+		if only_allocated and not frappe.db.exists(
+			LEDGER_DOCTYPE,
+			{
+				"cg_event_key": build_event_key(
+					doc.company, doc.doctype, entry.name, None, EVENT_ALLOCATION
+				)
+			},
+		):
 			continue
 
 		qty = sign * abs(flt(entry.get("qty")))

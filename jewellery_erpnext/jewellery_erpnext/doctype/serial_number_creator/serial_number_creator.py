@@ -20,6 +20,7 @@ from frappe.utils import (
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	CUSTOMER_INVENTORY_TYPES,
+	normalize_ownership,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import set_stamping_no
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance import (
@@ -1676,6 +1677,28 @@ def submit_tracking_bom_for_finished_goods(doc):
 # 	)
 
 
+def _source_row_ownership(batch_no, inventory_type=None, customer=None):
+	"""``(inventory_type, customer)`` for an SNC source row: the batch's own lane first (F23).
+
+	Ownership used to come only from a Stock Entry Detail, so a MOP Log balance row written by
+	any other voucher showed none -- blank on all 5,196 SNC source rows on kg-gk. The batch is
+	the physical truth, the same rule ``update_batches`` applies (F5). A batch that records no
+	lane falls back to what the Stock Entry Detail said.
+	"""
+	if batch_no:
+		batch = frappe.db.get_value(
+			"Batch",
+			batch_no,
+			["custom_inventory_type", "custom_customer"],
+			as_dict=True,
+		)
+		if batch and batch.custom_inventory_type:
+			return normalize_ownership(
+				batch.custom_inventory_type, batch.custom_customer, batch_no=batch_no
+			)
+	return inventory_type, customer
+
+
 def _get_source_raw_materials(mop_name, snc_doc):
 	"""Get batch-wise source raw materials from MOP Log for a Manufacturing Operation.
 
@@ -1762,6 +1785,9 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				sub_setting_type = sed_data.custom_sub_setting_type
 				inventory_type = sed_data.inventory_type
 				customer = sed_data.customer
+		inventory_type, customer = _source_row_ownership(
+			batch_no, inventory_type, customer
+		)
 
 		s_wh = None
 		# ── Warehouse resolution for SNC fetch (same priorities as submit) ──
