@@ -72,6 +72,7 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 	get_customer_gold_settings,
 	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
+	validate_settlement_accounts,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
@@ -1602,13 +1603,27 @@ def settle_customer_gold_liability(doc, event_names):
 	if get_customer_gold_valuation_policy() != VALUATION_NOMINAL:
 		return
 
-	rows = frappe.get_all(
+	# FOR UPDATE: the claim below is what stops a second JE for the same events, so reading the
+	# unclaimed set must be a locking read. Two concurrent submits of one document would otherwise
+	# both see the events unclaimed and both post. The second now waits, and its locking read sees
+	# the first one's committed claim -- a plain read would keep its stale snapshot.
+	rows = frappe.db.get_values(
 		LEDGER_DOCTYPE,
-		filters={
+		{
 			"name": ["in", event_names],
 			"cg_settlement_voucher": ["is", "not set"],
 		},
-		fields=["name", "customer", "cg_carrying_value_delta"],
+		[
+			"name",
+			"customer",
+			"cg_carrying_value_delta",
+			"cg_source_row",
+			"serial_no",
+			"batch_no",
+		],
+		as_dict=True,
+		order_by="name",
+		for_update=True,
 	)
 	if not rows:
 		return
@@ -1637,7 +1652,8 @@ def settle_customer_gold_liability(doc, event_names):
 		return
 
 	accounts = get_customer_gold_company_settings(doc.company)
-	je = _build_settlement_entry(doc, accounts, per_customer, total, precision)
+	settled = [row for row in rows if flt(row.cg_carrying_value_delta)]
+	je = _build_settlement_entry(doc, accounts, per_customer, total, precision, settled)
 
 	# Claim only the events this JE actually settled. An event whose value could not be
 	# established carries 0 -- ``_customer_share`` refused to guess it -- and stamping it would
@@ -1652,36 +1668,27 @@ def settle_customer_gold_liability(doc, event_names):
 	return je
 
 
-def _build_settlement_entry(doc, accounts, per_customer, total, precision):
+def _build_settlement_entry(doc, accounts, per_customer, total, precision, events=()):
 	"""Post the standard Journal Entry and return its name.
 
 	Direction follows the sign of ``total``: positive means metal was delivered, so the
 	obligation shrinks -- **Dr Customer Gold Liability / Cr Customer Gold COGS Adjustment**, the
 	SOP's Example C posting. A physical return inverts both legs.
 	"""
-	# Refuse to post the two legs to one ledger. The settings validator already rejects this,
-	# but it only runs on SAVE and it returns early while the feature flag is off
-	# (subcontracting_settings.py:60-61) -- so a row configured before the flag was switched on
-	# has never been validated at all. That is exactly how the real KGJPL row was written.
+	# The settings are validated again HERE, not trusted from save time (F4). The save-time
+	# validator returns early while the feature flag is off and never sees a configuration that
+	# changed afterwards -- which is how the KGJPL row posted KGJPL-JE-JE-26-00018, Dr Customer
+	# Goods Receive / Cr Advances from Customers, liability to liability.
 	#
-	# Blocking here fails the delivery, which is the right outcome: the alternative is a balanced
-	# Dr X / Cr X entry that erpnext accepts, that moves no balance, and that permanently claims
-	# the events via cg_settlement_voucher so no later correction can settle them.
-	if accounts.liability_account == accounts.cogs_adjustment_account:
-		frappe.throw(
-			frappe._(
-				"Customer Gold Liability and COGS Adjustment are both configured as {0} for "
-				"company {1}. Settling against a single account would post it against itself "
-				"and leave the liability untouched. Fix the Customer Gold accounts in "
-				"Subcontracting Settings before submitting {2} {3}."
-			).format(
-				frappe.bold(accounts.liability_account),
-				frappe.bold(doc.company),
-				doc.doctype,
-				frappe.bold(doc.name),
-			),
-			title=frappe._("Customer Gold Accounts Must Differ"),
-		)
+	# Blocking fails the delivery, and that is the right outcome: the alternative is a JE that
+	# erpnext accepts, that discharges nothing, and that permanently claims the events via
+	# cg_settlement_voucher so no later correction can settle them.
+	validate_settlement_accounts(
+		doc.company,
+		accounts.liability_account,
+		accounts.cogs_adjustment_account,
+		where=f"{doc.doctype} {doc.name}",
+	)
 
 	# A party is set only when the account actually demands one. A Customer Gold Liability
 	# account is commonly a plain Liability ledger, for which Frappe rejects a party outright;
@@ -1695,8 +1702,20 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision):
 	je.voucher_type = "Journal Entry"
 	je.company = doc.company
 	je.posting_date = doc.get("posting_date") or frappe.utils.nowdate()
-	je.user_remark = frappe._("Customer Gold settlement for {0} {1}").format(
-		doc.doctype, doc.name
+	# The structural link is the ledger's own ``cg_settlement_voucher``, which points from every
+	# settled event to this JE; each event carries its customer, document row, serial and batch,
+	# and the batch's Batch Components name the customer's source receipts. The remark repeats
+	# the events so a reader of the JE alone can find them.
+	je.user_remark = frappe._(
+		"Customer Gold settlement for {0} {1}. Events: {2}"
+	).format(
+		doc.doctype,
+		doc.name,
+		"; ".join(
+			f"{e.name} (row {e.cg_source_row}, serial {e.serial_no or '-'}, batch {e.batch_no or '-'})"
+			for e in events
+		)
+		or "-",
 	)
 
 	for customer, amount in per_customer.items():
