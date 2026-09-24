@@ -1664,6 +1664,15 @@ class TestSeUtilsGuards(_StockEntryTestCase):
 		gv.assert_called_once_with("Serial No", "S-1", "custom_gross_wt")
 		self.assertEqual(row.gross_weight, 3.5)
 
+	def test_set_gross_wt_keeps_the_builders_weight_when_the_serial_has_none(self):
+		"""F22: a finished piece's serial is weighed after the entry is built, so it reads
+		nothing yet. The builder's weight must survive instead of being blanked."""
+		row = _Row(serial_no="KLHGX62F1119", gross_weight=5.5192)
+		se = _Doc(items=[row])
+		with patch.object(se_utils.frappe.db, "get_value", return_value=None):
+			se_utils.set_gross_wt(se)
+		self.assertEqual(row.gross_weight, 5.5192)
+
 	def test_set_gross_wt_ignores_non_serialized_rows(self):
 		row = _Row(serial_no=None, gross_weight=None)
 		se = _Doc(items=[row])
@@ -2577,17 +2586,36 @@ class TestConsumeStockReservationEntry(_StockEntryTestCase):
 		sre = _Doc(**defaults)
 		sre.db_set = MagicMock()
 		sre.update_status = MagicMock()
+		sre.update_reserved_qty_in_voucher = MagicMock()
 		return sre
 
 	def _run(self, sre, update_bin=True):
 		bin_doc = MagicMock()
+		self.release = MagicMock()
 		with patch(
 			"erpnext.stock.utils.get_or_make_bin", return_value="BIN-1"
 		) as gomb, patch.object(
 			se_events.frappe, "get_cached_doc", return_value=bin_doc
-		) as gcd:
+		) as gcd, patch(
+			"jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.release_consumed_allocation",
+			self.release,
+		):
 			se_events.consume_stock_reservation_entry(sre, update_bin=update_bin)
 		return bin_doc, gomb, gcd
+
+	def test_the_orders_reserved_qty_is_recomputed(self):
+		"""F30: ERPNext recomputes it on submit and cancel; consumption skipped it."""
+		sre = self._sre()
+		self._run(sre, update_bin=False)
+		sre.update_reserved_qty_in_voucher.assert_called_once_with(
+			update_modified=False
+		)
+
+	def test_the_customers_gold_is_released(self):
+		"""F29: a consumed reservation releases its customer-gold allocation, as a cancel does."""
+		sre = self._sre()
+		self._run(sre, update_bin=False)
+		self.release.assert_called_once_with(sre)
 
 	def test_updates_sb_entries_delivered_qty(self):
 		entries = [self._sb_entry(2), self._sb_entry(3)]

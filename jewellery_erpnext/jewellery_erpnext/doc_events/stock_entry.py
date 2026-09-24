@@ -23,6 +23,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	validate_loss_ownership_carried,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
+	should_allow_zero_valuation,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
@@ -613,8 +616,8 @@ def validate_metal_properties(doc):
 		)
 
 	for row in doc.items:
-		# allow_zero_valuation Start
-		if row.inventory_type == "Customer Goods":
+		# allow_zero_valuation Start -- same rule as allow_zero_valuation(); see utils/zero_valuation
+		if should_allow_zero_valuation(row, doc):
 			row.allow_zero_valuation_rate = 1
 		# allow_zero_valuation End
 
@@ -1339,8 +1342,11 @@ def validate_items(self):
 
 
 def allow_zero_valuation(self):
+	# Customer-owned INPUT rows only: never a finished good or secondary row that ERPNext derives,
+	# which would be zeroed on the next validate pass (F3). The authoritative enforcement is in
+	# CustomStockEntry.set_basic_rate, because a repost never reaches this hook.
 	for row in self.items:
-		if row.inventory_type == "Customer Goods":
+		if should_allow_zero_valuation(row, self):
 			row.allow_zero_valuation_rate = 1
 
 
@@ -2158,6 +2164,18 @@ def consume_stock_reservation_entry(sre_doc, update_bin=True):
 
 	# Explicitly set status to "Delivered"
 	sre_doc.update_status(status="Delivered")
+
+	# F30: the order's reserved quantity is summed from its live reservations, so it has to be
+	# recomputed now -- ERPNext does this on submit and cancel, and consumption skipped it (946
+	# Sales Order rows on kg-gk still show stock reserved that was consumed long ago).
+	sre_doc.update_reserved_qty_in_voucher(update_modified=False)
+
+	# F29: give the customer's gold back to the free quantity, as a cancel would.
+	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+		release_consumed_allocation,
+	)
+
+	release_consumed_allocation(sre_doc)
 
 	# Refresh bin reserved stock so the physical stock becomes available
 	if update_bin:

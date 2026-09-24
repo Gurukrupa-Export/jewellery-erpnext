@@ -51,6 +51,9 @@ def _row(**fields):
 	defaults = {
 		"name": fields.get("name", "row-x"),
 		"item_code": "M-G-18KT-75.0-Y",
+		# create_child_batches stamps Batch Rate only on metal/finding rows, read off this
+		# before any Item lookup -- keep it set so the test never touches the Item table.
+		"custom_variant_of": "M",
 		"s_warehouse": None,
 		"t_warehouse": None,
 		"batch_no": None,

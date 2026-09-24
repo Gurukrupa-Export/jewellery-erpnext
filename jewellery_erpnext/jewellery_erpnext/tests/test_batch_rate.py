@@ -450,20 +450,51 @@ class TestSubcontractingBatchRate(IntegrationTestCase):
 
 	def test_stock_entry_row_rate_falls_back_to_basic_rate(self):
 		doc = SimpleNamespace(doctype="Stock Entry")
-		row = SimpleNamespace(get=lambda f: {"basic_rate": 6120.5}.get(f))
+		row = SimpleNamespace(
+			get=lambda f: {"basic_rate": 6120.5, "custom_variant_of": "M"}.get(f)
+		)
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 6120.5)
 
 	def test_stock_entry_row_prefers_maintained_rate(self):
 		doc = SimpleNamespace(doctype="Stock Entry")
 		row = SimpleNamespace(
-			get=lambda f: {"custom_metal_rate": 5900, "basic_rate": 6120.5}.get(f)
+			get=lambda f: {
+				"custom_metal_rate": 5900,
+				"basic_rate": 6120.5,
+				"custom_variant_of": "M",
+			}.get(f)
 		)
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 5900)
 
 	def test_purchase_receipt_row_uses_rate(self):
 		doc = SimpleNamespace(doctype="Purchase Receipt")
-		row = SimpleNamespace(get=lambda f: {"rate": 7420}.get(f))
+		row = SimpleNamespace(
+			get=lambda f: {"rate": 7420, "custom_variant_of": "M"}.get(f)
+		)
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 7420)
+
+	def test_a_finding_row_is_metal_too(self):
+		doc = SimpleNamespace(doctype="Stock Entry")
+		row = SimpleNamespace(
+			get=lambda f: {"basic_rate": 6100.0, "custom_variant_of": "F"}.get(f)
+		)
+		self.assertEqual(batch_rename._source_row_rate(doc, row), 6100.0)
+
+	def test_a_finished_piece_gets_no_metal_rate(self):
+		"""F8: KLHGX62F1119's batch was stamped Rs.8,01,654.99 -- the whole piece, diamond included."""
+		doc = SimpleNamespace(doctype="Stock Entry")
+		row = SimpleNamespace(
+			get=lambda f: {"basic_rate": 801666.57, "item_code": "EA02652-001"}.get(f)
+		)
+		with patch.object(batch_rename.frappe, "get_cached_value", return_value=None):
+			self.assertEqual(batch_rename._source_row_rate(doc, row), 0.0)
+
+	def test_a_diamond_row_gets_no_metal_rate(self):
+		doc = SimpleNamespace(doctype="Stock Entry")
+		row = SimpleNamespace(
+			get=lambda f: {"basic_rate": 37370.0, "custom_variant_of": "D"}.get(f)
+		)
+		self.assertEqual(batch_rename._source_row_rate(doc, row), 0.0)
 
 
 def _doc(**fields):

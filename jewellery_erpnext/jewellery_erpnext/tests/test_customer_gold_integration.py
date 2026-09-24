@@ -806,7 +806,9 @@ class TestCustomerGoldReceiptPostsCorrectly(_CustomerGoldIntegrationCase):
 		# receipt began accepting a LIST of purities: an operating-purity item is now rejected
 		# for not being on that list rather than for not being THE 24KT item, and the message
 		# names what would have been accepted.
-		with self.assertThrowsContaining("is not configured for Customer Gold receipts"):
+		with self.assertThrowsContaining(
+			"is not configured for Customer Gold receipts"
+		):
 			se.save()
 
 
@@ -2853,17 +2855,15 @@ class TestNextOrderRevaluation(TestFulfilmentLedger):
 			msg="a second Revaluation event was written",
 		)
 		self.assertEqual(
-			frappe.db.count("Stock Reconciliation", {"docstatus": 1, "company": COMPANY}),
+			frappe.db.count(
+				"Stock Reconciliation", {"docstatus": 1, "company": COMPANY}
+			),
 			recos_before,
 			msg="an orphan Stock Reconciliation was submitted before the refusal",
 		)
 
 	def test_the_liability_does_not_move_on_the_refused_repeat(self):
 		"""What the defect actually cost: the obligation grew twice for one price change."""
-		from jewellery_erpnext.customer_subcontracting import (
-			customer_gold_fulfilment as cgf,
-		)
-
 		batch = self._stocked_batch(qty=2)
 		self._revalue(batch, new_rate=7500.00)
 		after_first = flt(
@@ -4562,12 +4562,17 @@ class TestProductionEvents(TestCustodyTransfer):
 	#: returns. Both branches of the dispatcher's unclassified diagnostic are now covered.
 	UNCLASSIFIED = "Customer Gold: unclassified one-sided movement"
 
-	def _manufacture(self, batch, qty, fg_item=None, consume_item=None):
+	def _manufacture(
+		self, batch, qty, fg_item=None, consume_item=None, production_cost=0.0
+	):
 		"""A real Manufacture Stock Entry consuming customer metal.
 
 		``consume_item`` defaults to ``self.item`` so every existing caller is unchanged. It
 		exists because a batch that has been through a conversion holds the OTHER item, and
 		erpnext rejects a row whose batch does not belong to its item code.
+
+		``production_cost`` adds an additional-cost line, so the finished piece carries value the
+		customer never supplied -- what a real piece always has.
 		"""
 		se = frappe.new_doc("Stock Entry")
 		se.stock_entry_type = MANUFACTURE_SE_TYPE
@@ -4621,6 +4626,17 @@ class TestProductionEvents(TestCustodyTransfer):
 				"expense_account": self.difference_account,
 			},
 		)
+		if production_cost:
+			se.append(
+				"additional_costs",
+				{
+					"expense_account": self._ensure_account(
+						"CG Test Manufacturing Cost", "Expense"
+					),
+					"description": "Production cost",
+					"amount": production_cost,
+				},
+			)
 		se.flags.ignore_mandatory = True
 		se.save()
 		se.submit()
@@ -4999,11 +5015,15 @@ class TestManufacturedPieceSettles(TestProductionEvents):
 
 		S1 settles Rs.42,988.98 against an FG stock value of Rs.43,186.98 -- the Rs.198.00
 		difference being company alloy and production cost. A settlement that tracked the stock
-		ledger would over-discharge by exactly that, and on this fixture the two numbers differ
-		by the whole amount, because the fixture's finished batch is zero-valued.
+		ledger would over-discharge by exactly that.
+
+		The piece carries the SOP's Rs.198.00 as production cost. This test used to pass only
+		because the finished batch was zero-valued -- the F3 defect. With F3 fixed, a piece made
+		of nothing but customer gold is worth exactly the customer value, so the two numbers can
+		only differ when the piece holds something the customer did not supply.
 		"""
 		batch = self._stocked_batch(qty=20)
-		se = self._manufacture(batch, 6)
+		se = self._manufacture(batch, 6, production_cost=198.0)
 		fg_batch = [r for r in se.items if r.get("is_finished_item")][0].batch_no
 
 		dn = self._delivery(fg_batch, qty=6)
@@ -5026,12 +5046,18 @@ class TestManufacturedPieceSettles(TestProductionEvents):
 		)
 
 		self.assertAlmostEqual(event_value, -42988.98, places=2)
+		self.assertAlmostEqual(
+			sle_value,
+			-43186.98,
+			places=2,
+			msg="the piece did not carry the customer gold plus the Rs.198.00 production cost",
+		)
 		self.assertNotAlmostEqual(
 			event_value,
 			sle_value,
 			places=2,
 			msg="the settlement is tracking the stock ledger rather than the booked customer "
-			"value -- on a piece with company alloy in it that over-discharges the liability",
+			"value -- on a piece with company cost in it that over-discharges the liability",
 		)
 
 	def test_the_manufactured_delivery_does_not_settle_twice(self):
@@ -5098,12 +5124,12 @@ class TestConvertedPieceSettlesTheSourceValue(TestManufacturedPieceSettles):
 	#: quantities persist at 2dp, so what the system can actually hold is 7.95.
 	CONVERTED_QTY = 7.95
 
-	#: What this fixture must settle: 7.95 x 75.4 / 99.9 x 7,164.83, recomputed here from the
-	#: constants above rather than read back from the code under test.
-	EXPECTED_VALUE = 42991.13
-	#: The SOP's S1 figure for 6.000 g. EXPECTED_VALUE sits Rs.2.15 above it, and that gap is
-	#: entirely the 7.949602 -> 7.95 quantity rounding: 0.0004 g of 24KT at Rs.7,164.83. It is
-	#: asserted as a tolerance below, so a real regression cannot hide inside it.
+	#: What this fixture must settle: the 6.000 g drawn x 7,164.83. The component is recorded in
+	#: the source item's grams and apportioned by what the converted batch PRODUCED (7.95 g), so
+	#: no purity restatement is involved. An earlier fix restated 7.95 g of 75.4% into 24KT and
+	#: settled Rs.42,991.13 -- Rs.2.15 of 7.949602 -> 7.95 rounding the source never posted.
+	EXPECTED_VALUE = 42988.98
+	#: The SOP's S1 figure for 6.000 g, which the settlement now reproduces exactly.
 	SOP_VALUE = 42988.98
 	#: What the defect posted: 7.950 x 7,164.83, the 18KT gram count at the 24KT rate.
 	OVERSTATED_VALUE = 56960.40
@@ -5286,14 +5312,7 @@ class TestConvertedPieceSettlesTheSourceValue(TestManufacturedPieceSettles):
 			value,
 			-self.EXPECTED_VALUE,
 			places=2,
-			msg="not 7.95 x 75.4 / 99.9 x 7,164.83",
-		)
-		self.assertAlmostEqual(
-			value,
-			-self.SOP_VALUE,
-			delta=3.0,
-			msg="a purity change must not change what the customer posted; only the "
-			"2dp quantity rounding may move it, and that is worth Rs.2.15",
+			msg="a purity change must not change what the customer posted: 6.000 x 7,164.83",
 		)
 
 	def test_the_journal_entry_agrees_with_the_custody_event(self):
@@ -5353,6 +5372,737 @@ class TestConvertedPieceSettlesTheSourceValue(TestManufacturedPieceSettles):
 			places=3,
 			msg="the fine gold delivered is not the fine gold that was converted",
 		)
+
+
+class TestNosPieceSettlesItsCustomerGold(TestProductionEvents):
+	"""Brief §11 -- the production shape: customer gold made into a DIFFERENT item, counted in Nos.
+
+	THE FALSE GREEN THIS REPLACES
+	-----------------------------
+	``TestManufacturedPieceSettles`` manufactures ``self.item`` out of ``self.item`` -- a metal
+	variant with a Metal Purity, counted in grams. Real work never does that: KLHGX62F1119 is
+	``EA02652-001``, one piece, ``stock_uom`` Nos, and 0 of 25,249 Nos items on kg-gk carry a
+	Metal Purity. Settlement restated the components through the delivered item's purity, got
+	``None`` for the piece, fell back to its stock value and released Rs.11.58 of a
+	Rs.7,86,828.62 obligation. The fixture's metal-into-itself shape was the one case where
+	that restatement happened to work, so the suite stayed green.
+
+	Here the finished item is its own non-variant Nos item with no attributes at all.
+	"""
+
+	PIECE = "CG-TEST-PIECE-NOS"
+	#: Gold jewellery. india_compliance requires a 6- or 8-digit HSN on every Item.
+	PIECE_HSN = "71131910"
+	SOURCE_QTY = 6.0
+	BOOKED_RATE = EXPECTED_PER_GRAM
+	#: 6.000 g x 7,164.83 -- the SOP's S1 figure.
+	EXPECTED_VALUE = 42988.98
+	#: 6.000 g of the 99.9% fixture item.
+	EXPECTED_FINE = 5.994
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		settings = frappe.get_doc(SETTINGS_DOCTYPE)
+		settings.customer_gold_valuation_policy = "Nominal"
+		settings.save(ignore_permissions=True)
+		frappe.clear_cache(doctype=SETTINGS_DOCTYPE)
+		cls._ensure_piece()
+
+	def _settlement_entries(self, voucher):
+		return sorted(
+			{
+				r.cg_settlement_voucher
+				for r in frappe.get_all(
+					"Customer Gold Ledger Entry",
+					filters={
+						"reference_docname": voucher,
+						"cg_settlement_voucher": ["!=", ""],
+					},
+					fields=["cg_settlement_voucher"],
+				)
+				if r.cg_settlement_voucher
+			}
+		)
+
+	@classmethod
+	def _ensure_piece(cls):
+		if not frappe.db.exists("UOM", "Nos"):
+			frappe.get_doc(
+				{"doctype": "UOM", "uom_name": "Nos", "must_be_whole_number": 1}
+			).insert(ignore_permissions=True)
+		if frappe.db.exists("Item", cls.PIECE):
+			return
+		item = frappe.new_doc("Item")
+		item.item_code = cls.PIECE
+		item.item_name = "CG Test Earring"
+		item.item_group = cls.item_group
+		item.stock_uom = "Nos"
+		item.is_stock_item = 1
+		item.has_batch_no = 1
+		item.create_new_batch = 1
+		item.gst_hsn_code = cls.PIECE_HSN
+		item.custom_inventory_type_can_be_customer_goods = 1
+		item.insert(ignore_permissions=True)
+
+	def _make_piece(self, batch):
+		"""One Nos piece from ``SOURCE_QTY`` g of the customer's metal -- a real Manufacture."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_finished_goods_ownership,
+		)
+
+		consumed = [
+			{
+				"item_code": self.item,
+				"qty": self.SOURCE_QTY,
+				"s_warehouse": self.warehouse,
+				"batch_no": batch,
+				"use_serial_batch_fields": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"allow_zero_valuation_rate": 1,
+				"expense_account": self.difference_account,
+			}
+		]
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = MANUFACTURE_SE_TYPE
+		se.purpose = "Manufacture"
+		se.company = COMPANY
+		se.manufacturer = MANUFACTURER
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		for row in consumed:
+			se.append("items", row)
+		fg_inventory_type, fg_customer = _finished_goods_ownership(consumed)
+		se.append(
+			"items",
+			{
+				"item_code": self.PIECE,
+				"qty": 1,
+				"t_warehouse": self.warehouse,
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+				"is_finished_item": 1,
+				"inventory_type": fg_inventory_type,
+				"customer": fg_customer,
+				# What the app's builders stamp. The F3 fix must neutralise it on a derived row.
+				"allow_zero_valuation_rate": 1,
+				"expense_account": self.difference_account,
+			},
+		)
+		se.flags.ignore_mandatory = True
+		se.save()
+		se.submit()
+		return se
+
+	def _deliver_piece(self, batch_no, is_return_of=None):
+		if not frappe.db.exists("Sales Type", SALES_TYPE):
+			frappe.get_doc(
+				{"doctype": "Sales Type", "type": SALES_TYPE, "tax_rate": 0}
+			).insert(ignore_permissions=True)
+		if not frappe.db.exists("Customer Payment Terms", {"customer": CUSTOMER}):
+			frappe.get_doc(
+				{"doctype": "Customer Payment Terms", "customer": CUSTOMER}
+			).insert(ignore_permissions=True)
+
+		so = frappe.new_doc("Sales Order")
+		so.company = COMPANY
+		so.customer = CUSTOMER
+		so.sales_type = SALES_TYPE
+		so.transaction_date = self.posting_date
+		so.delivery_date = self.posting_date
+		so.append(
+			"items",
+			{
+				"item_code": self.PIECE,
+				"qty": 1,
+				"rate": 0,
+				"delivery_date": self.posting_date,
+				"warehouse": self.warehouse,
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+			},
+		)
+		so.flags.ignore_mandatory = True
+		so.save()
+		so.submit()
+
+		dn = frappe.new_doc("Delivery Note")
+		dn.company = COMPANY
+		dn.customer = CUSTOMER
+		dn.posting_date = self.posting_date
+		dn.set_posting_time = 1
+		dn.append(
+			"items",
+			{
+				"item_code": self.PIECE,
+				"qty": 1,
+				"rate": 0,
+				"warehouse": self.warehouse,
+				"batch_no": batch_no,
+				"use_serial_batch_fields": 1,
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+				"against_sales_order": so.name,
+				"so_detail": so.items[0].name,
+			},
+		)
+		dn.flags.ignore_mandatory = True
+		dn.save()
+		dn.submit()
+		return dn
+
+	def _piece_delivered(self):
+		batch = self._stocked_batch(qty=10)
+		se = self._make_piece(batch)
+		fg = [r for r in se.items if r.get("is_finished_item")][0]
+		self.assertTrue(fg.batch_no, msg="no finished batch to deliver")
+		return se, fg, self._deliver_piece(fg.batch_no)
+
+	def test_the_piece_really_has_no_metal_purity(self):
+		"""Guards the fixture: without this the test could quietly become the false green again."""
+		from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
+			get_purity_percentage,
+		)
+
+		self._ensure_piece()
+		self.assertEqual(frappe.db.get_value("Item", self.PIECE, "stock_uom"), "Nos")
+		self.assertFalse(get_purity_percentage(self.PIECE))
+
+	def test_the_piece_keeps_its_value_through_submit(self):
+		"""F3 on the same fixture: the Manufacture's save-then-submit must not zero the piece."""
+		batch = self._stocked_batch(qty=10)
+		se = self._make_piece(batch)
+		fg = [r for r in se.items if r.get("is_finished_item")][0]
+		self.assertAlmostEqual(flt(fg.basic_rate), self.EXPECTED_VALUE, delta=1.0)
+
+	def test_delivering_the_piece_releases_the_customer_gold_at_its_booked_rate(self):
+		_se, _fg, dn = self._piece_delivered()
+		events = self._events(dn.name, "Delivery")
+		self.assertEqual(len(events), 1, msg="the delivery wrote no custody event")
+		self.assertAlmostEqual(
+			flt(events[0].cg_carrying_value_delta),
+			-self.EXPECTED_VALUE,
+			places=2,
+			msg="released the piece's stock value (or nothing) instead of 6.000 x 7,164.83",
+		)
+
+	def test_the_delivery_records_the_customer_fine_gold(self):
+		"""Was 0.000 fine, Unknown, on every piece shipped."""
+		_se, _fg, dn = self._piece_delivered()
+		(event,) = self._events(dn.name, "Delivery")
+		self.assertEqual(event.cg_fine_measurement_status, "Known")
+		self.assertAlmostEqual(
+			flt(event.cg_fine_gold_delta), -self.EXPECTED_FINE, places=3
+		)
+
+	def test_the_settlement_journal_entry_moves_exactly_that_value(self):
+		_se, _fg, dn = self._piece_delivered()
+		entries = self._settlement_entries(dn.name)
+		self.assertEqual(
+			len(entries), 1, msg=f"expected one settlement JE, got {entries}"
+		)
+		je = frappe.get_doc("Journal Entry", entries[0])
+		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
+		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		self.assertAlmostEqual(
+			debits.get(self.liability_account, 0.0), self.EXPECTED_VALUE, places=2
+		)
+		self.assertAlmostEqual(
+			credits.get(self.cogs_account, 0.0), self.EXPECTED_VALUE, places=2
+		)
+
+	def test_the_customer_is_left_owing_only_what_was_not_delivered(self):
+		"""10 g received, 6 g went out in the piece: 4 g of fine-gold custody remains."""
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
+		)
+
+		batch = self._stocked_batch(qty=10)
+		after_receipt = cgf.get_customer_gold_fine_position(COMPANY, CUSTOMER)
+		se = self._make_piece(batch)
+		fg = [r for r in se.items if r.get("is_finished_item")][0]
+		self._deliver_piece(fg.batch_no)
+		self.assertAlmostEqual(
+			cgf.get_customer_gold_fine_position(COMPANY, CUSTOMER),
+			after_receipt - self.EXPECTED_FINE,
+			places=3,
+		)
+
+
+class TestKLHGX62F1119Pattern(TestNosPieceSettlesItsCustomerGold):
+	"""Brief §8 -- the KLHGX62F1119 chain end to end, on real documents, under the test company.
+
+	10 g of customer 24KT -> 5 g of it plus company alloy converted to 75.4% -> a small process
+	loss -> the company's diamond and a production cost -> one Nos piece -> Delivery Note ->
+	Sales Invoice -> settlement; and separately cancellation, delivery return and repost.
+
+	The deterministic figures: customer gold at 7,164.83/g (the fixture's 71,648.30 per 10 g);
+	company alloy 1.625 g at Rs.20/g (5 g of 99.9% + 1.625 g of alloy = 6.625 g at 75.4%); loss
+	0.010 g with 0.005 g recovered; company diamond 0.396 ct at Rs.37,370/ct; production cost
+	Rs.11.58. The customer's gold inside the piece is 5.000 x 6.615 / 6.625 = 4.99245 g, stored by
+	``Batch Component`` at 3 dp as 4.992 g.
+
+	Every assertion below is a DELTA. ``IntegrationTestCase`` rolls back once per class, so the
+	tests in this class share one transaction and absolute balances would depend on test order.
+	"""
+
+	ALLOY = "CG-TEST-ALLOY"
+	DIAMOND = "CG-TEST-DIAMOND"
+	COMPANY_RECEIPT_TYPE = "CG Test Company Receipt"
+	ALLOY_QTY = 1.625
+	ALLOY_RATE = 20.0
+	CONVERTED_QTY = 6.625
+	LOST = 0.010
+	RECOVERED = 0.005
+	DIAMOND_CT = 0.396
+	DIAMOND_RATE = 37370.0
+	PRODUCTION_COST = 11.58
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		if not frappe.db.exists("UOM", "Carat"):
+			frappe.get_doc(
+				{"doctype": "UOM", "uom_name": "Carat", "must_be_whole_number": 0}
+			).insert(ignore_permissions=True)
+		if not frappe.db.exists("Stock Entry Type", cls.COMPANY_RECEIPT_TYPE):
+			doc = frappe.new_doc("Stock Entry Type")
+			doc.name = cls.COMPANY_RECEIPT_TYPE
+			doc.purpose = "Material Receipt"
+			doc.insert(ignore_permissions=True)
+		for code, uom, hsn, name in (
+			(cls.ALLOY, "Gram", "74031900", "CG Test Alloy"),
+			(cls.DIAMOND, "Carat", "71023910", "CG Test Diamond"),
+		):
+			if frappe.db.exists("Item", code):
+				continue
+			item = frappe.new_doc("Item")
+			item.item_code = code
+			item.item_name = name
+			item.item_group = cls.item_group
+			item.stock_uom = uom
+			item.is_stock_item = 1
+			item.has_batch_no = 1
+			item.create_new_batch = 1
+			item.gst_hsn_code = hsn
+			item.insert(ignore_permissions=True)
+
+	# -- the chain ---------------------------------------------------------------------------
+	def _company_stock(self, item_code, qty, rate, uom):
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = self.COMPANY_RECEIPT_TYPE
+		se.purpose = "Material Receipt"
+		se.company = COMPANY
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		se.append(
+			"items",
+			{
+				"item_code": item_code,
+				"qty": qty,
+				"basic_rate": rate,
+				"t_warehouse": self.warehouse,
+				"uom": uom,
+				"stock_uom": uom,
+				"conversion_factor": 1,
+				"inventory_type": "Regular Stock",
+				"expense_account": self.difference_account,
+			},
+		)
+		se.flags.ignore_mandatory = True
+		se.save()
+		se.submit()
+		return se.items[0].batch_no
+
+	def _convert_with_alloy(self, customer_batch, alloy_batch):
+		lane = f"Customer Goods|{CUSTOMER}"
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = REPACK_SE_TYPE
+		se.purpose = "Repack"
+		se.company = COMPANY
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		se._customer = CUSTOMER
+		common = {
+			"uom": "Gram",
+			"stock_uom": "Gram",
+			"conversion_factor": 1,
+			"custom_conversion_lane": lane,
+			"expense_account": self.difference_account,
+		}
+		se.append(
+			"items",
+			{
+				"item_code": self.item,
+				"qty": 5.0,
+				"s_warehouse": self.warehouse,
+				"batch_no": customer_batch,
+				"use_serial_batch_fields": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				**common,
+			},
+		)
+		se.append(
+			"items",
+			{
+				"item_code": self.ALLOY,
+				"qty": self.ALLOY_QTY,
+				"s_warehouse": self.warehouse,
+				"batch_no": alloy_batch,
+				"use_serial_batch_fields": 1,
+				"inventory_type": "Regular Stock",
+				**common,
+			},
+		)
+		se.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": self.CONVERTED_QTY,
+				"t_warehouse": self.warehouse,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				**common,
+			},
+		)
+		se.flags.ignore_mandatory = True
+		se.save()
+		se.submit()
+		return se, [r for r in se.items if r.t_warehouse][0].batch_no
+
+	def _lose(self, batch):
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = LOSS_SE_TYPE
+		se.purpose = "Repack"
+		se.company = COMPANY
+		se.manufacturer = MANUFACTURER
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		se._customer = CUSTOMER
+		ownership = {"inventory_type": "Customer Goods", "customer": CUSTOMER}
+		se.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": self.LOST,
+				"s_warehouse": self.warehouse,
+				"batch_no": batch,
+				"use_serial_batch_fields": 1,
+				**ownership,
+				"allow_zero_valuation_rate": 1,
+				"expense_account": self.difference_account,
+			},
+		)
+		se.append(
+			"items",
+			{
+				"item_code": self.operating_item,
+				"qty": self.RECOVERED,
+				"t_warehouse": self.warehouse,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"is_finished_item": 1,
+				**ownership,
+				"allow_zero_valuation_rate": 1,
+				"expense_account": self.difference_account,
+			},
+		)
+		se.flags.ignore_mandatory = True
+		se.save()
+		se.submit()
+		return se
+
+	def _make_the_piece(self, converted_batch, diamond_batch):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_finished_goods_ownership,
+		)
+
+		consumed = [
+			{
+				"item_code": self.operating_item,
+				"qty": self.CONVERTED_QTY - self.LOST,
+				"s_warehouse": self.warehouse,
+				"batch_no": converted_batch,
+				"use_serial_batch_fields": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"allow_zero_valuation_rate": 1,
+				"expense_account": self.difference_account,
+			},
+			{
+				"item_code": self.DIAMOND,
+				"qty": self.DIAMOND_CT,
+				"s_warehouse": self.warehouse,
+				"batch_no": diamond_batch,
+				"use_serial_batch_fields": 1,
+				"uom": "Carat",
+				"stock_uom": "Carat",
+				"conversion_factor": 1,
+				"inventory_type": "Regular Stock",
+				"expense_account": self.difference_account,
+			},
+		]
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = MANUFACTURE_SE_TYPE
+		se.purpose = "Manufacture"
+		se.company = COMPANY
+		se.manufacturer = MANUFACTURER
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		for row in consumed:
+			se.append("items", row)
+		fg_inventory_type, fg_customer = _finished_goods_ownership(consumed)
+		se.append(
+			"items",
+			{
+				"item_code": self.PIECE,
+				"qty": 1,
+				"t_warehouse": self.warehouse,
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+				"is_finished_item": 1,
+				"inventory_type": fg_inventory_type,
+				"customer": fg_customer,
+				"allow_zero_valuation_rate": 1,
+				"expense_account": self.difference_account,
+			},
+		)
+		se.append(
+			"additional_costs",
+			{
+				"expense_account": self._ensure_account(
+					"CG Test Manufacturing Cost", "Expense"
+				),
+				"description": "Production cost",
+				"amount": self.PRODUCTION_COST,
+			},
+		)
+		se.flags.ignore_mandatory = True
+		se.save()
+		se.submit()
+		return se
+
+	def _chain(self):
+		"""Receipt -> conversion -> loss -> manufacture. Returns what later steps need."""
+		customer_batch = self._stocked_batch(qty=10)
+		alloy_batch = self._company_stock(self.ALLOY, 10, self.ALLOY_RATE, "Gram")
+		diamond_batch = self._company_stock(self.DIAMOND, 1, self.DIAMOND_RATE, "Carat")
+		conversion, converted_batch = self._convert_with_alloy(
+			customer_batch, alloy_batch
+		)
+		loss = self._lose(converted_batch)
+		manufacture = self._make_the_piece(converted_batch, diamond_batch)
+		fg = [r for r in manufacture.items if r.get("is_finished_item")][0]
+		return frappe._dict(
+			customer_batch=customer_batch,
+			converted_batch=converted_batch,
+			diamond_batch=diamond_batch,
+			conversion=conversion,
+			loss=loss,
+			manufacture=manufacture,
+			fg=fg,
+		)
+
+	# -- measurement helpers -------------------------------------------------------------------
+	def _customer_component(self, batch):
+		rows = [
+			r
+			for r in cgc._recorded_components(batch)
+			if r.get("customer") == CUSTOMER
+			and r.get("inventory_type") == "Customer Goods"
+		]
+		self.assertEqual(len(rows), 1, rows)
+		return flt(rows[0]["qty"])
+
+	def _gl_balance(self, account):
+		row = frappe.db.sql(
+			"""SELECT COALESCE(SUM(credit - debit), 0) FROM `tabGL Entry`
+			   WHERE account = %s AND is_cancelled = 0""",
+			(account,),
+		)
+		return flt(row[0][0], 2)
+
+	def _sle_value(self, voucher, positive):
+		sign = ">" if positive else "<"
+		row = frappe.db.sql(
+			f"""SELECT COALESCE(SUM(stock_value_difference), 0) FROM `tabStock Ledger Entry`
+			    WHERE voucher_no = %s AND is_cancelled = 0 AND actual_qty {sign} 0""",
+			(voucher,),
+		)
+		return flt(row[0][0], 2)
+
+	# -- §8.2 assertions -----------------------------------------------------------------------
+	def test_the_piece_holds_the_customers_gold_by_lineage(self):
+		c = self._chain()
+		self.assertAlmostEqual(
+			self._customer_component(c.fg.batch_no),
+			5.0 * (self.CONVERTED_QTY - self.LOST) / self.CONVERTED_QTY,
+			delta=0.001,
+			msg="the piece does not record the customer gold the chain put into it",
+		)
+
+	def test_ownership_stays_true_to_each_batch(self):
+		"""Customer gold stays the customer's; company alloy and diamond stay the company's."""
+		c = self._chain()
+		self.assertEqual(
+			frappe.db.get_value(
+				"Batch", c.fg.batch_no, ["custom_inventory_type", "custom_customer"]
+			),
+			("Customer Goods", CUSTOMER),
+		)
+		diamond_row = [r for r in c.manufacture.items if r.item_code == self.DIAMOND][0]
+		self.assertEqual(
+			diamond_row.inventory_type, "Regular Stock", "F5: diamond relabelled"
+		)
+		self.assertFalse(diamond_row.get("customer"))
+		owners = {
+			(r["item_code"], r["inventory_type"])
+			for r in cgc._recorded_components(c.fg.batch_no)
+		}
+		self.assertIn((self.ALLOY, "Regular Stock"), owners)
+		self.assertIn((self.DIAMOND, "Regular Stock"), owners)
+
+	def test_the_piece_carries_every_input_and_nothing_goes_to_stock_adjustment(self):
+		"""FG value = consumed value + production cost; no F3 residue in Stock Adjustment."""
+		c = self._chain()
+		consumed = -self._sle_value(c.manufacture.name, positive=False)
+		produced = self._sle_value(c.manufacture.name, positive=True)
+		self.assertAlmostEqual(produced, consumed + self.PRODUCTION_COST, delta=0.05)
+		self.assertGreater(produced, self.DIAMOND_CT * self.DIAMOND_RATE)
+		adjustment = frappe.db.sql(
+			"""SELECT COALESCE(SUM(debit - credit), 0) FROM `tabGL Entry`
+			   WHERE voucher_no = %s AND account = %s AND is_cancelled = 0""",
+			(c.manufacture.name, self.difference_account),
+		)[0][0]
+		self.assertAlmostEqual(
+			flt(adjustment), 0.0, places=2, msg="value went to Stock Adjustment"
+		)
+
+	def test_physical_quantities_reconcile(self):
+		"""10 g in: 5 g untouched in the receipt batch; the converted batch fully used or lost."""
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+		c = self._chain()
+		self.assertAlmostEqual(
+			flt(get_batch_qty(batch_no=c.customer_batch, warehouse=self.warehouse)),
+			5.0,
+			places=3,
+		)
+		self.assertAlmostEqual(
+			flt(get_batch_qty(batch_no=c.converted_batch, warehouse=self.warehouse)),
+			0.0,
+			places=3,
+		)
+
+	def test_delivery_settles_exactly_the_customer_gold_and_the_books_agree(self):
+		c = self._chain()
+		in_piece = self._customer_component(c.fg.batch_no)
+		expected = flt(in_piece * self.BOOKED_RATE, 2)
+		liability_before = self._gl_balance(self.liability_account)
+
+		dn = self._deliver_piece(c.fg.batch_no)
+
+		(event,) = self._events(dn.name, "Delivery")
+		self.assertAlmostEqual(flt(event.cg_carrying_value_delta), -expected, places=2)
+		self.assertAlmostEqual(
+			flt(event.cg_fine_gold_delta), -in_piece * 99.9 / 100.0, places=3
+		)
+		self.assertEqual(event.cg_fine_measurement_status, "Known")
+
+		(je_name,) = self._settlement_entries(dn.name)
+		je = frappe.get_doc("Journal Entry", je_name)
+		self.assertAlmostEqual(flt(je.total_debit), flt(je.total_credit), places=2)
+		self.assertAlmostEqual(
+			self._gl_balance(self.liability_account),
+			liability_before - expected,
+			places=2,
+			msg="Customer Gold Liability did not fall by exactly the customer gold delivered",
+		)
+
+	def test_the_invoice_settles_nothing_more(self):
+		"""F2-10: an invoice raised against the delivery moves no metal and posts no settlement."""
+		from erpnext.stock.doctype.delivery_note.delivery_note import make_sales_invoice
+
+		c = self._chain()
+		dn = self._deliver_piece(c.fg.batch_no)
+		events_before = len(frappe.get_all("Customer Gold Ledger Entry"))
+		si = make_sales_invoice(dn.name)
+		si.flags.ignore_mandatory = True
+		si.insert(ignore_permissions=True)
+		si.submit()
+		self.assertEqual(
+			len(frappe.get_all("Customer Gold Ledger Entry")), events_before
+		)
+		self.assertEqual(self._settlement_entries(si.name), [])
+
+	def test_cancelling_the_delivery_restores_the_liability_once(self):
+		"""E2E-002."""
+		c = self._chain()
+		liability_before = self._gl_balance(self.liability_account)
+		dn = self._deliver_piece(c.fg.batch_no)
+		(je_name,) = self._settlement_entries(dn.name)
+
+		dn.cancel()
+
+		self.assertEqual(frappe.db.get_value("Journal Entry", je_name, "docstatus"), 2)
+		self.assertAlmostEqual(
+			self._gl_balance(self.liability_account), liability_before, places=2
+		)
+		self.assertTrue(self._events(dn.name, "Reversal"))
+
+	def test_a_delivery_return_restores_the_customer_component(self):
+		"""E2E-003: gross, fine gold and carrying value all come back, once."""
+		from erpnext.stock.doctype.delivery_note.delivery_note import make_sales_return
+
+		c = self._chain()
+		in_piece = self._customer_component(c.fg.batch_no)
+		expected = flt(in_piece * self.BOOKED_RATE, 2)
+		liability_before = self._gl_balance(self.liability_account)
+		dn = self._deliver_piece(c.fg.batch_no)
+
+		ret = make_sales_return(dn.name)
+		ret.flags.ignore_mandatory = True
+		ret.save()
+		ret.submit()
+
+		(event,) = self._events(ret.name, "Delivery Return")
+		self.assertAlmostEqual(flt(event.cg_carrying_value_delta), expected, places=2)
+		self.assertAlmostEqual(
+			flt(event.cg_fine_gold_delta), in_piece * 99.9 / 100.0, places=3
+		)
+		self.assertAlmostEqual(
+			self._gl_balance(self.liability_account), liability_before, places=2
+		)
+
+	def test_reposting_the_manufacture_twice_keeps_the_piece_valued(self):
+		"""§20: a repost must not re-zero the piece, and a second repost must not move it."""
+		c = self._chain()
+		produced = self._sle_value(c.manufacture.name, positive=True)
+		for _ in range(2):
+			riv = frappe.get_doc(
+				{
+					"doctype": "Repost Item Valuation",
+					"based_on": "Transaction",
+					"voucher_type": "Stock Entry",
+					"voucher_no": c.manufacture.name,
+					"posting_date": c.manufacture.posting_date,
+					"posting_time": c.manufacture.posting_time,
+					"company": COMPANY,
+				}
+			)
+			riv.insert(ignore_permissions=True)
+			riv.submit()
+			self.assertAlmostEqual(
+				self._sle_value(c.manufacture.name, positive=True), produced, places=2
+			)
+		self.assertGreater(produced, 1000.0, "the piece was valued at next to nothing")
 
 
 class TestLossAndRecovery(TestCustodyTransfer):
