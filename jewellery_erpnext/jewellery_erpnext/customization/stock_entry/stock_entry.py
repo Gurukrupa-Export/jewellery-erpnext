@@ -30,6 +30,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.entered_metal_rate 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.loss_valuation import (
 	set_process_loss_produce_rates,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	normalize_ownership,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
 	release_derived_outputs,
 	settle_derived_outputs,
@@ -98,6 +101,27 @@ def before_validate(self, method):
 def on_submit(self, method):
 	pass
 	# validate_inventory_dimention(self)
+
+
+def lane_from_batch(row, batch):
+	"""``(inventory_type, customer)`` for a row that draws ``batch`` (F5).
+
+	The batch is the physical truth, so its lane wins over whatever the row was built with.
+	The rebuild used to keep the row's lane and take only the batch's customer, which is how
+	KLHGX62F1119's company diamond -- a Regular Stock batch, no customer -- travelled as
+	"Customer Goods, no customer" through MAT-STE-18637/38/39.
+
+	A batch that records no lane of its own keeps the old behaviour: the row's lane, the
+	batch's customer.
+	"""
+	if batch.get("custom_inventory_type"):
+		return normalize_ownership(
+			batch.get("custom_inventory_type"),
+			batch.get("custom_customer"),
+			batch_no=row.get("batch_no"),
+			item_code=row.get("item_code"),
+		)
+	return row.get("inventory_type"), batch.get("custom_customer")
 
 
 class CustomStockEntry(StockEntry):
@@ -219,10 +243,9 @@ class CustomStockEntry(StockEntry):
 					if isinstance(item, dict):
 						item = frappe._dict(item)
 					if item.batch_no:
-						binfo = batch_map.get(item.batch_no) or {}
-						if not item.inventory_type:
-							item.inventory_type = binfo.get("custom_inventory_type")
-						item.customer = binfo.get("custom_customer")
+						item.inventory_type, item.customer = lane_from_batch(
+							item, batch_map.get(item.batch_no) or {}
+						)
 					if (item_map.get(item.item_code) or {}).get("variant_of") == "D":
 						attribute = grade_map.get(item.item_code)
 						diamond_sieve_size = sieve_map.get(item.item_code)
