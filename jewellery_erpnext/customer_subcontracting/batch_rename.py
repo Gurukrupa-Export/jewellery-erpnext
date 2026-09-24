@@ -172,33 +172,21 @@ def _source_row_rate(doc, row):
 	that is minting the batch instead: the Stock Entry Detail's maintained rate
 	falling back to ``basic_rate``, or the Purchase Receipt Item's ``rate``.
 
-	Metal and finding rows only (F8). ``create_child_batches`` also mints the finished piece's
+	A Manufacture's finished piece gets none (F8). ``create_child_batches`` also mints the piece's
 	batch on a customer order, and that row's rate is the whole piece -- customer gold, company
-	alloy and diamond, production cost. Stamped as a metal rate it read as Rs.8,01,654.99 per
-	"gram" on KLHGX62F1119's batch, and anything that trusts Batch Rate over ``basic_rate`` took
-	the company diamond as metal. Any other item gets no Batch Rate. A metal row's value always
-	belongs on ``custom_metal_rate`` -- never ``custom_alloy_rate``.
+	alloy and diamond, production cost. Stamped as a Batch Rate it read Rs.8,01,654.99 on
+	KLHGX62F1119's batch, and anything that trusts Batch Rate over ``basic_rate`` took the company
+	diamond as metal. Every other row keeps its rate, stones included -- the app deliberately
+	gives diamond and gemstone batches a Batch Rate (``_rate_field_for_item``).
 	"""
-	if _variant_of(row) not in METAL_TEMPLATES:
-		return 0.0
-
 	if doc.doctype == "Stock Entry":
+		if getattr(doc, "purpose", None) == "Manufacture" and row.get(
+			"is_finished_item"
+		):
+			return 0.0
 		return flt(row.get("custom_metal_rate")) or flt(row.get("basic_rate"))
 
 	return flt(row.get("rate"))
-
-
-#: Item templates whose batches carry a metal Batch Rate: metal and findings.
-METAL_TEMPLATES = ("M", "F")
-
-
-def _variant_of(row):
-	if row.get("custom_variant_of"):
-		return row.get("custom_variant_of")
-	item_code = row.get("item_code")
-	return (
-		frappe.get_cached_value("Item", item_code, "variant_of") if item_code else None
-	)
 
 
 def get_year_code():

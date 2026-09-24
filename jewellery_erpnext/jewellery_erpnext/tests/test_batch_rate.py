@@ -473,28 +473,24 @@ class TestSubcontractingBatchRate(IntegrationTestCase):
 		)
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 7420)
 
-	def test_a_finding_row_is_metal_too(self):
-		doc = SimpleNamespace(doctype="Stock Entry")
-		row = SimpleNamespace(
-			get=lambda f: {"basic_rate": 6100.0, "custom_variant_of": "F"}.get(f)
-		)
+	def test_a_finding_row_keeps_its_rate(self):
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Repack")
+		row = SimpleNamespace(get=lambda f: {"basic_rate": 6100.0}.get(f))
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 6100.0)
 
-	def test_a_finished_piece_gets_no_metal_rate(self):
+	def test_a_manufactured_piece_gets_no_batch_rate(self):
 		"""F8: KLHGX62F1119's batch was stamped Rs.8,01,654.99 -- the whole piece, diamond included."""
-		doc = SimpleNamespace(doctype="Stock Entry")
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Manufacture")
 		row = SimpleNamespace(
-			get=lambda f: {"basic_rate": 801666.57, "item_code": "EA02652-001"}.get(f)
-		)
-		with patch.object(batch_rename.frappe, "get_cached_value", return_value=None):
-			self.assertEqual(batch_rename._source_row_rate(doc, row), 0.0)
-
-	def test_a_diamond_row_gets_no_metal_rate(self):
-		doc = SimpleNamespace(doctype="Stock Entry")
-		row = SimpleNamespace(
-			get=lambda f: {"basic_rate": 37370.0, "custom_variant_of": "D"}.get(f)
+			get=lambda f: {"basic_rate": 801666.57, "is_finished_item": 1}.get(f)
 		)
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 0.0)
+
+	def test_a_stone_row_keeps_its_batch_rate(self):
+		"""Diamond and gemstone batches carry a Batch Rate by design (``_rate_field_for_item``)."""
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Manufacture")
+		row = SimpleNamespace(get=lambda f: {"basic_rate": 37370.0}.get(f))
+		self.assertEqual(batch_rename._source_row_rate(doc, row), 37370.0)
 
 
 def _doc(**fields):
