@@ -1204,7 +1204,10 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"use_serial_batch_fields": 1,
 			"serial_no": sr_no,
 			"is_finished_item": 1,
-			"custom_gross_wt": doc.total_weight,
+			# F22: ``gross_weight`` is the Stock Entry Detail field. The old key,
+			# ``custom_gross_wt``, is a Serial No field that Stock Entry Detail does not have,
+			# so every finished row on kg-gk (1,302 of 1,302) recorded 0 g.
+			"gross_weight": doc.total_weight,
 		},
 	)
 
@@ -1779,11 +1782,16 @@ def _snc_se_detail_maps(se_name):
 			MAX(inventory_type = 'Customer Goods') AS is_customer_goods
 		FROM `tabStock Entry Detail`
 		WHERE parent = %s
+			AND IFNULL(s_warehouse, '') != ''
+			AND is_finished_item = 0
 		GROUP BY item_code
 		""",
 		(se_name,),
 		as_dict=True,
 	)
+	# Consumed rows only (F27). A produced row -- the finished piece, or scrap booked back as
+	# the same metal item -- would otherwise be averaged into that item's consumed rate and
+	# could mark it Customer Goods on the strength of an output.
 	rate_map = {r.item_code: r.rate for r in se_rates}
 	inv_map = {
 		r.item_code: ("Customer Goods" if r.is_customer_goods else "Regular Stock")
@@ -1801,6 +1809,18 @@ def _stone_se_rate(consumed_rate, item_valuation_rate):
 	left blank. Returns 0.0 only when neither source has a value.
 	"""
 	return flt(consumed_rate) or flt(item_valuation_rate)
+
+
+def _keep_as_built_bom_off_default(bom):
+	"""An as-built FG BOM describes one piece; it must never become the item's default (F21).
+
+	``BOM.is_default`` is ``no_copy`` with a default of 1, so ``copy_doc`` handed every as-built
+	BOM ``is_default = 1``, and ERPNext's ``manage_default_bom`` then made it the item's default
+	and unchecked the design BOM. KLHGX62F1119's own BOM became ``EA02652-001``'s default, so any
+	flow resolving the item's default BOM got one piece's composition. With 0 here ERPNext still
+	defaults it when the item has no other submitted default, and not otherwise.
+	"""
+	bom.is_default = 0
 
 
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
@@ -1898,6 +1918,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom = frappe.copy_doc(bom_doc)
 	new_bom.gold_rate_with_gst = flt(gold_rate_with_gst)
 	new_bom.is_active = 1
+	_keep_as_built_bom_off_default(new_bom)
 	new_bom.custom_creation_doctype = self.doctype
 	new_bom.custom_creation_docname = self.name
 	new_bom.company = self.company
