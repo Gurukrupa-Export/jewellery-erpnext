@@ -3232,6 +3232,24 @@ def create_test_data():
 			)
 
 			_ensure_customer_gold_rate_fields()
+			# Same for the rate CHECK fields and the approver role (F1).
+			from jewellery_erpnext.patches.add_customer_gold_rate_check_fields import (
+				execute as _ensure_customer_gold_rate_check_fields,
+			)
+
+			_ensure_customer_gold_rate_check_fields()
+			# And the SNC design-tolerance override fields and role (F6).
+			from jewellery_erpnext.patches.add_snc_tolerance_override_fields import (
+				execute as _ensure_snc_tolerance_override_fields,
+			)
+
+			_ensure_snc_tolerance_override_fields()
+			# And the Material Request diamond-substitution fields and role (F11).
+			from jewellery_erpnext.patches.add_mr_diamond_substitution_fields import (
+				execute as _ensure_mr_diamond_substitution_fields,
+			)
+
+			_ensure_mr_diamond_substitution_fields()
 
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (

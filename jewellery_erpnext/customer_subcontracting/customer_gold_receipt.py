@@ -28,9 +28,13 @@ valuation and the liability posting are separate, later work.
 
 import frappe
 from frappe import _
-from frappe.utils import flt, getdate
+from frappe.utils import flt, getdate, nowdate
 
 from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
+	OUTLIER_BAND,
+	is_outlier,
+	rate_ratio,
+	reference_rate,
 	resolve_customer_gold_rate_for_date,
 )
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
@@ -51,6 +55,10 @@ CUSTOMER_GOODS = "Customer Goods"
 #: ``sub_utils/repack.py:377`` hardcode it -- there is no shared constant to import, and the
 #: test fixtures' copy is test code.
 METAL_PURITY_ATTRIBUTE = "Metal Purity"
+
+#: May submit a receipt whose rate is outside ``OUTLIER_BAND`` of its reference, with a reason.
+#: Created by ``patches.add_customer_gold_rate_check_fields``.
+RATE_APPROVER_ROLE = "Customer Gold Rate Approver"
 
 #: Snapshot fields written by ``set_customer_gold_rate_snapshot``. Provisioned by
 #: ``patches.add_customer_gold_rate_snapshot_fields``.
@@ -92,8 +100,110 @@ def validate_customer_gold_receipt(doc, method=None):
 	_validate_receipt_purpose(settings)
 	customer = _validate_customer(doc)
 	_validate_rows(doc, settings, customer)
+	_refuse_backdated_submit(doc)
 	rate = set_customer_gold_rate_snapshot(doc, settings)
+	check_customer_gold_rate(doc, settings, rate)
 	apply_valuation_policy(doc, rate)
+
+
+def _refuse_backdated_submit(doc):
+	"""A customer-gold receipt is submitted for the day it is submitted on (F1/F10).
+
+	Every receipt since the rate engine landed was backdated a day: the day's Gold Rates row
+	appeared only at ~23:02, the resolver needs an exact-date row, so users posted for
+	yesterday. That valued the gold at the previous close, posted the GL a day early (a 1 Oct
+	receipt would land in the 30 Sept close) and forced a repost each time. The decision
+	(2026-09-24) is no backdating and no separate rate date: once the rate job runs at 09:00,
+	15:00 and 23:00 today's rate exists, and before it does the receipt waits.
+
+	Enforced at SUBMIT only, so a draft for an earlier date can still be saved and corrected.
+	"""
+	if doc.get("_action") != "submit":
+		return
+
+	posting_date = getdate(doc.get("posting_date"))
+	today = getdate(nowdate())
+	if posting_date < today:
+		frappe.throw(
+			_(
+				"A Customer Gold receipt cannot be backdated. Posting Date {0} is before today "
+				"({1}). Set the Posting Date to today; if today's gold rate is not available "
+				"yet, submit once it is."
+			).format(
+				frappe.bold(frappe.format(posting_date, {"fieldtype": "Date"})),
+				frappe.format(today, {"fieldtype": "Date"}),
+			),
+			title=_("Backdated Customer Gold Receipt"),
+		)
+
+
+def check_customer_gold_rate(doc, settings, rate):
+	"""Compare the frozen per-gram rate with an independent reference; refuse an outlier (F1).
+
+	``KGJPL-SE-CGR-26-00011`` booked Rs.1,57,655 per gram. The company was paying Rs.15,504.85
+	per gram for the same item. The feed had quoted per 10 g while the setting said per gram,
+	and nothing compared the two -- so a liability ten times too large was booked without a
+	question. The feed switches scale (per 10 g, then per gram on 22-23 Sept, then back), so
+	no unit setting fixes it on its own, and dividing by ten would be wrong on the per-gram days.
+
+	The evidence -- reference rate, where it came from, the ratio -- is recorded on every
+	validate, so a draft already shows it. At submit, a ratio outside ``OUTLIER_BAND`` is
+	refused unless a user with ``RATE_APPROVER_ROLE`` records a reason; that user is then
+	stamped on the receipt. Nothing is ever auto-corrected.
+
+	With no reference at all (no purchase of the item, no earlier feed rate) the receipt is
+	accepted and the check records that it could not be made.
+	"""
+	reference = reference_rate(
+		settings.get("customer_24kt_item"),
+		doc.get("company"),
+		doc.get("posting_date"),
+		settings,
+	)
+	ratio = rate_ratio(rate.per_gram_rate, reference)
+
+	doc.custom_gold_rate_check_reference = reference.rate if reference else None
+	doc.custom_gold_rate_check_source = (
+		reference.source if reference else _("No reference rate available")
+	)
+	doc.custom_gold_rate_check_ratio = ratio
+	doc.custom_gold_rate_override_by = None
+
+	if not is_outlier(ratio):
+		return
+
+	message = _(
+		"The Customer Gold rate {0} per gram is {1}x the reference {2} per gram ({3}). "
+		"Rates outside {4}x-{5}x of the reference are refused: a rate quoted per 10 grams but "
+		"read as per gram is exactly ten times too high."
+	).format(
+		frappe.bold(flt(rate.per_gram_rate, 2)),
+		frappe.bold(flt(ratio, 2)),
+		frappe.bold(flt(reference.rate, 2)),
+		reference.source,
+		OUTLIER_BAND[0],
+		OUTLIER_BAND[1],
+	)
+
+	if doc.get("_action") != "submit":
+		frappe.msgprint(
+			message, title=_("Customer Gold Rate Outlier"), indicator="orange"
+		)
+		return
+
+	reason = (doc.get("custom_gold_rate_override_reason") or "").strip()
+	if not reason or RATE_APPROVER_ROLE not in frappe.get_roles():
+		frappe.throw(
+			message
+			+ " "
+			+ _(
+				"Correct the Gold Rates record, or have a {0} enter a Rate Override Reason and "
+				"submit."
+			).format(frappe.bold(RATE_APPROVER_ROLE)),
+			title=_("Customer Gold Rate Outlier"),
+		)
+
+	doc.custom_gold_rate_override_by = frappe.session.user
 
 
 def _validate_receipt_purpose(settings):
@@ -597,5 +707,12 @@ def set_customer_gold_rate_snapshot(doc, settings):
 	doc.custom_gold_rate_raw = rate.raw_rate
 	doc.custom_gold_rate_unit = rate.rate_unit
 	doc.custom_gold_rate_per_gram = rate.per_gram_rate
+	# The normalisation, so the per-gram figure can be re-derived from the raw one later.
+	doc.custom_gold_rate_factor = rate.rate_factor
+	doc.custom_gold_rate_currency = (
+		frappe.db.get_value("Company", doc.get("company"), "default_currency")
+		if doc.get("company")
+		else None
+	)
 
 	return rate

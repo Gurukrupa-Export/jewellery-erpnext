@@ -538,6 +538,16 @@ class TestSNCSeDetailMaps(IntegrationTestCase):
 		self.assertEqual(inv_map["D-NULL"], "Regular Stock")
 
 	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	def test_only_consumed_rows_are_read(self, mock_sql):
+		"""F27: the produce rows -- the finished piece, or scrap booked back as the same metal item
+		-- must not be averaged into a consumed item's rate or ownership."""
+		mock_sql.return_value = []
+		_snc_se_detail_maps("MAT-STE-TEST")
+		query = " ".join(mock_sql.call_args.args[0].split())
+		self.assertIn("IFNULL(s_warehouse, '') != ''", query)
+		self.assertIn("is_finished_item = 0", query)
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
 	def test_empty_se_returns_empty_maps(self, mock_sql):
 		mock_sql.return_value = []
 		rate_map, inv_map = _snc_se_detail_maps("MAT-STE-EMPTY")
@@ -1270,3 +1280,62 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 		with patch(f"{_SNC_MODULE}._active_sres_for", side_effect=_ReachedPriorityOne):
 			with self.assertRaises(_ReachedPriorityOne):
 				to_prepare_data_for_make_mnf_stock_entry(self._doc(3.186))
+
+
+class TestAsBuiltBomIsNotTheDefault(IntegrationTestCase):
+	"""F21: an as-built FG BOM describes one piece and must not become the item's default BOM."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_copy_doc_hands_a_new_bom_is_default_1(self):
+		"""Why the helper is needed: is_default is no_copy with default 1 on BOM."""
+		field = frappe.get_meta("BOM").get_field("is_default")
+		self.assertEqual((field.no_copy, str(field.default)), (1, "1"))
+
+	def test_the_as_built_bom_is_not_marked_default(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_keep_as_built_bom_off_default,
+		)
+
+		bom = frappe._dict(is_default=1)
+		_keep_as_built_bom_off_default(bom)
+		self.assertEqual(bom.is_default, 0)
+
+
+class TestSourceRowOwnership(IntegrationTestCase):
+	"""F23: an SNC source row takes its owner from the batch, whatever voucher wrote the balance."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _owner(self, batch, *fallback):
+		from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator import (
+			serial_number_creator as snc,
+		)
+
+		with patch.object(snc.frappe.db, "get_value", return_value=batch):
+			return snc._source_row_ownership("B-1", *fallback)
+
+	def test_a_customer_batch_names_its_customer(self):
+		batch = frappe._dict(
+			custom_inventory_type="Customer Goods", custom_customer="GJCU0009"
+		)
+		self.assertEqual(self._owner(batch), ("Customer Goods", "GJCU0009"))
+
+	def test_the_batch_wins_over_a_stale_stock_entry_row(self):
+		batch = frappe._dict(
+			custom_inventory_type="Regular Stock", custom_customer=None
+		)
+		self.assertEqual(
+			self._owner(batch, "Customer Goods", "GJCU0009"), ("Regular Stock", None)
+		)
+
+	def test_a_batch_with_no_lane_keeps_the_stock_entry_row(self):
+		batch = frappe._dict(custom_inventory_type=None, custom_customer=None)
+		self.assertEqual(
+			self._owner(batch, "Customer Goods", "GJCU0009"),
+			("Customer Goods", "GJCU0009"),
+		)

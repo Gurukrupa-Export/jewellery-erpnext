@@ -97,6 +97,12 @@ _ACCOUNTS = {
 	"Payable - A": _account(account_type="Payable"),
 	"Receivable - A": _account(account_type="Receivable"),
 	"Stock Type - A": _account(account_type="Stock"),
+	#: The KGJPL shape behind KGJPL-JE-JE-26-00018: a Liability chosen as the adjustment account.
+	"Advances from Customers - A": _account(),
+	"Group Expense - A": _account(root_type="Expense", is_group=1),
+	"Disabled Expense - A": _account(root_type="Expense", disabled=1),
+	"Expense - B": _account(root_type="Expense", company=COMPANY_B),
+	"Income - A": _account(root_type="Income"),
 }
 
 
@@ -349,11 +355,69 @@ class TestCustomerGoldSettings(IntegrationTestCase):
 		"""Guard the guards -- the normal configuration must remain valid."""
 		validate_customer_gold_settings(_settings())
 
-	def test_cogs_account_root_type_is_not_enforced(self, _mock):
-		"""Classification is pending Finance approval, so any non-group company account passes."""
+	def test_an_expense_adjustment_account_passes(self, _mock):
 		validate_customer_gold_settings(
 			_settings(company_accounts=[_row(1, cogs=COGS_A)])
 		)
+
+	def test_an_income_adjustment_account_is_left_to_finance(self, _mock):
+		"""Only Liability is certainly wrong. Expense vs Income is Finance's call, not pinned here."""
+		validate_customer_gold_settings(
+			_settings(company_accounts=[_row(1, cogs="Income - A")])
+		)
+
+	# ------------------------------------------------ F4: the adjustment account's own rules
+	def test_a_liability_adjustment_account_blocks(self, _mock):
+		"""F4. KGJPL-JE-JE-26-00018 posted Dr Customer Goods Receive / Cr Advances from
+		Customers -- two liabilities. The obligation moved to a party-less advance and nothing
+		was discharged. Every earlier check passed it: the adjustment account had no root-type rule.
+		"""
+		with self._blocks("would move the obligation"):
+			validate_customer_gold_settings(
+				_settings(
+					company_accounts=[
+						_row(1, liability=LIAB_A, cogs="Advances from Customers - A")
+					]
+				)
+			)
+
+	def test_a_group_adjustment_account_blocks(self, _mock):
+		with self._blocks("is a group account"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, cogs="Group Expense - A")])
+			)
+
+	def test_a_disabled_adjustment_account_blocks(self, _mock):
+		with self._blocks("is disabled"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, cogs="Disabled Expense - A")])
+			)
+
+	def test_another_companys_adjustment_account_blocks(self, _mock):
+		with self._blocks("belongs to Company"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, cogs="Expense - B")])
+			)
+
+	def test_a_nonexistent_adjustment_account_blocks(self, _mock):
+		with self._blocks("does not exist"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, cogs="No Such Account - A")])
+			)
+
+	def test_posting_time_messages_name_the_document_not_a_row(self, _mock):
+		"""The same rules run at posting, where there is no settings row to point at."""
+		from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+			validate_settlement_accounts,
+		)
+
+		with self._blocks("Delivery Note DN-1:"):
+			validate_settlement_accounts(
+				COMPANY_A,
+				LIAB_A,
+				"Advances from Customers - A",
+				where="Delivery Note DN-1",
+			)
 
 	# ------------------------------------------------------- the two legs must differ
 	def test_identical_liability_and_cogs_accounts_block(self, _mock):
@@ -425,9 +489,7 @@ class TestCustomerGoldSettings(IntegrationTestCase):
 		with self._blocks("must be batch controlled"):
 			validate_customer_gold_settings(
 				_settings(
-					customer_gold_items=[
-						frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH)
-					]
+					customer_gold_items=[frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH)]
 				)
 			)
 
@@ -436,9 +498,7 @@ class TestCustomerGoldSettings(IntegrationTestCase):
 		with self._blocks("Row #1"):
 			validate_customer_gold_settings(
 				_settings(
-					customer_gold_items=[
-						frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH)
-					]
+					customer_gold_items=[frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH)]
 				)
 			)
 

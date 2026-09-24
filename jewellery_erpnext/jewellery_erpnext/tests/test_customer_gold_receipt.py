@@ -149,6 +149,7 @@ def _db_get_value(doctype, name, fieldname=None, as_dict=False):
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
 class TestCustomerGoldReceiptRules(IntegrationTestCase):
 	"""Receipt eligibility, with the feature enabled."""
 
@@ -361,6 +362,7 @@ NEW_RATE = frappe._dict(
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
 class TestCustomerGoldBatchIntegrity(IntegrationTestCase):
 	"""C06 -- item, company and expiry/disabled, beyond the two ownership checks."""
 
@@ -444,6 +446,7 @@ class TestCustomerGoldBatchIntegrity(IntegrationTestCase):
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
 class TestCustomerGoldRateSnapshot(IntegrationTestCase):
 	"""The receipt freezes the resolved rate as audit evidence."""
 
@@ -627,6 +630,7 @@ class TestPureQtyExclusion(IntegrationTestCase):
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
 class TestCustomerGoldValuationPolicy(IntegrationTestCase):
 	"""C01 -- which valuation fields a receipt stamps, per configured policy.
 

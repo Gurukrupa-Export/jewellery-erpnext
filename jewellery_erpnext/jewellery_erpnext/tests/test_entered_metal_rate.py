@@ -32,6 +32,7 @@ class _Row(SimpleNamespace):
 def _row(**fields):
 	defaults = {
 		"item_code": "M-G-24KT-99.9-Y",
+		"custom_variant_of": "M",
 		"qty": 10.0,
 		"transfer_qty": 10.0,
 		"s_warehouse": None,

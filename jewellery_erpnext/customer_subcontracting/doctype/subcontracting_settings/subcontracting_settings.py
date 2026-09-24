@@ -127,9 +127,9 @@ def validate_customer_gold_receipt_config(doc):
 	for row in doc.get("customer_gold_items") or []:
 		if not row.item:
 			frappe.throw(
-				_("Row #{0}: Item is mandatory in Additional Customer Gold Items.").format(
-					row.idx
-				)
+				_(
+					"Row #{0}: Item is mandatory in Additional Customer Gold Items."
+				).format(row.idx)
 			)
 		if row.item in seen_items:
 			frappe.throw(
@@ -306,27 +306,56 @@ def validate_customer_gold_accounts(doc):
 			)
 		seen[row.company] = row.idx
 
-		_validate_account(
+		validate_settlement_accounts(
+			row.company,
 			row.customer_gold_liability_account,
-			row.company,
-			row.idx,
-			_("Customer Gold Liability Account"),
-			expected_root_type="Liability",
-		)
-		# Root type is deliberately not enforced for the COGS Adjustment account --
-		# its classification is pending Finance approval. Company / non-group / existence
-		# are still enforced so it cannot point at another company's ledger.
-		_validate_account(
 			row.customer_gold_cogs_adjustment_account,
-			row.company,
-			row.idx,
-			_("Customer Gold COGS Adjustment Account"),
+			where=_("Row #{0}").format(row.idx),
 		)
 
-		_reject_identical_accounts(row)
+
+def validate_settlement_accounts(
+	company, liability_account, cogs_adjustment_account, where
+):
+	"""The rules for the two settlement legs, run at settings save AND again at posting (F4).
+
+	The settlement Journal Entry debits the liability account and credits the COGS Adjustment
+	account. Both must be enabled ledger accounts of ``company``; the liability must be root type
+	Liability; the adjustment must NOT be, and must not be the same account.
+
+	WHY TWICE
+	---------
+	Save-time validation runs only while the feature flag is on, and a configuration can change
+	after it was saved -- the KGJPL row that posted ``KGJPL-JE-JE-26-00018`` had never been
+	validated at all. So ``_build_settlement_entry`` calls this again before it inserts anything.
+	``where`` says which: "Row #1" on the settings form, the document being posted otherwise.
+
+	WHY THE ADJUSTMENT ACCOUNT MAY NOT BE A LIABILITY
+	-------------------------------------------------
+	``KGJPL-JE-JE-26-00018`` posted Dr Customer Goods Receive / Cr Advances from Customers:
+	liability to liability. It passed every earlier check because the adjustment account had no
+	root-type rule. The customer's obligation did not fall; it moved to a party-less advance.
+	Which root type the adjustment SHOULD be (Expense, as a COGS adjustment, or Income) is
+	Finance's decision and is not pinned here. Liability is the one that is certainly wrong.
+	"""
+	_validate_account(
+		liability_account,
+		company,
+		where,
+		_("Customer Gold Liability Account"),
+		expected_root_type="Liability",
+	)
+	_reject_identical_accounts(liability_account, cogs_adjustment_account, where)
+	_validate_account(
+		cogs_adjustment_account,
+		company,
+		where,
+		_("Customer Gold COGS Adjustment Account"),
+		forbidden_root_type="Liability",
+	)
 
 
-def _reject_identical_accounts(row):
+def _reject_identical_accounts(liability, cogs, where):
 	"""The two settlement legs must land on different ledgers.
 
 	``_build_settlement_entry`` debits the liability account and credits the COGS adjustment
@@ -348,28 +377,28 @@ def _reject_identical_accounts(row):
 	It passed every existing check, because the liability gate wants root type ``Liability`` --
 	which that account is -- and the COGS gate has no root-type rule to fail.
 	"""
-	liability = row.customer_gold_liability_account
-	cogs = row.customer_gold_cogs_adjustment_account
 	if not liability or not cogs or liability != cogs:
 		return
 
 	frappe.throw(
 		_(
-			"Row #{0}: Customer Gold Liability Account and Customer Gold COGS Adjustment "
+			"{0}: Customer Gold Liability Account and Customer Gold COGS Adjustment "
 			"Account are both set to {1}. The settlement Journal Entry debits the first and "
 			"credits the second, so a single account would post {2} against itself and the "
 			"liability would never reduce. Configure a separate account -- typically an "
 			"Expense account -- for the COGS Adjustment."
-		).format(row.idx, frappe.bold(liability), frappe.bold(liability)),
+		).format(where, frappe.bold(liability), frappe.bold(liability)),
 		title=_("Customer Gold Accounts Must Differ"),
 	)
 
 
-def _validate_account(account, company, idx, label, expected_root_type=None):
+def _validate_account(
+	account, company, where, label, expected_root_type=None, forbidden_root_type=None
+):
 	if not account:
 		frappe.throw(
-			_("Row #{0}: {1} is mandatory when Customer Gold Flow is enabled.").format(
-				idx, frappe.bold(label)
+			_("{0}: {1} is mandatory when Customer Gold Flow is enabled.").format(
+				where, frappe.bold(label)
 			),
 			title=_("Customer Gold Configuration Incomplete"),
 		)
@@ -382,13 +411,13 @@ def _validate_account(account, company, idx, label, expected_root_type=None):
 	)
 	if not details:
 		frappe.throw(
-			_("Row #{0}: Account {1} does not exist.").format(idx, frappe.bold(account))
+			_("{0}: Account {1} does not exist.").format(where, frappe.bold(account))
 		)
 
 	if details.is_group:
 		frappe.throw(
-			_("Row #{0}: {1} {2} is a group account. Select a ledger account.").format(
-				idx, label, frappe.bold(account)
+			_("{0}: {1} {2} is a group account. Select a ledger account.").format(
+				where, label, frappe.bold(account)
 			)
 		)
 
@@ -397,9 +426,7 @@ def _validate_account(account, company, idx, label, expected_root_type=None):
 		# so without this a disabled ledger is accepted here and only surfaces as a failed
 		# posting later. Deliberately going beyond core.
 		frappe.throw(
-			_("Row #{0}: {1} {2} is disabled.").format(
-				idx, label, frappe.bold(account)
-			),
+			_("{0}: {1} {2} is disabled.").format(where, label, frappe.bold(account)),
 			title=_("Account Disabled"),
 		)
 
@@ -412,10 +439,10 @@ def _validate_account(account, company, idx, label, expected_root_type=None):
 		# a Stock Entry supplies none -- "Supplier is required against Payable account".
 		frappe.throw(
 			_(
-				"Row #{0}: {1} {2} is a {3} account, which requires a Party on every entry. "
+				"{0}: {1} {2} is a {3} account, which requires a Party on every entry. "
 				"Customer Gold postings do not carry one."
 			).format(
-				idx, label, frappe.bold(account), frappe.bold(details.account_type)
+				where, label, frappe.bold(account), frappe.bold(details.account_type)
 			),
 			title=_("Unsupported Account Type"),
 		)
@@ -425,17 +452,17 @@ def _validate_account(account, company, idx, label, expected_root_type=None):
 		# when the difference account is of type Stock.
 		frappe.throw(
 			_(
-				"Row #{0}: {1} {2} is a Stock account and cannot be used as the Customer Gold contra account."
-			).format(idx, label, frappe.bold(account)),
+				"{0}: {1} {2} is a Stock account and cannot be used as the Customer Gold contra account."
+			).format(where, label, frappe.bold(account)),
 			title=_("Unsupported Account Type"),
 		)
 
 	if details.company != company:
 		frappe.throw(
 			_(
-				"Row #{0}: {1} {2} belongs to Company {3}, but the Customer Gold configuration is for Company {4}."
+				"{0}: {1} {2} belongs to Company {3}, but the Customer Gold configuration is for Company {4}."
 			).format(
-				idx,
+				where,
 				label,
 				frappe.bold(account),
 				frappe.bold(details.company),
@@ -445,15 +472,28 @@ def _validate_account(account, company, idx, label, expected_root_type=None):
 
 	if expected_root_type and details.root_type != expected_root_type:
 		frappe.throw(
-			_(
-				"Row #{0}: {1} {2} is a {3} account, but it must be of root type {4}."
-			).format(
-				idx,
+			_("{0}: {1} {2} is a {3} account, but it must be of root type {4}.").format(
+				where,
 				label,
 				frappe.bold(account),
 				frappe.bold(details.root_type),
 				frappe.bold(expected_root_type),
 			)
+		)
+
+	if forbidden_root_type and details.root_type == forbidden_root_type:
+		frappe.throw(
+			_(
+				"{0}: {1} {2} is a {3} account. The settlement credits it to release the "
+				"customer's gold liability, so a {3} account would move the obligation instead "
+				"of discharging it. Select an Expense (COGS adjustment) account."
+			).format(
+				where,
+				label,
+				frappe.bold(account),
+				frappe.bold(details.root_type),
+			),
+			title=_("Invalid Customer Gold Adjustment Account"),
 		)
 
 
