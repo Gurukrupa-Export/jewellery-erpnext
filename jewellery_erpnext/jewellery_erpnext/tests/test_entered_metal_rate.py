@@ -4,10 +4,11 @@
 """A rate typed on a Customer Goods row must reach the Batch that row mints.
 
 ERPNext's ``set_basic_rate`` clears ``basic_rate`` on every allow-zero-valuation
-row, so ``Customer Goods Received`` batches were minted with no Batch Rate and
-every Repack-Metal Conversion downstream blended 0 from them. The capture/restore
-pair parks the entered rate on ``custom_metal_rate``, which both batch-stamping
-readers already prefer over ``basic_rate``.
+row, so ``Customer Goods Received`` batches were minted with no Batch Rate. The
+capture/restore pair parks the entered rate on ``custom_metal_rate``, which both
+batch-stamping readers prefer over ``valuation_rate`` and ``basic_rate``. (A
+Repack-Metal Conversion downstream no longer blends from it: since F26 its target
+keeps its own ledger rate.)
 
 DB-free per the suite convention: ``setUpClass`` is neutralized and the logic runs
 against ``SimpleNamespace`` rows.

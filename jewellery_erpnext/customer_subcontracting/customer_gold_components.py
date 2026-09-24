@@ -576,9 +576,10 @@ def record_batch_components(target_batch, sources, voucher_type=None):
 	#    would throw on a batch that is already perfectly valid. Since the caller swallows
 	#    exceptions (it must not fail a stock movement), provenance would simply never be
 	#    recorded -- and nothing would say so.
-	# 2. **It re-runs ``Batch.on_update``**, which blends ``custom_metal_rate`` /
+	# 2. **It re-ran ``Batch.on_update``**, which blended ``custom_metal_rate`` /
 	#    ``custom_alloy_rate`` from the origin entries. Writing provenance must not silently
-	#    re-blend a batch's valuation as a side effect.
+	#    re-blend a batch's valuation as a side effect. (That blend is retired since F26 --
+	#    Batch Rate is the minting stamp -- but reason 1 alone still rules out a re-save.)
 	#
 	# Deleting and re-inserting (rather than diffing) is what makes this idempotent: a repost
 	# or a re-submit converges on the same table instead of appending to it.

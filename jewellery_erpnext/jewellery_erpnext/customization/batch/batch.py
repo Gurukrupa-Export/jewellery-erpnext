@@ -237,7 +237,8 @@ def generate_unique_alphanumeric():
 
 # Purities within this tolerance (percentage points) count as equal, so a
 # same-purity conversion (e.g. 18KT metal -> 18KT finding) inherits the source
-# Batch Rate unchanged instead of being re-scaled.
+# Batch Rate unchanged instead of being re-scaled. Used by the retired blend's
+# one-off backfill (patches/backfill_blended_batch_metal_rate) -- see on_update.
 PURITY_TOLERANCE = 0.01
 
 
@@ -274,192 +275,30 @@ def _resolve_metal_purity(item_code):
 		return 0.0
 
 
-# Which Batch fields may hold a source row's own rate, in preference order. See
-# ``_origin_row_rate`` for why the alloy side takes two and the metal side one.
+# Which Batch fields may hold a source row's own rate, in preference order. Only
+# patches/backfill_blended_batch_metal_rate reads these now: the blend they served is retired
+# (see on_update).
 ALLOY_SOURCE_RATE_FIELDS = ("custom_alloy_rate", "custom_metal_rate")
 METAL_SOURCE_RATE_FIELDS = ("custom_metal_rate",)
 
 
-def _source_batch_rates(rows):
-	"""``{batch_no: {custom_metal_rate, custom_alloy_rate}}`` for every origin row, in one query."""
-	names = {row.batch_no for row in rows if row.batch_no}
-	if not names:
-		return {}
+def on_update(doc, method=None):
+	"""Retired (F26). No longer registered in hooks.py; kept so a stale hooks cache cannot
+	break a Batch save between deploy and cache clear.
 
-	return {
-		b.name: b
-		for b in frappe.get_all(
-			"Batch",
-			filters={"name": ("in", list(names))},
-			fields=["name", "custom_metal_rate", "custom_alloy_rate"],
-		)
-	}
+	This used to restate a Repack-Metal Conversion target's ``custom_metal_rate`` and
+	``custom_alloy_rate`` from its origin entries on every provenance save: a qty-weighted,
+	purity-scaled mix of the source batches' rates. That overwrote the rate the batch was
+	minted with -- the minting row's own rate, which is the ledger's incoming rate and so the
+	figure batch-wise valuation charges on every issue (or, on a zero-valued customer row, the
+	rate the user entered). The mix also left the company alloy out of the metal rate,
+	divided by 100 instead of the source purity, and depended on an alloy classifier that
+	differs between sites; on the 22KT batch of the KLHGX62F1119 audit it read 144,648.4625
+	against a ledger rate of 144,642.733945.
 
-
-def _origin_row_rate(row, fieldnames, batch_rates):
-	"""The rate to blend for one origin row: the SOURCE BATCH's own rate first.
-
-	``row.rate`` is a COPY of ``Serial and Batch Entry.incoming_rate``, frozen by
-	``serial_and_batch_bundle.doc_events.utils.update_parent_batch_id`` on bundle ``after_insert``.
-	It is a read of a value that is not final yet.
-
-	``StockEntry.on_submit`` creates the bundles (``make_bundle_using_old_serial_batch_fields``)
-	BEFORE ``update_stock_ledger`` submits and prices them, and ERPNext does not price a Stock Entry
-	bundle while it is a draft (``serial_and_batch_bundle.py:140-142``). So any produced row that
-	already carries a ``batch_no`` at submit -- which is every batch
-	``customer_subcontracting.batch_rename`` mints for a customer lane, and deliberately NOT what a
-	Regular lane gets -- freezes 0 while the real rate lands milliseconds later. Measured on kg-gk:
-	origin rows written at 12:01:55.032029, the rates they wanted at .156075 and .174223.
-
-	That is why the frozen copy is 0 on every customer-lane origin row on the site while 33,512 of
-	33,784 rows overall are fine: it is per-flow, not per-run, and for conversions it never works.
-
-	The source Batch's maintained rate has no such timing -- it was stamped one voucher earlier and
-	is not written by this transaction. Preferring it also converges this blend with
-	``batch/doc_events/utils.carry_rates_from_source_batches``, which performs the identical
-	two-pool blend for hand-built batches from exactly this input, and which is demonstrably the
-	path that produces correct numbers here.
-
-	``fieldnames`` is a PREFERENCE ORDER, not one field, because the writer and this reader do not
-	agree on what "alloy" means. ``batch/doc_events/utils.py`` picks the field to stamp from
-	``Item Group.custom_is_alloy_group`` (and ``variant_of in ("M", "F")``); ``_is_alloy`` below asks
-	whether the item group is literally ``"Alloy"`` or the item carries a single attribute. Where that
-	flag is unset the two disagree, and the flag is a per-site master: it is SET on gk and UNSET on
-	kg-gk. So on kg-gk the writer stamps an alloy batch's rate onto ``custom_metal_rate`` while this
-	blend looks for it on ``custom_alloy_rate`` and reads 0 -- measured there, 0 of 6 Alloy-group
-	batches carry ``custom_alloy_rate`` and all 5 that are priced carry ``custom_metal_rate``. That is
-	why MAT-STE-17967 minted a Customer Goods batch with Alloy Rate 0 while its Regular Stock sibling,
-	blended off the same source batch, got 62.
-
-	An ALLOY source therefore accepts either field: the batch holds nothing but alloy, so whichever
-	field is populated describes alloy. A METAL source accepts ``custom_metal_rate`` ONLY. The
-	asymmetry is load-bearing, not tidiness -- on gk, 27 non-alloy batches carry ``custom_alloy_rate``
-	with ``custom_metal_rate`` at 0, and on a metal batch that field holds the alloy blended INTO the
-	metal, a different quantity. Accepting it as a metal rate would value gold at alloy prices.
-
-	The frozen ledger rate stays as the last fallback, so a source batch with no maintained rate
-	blends exactly as it does today.
+	Batch Rate is now the minting stamp alone: ``batch_rename._source_row_rate`` for batches
+	minted by hand, ``doc_events.utils._source_row_rate`` for the rest. Origin entries are
+	still recorded as provenance, and Batch Component is unchanged. Batches already restated
+	by the blend are re-stamped by ``patches/restamp_batch_rate_from_ledger``.
 	"""
-	source = batch_rates.get(row.batch_no) or {}
-	for fieldname in fieldnames:
-		rate = flt(source.get(fieldname))
-		if rate:
-			return rate
-	return flt(row.rate)
-
-
-def _stamp_blended_rate(doc, fieldname, value, pool_qty):
-	"""Write a blended pool rate only when the blend actually carries information.
-
-	Two refusals, each of which used to write a 0 over a correct rate:
-
-	* An EMPTY POOL is uncomputable, not zero. ``metal_qty``/``alloy_qty`` count the rows that
-	  landed in the pool, so 0 means the lane consumed nothing of that kind. A metal-only
-	  conversion says nothing about the target's alloy rate and must not erase the one the minting
-	  row stamped.
-	* A pool that BLENDS TO 0 over a rate that is already set is missing information, never a
-	  valuation. The ways to reach it are an unpriced draft bundle (see ``_origin_row_rate``), a
-	  source batch that never got a rate, or a deleted source. In all three the rate
-	  ``batch_rename.create_child_batches`` stamped at ``before_submit`` is the better number.
-
-	Close to ``batch/doc_events/utils._can_stamp_rate``'s contract -- "an empty field is fillable;
-	a set rate is not clobbered" -- but deliberately not a call to it, because that helper is
-	stricter in the one direction this function must stay permissive in: with a rate already
-	stored and the batch no longer new, it refuses EVERY rewrite, including a legitimate non-zero
-	blend. That is right for the ``validate``-time stamper it guards, whose job is to fill a new
-	batch once; it would defeat this one, whose job is to restate the rate from the sources each
-	time they change. Here only an UNINFORMATIVE write is refused.
-
-	(An earlier version of this comment justified the duplication by claiming ``__islocal`` is
-	still set while ``on_update`` runs inside ``insert()``. That is false -- ``db_insert`` clears
-	it at ``base_document.py:802``, before ``run_post_save_methods`` at ``document.py:513`` -- so
-	``is_new()`` is already False here. The real reason is the paragraph above.)
-
-	A non-zero blend still overwrites. Only 0-over-non-zero is refused.
-	"""
-	if not pool_qty:
-		return
-
-	if not flt(value) and flt(doc.get(fieldname)):
-		return
-
-	doc.db_set(fieldname, value)
-
-
-def on_update(doc, method):
-	if not doc.flags.is_update_origin_entries:
-		return
-
-	if not doc.custom_origin_entries:
-		return
-
-	if doc.reference_doctype != "Stock Entry" or not doc.custom_voucher_detail_no:
-		return
-
-	se_type = frappe.db.get_value(
-		doc.reference_doctype, doc.reference_name, "stock_entry_type"
-	)
-	if se_type != "Repack-Metal Conversion":
-		return
-
-	target_purity = _resolve_metal_purity(doc.item)
-
-	def _is_alloy(item_code):
-		item = frappe.get_doc("Item", item_code)
-		res = False
-
-		if item.item_group == "Alloy":
-			res = True
-		elif len(item.attributes) == 1:
-			res = True
-
-		return res
-
-	# Qty-weighted blend of the source batches' Batch Rates. Metal sources are
-	# converted to the target purity (Batch Rate = source rate x target_purity / 100),
-	# except when source and target purity match, where the rate is inherited
-	# unchanged. Alloy sources are blended separately into custom_alloy_rate.
-	# Resolved per pool, so an alloy source's rate is read off ``custom_alloy_rate`` and a metal
-	# source's off ``custom_metal_rate`` -- the two pools must not cross-contaminate.
-	batch_rates = _source_batch_rates(doc.custom_origin_entries)
-
-	alloy_value = alloy_qty = 0.0
-	metal_value = metal_qty = 0.0
-
-	for row in doc.custom_origin_entries:
-		row_qty = flt(row.qty) or 1.0
-		if _is_alloy(row.item_code):
-			alloy_value += (
-				_origin_row_rate(row, ALLOY_SOURCE_RATE_FIELDS, batch_rates) * row_qty
-			)
-			alloy_qty += row_qty
-		else:
-			source_purity = _resolve_metal_purity(row.item_code)
-			source_rate = _origin_row_rate(row, METAL_SOURCE_RATE_FIELDS, batch_rates)
-			if target_purity and abs(source_purity - target_purity) > PURITY_TOLERANCE:
-				converted_rate = (source_rate * target_purity) / 100
-			else:
-				converted_rate = source_rate
-			metal_value += converted_rate * row_qty
-			metal_qty += row_qty
-
-	alloy_rate = (alloy_value / alloy_qty) if alloy_qty else 0.0
-	metal_rate = (metal_value / metal_qty) if metal_qty else 0.0
-
-	_stamp_blended_rate(doc, "custom_alloy_rate", alloy_rate, alloy_qty)
-
-	# An ALLOY target never takes the metal blend. Nothing stops a conversion from producing an
-	# alloy item -- gk holds three such batches (GE2D082-ML7-14, -15, GE2D082-MAL-03, all Nov-Dec
-	# 2024) and no validation blocks it -- and without this gate such a batch would be stamped with
-	# the blended rate of the GOLD it was made from. That is the one way an alloy batch can acquire a
-	# ``custom_metal_rate`` that is not its own rate, which is precisely the case
-	# ``ALLOY_SOURCE_RATE_FIELDS`` cannot distinguish: a later conversion consuming that batch as an
-	# alloy source would read the gold rate as the alloy's price. Replayed on the GE2D082-ML7-14
-	# shape that is 6436.61 instead of 62.00, a 104x over-valuation.
-	#
-	# NOT symmetric. A METAL target legitimately carries both: ``custom_metal_rate`` is its own
-	# value and ``custom_alloy_rate`` is the alloy blended into it. MAT-STE-17967's 22KT batch is
-	# exactly that -- 145882.50 and 62.00 -- so gating the alloy stamp too would break the ordinary
-	# case this module exists to serve.
-	if not _is_alloy(doc.item):
-		_stamp_blended_rate(doc, "custom_metal_rate", metal_rate, metal_qty)
+	return
