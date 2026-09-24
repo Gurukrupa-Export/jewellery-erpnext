@@ -146,7 +146,6 @@ class ManufacturingWorkOrder(Document):
 						SUM(other_wt) AS other_wt,
 						SUM(received_gross_wt) AS received_gross_wt,
 						SUM(received_net_wt) AS received_net_wt,
-						SUM(loss_wt) AS loss_wt,
 						SUM(diamond_pcs) AS diamond_pcs,
 						SUM(gemstone_pcs) AS gemstone_pcs
 					FROM `tabManufacturing Operation`
@@ -168,9 +167,11 @@ class ManufacturingWorkOrder(Document):
 					self.other_wt = flt(agg.get("other_wt"))
 					self.received_gross_wt = flt(agg.get("received_gross_wt"))
 					self.received_net_wt = flt(agg.get("received_net_wt"))
-					self.loss_wt = flt(agg.get("loss_wt"))
 					self.diamond_pcs = flt(agg.get("diamond_pcs"))
 					self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
+					# Loss is the one weight that does NOT live on the latest operation (F14):
+					# see cumulative_loss_wt. Summed over the latest operations it was always 0.
+					self.loss_wt = cumulative_loss_wt(sibling_mwos)
 
 		# The carat->gram twins are DERIVED, never summed: SUM(diamond_wt_in_gram) over
 		# siblings adds values that were each already rounded to 3, so it drifts from
@@ -883,6 +884,32 @@ class ManufacturingWorkOrder(Document):
 	@frappe.whitelist()
 	def create_mfg_entry(self):
 		create_se_entry(self)
+
+
+def cumulative_loss_wt(sibling_mwos):
+	"""The FG work order's process loss: loss_wt summed over EVERY operation of its siblings.
+
+	Every other header weight is a balance, so the latest operation carries it forward and
+	sync_mwo_weights reads it there. loss_wt is not a balance -- it is the change measured
+	on the one operation that was received (Employee IR writes received_gross_wt - gross_wt
+	on it), and the next operation starts at 0 (the field is no_copy and Department IR zeroes
+	it). Summed over the latest operations it was therefore always 0 (F14). Each operation
+	holds only its own change, so the sum counts every loss exactly once.
+
+	The sign is kept: negative is a loss, positive a gain. Reports that list operations
+	must not also list the FG work order, or the loss shows twice -- they filter for_fg = 0.
+	"""
+	if not sibling_mwos:
+		return 0.0
+	total = frappe.db.sql(
+		"""
+		SELECT COALESCE(SUM(loss_wt), 0)
+		FROM `tabManufacturing Operation`
+		WHERE manufacturing_work_order IN %s
+		""",
+		(tuple(sibling_mwos),),
+	)
+	return flt(total[0][0], 3) if total else 0.0
 
 
 @frappe.whitelist()
