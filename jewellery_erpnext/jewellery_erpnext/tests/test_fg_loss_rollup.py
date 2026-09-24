@@ -375,3 +375,12 @@ class TestBackfillFgLossWt(IntegrationTestCase):
 			],
 		)
 		self.assertTrue(fake.committed)
+
+
+class TestBackfillFgLossQueries(IntegrationTestCase):
+	"""The backfill's reads, against the real tables, matching nothing. Read-only."""
+
+	def test_detect_runs_against_the_real_tables(self):
+		from jewellery_erpnext.patches import backfill_fg_loss_wt as patch_mod
+
+		self.assertEqual(patch_mod.detect(mwos=["__F14_NO_SUCH_MWO__"]), ([], [], []))
