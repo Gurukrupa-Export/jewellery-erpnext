@@ -1,9 +1,9 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
-from unittest.mock import patch
-
 import re
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
@@ -1946,3 +1946,1287 @@ class TestMaterialRequestOwnershipStampPersists(IntegrationTestCase):
 		row.update({"custom_is_customer_item": 1})
 
 		self.assertEqual(row.get_valid_dict().get("custom_is_customer_item"), 1)
+
+
+class TestCancelAllLinked(UnitTestCase):
+	"""PMO1 with its own MWO / Department IR / Stock Entries; PMO2 and a Sales Order hang off SE3."""
+
+	GRAPH = {
+		("Parent Manufacturing Order", "PMO1"): {
+			"Manufacturing Work Order": ["MWO1"],
+			"Stock Entry": ["SE1"],
+		},
+		("Manufacturing Work Order", "MWO1"): {
+			"Department IR": ["DIR1"],
+			"Stock Entry": ["SE2"],
+		},
+		("Department IR", "DIR1"): {"Stock Entry": ["SE3", "SE1"]},
+		("Stock Entry", "SE3"): {
+			"Serial and Batch Bundle": ["SBB3"],
+			# another PMO and a shared upstream record: never walked into
+			"Parent Manufacturing Order": ["PMO2"],
+			"Sales Order": ["SO-SHARED"],
+		},
+		("Serial and Batch Bundle", "SBB3"): {"Sales Order": ["SO-UNRELATED"]},
+		("Parent Manufacturing Order", "PMO2"): {"Stock Entry": ["SE-OF-PMO2"]},
+	}
+
+	def _children(self, _tree, parent_dt, parent_names):
+		out = {}
+		for name in parent_names:
+			for dt, names in self.GRAPH.get((parent_dt, name), {}).items():
+				out.setdefault(dt, []).extend(names)
+		return out
+
+	def _plan(self, created=None):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		created = created or {}
+		with (
+			patch.object(
+				cancel_all,
+				"_creation_times",
+				side_effect=lambda keys: {k: created[k] for k in keys if k in created},
+			),
+			patch.object(cancel_all, "_shared_upstream", return_value=([], {})),
+			patch.object(
+				cancel_all.LeveledSubmittableTree,
+				"get_next_level_children",
+				autospec=True,
+				side_effect=self._children,
+			),
+			patch.object(cancel_all, "get_exempted_doctypes", return_value=[]),
+		):
+			return cancel_all.get_cancel_plan("PMO1")
+
+	def test_plan_is_this_pmo_and_what_was_made_from_it(self):
+		plan = self._plan()
+
+		self.assertEqual(plan[-1], ("Parent Manufacturing Order", "PMO1"))
+		self.assertEqual(len(plan), len(set(plan)))
+		self.assertEqual(
+			set(plan),
+			{
+				("Manufacturing Work Order", "MWO1"),
+				("Department IR", "DIR1"),
+				("Stock Entry", "SE1"),
+				("Stock Entry", "SE2"),
+				("Stock Entry", "SE3"),
+				("Parent Manufacturing Order", "PMO1"),
+			},
+		)
+
+	def test_other_pmos_and_shared_upstream_are_never_walked_into(self):
+		plan = self._plan()
+
+		self.assertNotIn(("Parent Manufacturing Order", "PMO2"), plan)
+		self.assertNotIn(("Stock Entry", "SE-OF-PMO2"), plan)
+		self.assertNotIn(("Sales Order", "SO-SHARED"), plan)
+
+	def test_newest_created_goes_first(self):
+		plan = self._plan(
+			created={
+				("Manufacturing Work Order", "MWO1"): "2026-09-10 10:00:00",
+				("Department IR", "DIR1"): "2026-09-11 10:00:00",
+				("Stock Entry", "SE1"): "2026-09-12 10:00:00",
+				("Stock Entry", "SE2"): "2026-09-13 10:00:00",
+				("Stock Entry", "SE3"): "2026-09-14 10:00:00",
+			}
+		)
+
+		self.assertEqual(
+			plan,
+			[
+				("Stock Entry", "SE3"),
+				("Stock Entry", "SE2"),
+				("Stock Entry", "SE1"),
+				("Department IR", "DIR1"),
+				("Manufacturing Work Order", "MWO1"),
+				("Parent Manufacturing Order", "PMO1"),
+			],
+		)
+
+	def test_unknown_creation_is_kept_and_ordered_by_depth(self):
+		plan = self._plan(created={})
+
+		self.assertEqual(len(plan), 6)
+		self.assertLess(
+			plan.index(("Stock Entry", "SE3")),
+			plan.index(("Manufacturing Work Order", "MWO1")),
+		)
+
+	def _shared(
+		self, pmo_links, docstatus, referrers, so_quotations=(), item_tracking_boms=None
+	):
+		"""Runs _shared_upstream against fake records: referrers[X] = submitted records using X."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		def get_value(dt, dn, fields, as_dict=False):
+			if dt == "Parent Manufacturing Order":
+				return frappe._dict(pmo_links)
+			return docstatus.get((dt, dn), 1)
+
+		downstream = {
+			("Parent Manufacturing Order", "PMO1"),
+			("Manufacturing Work Order", "MWO1"),
+		}
+		with (
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch.object(
+				frappe,
+				"get_all",
+				side_effect=lambda dt, filters, pluck, distinct: list(so_quotations)
+				if pluck == "prevdoc_docname"
+				else list((item_tracking_boms or {}).get((dt, filters["parent"]), [])),
+			),
+			patch.object(
+				cancel_all,
+				"_submitted_referrers",
+				side_effect=lambda key: referrers.get(key, []),
+			),
+		):
+			return cancel_all._shared_upstream(
+				("Parent Manufacturing Order", "PMO1"), downstream
+			)
+
+	PMO_LINKS = {
+		"manufacturing_plan": "MP1",
+		"sales_order": "SO1",
+		"quotation": "QTN1",
+		"custom_tracking_bom": "TB1",
+	}
+
+	def test_case_1_plan_shared_with_a_submitted_pmo_keeps_everything_above(self):
+		pmo1, pmo2 = (
+			("Parent Manufacturing Order", "PMO1"),
+			("Parent Manufacturing Order", "PMO2"),
+		)
+		mp, so, qtn, tb = (
+			("Manufacturing Plan", "MP1"),
+			("Sales Order", "SO1"),
+			("Quotation", "QTN1"),
+			("Tracking Bom", "TB1"),
+		)
+		included, kept = self._shared(
+			self.PMO_LINKS,
+			{},
+			{
+				mp: [pmo1, pmo2],
+				so: [mp, pmo1, pmo2],
+				qtn: [so, pmo1, pmo2],
+				tb: [pmo1, pmo2],
+			},
+		)
+
+		self.assertEqual(included, [])
+		self.assertEqual(set(kept), {mp, so, qtn, tb})
+		self.assertEqual(kept[mp], [pmo2])
+
+	def test_case_2_other_pmos_already_cancelled_lets_everything_above_go(self):
+		# cancelled PMOs no longer show up as submitted users
+		pmo1 = ("Parent Manufacturing Order", "PMO1")
+		mp, so, qtn, tb = (
+			("Manufacturing Plan", "MP1"),
+			("Sales Order", "SO1"),
+			("Quotation", "QTN1"),
+			("Tracking Bom", "TB1"),
+		)
+		included, kept = self._shared(
+			self.PMO_LINKS,
+			{},
+			{mp: [pmo1], so: [mp, pmo1], qtn: [so, pmo1], tb: [pmo1, mp, so, qtn]},
+		)
+
+		self.assertEqual(included, [mp, so, qtn, tb])
+		self.assertEqual(kept, {})
+
+	def test_case_3_only_pmo_of_its_plan_but_tracking_bom_shared_with_another_order(
+		self,
+	):
+		pmo1 = ("Parent Manufacturing Order", "PMO1")
+		mp, so, qtn, tb = (
+			("Manufacturing Plan", "MP1"),
+			("Sales Order", "SO1"),
+			("Quotation", "QTN1"),
+			("Tracking Bom", "TB1"),
+		)
+		other_so = ("Sales Order", "SO-OTHER")
+		included, kept = self._shared(
+			self.PMO_LINKS,
+			{},
+			{
+				mp: [pmo1],
+				so: [mp, pmo1],
+				qtn: [so, pmo1],
+				tb: [pmo1, so, qtn, other_so],
+			},
+		)
+
+		self.assertEqual(included, [mp, so, qtn])
+		self.assertEqual(kept, {tb: [other_so]})
+
+	def test_sales_order_stays_while_another_plan_of_it_is_submitted(self):
+		pmo1 = ("Parent Manufacturing Order", "PMO1")
+		mp, so, qtn = (
+			("Manufacturing Plan", "MP1"),
+			("Sales Order", "SO1"),
+			("Quotation", "QTN1"),
+		)
+		other_mp = ("Manufacturing Plan", "MP-OTHER")
+		included, kept = self._shared(
+			self.PMO_LINKS, {}, {mp: [pmo1], so: [mp, pmo1, other_mp], qtn: [so, pmo1]}
+		)
+
+		self.assertEqual(included, [mp, ("Tracking Bom", "TB1")])
+		self.assertEqual(kept[so], [other_mp])
+		self.assertEqual(kept[qtn], [so])
+
+	def test_tracking_bom_of_another_item_on_the_order_goes_when_unused(self):
+		"""SO/Quotation carry a second item whose PMO is already cancelled: its Tracking Bom goes too."""
+		pmo1 = ("Parent Manufacturing Order", "PMO1")
+		mp, so, qtn, tb = (
+			("Manufacturing Plan", "MP1"),
+			("Sales Order", "SO1"),
+			("Quotation", "QTN1"),
+			("Tracking Bom", "TB1"),
+		)
+		other_item_tb = ("Tracking Bom", "TB-OTHER-ITEM")
+		included, kept = self._shared(
+			self.PMO_LINKS,
+			{},
+			{
+				mp: [pmo1],
+				so: [mp, pmo1],
+				qtn: [so, pmo1],
+				tb: [so, qtn, pmo1],
+				other_item_tb: [so, qtn],
+			},
+			item_tracking_boms={
+				("Sales Order Item", "SO1"): ["TB1", "TB-OTHER-ITEM"],
+				("Quotation Item", "QTN1"): ["TB1", "TB-OTHER-ITEM"],
+			},
+		)
+
+		self.assertEqual(included, [mp, so, qtn, tb, other_item_tb])
+		self.assertEqual(kept, {})
+
+	def test_cancelled_workflow_records_move_to_the_cancelled_state(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		with (
+			patch(
+				"frappe.model.workflow.get_workflow_name",
+				side_effect=lambda dt: "QWF" if dt == "Quotation" else None,
+			),
+			patch(
+				"frappe.model.workflow.get_workflow_state_field",
+				return_value="workflow_state",
+			),
+			patch.object(frappe.db, "get_value", return_value="Cancelled") as get_value,
+			patch.object(frappe, "get_all", return_value=["QTN1"]) as get_all,
+			patch.object(frappe.db, "set_value") as set_value,
+		):
+			cancel_all.mark_workflow_cancelled(
+				[("Quotation", "QTN1"), ("Stock Entry", "SE1")]
+			)
+
+		get_value.assert_called_once_with(
+			"Workflow Document State", {"parent": "QWF", "doc_status": "2"}, "state"
+		)
+		self.assertEqual(
+			get_all.call_args.args[1], {"name": ["in", ["QTN1"]], "docstatus": 2}
+		)
+		set_value.assert_called_once_with(
+			"Quotation", "QTN1", "workflow_state", "Cancelled", update_modified=False
+		)
+
+	def _covered(self, rows, mwo_owner, pmo_docstatus=None):
+		"""rows: [{fieldname: value}] of one record (parent first); mwo_owner[MWO] = (PMO, docstatus)."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		link_fields = [
+			frappe._dict(
+				fieldname="manufacturing_work_order", options="Manufacturing Work Order"
+			),
+			frappe._dict(
+				fieldname="parent_manufacturing_order",
+				options="Parent Manufacturing Order",
+			),
+			frappe._dict(
+				fieldname="amended_from", options="Parent Manufacturing Order"
+			),
+			frappe._dict(fieldname="item", options="Item"),
+		]
+
+		def make(values):
+			row = frappe._dict(values)
+			row.meta = frappe._dict(get_link_fields=lambda: link_fields)
+			return row
+
+		parent, *children = [make(r) for r in rows]
+		parent.get_all_children = lambda: children
+
+		def get_value(dt, dn, fields):
+			if dt == "Parent Manufacturing Order":
+				return (pmo_docstatus or {}).get(dn, 1)
+			return mwo_owner.get(dn)
+
+		with (
+			patch.object(frappe, "get_doc", return_value=parent),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+		):
+			return cancel_all._other_orders_covered(parent, {"PMO1"})
+
+	def test_record_covering_another_orders_work_order_is_reported(self):
+		covered = self._covered(
+			[
+				{},
+				{"manufacturing_work_order": "MWO-MINE"},
+				{"manufacturing_work_order": "MWO-OTHER"},
+			],
+			{"MWO-MINE": ("PMO1", 1), "MWO-OTHER": ("PMO2", 1)},
+		)
+
+		self.assertEqual(covered, [("Manufacturing Work Order", "MWO-OTHER")])
+
+	def test_other_orders_already_cancelled_or_amended_from_are_ignored(self):
+		covered = self._covered(
+			[
+				{
+					"amended_from": "PMO-OLD",
+					"parent_manufacturing_order": "PMO1",
+					"item": "X",
+				},
+				{"manufacturing_work_order": "MWO-OTHER-CANCELLED"},
+				{"parent_manufacturing_order": "PMO-CANCELLED"},
+			],
+			{"MWO-OTHER-CANCELLED": ("PMO2", 2)},
+			pmo_docstatus={"PMO-CANCELLED": 2},
+		)
+
+		self.assertEqual(covered, [])
+
+	def test_record_covering_another_pmo_directly_is_reported(self):
+		covered = self._covered([{"parent_manufacturing_order": "PMO2"}], {})
+
+		self.assertEqual(covered, [("Parent Manufacturing Order", "PMO2")])
+
+	def test_done_event_waits_for_the_commit(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		pmo = ("Parent Manufacturing Order", "PMO1")
+		with (
+			patch.object(cancel_all, "get_cancel_plan", return_value=[pmo]),
+			patch.object(cancel_all, "get_linked_records", return_value=({}, [])),
+			patch.object(cancel_all, "_cancel_in_order", return_value=[]),
+			patch.object(cancel_all, "mark_workflow_cancelled"),
+			patch.object(frappe.db, "savepoint"),
+			patch.object(frappe, "publish_realtime") as publish,
+		):
+			cancel_all.cancel_all("PMO1", "Administrator")
+
+		self.assertEqual(publish.call_args.args[1]["status"], "done")
+		self.assertTrue(publish.call_args.kwargs.get("after_commit"))
+
+	def test_blocker_name_must_match_whole(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		message = 'Cannot link cancelled document: Reference Docname: <a href="/app/bom/BOM-00012">BOM-00012</a>'
+		self.assertFalse(cancel_all._names_in("BOM-0001", message))
+		self.assertTrue(cancel_all._names_in("BOM-00012", message))
+
+	def _operation_users(self, rows, linked=()):
+		"""rows[(child_doctype, parenttype)] = submitted IRs using the operation through their rows;
+		linked = submitted documents Frappe's own cancel check reports (Stock Entry, SNC, ...)."""
+
+		from jewellery_erpnext import utils
+
+		def get_all(child_doctype, filters, pluck, distinct):
+			return rows.get((child_doctype, filters["parenttype"]), [])
+
+		return (
+			patch.object(utils.frappe, "get_all", side_effect=get_all),
+			patch.object(
+				utils.frappe,
+				"get_doc",
+				return_value=frappe._dict(
+					doctype="Manufacturing Operation", name="MOP-B"
+				),
+			),
+			patch.object(utils, "get_submitted_linked_docs", return_value=list(linked)),
+		)
+
+	def _check_in_use(self, rows, linked=()):
+		from jewellery_erpnext import utils
+
+		a, b, c = self._operation_users(rows, linked)
+		with a, b, c:
+			utils.ensure_operation_not_in_use("MOP-B", "Employee IR", "EIR-1")
+
+	def test_ir_cancel_stops_while_another_submitted_ir_uses_the_operation(self):
+		with self.assertRaises(frappe.LinkExistsError) as ctx:
+			self._check_in_use(
+				{("Department IR Operation", "Department IR"): ["DIR-LATER"]}
+			)
+		self.assertIn("DIR-LATER", str(ctx.exception))
+
+	def test_ir_cancel_stops_while_a_submitted_stock_entry_uses_the_operation(self):
+		with self.assertRaises(frappe.LinkExistsError) as ctx:
+			self._check_in_use({}, linked=[("Stock Entry", "SE-LATER")])
+		self.assertIn("SE-LATER", str(ctx.exception))
+
+	def test_ir_cancel_ignores_its_own_rows(self):
+		self._check_in_use(
+			{("Employee IR Operation", "Employee IR"): ["EIR-1"]},
+			linked=[("Employee IR", "EIR-1")],
+		)
+
+	def test_latest_operation_skips_revert_leftovers_but_keeps_empty_status(self):
+		from jewellery_erpnext import utils
+
+		rows = [
+			frappe._dict(name="MOP-LEFTOVER", department_ir_status="Revert"),
+			frappe._dict(name="MOP-CURRENT", department_ir_status=None),
+			frappe._dict(name="MOP-OLDER", department_ir_status="Received"),
+		]
+		with patch.object(utils.frappe, "get_all", return_value=rows) as get_all:
+			self.assertEqual(
+				utils.latest_operation("MWO1", status="Not Started"), "MOP-CURRENT"
+			)
+		self.assertEqual(
+			get_all.call_args.args[1],
+			{"manufacturing_work_order": "MWO1", "status": "Not Started"},
+		)
+		self.assertEqual(get_all.call_args.kwargs["order_by"], "creation desc")
+
+	def _tracking_bom_cancel(self, docstatus, users):
+		from jewellery_erpnext import utils
+
+		tracking_bom = frappe._dict(
+			doctype="Tracking Bom", name="TB1", docstatus=docstatus
+		)
+		tracking_bom.cancel = MagicMock()
+		with (
+			patch.object(utils.frappe, "get_doc", return_value=tracking_bom),
+			patch.object(utils, "get_submitted_linked_docs", return_value=list(users)),
+		):
+			utils.cancel_tracking_bom_if_unused("TB1")
+		return tracking_bom.cancel
+
+	def test_tracking_bom_is_cancelled_by_its_last_user(self):
+		# e.g. the Quotation, cancelled after its Sales Order: nothing submitted uses it any more
+		self._tracking_bom_cancel(1, []).assert_called_once()
+
+	def test_tracking_bom_stays_while_another_order_uses_it(self):
+		self._tracking_bom_cancel(1, [("Sales Order", "SO-OTHER")]).assert_not_called()
+
+	def test_tracking_bom_draft_or_cancelled_is_left_alone(self):
+		self._tracking_bom_cancel(0, []).assert_not_called()
+		self._tracking_bom_cancel(2, []).assert_not_called()
+
+	def test_amended_quotation_drops_only_cancelled_tracking_boms(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events import quotation
+
+		rows = [
+			frappe._dict(custom_tracking_bom="TB-CANCELLED"),
+			frappe._dict(custom_tracking_bom="TB-SHARED-ACTIVE"),
+			frappe._dict(custom_tracking_bom=None),
+		]
+		docstatus = {"TB-CANCELLED": 2, "TB-SHARED-ACTIVE": 1}
+		with patch.object(
+			quotation.frappe.db,
+			"get_value",
+			side_effect=lambda dt, dn, f: docstatus[dn],
+		):
+			quotation.clear_cancelled_tracking_boms(SimpleNamespace(items=rows))
+
+		self.assertEqual(
+			[r.custom_tracking_bom for r in rows], [None, "TB-SHARED-ACTIVE", None]
+		)
+
+	def test_ir_rows_on_reverted_operations_are_refused(self):
+		from jewellery_erpnext import utils
+
+		rows = [
+			frappe._dict(idx=1, manufacturing_operation="MOP-LIVE"),
+			frappe._dict(idx=2, manufacturing_operation="MOP-REVERTED"),
+			frappe._dict(idx=3, manufacturing_operation=None),
+		]
+		doc = frappe._dict(employee_ir_operations=rows)
+		with patch.object(
+			utils.frappe, "get_all", return_value=["MOP-REVERTED"]
+		) as get_all:
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				utils.validate_no_reverted_operations(doc, "employee_ir_operations")
+
+		self.assertIn("Row 2", str(ctx.exception))
+		self.assertNotIn("Row 1", str(ctx.exception))
+		self.assertEqual(
+			get_all.call_args.args[1]["name"], ["in", ["MOP-LIVE", "MOP-REVERTED"]]
+		)
+
+	def test_ir_rows_on_live_operations_pass(self):
+		from jewellery_erpnext import utils
+
+		doc = frappe._dict(
+			department_ir_operation=[
+				frappe._dict(idx=1, manufacturing_operation="MOP-LIVE")
+			]
+		)
+		with patch.object(utils.frappe, "get_all", return_value=[]):
+			utils.validate_no_reverted_operations(doc, "department_ir_operation")
+
+	def test_statuses_are_read_once_per_doctype(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		keys = [
+			("Stock Entry", "SE1"),
+			("Stock Entry", "SE2"),
+			("Department IR", "DIR1"),
+		]
+		with patch.object(
+			frappe,
+			"get_all",
+			side_effect=lambda dt, filters, pluck, order_by: ["SE2"]
+			if dt == "Stock Entry"
+			else ["DIR1"],
+		) as get_all:
+			still = cancel_all._still_submitted(keys)
+
+		self.assertEqual(still, {("Stock Entry", "SE2"), ("Department IR", "DIR1")})
+		self.assertEqual(get_all.call_count, 2)
+
+	def test_same_work_order_is_looked_up_once(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		link_fields = [
+			frappe._dict(
+				fieldname="manufacturing_work_order", options="Manufacturing Work Order"
+			)
+		]
+
+		def row(mwo):
+			r = frappe._dict(manufacturing_work_order=mwo)
+			r.meta = frappe._dict(get_link_fields=lambda: link_fields)
+			return r
+
+		first, second = row(None), row(None)
+		first.get_all_children = lambda: [row("MWO-OTHER"), row("MWO-OTHER")]
+		second.get_all_children = lambda: [row("MWO-OTHER")]
+		order_of = {}
+		with patch.object(
+			frappe.db, "get_value", return_value=("PMO2", 1)
+		) as get_value:
+			self.assertEqual(
+				cancel_all._other_orders_covered(first, {"PMO1"}, order_of),
+				[("Manufacturing Work Order", "MWO-OTHER")],
+			)
+			self.assertEqual(
+				cancel_all._other_orders_covered(second, {"PMO1"}, order_of),
+				[("Manufacturing Work Order", "MWO-OTHER")],
+			)
+		get_value.assert_called_once()
+
+	def test_batched_links_map_each_record_and_report_child_rows_as_their_parent(self):
+		from jewellery_erpnext import utils
+
+		metas = {
+			"Stock Entry": frappe._dict(
+				name="Stock Entry", istable=0, issingle=0, is_submittable=1
+			),
+			"Department IR Operation": frappe._dict(
+				name="Department IR Operation", istable=1, issingle=0, is_submittable=0
+			),
+			"MOP Log": frappe._dict(
+				name="MOP Log", istable=0, issingle=0, is_submittable=0
+			),
+		}
+		link_fields = [
+			{
+				"parent": "Stock Entry",
+				"fieldname": "manufacturing_operation",
+				"issingle": 0,
+			},
+			{
+				"parent": "Department IR Operation",
+				"fieldname": "manufacturing_operation",
+				"issingle": 0,
+			},
+			{
+				"parent": "MOP Log",
+				"fieldname": "manufacturing_operation",
+				"issingle": 0,
+			},
+		]
+		rows = {
+			"Stock Entry": [frappe._dict(name="SE1", manufacturing_operation="MOP-A")],
+			"Department IR Operation": [
+				frappe._dict(
+					name="row1",
+					manufacturing_operation="MOP-B",
+					parent="DIR1",
+					parenttype="Department IR",
+				),
+				frappe._dict(
+					name="row2",
+					manufacturing_operation="MOP-B",
+					parent="DIR1",
+					parenttype="Department IR",
+				),
+			],
+		}
+		queried = []
+
+		def get_values(dt, filters, fields, as_dict, order_by):
+			queried.append((dt, filters["manufacturing_operation"]))
+			return rows.get(dt, [])
+
+		with (
+			patch("frappe.model.rename_doc.get_link_fields", return_value=link_fields),
+			patch("frappe.model.dynamic_links.get_dynamic_link_map", return_value={}),
+			patch.object(utils.frappe, "get_meta", side_effect=lambda dt: metas[dt]),
+			patch.object(utils.frappe.db, "get_values", side_effect=get_values),
+		):
+			found = utils.get_submitted_links(
+				"Manufacturing Operation", ["MOP-A", "MOP-B", "MOP-C"]
+			)
+
+		self.assertEqual(
+			found,
+			{
+				"MOP-A": [("Stock Entry", "SE1")],
+				"MOP-B": [("Department IR", "DIR1")],
+				"MOP-C": [],
+			},
+		)
+		# one query per link field for all three operations; MOP Log never holds submitted rows
+		self.assertEqual(
+			queried,
+			[
+				("Stock Entry", ["in", ["MOP-A", "MOP-B", "MOP-C"]]),
+				("Department IR Operation", ["in", ["MOP-A", "MOP-B", "MOP-C"]]),
+			],
+		)
+
+	def test_already_cancelled_upstream_is_skipped(self):
+		mp = ("Manufacturing Plan", "MP1")
+		included, kept = self._shared(self.PMO_LINKS, {mp: 2}, {})
+
+		self.assertNotIn(mp, included)
+		self.assertNotIn(mp, kept)
+
+	def test_snc_release_makes_bom_wait_for_it_instead_of_blocking(self):
+		snc, bom, pmo = (
+			("Serial Number Creator", "SNC1"),
+			("BOM", "BOM1"),
+			("Parent Manufacturing Order", "PMO1"),
+		)
+		tb = ("Tracking Bom", "TB1")
+		referrers, outside = self._linked_records(
+			[snc, bom, pmo], {bom: [snc, tb], pmo: [snc]}, released={(bom, tb): snc}
+		)
+
+		self.assertEqual(outside, [])
+		self.assertEqual(referrers[bom], {snc})
+
+	def test_loop_is_broken_ignoring_only_links_from_the_plan(self):
+		"""SNC and BOM each refuse to go first; one is let through, then the other cancels normally."""
+		from frappe.model import delete_doc
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		snc, bom, pmo = (
+			("Serial Number Creator", "SNC1"),
+			("BOM", "BOM1"),
+			("Parent Manufacturing Order", "PMO1"),
+		)
+		plan = [snc, bom, pmo]
+		docstatus = dict.fromkeys(plan, 1)
+		links_to = {snc: [bom], bom: [snc], pmo: [snc]}
+		cancelled = []
+
+		def fake_linked_docs(doc, method="Delete"):
+			key = (doc.doctype, doc.name)
+			return [
+				{"reference_doctype": dt, "reference_docname": dn}
+				for dt, dn in links_to.get(key, [])
+				if docstatus[(dt, dn)] == 1
+			]
+
+		def get_doc(dt, dn):
+			doc = frappe._dict(doctype=dt, name=dn)
+
+			def cancel():
+				if delete_doc.get_linked_docs(doc, "Cancel"):
+					raise frappe.LinkExistsError(f"{dt} {dn} is linked")
+				cancelled.append((dt, dn))
+				docstatus[(dt, dn)] = 2
+
+			doc.cancel = cancel
+			return doc
+
+		from jewellery_erpnext import utils
+
+		with (
+			patch.object(delete_doc, "get_linked_docs", side_effect=fake_linked_docs),
+			patch.object(delete_doc, "get_dynamic_linked_docs", return_value=[]),
+			patch.object(
+				utils,
+				"get_submitted_links",
+				side_effect=lambda dt, names: {
+					n: [
+						(link["reference_doctype"], link["reference_docname"])
+						for link in fake_linked_docs(
+							frappe._dict(doctype=dt, name=n), "Cancel"
+						)
+					]
+					for n in names
+				},
+			),
+			patch.object(cancel_all, "get_cancel_plan", return_value=plan),
+			patch.object(cancel_all, "mark_workflow_cancelled"),
+			patch.object(cancel_all, "_released_by_plan", return_value={}),
+			patch.object(cancel_all, "_other_orders_covered", return_value=[]),
+			patch.object(
+				frappe.db,
+				"get_value",
+				side_effect=lambda dt, dn, f: docstatus[(dt, dn)],
+			),
+			patch.object(
+				cancel_all,
+				"_still_submitted",
+				side_effect=lambda keys: {k for k in keys if docstatus[k] == 1},
+			),
+			patch.object(frappe.db, "savepoint"),
+			patch.object(frappe.db, "rollback"),
+			patch.object(frappe, "get_doc", side_effect=get_doc),
+			patch.object(frappe, "publish_progress"),
+			patch.object(frappe, "publish_realtime") as publish,
+		):
+			cancel_all.cancel_all("PMO1", "Administrator")
+
+		self.assertEqual(cancelled, [snc, bom, pmo])
+		message = publish.call_args.args[1]
+		self.assertEqual(message["status"], "done")
+		self.assertEqual(message["loop_breaks"], [snc])
+
+	def _run_restarts(self, plan, cancel):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		docstatus = dict.fromkeys(plan, 1)
+		snapshots = []
+
+		def savepoint(name):
+			if name.startswith("pmo_cancel_run_"):
+				snapshots.append(dict(docstatus))
+
+		def rollback(save_point=None):
+			if save_point and save_point.startswith("pmo_cancel_run_"):
+				docstatus.clear()
+				docstatus.update(snapshots[-1])
+
+		def get_doc(dt, dn):
+			doc = frappe._dict(doctype=dt, name=dn)
+			doc.cancel = lambda: cancel((dt, dn), docstatus)
+			return doc
+
+		with (
+			patch.object(cancel_all, "get_cancel_plan", return_value=plan),
+			patch.object(cancel_all, "mark_workflow_cancelled"),
+			patch.object(cancel_all, "get_linked_records", return_value=({}, [])),
+			patch.object(
+				frappe.db,
+				"get_value",
+				side_effect=lambda dt, dn, f: docstatus[(dt, dn)],
+			),
+			patch.object(
+				cancel_all,
+				"_still_submitted",
+				side_effect=lambda keys: {k for k in keys if docstatus[k] == 1},
+			),
+			patch.object(frappe.db, "savepoint", side_effect=savepoint),
+			patch.object(frappe.db, "rollback", side_effect=rollback),
+			patch.object(frappe, "get_doc", side_effect=get_doc),
+			patch.object(frappe, "publish_progress"),
+			patch.object(frappe, "publish_realtime") as publish,
+		):
+			cancel_all.cancel_all("PMO1", "Administrator")
+
+		return docstatus, publish.call_args.args[1]
+
+	def test_cancelled_link_teaches_order_and_restarts(self):
+		"""Quotation's hook saves a Tracking Bom that links to a BOM: the BOM must wait for it."""
+		bom, qtn, pmo = (
+			("BOM", "BOM-1"),
+			("Quotation", "QTN-1"),
+			("Parent Manufacturing Order", "PMO1"),
+		)
+
+		def cancel(key, docstatus):
+			if key == qtn and docstatus[bom] == 2:
+				raise frappe.CancelledLinkError(
+					"Cannot link cancelled document: Reference Docname: BOM-1"
+				)
+			docstatus[key] = 2
+
+		docstatus, message = self._run_restarts([bom, qtn, pmo], cancel)
+
+		self.assertEqual(set(docstatus.values()), {2})
+		self.assertEqual(message["learned_order"], [(qtn, [bom])])
+
+	def test_editing_a_cancelled_doc_teaches_order_and_restarts(self):
+		tracking, qtn, pmo = (
+			("Tracking Bom", "TB-1"),
+			("Quotation", "QTN-1"),
+			("Parent Manufacturing Order", "PMO1"),
+		)
+
+		class FakeTrackingBom:
+			doctype, name = tracking
+
+			def check_docstatus_transition(self, to_docstatus):
+				raise frappe.ValidationError("Cannot edit cancelled document")
+
+		def cancel(key, docstatus):
+			if key == qtn and docstatus[tracking] == 2:
+				FakeTrackingBom().check_docstatus_transition(2)
+			docstatus[key] = 2
+
+		docstatus, message = self._run_restarts([tracking, qtn, pmo], cancel)
+
+		self.assertEqual(set(docstatus.values()), {2})
+		self.assertEqual(message["learned_order"], [(qtn, [tracking])])
+
+	def test_rule_follows_the_document_that_cancelled_the_blocker(self):
+		"""The Sales Order's cancel takes the Tracking Bom down with it, so the Sales Order must wait."""
+		so, tracking, qtn, pmo = (
+			("Sales Order", "SO-1"),
+			("Tracking Bom", "TB-1"),
+			("Quotation", "QTN-1"),
+			("Parent Manufacturing Order", "PMO1"),
+		)
+
+		class FakeTrackingBom:
+			doctype, name = tracking
+
+			def check_docstatus_transition(self, to_docstatus):
+				raise frappe.ValidationError("Cannot edit cancelled document")
+
+		def cancel(key, docstatus):
+			if key == qtn and docstatus[tracking] == 2:
+				FakeTrackingBom().check_docstatus_transition(2)
+			docstatus[key] = 2
+			if key == so:
+				docstatus[tracking] = 2
+
+		docstatus, message = self._run_restarts([so, tracking, qtn, pmo], cancel)
+
+		self.assertEqual(set(docstatus.values()), {2})
+		self.assertEqual(len(message["learned_order"]), 1)
+		self.assertEqual(message["learned_order"][0][0], qtn)
+		self.assertEqual(set(message["learned_order"][0][1]), {tracking, so})
+
+	def test_same_rule_twice_stops_instead_of_looping(self):
+		tracking, qtn, pmo = (
+			("Tracking Bom", "TB-1"),
+			("Quotation", "QTN-1"),
+			("Parent Manufacturing Order", "PMO1"),
+		)
+
+		class FakeTrackingBom:
+			doctype, name = tracking
+
+			def check_docstatus_transition(self, to_docstatus):
+				raise frappe.ValidationError("Cannot edit cancelled document")
+
+		def cancel(key, docstatus):
+			if key == qtn:
+				# a hook that fails whatever the order: waiting cannot fix it, so don't restart forever
+				FakeTrackingBom().check_docstatus_transition(2)
+			docstatus[key] = 2
+
+		with patch.object(frappe, "log_error"):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				self._run_restarts([tracking, qtn, pmo], cancel)
+		self.assertIn("still cannot be cancelled", str(ctx.exception))
+
+	def _linked_records(self, plan, links_to, released=None):
+		"""links_to[X] = records linking to X (what Frappe's cancel check would report)."""
+
+		from jewellery_erpnext import utils
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		with (
+			patch.object(cancel_all, "_released_by_plan", return_value=released or {}),
+			patch.object(cancel_all, "_other_orders_covered", return_value=[]),
+			patch.object(
+				frappe,
+				"get_doc",
+				side_effect=lambda dt, dn: frappe._dict(doctype=dt, name=dn),
+			),
+			patch.object(
+				utils,
+				"get_submitted_links",
+				side_effect=lambda dt, names: {
+					n: list(links_to.get((dt, n), [])) for n in names
+				},
+			),
+		):
+			return cancel_all.get_linked_records(plan)
+
+	def test_linked_records_split_inside_and_outside_the_plan(self):
+		se, mr, pmo = (
+			("Stock Entry", "SE1"),
+			("Material Request", "MR1"),
+			("Parent Manufacturing Order", "PMO1"),
+		)
+		referrers, outside = self._linked_records(
+			[se, mr, pmo],
+			{
+				mr: [se],
+				# reversed by the Stock Entry's own cancel, not blockers
+				se: [
+					("Serial and Batch Bundle", "SBB1"),
+					("GL Entry", "GLE1"),
+					("Stock Ledger Entry", "SLE1"),
+				],
+				pmo: [mr, ("Sales Invoice", "SINV-1")],
+			},
+		)
+
+		self.assertEqual(referrers, {mr: {se}, pmo: {mr}})
+		self.assertEqual(outside, [(pmo, ("Sales Invoice", "SINV-1"))])
+
+	def test_outside_link_stops_before_anything_is_cancelled(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		pmo = ("Parent Manufacturing Order", "PMO1")
+		with (
+			patch.object(cancel_all, "get_cancel_plan", return_value=[pmo]),
+			patch.object(
+				cancel_all,
+				"get_linked_records",
+				return_value=({}, [(pmo, ("Sales Invoice", "SINV-1"))]),
+			),
+			patch.object(cancel_all, "_cancel_in_order") as run,
+			patch.object(frappe, "log_error"),
+			patch.object(frappe, "publish_realtime") as publish,
+		):
+			self.assertRaises(
+				frappe.ValidationError, cancel_all.cancel_all, "PMO1", "Administrator"
+			)
+
+		run.assert_not_called()
+		self.assertIn("SINV-1", publish.call_args.args[1]["error"])
+
+	def test_records_linking_to_x_are_ordered_before_x(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		qtn, so, tb, pmo = (
+			("Quotation", "Q"),
+			("Sales Order", "SO"),
+			("Tracking Bom", "TB"),
+			("Parent Manufacturing Order", "P"),
+		)
+		# newest-first would try the Quotation first, but the Sales Order links to it
+		plan = [qtn, tb, so, pmo]
+		order = cancel_all._order_by_links(plan, {qtn: {so}, tb: {qtn}, pmo: {tb}})
+
+		self.assertEqual(order, [so, qtn, tb, pmo])
+
+	def test_link_loop_is_entered_at_its_newest_record(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		snc, bom, pmo = (
+			("Serial Number Creator", "S"),
+			("BOM", "B"),
+			("Parent Manufacturing Order", "P"),
+		)
+		order = cancel_all._order_by_links(
+			[bom, snc, pmo], {snc: {bom}, bom: {snc}, pmo: {snc}}
+		)
+
+		self.assertEqual(order, [bom, snc, pmo])
+
+	def test_record_is_not_attempted_while_a_planned_record_still_links_to_it(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		so, qtn = ("Sales Order", "SO"), ("Quotation", "Q")
+		docstatus = {so: 1, qtn: 1}
+		attempted = []
+
+		def try_cancel(dt, dn, *args):
+			attempted.append((dt, dn))
+			docstatus[(dt, dn)] = 2
+			return True
+
+		with (
+			patch.object(
+				frappe.db,
+				"get_value",
+				side_effect=lambda dt, dn, f: docstatus[(dt, dn)],
+			),
+			patch.object(
+				cancel_all,
+				"_still_submitted",
+				side_effect=lambda keys: {k for k in keys if docstatus[k] == 1},
+			),
+			patch.object(cancel_all, "_try_cancel", side_effect=try_cancel),
+		):
+			cancel_all._cancel_in_order(
+				[qtn, so], {}, (), lambda key: None, {}, {qtn: {so}}
+			)
+
+		self.assertEqual(attempted, [so, qtn])
+
+	def test_unrelated_validation_error_is_not_learned(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		def cancel(key, docstatus):
+			raise frappe.ValidationError("some business rule")
+
+		with patch.object(frappe, "log_error"):
+			self.assertRaises(
+				frappe.ValidationError,
+				self._run_restarts,
+				[("Quotation", "QTN-1"), ("Parent Manufacturing Order", "PMO1")],
+				cancel,
+			)
+		self.assertEqual(cancel_all._PlanDocs.value, frozenset())
+
+	def test_loop_rule_never_ignores_links_from_outside_the_plan(self):
+		from frappe.model import delete_doc
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		outside = {"reference_doctype": "Sales Invoice", "reference_docname": "SINV-1"}
+		inside = {"reference_doctype": "BOM", "reference_docname": "BOM1"}
+		with patch.object(
+			delete_doc, "get_linked_docs", return_value=[outside, inside]
+		):
+			with cancel_all._ignore_links_from({("BOM", "BOM1")}):
+				self.assertEqual(
+					delete_doc.get_linked_docs(frappe._dict(), "Cancel"), [outside]
+				)
+				# deletes keep every link
+				self.assertEqual(
+					delete_doc.get_linked_docs(frappe._dict(), "Delete"),
+					[outside, inside],
+				)
+
+	def test_negative_stock_is_retried_on_next_pass(self):
+		from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
+			BatchNegativeStockError,
+		)
+
+		plan = [
+			("Stock Entry", "SE-EARLY"),
+			("Stock Entry", "SE-LATE"),
+			("Parent Manufacturing Order", "PMO1"),
+		]
+		docstatus = dict.fromkeys(plan, 1)
+		effects = {
+			("Stock Entry", "SE-EARLY"): [
+				BatchNegativeStockError("batch negative"),
+				None,
+			]
+		}
+
+		cancelled, _rollback, message = self._run(plan, docstatus, effects)
+
+		self.assertEqual(
+			cancelled,
+			[
+				("Stock Entry", "SE-LATE"),
+				("Parent Manufacturing Order", "PMO1"),
+				("Stock Entry", "SE-EARLY"),
+			],
+		)
+		self.assertEqual(message["status"], "done")
+
+	def test_failed_attempt_drops_cached_bundles(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		frappe.local.cache["document_cache::Serial and Batch Bundle::SBB1"] = "stale"
+		frappe.flags.currently_saving.append(("Stock Entry", "SE1"))
+		with patch.object(frappe, "clear_document_cache") as clear:
+			cancel_all._reset_after_failed_attempt("Stock Entry", "SE1")
+
+		self.assertNotIn(
+			"document_cache::Serial and Batch Bundle::SBB1", frappe.local.cache
+		)
+		self.assertEqual(frappe.flags.currently_saving, [])
+		cleared = {c.args[0] for c in clear.call_args_list}
+		self.assertEqual(cleared, {"Serial and Batch Bundle", "Stock Entry"})
+
+	def test_bundles_are_left_to_their_stock_entry(self):
+		plan = self._plan()
+
+		self.assertNotIn(("Serial and Batch Bundle", "SBB3"), plan)
+		# and the walk does not continue through a bundle either
+		self.assertNotIn(("Sales Order", "SO-UNRELATED"), plan)
+
+	def _run(self, plan, docstatus, cancel_side_effects, expect_error=None):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		cancelled = []
+
+		def get_doc(dt, dn):
+			doc = frappe._dict(doctype=dt, name=dn)
+
+			def cancel():
+				effects = cancel_side_effects.get((dt, dn))
+				if effects:
+					effect = effects.pop(0)
+					if effect:
+						raise effect
+				cancelled.append((dt, dn))
+				docstatus[(dt, dn)] = 2
+
+			doc.cancel = cancel
+			return doc
+
+		with (
+			patch.object(cancel_all, "get_cancel_plan", return_value=plan),
+			patch.object(cancel_all, "mark_workflow_cancelled"),
+			patch.object(cancel_all, "get_linked_records", return_value=({}, [])),
+			patch.object(
+				frappe.db,
+				"get_value",
+				side_effect=lambda dt, dn, f: docstatus[(dt, dn)],
+			),
+			patch.object(
+				cancel_all,
+				"_still_submitted",
+				side_effect=lambda keys: {k for k in keys if docstatus[k] == 1},
+			),
+			patch.object(frappe.db, "savepoint"),
+			patch.object(frappe.db, "rollback") as rollback,
+			patch.object(frappe, "get_doc", side_effect=get_doc),
+			patch.object(frappe, "publish_progress"),
+			patch.object(frappe, "log_error"),
+			patch.object(frappe, "publish_realtime") as publish,
+		):
+			if expect_error:
+				self.assertRaises(
+					expect_error, cancel_all.cancel_all, "PMO1", "Administrator"
+				)
+			else:
+				cancel_all.cancel_all("PMO1", "Administrator")
+
+		return cancelled, rollback, publish.call_args.args[1]
+
+	def test_link_error_is_retried_on_next_pass(self):
+		plan = [("Stock Entry", "SE1"), ("Parent Manufacturing Order", "PMO1")]
+		docstatus = dict.fromkeys(plan, 1)
+		# PMO1 is tried first here to force a LinkExistsError, then succeeds after SE1.
+		plan = list(reversed(plan))
+		effects = {
+			("Parent Manufacturing Order", "PMO1"): [
+				frappe.LinkExistsError("linked"),
+				None,
+			]
+		}
+
+		cancelled, rollback, message = self._run(plan, docstatus, effects)
+
+		self.assertEqual(
+			cancelled, [("Stock Entry", "SE1"), ("Parent Manufacturing Order", "PMO1")]
+		)
+		self.assertEqual(message["status"], "done")
+		rollback.assert_called_once()  # only the savepoint rollback
+		self.assertIn("save_point", rollback.call_args.kwargs)
+
+	def test_already_cancelled_doc_is_skipped(self):
+		plan = [("Stock Entry", "SE1"), ("Parent Manufacturing Order", "PMO1")]
+		docstatus = {
+			("Stock Entry", "SE1"): 2,
+			("Parent Manufacturing Order", "PMO1"): 1,
+		}
+
+		cancelled, _rollback, message = self._run(plan, docstatus, {})
+
+		self.assertEqual(cancelled, [("Parent Manufacturing Order", "PMO1")])
+		self.assertEqual(message["status"], "done")
+
+	def test_no_progress_raises_so_job_runner_rolls_back(self):
+		plan = [("Stock Entry", "SE1"), ("Parent Manufacturing Order", "PMO1")]
+		docstatus = dict.fromkeys(plan, 1)
+		stuck = [frappe.LinkExistsError("still linked")] * 5
+		effects = {("Parent Manufacturing Order", "PMO1"): list(stuck)}
+
+		_cancelled, _rollback, message = self._run(
+			plan, docstatus, effects, expect_error=frappe.ValidationError
+		)
+
+		self.assertEqual(message["status"], "failed")
+		self.assertIn("PMO1", message["error"])
+
+	def test_other_error_raises_immediately(self):
+		plan = [("Stock Entry", "SE1"), ("Parent Manufacturing Order", "PMO1")]
+		docstatus = dict.fromkeys(plan, 1)
+		effects = {("Stock Entry", "SE1"): [frappe.ValidationError("negative stock")]}
+
+		cancelled, _rollback, message = self._run(
+			plan, docstatus, effects, expect_error=frappe.ValidationError
+		)
+
+		self.assertEqual(cancelled, [])
+		self.assertEqual(message["status"], "failed")
+		self.assertIn("negative stock", message["error"])
+
+	def test_only_system_manager_can_start(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		with (
+			patch.dict(frappe.local.session, {"user": "someone@example.com"}),
+			patch.object(frappe, "get_roles", return_value=["Stock User"]),
+			patch.object(frappe, "enqueue") as enqueue,
+		):
+			self.assertRaises(
+				frappe.PermissionError, cancel_all.enqueue_cancel_all, "PMO1"
+			)
+			self.assertRaises(
+				frappe.PermissionError, cancel_all.get_cancel_preview, "PMO1"
+			)
+		enqueue.assert_not_called()
