@@ -505,6 +505,16 @@ def get_current_mop_balance_rows(
 	covers ``(manufacturing_operation, is_cancelled, item_code, batch_no,
 	creation)`` so the narrowed filter is index-served. The Python-side
 	dedup picks the latest row per ``(item_code, batch_no)``.
+
+	**On a Finished operation this is a closing snapshot, not WIP.** The
+	Manufacture Stock Entry that consumes the piece into the finished good
+	writes no MOP Log row, so the last balance an operation recorded stays on
+	it after the metal has left. That is by design (F15): a closing row would
+	need Manufacture in the MOP Settings reservation table, which would reserve
+	the finished piece against the Sales Order, log the consumption as +qty,
+	and let ``MOPLog.save`` zero the FG operation's header weights that
+	``sync_mwo_weights`` sets. Readers that mean "metal still in process" must
+	filter on the operation's status.
 	"""
 	fields = list(
 		dict.fromkeys((include_fields or current_balance_fields) + ["name", "creation"])
@@ -570,6 +580,13 @@ def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=Non
 	Operations under one MWO form a linear chain (``previous_mop``), so "latest
 	across the MWO" is a well-defined current state and not a merge of
 	concurrent branches.
+
+	**For a Completed work order this is a closing snapshot, not WIP.** The
+	Manufacture that turns the piece into the finished good writes no MOP Log
+	row, so the balance still shows what the work order held when it was
+	closed. That is by design (F15; see :func:`get_current_mop_balance_rows`).
+	Readers that mean "metal still in process" must filter on the work order's
+	status.
 
 	Index-served by ``mop_mwo_idx`` (manufacturing_work_order, is_cancelled,
 	item_code, batch_no) from ``add_make_receive_entry_indexes``.
