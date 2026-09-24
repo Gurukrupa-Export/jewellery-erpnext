@@ -1593,7 +1593,19 @@ def update_new_serial_no(self):
 
 
 def submit_tracking_bom_for_finished_goods(doc):
-	"""Update and submit linked Tracking BOM when SNC creates FG BOM."""
+	"""Submit the linked Tracking BOM when the SNC creates the FG BOM -- and change nothing else on it.
+
+	The Tracking BOM stays the PLANNED composition. The as-built BOM is ``doc.fg_bom``, already linked
+	from the SNC, from ``Serial No.custom_bom_no`` and from the BOM's own ``custom_creation_docname``.
+
+	This used to relabel it "Finished Goods" and point ``reference_docname`` at the FG BOM without
+	rebuilding its tables (F7): a record that claimed to be the finished piece but held the plan
+	(KLHGX62F1119: 4.169 g / 1.570 g finding / 0.486 ct against the piece's 5.5192 / 0 / 0.396). Nothing
+	read the label or the pointer. One Tracking BOM serves every sibling PMO of a Manufacturing Plan
+	row, so one pointer could never name each piece's BOM. Rebuilding the tables would have been worse:
+	a later sibling PMO reads them for its tolerance bands, Material Requests and finding work orders.
+	And the pointer blocked cancelling the FG BOM, through Frappe's back-link check.
+	"""
 	if not doc.get("fg_bom"):
 		return
 
@@ -1611,23 +1623,8 @@ def submit_tracking_bom_for_finished_goods(doc):
 
 	tracking_bom = frappe.get_doc("Tracking Bom", tracking_bom_name)
 	if tracking_bom.docstatus == 0:
-		tracking_bom.bom_type = "Finished Goods"
-		tracking_bom.reference_doctype = "BOM"
-		tracking_bom.reference_docname = doc.fg_bom
-		tracking_bom.flags.ignore_validate_update_after_submit = True
-		tracking_bom.save(ignore_permissions=True)
+		tracking_bom.flags.ignore_permissions = True
 		tracking_bom.submit()
-	else:
-		frappe.db.set_value(
-			"Tracking Bom",
-			tracking_bom_name,
-			{
-				"bom_type": "Finished Goods",
-				"reference_doctype": "BOM",
-				"reference_docname": doc.fg_bom,
-			},
-			update_modified=True,
-		)
 
 
 # def _resolve_mwo_qty(mwo):
