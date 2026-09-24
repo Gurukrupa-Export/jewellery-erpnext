@@ -1204,7 +1204,10 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"use_serial_batch_fields": 1,
 			"serial_no": sr_no,
 			"is_finished_item": 1,
-			"custom_gross_wt": doc.total_weight,
+			# F22: ``gross_weight`` is the Stock Entry Detail field. The old key,
+			# ``custom_gross_wt``, is a Serial No field that Stock Entry Detail does not have,
+			# so every finished row on kg-gk (1,302 of 1,302) recorded 0 g.
+			"gross_weight": doc.total_weight,
 		},
 	)
 

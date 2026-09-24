@@ -1664,6 +1664,15 @@ class TestSeUtilsGuards(_StockEntryTestCase):
 		gv.assert_called_once_with("Serial No", "S-1", "custom_gross_wt")
 		self.assertEqual(row.gross_weight, 3.5)
 
+	def test_set_gross_wt_keeps_the_builders_weight_when_the_serial_has_none(self):
+		"""F22: a finished piece's serial is weighed after the entry is built, so it reads
+		nothing yet. The builder's weight must survive instead of being blanked."""
+		row = _Row(serial_no="KLHGX62F1119", gross_weight=5.5192)
+		se = _Doc(items=[row])
+		with patch.object(se_utils.frappe.db, "get_value", return_value=None):
+			se_utils.set_gross_wt(se)
+		self.assertEqual(row.gross_weight, 5.5192)
+
 	def test_set_gross_wt_ignores_non_serialized_rows(self):
 		row = _Row(serial_no=None, gross_weight=None)
 		se = _Doc(items=[row])
