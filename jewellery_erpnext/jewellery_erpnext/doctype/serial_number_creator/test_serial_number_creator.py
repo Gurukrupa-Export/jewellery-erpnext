@@ -1459,3 +1459,40 @@ class TestAsBuiltBomIsNotTheDefault(IntegrationTestCase):
 		bom = frappe._dict(is_default=1)
 		_keep_as_built_bom_off_default(bom)
 		self.assertEqual(bom.is_default, 0)
+
+
+class TestSourceRowOwnership(IntegrationTestCase):
+	"""F23: an SNC source row takes its owner from the batch, whatever voucher wrote the balance."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _owner(self, batch, *fallback):
+		from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator import (
+			serial_number_creator as snc,
+		)
+
+		with patch.object(snc.frappe.db, "get_value", return_value=batch):
+			return snc._source_row_ownership("B-1", *fallback)
+
+	def test_a_customer_batch_names_its_customer(self):
+		batch = frappe._dict(
+			custom_inventory_type="Customer Goods", custom_customer="GJCU0009"
+		)
+		self.assertEqual(self._owner(batch), ("Customer Goods", "GJCU0009"))
+
+	def test_the_batch_wins_over_a_stale_stock_entry_row(self):
+		batch = frappe._dict(
+			custom_inventory_type="Regular Stock", custom_customer=None
+		)
+		self.assertEqual(
+			self._owner(batch, "Customer Goods", "GJCU0009"), ("Regular Stock", None)
+		)
+
+	def test_a_batch_with_no_lane_keeps_the_stock_entry_row(self):
+		batch = frappe._dict(custom_inventory_type=None, custom_customer=None)
+		self.assertEqual(
+			self._owner(batch, "Customer Goods", "GJCU0009"),
+			("Customer Goods", "GJCU0009"),
+		)
