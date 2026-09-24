@@ -24,6 +24,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.su
 from jewellery_erpnext.jewellery_erpnext.customization.utils.bom_weights import (
 	apply_bom_weights,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.diamond_conversion_batches import (
+	get_diamond_conversion_target_batches,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
 )
@@ -220,6 +223,25 @@ def get_fifo_batches(self, row, consumed=None):
 			[batch.batch_no for batch in batch_data],
 			["custom_inventory_type", "custom_customer"],
 		)
+	# Opt-in, and set only by DiamondConversion.before_validate for the "Sieve Size to Sieve
+	# Size" conversion type, which may not re-consume its own output. Every other caller leaves
+	# the flag unset (self.flags is a _dict, so it reads None) and issues zero extra queries.
+	# update_batch_details calls this function once per source row, so the resolved map is
+	# memoised on the doc for the duration of the save rather than re-queried per row.
+	barred_batches = {}
+	if self.flags.exclude_diamond_conversion_target_batches:
+		if self.flags.diamond_conversion_batch_cache is None:
+			self.flags.diamond_conversion_batch_cache = {}
+		cache = self.flags.diamond_conversion_batch_cache
+		unresolved = [
+			batch.batch_no for batch in batch_data if batch.batch_no not in cache
+		]
+		if unresolved:
+			resolved = get_diamond_conversion_target_batches(unresolved)
+			cache.update({batch_no: resolved.get(batch_no) for batch_no in unresolved})
+		barred_batches = {
+			batch.batch_no for batch in batch_data if cache.get(batch.batch_no)
+		}
 	# F5: the lane a row is booked in comes from the batch it actually draws, not from what the
 	# PMO expected. KLHGX62F1119's company diamond (a Regular Stock batch, no customer) was
 	# allowed in place of the customer's diamond and travelled as Customer Goods with a NULL
@@ -247,6 +269,9 @@ def get_fifo_batches(self, row, consumed=None):
 			and self.get("stock_entry_type") not in SAMPLE_ALLOWED_SE_TYPES
 			and is_customer_sample_batch(batch.batch_no)
 		):
+			continue
+		# Diamond Conversion output is not eligible input for another Diamond Conversion.
+		if batch.batch_no in barred_batches:
 			continue
 		if (
 			expected_type in ["Customer Goods", "Customer Stock"]
