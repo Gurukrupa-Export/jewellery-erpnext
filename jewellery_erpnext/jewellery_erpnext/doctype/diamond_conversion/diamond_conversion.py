@@ -21,9 +21,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 # Range" by patches/rename_diamond_conversion_sieve_type.py.
 SIEVE_TO_SIEVE = "Sieve Size to Sieve Size"
 
-# Source AND target are read through the SAME item attribute for SIEVE_TO_SIEVE. The rename was
-# to the Diamond Conversion option label only, not to any item attribute.
-SIEVE_RANGE_ATTRIBUTE = "Diamond Sieve Size Range"
+# Source AND target are read through this SAME item attribute. Live items carry
+# "Diamond Sieve Size" -- "Diamond Sieve Size Range" is the coarser grouping above it and is NOT
+# what this validation reads. The rename was to the Diamond Conversion option label only.
+SIEVE_ATTRIBUTE = "Diamond Sieve Size"
 
 # "+13-17.5" -> ("13", "17.5"). Anchored and fully specified so a malformed value (no "+", a
 # third segment, a stray letter) fails to match instead of being silently mangled the way
@@ -143,8 +144,9 @@ def validate_target_item(self):
 
 	The sibling "Sieve Size to Sieve Size Range" branch that used to live here was replaced by
 	``validate_sieve_size_band`` when that option was renamed to "Sieve Size to Sieve Size":
-	the new rule reads ``Diamond Sieve Size Range`` on BOTH sides and compares numeric UP/DOWN
-	bands rather than following the ``Attribute Value.sieve_size_range`` link.
+	the new rule reads ``Diamond Sieve Size`` on BOTH sides and compares numeric UP/DOWN bands
+	rather than following the ``Attribute Value.sieve_size_range`` link. This branch keeps the
+	older Range-based membership test, which is why it still names both attributes below.
 	"""
 	if self.conversion_type == "Sieve Size Range to Sieve Size":
 		attribute_data = frappe._dict()
@@ -207,8 +209,8 @@ def _parse_sieve_bounds(attribute_value):
 	return flt(match.group(1), 3), flt(match.group(2), 3)
 
 
-def _get_sieve_range_values(item_codes):
-	"""``{item_code: attribute_value}`` for the ``Diamond Sieve Size Range`` attribute.
+def _get_sieve_values(item_codes):
+	"""``{item_code: attribute_value}`` for the ``Diamond Sieve Size`` attribute.
 
 	One query for the whole document. ``setdefault`` is first-win, which matches the row a
 	``frappe.db.get_value`` would have returned had a malformed duplicate attribute row existed.
@@ -220,7 +222,7 @@ def _get_sieve_range_values(item_codes):
 	for row in frappe.db.get_all(
 		"Item Variant Attribute",
 		filters={
-			"attribute": SIEVE_RANGE_ATTRIBUTE,
+			"attribute": SIEVE_ATTRIBUTE,
 			"parent": ["in", sorted(item_codes)],
 		},
 		fields=["parent", "attribute_value"],
@@ -245,11 +247,13 @@ def _get_sieve_dimensions(attribute_values):
 	return dimension_map
 
 
-def _resolve_sieve_band(row, label, sieve_values, dimension_map):
-	"""``(attribute_value, down, up)`` for one row's item, throwing on anything unusable.
+def _resolve_sieve(row, label, sieve_values, dimension_map):
+	"""``(attribute_value, low, high, down, up)`` -- the parsed sieve VALUE and its BAND.
 
-	``height`` is UP and ``weight`` is DOWN -- ``attribute_value.js`` relabels them that way for
-	sieve values. Never skips: every unusable state is a throw that names what to fix.
+	Both sides need both halves, because the rule is symmetric: each side's value is tested
+	against the OTHER side's band. ``height`` is UP and ``weight`` is DOWN --
+	``attribute_value.js`` relabels them that way for sieve values. Never skips: every unusable
+	state is a throw that names what to fix.
 	"""
 	attr_value = sieve_values.get(row.item_code)
 	if not attr_value:
@@ -258,7 +262,18 @@ def _resolve_sieve_band(row, label, sieve_values, dimension_map):
 				row.idx,
 				label,
 				frappe.bold(row.item_code),
-				frappe.bold(SIEVE_RANGE_ATTRIBUTE),
+				frappe.bold(SIEVE_ATTRIBUTE),
+			)
+		)
+
+	bounds = _parse_sieve_bounds(attr_value)
+	if not bounds:
+		frappe.throw(
+			_(
+				"Row #{0}: {1} item {2} has sieve value {3}, which is not in the expected "
+				"+From-To form."
+			).format(
+				row.idx, label, frappe.bold(row.item_code), frappe.bold(attr_value)
 			)
 		)
 
@@ -274,16 +289,23 @@ def _resolve_sieve_band(row, label, sieve_values, dimension_map):
 			)
 		)
 
-	if not dimension.is_diamond_sieve_size_range:
+	# Reject only a value that is AFFIRMATIVELY the wrong kind. A positive
+	# ``is_diamond_sieve_size`` assertion would also block the 85 items whose value has neither
+	# checkbox ticked, which is untidy master data rather than a real mix-up -- the gates that
+	# matter are that the record exists and that UP/DOWN are set. No item currently points a
+	# ``Diamond Sieve Size`` attribute at a range-flagged value, so this blocks nothing today
+	# while still catching the mix-up if one is ever created.
+	if dimension.is_diamond_sieve_size_range:
 		frappe.throw(
 			_(
-				"Row #{0}: Attribute Value {1} on {2} item {3} is not marked as a {4}."
+				"Row #{0}: Attribute Value {1} on {2} item {3} is a {4}, not a {5}."
 			).format(
 				row.idx,
 				frappe.bold(attr_value),
 				label,
 				frappe.bold(row.item_code),
-				frappe.bold(SIEVE_RANGE_ATTRIBUTE),
+				frappe.bold("Diamond Sieve Size Range"),
+				frappe.bold(SIEVE_ATTRIBUTE),
 			)
 		)
 
@@ -309,20 +331,29 @@ def _resolve_sieve_band(row, label, sieve_values, dimension_map):
 			)
 		)
 
-	return attr_value, down, up
+	return attr_value, bounds[0], bounds[1], down, up
 
 
 def validate_sieve_size_band(self):
-	"""Every target's sieve must sit inside every source's UP/DOWN band.
+	"""Each side's sieve VALUE must sit inside the OTHER side's UP/DOWN band.
 
-	For source ``D-NT-RO-4-+14-16`` the ``Diamond Sieve Size Range`` attribute is ``+14-16``,
-	whose Attribute Value carries DOWN 13 and UP 17.5 -- so a target must lie inside 13..17.5,
-	both by its own ``+A-B`` bounds and by its own UP/DOWN.
+	The rule is symmetric, and it is always value-against-band -- never band-against-band. For
+	source ``+7-7.5`` (value 7..7.5, band 7.5..9) and target ``+8-8.5`` (value 8..8.5, band
+	7.5..8.5):
+
+	* forward -- the target's 8..8.5 sits inside the source's 7.5..9, so the source is eligible
+	  for the target;
+	* reverse -- the source's 7..7.5 must sit inside the target's 7.5..8.5, and 7 < 7.5, so it is
+	  not. Checking only the forward direction let exactly this pairing save (DCON00106).
+
+	How wide a conversion may be is therefore a master-data decision, set per value on both
+	sides rather than derived from the name.
 
 	Intersection, not union, across distinct source items: ``make_diamond_stock_entry`` melts
 	every source row into every target row in one Repack, so a target that fits only the wider
-	band is still genuinely being produced from the narrow-band source. Sources are deduped by
-	item first, because ``update_batch_details`` splits one item across many rows by batch.
+	band is still genuinely being produced from the narrow-band source. Both directions are
+	checked against every distinct source. Sources are deduped by item first, because
+	``update_batch_details`` splits one item across many rows by batch.
 	"""
 	if self.conversion_type != SIEVE_TO_SIEVE:
 		return
@@ -337,37 +368,25 @@ def validate_sieve_size_band(self):
 	item_codes = set(source_rows)
 	item_codes.update(row.item_code for row in self.sc_target_table if row.item_code)
 
-	sieve_values = _get_sieve_range_values(item_codes)
+	sieve_values = _get_sieve_values(item_codes)
 	dimension_map = _get_sieve_dimensions(
 		{value for value in sieve_values.values() if value}
 	)
 
-	source_bands = [
-		_resolve_sieve_band(row, _("Source"), sieve_values, dimension_map)
+	# The row is carried alongside so the reverse throw can name the source item and the row the
+	# user has to change, rather than the target row that happened to trigger the comparison.
+	source_entries = [
+		(row, *_resolve_sieve(row, _("Source"), sieve_values, dimension_map))
 		for row in source_rows.values()
 	]
 
 	for target_row in self.sc_target_table:
-		target_value, target_down, target_up = _resolve_sieve_band(
+		t_value, t_low, t_high, t_down, t_up = _resolve_sieve(
 			target_row, _("Target"), sieve_values, dimension_map
 		)
 
-		bounds = _parse_sieve_bounds(target_value)
-		if not bounds:
-			frappe.throw(
-				_(
-					"Row #{0}: Target item {1} has sieve value {2}, which is not in the "
-					"expected +From-To form."
-				).format(
-					target_row.idx,
-					frappe.bold(target_row.item_code),
-					frappe.bold(target_value),
-				)
-			)
-		low, high = bounds
-
-		for source_value, source_down, source_up in source_bands:
-			if low < source_down or high > source_up:
+		for s_row, s_value, s_low, s_high, s_down, s_up in source_entries:
+			if t_low < s_down or t_high > s_up:
 				frappe.throw(
 					_(
 						"Row #{0}: Target item {1} has sieve range {2} to {3}, which is outside "
@@ -375,27 +394,27 @@ def validate_sieve_size_band(self):
 					).format(
 						target_row.idx,
 						frappe.bold(target_row.item_code),
-						frappe.bold(low),
-						frappe.bold(high),
-						frappe.bold(source_down),
-						frappe.bold(source_up),
-						frappe.bold(source_value),
+						frappe.bold(t_low),
+						frappe.bold(t_high),
+						frappe.bold(s_down),
+						frappe.bold(s_up),
+						frappe.bold(s_value),
 					)
 				)
 
-			if target_down < source_down or target_up > source_up:
+			if s_low < t_down or s_high > t_up:
 				frappe.throw(
 					_(
-						"Row #{0}: Target item {1} has UP/DOWN {2} to {3}, which is outside the "
-						"allowed band {4} to {5} of source sieve size {6}."
+						"Row #{0}: Source item {1} has sieve range {2} to {3}, which is outside "
+						"the allowed band {4} to {5} of target sieve size {6}."
 					).format(
-						target_row.idx,
-						frappe.bold(target_row.item_code),
-						frappe.bold(target_down),
-						frappe.bold(target_up),
-						frappe.bold(source_down),
-						frappe.bold(source_up),
-						frappe.bold(source_value),
+						s_row.idx,
+						frappe.bold(s_row.item_code),
+						frappe.bold(s_low),
+						frappe.bold(s_high),
+						frappe.bold(t_down),
+						frappe.bold(t_up),
+						frappe.bold(t_value),
 					)
 				)
 

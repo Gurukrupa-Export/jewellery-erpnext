@@ -31,12 +31,18 @@ def _row(**kwargs):
 	return row
 
 
-def _attribute_value(name, height=0.0, weight=0.0, is_range=1):
+def _attribute_value(name, height=0.0, weight=0.0, is_range=0):
+	"""A Diamond Sieve Size Attribute Value. ``height`` is UP and ``weight`` is DOWN.
+
+	``is_range=1`` models the mix-up the validator rejects: a Diamond Sieve Size Range value
+	reached through an item's Diamond Sieve Size attribute.
+	"""
 	return frappe._dict(
 		{
 			"name": name,
 			"height": height,
 			"weight": weight,
+			"is_diamond_sieve_size": 0 if is_range else 1,
 			"is_diamond_sieve_size_range": is_range,
 		}
 	)
@@ -185,8 +191,12 @@ class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):
 		self.assertRaises(frappe.ValidationError, validate_sieve_size_band, doc)
 
 	@patch("frappe.db.get_all")
-	def test_target_bounds_fit_but_its_own_up_down_do_not(self, mock_get_all):
-		"""``+A-B`` sits inside the band while the target's own UP overshoots it."""
+	def test_source_value_outside_target_band_throws(self, mock_get_all):
+		"""Forward direction passes, reverse direction does not.
+
+		Target +15-16 sits inside the source's 13..17.5, but the source's own 14..16 has to sit
+		inside the target's 14.5..19 and 14 < 14.5.
+		"""
 		doc = self._doc(
 			[_row(idx=1, item_code="D-SRC")],
 			[_row(idx=1, item_code="D-TGT")],
@@ -199,7 +209,9 @@ class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):
 			],
 		)
 
-		self.assertRaises(frappe.ValidationError, validate_sieve_size_band, doc)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("Source item", str(caught.exception))
 
 	@patch("frappe.db.get_all")
 	def test_target_must_fit_every_distinct_source_band(self, mock_get_all):
@@ -244,6 +256,7 @@ class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):
 
 	@patch("frappe.db.get_all")
 	def test_target_up_down_unset_throws(self, mock_get_all):
+		"""A target needs a band too -- the source's value is tested against it."""
 		doc = self._doc(
 			[_row(idx=1, item_code="D-SRC")],
 			[_row(idx=1, item_code="D-TGT")],
@@ -274,21 +287,111 @@ class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):
 		self.assertIn("does not exist", str(caught.exception))
 
 	@patch("frappe.db.get_all")
-	def test_value_not_marked_as_sieve_size_range_throws(self, mock_get_all):
-		"""A plain sieve-size value parses as +A-B and has real UP/DOWN, so it must be caught."""
+	def test_range_flagged_value_throws(self, mock_get_all):
+		"""A Range value parses as +A-B and can carry UP/DOWN, so the mix-up must be caught.
+
+		Source side only -- the target's Attribute Value record is no longer read at all.
+		"""
 		doc = self._doc(
 			[_row(idx=1, item_code="D-SRC")],
 			[_row(idx=1, item_code="D-TGT")],
 		)
 		mock_get_all.side_effect = self._side_effect(
-			{"D-SRC": "+14-16", "D-TGT": "+6-6.5"},
+			{"D-SRC": "+6.5-8", "D-TGT": "+7-7.5"},
 			[
-				_attribute_value("+14-16", height=17.5, weight=13.0),
-				_attribute_value("+6-6.5", height=7.0, weight=5.5, is_range=0),
+				_attribute_value("+6.5-8", height=8.5, weight=6.0, is_range=1),
+				_attribute_value("+7-7.5", height=9.0, weight=6.5),
 			],
 		)
 
-		self.assertRaises(frappe.ValidationError, validate_sieve_size_band, doc)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("Diamond Sieve Size Range", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_untagged_value_is_not_blocked(self, mock_get_all):
+		"""Neither checkbox ticked is untidy master data, not a mix-up -- UP/DOWN is the gate.
+
+		85 live items point at such a value; blocking them would add nothing.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-SRC")],
+			[_row(idx=1, item_code="D-TGT")],
+		)
+		untagged = _attribute_value("+7-7.5", height=9.0, weight=6.5)
+		untagged.is_diamond_sieve_size = 0
+		mock_get_all.side_effect = self._side_effect(
+			{"D-SRC": "+7-7.5", "D-TGT": "+8-8.5"},
+			[untagged, _attribute_value("+8-8.5", height=9.0, weight=7.0)],
+		)
+
+		validate_sieve_size_band(doc)
+
+	@patch("frappe.db.get_all")
+	def test_dcon00106_source_value_below_target_band(self, mock_get_all):
+		"""The reported case: forward check passes, reverse check must reject it.
+
+		Source +7-7.5 (value 7..7.5, band 7.5..9), target +8-8.5 (value 8..8.5, band 7.5..8.5).
+		The target's 8..8.5 fits the source band, but the source's 7..7.5 does not fit the
+		target's, since 7 < 7.5. Checking only the forward direction let this save.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-6B-+7-7.5")],
+			[_row(idx=1, item_code="D-NT-RO-6B-+8-8.5")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-6B-+7-7.5": "+7-7.5", "D-NT-RO-6B-+8-8.5": "+8-8.5"},
+			[
+				_attribute_value("+7-7.5", height=9.0, weight=7.5),
+				_attribute_value("+8-8.5", height=8.5, weight=7.5),
+			],
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("Source item", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_target_band_wider_than_source_band_still_passes(self, mock_get_all):
+		"""The reported case: source banded 7..8.5, target +8-8.5 whose own band is 6.5..9.
+
+		(8, 8.5) is inside 7..8.5 so it saves. The target's own 6.5..9 spills past the source
+		band on both ends and is correctly ignored.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-6B-+7-7.5")],
+			[_row(idx=1, item_code="D-NT-RO-6B-+8-8.5")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-6B-+7-7.5": "+7-7.5", "D-NT-RO-6B-+8-8.5": "+8-8.5"},
+			[
+				_attribute_value("+7-7.5", height=8.5, weight=7.0),
+				_attribute_value("+8-8.5", height=9.0, weight=6.5),
+			],
+		)
+
+		validate_sieve_size_band(doc)
+
+	@patch("frappe.db.get_all")
+	def test_live_regression_plus_7_to_plus_8(self, mock_get_all):
+		"""The production case that was rejected by the stale is_..._range check.
+
+		Source D-NT-RO-6B-+7-7.5 (band 6.5..9) -> target D-NT-RO-6B-+8-8.5 (bounds 8..8.5,
+		own band 7..9). Everything sits inside the source band, so it must save.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-6B-+7-7.5")],
+			[_row(idx=1, item_code="D-NT-RO-6B-+8-8.5")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-6B-+7-7.5": "+7-7.5", "D-NT-RO-6B-+8-8.5": "+8-8.5"},
+			[
+				_attribute_value("+7-7.5", height=9.0, weight=6.5),
+				_attribute_value("+8-8.5", height=9.0, weight=7.0),
+			],
+		)
+
+		validate_sieve_size_band(doc)
 
 	@patch("frappe.db.get_all")
 	def test_inverted_band_throws(self, mock_get_all):
