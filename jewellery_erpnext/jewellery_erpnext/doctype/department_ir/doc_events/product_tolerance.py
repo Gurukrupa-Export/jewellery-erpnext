@@ -380,3 +380,205 @@ def _failure_line(doc, pmo, bucket, label, actual, lower, upper, uom):
 		dept=frappe.bold(doc.next_department),
 		uom=uom,
 	)
+
+
+# ---------------------------------------------------------------------------------------------
+# F6 -- the same bands, checked once more on the finished piece at Serial Number Creator.
+#
+# KLHGX62F1119 shipped two diamonds and a finding short of its design (0.396 ct against a
+# 0.452-0.520 ct band, 5.440 g of metal against 3.787-4.357 g) and nothing stopped it: the
+# Department IR check is armed per destination department and no KGJPL department had it on,
+# and it skips diamond bands scoped to a diamond type. At the SNC the whole piece is known --
+# every stone with its type -- so a scoped band can be checked against its own subtotal.
+#
+# Armed the same way as the Department IR check, by the SNC department's
+# ``custom_apply_product_tolerance``, so nothing changes until a department is switched on.
+# Outside tolerance the SNC is refused unless a Product Tolerance Approver records a reason.
+
+TOLERANCE_APPROVER_ROLE = "Product Tolerance Approver"
+
+#: The Item attribute that carries each band scope field, for reading an as-built piece.
+SCOPE_ATTRIBUTES = {
+	"diamond_type": "Diamond Type",
+	"gemstone_type": "Gemstone Type",
+	"gemstone_shape": "Stone Shape",
+}
+
+#: Grams per carat, for a piece's gross weight -- as ``SerialNumberCreator._compute_total_weight``.
+GRAMS_PER_CARAT = 0.2
+
+_STONE_FIELD = {"D": "diamond_wt", "G": "gemstone_wt"}
+_METAL_FIELD = {"M": "net_wt", "F": "finding_wt"}
+
+
+def validate_snc_design_tolerance(snc):
+	"""``before_submit`` for Serial Number Creator: the finished piece against its design bands."""
+	if not snc.get("parent_manufacturing_order") or not snc.get("department"):
+		return
+	if not cint(
+		frappe.get_cached_value(
+			"Department", snc.department, "custom_apply_product_tolerance"
+		)
+	):
+		return
+
+	snc.custom_tolerance_override_by = None
+	failures = get_snc_tolerance_failures(snc)
+	if not failures:
+		return
+
+	reason = (snc.get("custom_tolerance_override_reason") or "").strip()
+	if reason and TOLERANCE_APPROVER_ROLE in frappe.get_roles():
+		snc.custom_tolerance_override_by = frappe.session.user
+		return
+
+	frappe.throw(
+		title=_("Product Tolerance Exceeded"),
+		msg="<br>".join(failures)
+		+ "<br><br>"
+		+ _(
+			"The finished piece differs from its design beyond the product tolerance. A {0} "
+			"may submit it after entering a Tolerance Override Reason."
+		).format(frappe.bold(TOLERANCE_APPROVER_ROLE)),
+	)
+
+
+def get_snc_tolerance_failures(snc):
+	"""Failure lines for every finished piece outside its PMO's bands; empty when all are within."""
+	pmo = snc.parent_manufacturing_order
+	bands = get_tolerance_bands([pmo]).get(pmo) or {}
+	if not bands:
+		return []
+
+	metal_type = frappe.db.get_value("Parent Manufacturing Order", pmo, "metal_type")
+	destination = frappe._dict(next_department=snc.department)
+
+	pieces = _snc_pieces(snc)
+	failures = []
+	for piece_id, bucket in sorted(pieces.items()):
+		bucket.metal_types = {metal_type} if metal_type else set()
+		bucket.mwos = [snc.get("manufacturing_work_order") or _("n/a")]
+		bucket.mops = [snc.get("manufacturing_operation") or ""]
+		label = _("{0} piece {1}").format(pmo, piece_id) if len(pieces) > 1 else pmo
+		failures += _check_metal(destination, label, bucket, bands.get("metal") or [])
+		for kind, weight_field, stone_label in (
+			("diamond", "diamond_wt", _("Diamond")),
+			("gemstone", "gemstone_wt", _("Gemstone")),
+		):
+			failures += _check_piece_stone(
+				destination,
+				label,
+				bucket,
+				bands.get(kind) or [],
+				kind,
+				weight_field,
+				stone_label,
+			)
+	return failures
+
+
+def _snc_pieces(snc):
+	"""``{piece id: weight bucket}`` from the SNC's as-built FG details.
+
+	Each ``id`` is one finished piece, so each bucket is one piece and the per-piece bands
+	apply unscaled. Rows with no id are one bucket covering every piece, scaled by their count.
+	"""
+	rows = [r for r in snc.get("fg_details") or [] if r.get("row_material")]
+	facts = _item_facts({r.row_material for r in rows})
+
+	ids = {cint(r.get("id")) for r in rows}
+	unsplit = ids == {0}
+	pieces = {}
+	for row in rows:
+		piece_id = cint(row.get("id")) or 1
+		bucket = pieces.setdefault(
+			piece_id,
+			frappe._dict(
+				gross_wt=0.0,
+				net_wt=0.0,
+				finding_wt=0.0,
+				diamond_wt=0.0,
+				gemstone_wt=0.0,
+				scoped={},
+				qty=_piece_count(snc) if unsplit else 1,
+			),
+		)
+		info = facts.get(row.row_material) or {}
+		kind = info.get("variant_of")
+		qty = flt(row.get("qty"))
+		field = _METAL_FIELD.get(kind) or _STONE_FIELD.get(kind)
+		if not field:
+			continue
+		bucket[field] += qty
+		for scope_field, value in (info.get("scope") or {}).items():
+			bucket.scoped[(scope_field, value)] = (
+				bucket.scoped.get((scope_field, value), 0.0) + qty
+			)
+
+	for bucket in pieces.values():
+		bucket.gross_wt = (
+			bucket.net_wt
+			+ bucket.finding_wt
+			+ (bucket.diamond_wt + bucket.gemstone_wt) * GRAMS_PER_CARAT
+		)
+	return pieces
+
+
+def _piece_count(snc):
+	from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+		_resolve_snc_mnf_qty,
+	)
+
+	return cint(_resolve_snc_mnf_qty(snc)) or 1
+
+
+def _item_facts(item_codes):
+	"""``{item: {"variant_of": ..., "scope": {band field: attribute value}}}`` in two reads."""
+	if not item_codes:
+		return {}
+	facts = {
+		item.name: {"variant_of": item.variant_of, "scope": {}}
+		for item in frappe.get_all(
+			"Item",
+			filters={"name": ["in", list(item_codes)]},
+			fields=["name", "variant_of"],
+		)
+	}
+	field_for = {attribute: field for field, attribute in SCOPE_ATTRIBUTES.items()}
+	for attr in frappe.get_all(
+		"Item Variant Attribute",
+		filters={
+			"parent": ["in", list(item_codes)],
+			"attribute": ["in", list(field_for)],
+		},
+		fields=["parent", "attribute", "attribute_value"],
+	):
+		if attr.parent in facts and attr.attribute_value:
+			facts[attr.parent]["scope"][
+				field_for[attr.attribute]
+			] = attr.attribute_value
+	return facts
+
+
+def _check_piece_stone(doc, label, bucket, band_rows, kind, weight_field, stone_label):
+	"""A stone band on a finished piece, against its own scope's subtotal.
+
+	Unlike the Department IR check, a scoped band is enforceable here: the piece's stones are
+	known item by item, so "Natural diamonds, 0.452-0.520 ct" compares with the Natural
+	subtotal. Per-sieve diamond bands (MM Size wise, Group Size wise) are still skipped. A
+	piece with none of a stone its design bands for is outside the band, not exempt.
+	"""
+	if kind == "diamond":
+		band_rows = [b for b in band_rows if b.get("weight_type") in TOTAL_WEIGHT_TYPES]
+	if not band_rows:
+		return []
+
+	def actual_for(_bucket, band):
+		for field in SCOPE_FIELDS[kind]:
+			if band.get(field):
+				return bucket.scoped.get((field, band.get(field)), 0.0)
+		return bucket.get(weight_field)
+
+	return _check_bands(
+		doc, label, bucket, band_rows, stone_label, _("cts"), actual_for
+	)

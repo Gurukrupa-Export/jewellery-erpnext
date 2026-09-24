@@ -22,6 +22,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	CUSTOMER_INVENTORY_TYPES,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import set_stamping_no
+from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance import (
+	validate_snc_design_tolerance,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
 )
@@ -40,6 +43,10 @@ class SerialNumberCreator(Document):
 
 	# 	if not self.fg_details:
 	# 		self.load_raw_materials()
+
+	def before_submit(self):
+		# F6: the finished piece against its design's product tolerance, before any stock moves.
+		validate_snc_design_tolerance(self)
 
 	def on_submit(self):
 		validate_qty(self)

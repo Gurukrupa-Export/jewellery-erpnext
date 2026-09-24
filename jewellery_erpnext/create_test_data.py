@@ -3239,6 +3239,12 @@ def create_test_data():
 			)
 
 			_ensure_customer_gold_rate_check_fields()
+			# And the SNC design-tolerance override fields and role (F6).
+			from jewellery_erpnext.patches.add_snc_tolerance_override_fields import (
+				execute as _ensure_snc_tolerance_override_fields,
+			)
+
+			_ensure_snc_tolerance_override_fields()
 
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:
