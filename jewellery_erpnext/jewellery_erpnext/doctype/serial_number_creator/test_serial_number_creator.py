@@ -540,6 +540,16 @@ class TestSNCSeDetailMaps(IntegrationTestCase):
 		self.assertEqual(inv_map["D-NULL"], "Regular Stock")
 
 	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	def test_only_consumed_rows_are_read(self, mock_sql):
+		"""F27: the produce rows -- the finished piece, or scrap booked back as the same metal item
+		-- must not be averaged into a consumed item's rate or ownership."""
+		mock_sql.return_value = []
+		_snc_se_detail_maps("MAT-STE-TEST")
+		query = " ".join(mock_sql.call_args.args[0].split())
+		self.assertIn("IFNULL(s_warehouse, '') != ''", query)
+		self.assertIn("is_finished_item = 0", query)
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
 	def test_empty_se_returns_empty_maps(self, mock_sql):
 		mock_sql.return_value = []
 		rate_map, inv_map = _snc_se_detail_maps("MAT-STE-EMPTY")

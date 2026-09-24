@@ -1779,11 +1779,16 @@ def _snc_se_detail_maps(se_name):
 			MAX(inventory_type = 'Customer Goods') AS is_customer_goods
 		FROM `tabStock Entry Detail`
 		WHERE parent = %s
+			AND IFNULL(s_warehouse, '') != ''
+			AND is_finished_item = 0
 		GROUP BY item_code
 		""",
 		(se_name,),
 		as_dict=True,
 	)
+	# Consumed rows only (F27). A produced row -- the finished piece, or scrap booked back as
+	# the same metal item -- would otherwise be averaged into that item's consumed rate and
+	# could mark it Customer Goods on the strength of an output.
 	rate_map = {r.item_code: r.rate for r in se_rates}
 	inv_map = {
 		r.item_code: ("Customer Goods" if r.is_customer_goods else "Regular Stock")
