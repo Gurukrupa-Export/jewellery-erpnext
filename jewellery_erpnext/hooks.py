@@ -108,6 +108,11 @@ before_request = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_com
 before_job = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 
 doc_events = {
+	# While a PMO's Cancel All Linked Documents runs, refuse any submit that points at that PMO
+	# (directly or through its Work Orders / Operations). One Redis read per submit when idle.
+	"*": {
+		"before_submit": "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.cancel_all.block_submit_while_pmo_cancels",
+	},
 	# Block stock/manufacturing transactions while EOD sync is running.
 	# The validator bypasses itself when frappe.flags.in_eod_mop_sync is True
 	# so the sync process can create Stock Entries and update MOP Logs unhindered.
