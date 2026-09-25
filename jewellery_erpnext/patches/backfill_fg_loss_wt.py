@@ -3,9 +3,11 @@
 ``ManufacturingWorkOrder.sync_mwo_weights`` used to take the FG work order's ``loss_wt``
 from the LATEST operation of each sibling work order. Loss is measured on the operation
 that was received and the next operation starts at 0, so every FG header it wrote reads 0
-loss. It now sums every loss (negative ``loss_wt``) over every sibling operation
-(``cumulative_loss_wt``; a positive value is material coming in, such as the casting
-receipt). This script applies the same rule to headers written before the fix.
+loss. It now sums every loss (negative ``loss_wt``) over the sibling operations that have a
+submitted Employee IR receive (``cumulative_loss_wt``). A positive value is material coming in,
+such as the casting receipt, and a value on an operation nobody received is a leftover from a
+cancelled receive, a Department IR copy or a split. This script applies the same rule to headers
+written before the fix.
 
 It writes ``loss_wt`` only -- on the FG work order and on the FG operation that
 ``sync_mwo_weights`` writes to -- with ``frappe.db.set_value(update_modified=False)``. It
