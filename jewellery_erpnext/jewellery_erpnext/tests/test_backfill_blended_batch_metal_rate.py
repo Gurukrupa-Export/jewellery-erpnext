@@ -45,6 +45,7 @@ class _Site:
 		bundles=None,
 		basic_rates=None,
 		alloy_items=(ALLOY_ITEM,),
+		no_purity_items=(),
 		has_column=True,
 	):
 		self.batches = batches or {}
@@ -53,6 +54,9 @@ class _Site:
 		self.bundles = bundles or {}
 		self.basic_rates = basic_rates or {}
 		self.alloy_items = set(alloy_items)
+		# Items with no ``Metal Purity`` attribute -- diamonds, gemstones. The patch refuses to
+		# invent a purity for these from the item code. Default empty: every item is a metal.
+		self.no_purity_items = set(no_purity_items)
 		self._has_column = has_column
 		self.writes = []
 		self.mirror_updates = []
@@ -76,6 +80,9 @@ class _Site:
 		if doctype == "Item":
 			group = "Alloy" if name in self.alloy_items else "Metal - V"
 			return frappe._dict(item_group=group)
+		if doctype == "Item Variant Attribute":
+			item = (name or {}).get("parent") if isinstance(name, dict) else name
+			return None if item in self.no_purity_items else "IVA-{0}".format(item)
 		if doctype == "Stock Entry Detail":
 			return self.basic_rates.get(name, 0.0)
 		return None
@@ -187,7 +194,9 @@ class TestBackfillScope(_BackfillTestCase):
 		update = next(q for q in site.queries if q.strip().upper().startswith("UPDATE"))
 
 		self.assertIn("IFNULL(custom_metal_rate, 0) = 0", update)
-		self.assertEqual(site.mirror_updates, [(159000.0, "BAD")])
+		self.assertIn("CASE batch_no", update)
+		# One grouped statement: the CASE pairs first, then the IN list.
+		self.assertEqual(site.mirror_updates, [["BAD", 159000.0, "BAD"]])
 
 	def test_a_batch_already_holding_a_rate_is_never_selected(self):
 		site = _Site(
@@ -508,3 +517,135 @@ class TestBackfillCascade(_BackfillTestCase):
 			_run(site)
 
 		self.assertEqual(_healed(site), {"ROOT"})
+
+
+class TestAlloyTargetIsNotHealedToAMetalRate(_BackfillTestCase):
+	"""The repair path honours the same alloy-target gate as ``batch.on_update``.
+
+	Worse here than at runtime: a repair run can CREATE the precondition and consume it in the same
+	pass -- heal an alloy batch to a gold rate, then blend that rate into a dependent's alloy pool,
+	because ``ALLOY_SOURCE_RATE_FIELDS`` accepts ``custom_metal_rate`` for an alloy source.
+
+	Latent on today's data (no alloy-item batch is a candidate on gk, kg-gk or alfarsi), but the
+	shape is real: gk holds GE2D082-ML7-14, -15 and GE2D082-MAL-03, conversion-produced alloy
+	batches, and only their 2024 creation date keeps them below BLEND_INTRODUCED.
+	"""
+
+	def _site(self, target_item):
+		return _Site(
+			batches={
+				"TGT": {
+					"item": target_item,
+					"custom_metal_rate": 0,
+					"reference_name": "SE-1",
+					"custom_voucher_detail_no": "ROW-1",
+				},
+				"SRC": {"item": "M-G-24KT-99.9-Y", "custom_metal_rate": 159000.0},
+			},
+			origins={
+				"TGT": [{"batch_no": "SRC", "item_code": "M-G-24KT-99.9-Y", "qty": 1.0}]
+			},
+			roots=["TGT"],
+		)
+
+	def test_an_alloy_target_is_not_given_a_metal_rate(self):
+		site = _run(self._site(ALLOY_ITEM))
+
+		self.assertEqual(
+			_rates_written(site),
+			[],
+			msg="the repair wrote a gold rate onto an alloy batch",
+		)
+		self.assertEqual(
+			site.mirror_updates,
+			[],
+			msg="a gold rate was mirrored onto Stock Entry Detail for an alloy batch",
+		)
+
+	def test_a_metal_target_is_still_healed(self):
+		"""The gate must not turn the patch into a no-op."""
+		site = _run(self._site("M-G-22KT-91.75-Y"))
+
+		self.assertAlmostEqual(_rates_written(site)[0], 145882.5, places=4)
+
+
+class TestTheMirrorIsGroupedNotPerBatch(_BackfillTestCase):
+	"""Several healed batches share ONE UPDATE.
+
+	``tabStock Entry Detail.batch_no`` is the 4th column of ``sed_parent_item_wh_idx``, so
+	``WHERE batch_no = %s`` full-scans ~933,000 rows (EXPLAIN ``type=ALL``, ~0.59 s measured). One
+	scan per healed batch is ~116 minutes against gk's 11,804 writes, unattended during
+	``bench migrate``.
+	"""
+
+	def test_two_healed_batches_produce_a_single_update(self):
+		site = _Site(
+			batches={
+				"BAD1": {"item": "M-G-24KT-99.9-Y", "custom_metal_rate": 0},
+				"BAD2": {"item": "M-G-24KT-99.9-Y", "custom_metal_rate": 0},
+				"SRC": {"item": "M-G-24KT-99.9-Y", "custom_metal_rate": 159000.0},
+			},
+			origins={
+				"BAD1": [
+					{"batch_no": "SRC", "item_code": "M-G-24KT-99.9-Y", "qty": 5.0}
+				],
+				"BAD2": [
+					{"batch_no": "SRC", "item_code": "M-G-24KT-99.9-Y", "qty": 5.0}
+				],
+			},
+			roots=["BAD1", "BAD2"],
+		)
+		_run(site)
+
+		self.assertEqual(
+			len(site.mirror_updates),
+			1,
+			msg="the mirror still runs one full table scan per batch",
+		)
+		# Order within the chunk is not guaranteed; the pairing is what matters.
+		params = site.mirror_updates[0]
+		self.assertEqual(sorted(params[-2:]), ["BAD1", "BAD2"])
+		pairs = dict(zip(params[0:4:2], params[1:4:2]))
+		self.assertEqual(pairs, {"BAD1": 159000.0, "BAD2": 159000.0})
+
+
+class TestStoneBatchesAreNotGivenAnInventedPurity(_BackfillTestCase):
+	"""An item with no ``Metal Purity`` attribute is refused, not guessed at.
+
+	``_resolve_metal_purity`` falls back to ``float(item_code.split("-")[-2])``; on
+	``DL-NT-RO-7-+2-2.5`` that token is ``'+2'`` -> 2.0, a sieve range read as a percentage. gk holds
+	877 such Diamond/Gemstone batches with a zero rate and origin rows past the cutoff, and every one
+	would have been written and mirrored into FG-BOM costing.
+	"""
+
+	def _site(self, item, no_purity):
+		return _Site(
+			batches={
+				"TGT": {"item": item, "custom_metal_rate": 0},
+				"SRC": {"item": "M-G-24KT-99.9-Y", "custom_metal_rate": 159000.0},
+			},
+			origins={
+				"TGT": [{"batch_no": "SRC", "item_code": "M-G-24KT-99.9-Y", "qty": 1.0}]
+			},
+			roots=["TGT"],
+			no_purity_items=no_purity,
+		)
+
+	def test_a_stone_item_is_not_healed(self):
+		site = _run(self._site("DL-NT-RO-7-+2-2.5", ("DL-NT-RO-7-+2-2.5",)))
+
+		self.assertEqual(
+			_rates_written(site),
+			[],
+			msg="a gold-derived rate was written onto a diamond batch",
+		)
+		self.assertEqual(
+			site.mirror_updates,
+			[],
+			msg="an invented stone rate was mirrored onto Stock Entry Detail",
+		)
+
+	def test_a_metal_item_is_still_healed(self):
+		site = _run(self._site("M-G-24KT-99.9-Y", ()))
+
+		self.assertAlmostEqual(_rates_written(site)[0], 159000.0, places=4)

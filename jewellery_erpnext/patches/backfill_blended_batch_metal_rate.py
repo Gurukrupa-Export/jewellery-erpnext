@@ -65,8 +65,16 @@ OUT OF SCOPE, deliberately: FG BOMs already costed from the stale zero keep thei
 ``custom_kg_cost_*`` / ``custom_gk_cost_*`` amounts. Recomputing those is a separate, business
 approved operation.
 
-Safe to re-run: every filter is ``IFNULL(..., 0) = 0``, so a second run finds no candidates.
-Batches that already hold a correct rate are never in the candidate set and are never written.
+Safe to re-run: every write is guarded by ``IFNULL(..., 0) = 0``, so a second run writes nothing.
+It is not a no-op though -- batches that stayed unrecoverable remain candidates and are re-scanned.
+
+SCOPE, measured by replaying ``execute()`` read-only rather than guessed. The 127/2/5 figures below
+are ROOT counts; the closure over dependents is far larger. On gk: 127 roots -> 12,603 candidates
+over 4 rounds -> 11,804 batch writes and 26,360 Stock Entry Detail rows. alfarsi: 5 roots -> 11
+candidates. kg-gk: 0 roots, so the patch is a no-op there. Only 125 of the candidate vouchers are
+``Repack-Metal Conversion``; the rest arrive through the closure (Process Loss ~1,000, Manufacture
+47, Repack 35, Customer Goods Received 2). Size a migration window from those numbers, not the
+root count.
 
 Ad-hoc, restricted to named batches for a trial run::
 
@@ -77,6 +85,8 @@ import frappe
 from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.batch.batch import (
+	ALLOY_SOURCE_RATE_FIELDS,
+	METAL_SOURCE_RATE_FIELDS,
 	PURITY_TOLERANCE,
 	_resolve_metal_purity,
 )
@@ -111,6 +121,50 @@ def _is_alloy(item_code, cache):
 	return cache[item_code]
 
 
+def _has_metal_purity(item_code, cache):
+	"""Does this item carry a ``Metal Purity`` attribute at all?
+
+	``_resolve_metal_purity`` falls back to ``float(item_code.split("-")[-2])`` when the attribute is
+	missing, and on a non-metal item that token is not a purity. Measured: ``DL-NT-RO-7-+2-2.5`` ->
+	``'+2'`` -> **2.0**, and ``GB-...-FC-35-PC`` -> **35.0** -- a sieve range and a piece count read as
+	percentages. The blend then scales a gold rate by them and writes the result as that stone's metal
+	rate, which ``_mirror_onto_stock_entry_detail`` copies onto Stock Entry Detail, where
+	``manufacturing_operation._snc_se_detail_maps`` reads
+	``COALESCE(NULLIF(custom_metal_rate, 0), basic_rate)`` -- so FG-BOM costing would prefer the
+	invented number over the stone's own ``valuation_rate``.
+
+	The attribute separates the two populations essentially perfectly on gk: of the batches this patch
+	would otherwise consider, 41,257 of 41,258 Metal/Finding items carry it and **0 of 877** Diamond or
+	Gemstone items do. So this refuses 877 stone writes (and 96 mirrored Stock Entry Detail rows) while
+	keeping every metal and finding batch the patch exists for.
+	"""
+	if item_code not in cache:
+		cache[item_code] = bool(
+			frappe.db.get_value(
+				"Item Variant Attribute",
+				{"parent": item_code, "attribute": "Metal Purity"},
+				"name",
+			)
+		)
+	return cache[item_code]
+
+
+def _first_rate(source, fieldnames):
+	"""First populated rate field on a source Batch, in preference order.
+
+	Mirrors ``batch._origin_row_rate``'s pool handling so a healed batch gets exactly the rate the
+	live blend would now produce. An alloy source accepts either field because the
+	``custom_is_alloy_group`` master flag decides where the writer stamps and is unset on kg-gk; a
+	metal source accepts ``custom_metal_rate`` only, because ``custom_alloy_rate`` on a metal batch
+	is the alloy blended into it, not its own rate.
+	"""
+	for fieldname in fieldnames:
+		rate = flt(source.get(fieldname))
+		if rate:
+			return rate
+	return 0.0
+
+
 def _blend_from_source_batches(batch, origins, alloy_cache):
 	"""Recovery 1 -- the fixed blend, qty-weighted and purity-converted, per pool."""
 	names = {row.batch_no for row in origins if row.batch_no}
@@ -136,11 +190,11 @@ def _blend_from_source_batches(batch, origins, alloy_cache):
 		source = rates.get(row.batch_no) or {}
 
 		if _is_alloy(row.item_code, alloy_cache):
-			alloy_value += flt(source.get("custom_alloy_rate")) * row_qty
+			alloy_value += _first_rate(source, ALLOY_SOURCE_RATE_FIELDS) * row_qty
 			alloy_qty += row_qty
 			continue
 
-		source_rate = flt(source.get("custom_metal_rate"))
+		source_rate = _first_rate(source, METAL_SOURCE_RATE_FIELDS)
 		source_purity = _resolve_metal_purity(row.item_code)
 		if target_purity and abs(source_purity - target_purity) > PURITY_TOLERANCE:
 			source_rate = (source_rate * target_purity) / 100
@@ -218,16 +272,43 @@ def _dependents_of(healed):
 	)
 
 
-def _mirror_onto_stock_entry_detail(batch_no, rate):
-	"""Fill the read-only ``fetch_from`` copy on rows that will never re-save."""
-	frappe.db.sql(
-		"""
-		UPDATE `tabStock Entry Detail`
-		SET custom_metal_rate = %s
-		WHERE batch_no = %s AND IFNULL(custom_metal_rate, 0) = 0
-		""",
-		(rate, batch_no),
-	)
+# How many batches share one grouped mirror UPDATE. See ``_flush_mirrors``.
+MIRROR_CHUNK = 500
+
+
+def _flush_mirrors(pending):
+	"""Fill the read-only ``fetch_from`` copies, one grouped UPDATE per chunk.
+
+	This used to run one ``WHERE batch_no = %s`` UPDATE per healed batch. ``batch_no`` is only the
+	4th column of ``sed_parent_item_wh_idx``, so that predicate cannot use the index: EXPLAIN reports
+	``type=ALL`` over ~933,000 rows, measured at ~0.59 s. Against gk's 11,804 writes that is roughly
+	116 minutes of full scans, every one taking row locks, inside a single uncommitted transaction --
+	and the patch is registered ``post_model_sync``, so it runs unattended during ``bench migrate``.
+
+	Grouping 500 batches per statement turns ~11,800 scans into ~24. The CASE carries each batch's own
+	rate, so the batching changes which statement writes a row, never what it writes.
+	"""
+	if not pending:
+		return
+
+	items = list(pending.items())
+	for start in range(0, len(items), MIRROR_CHUNK):
+		chunk = items[start : start + MIRROR_CHUNK]
+		cases = " ".join(["WHEN %s THEN %s"] * len(chunk))
+		placeholders = ", ".join(["%s"] * len(chunk))
+		params = []
+		for batch_no, rate in chunk:
+			params.extend([batch_no, rate])
+		params.extend([batch_no for batch_no, _ in chunk])
+		frappe.db.sql(
+			f"""
+			UPDATE `tabStock Entry Detail`
+			SET custom_metal_rate = CASE batch_no {cases} END
+			WHERE batch_no IN ({placeholders}) AND IFNULL(custom_metal_rate, 0) = 0
+			""",
+			params,
+		)
+	pending.clear()
 
 
 def _collect_candidates():
@@ -260,7 +341,7 @@ def _collect_candidates():
 	return [row.name for row in rows]
 
 
-def _repair_one(name, alloy_cache, sources_used):
+def _repair_one(name, alloy_cache, purity_cache, sources_used, pending_mirrors):
 	"""Recover and write one batch's rate. Returns the written rate, or 0.0 if unrecoverable."""
 	batch = frappe.db.get_value(
 		"Batch",
@@ -297,6 +378,27 @@ def _repair_one(name, alloy_cache, sources_used):
 	if not metal_rate:
 		return 0.0
 
+	# An ALLOY target never takes the metal blend -- the same gate ``batch.on_update`` applies. The
+	# runtime refuses it because ``ALLOY_SOURCE_RATE_FIELDS`` would later read that stray
+	# ``custom_metal_rate`` as the alloy's own price; this path is worse, because the repair run can
+	# CREATE the precondition and then consume it within the same pass -- heal an alloy batch to a
+	# gold rate, then blend that rate into a dependent's alloy pool. Demonstrated on the test
+	# harness: an alloy target healed to 159000.0, and a consumer's ``custom_alloy_rate`` written
+	# 159000.0 against a true alloy price of 62.00.
+	#
+	# Returning 0.0 rather than skipping just the write is deliberate: the dependency walk keys on
+	# batches that received a rate, and an alloy batch that was refused one must not become a
+	# healed root that drags its dependents along behind a value we declined to write.
+	if _is_alloy(batch.item, alloy_cache):
+		return 0.0
+
+	# Refuse an item whose purity would have to be invented from its item code -- see
+	# ``_has_metal_purity``. Same reasoning as the alloy gate above: returning 0.0 rather than just
+	# skipping the write keeps the batch out of the healed set, so it never drags dependents along
+	# behind a value we declined to write.
+	if not _has_metal_purity(batch.item, purity_cache):
+		return 0.0
+
 	frappe.db.set_value(
 		"Batch", name, "custom_metal_rate", metal_rate, update_modified=False
 	)
@@ -307,7 +409,7 @@ def _repair_one(name, alloy_cache, sources_used):
 			"Batch", name, "custom_alloy_rate", alloy_rate, update_modified=False
 		)
 
-	_mirror_onto_stock_entry_detail(name, metal_rate)
+	pending_mirrors[name] = metal_rate
 	sources_used[used] += 1
 	return metal_rate
 
@@ -323,6 +425,8 @@ def execute():
 		return
 
 	alloy_cache = {}
+	purity_cache = {}
+	pending_mirrors = {}
 	healed = 0
 	sources_used = {"blend": 0, "voucher_row": 0}
 
@@ -345,12 +449,21 @@ def execute():
 		for name in candidates:
 			if flt(frappe.db.get_value("Batch", name, "custom_metal_rate")):
 				continue
-			if _repair_one(name, alloy_cache, sources_used):
+			if _repair_one(
+				name, alloy_cache, purity_cache, sources_used, pending_mirrors
+			):
 				healed += 1
 				wrote = True
+		# Flush and commit per pass rather than holding every row lock until the end. The fixpoint
+		# re-reads each batch's rate from the database, so a committed pass is exactly the state the
+		# next pass expects -- and an interrupted migrate leaves completed passes durable instead of
+		# rolling back hours of work.
+		_flush_mirrors(pending_mirrors)
+		frappe.db.commit()
 		if not wrote:
 			break
 
+	_flush_mirrors(pending_mirrors)
 	frappe.db.commit()
 	frappe.logger().info(
 		f"{__name__}: healed {healed} batch rate(s) "
