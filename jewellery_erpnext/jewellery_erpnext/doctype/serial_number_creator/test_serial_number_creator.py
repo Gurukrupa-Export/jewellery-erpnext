@@ -1496,3 +1496,70 @@ class TestSourceRowOwnership(IntegrationTestCase):
 			self._owner(batch, "Customer Goods", "GJCU0009"),
 			("Customer Goods", "GJCU0009"),
 		)
+
+
+class TestTrackingBomStaysThePlan(IntegrationTestCase):
+	"""F7: SNC submit submits the Tracking BOM but never relabels it or points it at the FG BOM.
+
+	The Tracking BOM is the planned composition, shared by every sibling PMO of a plan row; the as-built
+	BOM is the SNC's own ``fg_bom``.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, docstatus, reference=("Sales Order", "SO-1")):
+		from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator import (
+			serial_number_creator as snc,
+		)
+
+		tracking_bom = frappe._dict(
+			docstatus=docstatus,
+			bom_type="Sales Order",
+			reference_doctype=reference[0],
+			reference_docname=reference[1],
+			flags=frappe._dict(),
+		)
+		tracking_bom.submit = lambda: tracking_bom.update(docstatus=1)
+		doc = frappe._dict(
+			fg_bom="BOM-PIECE-001",
+			manufacturing_work_order="MWO-1",
+			parent_manufacturing_order="PMO-1",
+		)
+		with (
+			patch.object(snc.frappe.db, "get_value", return_value="TB-1"),
+			patch.object(snc.frappe, "get_doc", return_value=tracking_bom),
+			patch.object(snc.frappe.db, "set_value") as set_value,
+		):
+			snc.submit_tracking_bom_for_finished_goods(doc)
+		return tracking_bom, set_value
+
+	def test_a_draft_tracking_bom_is_submitted_unchanged(self):
+		tracking_bom, set_value = self._run(docstatus=0)
+		self.assertEqual(tracking_bom.docstatus, 1)
+		self.assertEqual(
+			(
+				tracking_bom.bom_type,
+				tracking_bom.reference_doctype,
+				tracking_bom.reference_docname,
+			),
+			("Sales Order", "Sales Order", "SO-1"),
+		)
+		set_value.assert_not_called()
+
+	def test_a_submitted_tracking_bom_is_not_written(self):
+		tracking_bom, set_value = self._run(docstatus=1)
+		set_value.assert_not_called()
+		self.assertEqual(tracking_bom.reference_docname, "SO-1")
+
+	def test_the_last_inserted_work_order_is_not_pinned(self):
+		"""MWO.after_insert's pointer would block deleting or cancelling that sibling for good."""
+		tracking_bom, set_value = self._run(
+			docstatus=0, reference=("Manufacturing Work Order", "MWO-SIBLING-C")
+		)
+		self.assertEqual(tracking_bom.docstatus, 1)
+		self.assertIsNone(tracking_bom.reference_doctype)
+		self.assertIsNone(tracking_bom.reference_docname)
+		self.assertEqual(tracking_bom.bom_type, "Sales Order")
+		set_value.assert_not_called()

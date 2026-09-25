@@ -146,7 +146,6 @@ class ManufacturingWorkOrder(Document):
 						SUM(other_wt) AS other_wt,
 						SUM(received_gross_wt) AS received_gross_wt,
 						SUM(received_net_wt) AS received_net_wt,
-						SUM(loss_wt) AS loss_wt,
 						SUM(diamond_pcs) AS diamond_pcs,
 						SUM(gemstone_pcs) AS gemstone_pcs
 					FROM `tabManufacturing Operation`
@@ -168,9 +167,11 @@ class ManufacturingWorkOrder(Document):
 					self.other_wt = flt(agg.get("other_wt"))
 					self.received_gross_wt = flt(agg.get("received_gross_wt"))
 					self.received_net_wt = flt(agg.get("received_net_wt"))
-					self.loss_wt = flt(agg.get("loss_wt"))
 					self.diamond_pcs = flt(agg.get("diamond_pcs"))
 					self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
+					# Loss is the one weight that does NOT live on the latest operation (F14):
+					# see cumulative_loss_wt. Summed over the latest operations it was always 0.
+					self.loss_wt = cumulative_loss_wt(sibling_mwos)
 
 		# The carat->gram twins are DERIVED, never summed: SUM(diamond_wt_in_gram) over
 		# siblings adds values that were each already rounded to 3, so it drifts from
@@ -883,6 +884,62 @@ class ManufacturingWorkOrder(Document):
 	@frappe.whitelist()
 	def create_mfg_entry(self):
 		create_se_entry(self)
+
+
+def cumulative_loss_wt(sibling_mwos):
+	"""The FG work order's process loss: every LOSS recorded on an operation of its siblings.
+
+	Every other header weight is a balance, so the latest operation carries it forward and
+	sync_mwo_weights reads it there. loss_wt is not a balance -- it is the change measured
+	on the one operation that was received (Employee IR writes received_gross_wt - gross_wt
+	on it), and the operation Employee IR creates next starts at 0. Summed over the latest
+	operations it was therefore always 0 (F14).
+
+	Only an operation with a SUBMITTED Employee IR receive counts. That is the only real
+	writer of loss_wt; every other value on an operation is a leftover: a cancelled receive
+	leaves its figure behind, Department IR's copy_doc carries no_copy fields forward (it zeroes
+	them only for a refined work order), and create_manufacturing_operation seeds a split
+	child's first operation from the header the split copied from its parent.
+
+	Only the negative values are losses. The field is "Loss / Increase Wt", and an increase
+	is material coming IN, not a process gain: the casting operation is issued at gross 0 and
+	received at the whole cast weight, and assembly receives the findings it attaches. On
+	kg-gk 2,153 of 2,183 positive Casting rows equal the entire cast weight. Netting them
+	against the losses gave PMO-KGJPL-NE05090-002-0001 a "loss" of +34.25 g for a piece that
+	lost 5.63 g. The per-operation reports read loss the same way (only negative loss_wt).
+
+	The result keeps the field's sign: negative, or 0 when nothing was lost. Reports that list
+	operations must not also list the FG work order, or the loss shows twice -- they filter
+	for_fg = 0.
+	"""
+	if not sibling_mwos:
+		return 0.0
+	operations = frappe.db.sql(
+		"""
+		SELECT name, loss_wt
+		FROM `tabManufacturing Operation`
+		WHERE manufacturing_work_order IN %s
+		""",
+		(tuple(sibling_mwos),),
+	)
+	if not operations:
+		return 0.0
+	received = {
+		row[0]
+		for row in frappe.db.sql(
+			"""
+			SELECT DISTINCT eiro.manufacturing_operation
+			FROM `tabEmployee IR Operation` eiro
+			INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+			WHERE eir.type = 'Receive' AND eir.docstatus = 1
+				AND eiro.manufacturing_operation IN %s
+			""",
+			(tuple(name for name, _loss in operations),),
+		)
+	}
+	return flt(
+		sum(min(flt(loss), 0.0) for name, loss in operations if name in received), 3
+	)
 
 
 @frappe.whitelist()

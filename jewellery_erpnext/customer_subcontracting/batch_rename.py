@@ -170,7 +170,10 @@ def _source_row_rate(doc, row):
 	rate stamping in ``customization/batch/doc_events/utils.py`` never runs for them
 	and they were created with no Batch Rate at all. Read it straight off the row
 	that is minting the batch instead: the Stock Entry Detail's maintained rate
-	falling back to ``basic_rate``, or the Purchase Receipt Item's ``rate``.
+	falling back to ``valuation_rate`` and then ``basic_rate``, or the Purchase
+	Receipt Item's ``rate``. ``valuation_rate`` is the ledger's incoming rate for the
+	row (``basic_rate`` plus its share of additional costs), and that minting stamp
+	stays the batch's rate: nothing restates it later (F26).
 
 	A Manufacture's finished piece gets none (F8). ``create_child_batches`` also mints the piece's
 	batch on a customer order, and that row's rate is the whole piece -- customer gold, company
@@ -184,7 +187,11 @@ def _source_row_rate(doc, row):
 			"is_finished_item"
 		):
 			return 0.0
-		return flt(row.get("custom_metal_rate")) or flt(row.get("basic_rate"))
+		return (
+			flt(row.get("custom_metal_rate"))
+			or flt(row.get("valuation_rate"))
+			or flt(row.get("basic_rate"))
+		)
 
 	return flt(row.get("rate"))
 
