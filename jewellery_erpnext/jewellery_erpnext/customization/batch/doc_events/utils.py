@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import frappe
 from frappe import _
 from frappe.utils import cstr, flt
@@ -399,6 +401,25 @@ def is_subcontracting_gold_repack(batch):
 	)
 
 
+@contextmanager
+def snc_settlement_conversion(stock_entry_name):
+	"""Mark ``stock_entry_name`` as one of Create SNC's own settlement conversions while
+	the caller submits it -- the only proof ``is_snc_settlement_conversion`` accepts.
+
+	Request-scoped on purpose: every Stock Entry field a conversion could be recognised by
+	(``stock_entry_type``, ``auto_created``, ``manufacturing_work_order``) is permlevel 0,
+	so any client can post it, whereas ``frappe.flags`` is rebuilt per request and cannot be
+	set by one. Keyed by Stock Entry name rather than a boolean, so no other batch validated
+	in the same request is exempted; restored in ``finally`` like ``is_batch_autoname``.
+	"""
+	previous = frappe.flags.snc_settlement_conversions or set()
+	frappe.flags.snc_settlement_conversions = previous | {stock_entry_name}
+	try:
+		yield
+	finally:
+		frappe.flags.snc_settlement_conversions = previous
+
+
 def is_snc_settlement_conversion(batch):
 	"""Exempt the batch a Create SNC settlement conversion mints for a customer.
 
@@ -410,10 +431,11 @@ def is_snc_settlement_conversion(batch):
 	``update_parent_batch_id``, so without this exemption the settlement throws "Item ...
 	is not allowed as Customer Goods" and the FG work order stays blocked.
 
-	Scoped to the SNC's own entries: a ``Repack-Metal Conversion`` that is auto-created
-	AND linked to a Manufacturing Work Order. The Metal Conversions doctype builds the
-	same Stock Entry type without a work order, so it stays guarded. Mirrors
-	``is_subcontracting_gold_repack``: only batches that actually carry a customer.
+	Only a conversion Create SNC is submitting in THIS request qualifies (see
+	``snc_settlement_conversion``); a Stock Entry that merely looks like one -- posted with
+	the same type, ``auto_created`` and work order -- stays guarded. Every guard evaluation
+	of an SNC batch happens inside that submit; a later direct re-save of the Batch itself
+	is guarded like any other Customer Goods batch of an unflagged item.
 	"""
 	if getattr(batch, "reference_doctype", None) != "Stock Entry":
 		return False
@@ -421,17 +443,8 @@ def is_snc_settlement_conversion(batch):
 	if not getattr(batch, "custom_customer", None):
 		return False
 
-	se = frappe.db.get_value(
-		"Stock Entry",
-		getattr(batch, "reference_name", None),
-		["stock_entry_type", "auto_created", "manufacturing_work_order"],
-		as_dict=True,
-	)
-	return bool(
-		se
-		and se.stock_entry_type == "Repack-Metal Conversion"
-		and se.auto_created
-		and se.manufacturing_work_order
+	return getattr(batch, "reference_name", None) in (
+		frappe.flags.snc_settlement_conversions or ()
 	)
 
 

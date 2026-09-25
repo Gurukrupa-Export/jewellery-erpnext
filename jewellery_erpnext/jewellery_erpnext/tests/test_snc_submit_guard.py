@@ -8,6 +8,9 @@ from unittest.mock import patch
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.customer_subcontracting.sub_utils import snc
+from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events import (
+	utils as batch_utils,
+)
 
 
 class _Doc(SimpleNamespace):
@@ -1269,7 +1272,13 @@ class TestSncHardening(IntegrationTestCase):
 		self.assertEqual(filters["company"], "GEPL")
 
 	def _convert(
-		self, source_item, source_qty, required_item, required_pure_qty, required_qty
+		self,
+		source_item,
+		source_qty,
+		required_item,
+		required_pure_qty,
+		required_qty,
+		on_submit=None,
 	):
 		appended = []
 		se = _Doc(name="SE-CONV", update=lambda values: None, insert=lambda **kw: None)
@@ -1282,7 +1291,9 @@ class TestSncHardening(IntegrationTestCase):
 
 		with patch.object(snc.frappe, "new_doc", return_value=se), patch.object(
 			snc, "_append_item", side_effect=lambda doc, values: appended.append(values)
-		), patch.object(snc, "_submit_consuming_stock_entry"), patch.object(
+		), patch.object(
+			snc, "_submit_consuming_stock_entry", side_effect=on_submit
+		), patch.object(
 			snc, "_get_item_purity", side_effect=lambda code: float(code.split("-")[3])
 		), patch.object(snc.frappe.db, "get_value", side_effect=_get_value):
 			snc.create_repack_metal_conversion(
@@ -1300,6 +1311,42 @@ class TestSncHardening(IntegrationTestCase):
 				owner_customer="GJCU0009",
 			)
 		return appended
+
+	def _minted_batch(self):
+		"""The customer batch the SE-CONV conversion mints, as the guard sees it."""
+		return SimpleNamespace(
+			reference_doctype="Stock Entry", reference_name="SE-CONV", custom_customer="C1"
+		)
+
+	def test_conversion_is_marked_only_while_it_submits(self):
+		# The Customer Goods exemption must hold for exactly SNC's own submit of this
+		# entry -- the only time the guard runs on the batch it mints -- and not after.
+		snc.frappe.flags.snc_settlement_conversions = None
+		self.addCleanup(setattr, snc.frappe.flags, "snc_settlement_conversions", None)
+		during = []
+		self._convert(
+			M_ITEM,
+			1.0,
+			F_ITEM,
+			0.918,
+			1.0,
+			on_submit=lambda se: during.append(
+				batch_utils.is_snc_settlement_conversion(self._minted_batch())
+			),
+		)
+		self.assertEqual(during, [True])
+		self.assertFalse(batch_utils.is_snc_settlement_conversion(self._minted_batch()))
+
+	def test_conversion_mark_is_cleared_when_the_submit_fails(self):
+		snc.frappe.flags.snc_settlement_conversions = None
+		self.addCleanup(setattr, snc.frappe.flags, "snc_settlement_conversions", None)
+
+		def _fail(se):
+			raise RuntimeError("submit failed")
+
+		with self.assertRaises(RuntimeError):
+			self._convert(M_ITEM, 1.0, F_ITEM, 0.918, 1.0, on_submit=_fail)
+		self.assertFalse(batch_utils.is_snc_settlement_conversion(self._minted_batch()))
 
 	def test_different_purity_conversion_produces_exactly_the_required_weight(self):
 		# 1.0 g of a 91.75 finding: pure 0.918 -> 0.919 g of 99.9 metal. Re-deriving the

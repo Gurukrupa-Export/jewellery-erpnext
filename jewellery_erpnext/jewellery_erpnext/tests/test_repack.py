@@ -305,49 +305,85 @@ class TestRepackAutomation(IntegrationTestCase):
 		):
 			self.assertFalse(batch_utils.is_subcontracting_gold_repack(batch))
 
-	def _snc_batch(self, customer="GJCU0009"):
+	def _snc_batch(self, customer="GJCU0009", reference_name="MAT-STE-RMC"):
 		return SimpleNamespace(
-			reference_doctype="Stock Entry",
-			reference_name="MAT-STE-RMC",
-			custom_customer=customer,
 			item="F-G-22KT-91.75-Y-HG-RBH-2.70 MM",
+			custom_inventory_type="Customer Goods",
+			custom_customer=customer,
+			custom_customer_voucher_type=None,
+			custom_voucher_detail_no=None,
+			reference_doctype="Stock Entry",
+			reference_name=reference_name,
+			name="B-SNC-01",
+			get=lambda key, default=None: default,
 		)
 
-	def test_snc_settlement_conversion_is_exempt_from_the_item_flag(self):
-		se = frappe._dict(
-			stock_entry_type="Repack-Metal Conversion",
-			auto_created=1,
-			manufacturing_work_order="MWO-1",
-		)
-		with patch.object(batch_utils.frappe.db, "get_value", return_value=se):
-			self.assertTrue(batch_utils.is_snc_settlement_conversion(self._snc_batch()))
+	def _clear_snc_marks(self):
+		# frappe.flags outlives a test in one process; never leak a mark into the next test.
+		frappe.flags.snc_settlement_conversions = None
+		self.addCleanup(setattr, frappe.flags, "snc_settlement_conversions", None)
 
-	def test_metal_conversions_doctype_entry_stays_guarded(self):
-		# Same Stock Entry type, auto-created, but no work order: Metal Conversions.
-		se = frappe._dict(
-			stock_entry_type="Repack-Metal Conversion",
-			auto_created=1,
-			manufacturing_work_order=None,
-		)
-		with patch.object(batch_utils.frappe.db, "get_value", return_value=se):
-			self.assertFalse(
-				batch_utils.is_snc_settlement_conversion(self._snc_batch())
-			)
+	def test_snc_conversion_is_exempt_only_while_create_snc_marks_it(self):
+		self._clear_snc_marks()
+		batch = self._snc_batch()
+		self.assertFalse(batch_utils.is_snc_settlement_conversion(batch))
+		with batch_utils.snc_settlement_conversion("MAT-STE-RMC"):
+			self.assertTrue(batch_utils.is_snc_settlement_conversion(batch))
+			# Another entry validated in the same request is not covered by this mark.
+			other = self._snc_batch(reference_name="MAT-STE-OTHER")
+			self.assertFalse(batch_utils.is_snc_settlement_conversion(other))
+		self.assertFalse(batch_utils.is_snc_settlement_conversion(batch))
 
-	def test_snc_exemption_requires_a_customer_and_the_conversion_type(self):
-		with patch.object(batch_utils.frappe.db, "get_value") as get_value:
+	def test_forged_repack_metal_conversion_is_still_rejected(self):
+		"""A Stock Entry posted by a client with everything an SNC conversion carries --
+		type Repack-Metal Conversion, auto_created=1, a work order -- but NOT submitted by
+		Create SNC must not get the exemption: the guard still refuses the Customer Goods
+		batch of an item without the Customer Goods flag."""
+		self._clear_snc_marks()
+		forged = {
+			"stock_entry_type": "Repack-Metal Conversion",
+			"auto_created": 1,
+			"manufacturing_work_order": "MWO-1",
+		}
+
+		def _get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Stock Entry":
+				if isinstance(fieldname, (list, tuple)):
+					return frappe._dict(forged)
+				return forged.get(fieldname)
+			if doctype == "Item":
+				return 0  # custom_inventory_type_can_be_customer_goods is off
+			return None
+
+		db = MagicMock()
+		db.get_all.return_value = []
+		db.get_value.side_effect = _get_value
+		with patch.object(batch_utils.frappe, "db", db):
+			with self.assertRaises(Exception) as cm:
+				batch_utils.update_inventory_dimentions(
+					self._snc_batch(reference_name="MAT-STE-FORGED")
+				)
+		self.assertIn("is not allowed as", str(cm.exception))
+
+	def test_snc_marker_requires_a_customer_and_is_cleared_on_error(self):
+		self._clear_snc_marks()
+		with batch_utils.snc_settlement_conversion("MAT-STE-RMC"):
 			self.assertFalse(
 				batch_utils.is_snc_settlement_conversion(self._snc_batch(customer=None))
 			)
-		get_value.assert_not_called()
-		se = frappe._dict(
-			stock_entry_type="Material Transfer (WORK ORDER)",
-			auto_created=1,
-			manufacturing_work_order="MWO-1",
-		)
-		with patch.object(batch_utils.frappe.db, "get_value", return_value=se):
-			self.assertFalse(
-				batch_utils.is_snc_settlement_conversion(self._snc_batch())
+		with self.assertRaises(RuntimeError):
+			with batch_utils.snc_settlement_conversion("MAT-STE-RMC"):
+				raise RuntimeError("submit failed")
+		self.assertFalse(batch_utils.is_snc_settlement_conversion(self._snc_batch()))
+		# Nested marks restore the outer one.
+		with batch_utils.snc_settlement_conversion("MAT-STE-OUTER"):
+			with batch_utils.snc_settlement_conversion("MAT-STE-RMC"):
+				self.assertTrue(batch_utils.is_snc_settlement_conversion(self._snc_batch()))
+			self.assertFalse(batch_utils.is_snc_settlement_conversion(self._snc_batch()))
+			self.assertTrue(
+				batch_utils.is_snc_settlement_conversion(
+					self._snc_batch(reference_name="MAT-STE-OUTER")
+				)
 			)
 
 	def test_repair_unpack_allows_customer_goods_at_mint_via_voucher_type(self):

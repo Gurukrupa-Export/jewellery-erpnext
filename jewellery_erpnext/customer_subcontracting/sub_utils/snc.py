@@ -5,6 +5,9 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
+	snc_settlement_conversion,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	create_mr_wo_stock_entry,
 	get_make_receive_entry_rows,
@@ -504,7 +507,11 @@ def create_repack_metal_conversion(
 		},
 	)
 	se.insert(ignore_permissions=True)
-	_submit_consuming_stock_entry(se)
+	# The batch this conversion mints for a customer is exempt from the Customer Goods
+	# item-flag guard only while THIS entry is being submitted by SNC (server-only marker;
+	# the entry's own fields can be posted by any client).
+	with snc_settlement_conversion(se.name):
+		_submit_consuming_stock_entry(se)
 
 	target_batch = frappe.db.get_value(
 		"Stock Entry Detail",
