@@ -1045,9 +1045,10 @@ class TestCreateMrWoStockEntryPcsValidation(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def _patches(self, sre_dict, mop_balance_map=None):
+	def _patches(self, sre_dict, mop_balance_map=None, get_values=None):
 		"""Common patch stack — get_doc, get_value, get_all (MOP Log fetch),
-		savepoint stubs.
+		savepoint stubs. ``get_values`` replaces the default get_value sequence (existing
+		receive, department RM warehouse, one SRE) for multi-row receives.
 		"""
 		patches = [
 			patch(
@@ -1060,7 +1061,7 @@ class TestCreateMrWoStockEntryPcsValidation(IntegrationTestCase):
 			),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
-				side_effect=[None, "WH-Raw", sre_dict, "WH-Src"],
+				side_effect=get_values or [None, "WH-Raw", sre_dict, "WH-Src"],
 			),
 			# Helper inside create_mr_wo_stock_entry calls
 			# get_current_mop_balance_rows → frappe.db.get_all on MOP Log.
@@ -1235,15 +1236,13 @@ class TestCreateMrWoStockEntryPcsValidation(IntegrationTestCase):
 			appended[0]["pcs"], 0, f"Server must force pcs=0 for {item_code}"
 		)
 
-	def _receive_one_row(self, **row_fields):
-		"""Run one M row through create_mr_wo_stock_entry with the call's default target
-		(the department RM warehouse, "WH-Raw") and return (appended rows, stock entry)."""
-		sre = frappe._dict(
+	def _tw_sre(self, name, warehouse):
+		return frappe._dict(
 			{
-				"name": "SRE-TW",
+				"name": name,
 				"docstatus": 1,
 				"item_code": "M-G-22KT-91.75-Y",
-				"warehouse": "WH-Src",
+				"warehouse": warehouse,
 				"reserved_qty": 5.0,
 				"delivered_qty": 0.0,
 				"stock_uom": "Gram",
@@ -1252,7 +1251,19 @@ class TestCreateMrWoStockEntryPcsValidation(IntegrationTestCase):
 				"manufacturing_work_order": "MWO-1",
 			}
 		)
-		new_doc_mock = self._patches(sre, mop_balance_map={})[-1]
+
+	def _receive_one_row(self, **row_fields):
+		"""Run one M row through create_mr_wo_stock_entry with the call's default target
+		(the department RM warehouse, "WH-Raw") and return (appended rows, stock entry)."""
+		return self._receive_rows([("SRE-TW", "WH-Src", row_fields)])
+
+	def _receive_rows(self, rows):
+		"""Run ``rows`` -- ``(sre_name, sre_warehouse, extra row fields)`` -- through
+		create_mr_wo_stock_entry and return (appended rows, stock entry)."""
+		sres = [self._tw_sre(name, warehouse) for name, warehouse, _fields in rows]
+		new_doc_mock = self._patches(
+			None, mop_balance_map={}, get_values=[None, "WH-Raw", *sres]
+		)[-1]
 		stock_entry = MagicMock()
 		stock_entry.doctype = "Stock Entry"
 		stock_entry.name = "STE-TW"
@@ -1269,12 +1280,8 @@ class TestCreateMrWoStockEntryPcsValidation(IntegrationTestCase):
 			{
 				"manufacturing_operation": "MOP-1",
 				"receive_items": [
-					{
-						"stock_reservation_entry": "SRE-TW",
-						"qty": 1.0,
-						"idx": 1,
-						**row_fields,
-					}
+					{"stock_reservation_entry": name, "qty": 1.0, "idx": idx, **fields}
+					for idx, (name, _warehouse, fields) in enumerate(rows, start=1)
 				],
 			},
 			request_id="t-row-target",
@@ -1297,6 +1304,23 @@ class TestCreateMrWoStockEntryPcsValidation(IntegrationTestCase):
 			frappe.exceptions.ValidationError, "cannot be the same \\(WH-Src\\)"
 		):
 			self._receive_one_row(t_warehouse="WH-Src")
+
+	def test_mixed_rows_where_one_target_is_another_rows_source_are_accepted(self):
+		# A -> B and B -> C: WH-B is a target of one row and the source of another, but
+		# no row moves stock to itself, so the receive is valid (the check is per row).
+		appended, stock_entry = self._receive_rows(
+			[
+				("SRE-A", "WH-A", {"t_warehouse": "WH-B"}),
+				("SRE-B", "WH-B", {"t_warehouse": "WH-C"}),
+			]
+		)
+		self.assertEqual(
+			[(r["s_warehouse"], r["t_warehouse"]) for r in appended],
+			[("WH-A", "WH-B"), ("WH-B", "WH-C")],
+		)
+		# Mixed sources and targets leave both header defaults blank.
+		self.assertIsNone(stock_entry.to_warehouse)
+		self.assertIsNone(stock_entry.from_warehouse)
 
 	def test_t13_d_item_negative_pcs_rejected(self):
 		"""T13 — D item: receive_pcs < 0 server-rejected."""

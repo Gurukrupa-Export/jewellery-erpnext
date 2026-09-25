@@ -5056,9 +5056,16 @@ def create_mr_wo_stock_entry(
 			}
 		)
 
-		# Checked against every row's source, not just the header: a mixed
-		# receive leaves the header blank, and one bad row must still be caught.
-		clashing = sorted(target_warehouses & source_warehouses)
+		# Checked per row, not against the header: a mixed receive leaves the header
+		# blank, and one bad row must still be caught. Per row, like ERPNext's own
+		# check -- with per-row targets one row's target may be another row's source.
+		clashing = sorted(
+			{
+				vrow["t_warehouse"]
+				for vrow in validated_rows
+				if vrow["t_warehouse"] == vrow["s_warehouse"]
+			}
+		)
 		if clashing:
 			frappe.throw(
 				_(
