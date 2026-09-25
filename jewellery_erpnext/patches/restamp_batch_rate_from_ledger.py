@@ -21,6 +21,16 @@ the blended rate. Only rows whose mirror still equals the old Batch Rate are tou
 
 Listed for REVIEW and left alone:
 
+* a target whose ledger rate disagrees with its voucher row's ``valuation_rate``. The two are
+  equal at submit, so a difference means the ledger moved afterwards -- a repost that pooled a
+  multi-lane conversion. On kg-gk MAT-STE-18032 books both its customer and its company target at
+  115,509.23 while each row holds 0: that is neither batch's own rate;
+* a change of more than ``MAX_RELATIVE_CHANGE`` (25%), or a set rate dropping to 0. Every
+  change the retired blend explains is far smaller -- about 0.04% from its purity arithmetic on
+  22KT, and up to 9.6% where it multiplied a 22KT source rate by 100/100 instead of 100/91.75 to
+  price a 24KT target. On kg-gk the only larger moves were a company 22KT batch the pooled
+  MAT-STE-18032 row prices at 115,509.23 (+712%) and a customer batch whose ledger reads 0:
+  both are ledger questions, not blend residue;
 * a target row whose run produces more than one row. ERPNext pools the ledger rate across such
   a run (``loss_valuation.set_process_loss_produce_rates`` leaves it to ERPNext on purpose), so the
   ledger rate is not the batch's own and needs the separate multi-output pricing fix;
@@ -44,8 +54,10 @@ controlled remediation phase. It is a dry run unless told otherwise:
     bench --site <site> execute jewellery_erpnext.patches.restamp_batch_rate_from_ledger.execute \\
         --kwargs "{'dry_run': False}"
 
-Scope to specific batches with ``'batches': ['...']``. Safe to re-run: a re-stamped batch
-matches its ledger rate and is not selected again.
+Scope to specific batches with ``'batches': ['...']``; skip the mirror pass with
+``'mirrors': False``. Differences below ``TOLERANCE`` (a paisa per unit) are ledger rounding,
+not blend residue, and are left alone. Safe to re-run: a re-stamped batch matches its ledger
+rate and is not selected again.
 """
 
 import frappe
@@ -61,7 +73,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	METAL_CONVERSION_SE_TYPE,
 )
 
-TOLERANCE = 0.001
+TOLERANCE = 0.01
+MAX_RELATIVE_CHANGE = 0.25
 CUSTOMER_INVENTORY_TYPES = ("Customer Goods", "Customer Stock")
 
 
@@ -73,9 +86,11 @@ def _conversion_target_batches(batches=None):
 		SELECT
 			b.name, b.item, b.custom_metal_rate, b.custom_alloy_rate,
 			b.custom_inventory_type, b.custom_customer,
-			b.reference_name AS stock_entry, b.custom_voucher_detail_no AS row_name
+			b.reference_name AS stock_entry, b.custom_voucher_detail_no AS row_name,
+			sed.valuation_rate AS row_valuation_rate
 		FROM `tabBatch` b
 		INNER JOIN `tabStock Entry` se ON se.name = b.reference_name
+		LEFT JOIN `tabStock Entry Detail` sed ON sed.name = b.custom_voucher_detail_no
 		WHERE b.reference_doctype = 'Stock Entry'
 			AND se.stock_entry_type = %(se_type)s
 			AND se.docstatus = 1
@@ -164,9 +179,33 @@ def detect(batches=None):
 				{"batch": batch.name, "reason": "no ledger row for the minting row"}
 			)
 			continue
+		if abs(flt(batch.row_valuation_rate) - ledger) > TOLERANCE:
+			review.append(
+				{
+					"batch": batch.name,
+					"reason": (
+						f"ledger rate {ledger} differs from the voucher row's valuation_rate "
+						f"{flt(batch.row_valuation_rate)}: reposted or pooled across lanes"
+					),
+				}
+			)
+			continue
 		field = _rate_field_for_item(batch.item, alloy_items)
 		before = flt(batch.get(field))
 		if abs(before - ledger) <= TOLERANCE:
+			continue
+		if before and (
+			not ledger or abs(ledger - before) / abs(before) > MAX_RELATIVE_CHANGE
+		):
+			review.append(
+				{
+					"batch": batch.name,
+					"reason": (
+						f"implausible change {before} -> {ledger}: check the ledger before "
+						"re-stamping"
+					),
+				}
+			)
 			continue
 		changes.append(
 			{
@@ -196,10 +235,10 @@ def _mirror_rows(change):
 	)
 
 
-def execute(dry_run=True, batches=None):
+def execute(dry_run=True, batches=None, mirrors=True):
 	changes, review = detect(batches)
 	for change in changes:
-		change["mirror_rows"] = _mirror_rows(change)
+		change["mirror_rows"] = _mirror_rows(change) if mirrors else []
 
 	customer_owned = sum(1 for c in changes if c["customer_owned"])
 	mirrors = sum(len(c["mirror_rows"]) for c in changes)
