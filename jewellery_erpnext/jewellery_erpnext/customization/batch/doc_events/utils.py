@@ -86,15 +86,14 @@ def update_inventory_dimentions(self):
 				self.custom_employee = emp
 			# Batch Rate is stamped from the row that created the batch: Purchase
 			# Receipt Item.rate, or the Stock Entry Detail's own maintained rate
-			# falling back to basic_rate. Stamped only while the field is still
-			# empty (see _can_stamp_rate) so a later re-save cannot clobber the
-			# qty-weighted rate batch.on_update blends for Repack-Metal Conversion.
+			# falling back to valuation_rate, then basic_rate. Stamped only while
+			# the field is still empty (see _can_stamp_rate): this minting stamp is
+			# the Batch Rate for the life of the batch (F26).
 			#
 			# Every item gets a rate, not just metal. The split is only alloy vs
-			# everything else: an alloy batch's value belongs on custom_alloy_rate
-			# because batch.on_update blends the two pools separately for a
-			# Repack-Metal Conversion. Diamond, gemstone, finding and consumable
-			# batches were previously left at 0 -- see _rate_field_for_item.
+			# everything else: an alloy batch's value belongs on custom_alloy_rate.
+			# Diamond, gemstone, finding and consumable batches were previously
+			# left at 0 -- see _rate_field_for_item.
 			rate_field = _rate_field_for_item(self.item, alloy_item_list)
 			if _can_stamp_rate(self, rate_field):
 				setattr(
@@ -186,9 +185,7 @@ def carry_rates_from_source_batches(batch, sources):
 	"""Copy the Batch Rate / Alloy Rate pools onto a HAND-BUILT batch from its source batches.
 
 	``sources`` is ``[(batch_no, qty)]`` -- the batches consumed to make this one, with the
-	quantity taken from each. Both pools are carried, qty-weighted across the sources, which
-	is the same two-pool weighted shape ``batch.on_update`` blends from
-	``custom_origin_entries`` for a Repack-Metal Conversion.
+	quantity taken from each. Both pools are carried, qty-weighted across the sources.
 
 	**Why this exists at all.** ``update_inventory_dimentions`` stamps a new batch's rate from
 	the voucher row that minted it, but it can only do so inside
@@ -246,10 +243,10 @@ def _can_stamp_rate(batch, fieldname):
 	"""Whether the Batch Rate / Alloy Rate may still be written.
 
 	The requirement is that *newly created* batches carry the rate of the voucher
-	row that made them. Re-stamping on every save would also undo the qty-weighted
-	rate ``batch.on_update`` blends from ``custom_origin_entries`` for a
-	Repack-Metal Conversion, since ``validate`` runs before ``on_update`` only on
-	the save that does the blending -- any later save would overwrite it.
+	row that made them, and keep it: that minting stamp is the Batch Rate (F26).
+	``serial_and_batch_bundle.update_parent_batch_id`` re-saves a produced batch on
+	every Manufacture / Repack submit to record provenance, so re-stamping on every
+	save would restate the rate from whatever the row holds by then.
 
 	An empty field is always fillable (a batch that never got a rate should still
 	get one); a rate that is already set is only rewritten while the batch is new.
@@ -269,25 +266,33 @@ def _source_row_rate(batch, child_doctype, se_fieldname):
 	A Purchase Receipt Item (and any other non-Stock-Entry voucher row) carries a
 	single ``rate``. A Stock Entry Detail carries its own maintained Batch/Alloy
 	Rate -- fetched from the *consumed* batch, so it is empty on the produce row
-	that mints a new batch -- and falls back to ``basic_rate``, the valuation the
-	entry itself booked.
+	that mints a new batch unless a rate typed on a zero-valued customer row was
+	parked there (``entered_metal_rate``) -- and falls back to ``valuation_rate``,
+	then ``basic_rate``.
+
+	``valuation_rate`` first because it is what the ledger books: the Stock Entry's
+	SLE ``incoming_rate`` for a target row is ``valuation_rate``, which is
+	``basic_rate`` plus the row's share of additional costs. With batch-wise
+	valuation that is the rate every later issue of the batch is charged, so the
+	Batch Rate matches it (F26). ``basic_rate`` stays as the fallback for a row
+	whose valuation_rate is not set.
 	"""
 	if batch.reference_doctype != "Stock Entry":
 		return _row_value(child_doctype, batch.custom_voucher_detail_no, "rate")
 
-	rate = _row_value(child_doctype, batch.custom_voucher_detail_no, se_fieldname)
-	if not rate:
-		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, "basic_rate")
+	for fieldname in (se_fieldname, "valuation_rate", "basic_rate"):
+		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, fieldname)
+		if flt(rate):
+			return rate
 	return rate
 
 
 def _rate_field_for_item(item_code, alloy_item_list):
 	"""Which Batch field the minting row's rate belongs on.
 
-	Alloy is the only special case: ``batch.on_update`` blends alloy and metal
-	into two separate qty-weighted pools for a Repack-Metal Conversion
-	(``custom_alloy_rate`` vs ``custom_metal_rate``), so an alloy batch's value
-	has to land in the alloy pool or the conversion's blend double-counts it.
+	Alloy is the only special case: an alloy batch's value lands on
+	``custom_alloy_rate``, the pool ``carry_rates_from_source_batches`` carries
+	separately, not on ``custom_metal_rate``.
 
 	Everything else -- metal, diamond, gemstone, finding, consumables -- takes
 	``custom_metal_rate``. This used to be narrowed to items carrying a

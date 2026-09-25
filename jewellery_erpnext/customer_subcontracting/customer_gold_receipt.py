@@ -28,7 +28,7 @@ valuation and the liability posting are separate, later work.
 
 import frappe
 from frappe import _
-from frappe.utils import flt, getdate, nowdate
+from frappe.utils import flt, getdate, now_datetime, nowdate
 
 from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
 	OUTLIER_BAND,
@@ -100,10 +100,31 @@ def validate_customer_gold_receipt(doc, method=None):
 	_validate_receipt_purpose(settings)
 	customer = _validate_customer(doc)
 	_validate_rows(doc, settings, customer)
+	_apply_default_posting_time(doc)
 	_refuse_backdated_submit(doc)
 	rate = set_customer_gold_rate_snapshot(doc, settings)
 	check_customer_gold_rate(doc, settings, rate)
 	apply_valuation_policy(doc, rate)
+
+
+def _apply_default_posting_time(doc):
+	"""Post "now" when the user has not chosen a date -- as ERPNext would, but before the rate is read.
+
+	With ``set_posting_time`` off, ERPNext's ``validate_posting_time`` moves the posting date to now
+	during ``validate``. This hook runs in ``before_validate``, earlier, so without this a draft
+	saved yesterday would freeze yesterday's rate and be refused at submit as backdated, although
+	ERPNext was about to post it today. Mirrors ``transaction_base.validate_posting_time``.
+	"""
+	flags = doc.get("flags") or {}
+	if (
+		doc.get("set_posting_time")
+		or frappe.flags.in_import
+		or flags.get("from_restore")
+	):
+		return
+	now = now_datetime()
+	doc.posting_date = now.strftime("%Y-%m-%d")
+	doc.posting_time = now.strftime("%H:%M:%S.%f")
 
 
 def _refuse_backdated_submit(doc):
@@ -193,13 +214,14 @@ def check_customer_gold_rate(doc, settings, rate):
 
 	reason = (doc.get("custom_gold_rate_override_reason") or "").strip()
 	if not reason or RATE_APPROVER_ROLE not in frappe.get_roles():
+		# Not "correct the Gold Rates record": GoldRates.validate re-fetches every feed on save, so
+		# a hand correction there does not stick.
 		frappe.throw(
 			message
 			+ " "
-			+ _(
-				"Correct the Gold Rates record, or have a {0} enter a Rate Override Reason and "
-				"submit."
-			).format(frappe.bold(RATE_APPROVER_ROLE)),
+			+ _("A {0} may submit it after entering a Rate Override Reason.").format(
+				frappe.bold(RATE_APPROVER_ROLE)
+			),
 			title=_("Customer Gold Rate Outlier"),
 		)
 
