@@ -107,11 +107,7 @@ class ManufacturingWorkOrder(Document):
 			# Pull the last MOP name per sibling MWO
 			mop_names = frappe.db.get_all(
 				"Manufacturing Operation",
-				# Revert = left behind by a cancelled IR, never a Work Order's current operation.
-				{
-					"manufacturing_work_order": ["in", sibling_mwos],
-					"department_ir_status": ["!=", "Revert"],
-				},
+				{"manufacturing_work_order": ["in", sibling_mwos]},
 				["name", "manufacturing_work_order"],
 				order_by="creation desc",
 			)
@@ -213,9 +209,12 @@ class ManufacturingWorkOrder(Document):
 		# (MOP) so that the SNC submission picks up correct weights.
 		fg_mop = getattr(self, "manufacturing_operation", None)
 		if not fg_mop:
-			from jewellery_erpnext.utils import latest_operation
-
-			fg_mop = latest_operation(self.name)
+			fg_mop = frappe.db.get_value(
+				"Manufacturing Operation",
+				{"manufacturing_work_order": self.name},
+				"name",
+				order_by="creation desc",
+			)
 
 		if fg_mop:
 			frappe.db.set_value(
@@ -1299,13 +1298,7 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 		mop.save()
 	pending_operations = frappe.get_all(
 		"Manufacturing Operation",
-		# Revert leftovers of cancelled IRs stay as they are: marked Finished they would show up
-		# in the Department IR Issue picker.
-		{
-			"manufacturing_work_order": docname,
-			"status": "Not Started",
-			"department_ir_status": ["!=", "Revert"],
-		},
+		{"manufacturing_work_order": docname, "status": "Not Started"},
 		pluck="name",
 	)
 	if pending_operations:  # to prevent this workorder from showing in any IR doc

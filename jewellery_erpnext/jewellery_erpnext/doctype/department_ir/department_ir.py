@@ -22,12 +22,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_department_ir,
 	get_last_mop_index,
 )
-from jewellery_erpnext.utils import (
-	ensure_operation_not_in_use,
-	is_mwo_refined,
-	set_values_in_bulk,
-	validate_no_reverted_operations,
-)
+from jewellery_erpnext.utils import is_mwo_refined, set_values_in_bulk
 
 
 class DepartmentIR(Document):
@@ -80,7 +75,7 @@ class DepartmentIR(Document):
 		dir_status = (
 			"In-Transit"
 			if self.type == "Receive"
-			else ["not in", ["In-Transit", "Received", "Revert"]]
+			else ["not in", ["In-Transit", "Received"]]
 		)
 		filters = {"department_ir_status": dir_status}
 		if self.type == "Issue":
@@ -101,9 +96,6 @@ class DepartmentIR(Document):
 				self.append(
 					"department_ir_operation", {"manufacturing_operation": row.name}
 				)
-
-	def validate(self):
-		validate_no_reverted_operations(self, "department_ir_operation")
 
 	def before_submit(self):
 		if not self.department_ir_operation:
@@ -412,6 +404,14 @@ class DepartmentIR(Document):
 				recalculate_manufacturing_operation_weights(mop_name)
 		for row in self.department_ir_operation:
 			if cancel:
+				new_operation = frappe.db.get_value(
+					"Manufacturing Operation",
+					{
+						"department_issue_id": self.name,
+						"manufacturing_work_order": row.manufacturing_work_order,
+					},
+				)
+				new_operation = frappe.get_doc("Manufacturing Operation", new_operation)
 				se_list = frappe.db.get_list(
 					"Stock Entry", {"department_ir": self.name}
 				)
@@ -433,29 +433,29 @@ class DepartmentIR(Document):
 					"manufacturing_operation",
 					row.manufacturing_operation,
 				)
-				# The operation this IR created is left in place on cancel, not deleted: once later IRs
-				# have worked it, MOP Logs, Subcontracting Logs, Stock Entries and the next operation
-				# all point at it and the delete could never succeed. The Work Order is moved back to
-				# the previous operation above either way. Left "In-Transit" it would still block a
-				# Work Order split and show up in every later Receive, so it is marked "Revert", which
-				# every operation picker and scanner already skips.
-				created_operation = frappe.db.get_value(
-					"Manufacturing Operation",
-					{
-						"department_issue_id": self.name,
-						"manufacturing_work_order": row.manufacturing_work_order,
-					},
-				)
-				if created_operation:
-					ensure_operation_not_in_use(
-						created_operation, self.doctype, self.name
-					)
-					# Not Started too: a later IR's cancel may have set it back to WIP, which would
-					# still count as an open operation (e.g. blocking a Work Order split).
+				if new_operation.name:
 					frappe.db.set_value(
+						"Department IR Operation",
+						{
+							"docstatus": 2,
+							"manufacturing_operation": new_operation.name,
+						},
+						"manufacturing_operation",
+						None,
+					)
+					frappe.db.set_value(
+						"Stock Entry Detail",
+						{
+							"docstatus": 2,
+							"manufacturing_operation": new_operation.name,
+						},
+						"manufacturing_operation",
+						None,
+					)
+					frappe.delete_doc(
 						"Manufacturing Operation",
-						created_operation,
-						{"department_ir_status": "Revert", "status": "Not Started"},
+						new_operation.name,
+						ignore_permissions=1,
 					)
 				frappe.db.set_value(
 					"Manufacturing Operation",

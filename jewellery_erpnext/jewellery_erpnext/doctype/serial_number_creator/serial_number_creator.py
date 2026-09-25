@@ -63,9 +63,6 @@ class SerialNumberCreator(Document):
 		to_prepare_data_for_make_mnf_stock_entry(self)
 		update_new_serial_no(self)
 
-	def on_cancel(self):
-		release_tracking_bom_for_finished_goods(self)
-
 	def _render_fg_details(self):
 		"""Build source_table (batch-wise) and fg_details (aggregated) from MOP Log."""
 		mop_name = self.manufacturing_operation
@@ -1595,7 +1592,11 @@ def update_new_serial_no(self):
 		serial_doc.save()
 
 
-def _linked_tracking_bom(doc):
+def submit_tracking_bom_for_finished_goods(doc):
+	"""Update and submit linked Tracking BOM when SNC creates FG BOM."""
+	if not doc.get("fg_bom"):
+		return
+
 	tracking_bom_name = frappe.db.get_value(
 		"Manufacturing Work Order", doc.manufacturing_work_order, "custom_tracking_bom"
 	)
@@ -1605,45 +1606,6 @@ def _linked_tracking_bom(doc):
 			doc.parent_manufacturing_order,
 			"custom_tracking_bom",
 		)
-	return tracking_bom_name
-
-
-def release_tracking_bom_for_finished_goods(doc):
-	"""Undo submit_tracking_bom_for_finished_goods on cancel.
-
-	The Tracking BOM is per item and shared by every order of it, so it stays submitted; only its
-	pointer to this SNC's FG BOM is cleared, and only while it still points there (a later SNC may
-	have moved it on). Left in place, it blocks cancelling that BOM.
-	"""
-	tracking_bom_name = doc.get("fg_bom") and _linked_tracking_bom(doc)
-	if not tracking_bom_name:
-		return
-
-	reference = frappe.db.get_value(
-		"Tracking Bom",
-		tracking_bom_name,
-		["reference_doctype", "reference_docname"],
-		as_dict=True,
-	)
-	if (
-		reference
-		and reference.reference_doctype == "BOM"
-		and reference.reference_docname == doc.fg_bom
-	):
-		frappe.db.set_value(
-			"Tracking Bom",
-			tracking_bom_name,
-			{"reference_doctype": None, "reference_docname": None},
-			update_modified=True,
-		)
-
-
-def submit_tracking_bom_for_finished_goods(doc):
-	"""Update and submit linked Tracking BOM when SNC creates FG BOM."""
-	if not doc.get("fg_bom"):
-		return
-
-	tracking_bom_name = _linked_tracking_bom(doc)
 	if not tracking_bom_name:
 		return
 

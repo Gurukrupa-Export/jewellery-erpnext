@@ -1697,11 +1697,15 @@ class RefiningEntry(Document):
 				#
 				# Queried per the LAST NOT-STARTED Manufacturing Operation on the MWO — where the
 				# material physically sits — falling back to the MWO's manufacturing_operation.
-				from jewellery_erpnext.utils import latest_operation
-
 				last_mop = (
-					latest_operation(
-						mwo_row.manufacturing_work_order, status="Not Started"
+					frappe.db.get_value(
+						"Manufacturing Operation",
+						{
+							"manufacturing_work_order": mwo_row.manufacturing_work_order,
+							"status": "Not Started",
+						},
+						"name",
+						order_by="creation desc",
 					)
 					or mwo_row.manufacturing_operation
 				)
@@ -3124,12 +3128,7 @@ class RefiningEntry(Document):
 			# pending operation plus any further (downstream) operations in the route.
 			pending_mops = frappe.db.get_all(
 				"Manufacturing Operation",
-				# Revert = left behind by a cancelled IR, not part of the route any more.
-				filters={
-					"manufacturing_work_order": mwo,
-					"status": "Not Started",
-					"department_ir_status": ["!=", "Revert"],
-				},
+				filters={"manufacturing_work_order": mwo, "status": "Not Started"},
 				pluck="name",
 			)
 			for mop in pending_mops:
