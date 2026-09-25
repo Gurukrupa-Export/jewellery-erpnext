@@ -1595,28 +1595,8 @@ def update_new_serial_no(self):
 		serial_doc.save()
 
 
-def submit_tracking_bom_for_finished_goods(doc):
-	"""Submit the linked Tracking BOM when the SNC creates the FG BOM -- and change nothing else on it.
-
-	The Tracking BOM stays the PLANNED composition. The as-built BOM is ``doc.fg_bom``, already linked
-	from the SNC, from ``Serial No.custom_bom_no`` and from the BOM's own ``custom_creation_docname``.
-
-	This used to relabel it "Finished Goods" and point ``reference_docname`` at the FG BOM without
-	rebuilding its tables (F7): a record that claimed to be the finished piece but held the plan
-	(KLHGX62F1119: 4.169 g / 1.570 g finding / 0.486 ct against the piece's 5.5192 / 0 / 0.396). Nothing
-	read the label or the pointer. One Tracking BOM serves every sibling PMO of a Manufacturing Plan
-	row, so one pointer could never name each piece's BOM. Rebuilding the tables would have been worse:
-	a later sibling PMO reads them for its tolerance bands, Material Requests and finding work orders.
-	And the pointer blocked cancelling the FG BOM, through Frappe's back-link check.
-
-	One pointer IS cleared: a draft whose reference is a Manufacturing Work Order. Every MWO's
-	``after_insert`` writes itself there, so it names whichever sibling work order was inserted last,
-	and once the Tracking BOM is submitted that dynamic link would stop anyone deleting or cancelling
-	that work order for good. The old re-point used to lift it as a side effect; nothing reads it.
-	"""
-	if not doc.get("fg_bom"):
-		return
-
+def _linked_tracking_bom(doc):
+	"""The Tracking BOM of the SNC's work order, else of its Parent Manufacturing Order."""
 	tracking_bom_name = frappe.db.get_value(
 		"Manufacturing Work Order", doc.manufacturing_work_order, "custom_tracking_bom"
 	)
@@ -1630,11 +1610,13 @@ def submit_tracking_bom_for_finished_goods(doc):
 
 
 def release_tracking_bom_for_finished_goods(doc):
-	"""Undo submit_tracking_bom_for_finished_goods on cancel.
+	"""On cancel, clear a Tracking BOM pointer at this SNC's FG BOM.
 
-	The Tracking BOM is per item and shared by every order of it, so it stays submitted; only its
-	pointer to this SNC's FG BOM is cleared, and only while it still points there (a later SNC may
-	have moved it on). Left in place, it blocks cancelling that BOM.
+	Since F7 an SNC no longer writes that pointer (see submit_tracking_bom_for_finished_goods), but SNCs
+	submitted before it did, and a Tracking BOM left pointing at the FG BOM blocks cancelling that BOM.
+	The Tracking BOM is per item and shared by every order of it, so it stays submitted; only the
+	pointer is cleared, and only while it still points at this SNC's FG BOM (a later SNC may have moved
+	it on).
 	"""
 	tracking_bom_name = doc.get("fg_bom") and _linked_tracking_bom(doc)
 	if not tracking_bom_name:
@@ -1660,7 +1642,24 @@ def release_tracking_bom_for_finished_goods(doc):
 
 
 def submit_tracking_bom_for_finished_goods(doc):
-	"""Update and submit linked Tracking BOM when SNC creates FG BOM."""
+	"""Submit the linked Tracking BOM when the SNC creates the FG BOM -- and change nothing else on it.
+
+	The Tracking BOM stays the PLANNED composition. The as-built BOM is ``doc.fg_bom``, already linked
+	from the SNC, from ``Serial No.custom_bom_no`` and from the BOM's own ``custom_creation_docname``.
+
+	This used to relabel it "Finished Goods" and point ``reference_docname`` at the FG BOM without
+	rebuilding its tables (F7): a record that claimed to be the finished piece but held the plan
+	(KLHGX62F1119: 4.169 g / 1.570 g finding / 0.486 ct against the piece's 5.5192 / 0 / 0.396). Nothing
+	read the label or the pointer. One Tracking BOM serves every sibling PMO of a Manufacturing Plan
+	row, so one pointer could never name each piece's BOM. Rebuilding the tables would have been worse:
+	a later sibling PMO reads them for its tolerance bands, Material Requests and finding work orders.
+	And the pointer blocked cancelling the FG BOM, through Frappe's back-link check.
+
+	One pointer IS cleared: a draft whose reference is a Manufacturing Work Order. Every MWO's
+	``after_insert`` writes itself there, so it names whichever sibling work order was inserted last,
+	and once the Tracking BOM is submitted that dynamic link would stop anyone deleting or cancelling
+	that work order for good. The old re-point used to lift it as a side effect; nothing reads it.
+	"""
 	if not doc.get("fg_bom"):
 		return
 

@@ -1563,3 +1563,127 @@ class TestTrackingBomStaysThePlan(IntegrationTestCase):
 		self.assertIsNone(tracking_bom.reference_docname)
 		self.assertEqual(tracking_bom.bom_type, "Sales Order")
 		set_value.assert_not_called()
+
+
+class TestTrackingBomLookupAndRelease(IntegrationTestCase):
+	"""The helpers kggk_uat's PMO cancel-all shares with SNC submit and cancel.
+
+	A merge once dropped ``_linked_tracking_bom`` while submit, cancel and cancel-all still called it,
+	so every SNC submit raised NameError. These pin all three callers to the one lookup.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _snc(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator import (
+			serial_number_creator as snc,
+		)
+
+		return snc
+
+	def _values(self, values):
+		"""A frappe.db.get_value stand-in keyed on (doctype, name); anything else is None."""
+
+		def get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			return values.get((doctype, name))
+
+		return get_value
+
+	def test_the_work_orders_tracking_bom_wins(self):
+		snc = self._snc()
+		doc = frappe._dict(
+			manufacturing_work_order="MWO-1", parent_manufacturing_order="PMO-1"
+		)
+		values = {
+			("Manufacturing Work Order", "MWO-1"): "TB-MWO",
+			("Parent Manufacturing Order", "PMO-1"): "TB-PMO",
+		}
+		with patch.object(snc.frappe.db, "get_value", side_effect=self._values(values)):
+			self.assertEqual(snc._linked_tracking_bom(doc), "TB-MWO")
+
+	def test_the_parent_orders_tracking_bom_is_the_fallback(self):
+		snc = self._snc()
+		doc = frappe._dict(
+			manufacturing_work_order="MWO-1", parent_manufacturing_order="PMO-1"
+		)
+		values = {("Parent Manufacturing Order", "PMO-1"): "TB-PMO"}
+		with patch.object(snc.frappe.db, "get_value", side_effect=self._values(values)):
+			self.assertEqual(snc._linked_tracking_bom(doc), "TB-PMO")
+
+	def _release(self, reference, fg_bom="BOM-PIECE-001"):
+		snc = self._snc()
+		doc = frappe._dict(
+			fg_bom=fg_bom,
+			manufacturing_work_order="MWO-1",
+			parent_manufacturing_order="PMO-1",
+		)
+
+		def get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Manufacturing Work Order":
+				return "TB-1"
+			if doctype == "Tracking Bom":
+				return frappe._dict(
+					reference_doctype=reference[0], reference_docname=reference[1]
+				)
+			return None
+
+		with (
+			patch.object(snc.frappe.db, "get_value", side_effect=get_value),
+			patch.object(snc.frappe.db, "set_value") as set_value,
+		):
+			snc.release_tracking_bom_for_finished_goods(doc)
+		return set_value
+
+	def test_cancel_clears_a_pre_f7_pointer_at_this_fg_bom(self):
+		set_value = self._release(("BOM", "BOM-PIECE-001"))
+		set_value.assert_called_once_with(
+			"Tracking Bom",
+			"TB-1",
+			{"reference_doctype": None, "reference_docname": None},
+			update_modified=True,
+		)
+
+	def test_cancel_leaves_a_pointer_that_moved_on(self):
+		set_value = self._release(("BOM", "BOM-OTHER-PIECE"))
+		set_value.assert_not_called()
+
+	def test_cancel_without_an_fg_bom_does_nothing(self):
+		set_value = self._release(("BOM", "BOM-PIECE-001"), fg_bom=None)
+		set_value.assert_not_called()
+
+	def test_pmo_cancel_all_resolves_the_sncs_tracking_bom(self):
+		"""cancel_all imports _linked_tracking_bom from this module; the plan must see the release."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		snc = self._snc()
+		row = frappe._dict(
+			fg_bom="BOM-PIECE-001",
+			manufacturing_work_order="MWO-1",
+			parent_manufacturing_order="PMO-1",
+		)
+
+		def get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Serial Number Creator":
+				return row
+			if doctype == "Manufacturing Work Order":
+				return "TB-1"
+			return None
+
+		with patch.object(snc.frappe.db, "get_value", side_effect=get_value):
+			released = cancel_all._released_by_plan(
+				[("Serial Number Creator", "SNC-1")]
+			)
+
+		self.assertEqual(
+			released,
+			{
+				(("BOM", "BOM-PIECE-001"), ("Tracking Bom", "TB-1")): (
+					"Serial Number Creator",
+					"SNC-1",
+				)
+			},
+		)
