@@ -23,7 +23,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, nowtime, today
+from frappe.utils import flt, nowtime, today
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	resolve_batch_ownership,
@@ -737,60 +737,8 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 
 
 def _resolve_t_warehouse(eir, table_name):
-	"""Resolve target warehouse based on is_raw_material."""
-	if cint(eir.is_raw_material):
-		return _resolve_raw_material_warehouse(eir)
+	"""Resolve target warehouse. Process Loss always uses the Department Scrap warehouse."""
 	return _resolve_scrap_warehouse(eir)
-
-
-def _resolve_raw_material_warehouse(eir):
-	if eir.subcontracting == "Yes":
-		if not eir.subcontractor:
-			frappe.throw(
-				_(
-					"Employee IR {0}: subcontractor is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"company": eir.company,
-				"subcontractor": eir.subcontractor,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for "
-					"subcontractor {1}"
-				).format(eir.name, eir.subcontractor)
-			)
-	else:
-		if not eir.employee:
-			frappe.throw(
-				_(
-					"Employee IR {0}: employee is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"employee": eir.employee,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for employee {1}"
-				).format(eir.name, eir.employee)
-			)
-	return wh
 
 
 def _resolve_scrap_warehouse(eir):
@@ -827,9 +775,6 @@ def _resolve_scrap_warehouse(eir):
 
 def _resolve_loss_item(eir, row, table_name):
 	"""Return the item_code to use on the produce row of the Process Loss SE."""
-	if cint(eir.is_raw_material):
-		# Same item — loss moves to employee/subcontractor raw-material warehouse.
-		return row.item_code
 
 	# Scrap path: resolve the dust/loss variant via the manufacturer's mapping.
 	if not row.variant_of:
