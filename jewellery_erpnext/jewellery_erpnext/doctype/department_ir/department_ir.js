@@ -27,7 +27,7 @@ frappe.ui.form.on("Department IR", {
 		frm.set_query("previous_department", department_filter(frm));
 		frm.set_query("manufacturing_operation", "department_ir_operation", function (doc, cdt, cdn) {
 			var dir_status =
-				frm.doc.type == "Receive" ? "In-Transit" : ["not in", ["In-Transit", "Received"]];
+				frm.doc.type == "Receive" ? "In-Transit" : ["not in", ["In-Transit", "Received", "Revert"]];
 			var filter_dict = {
 				department_ir_status: dir_status,
 			};
