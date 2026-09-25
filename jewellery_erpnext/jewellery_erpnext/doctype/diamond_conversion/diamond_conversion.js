@@ -17,11 +17,7 @@ frappe.ui.form.on("Diamond Conversion", {
 	refresh(frm) {
 		set_batch_filter(frm, "sc_source_table");
 		// set_batch_filter(frm,"sc_target_table");
-		frm.fields_dict["sc_source_table"].grid.get_field("item_code").get_query = function (
-			frm,
-			cdt,
-			cdn
-		) {
+		frm.fields_dict["sc_source_table"].grid.get_field("item_code").get_query = function (frm, cdt, cdn) {
 			return {
 				query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.item_query_filters",
 			};
@@ -56,18 +52,19 @@ frappe.ui.form.on("SC Target Table", {
 });
 //To Set Batch Field Filter
 function set_batch_filter(frm, child_table_name) {
-	frm.fields_dict[child_table_name].grid.get_field("batch").get_query = function (
-		doc,
-		cdt,
-		cdn
-	) {
+	frm.fields_dict[child_table_name].grid.get_field("batch").get_query = function (doc, cdt, cdn) {
 		var child = locals[cdt][cdn];
 		return {
-			query: "jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions.get_filtered_batches",
+			// Diamond Conversion's own query, not metal_conversions.get_filtered_batches, so
+			// that "Sieve Size to Sieve Size" can hide the batches an earlier Diamond
+			// Conversion produced without affecting Metal / Gemstone Conversion. The closure
+			// reads frm.doc at call time, so changing Conversion Type needs no re-registration.
+			query: "jewellery_erpnext.jewellery_erpnext.doctype.diamond_conversion.diamond_conversion.get_source_batches",
 			filters: {
 				item_code: child.item_code,
 				warehouse: frm.doc.source_warehouse,
 				company: frm.doc.company,
+				conversion_type: frm.doc.conversion_type,
 			},
 		};
 	};
@@ -165,24 +162,9 @@ function set_batch_value(frm, cdt, cdn) {
 					"batch_available_qty",
 					r.message[0]
 				);
-				frappe.model.set_value(
-					child_doc.doctype,
-					child_doc.name,
-					"supplier",
-					r.message[1]
-				);
-				frappe.model.set_value(
-					child_doc.doctype,
-					child_doc.name,
-					"customer",
-					r.message[2]
-				);
-				frappe.model.set_value(
-					child_doc.doctype,
-					child_doc.name,
-					"inventory_type",
-					r.message[3]
-				);
+				frappe.model.set_value(child_doc.doctype, child_doc.name, "supplier", r.message[1]);
+				frappe.model.set_value(child_doc.doctype, child_doc.name, "customer", r.message[2]);
+				frappe.model.set_value(child_doc.doctype, child_doc.name, "inventory_type", r.message[3]);
 			}
 		},
 	});

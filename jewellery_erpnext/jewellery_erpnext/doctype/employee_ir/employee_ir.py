@@ -105,7 +105,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_resolve_department_warehouse,
 )
 from jewellery_erpnext.utils import (
+	ensure_operation_not_in_use,
 	get_item_from_attribute_full,  # noqa: F401 – patched by tests
+	validate_no_reverted_operations,
 )
 
 
@@ -184,6 +186,7 @@ class EmployeeIR(Document):
 		validate_duplication_and_gr_wt(self)
 
 	def validate(self):
+		validate_no_reverted_operations(self, "employee_ir_operations")
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()
@@ -677,34 +680,33 @@ class EmployeeIR(Document):
 				):
 					frappe.get_doc("Stock Reservation Entry", sre).cancel()
 
-				next_op_name = frappe.db.get_value(
-					"Manufacturing Operation",
-					{
-						"employee_ir": self.name,
-						"previous_mop": row.manufacturing_operation,
-					},
-				)
-
 				frappe.db.set_value(
 					"Manufacturing Work Order",
 					row.manufacturing_work_order,
 					"manufacturing_operation",
 					row.manufacturing_operation,
 				)
-				if next_op_name:
+				# The next operation this IR created is left in place on cancel, not deleted: once
+				# later IRs have worked it, logs, stock entries and the following operation point at
+				# it and the delete could never succeed. The Work Order moves back above either way.
+				# Left as "Not Started" in the same department it would sit next to the row's own
+				# operation and could be picked by the Issue scanner, so it is marked "Revert", which
+				# every operation picker and scanner already skips.
+				next_operation = frappe.db.get_value(
+					"Manufacturing Operation",
+					{
+						"employee_ir": self.name,
+						"previous_mop": row.manufacturing_operation,
+					},
+				)
+				if next_operation:
+					ensure_operation_not_in_use(next_operation, self.doctype, self.name)
+					# Not Started too: a later IR's cancel may have set it back to WIP, which would
+					# still count as an open operation (e.g. blocking a Work Order split).
 					frappe.db.set_value(
-						"Department IR Operation",
-						{
-							"docstatus": 2,
-							"manufacturing_operation": next_op_name,
-						},
-						"manufacturing_operation",
-						None,
-					)
-					frappe.delete_doc(
 						"Manufacturing Operation",
-						next_op_name,
-						ignore_permissions=1,
+						next_operation,
+						{"department_ir_status": "Revert", "status": "Not Started"},
 					)
 
 				frappe.db.set_value(

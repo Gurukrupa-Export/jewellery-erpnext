@@ -93,12 +93,32 @@ def validate(self, method):
 			deduplicate=True,
 		)
 	if self.docstatus == 0:
+		clear_cancelled_tracking_boms(self)
 		calculate_gst_rate(self)
 		if not self.get("__islocal"):
 			set_bom_item_details(self)
 			update_si(self)
 			validate_invoice_item(self)
 		set_tracking_bom_rate_in_quotation(self)
+
+
+def clear_cancelled_tracking_boms(self):
+	"""Drop row links to cancelled Tracking BOMs from a draft Quotation.
+
+	Cancelling the Quotation can cancel its Tracking BOM (cancel_bom), and an amended copy carries
+	the old link over, which would fail on submit with "Cannot link cancelled document". Cleared
+	here, before_submit asks for the Tracking BOM to be created again; a still-submitted, shared
+	one keeps its link.
+	"""
+	for row in self.items:
+		if (
+			row.custom_tracking_bom
+			and frappe.db.get_value(
+				"Tracking Bom", row.custom_tracking_bom, "docstatus"
+			)
+			== 2
+		):
+			row.custom_tracking_bom = None
 
 
 def create_bom_scientifically(self):
@@ -164,9 +184,14 @@ def submit_bom(self):
 def cancel_bom(self):
 	for row in self.items:
 		if row.custom_tracking_bom:
-			bom = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
-			bom.is_active = 0
-			bom.save()
+			# This used to set is_active = 0 and save the Tracking Bom, but Tracking Bom has no
+			# is_active field, so the save changed nothing -- and it failed with "Cannot edit cancelled
+			# document" once the Sales Order's on_cancel had already cancelled it. Now it is cancelled
+			# here when this Quotation was its last user (the Sales Order goes first and has to leave
+			# it while the Quotation still links to it), and left alone while other orders use it.
+			from jewellery_erpnext.utils import cancel_tracking_bom_if_unused
+
+			cancel_tracking_bom_if_unused(row.custom_tracking_bom)
 			row.custom_tracking_bom = None
 
 
@@ -844,7 +869,11 @@ def create_tracking_bom_directly(self):
 			row.copy_bom = bom_data.get(row.item_code)
 
 		if row.custom_tracking_bom:
-			if not frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+			# A cancelled one (e.g. copied into an amended Quotation) counts as missing: it can no
+			# longer be linked, so a fresh Tracking BOM is built for the row.
+			if frappe.db.get_value(
+				"Tracking Bom", row.custom_tracking_bom, "docstatus"
+			) in (None, 2):
 				row.custom_tracking_bom = None
 			else:
 				continue

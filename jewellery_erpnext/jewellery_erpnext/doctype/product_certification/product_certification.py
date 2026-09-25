@@ -1157,7 +1157,11 @@ class ProductCertification(Document):
 			# the per-row `limit=1` query used.
 			for operation in frappe.get_all(
 				"Manufacturing Operation",
-				filters={"manufacturing_work_order": ("in", list(mwos))},
+				# Revert = left behind by a cancelled IR, never a Work Order's current operation.
+				filters={
+					"manufacturing_work_order": ("in", list(mwos)),
+					"department_ir_status": ("!=", "Revert"),
+				},
 				fields=["manufacturing_work_order", "diamond_pcs", "gemstone_pcs"],
 				order_by="creation desc",
 			):
