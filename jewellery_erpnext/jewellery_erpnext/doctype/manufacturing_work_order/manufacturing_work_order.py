@@ -892,8 +892,14 @@ def cumulative_loss_wt(sibling_mwos):
 	Every other header weight is a balance, so the latest operation carries it forward and
 	sync_mwo_weights reads it there. loss_wt is not a balance -- it is the change measured
 	on the one operation that was received (Employee IR writes received_gross_wt - gross_wt
-	on it), and the next operation starts at 0 (the field is no_copy and Department IR zeroes
-	it). Summed over the latest operations it was therefore always 0 (F14).
+	on it), and the operation Employee IR creates next starts at 0. Summed over the latest
+	operations it was therefore always 0 (F14).
+
+	Only an operation with a SUBMITTED Employee IR receive counts. That is the only real
+	writer of loss_wt; every other value on an operation is a leftover: a cancelled receive
+	leaves its figure behind, Department IR's copy_doc carries no_copy fields forward (it zeroes
+	them only for a refined work order), and create_manufacturing_operation seeds a split
+	child's first operation from the header the split copied from its parent.
 
 	Only the negative values are losses. The field is "Loss / Increase Wt", and an increase
 	is material coming IN, not a process gain: the casting operation is issued at gross 0 and
@@ -908,15 +914,32 @@ def cumulative_loss_wt(sibling_mwos):
 	"""
 	if not sibling_mwos:
 		return 0.0
-	rows = frappe.db.sql(
+	operations = frappe.db.sql(
 		"""
-		SELECT loss_wt
+		SELECT name, loss_wt
 		FROM `tabManufacturing Operation`
 		WHERE manufacturing_work_order IN %s
 		""",
 		(tuple(sibling_mwos),),
 	)
-	return flt(sum(min(flt(row[0]), 0.0) for row in rows), 3)
+	if not operations:
+		return 0.0
+	received = {
+		row[0]
+		for row in frappe.db.sql(
+			"""
+			SELECT DISTINCT eiro.manufacturing_operation
+			FROM `tabEmployee IR Operation` eiro
+			INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+			WHERE eir.type = 'Receive' AND eir.docstatus = 1
+				AND eiro.manufacturing_operation IN %s
+			""",
+			(tuple(name for name, _loss in operations),),
+		)
+	}
+	return flt(
+		sum(min(flt(loss), 0.0) for name, loss in operations if name in received), 3
+	)
 
 
 @frappe.whitelist()

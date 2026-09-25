@@ -1605,6 +1605,11 @@ def submit_tracking_bom_for_finished_goods(doc):
 	row, so one pointer could never name each piece's BOM. Rebuilding the tables would have been worse:
 	a later sibling PMO reads them for its tolerance bands, Material Requests and finding work orders.
 	And the pointer blocked cancelling the FG BOM, through Frappe's back-link check.
+
+	One pointer IS cleared: a draft whose reference is a Manufacturing Work Order. Every MWO's
+	``after_insert`` writes itself there, so it names whichever sibling work order was inserted last,
+	and once the Tracking BOM is submitted that dynamic link would stop anyone deleting or cancelling
+	that work order for good. The old re-point used to lift it as a side effect; nothing reads it.
 	"""
 	if not doc.get("fg_bom"):
 		return
@@ -1623,6 +1628,9 @@ def submit_tracking_bom_for_finished_goods(doc):
 
 	tracking_bom = frappe.get_doc("Tracking Bom", tracking_bom_name)
 	if tracking_bom.docstatus == 0:
+		if tracking_bom.reference_doctype == "Manufacturing Work Order":
+			tracking_bom.reference_doctype = None
+			tracking_bom.reference_docname = None
 		tracking_bom.flags.ignore_permissions = True
 		tracking_bom.submit()
 

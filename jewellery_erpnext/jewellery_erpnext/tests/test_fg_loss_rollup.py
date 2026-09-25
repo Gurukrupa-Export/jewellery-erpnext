@@ -41,11 +41,16 @@ _WEIGHT_FIELDS = (
 )
 
 
-def _op(name, mwo, creation, loss_wt=0.0, **weights):
+def _op(name, mwo, creation, loss_wt=0.0, received=True, **weights):
+	"""One operation. ``received``: whether a submitted Employee IR receive exists for it."""
 	row = {field: 0.0 for field in _WEIGHT_FIELDS}
 	row.update(weights)
 	row.update(
-		name=name, manufacturing_work_order=mwo, creation=creation, loss_wt=loss_wt
+		name=name,
+		manufacturing_work_order=mwo,
+		creation=creation,
+		loss_wt=loss_wt,
+		received=received,
 	)
 	return frappe._dict(row)
 
@@ -76,6 +81,12 @@ class _FakeDb:
 		return sorted(rows, key=lambda op: op.creation, reverse=True)
 
 	def sql(self, query, values=None, *args, **kwargs):
+		if "FROM `tabEmployee IR Operation`" in query:
+			# The named operations that have a submitted Employee IR receive.
+			names = set(values[0])
+			return tuple(
+				(op.name,) for op in self.operations if op.name in names and op.received
+			)
 		if "FROM `tabManufacturing Operation`" not in query:
 			return self._real_sql(query, values, *args, **kwargs)
 		if "WHERE manufacturing_work_order IN" in query:
@@ -83,7 +94,7 @@ class _FakeDb:
 			self.loss_query_params = values
 			mwos = set(values[0])
 			return tuple(
-				(op.loss_wt,)
+				(op.name, op.loss_wt)
 				for op in self.operations
 				if op.manufacturing_work_order in mwos
 			)
@@ -217,6 +228,28 @@ class TestFgLossRollup(IntegrationTestCase):
 
 		self.assertAlmostEqual(doc.loss_wt, -5.63, places=6)
 
+	def test_leftover_loss_on_an_unreceived_operation_is_not_counted(self):
+		"""A cancelled receive, a Department IR copy and a split child's seed all leave loss_wt.
+
+		None of them has a submitted Employee IR receive, so none is a loss.
+		"""
+		fake = _FakeDb(
+			siblings=["MWO-A", "MWO-SPLIT"],
+			operations=[
+				_op("RECEIVED", "MWO-A", 1, loss_wt=-0.12),
+				# The receive was cancelled; the figure stayed on the operation.
+				_op("CANCELLED-RECEIVE", "MWO-A", 2, loss_wt=-0.12, received=False),
+				# Department IR copied the leftover onto the next operation.
+				_op("DEPT-IR-COPY", "MWO-A", 3, loss_wt=-0.12, received=False),
+				# create_manufacturing_operation seeded it from the split's copied header.
+				_op("SPLIT-SEED", "MWO-SPLIT", 1, loss_wt=-0.12, received=False),
+			],
+		)
+		doc = _fg_mwo()
+		_sync(doc, fake)
+
+		self.assertAlmostEqual(doc.loss_wt, -0.12, places=6)
+
 	def test_nothing_lost_reads_zero_not_a_gain(self):
 		fake = _FakeDb(
 			siblings=["MWO-A"],
@@ -285,8 +318,19 @@ class TestCumulativeLossQuery(IntegrationTestCase):
 		sql.assert_not_called()
 
 	def test_the_query_runs_against_the_real_table(self):
-		# No such work order: proves the SQL is valid and COALESCE turns no rows into 0.
+		# No such work order: proves the operation query is valid and no rows read as 0.
 		self.assertEqual(cumulative_loss_wt(["__F14_NO_SUCH_MWO__"]), 0.0)
+
+	def test_the_receive_query_runs_against_the_real_tables(self):
+		"""An operation that exists reaches the Employee IR join, proving it is valid SQL."""
+		mwo = frappe.db.get_value(
+			"Manufacturing Operation",
+			{"manufacturing_work_order": ["is", "set"]},
+			"manufacturing_work_order",
+		)
+		if not mwo:
+			self.skipTest("no Manufacturing Operation on this site")
+		self.assertLessEqual(cumulative_loss_wt([mwo]), 0.0)
 
 
 class _FakeBackfillDb:

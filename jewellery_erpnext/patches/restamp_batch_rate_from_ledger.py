@@ -31,6 +31,11 @@ Listed for REVIEW and left alone:
   price a 24KT target. On kg-gk the only larger moves were a company 22KT batch the pooled
   MAT-STE-18032 row prices at 115,509.23 (+712%) and a customer batch whose ledger reads 0:
   both are ledger questions, not blend residue;
+* a voucher whose produce rows belong to more than one owner and all carry the same
+  ``basic_rate``. That is ERPNext's own pooling (``get_basic_rate_for_repacked_items`` spreads
+  the voucher's value over every finished row): every multi-lane conversion submitted before
+  the lane pricer, and any without ``auto_created``, was valued this way AT SUBMIT, so its
+  row and ledger agree and only this signature gives it away;
 * a target row whose run produces more than one row. ERPNext pools the ledger rate across such
   a run (``loss_valuation.set_process_loss_produce_rates`` leaves it to ERPNext on purpose), so the
   ledger rate is not the batch's own and needs the separate multi-output pricing fix;
@@ -54,10 +59,16 @@ controlled remediation phase. It is a dry run unless told otherwise:
     bench --site <site> execute jewellery_erpnext.patches.restamp_batch_rate_from_ledger.execute \\
         --kwargs "{'dry_run': False}"
 
-Scope to specific batches with ``'batches': ['...']``; skip the mirror pass with
-``'mirrors': False``. Differences below ``TOLERANCE`` (a paisa per unit) are ledger rounding,
-not blend residue, and are left alone. Safe to re-run: a re-stamped batch matches its ledger
-rate and is not selected again.
+Also listed, not changed: batches DERIVED from a re-stamped batch that still hold its blended
+rate. ``finding_repack`` and ``manufacturing_operation._create_scrap_batch`` build finding and
+scrap batches by hand and ``carry_rates_from_source_batches`` copies their sources' Batch Rates.
+Re-derive them from their corrected sources after this run.
+
+Scope to specific batches with ``'batches': ['...']``. ``'mirrors': False`` is for a quicker
+dry run only: a real run without the mirror pass could never be completed later, because a
+re-run no longer sees the old rate the mirrors hold. Differences below ``TOLERANCE`` (a paisa
+per unit) are ledger rounding, not blend residue, and are left alone. Safe to re-run: a
+re-stamped batch matches its ledger rate and is not selected again.
 """
 
 import frappe
@@ -133,20 +144,77 @@ def _ledger_rate(stock_entry, row_name, batch_no):
 
 
 def _pooled_rows(stock_entry, cache):
-	"""Names of the produce rows that share a run with another produce row."""
+	"""Names of the produce rows whose ledger rate is pooled rather than their own.
+
+	Two shapes: a run with more than one produce row, and a voucher whose produce rows belong
+	to more than one owner yet all carry one ``basic_rate`` -- ERPNext valuing every finished
+	row at the voucher's average, which is what happened before the lane pricer.
+	"""
 	if stock_entry not in cache:
 		items = frappe.get_all(
 			"Stock Entry Detail",
 			filters={"parent": stock_entry, "parenttype": "Stock Entry"},
-			fields=["name", "s_warehouse", "t_warehouse"],
+			fields=[
+				"name",
+				"s_warehouse",
+				"t_warehouse",
+				"inventory_type",
+				"customer",
+				"basic_rate",
+			],
 			order_by="idx",
 		)
 		pooled = set()
+		produced_rows = []
 		for _consumed, produced in iter_loss_runs(items):
+			produced_rows.extend(produced)
 			if len(produced) > 1:
 				pooled.update(row.name for row in produced)
+		owners = {
+			(row.inventory_type or None, row.customer or None) for row in produced_rows
+		}
+		rates = [flt(row.basic_rate) for row in produced_rows]
+		if len(owners) > 1 and max(rates) - min(rates) <= TOLERANCE:
+			pooled.update(row.name for row in produced_rows)
 		cache[stock_entry] = pooled
 	return cache[stock_entry]
+
+
+def _derived_batches(changes):
+	"""Hand-built batches that still hold a re-stamped source's OLD (blended) rate.
+
+	``carry_rates_from_source_batches`` copies a single source's rate verbatim, so a derived batch
+	whose rate equals its source's blended rate took it from there. Batches whose rate differs
+	were priced some other way (most descendants on kg-gk hold the ledger rate already) and are
+	not listed; a qty-weighted carry from several sources cannot be recognised this way and is
+	not listed either. Excluded outright: conversion targets (the main pass owns them) and a
+	Manufacture's finished pieces (F8: no Batch Rate).
+	"""
+	if not changes:
+		return []
+	blended = {c["batch"]: flt(c.get("before")) for c in changes}
+	rows = frappe.db.sql(
+		"""
+		SELECT DISTINCT o.parent AS batch, o.batch_no AS source, b.custom_metal_rate
+		FROM `tabBatch MultiSelect` o
+		INNER JOIN `tabBatch` b ON b.name = o.parent
+		LEFT JOIN `tabStock Entry` se
+			ON b.reference_doctype = 'Stock Entry' AND se.name = b.reference_name
+		WHERE o.parenttype = 'Batch'
+			AND o.batch_no IN %(changed)s
+			AND IFNULL(se.stock_entry_type, '') != %(se_type)s
+			AND IFNULL(se.purpose, '') != 'Manufacture'
+			AND IFNULL(b.custom_metal_rate, 0) != 0
+		ORDER BY o.parent
+		""",
+		{"changed": tuple(blended), "se_type": METAL_CONVERSION_SE_TYPE},
+		as_dict=True,
+	)
+	return [
+		row
+		for row in rows
+		if abs(flt(row.custom_metal_rate) - blended.get(row.source, 0.0)) <= TOLERANCE
+	]
 
 
 def _alloy_items():
@@ -169,7 +237,8 @@ def detect(batches=None):
 			review.append(
 				{
 					"batch": batch.name,
-					"reason": "multi-output run: ledger rate is pooled",
+					"reason": "ledger rate is pooled: several outputs in one run, or "
+					"owner lanes valued at one voucher-wide rate",
 				}
 			)
 			continue
@@ -236,16 +305,22 @@ def _mirror_rows(change):
 
 
 def execute(dry_run=True, batches=None, mirrors=True):
+	if not mirrors and not dry_run:
+		frappe.throw(
+			"A real run must include the mirror pass: once the batches are re-stamped, a re-run "
+			"can no longer find the Stock Entry Detail rows that still hold the old rate."
+		)
 	changes, review = detect(batches)
 	for change in changes:
 		change["mirror_rows"] = _mirror_rows(change) if mirrors else []
+	derived = _derived_batches(changes)
 
 	customer_owned = sum(1 for c in changes if c["customer_owned"])
-	mirrors = sum(len(c["mirror_rows"]) for c in changes)
+	mirror_count = sum(len(c["mirror_rows"]) for c in changes)
 	print(
 		f"[restamp-batch-rate] {len(changes)} batch(es) to re-stamp "
-		f"({customer_owned} customer-owned), {mirrors} Stock Entry Detail mirror row(s), "
-		f"{len(review)} needing review."
+		f"({customer_owned} customer-owned), {mirror_count} Stock Entry Detail mirror row(s), "
+		f"{len(review)} needing review, {len(derived)} derived batch(es) to re-derive by hand."
 	)
 	for c in changes:
 		owner = f"customer {c['customer']}" if c["customer_owned"] else "company"
@@ -255,8 +330,12 @@ def execute(dry_run=True, batches=None, mirrors=True):
 		)
 	for r in review:
 		print(f"  REVIEW {r['batch']}: {r['reason']}")
+	for d in derived:
+		print(
+			f"  DERIVED {d['batch']} from {d['source']} (holds {d['custom_metal_rate']})"
+		)
 
-	result = {"changes": changes, "review": review}
+	result = {"changes": changes, "review": review, "derived": derived}
 	if dry_run:
 		print("[restamp-batch-rate] DRY RUN — nothing written.")
 		return result
@@ -276,6 +355,6 @@ def execute(dry_run=True, batches=None, mirrors=True):
 	frappe.db.commit()
 
 	print(
-		f"[restamp-batch-rate] Re-stamped {len(changes)} batch(es), {mirrors} mirror row(s)."
+		f"[restamp-batch-rate] Re-stamped {len(changes)} batch(es), {mirror_count} mirror row(s)."
 	)
 	return result

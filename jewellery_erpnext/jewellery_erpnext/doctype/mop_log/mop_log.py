@@ -512,9 +512,9 @@ def get_current_mop_balance_rows(
 	it after the metal has left. That is by design (F15): a closing row would
 	need Manufacture in the MOP Settings reservation table, which would reserve
 	the finished piece against the Sales Order, log the consumption as +qty,
-	and let ``MOPLog.save`` zero the FG operation's header weights that
-	``sync_mwo_weights`` sets. Readers that mean "metal still in process" must
-	filter on the operation's status.
+	and let ``MOPLog.save`` overwrite the FG operation's header weights, which
+	``sync_mwo_weights`` sets, with ledger sums of those +qty rows. Readers that
+	mean "metal still in process" must filter on the operation's status.
 	"""
 	fields = list(
 		dict.fromkeys((include_fields or current_balance_fields) + ["name", "creation"])

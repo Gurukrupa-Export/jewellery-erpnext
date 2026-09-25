@@ -38,8 +38,11 @@ def _target(
 class _Site:
 	"""The site as the script sees it: targets, ledger rates, pooled rows, mirrors."""
 
-	def __init__(self, targets, ledger, pooled=(), alloy_items=(), mirrors=None):
+	def __init__(
+		self, targets, ledger, pooled=(), alloy_items=(), mirrors=None, derived=None
+	):
 		self.targets = targets
+		self.derived = derived or []
 		self.ledger = ledger  # {batch: rate or None}
 		# A voucher row's valuation_rate equals its ledger rate unless a test says otherwise.
 		for target in targets:
@@ -61,6 +64,7 @@ class _Site:
 			),
 			patch.object(restamp, "_pooled_rows", lambda se, cache: self.pooled),
 			patch.object(restamp, "_alloy_items", lambda: self.alloy_items),
+			patch.object(restamp, "_derived_batches", lambda changes: self.derived),
 			patch.object(
 				restamp,
 				"_mirror_rows",
@@ -192,17 +196,66 @@ class TestRestampWithoutMirrors(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def test_mirrors_false_writes_the_batches_only(self):
-		site = _Site(
+	def _site(self):
+		return _Site(
 			targets=[_target("B-22KT", "ROW-1", BLENDED_22KT_RATE)],
 			ledger={"B-22KT": LEDGER_22KT_RATE},
 			mirrors={"B-22KT": ["SED-1"]},
 		)
-		site.run(dry_run=False, mirrors=False)
 
-		self.assertEqual(
-			site.writes, [("Batch", "B-22KT", "custom_metal_rate", LEDGER_22KT_RATE)]
+	def test_a_real_run_without_mirrors_is_refused(self):
+		"""After the batches are re-stamped, a re-run could never find the stale mirrors."""
+		site = self._site()
+		with self.assertRaises(frappe.ValidationError):
+			site.run(dry_run=False, mirrors=False)
+		self.assertEqual(site.writes, [])
+
+	def test_a_dry_run_without_mirrors_skips_the_mirror_lookup(self):
+		result = self._site().run(mirrors=False)
+
+		self.assertEqual(result["changes"][0]["mirror_rows"], [])
+
+
+class TestDerivedBatches(IntegrationTestCase):
+	"""Finding and scrap batches that copied a blended rate are listed, never written."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_derived_batches_are_reported_and_left_alone(self):
+		site = _Site(
+			targets=[_target("B-22KT", "ROW-1", BLENDED_22KT_RATE)],
+			ledger={"B-22KT": LEDGER_22KT_RATE},
+			derived=[
+				frappe._dict(
+					batch="FINDING-1",
+					source="B-22KT",
+					custom_metal_rate=BLENDED_22KT_RATE,
+				)
+			],
 		)
+		result = site.run(dry_run=False)
+
+		self.assertEqual([d.batch for d in result["derived"]], ["FINDING-1"])
+		self.assertNotIn("FINDING-1", {name for _dt, name, _f, _v in site.writes})
+
+	def test_only_a_verbatim_copy_of_the_blended_rate_is_listed(self):
+		"""Most descendants hold the ledger rate already; only an exact copy took the blend."""
+		rows = [
+			frappe._dict(
+				batch="COPIED", source="B-22KT", custom_metal_rate=BLENDED_22KT_RATE
+			),
+			frappe._dict(
+				batch="LEDGER", source="B-22KT", custom_metal_rate=LEDGER_22KT_RATE
+			),
+			frappe._dict(batch="OTHER", source="B-22KT", custom_metal_rate=13340.5),
+		]
+		change = {"batch": "B-22KT", "before": BLENDED_22KT_RATE}
+		with patch.object(frappe.db, "sql", return_value=rows):
+			derived = restamp._derived_batches([change])
+
+		self.assertEqual([d.batch for d in derived], ["COPIED"])
 
 
 class TestPooledRows(IntegrationTestCase):
@@ -225,6 +278,52 @@ class TestPooledRows(IntegrationTestCase):
 			{"name": "P1", "s_warehouse": None, "t_warehouse": "W"},
 			{"name": "C3", "s_warehouse": "W", "t_warehouse": None},
 			{"name": "P2", "s_warehouse": None, "t_warehouse": "W"},
+		]
+		self.assertEqual(self._pooled(items), set())
+
+	def test_owner_lanes_valued_at_one_rate_are_pooled(self):
+		"""Before the lane pricer ERPNext gave every finished row the voucher's average."""
+		items = [
+			{"name": "C1", "s_warehouse": "W", "t_warehouse": None},
+			{
+				"name": "P1",
+				"s_warehouse": None,
+				"t_warehouse": "W",
+				"inventory_type": "Regular Stock",
+				"basic_rate": 13000.0,
+			},
+			{"name": "C2", "s_warehouse": "W", "t_warehouse": None},
+			{
+				"name": "P2",
+				"s_warehouse": None,
+				"t_warehouse": "W",
+				"inventory_type": "Customer Goods",
+				"customer": "GJCU0009",
+				"basic_rate": 13000.0,
+			},
+		]
+		self.assertEqual(self._pooled(items), {"P1", "P2"})
+
+	def test_owner_lanes_priced_apart_are_not_pooled(self):
+		"""The lane pricer values each owner's lane from its own inputs."""
+		items = [
+			{"name": "C1", "s_warehouse": "W", "t_warehouse": None},
+			{
+				"name": "P1",
+				"s_warehouse": None,
+				"t_warehouse": "W",
+				"inventory_type": "Regular Stock",
+				"basic_rate": 13216.33,
+			},
+			{"name": "C2", "s_warehouse": "W", "t_warehouse": None},
+			{
+				"name": "P2",
+				"s_warehouse": None,
+				"t_warehouse": "W",
+				"inventory_type": "Customer Goods",
+				"customer": "GJCU0009",
+				"basic_rate": 0.0,
+			},
 		]
 		self.assertEqual(self._pooled(items), set())
 
@@ -259,6 +358,11 @@ class TestRestampQueries(IntegrationTestCase):
 			"before": 1.0,
 		}
 		self.assertEqual(restamp._mirror_rows(change), [])
+
+	def test_the_derived_batch_query_runs(self):
+		self.assertEqual(
+			restamp._derived_batches([{"batch": "__F26_NO_SUCH_BATCH__"}]), []
+		)
 
 	def test_the_pooled_row_query_runs(self):
 		self.assertEqual(restamp._pooled_rows("__F26_NO_SE__", {}), set())
