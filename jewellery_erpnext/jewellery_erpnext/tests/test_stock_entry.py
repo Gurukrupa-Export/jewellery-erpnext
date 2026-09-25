@@ -6,7 +6,7 @@
 Pure-logic: every DB access is patched, docs are SimpleNamespace fakes. Covers the
 wired, previously-untested hook entry-points:
 
-* doc_events/stock_entry.py: before_validate orchestration, validate_ir,
+* doc_events/stock_entry.py: before_validate orchestration, validate_ir, validate_mop_is_current,
   validate_material_request_warehouses, validate_main_slip_warehouse,
   validate_duplicate_batches, before_submit, onsubmit dispatch, on_cancel,
   on_update_after_submit, prelock_bins / prelock_bins_on_cancel
@@ -230,6 +230,104 @@ class TestValidateIr(_StockEntryTestCase):
 		get_all, _throw, raised = self._run(self._se(manufacturing_work_order=None))
 		self.assertFalse(raised)
 		get_all.assert_not_called()
+
+
+# -------------------------------------------------------------- validate_mop_is_current
+class TestValidateMopIsCurrent(_StockEntryTestCase):
+	def _run(self, se, mops=None, mwos=None):
+		maps = {
+			"Manufacturing Operation": mops or {},
+			"Manufacturing Work Order": mwos or {},
+		}
+		with patch.object(
+			se_events,
+			"bulk_map",
+			side_effect=lambda doctype, names, fields: maps[doctype],
+		) as bulk_map:
+			raised, throw = _capture_throw(se_events.validate_mop_is_current, se)
+		return bulk_map, throw, raised
+
+	def _se(self, *mops, **extra):
+		rows = [_Row(idx=i, manufacturing_operation=m) for i, m in enumerate(mops, 1)]
+		return _Doc(auto_created=extra.get("auto_created", 0), items=rows)
+
+	def _mop(self, status="WIP", mwo="MWO-1"):
+		return frappe._dict(status=status, manufacturing_work_order=mwo)
+
+	def _mwo(self, current):
+		return {"MWO-1": frappe._dict(manufacturing_operation=current)}
+
+	def test_current_active_mop_passes(self):
+		_bm, _throw, raised = self._run(
+			self._se("MOP-2"), mops={"MOP-2": self._mop()}, mwos=self._mwo("MOP-2")
+		)
+		self.assertFalse(raised)
+
+	def test_superseded_mop_throws_naming_current(self):
+		# MAT-STE-48359: the receive finished MOP-1 and repointed the MWO at MOP-2
+		# before the draft Stock Entry against MOP-1 was submitted.
+		_bm, throw, raised = self._run(
+			self._se("MOP-1"),
+			mops={"MOP-1": self._mop(status="Finished")},
+			mwos=self._mwo("MOP-2"),
+		)
+		self.assertTrue(raised)
+		msg = throw.call_args[0][0]
+		self.assertIn("MOP-1", msg)
+		self.assertIn("MOP-2", msg)
+		self.assertIn("MWO-1", msg)
+
+	def test_superseded_but_not_finished_throws(self):
+		# A forked twin MOP the MWO no longer points at is just as stranded.
+		_bm, throw, raised = self._run(
+			self._se("MOP-1"), mops={"MOP-1": self._mop()}, mwos=self._mwo("MOP-2")
+		)
+		self.assertTrue(raised)
+		self.assertIn("MOP-2", throw.call_args[0][0])
+
+	def test_finished_current_mop_throws(self):
+		_bm, throw, raised = self._run(
+			self._se("MOP-2"),
+			mops={"MOP-2": self._mop(status="Finished")},
+			mwos=self._mwo("MOP-2"),
+		)
+		self.assertTrue(raised)
+		msg = throw.call_args[0][0]
+		self.assertIn("MOP-2", msg)
+		self.assertIn("Finished", msg)
+
+	def test_finished_mop_without_pointer_throws(self):
+		_bm, _throw, raised = self._run(
+			self._se("MOP-1"), mops={"MOP-1": self._mop(status="Finished")}
+		)
+		self.assertTrue(raised)
+
+	def test_active_mop_without_pointer_passes(self):
+		_bm, _throw, raised = self._run(self._se("MOP-1"), mops={"MOP-1": self._mop()})
+		self.assertFalse(raised)
+
+	def test_throw_names_offending_row(self):
+		_bm, throw, raised = self._run(
+			self._se("MOP-2", "MOP-1"),
+			mops={"MOP-2": self._mop(), "MOP-1": self._mop(status="Finished")},
+			mwos=self._mwo("MOP-2"),
+		)
+		self.assertTrue(raised)
+		self.assertIn("Row #2", throw.call_args[0][0])
+
+	def test_unknown_mop_skipped(self):
+		_bm, _throw, raised = self._run(self._se("MOP-X"))
+		self.assertFalse(raised)
+
+	def test_auto_created_skips_queries(self):
+		bulk_map, _throw, raised = self._run(self._se("MOP-1", auto_created=1))
+		self.assertFalse(raised)
+		bulk_map.assert_not_called()
+
+	def test_rows_without_mop_skip_queries(self):
+		bulk_map, _throw, raised = self._run(self._se(None))
+		self.assertFalse(raised)
+		bulk_map.assert_not_called()
 
 
 # ------------------------------------------------- validate_material_request_warehouses
@@ -850,6 +948,9 @@ class TestBeforeValidate(_StockEntryTestCase):
 				se_events, "validate_metal_properties"
 			),
 			"allow_zero_valuation": patch.object(se_events, "allow_zero_valuation"),
+			"validate_mop_is_current": patch.object(
+				se_events, "validate_mop_is_current"
+			),
 			"bulk_map": patch.object(se_events, "bulk_map", side_effect=self._item_map),
 			# flt() with a precision calls rounded() -> frappe.get_system_settings(
 			# "rounding_method"), a real DB/cache read. Only the scaled-purity branch
@@ -907,7 +1008,9 @@ class TestBeforeValidate(_StockEntryTestCase):
 		ctx = self._patched_pipeline()
 		with ctx["validate_ir"], ctx["validate_loss_ownership_carried"], ctx[
 			"validate_pcs"
-		], ctx["allow_zero_valuation"], ctx["bulk_map"], patch.object(
+		], ctx["allow_zero_valuation"], ctx["validate_mop_is_current"], ctx[
+			"bulk_map"
+		], patch.object(
 			se_events.frappe.db, "get_value", return_value="In-Transit"
 		) as gv:
 			raised, throw = _capture_throw(se_events.before_validate, se, method=None)
