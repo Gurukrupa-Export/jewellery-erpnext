@@ -1951,6 +1951,27 @@ class TestMaterialRequestOwnershipStampPersists(IntegrationTestCase):
 class TestCancelAllLinked(UnitTestCase):
 	"""PMO1 with its own MWO / Department IR / Stock Entries; PMO2 and a Sales Order hang off SE3."""
 
+	def setUp(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		# Keep every test off the real site state the job touches: in-progress flags go to a
+		# throwaway Redis key deleted afterwards (the real key other sessions read is never
+		# written), and rollbacks / commit-rollback callbacks are stubbed. Tests that need their
+		# own behaviour patch these again inside their `with` blocks.
+		flag_key = f"test_pmo_cancel_all_in_progress::{frappe.generate_hash(length=10)}"
+		self.addCleanup(frappe.cache.delete_value, flag_key)
+		for patcher in (
+			patch.object(cancel_all, "IN_FLIGHT_GRACE_SECONDS", 0),
+			patch.object(cancel_all, "IN_PROGRESS_KEY", flag_key),
+			patch.object(cancel_all.frappe.db, "rollback"),
+			patch.object(cancel_all.frappe.db, "after_commit", MagicMock()),
+			patch.object(cancel_all.frappe.db, "after_rollback", MagicMock()),
+		):
+			patcher.start()
+			self.addCleanup(patcher.stop)
+
 	GRAPH = {
 		("Parent Manufacturing Order", "PMO1"): {
 			"Manufacturing Work Order": ["MWO1"],
@@ -2320,23 +2341,13 @@ class TestCancelAllLinked(UnitTestCase):
 		self.assertEqual(covered, [("Parent Manufacturing Order", "PMO2")])
 
 	def test_done_event_waits_for_the_commit(self):
-		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
-			cancel_all,
-		)
+		# Through _job(): the gate, the wait, the rollback and the commit callbacks are all stubbed,
+		# so no real Redis flag, rollback or callback is left behind on the test site.
+		m = self._job()
 
-		pmo = ("Parent Manufacturing Order", "PMO1")
-		with (
-			patch.object(cancel_all, "get_cancel_plan", return_value=[pmo]),
-			patch.object(cancel_all, "get_linked_records", return_value=({}, [])),
-			patch.object(cancel_all, "_cancel_in_order", return_value=[]),
-			patch.object(cancel_all, "mark_workflow_cancelled"),
-			patch.object(frappe.db, "savepoint"),
-			patch.object(frappe, "publish_realtime") as publish,
-		):
-			cancel_all.cancel_all("PMO1", "Administrator")
-
-		self.assertEqual(publish.call_args.args[1]["status"], "done")
-		self.assertTrue(publish.call_args.kwargs.get("after_commit"))
+		self.assertIsNone(m.error)
+		self.assertEqual(m.publish.call_args.args[1]["status"], "done")
+		self.assertTrue(m.publish.call_args.kwargs.get("after_commit"))
 
 	def test_blocker_name_must_match_whole(self):
 		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
@@ -2623,6 +2634,340 @@ class TestCancelAllLinked(UnitTestCase):
 				("Department IR Operation", ["in", ["MOP-A", "MOP-B", "MOP-C"]]),
 			],
 		)
+
+	def _doc_with_rows(self, doctype, name, rows):
+		"""A fake document whose rows carry the given link values."""
+		link_fields = [
+			frappe._dict(
+				fieldname="manufacturing_work_order", options="Manufacturing Work Order"
+			),
+			frappe._dict(
+				fieldname="manufacturing_operation", options="Manufacturing Operation"
+			),
+			frappe._dict(
+				fieldname="parent_manufacturing_order",
+				options="Parent Manufacturing Order",
+			),
+			frappe._dict(
+				fieldname="amended_from", options="Parent Manufacturing Order"
+			),
+		]
+
+		def make(values):
+			row = frappe._dict(values)
+			row.meta = frappe._dict(
+				get_link_fields=lambda: link_fields, get_dynamic_link_fields=lambda: []
+			)
+			return row
+
+		doc = make({"doctype": doctype, "name": name})
+		children = [make(r) for r in rows]
+		doc.get_all_children = lambda: children
+		return doc
+
+	def _gate(self, doc, busy, owners=None):
+		"""busy: PMOs being cancelled, or {pmo: records on its list}.
+		owners: {"Manufacturing Operation": {op: mwo}, "Manufacturing Work Order": {mwo: pmo}}."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		owners = owners or {}
+
+		def get_all(dt, filters, pluck, order_by):
+			return [owners.get(dt, {}).get(n) for n in filters["name"][1]]
+
+		with (
+			patch.object(
+				cancel_all,
+				"pmos_being_cancelled",
+				return_value=busy
+				if isinstance(busy, dict)
+				else {pmo: set() for pmo in busy},
+			),
+			patch.object(frappe, "get_all", side_effect=get_all) as get_all_mock,
+		):
+			cancel_all.block_submit_while_pmo_cancels(doc)
+		return get_all_mock
+
+	def test_submit_touching_a_pmo_being_cancelled_is_refused(self):
+		doc = self._doc_with_rows(
+			"Employee IR", "EIR-NEW", [{"manufacturing_work_order": "MWO-A"}]
+		)
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._gate(doc, {"PMO1"}, {"Manufacturing Work Order": {"MWO-A": "PMO1"}})
+		self.assertIn("PMO1", str(ctx.exception))
+
+	def test_submit_reaching_the_pmo_through_an_operation_is_refused(self):
+		doc = self._doc_with_rows(
+			"Stock Entry", "SE-NEW", [{"manufacturing_operation": "MOP-A"}]
+		)
+		with self.assertRaises(frappe.ValidationError):
+			self._gate(
+				doc,
+				{"PMO1"},
+				{
+					"Manufacturing Operation": {"MOP-A": "MWO-A"},
+					"Manufacturing Work Order": {"MWO-A": "PMO1"},
+				},
+			)
+
+	def test_submit_for_other_pmos_goes_through(self):
+		doc = self._doc_with_rows(
+			"Employee IR",
+			"EIR-NEW",
+			[{"manufacturing_work_order": "MWO-B"}, {"amended_from": "PMO1"}],
+		)
+		self._gate(doc, {"PMO1"}, {"Manufacturing Work Order": {"MWO-B": "PMO2"}})
+
+	def test_gate_costs_nothing_when_no_cancel_runs(self):
+		doc = self._doc_with_rows(
+			"Employee IR", "EIR-NEW", [{"manufacturing_work_order": "MWO-A"}]
+		)
+		self._gate(doc, set()).assert_not_called()
+
+	def test_the_cancel_job_itself_is_not_blocked(self):
+		doc = self._doc_with_rows(
+			"Repost Item Valuation", "RIV-1", [{"parent_manufacturing_order": "PMO1"}]
+		)
+		frappe.flags.in_pmo_cancel_all = True
+		try:
+			self._gate(doc, {"PMO1"})
+		finally:
+			frappe.flags.in_pmo_cancel_all = False
+
+	def test_expired_in_progress_flags_are_ignored(self):
+		import time
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		flags = {
+			b"PMO-RUNNING": {
+				"until": time.time() + 600,
+				"records": [["Sales Order", "SO-1"]],
+			},
+			b"PMO-CRASHED": {"until": time.time() - 1, "records": []},
+		}
+		with patch.object(cancel_all.frappe.cache, "hgetall", return_value=flags):
+			self.assertEqual(
+				cancel_all.pmos_being_cancelled(),
+				{"PMO-RUNNING": {("Sales Order", "SO-1")}},
+			)
+
+	def _job(self, calls=None, **patches):
+		"""Runs cancel_all with the gate helpers and transaction callbacks mocked; returns the mocks.
+		`calls` records the gate, wait and rollback steps in order (pass one to add your own)."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		m = frappe._dict(
+			after_commit=MagicMock(),
+			after_rollback=MagicMock(),
+			calls=calls or MagicMock(),
+		)
+		defaults = {
+			"get_cancel_plan": [("Parent Manufacturing Order", "PMO1")],
+			"get_linked_records": ({}, []),
+			"_cancel_in_order": [],
+		}
+		with (
+			patch.object(
+				cancel_all,
+				"mark_cancel_in_progress",
+				side_effect=lambda *a: m.calls("mark", *a),
+			),
+			patch.object(
+				cancel_all,
+				"clear_cancel_in_progress",
+				side_effect=lambda *a: m.calls("clear", *a),
+			),
+			patch.object(
+				cancel_all.time, "sleep", side_effect=lambda sec: m.calls("sleep")
+			),
+			patch.object(
+				cancel_all.frappe.db,
+				"rollback",
+				side_effect=lambda **kw: m.calls("rollback", kw),
+			),
+			patch.object(cancel_all.frappe.db, "savepoint"),
+			patch.object(cancel_all.frappe.db, "after_commit", m.after_commit),
+			patch.object(cancel_all.frappe.db, "after_rollback", m.after_rollback),
+			patch.object(cancel_all, "mark_workflow_cancelled"),
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(frappe, "log_error"),
+			patch.object(frappe, "publish_realtime") as publish,
+		):
+			for name, value in {**defaults, **patches}.items():
+				kind = (
+					"side_effect"
+					if isinstance(value, Exception) or callable(value)
+					else "return_value"
+				)
+				stack = patch.object(cancel_all, name, **{kind: value})
+				stack.start()
+				self.addCleanup(stack.stop)
+			try:
+				cancel_all.cancel_all("PMO1", "Administrator")
+				m.error = None
+			except Exception as e:
+				m.error = e
+			m.publish = publish
+		return m
+
+	def test_job_gates_the_whole_list_waits_then_checks_in_a_fresh_transaction(self):
+		plan = [("Sales Order", "SO-1"), ("Parent Manufacturing Order", "PMO1")]
+		calls = MagicMock()
+
+		def linked(p):
+			calls("pre-check")
+			return ({}, [])
+
+		result = self._job(calls=calls, get_cancel_plan=plan, get_linked_records=linked)
+		names = [c.args[0] for c in calls.call_args_list]
+		# gate on the PMO, then on the whole list, wait, fresh transaction, and only then the check
+		self.assertEqual(names[:5], ["mark", "mark", "sleep", "rollback", "pre-check"])
+		self.assertEqual(result.calls.call_args_list[1].args, ("mark", "PMO1", plan))
+		self.assertIsNone(result.error)
+		self.assertEqual(result.publish.call_args.args[1]["status"], "done")
+
+	def test_job_keeps_the_gate_until_its_commit_or_rollback(self):
+		m = self._job(get_linked_records=frappe.ValidationError("outside link"))
+		self.assertIsInstance(m.error, frappe.ValidationError)
+		# failed after the hand-over: not cleared directly, but by the job runner's rollback
+		self.assertNotIn("clear", [c.args[0] for c in m.calls.call_args_list])
+		m.after_commit.add.call_args.args[0]()
+		m.after_rollback.add.call_args.args[0]()
+		self.assertEqual([c.args[0] for c in m.calls.call_args_list].count("clear"), 2)
+		self.assertFalse(frappe.flags.in_pmo_cancel_all)
+
+	def test_job_that_cannot_raise_the_gate_reports_and_still_clears_it(self):
+		m = self._job(mark_cancel_in_progress=frappe.ValidationError("cache down"))
+		self.assertIsInstance(m.error, frappe.ValidationError)
+		# failed before anything was cancelled: the button's flag is lowered straight away
+		self.assertIn(("clear", "PMO1"), [c.args for c in m.calls.call_args_list])
+		m.after_rollback.add.assert_not_called()
+		self.assertEqual(m.publish.call_args.args[1]["status"], "failed")
+		self.assertIn("cache down", m.publish.call_args.args[1]["error"])
+		self.assertFalse(frappe.flags.in_pmo_cancel_all)
+
+	def test_submit_against_a_sales_order_on_the_list_is_refused(self):
+		doc = self._doc_with_rows("Delivery Note", "DN-NEW", [])
+		doc.meta = frappe._dict(
+			get_link_fields=lambda: [
+				frappe._dict(fieldname="against_sales_order", options="Sales Order")
+			],
+			get_dynamic_link_fields=lambda: [],
+		)
+		doc.against_sales_order = "SO-1"
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._gate(doc, {"PMO1": {("Sales Order", "SO-1")}})
+		self.assertIn("PMO1", str(ctx.exception))
+
+	def test_submit_through_a_dynamic_link_to_the_list_is_refused(self):
+		doc = self._doc_with_rows("Payment Entry", "PE-NEW", [])
+		doc.meta = frappe._dict(
+			get_link_fields=lambda: [],
+			get_dynamic_link_fields=lambda: [
+				frappe._dict(fieldname="reference_name", options="reference_doctype")
+			],
+		)
+		doc.reference_doctype, doc.reference_name = "Sales Order", "SO-1"
+		with self.assertRaises(frappe.ValidationError):
+			self._gate(doc, {"PMO1": {("Sales Order", "SO-1")}})
+
+	def test_second_click_while_a_job_is_queued_does_not_touch_the_gate(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		with (
+			patch.object(cancel_all.frappe, "only_for"),
+			patch.object(cancel_all.frappe, "has_permission", return_value=True),
+			patch("frappe.utils.background_jobs.is_job_enqueued", return_value=True),
+			patch.object(cancel_all, "mark_cancel_in_progress") as mark,
+			patch.object(cancel_all.frappe, "enqueue") as enqueue,
+		):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				cancel_all.enqueue_cancel_all("PMO1")
+		self.assertIn("already running", str(ctx.exception))
+		mark.assert_not_called()
+		enqueue.assert_not_called()
+
+	def test_button_raises_the_gate_and_lowers_it_if_the_job_cannot_be_queued(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		with (
+			patch.object(cancel_all.frappe, "only_for"),
+			patch.object(cancel_all.frappe, "has_permission", return_value=True),
+			patch("frappe.utils.background_jobs.is_job_enqueued", return_value=False),
+			patch.object(cancel_all, "mark_cancel_in_progress") as mark,
+			patch.object(cancel_all, "clear_cancel_in_progress") as clear,
+			patch.object(
+				cancel_all.frappe, "enqueue", side_effect=RuntimeError("redis down")
+			),
+		):
+			self.assertRaises(RuntimeError, cancel_all.enqueue_cancel_all, "PMO1")
+		mark.assert_called_once_with("PMO1")
+		clear.assert_called_once_with("PMO1")
+
+	def test_redis_down_lets_submits_through(self):
+		import redis
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		with patch.object(
+			cancel_all.frappe.cache,
+			"hgetall",
+			side_effect=redis.exceptions.ConnectionError("down"),
+		):
+			self.assertEqual(cancel_all.pmos_being_cancelled(), {})
+
+	def test_cancel_all_does_not_start_if_the_flag_did_not_stick(self):
+		import redis
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		# hset swallows a Redis outage, so the read-back is what notices it
+		for read_back in ({}, redis.exceptions.ConnectionError("down")):
+			kwargs = (
+				{"side_effect": read_back}
+				if isinstance(read_back, Exception)
+				else {"return_value": read_back}
+			)
+			with (
+				patch.object(cancel_all.frappe.cache, "hset"),
+				patch.object(cancel_all.frappe.cache, "hgetall", **kwargs),
+			):
+				with self.assertRaises(frappe.ValidationError) as ctx:
+					cancel_all.mark_cancel_in_progress("PMO1")
+			self.assertIn("cache server is not reachable", str(ctx.exception))
+
+	def test_cancel_all_starts_when_the_flag_is_up(self):
+		import time
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events import (
+			cancel_all,
+		)
+
+		with (
+			patch.object(cancel_all.frappe.cache, "hset") as hset,
+			patch.object(
+				cancel_all.frappe.cache,
+				"hgetall",
+				return_value={b"PMO1": {"until": time.time() + 600}},
+			),
+		):
+			cancel_all.mark_cancel_in_progress("PMO1")
+		self.assertEqual(hset.call_args.args[:2], (cancel_all.IN_PROGRESS_KEY, "PMO1"))
 
 	def test_already_cancelled_upstream_is_skipped(self):
 		mp = ("Manufacturing Plan", "MP1")
@@ -3172,7 +3517,10 @@ class TestCancelAllLinked(UnitTestCase):
 			cancelled, [("Stock Entry", "SE1"), ("Parent Manufacturing Order", "PMO1")]
 		)
 		self.assertEqual(message["status"], "done")
-		rollback.assert_called_once()  # only the savepoint rollback
+		# one savepoint rollback for the retried record (the other is the job's fresh-transaction start)
+		self.assertEqual(
+			len([c for c in rollback.call_args_list if c.kwargs.get("save_point")]), 1
+		)
 		self.assertIn("save_point", rollback.call_args.kwargs)
 
 	def test_already_cancelled_doc_is_skipped(self):
