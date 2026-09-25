@@ -4711,6 +4711,8 @@ def create_mr_wo_stock_entry(
 	- After SE submit, cancels (full) or cancels+recreates (partial) each SRE.
 	- Relies on doc_events/stock_entry.sync_mop_log_for_stock_entry to bridge
 	  MOP Log rows (is_synced=1).
+	- A receive item may carry its own ``t_warehouse`` (Create SNC lands each borrowed
+	  row where its settlement draws from); otherwise it uses the call's target.
 	"""
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
@@ -4999,6 +5001,7 @@ def create_mr_wo_stock_entry(
 				"pcs": req_pcs,
 				"batch_no": batch_no,
 				"s_warehouse": resolved_warehouse,
+				"t_warehouse": row.get("t_warehouse") or t_warehouse,
 				"inventory_type": row_inventory_type,
 				"customer": row_customer,
 			}
@@ -5029,6 +5032,9 @@ def create_mr_wo_stock_entry(
 	# receive would mislabel the entry (the per-row `s_warehouse` below is what
 	# actually drives the ledger either way).
 	source_warehouses = {vrow["s_warehouse"] for vrow in validated_rows}
+	# Same rule for targets: rows normally share the call's target, but a row may
+	# carry its own, and then the header is left blank.
+	target_warehouses = {vrow["t_warehouse"] for vrow in validated_rows}
 
 	# Build the Stock Entry. All preceding validations succeeded.
 	frappe.db.savepoint("make_receive_entry")
@@ -5041,20 +5047,30 @@ def create_mr_wo_stock_entry(
 				"manufacturing_order": mo.manufacturing_order,
 				"manufacturing_operation": mo.name,
 				"department": mo.department,
-				"to_warehouse": t_warehouse,
+				"to_warehouse": next(iter(target_warehouses))
+				if len(target_warehouses) == 1
+				else None,
 				"from_warehouse": next(iter(source_warehouses))
 				if len(source_warehouses) == 1
 				else None,
 			}
 		)
 
-		# Checked against every row's source, not just the header: a mixed
-		# receive leaves the header blank, and one bad row must still be caught.
-		if t_warehouse and t_warehouse in source_warehouses:
+		# Checked per row, not against the header: a mixed receive leaves the header
+		# blank, and one bad row must still be caught. Per row, like ERPNext's own
+		# check -- with per-row targets one row's target may be another row's source.
+		clashing = sorted(
+			{
+				vrow["t_warehouse"]
+				for vrow in validated_rows
+				if vrow["t_warehouse"] == vrow["s_warehouse"]
+			}
+		)
+		if clashing:
 			frappe.throw(
 				_(
 					"Source Warehouse and Target Warehouse cannot be the same ({0}). Please check the department's warehouse configuration."
-				).format(t_warehouse)
+				).format(", ".join(clashing))
 			)
 
 		if request_id:
@@ -5071,7 +5087,7 @@ def create_mr_wo_stock_entry(
 					"batch_no": vrow["batch_no"],
 					"manufacturing_operation": mo.name,
 					"s_warehouse": vrow["s_warehouse"],
-					"t_warehouse": t_warehouse,
+					"t_warehouse": vrow["t_warehouse"],
 					"inventory_type": vrow["inventory_type"],
 					"customer": vrow["customer"],
 				},

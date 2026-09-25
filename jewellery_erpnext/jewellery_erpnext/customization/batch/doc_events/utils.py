@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import frappe
 from frappe import _
 from frappe.utils import cstr, flt
@@ -114,6 +116,7 @@ def update_inventory_dimentions(self):
 		not item_allows_customer_goods
 		and is_customer_inventory
 		and not is_subcontracting_gold_repack(self)
+		and not is_snc_settlement_conversion(self)
 		and not is_process_loss_repack(self)
 		and not is_repair_unpack(self)
 	):
@@ -395,6 +398,53 @@ def is_subcontracting_gold_repack(batch):
 			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
 		)
 		== "Subcontracting Repack"
+	)
+
+
+@contextmanager
+def snc_settlement_conversion(stock_entry_name):
+	"""Mark ``stock_entry_name`` as one of Create SNC's own settlement conversions while
+	the caller submits it -- the only proof ``is_snc_settlement_conversion`` accepts.
+
+	Request-scoped on purpose: every Stock Entry field a conversion could be recognised by
+	(``stock_entry_type``, ``auto_created``, ``manufacturing_work_order``) is permlevel 0,
+	so any client can post it, whereas ``frappe.flags`` is rebuilt per request and cannot be
+	set by one. Keyed by Stock Entry name rather than a boolean, so no other batch validated
+	in the same request is exempted; restored in ``finally`` like ``is_batch_autoname``.
+	"""
+	previous = frappe.flags.snc_settlement_conversions or set()
+	frappe.flags.snc_settlement_conversions = previous | {stock_entry_name}
+	try:
+		yield
+	finally:
+		frappe.flags.snc_settlement_conversions = previous
+
+
+def is_snc_settlement_conversion(batch):
+	"""Exempt the batch a Create SNC settlement conversion mints for a customer.
+
+	Create SNC (customer_subcontracting/sub_utils/snc.py) settles a customer-gold work
+	order that used company gold or a company finding by converting the customer's own
+	metal into that item -- so the produced batch is the customer's by construction, not
+	by the Item's ``custom_inventory_type_can_be_customer_goods`` flag. Most finding
+	variants do not carry that flag, and the batch is re-saved (re-validated) on submit by
+	``update_parent_batch_id``, so without this exemption the settlement throws "Item ...
+	is not allowed as Customer Goods" and the FG work order stays blocked.
+
+	Only a conversion Create SNC is submitting in THIS request qualifies (see
+	``snc_settlement_conversion``); a Stock Entry that merely looks like one -- posted with
+	the same type, ``auto_created`` and work order -- stays guarded. Every guard evaluation
+	of an SNC batch happens inside that submit; a later direct re-save of the Batch itself
+	is guarded like any other Customer Goods batch of an unflagged item.
+	"""
+	if getattr(batch, "reference_doctype", None) != "Stock Entry":
+		return False
+
+	if not getattr(batch, "custom_customer", None):
+		return False
+
+	return getattr(batch, "reference_name", None) in (
+		frappe.flags.snc_settlement_conversions or ()
 	)
 
 
