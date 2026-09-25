@@ -8,8 +8,12 @@ order. That is right for the weights, which are balances carried forward, and wr
 loss_wt, which is the change measured on the one operation that was received -- the next
 operation starts at 0. So the FG header always read 0 loss.
 
-The fake below evaluates the two aggregate queries over an in-memory operation table, so
-these tests pin which rows each field is summed over, not just which query was issued.
+Only negative loss_wt is a loss: a positive value is material coming in (the casting
+receipt carries the whole cast weight, assembly the findings it attaches).
+
+The fake below serves the operation rows each query selects from an in-memory table, and
+leaves the arithmetic to the code under test, so these tests pin which rows each field is
+summed over and how, not just which query was issued.
 """
 
 from types import SimpleNamespace
@@ -75,16 +79,13 @@ class _FakeDb:
 		if "FROM `tabManufacturing Operation`" not in query:
 			return self._real_sql(query, values, *args, **kwargs)
 		if "WHERE manufacturing_work_order IN" in query:
+			# Every operation of the named work orders, as the table would return them.
 			self.loss_query_params = values
 			mwos = set(values[0])
-			return (
-				(
-					sum(
-						op.loss_wt
-						for op in self.operations
-						if op.manufacturing_work_order in mwos
-					),
-				),
+			return tuple(
+				(op.loss_wt,)
+				for op in self.operations
+				if op.manufacturing_work_order in mwos
 			)
 		# The latest-operation aggregate. loss_wt is served here too, so a version that
 		# still read the loss from this query gets the latest operations' 0.
@@ -123,11 +124,20 @@ def _sync(doc, fake):
 
 class TestFgLossRollup(IntegrationTestCase):
 	def _two_siblings(self):
-		# Sibling A lost 0.12 g on its first operation and gained 0.02 g on its second;
-		# the latest operation of each sibling carries loss 0, as Department IR leaves it.
+		# Sibling A was cast (10 g received against a gross-0 issue), lost 0.12 g, then
+		# took in 0.02 g of findings; sibling B lost 0.05 g. The latest operation of each
+		# carries loss 0, as Department IR leaves it. Process loss: 0.12 + 0.05.
 		return _FakeDb(
 			siblings=["MWO-A", "MWO-B"],
 			operations=[
+				_op(
+					"MOP-A0",
+					"MWO-A",
+					0,
+					loss_wt=10.0,
+					gross_wt=0.0,
+					received_gross_wt=10.0,
+				),
 				_op(
 					"MOP-A1",
 					"MWO-A",
@@ -176,17 +186,49 @@ class TestFgLossRollup(IntegrationTestCase):
 		doc = _fg_mwo()
 		_sync(doc, fake)
 
-		self.assertAlmostEqual(doc.loss_wt, -0.15, places=6)
+		self.assertAlmostEqual(doc.loss_wt, -0.17, places=6)
 		self.assertAlmostEqual(
 			fake.writes[("Manufacturing Work Order", "MWO-FG")]["loss_wt"],
-			-0.15,
+			-0.17,
 			places=6,
 		)
 		self.assertAlmostEqual(
 			fake.writes[("Manufacturing Operation", "MOP-FG")]["loss_wt"],
-			-0.15,
+			-0.17,
 			places=6,
 		)
+
+	def test_material_coming_in_does_not_offset_the_loss(self):
+		"""PMO-KGJPL-NE05090-002-0001 on kg-gk: netting the casting receipt read +34.25 g."""
+		fake = _FakeDb(
+			siblings=["MWO-PIECE", "MWO-CHAIN"],
+			operations=[
+				_op("CAST", "MWO-PIECE", 1, loss_wt=39.88),
+				_op("FILL", "MWO-PIECE", 2, loss_wt=-1.38),
+				_op("PRE-POLISH", "MWO-PIECE", 3, loss_wt=-0.65),
+				_op("SETTING", "MWO-PIECE", 4, loss_wt=-2.63),
+				_op("FINAL-POLISH", "MWO-PIECE", 5, loss_wt=-0.81),
+				_op("CHAIN-ASSEMBLY", "MWO-CHAIN", 1, loss_wt=-0.03),
+				_op("CHAIN-POLISH", "MWO-CHAIN", 2, loss_wt=-0.13),
+			],
+		)
+		doc = _fg_mwo()
+		_sync(doc, fake)
+
+		self.assertAlmostEqual(doc.loss_wt, -5.63, places=6)
+
+	def test_nothing_lost_reads_zero_not_a_gain(self):
+		fake = _FakeDb(
+			siblings=["MWO-A"],
+			operations=[
+				_op("MOP-A0", "MWO-A", 0, loss_wt=10.0),
+				_op("MOP-A1", "MWO-A", 1, loss_wt=0.2),
+			],
+		)
+		doc = _fg_mwo()
+		_sync(doc, fake)
+
+		self.assertEqual(doc.loss_wt, 0.0)
 
 	def test_the_other_weights_stay_on_the_latest_operation(self):
 		fake = self._two_siblings()
@@ -212,7 +254,7 @@ class TestFgLossRollup(IntegrationTestCase):
 		self.assertEqual(fake.mwo_filters["for_fg"], 0)
 		self.assertEqual(fake.mwo_filters["name"], ["!=", "MWO-FG"])
 		self.assertEqual(set(fake.loss_query_params[0]), {"MWO-A", "MWO-B"})
-		self.assertAlmostEqual(doc.loss_wt, -0.15, places=6)
+		self.assertAlmostEqual(doc.loss_wt, -0.17, places=6)
 
 	def test_a_repeated_sync_does_not_compound_the_loss(self):
 		fake = self._two_siblings()
@@ -220,7 +262,7 @@ class TestFgLossRollup(IntegrationTestCase):
 		_sync(doc, fake)
 		_sync(doc, fake)
 
-		self.assertAlmostEqual(doc.loss_wt, -0.15, places=6)
+		self.assertAlmostEqual(doc.loss_wt, -0.17, places=6)
 
 	def test_no_sibling_leaves_the_header_as_it_was(self):
 		fake = _FakeDb(siblings=[], operations=[])
