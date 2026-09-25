@@ -172,6 +172,7 @@ def set_target_inventory_dimensions(self, method=None):
 
 def before_validate(self, method):
 	validate_ir(self)
+	validate_mop_is_current(self)
 	if self.docstatus == 0:
 		# FIFO batch allocation now runs automatically for every draft (incl.
 		# brand-new / unsaved docs) — this replaces the old "Get FIFO Batches"
@@ -376,6 +377,79 @@ def before_validate(self, method):
 		validate_metal_properties(self)
 	else:
 		allow_zero_valuation(self)
+
+
+def validate_mop_is_current(self):
+	"""Reject rows booked against a Manufacturing Operation the piece has already left.
+
+	When an Employee / Department IR receives a MOP it marks it Finished, creates the
+	next MOP and repoints ``Manufacturing Work Order.manufacturing_operation`` at it,
+	carrying forward only the stock the old MOP held at that moment. Stock booked on the
+	old MOP afterwards is stranded there: the next MOP never sees it, but the FG MWO's
+	SNC initialisation sums qty_change across every MOP of the MWO and picks it up, so
+	the serial-number source table disagrees with the piece's net weight
+	(MAT-STE-48359: +0.02 g issued to MOP-2609-215WTE six seconds after its receive).
+
+	Runs from before_validate, which also fires on submit, so a draft saved before the
+	receive and submitted after it is caught. Scoped to user-created entries like the
+	In-Transit guard in before_validate: EOD sync, SNC and the other cascades set
+	auto_created.
+	"""
+	if self.auto_created:
+		return
+
+	mops = [
+		row.manufacturing_operation
+		for row in self.items
+		if row.get("manufacturing_operation")
+	]
+	if not mops:
+		return
+
+	mop_map = bulk_map(
+		"Manufacturing Operation", mops, ["status", "manufacturing_work_order"]
+	)
+	mwo_map = bulk_map(
+		"Manufacturing Work Order",
+		[mop.manufacturing_work_order for mop in mop_map.values()],
+		["manufacturing_operation"],
+	)
+
+	for row in self.items:
+		mop = mop_map.get(row.get("manufacturing_operation"))
+		if not mop:
+			continue
+
+		current = (mwo_map.get(mop.manufacturing_work_order) or {}).get(
+			"manufacturing_operation"
+		)
+		superseded = current and current != row.manufacturing_operation
+		if mop.status != "Finished" and not superseded:
+			continue
+
+		if superseded:
+			frappe.throw(
+				_(
+					"Row #{0}: Manufacturing Operation {1} is no longer active; Manufacturing Work Order {2} has moved on to {3}. Stock booked on {1} will not carry forward, so create this Stock Entry against {3} instead."
+				).format(
+					row.idx,
+					frappe.bold(row.manufacturing_operation),
+					frappe.bold(mop.manufacturing_work_order),
+					frappe.bold(current),
+				),
+				title=_("Manufacturing Operation Not Current"),
+			)
+
+		frappe.throw(
+			_(
+				"Row #{0}: Manufacturing Operation {1} is already Finished, so stock booked on it will not carry forward. Book it against the active operation of Manufacturing Work Order {2} instead."
+			).format(
+				row.idx,
+				frappe.bold(row.manufacturing_operation),
+				frappe.bold(mop.manufacturing_work_order),
+			),
+			title=_("Manufacturing Operation Not Current"),
+		)
 
 
 def validate_ir(self):
