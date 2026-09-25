@@ -887,29 +887,36 @@ class ManufacturingWorkOrder(Document):
 
 
 def cumulative_loss_wt(sibling_mwos):
-	"""The FG work order's process loss: loss_wt summed over EVERY operation of its siblings.
+	"""The FG work order's process loss: every LOSS recorded on an operation of its siblings.
 
 	Every other header weight is a balance, so the latest operation carries it forward and
 	sync_mwo_weights reads it there. loss_wt is not a balance -- it is the change measured
 	on the one operation that was received (Employee IR writes received_gross_wt - gross_wt
 	on it), and the next operation starts at 0 (the field is no_copy and Department IR zeroes
-	it). Summed over the latest operations it was therefore always 0 (F14). Each operation
-	holds only its own change, so the sum counts every loss exactly once.
+	it). Summed over the latest operations it was therefore always 0 (F14).
 
-	The sign is kept: negative is a loss, positive a gain. Reports that list operations
-	must not also list the FG work order, or the loss shows twice -- they filter for_fg = 0.
+	Only the negative values are losses. The field is "Loss / Increase Wt", and an increase
+	is material coming IN, not a process gain: the casting operation is issued at gross 0 and
+	received at the whole cast weight, and assembly receives the findings it attaches. On
+	kg-gk 2,153 of 2,183 positive Casting rows equal the entire cast weight. Netting them
+	against the losses gave PMO-KGJPL-NE05090-002-0001 a "loss" of +34.25 g for a piece that
+	lost 5.63 g. The per-operation reports read loss the same way (only negative loss_wt).
+
+	The result keeps the field's sign: negative, or 0 when nothing was lost. Reports that list
+	operations must not also list the FG work order, or the loss shows twice -- they filter
+	for_fg = 0.
 	"""
 	if not sibling_mwos:
 		return 0.0
-	total = frappe.db.sql(
+	rows = frappe.db.sql(
 		"""
-		SELECT COALESCE(SUM(loss_wt), 0)
+		SELECT loss_wt
 		FROM `tabManufacturing Operation`
 		WHERE manufacturing_work_order IN %s
 		""",
 		(tuple(sibling_mwos),),
 	)
-	return flt(total[0][0], 3) if total else 0.0
+	return flt(sum(min(flt(row[0]), 0.0) for row in rows), 3)
 
 
 @frappe.whitelist()
