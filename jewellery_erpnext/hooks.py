@@ -10,6 +10,27 @@ app_license = "MIT"
 app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
 # after_migrate = "jewellery_erpnext.migrate.after_migrate"
+# Deliberately NOT the line above, which would apply every custom_fields/*.json in the app.
+# This re-asserts one form layout, for two reasons that apply to different environments:
+#
+#   CI         `bench install-app` marks every patches.txt entry completed without running it
+#              (frappe/installer.py:358), so the following `bench migrate` skips the patch
+#              that creates these fields and the form has no Total Pcs at all.
+#   Production the same, PLUS sync_fixtures re-imports gke_customization's Custom Field rows
+#              on every migrate and resets two anchors this layout depends on. migrate.py
+#              runs after_migrate at the end of post_schema_updates, after sync_fixtures, so
+#              this is the only hook that can put them back.
+#
+# Only the first reason is reachable in CI: install.sh moves gke_customization/fixtures aside
+# before installing anything and never restores it. The fixture-reset path is covered instead
+# by TestTotalPcsFieldLayout in tests/test_material_request_customizations.
+#
+# Idempotent. Non-fatal by design, but it prints as well as logging, so a failure is visible
+# in the migrate output rather than only in the Error Log.
+after_migrate = (
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
+)
+
 
 # Provisions this app's custom fields, BEFORE fixtures import (installer.py:360 vs :367).
 # That direction is required: a fixture's Dynamic Link record needs its target Link field to
@@ -144,6 +165,9 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
 			# Last in the list: sees the final item rows, after the e-invoice rebuild above.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
+			# Fills inventory_type / customer from the source batch, so the SLE this row
+			# writes carries a lane instead of NULL. See the module docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.inventory_dimension.set_sales_inventory_type",
 		],
 		# C12/CG-T139: entitlement must BLOCK before any SLE exists. before_submit is the only
 		# slot both late enough to see the batch and early enough to stop the movement -- see
@@ -228,6 +252,10 @@ doc_events = {
 			# t_warehouse there, and validate_customer_gold_receipt (last before_validate
 			# hook) still rewrites inventory_type afterwards. See the function docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.set_target_inventory_dimensions",
+			# Header totals per material family (metal / finding / diamond / gemstone, plus
+			# stone pcs). At `validate` because before_validate's update_batches REPLACES
+			# self.items wholesale, and because the six fields are allow_on_submit = 0.
+			"jewellery_erpnext.jewellery_erpnext.customization.utils.material_weights.set_material_totals",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
 			# Per-role Stock Entry Type whitelist. Fires only on a direct user save of
 			# the Stock Entry itself, never on the dozen cascades that mint one from
@@ -345,6 +373,10 @@ doc_events = {
 			# Separate hook entry, NOT a call inside sales_invoice.validate: that function
 			# returns early for is_return, which would skip every credit note.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
+			# Fills inventory_type / customer from the source batch. Its own entry for the
+			# same is_return reason as above -- a credit note's INWARD leg is exactly the
+			# row that was being written with a NULL lane. Last: needs the final rows.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.inventory_dimension.set_sales_inventory_type",
 		],
 		# C12/CG-T139: entitlement must BLOCK before any SLE exists. before_submit is the only
 		# slot that is both late enough to see the batch and early enough to stop the movement --

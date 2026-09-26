@@ -13,6 +13,9 @@ frappe.ui.form.on("Employee IR", {
 			});
 		}
 		add_load_full_casting_tree_button(frm);
+		toggle_finding_repack_columns(frm);
+		set_finding_repack_item_filters(frm);
+		toggle_tree_number_column(frm);
 		// Auto-load subcategory-driven FG BOM fields for a Receive (only if empty,
 		// so user-entered values are never wiped on a refresh).
 		if (frm.doc.docstatus == 0 && frm.doc.type == "Receive") {
@@ -113,14 +116,31 @@ frappe.ui.form.on("Employee IR", {
 		// can flip the answer even with the same rows loaded.
 		clear_operations_table(frm);
 		load_repeat_flag(frm);
+		// ...and so does whether it repacks tree metal into findings.
+		toggle_finding_repack_columns(frm);
+		// Whether this is a casting (tree) operation changes with it.
+		toggle_tree_number_column(frm);
 	},
 	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
-			frm.doc.employee_ir_operations.forEach(function (item) {
-				if (item.manufacturing_work_order == frm.doc.scan_mwo)
-					frappe.throw(__("{0} Manufacturing Work Order already exists", [frm.doc.scan_mwo]));
-			});
+			let scanned = frm.doc.scan_mwo;
+			// Clear the field BEFORE any throw. frappe.throw aborts the handler, so the clear at
+			// the end of the success path never runs on a rejected scan -- the field keeps the
+			// rejected code, scanning it again fires no change event, and the scanner looks dead.
+			frm.set_value("scan_mwo", "");
+			let already = (frm.doc.employee_ir_operations || []).some(
+				(item) => item.manufacturing_work_order == scanned
+			);
+			if (already) {
+				frappe.throw({
+					title: __("Work Order Already Scanned"),
+					message: __("Manufacturing Work Order {0} is already scanned on this Employee IR.", [
+						scanned,
+					]),
+				});
+			}
 			let wo_limit = await get_employee_ir_wo_limit(frm);
+			let tree_number = await scanned_tree_number(frm, scanned);
 			if (wo_limit > 0 && frm.doc.employee_ir_operations.length >= wo_limit) {
 				frappe.throw(
 					__("Only {0} work order(s) allowed per Employee IR for department {1}.", [
@@ -129,9 +149,37 @@ frappe.ui.form.on("Employee IR", {
 					])
 				);
 			}
+			// One Employee IR = one casting tree. The server twin is
+			// tree_casting.validate_single_casting_tree, reached from EmployeeIR.validate on every
+			// save; this is the fail-fast copy so the scanner refuses the code at the desk instead
+			// of the operator finding out at save -- the same division of labour the
+			// duplicate-work-order check above has with validate_duplication_and_gr_wt.
+			//
+			// Self-scoping: scanned_tree_number already answers null off a Receive and off a
+			// non-casting operation, so this is inert on an Issue and on a finding repack. A work
+			// order on NO tree abstains exactly as the server does -- its casting Issue may have
+			// been cancelled underneath the operator, which is a different problem.
+			//
+			// Best-effort by nature: rows added through Get Operations carry no tree_number until
+			// the next save, so a scan onto such a form cannot see the conflict. The server guard
+			// is the enforcement point.
+			if (tree_number) {
+				let other = (frm.doc.employee_ir_operations || []).find(
+					(item) => item.tree_number && item.tree_number !== tree_number
+				);
+				if (other) {
+					frappe.throw({
+						title: __("Different Casting Tree"),
+						message: __(
+							"Manufacturing Work Order {0} is on casting tree {1}, but this Employee IR is already receiving tree {2}. One Employee IR can receive only ONE casting tree — finish this one and start a new Employee IR for {1}.",
+							[scanned, tree_number, other.tree_number]
+						),
+					});
+				}
+			}
 			var query_filters = {
 				department: frm.doc.department,
-				manufacturing_work_order: frm.doc.scan_mwo,
+				manufacturing_work_order: scanned,
 			};
 			if (frm.doc.type == "Issue") {
 				query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
@@ -187,8 +235,10 @@ frappe.ui.form.on("Employee IR", {
 									diamond_pcs: values.diamond_pcs,
 									gemstone_wt: values.gemstone_wt,
 									gemstone_pcs: values.gemstone_pcs,
+									tree_number: tree_number,
 								});
 								frm.refresh_field("employee_ir_operations");
+								apply_tree_header(frm);
 								load_repeat_flag(frm);
 							}
 						);
@@ -199,6 +249,7 @@ frappe.ui.form.on("Employee IR", {
 							message: __("No Manufacturing Operation Found"),
 						});
 					}
+					// already cleared at entry; kept for the case where a prior handler re-set it
 					frm.set_value("scan_mwo", "");
 				});
 		}
@@ -545,8 +596,12 @@ function set_child_table_batch_filter(frm) {
 // MOP Settings.enforce_full_casting_tree_reissue is ticked; this button is shown either way,
 // since assembling the full tree is useful regardless of whether the rule is enforced.
 function set_child_table_item_filter(frm) {
+	// The first argument Frappe passes here is the parent DOC, not the form --
+	// link.js calls get_query((this.frm && this.frm.doc) || this.doc, ...). Naming
+	// it `frm` shadowed the enclosing form and made frm.doc.operation unreachable;
+	// the body only ever used locals[cdt][cdn], so renaming it changes nothing else.
 	frm.fields_dict["manually_book_loss_details"].grid.get_field("item_code").get_query = function (
-		frm,
+		doc,
 		cdt,
 		cdn
 	) {
@@ -556,9 +611,111 @@ function set_child_table_item_filter(frm) {
 			filters: {
 				manufacturing_work_order: d.manufacturing_work_order,
 				manufacturing_operation: d.manufacturing_operation,
+				// Read off the live form, so an operation changed after refresh is
+				// picked up. get_manual_loss_items fails open when this is blank.
+				operation: frm.doc.operation,
 			},
 		};
 	};
+}
+
+// The Tree Number header field and grid column are only ever filled for a tree (casting)
+// operation -- see doc_events/tree_casting.py. Showing them everywhere would put a
+// permanently blank field on every other department's form and a permanently blank column
+// in its grid, so reveal both off the same Department Operation.tree_no_reqd flag the
+// server keys on.
+function toggle_tree_number_column(frm) {
+	const grid = frm.fields_dict.employee_ir_operations.grid;
+	const apply = (show) => {
+		grid.toggle_display("tree_number", show);
+		frm.toggle_display("tree_number", show);
+		return show;
+	};
+	// Cached for scanned_tree_number below, which needs the same answer and must not pay for a
+	// second round trip on every scan. Stored as a PROMISE, not a boolean, so a scan landing
+	// while this one is still in flight awaits the real answer instead of reading undefined.
+	if (!frm.doc.operation) {
+		frm.__is_tree_operation = Promise.resolve(apply(false));
+		return;
+	}
+	frm.__is_tree_operation = frappe.db
+		.get_value("Department Operation", frm.doc.operation, "tree_no_reqd")
+		.then((r) => apply(!!(r.message && r.message.tree_no_reqd)));
+}
+
+// The casting tree lives on the WORK ORDER and a scan IS a work order code, so this needs no
+// extra callback level: it resolves beside the work-order-limit await at the top of scan_mwo and
+// the row built further down simply carries the answer.
+//
+// Receive only, and only on a tree (casting) operation -- the same two gates
+// tree_casting.resolve_receive_tree_numbers opens with. On an Issue the tree does not exist yet
+// (create_tree_on_issue mints it at submit) and on a re-issue the work order still points at the
+// PREVIOUS tree, so filling it would show last round's tree as this one's.
+//
+// Two jobs: the tree appears the instant the code is scanned, and the one-tree guard in scan_mwo
+// has something to compare against. EmployeeIR.validate re-resolves it from the work order on
+// every save, and that value -- not this one -- is what is ever persisted.
+async function scanned_tree_number(frm, work_order) {
+	if (frm.doc.type !== "Receive") return null;
+	if (!(await frm.__is_tree_operation)) return null;
+	const r = await frappe.db.get_value("Manufacturing Work Order", work_order, "tree_number");
+	return (r && r.message && r.message.tree_number) || null;
+}
+
+// Mirrors tree_casting.single_tree_or_none: one Link can only tell the truth when every row
+// agrees. A casting Receive now always does -- the scan guard above and
+// tree_casting.validate_single_casting_tree reject a work order from a second tree -- so this
+// normally just names that tree.
+//
+// Keep the `trees.length === 1` ternary rather than `trees[0] || null`: rows added through Get
+// Operations carry no tree at all, and a document created before the rule can still hold two.
+// Promoting one of those onto the header before the server rejects the save would read as fact.
+function apply_tree_header(frm) {
+	const trees = [
+		...new Set((frm.doc.employee_ir_operations || []).map((d) => d.tree_number).filter(Boolean)),
+	];
+	frm.set_value("tree_number", trees.length === 1 ? trees[0] : null);
+}
+
+const FINDING_REPACK_FIELDS = ["finding_item1", "finding_wt1", "finding_item2", "finding_wt2"];
+
+// The finding item/weight pairs only mean anything on an operation that repacks tree metal
+// into findings -- see doc_events/finding_repack.py. Reveal them off the same
+// Department Operation.is_finding_repack_requirement flag the server keys on, the way
+// add_load_full_casting_tree_button reads tree_no_reqd for casting.
+//
+// The flag is read from Department Operation rather than from the mirrored
+// Employee IR.is_finding_repack_reqd: on an operation change the mirror is filled by an
+// asynchronous fetch_from that has not necessarily landed when this runs, so reading it here
+// would toggle off a stale value. The mirror exists for the child rows' depends_on (which the
+// refresh_field below re-evaluates once the fetch settles), not for this.
+function toggle_finding_repack_columns(frm) {
+	const grid = frm.fields_dict.employee_ir_operations.grid;
+	const apply = (show) => {
+		FINDING_REPACK_FIELDS.forEach((fieldname) => grid.toggle_display(fieldname, show));
+		frm.refresh_field("employee_ir_operations");
+	};
+	if (!frm.doc.operation) {
+		apply(false);
+		return;
+	}
+	frappe.db
+		.get_value("Department Operation", frm.doc.operation, "is_finding_repack_requirement")
+		.then((r) => {
+			apply(!!(r.message && r.message.is_finding_repack_requirement));
+		});
+}
+
+// Only F- variants can be repacked into: MOP Log buckets a weight by the item code's first
+// character (FIELD_MAP in mop_log.py), so anything else would land in the wrong bucket on the
+// Manufacturing Operation. Convenience only -- validate_finding_repack rejects it server-side.
+function set_finding_repack_item_filters(frm) {
+	const grid = frm.fields_dict.employee_ir_operations.grid;
+	["finding_item1", "finding_item2"].forEach((fieldname) => {
+		const field = grid.get_field(fieldname);
+		if (!field) return;
+		field.get_query = () => ({ filters: { variant_of: "F", disabled: 0 } });
+	});
 }
 
 // Casting re-issue is all-or-nothing (see doc_events/tree_casting.py). This button pulls in the

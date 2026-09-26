@@ -2,12 +2,14 @@
 # See license.txt
 
 import json
+from unittest.mock import patch
 
 import frappe
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 from frappe.utils import add_days, add_to_date, now, today
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan import (
+	create_manufacturing_order,
 	get_details_to_append,
 	get_pending_ppo_sales_order,
 	get_repair_pending_ppo_sales_order,
@@ -51,7 +53,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.company = "Test_Company"
 		man_plan.branch = self.branch
 		if man_plan.setting_type:
-			man_plan.setting_type = "Close"
+			man_plan.setting_type = "Nova Glow"
 
 		# "No" must leave the full pending qty on the manufacturing side.
 		self.assertTrue(man_plan.manufacturing_plan_table)
@@ -109,7 +111,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.branch = self.branch
 		man_plan.company = "Test_Company"
 		if man_plan.setting_type:
-			man_plan.setting_type = "Close"
+			man_plan.setting_type = "Nova Glow"
 
 		# The fetch itself must flag the rows. Asserting this before any manual fix-up is the
 		# point: hand-setting row.subcontracting here is what used to hide the defect.
@@ -256,3 +258,97 @@ def create_repair_sales_order(self):
 	sales_order.save()
 	sales_order.submit()
 	return sales_order.name
+
+
+class TestPlanGradesTheEffectiveCustomer(UnitTestCase):
+	"""The internal-customer gate and the grade lookup must describe the SAME customer.
+
+	``create_manufacturing_order`` reads ``is_internal_customer`` to decide whether to resolve a
+	Diamond Grade at all, and resolves the grade against the REF customer the parent chain found.
+	Reading the flag off ``row.customer`` while grading the ref customer let an internal ordering
+	customer with an external ref customer skip the resolver entirely -- and the PMO, which
+	resolves through ``ref_customer``, then produced a grade the plan never did. That is exactly
+	the plan/PMO disagreement the shared resolver exists to remove.
+	"""
+
+	MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan"
+
+	def _run(self, customer, ref_customer, internal_flags):
+		"""Returns the so_det handed to make_manufacturing_order."""
+		doc = frappe._dict(select_manufacture_order="Manufacturing", name="MP-1")
+		row = frappe._dict(
+			name="ROW-1",
+			docname="SOI-1",
+			sales_order="SO-1",
+			mwo=None,
+			manufacturing_bom=None,
+			serial_id_bom=None,
+			manufacturing_order_qty=1,
+			qty_per_manufacturing_order=1,
+			diamond_quality="VVS",
+			customer=customer,
+			customer_diamond="No",
+			item_code="ITEM-1",
+		)
+		cache_data = {
+			"so_data": {"SOI-1": {"metal_type": "Gold"}},
+			"customer_data": {
+				name: {"is_internal_customer": flag}
+				for name, flag in internal_flags.items()
+			},
+			"ref_customer": {"SOI-1": ref_customer} if ref_customer else {},
+			"customer_diamond_grade": {
+				(ref_customer or customer, "VVS"): {
+					"diamond_grade_1": "PLAIN",
+					"diamond_grade_2": None,
+					"diamond_grade_3": None,
+					"diamond_grade_4": None,
+				}
+			},
+			"item_data": {"ITEM-1": {"has_batch_no": 1}},
+			"attribute_value_set": set(),
+			"mp_context": None,
+		}
+
+		seen = {}
+
+		def _capture(doc, row, master_bom=None, so_det=None, mp_context=None, **k):
+			seen["so_det"] = so_det
+
+		with patch(f"{self.MODULE}.make_manufacturing_order", side_effect=_capture):
+			create_manufacturing_order(doc, row, cache_data=cache_data)
+
+		return seen.get("so_det") or {}
+
+	def test_an_external_ref_customer_is_graded_even_when_the_order_is_internal(self):
+		"""The regression: INTERNAL orders on behalf of an EXTERNAL ref customer. The gate has
+		to follow the ref customer, or the plan resolves nothing and only the PMO grades."""
+		so_det = self._run(
+			customer="INTERNAL",
+			ref_customer="EXTERNAL",
+			internal_flags={"INTERNAL": 1, "EXTERNAL": 0},
+		)
+		self.assertEqual(so_det.get("diamond_grade"), "PLAIN")
+
+	def test_a_genuinely_internal_row_is_still_skipped(self):
+		"""No ref customer, internal orderer -- the gate must still close."""
+		so_det = self._run(
+			customer="INTERNAL", ref_customer=None, internal_flags={"INTERNAL": 1}
+		)
+		self.assertIsNone(so_det.get("diamond_grade"))
+
+	def test_an_internal_ref_customer_closes_the_gate(self):
+		"""The mirror image: an external orderer whose ref customer is internal is graded by
+		neither side, and the gate must agree with the lookup about that too."""
+		so_det = self._run(
+			customer="EXTERNAL",
+			ref_customer="INTERNAL",
+			internal_flags={"EXTERNAL": 0, "INTERNAL": 1},
+		)
+		self.assertIsNone(so_det.get("diamond_grade"))
+
+	def test_an_ordinary_external_row_is_unaffected(self):
+		so_det = self._run(
+			customer="EXTERNAL", ref_customer=None, internal_flags={"EXTERNAL": 0}
+		)
+		self.assertEqual(so_det.get("diamond_grade"), "PLAIN")

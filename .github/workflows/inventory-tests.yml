@@ -81,3 +81,4 @@ jobs:
           # disposable site's masters (company, warehouses, Gold Rates, accounts) and exercises the
           # Nominal valuation policy, which must never run against a shared CI site. It runs with:
           #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_integration
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_weight_totals
