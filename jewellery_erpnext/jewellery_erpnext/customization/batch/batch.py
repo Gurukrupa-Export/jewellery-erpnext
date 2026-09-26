@@ -88,7 +88,7 @@ def autoname(self,method=None):
 	# year_code = get_year_code()
 	# month_code = get_month_code()
 	# week_code = get_week_code()
-	item_group = frappe.db.get_value("Item",{self.item},"item_group")
+	item_group = frappe.db.get_value("Item",self.item,"item_group")
 
 	if item_group in ["Metal - V", "Diamond - V", "Gemstone - V", "Finding - V", "Other - V"]:
 		year_code = get_year_code()
@@ -371,7 +371,11 @@ def create_repack_stock_entry(batch_no, item_code, qty, target_rate, company, wa
             "account": expense_account,
             "is_cancelled": 0,
         },
-        fields=["sum(debit) as total_debit", "sum(credit) as total_credit"],
+        # fields=["sum(debit) as total_debit", "sum(credit) as total_credit"],
+        fields=[
+			{"SUM": "debit", "as": "total_debit"},
+        	{"SUM": "credit", "as": "total_credit"},
+		],
     )[0]
 
     total_debit = gl_totals.total_debit or 0
