@@ -18,20 +18,59 @@ exist during validation:
                     batch check any earlier would reject every legitimate receipt, since the
                     rows carry no batch until then.
 
-This module does NOT touch rates, valuation or GL. Nominal valuation and the liability
-posting are separate, later work.
+``before_validate`` additionally freezes the Customer Gold rate snapshot -- see
+``set_customer_gold_rate_snapshot`` -- so the receipt permanently records which rate was
+resolved for its posting date.
+
+This module does NOT set ``basic_rate``, ``valuation_rate`` or any stock/GL value. Nominal
+valuation and the liability posting are separate, later work.
 """
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, getdate, now_datetime, nowdate
 
+from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
+	OUTLIER_BAND,
+	is_outlier,
+	rate_ratio,
+	reference_rate,
+	resolve_customer_gold_rate_for_date,
+)
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+	VALUATION_NOMINAL,
+	get_allowed_customer_gold_items,
+	get_customer_gold_company_settings,
 	get_customer_gold_settings,
+	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	DEFAULT_INVENTORY_TYPE,
 )
 
 CUSTOMER_GOODS = "Customer Goods"
+
+#: The Item Attribute carrying metal purity. Hardcoded the same way ``metal_utils.py:21`` and
+#: ``sub_utils/repack.py:377`` hardcode it -- there is no shared constant to import, and the
+#: test fixtures' copy is test code.
+METAL_PURITY_ATTRIBUTE = "Metal Purity"
+
+#: May submit a receipt whose rate is outside ``OUTLIER_BAND`` of its reference, with a reason.
+#: Created by ``patches.add_customer_gold_rate_check_fields``.
+RATE_APPROVER_ROLE = "Customer Gold Rate Approver"
+
+#: Snapshot fields written by ``set_customer_gold_rate_snapshot``. Provisioned by
+#: ``patches.add_customer_gold_rate_snapshot_fields``.
+RATE_SNAPSHOT_FIELDS = (
+	"custom_gold_rate_reference",
+	"custom_gold_rate_date",
+	"custom_gold_rate_source",
+	"custom_gold_rate_field",
+	"custom_gold_rate_raw",
+	"custom_gold_rate_unit",
+	"custom_gold_rate_per_gram",
+)
 
 
 def _receipt_settings(doc):
@@ -61,6 +100,132 @@ def validate_customer_gold_receipt(doc, method=None):
 	_validate_receipt_purpose(settings)
 	customer = _validate_customer(doc)
 	_validate_rows(doc, settings, customer)
+	_apply_default_posting_time(doc)
+	_refuse_backdated_submit(doc)
+	rate = set_customer_gold_rate_snapshot(doc, settings)
+	check_customer_gold_rate(doc, settings, rate)
+	apply_valuation_policy(doc, rate)
+
+
+def _apply_default_posting_time(doc):
+	"""Post "now" when the user has not chosen a date -- as ERPNext would, but before the rate is read.
+
+	With ``set_posting_time`` off, ERPNext's ``validate_posting_time`` moves the posting date to now
+	during ``validate``. This hook runs in ``before_validate``, earlier, so without this a draft
+	saved yesterday would freeze yesterday's rate and be refused at submit as backdated, although
+	ERPNext was about to post it today. Mirrors ``transaction_base.validate_posting_time``.
+	"""
+	flags = doc.get("flags") or {}
+	if (
+		doc.get("set_posting_time")
+		or frappe.flags.in_import
+		or flags.get("from_restore")
+	):
+		return
+	now = now_datetime()
+	doc.posting_date = now.strftime("%Y-%m-%d")
+	doc.posting_time = now.strftime("%H:%M:%S.%f")
+
+
+def _refuse_backdated_submit(doc):
+	"""A customer-gold receipt is submitted for the day it is submitted on (F1/F10).
+
+	Every receipt since the rate engine landed was backdated a day: the day's Gold Rates row
+	appeared only at ~23:02, the resolver needs an exact-date row, so users posted for
+	yesterday. That valued the gold at the previous close, posted the GL a day early (a 1 Oct
+	receipt would land in the 30 Sept close) and forced a repost each time. The decision
+	(2026-09-24) is no backdating and no separate rate date: once the rate job runs at 09:00,
+	15:00 and 23:00 today's rate exists, and before it does the receipt waits.
+
+	Enforced at SUBMIT only, so a draft for an earlier date can still be saved and corrected.
+	"""
+	if doc.get("_action") != "submit":
+		return
+
+	posting_date = getdate(doc.get("posting_date"))
+	today = getdate(nowdate())
+	if posting_date < today:
+		frappe.throw(
+			_(
+				"A Customer Gold receipt cannot be backdated. Posting Date {0} is before today "
+				"({1}). Set the Posting Date to today; if today's gold rate is not available "
+				"yet, submit once it is."
+			).format(
+				frappe.bold(frappe.format(posting_date, {"fieldtype": "Date"})),
+				frappe.format(today, {"fieldtype": "Date"}),
+			),
+			title=_("Backdated Customer Gold Receipt"),
+		)
+
+
+def check_customer_gold_rate(doc, settings, rate):
+	"""Compare the frozen per-gram rate with an independent reference; refuse an outlier (F1).
+
+	``KGJPL-SE-CGR-26-00011`` booked Rs.1,57,655 per gram. The company was paying Rs.15,504.85
+	per gram for the same item. The feed had quoted per 10 g while the setting said per gram,
+	and nothing compared the two -- so a liability ten times too large was booked without a
+	question. The feed switches scale (per 10 g, then per gram on 22-23 Sept, then back), so
+	no unit setting fixes it on its own, and dividing by ten would be wrong on the per-gram days.
+
+	The evidence -- reference rate, where it came from, the ratio -- is recorded on every
+	validate, so a draft already shows it. At submit, a ratio outside ``OUTLIER_BAND`` is
+	refused unless a user with ``RATE_APPROVER_ROLE`` records a reason; that user is then
+	stamped on the receipt. Nothing is ever auto-corrected.
+
+	With no reference at all (no purchase of the item, no earlier feed rate) the receipt is
+	accepted and the check records that it could not be made.
+	"""
+	reference = reference_rate(
+		settings.get("customer_24kt_item"),
+		doc.get("company"),
+		doc.get("posting_date"),
+		settings,
+	)
+	ratio = rate_ratio(rate.per_gram_rate, reference)
+
+	doc.custom_gold_rate_check_reference = reference.rate if reference else None
+	doc.custom_gold_rate_check_source = (
+		reference.source if reference else _("No reference rate available")
+	)
+	doc.custom_gold_rate_check_ratio = ratio
+	doc.custom_gold_rate_override_by = None
+
+	if not is_outlier(ratio):
+		return
+
+	message = _(
+		"The Customer Gold rate {0} per gram is {1}x the reference {2} per gram ({3}). "
+		"Rates outside {4}x-{5}x of the reference are refused: a rate quoted per 10 grams but "
+		"read as per gram is exactly ten times too high."
+	).format(
+		frappe.bold(flt(rate.per_gram_rate, 2)),
+		frappe.bold(flt(ratio, 2)),
+		frappe.bold(flt(reference.rate, 2)),
+		reference.source,
+		OUTLIER_BAND[0],
+		OUTLIER_BAND[1],
+	)
+
+	if doc.get("_action") != "submit":
+		frappe.msgprint(
+			message, title=_("Customer Gold Rate Outlier"), indicator="orange"
+		)
+		return
+
+	reason = (doc.get("custom_gold_rate_override_reason") or "").strip()
+	if not reason or RATE_APPROVER_ROLE not in frappe.get_roles():
+		# Not "correct the Gold Rates record": GoldRates.validate re-fetches every feed on save, so
+		# a hand correction there does not stick.
+		frappe.throw(
+			message
+			+ " "
+			+ _("A {0} may submit it after entering a Rate Override Reason.").format(
+				frappe.bold(RATE_APPROVER_ROLE)
+			),
+			title=_("Customer Gold Rate Outlier"),
+		)
+
+	doc.custom_gold_rate_override_by = frappe.session.user
 
 
 def _validate_receipt_purpose(settings):
@@ -96,10 +261,29 @@ def _validate_customer(doc):
 			# blank. Backfill from the authoritative header rather than reject.
 			row.customer = customer
 		elif row.customer != customer:
+			# The batch is named when there is one, because in practice this message is what
+			# a user sees when they reuse ANOTHER customer's batch -- not when they type a
+			# mismatched customer. ``CustomStockEntry.update_batches`` runs earlier in the
+			# before_validate chain and overwrites ``row.customer`` from the batch, so by the
+			# time this check runs the row already carries the batch owner's name and the
+			# dedicated "Batch ... belongs to Customer ..." throw further down is unreachable.
+			#
+			# The receipt is correctly blocked either way -- this is not a hole -- but without
+			# the batch in the message the error text says only that two customer names differ
+			# and gives no clue which batch caused it. Fixing the ordering instead would mean
+			# reordering that before_validate chain, which is load-bearing for unrelated flows.
+			suffix = (
+				_(" Batch {0} is owned by {1}.").format(
+					frappe.bold(row.batch_no), frappe.bold(row.customer)
+				)
+				if row.get("batch_no")
+				else ""
+			)
 			frappe.throw(
 				_(
 					"Row #{0}: Customer {1} does not match the receipt Customer {2}."
-				).format(row.idx, frappe.bold(row.customer), frappe.bold(customer)),
+				).format(row.idx, frappe.bold(row.customer), frappe.bold(customer))
+				+ suffix,
 				title=_("Customer Mismatch"),
 			)
 
@@ -107,17 +291,28 @@ def _validate_customer(doc):
 
 
 def _validate_rows(doc, settings, customer):
-	configured_item = settings.customer_24kt_item
+	allowed_items = get_allowed_customer_gold_items(settings)
 
 	for row in doc.get("items") or []:
-		if row.get("inventory_type") and row.inventory_type != CUSTOMER_GOODS:
+		# ``Regular Stock`` here is NOT a caller's choice -- it is the framework's own
+		# blanket default. ``doc_events.stock_entry.before_validate`` runs FIRST in the
+		# before_validate chain (hooks.py) and ends with an unconditional
+		# ``if not row.inventory_type: row.inventory_type = "Regular Stock"``, so by the
+		# time this validator runs (last in that chain) every row already carries it.
+		# Treating it as "supplied" made every server-created Customer Gold receipt throw
+		# -- the API path the server-side tagging below exists to protect. Only the browser
+		# got through, because stock_entry.js sets Customer Goods before the save is sent.
+		# So blank and the default are both overridable; a DELIBERATE other ownership class
+		# (Customer Stock, Pure Metal) still hard-fails.
+		supplied = row.get("inventory_type")
+		if supplied and supplied not in (CUSTOMER_GOODS, DEFAULT_INVENTORY_TYPE):
 			frappe.throw(
 				_(
 					"Row #{0}: Customer Gold receipt requires Inventory Type {1}, but {2} was supplied."
 				).format(
 					row.idx,
 					frappe.bold(CUSTOMER_GOODS),
-					frappe.bold(row.inventory_type),
+					frappe.bold(supplied),
 				),
 				title=_("Invalid Inventory Type"),
 			)
@@ -125,11 +320,20 @@ def _validate_rows(doc, settings, customer):
 		# today only the client sets this.
 		row.inventory_type = CUSTOMER_GOODS
 
-		if row.item_code != configured_item:
+		if row.item_code not in allowed_items:
+			# Customers do not all hand over the same purity -- 99.5 arrives alongside 99.9 --
+			# so this is a membership test over the configured list, not equality with one
+			# item. A site that configures no additional purities gets a single-element list
+			# and therefore the exact behaviour this check had before.
 			frappe.throw(
 				_(
-					"Row #{0}: Customer Gold receipt accepts only the configured Customer 24KT Item {1}."
-				).format(row.idx, frappe.bold(configured_item)),
+					"Row #{0}: Item {1} is not configured for Customer Gold receipts. "
+					"Accepted items: {2}."
+				).format(
+					row.idx,
+					frappe.bold(row.item_code),
+					frappe.bold(", ".join(allowed_items) or _("none")),
+				),
 				title=_("Invalid Item"),
 			)
 
@@ -140,6 +344,183 @@ def _validate_rows(doc, settings, customer):
 				).format(row.idx),
 				title=_("Invalid Quantity"),
 			)
+
+
+#: Batch fields read by ``validate_customer_gold_batches``. ``custom_company`` is optional
+#: because it is NOT shipped by ``custom_fields/batch.json`` -- it reaches a site by some
+#: other route, so a freshly installed one does not have the column at all and naming it
+#: unconditionally raises ``Unknown column 'custom_company' in 'SELECT'``.
+_REQUIRED_BATCH_FIELDS = (
+	"item",
+	"custom_customer",
+	"custom_inventory_type",
+	"disabled",
+	"expiry_date",
+)
+_OPTIONAL_BATCH_FIELDS = ("custom_company",)
+
+
+def _batch_fields():
+	"""The Batch fields to read, skipping optional ones this site does not have.
+
+	Uses ``frappe.db.has_column`` rather than ``frappe.get_meta``. Both answer the
+	question, but ``get_meta`` resolves through ``frappe.db.get_value`` -- and the suites
+	covering this module patch that accessor wholesale, so a meta lookup here would be
+	answered by a test stub instead of the database. That is the same contamination that
+	produced the original CI failure in this area; ``has_column`` reads the table columns
+	directly and cannot be intercepted by it.
+	"""
+	return list(_REQUIRED_BATCH_FIELDS) + [
+		field
+		for field in _OPTIONAL_BATCH_FIELDS
+		if frappe.db.has_column("Batch", field)
+	]
+
+
+def _metal_purity(item_code):
+	"""The item's Metal Purity, read from the attribute VALUE, or ``None``.
+
+	WHY NOT ``metal_utils.get_purity_percentage``
+	----------------------------------------------
+	That helper joins to ``Attribute Value.purity_percentage``, and that column is wrong on this
+	bench: the row named ``99.9`` carries **100.0**, and ``91.75`` carries **0.0** across 54
+	items (measured; see D04 in docs-customer-gold/DECISIONS.md). Reading it here would price
+	99.5 gold against a 100.0 reference instead of 99.9 -- a 0.1% error on every receipt, in the
+	customer's favour, for ever.
+
+	The attribute VALUE is the same fact without the mis-keyed column: ``Attribute Value``
+	autonames ``field:attribute_value``, so the row named ``99.9`` IS the purity. ``repack.py``
+	and ``batch_rename.py`` already read it this way.
+
+	This does NOT repair the master, deliberately. That row is load-bearing elsewhere -- it
+	currently masks a fine-versus-reference basis mix-up in ``sub_utils/repack.py:244-256`` that
+	produces physical quantities on submitted Stock Entries, so correcting it in isolation would
+	turn a rounding error into wrong weights. Sequencing that is a business decision. Reading the
+	right field here is not.
+
+	Returns ``None`` when the item has no Metal Purity attribute or it does not parse. The
+	caller refuses rather than defaulting: ``repack.get_purity`` falls back to 99.9 and
+	``batch_rename.get_purity`` to 100 -- two different guesses for the same unknown -- and a
+	guess that sets a customer's booked value is exactly the wrong place to have one.
+	"""
+	rows = frappe.get_all(
+		"Item Variant Attribute",
+		filters={"parent": item_code, "attribute": METAL_PURITY_ATTRIBUTE},
+		fields=["attribute_value"],
+		limit=1,
+	)
+	if not rows:
+		return None
+
+	purity = flt(rows[0].attribute_value)
+	return purity if purity > 0 else None
+
+
+def _rate_for_item(per_gram, item_code, reference_item):
+	"""``per_gram`` restated for this row's purity.
+
+	The configured Gold Rate is quoted per gram of the Customer 24KT Item (decision D02). When a
+	customer hands over a different purity, the same rupees-per-gram would misprice it: gold is
+	bought and sold on fine content, so 99.5 metal is worth ``99.5 / 99.9`` of 99.9 metal. On a
+	10 g receipt at Rs.7,164.83 that difference is Rs.28.69 -- small per receipt, systematic
+	across every one of them, and always in the same direction.
+
+	The reference item returns ``per_gram`` unchanged, so a site receiving only the configured
+	item books exactly what it booked before this existed.
+	"""
+	per_gram = flt(per_gram)
+	if not per_gram or not item_code or item_code == reference_item:
+		return per_gram
+
+	row_purity = _metal_purity(item_code)
+	reference_purity = _metal_purity(reference_item)
+	if not row_purity or not reference_purity:
+		frappe.throw(
+			_(
+				"Cannot book {0} at the Customer Gold rate: the Metal Purity of {1} could not "
+				"be resolved, so its rate cannot be restated from the {2} quote. Set the Metal "
+				"Purity attribute on both items."
+			).format(
+				frappe.bold(item_code),
+				frappe.bold(item_code if not row_purity else reference_item),
+				frappe.bold(reference_item),
+			),
+			title=_("Customer Gold Purity Unknown"),
+		)
+
+	return per_gram * row_purity / reference_purity
+
+
+def apply_valuation_policy(doc, rate):
+	"""Stamp the row valuation fields required by the configured policy.
+
+	Runs AFTER ``set_customer_gold_rate_snapshot`` because the nominal branch needs the
+	resolved per-gram rate, and after ``_validate_rows`` because it needs the final
+	ownership tagging.
+
+	**Zero Value (the default, and every existing site).** Stamp
+	``allow_zero_valuation_rate`` and leave ``basic_rate`` alone. This has to happen here,
+	not in ``doc_events.stock_entry.allow_zero_valuation``: hooks.py runs that hook FIRST,
+	and at that point the blanket default earlier in the same hook has stamped the row
+	"Regular Stock", so allow_zero_valuation sees a non-customer row and leaves the flag at
+	0. ``_validate_rows`` then flips ownership to Customer Goods -- leaving Customer Goods
+	metal without the flag, which sends erpnext to the ``stock_entry.py:1661`` fallback and
+	either throws or books COMPANY valuation onto customer-owned metal. The browser never
+	showed this because ``stock_entry.js`` sets both fields client-side.
+
+	**Nominal.** Stamp ``basic_rate`` from the frozen per-gram rate and
+	``set_basic_rate_manually``, and deliberately do NOT stamp the allow-zero flag.
+	``set_basic_rate_manually`` is what makes the entered rate survive: erpnext's loop at
+	``stock_entry.py:1615-1619`` takes ``continue`` for such a row, computing ``basic_amount``
+	and skipping everything after -- including the allow-zero wipe at ``:1629``, the ``:1661``
+	valuation fallback, and ``get_args_for_incoming_rate``.
+
+	So the two flags are not in fact in conflict (``set_basic_rate_manually`` short-circuits
+	before the flag is ever read), but stamping both would be stamping one that can never be
+	consulted. They are kept mutually exclusive so the row says what it means.
+
+	This function decides NOTHING about accounting policy -- it applies whichever policy is
+	configured. Whether nominal is approved at all is D01.
+	"""
+	policy = get_customer_gold_valuation_policy()
+
+	if policy != VALUATION_NOMINAL:
+		for row in doc.get("items") or []:
+			row.allow_zero_valuation_rate = 1
+			row.set_basic_rate_manually = 0
+		return
+
+	# Resolved once per document, and deliberately NOT inside the loop: it throws when the
+	# company has no configured row, and that must fail the whole receipt rather than half of
+	# its rows. This is the first production caller of this resolver.
+	accounts = get_customer_gold_company_settings(doc.get("company"))
+	per_gram = flt(rate.per_gram_rate) if rate else 0.0
+
+	settings = get_customer_gold_settings()
+	reference_item = settings.get("customer_24kt_item")
+
+	for row in doc.get("items") or []:
+		row.basic_rate = _rate_for_item(per_gram, row.item_code, reference_item)
+		row.set_basic_rate_manually = 1
+		row.allow_zero_valuation_rate = 0
+
+		# THE CONTRA ACCOUNT. For a Stock Entry the credit leg is the row's
+		# ``expense_account`` -- ``StockController.get_gl_entries`` reads it at
+		# ``stock_controller.py:810``, and the ``target_warehouse`` branch above it can never
+		# fire because Stock Entry Detail has no such field (it uses ``t_warehouse``).
+		#
+		# A Liability-root account is legitimate here; all three gates accept it:
+		#   * ``check_expense_account`` exempts "Stock Entry" from its P&L requirement
+		#     (``stock_controller.py:1080``);
+		#   * ``validate_difference_account`` rejects only ``account_type == "Stock"``, and
+		#     for an opening entry actually REQUIRES Asset/Liability -- core explicitly
+		#     contemplates a liability account here (``stock_entry.py:917-932``);
+		#   * ``GL Entry.validate`` has no root-type check at all.
+		#
+		# So the standard path credits the liability directly and NO reclassification JE is
+		# needed -- the spec's S07 §7.1 "already credits the approved liability" branch.
+		# Adding a JE on top would be the duplicate stock debit that section forbids.
+		row.expense_account = accounts.liability_account
 
 
 def validate_customer_gold_batches(doc, method=None):
@@ -160,10 +541,7 @@ def validate_customer_gold_batches(doc, method=None):
 			)
 
 		batch = frappe.db.get_value(
-			"Batch",
-			row.batch_no,
-			["custom_customer", "custom_inventory_type"],
-			as_dict=True,
+			"Batch", row.batch_no, _batch_fields(), as_dict=True
 		)
 		if not batch:
 			frappe.throw(
@@ -172,6 +550,75 @@ def validate_customer_gold_batches(doc, method=None):
 				)
 			)
 
+		if batch.item and batch.item != row.item_code:
+			# erpnext does catch this eventually -- but in
+			# ``serial_and_batch_bundle``, built during ``on_submit``, i.e. after this
+			# hook. Throwing here names the row and the receipt while the operator still
+			# has the document in front of them.
+			frappe.throw(
+				_("Row #{0}: Batch {1} belongs to Item {2}, not {3}.").format(
+					row.idx,
+					frappe.bold(row.batch_no),
+					frappe.bold(batch.item),
+					frappe.bold(row.item_code),
+				),
+				title=_("Batch Item Mismatch"),
+			)
+
+		# Compared only when set, NEVER required, and only where the field exists at all.
+		# ``create_parent_batches`` does not stamp ``custom_company`` and neither does
+		# ``update_inventory_dimentions``, so demanding it would reject this flow's own
+		# freshly minted batches.
+		if (
+			batch.get("custom_company")
+			and doc.get("company")
+			and batch.custom_company != doc.company
+		):
+			frappe.throw(
+				_("Row #{0}: Batch {1} belongs to Company {2}, not {3}.").format(
+					row.idx,
+					frappe.bold(row.batch_no),
+					frappe.bold(batch.custom_company),
+					frappe.bold(doc.company),
+				),
+				title=_("Batch Company Mismatch"),
+			)
+
+		# A genuine gap, not belt-and-braces. erpnext's own ``StockEntry.validate_batch``
+		# guards disabled and expired batches only for purposes ``Material Transfer for
+		# Manufacture``, ``Manufacture``, ``Repack`` and ``Send to Subcontractor``.
+		# ``Material Receipt`` is NOT in that list -- and Settings force the configured
+		# Customer Gold type to be exactly ``Material Receipt``. So without this, a
+		# disabled or expired batch is accepted by erpnext and by this validator alike.
+		if batch.disabled:
+			frappe.throw(
+				_(
+					"Row #{0}: Batch {1} is disabled and cannot receive customer gold."
+				).format(row.idx, frappe.bold(row.batch_no)),
+				title=_("Batch Disabled"),
+			)
+
+		if batch.expiry_date and doc.get("posting_date"):
+			if getdate(batch.expiry_date) < getdate(doc.posting_date):
+				frappe.throw(
+					_(
+						"Row #{0}: Batch {1} expired on {2}, before the posting date {3}."
+					).format(
+						row.idx,
+						frappe.bold(row.batch_no),
+						frappe.bold(batch.expiry_date),
+						frappe.bold(doc.posting_date),
+					),
+					title=_("Batch Expired"),
+				)
+
+		# UNREACHABLE IN PRACTICE, and left in place deliberately. See the note at the
+		# Customer Mismatch throw above: ``CustomStockEntry.update_batches`` copies the batch
+		# owner onto ``row.customer`` earlier in the before_validate chain, so a row carrying
+		# another customer's batch is rejected there first. This remains as the correct check
+		# for any path that reaches this validator without that copy having happened -- a
+		# server-side caller, or a future reordering. It must not be deleted on the assumption
+		# that the earlier check will always fire.
 		if batch.custom_customer and batch.custom_customer != customer:
 			frappe.throw(
 				_(
@@ -199,3 +646,95 @@ def validate_customer_gold_batches(doc, method=None):
 				),
 				title=_("Invalid Batch Inventory Type"),
 			)
+
+		# The two guards above are of the shape `if <field> and <field> != expected`, so
+		# a BLANK value short-circuits past both. That is the C06 hole, and it is not
+		# theoretical: row_ownership documents that production holds Customer Goods
+		# batches with a NULL customer.
+		#
+		# A batch minted by this flow always carries both fields -- create_parent_batches
+		# sets custom_customer and custom_inventory_type together (batch_rename.py:76-77)
+		# -- so the only way to arrive here with a blank is a PRE-EXISTING batch that was
+		# never ownership-stamped, or was stamped Customer Goods without an owner. Neither
+		# may be adopted into a customer's receipt by silence.
+		#
+		# Deliberately scoped to this receipt. It does NOT change
+		# row_ownership.normalize_ownership, whose downgrade-to-Regular-Stock exists so
+		# that loss and repack builders can consume malformed historical stock without
+		# hard-failing a submit. Refusing to *originate* a customer obligation against an
+		# unowned batch is a different question from refusing to *consume* one.
+		if not batch.custom_inventory_type:
+			frappe.throw(
+				_(
+					"Row #{0}: Batch {1} has no Inventory Type, so it cannot be accepted "
+					"as customer gold. Set its Inventory Type to {2} and its Customer "
+					"before submitting."
+				).format(
+					row.idx,
+					frappe.bold(row.batch_no),
+					frappe.bold(CUSTOMER_GOODS),
+				),
+				title=_("Batch Ownership Unresolved"),
+			)
+
+		if not batch.custom_customer:
+			frappe.throw(
+				_(
+					"Row #{0}: Batch {1} is {2} but has no Customer, so the gold it holds "
+					"has no owner. Set its Customer to {3} before submitting."
+				).format(
+					row.idx,
+					frappe.bold(row.batch_no),
+					frappe.bold(CUSTOMER_GOODS),
+					frappe.bold(customer),
+				),
+				title=_("Batch Ownership Unresolved"),
+			)
+
+
+def set_customer_gold_rate_snapshot(doc, settings):
+	"""Freeze the Customer Gold rate evidence on the receipt.
+
+	Runs on every validate of a DRAFT and overwrites unconditionally. That is deliberate
+	and serves two purposes at once:
+
+	* the snapshot re-resolves whenever ``posting_date`` or the configured source / field /
+	  unit changes, so a corrected posting date cannot leave yesterday's rate behind; and
+	* a client-supplied value can never become financial truth -- whatever arrives over the
+	  API is replaced by the server's own resolution.
+
+	CAREFUL -- ``before_validate`` DOES run on the submit transition. ``run_before_save_methods``
+	calls it for ``_action in ("save", "submit")`` (``frappe/model/document.py:1396-1397``) and
+	``check_docstatus_transition`` sets ``_action = "submit"`` for 0 -> 1 (``document.py:1126``).
+	So the snapshot is re-resolved ONE FINAL TIME at submit and is frozen only afterwards,
+	because ordinary saves are then blocked. The practical consequence: if the Gold Rates row
+	for this posting date is corrected between drafting and submitting, the submitted document
+	carries the corrected rate. That matches the agreed policy (resolve on draft, re-resolve on
+	change, freeze at submit) -- but it is a final re-resolve AT submit, not a stop-running-at-submit.
+
+	Cancellation does not clear it: a cancelled receipt must still show the rate it originally
+	used. An amendment carries no snapshot (the fields are ``no_copy``) and resolves afresh
+	against its own posting date.
+
+	Sets snapshot fields ONLY -- never ``basic_rate``, ``valuation_rate`` or an expense
+	account. Consuming the frozen rate for stock valuation is later work, and that work
+	must read ``custom_gold_rate_per_gram`` from here rather than resolving a rate again.
+	"""
+	rate = resolve_customer_gold_rate_for_date(doc.get("posting_date"), settings)
+
+	doc.custom_gold_rate_reference = rate.gold_rate_reference
+	doc.custom_gold_rate_date = rate.gold_rate_date
+	doc.custom_gold_rate_source = rate.rate_source
+	doc.custom_gold_rate_field = rate.rate_field
+	doc.custom_gold_rate_raw = rate.raw_rate
+	doc.custom_gold_rate_unit = rate.rate_unit
+	doc.custom_gold_rate_per_gram = rate.per_gram_rate
+	# The normalisation, so the per-gram figure can be re-derived from the raw one later.
+	doc.custom_gold_rate_factor = rate.rate_factor
+	doc.custom_gold_rate_currency = (
+		frappe.db.get_value("Company", doc.get("company"), "default_currency")
+		if doc.get("company")
+		else None
+	)
+
+	return rate

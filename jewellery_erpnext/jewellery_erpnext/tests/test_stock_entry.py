@@ -28,6 +28,9 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.customer_subcontracting import batch_rename
+from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings import (
+	subcontracting_settings as cg_settings,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry import (
 	stock_entry as cse_mod,
 )
@@ -38,6 +41,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events im
 	se_utils,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events import stock_entry as se_events
+
+from . import customer_gold_purity_fixtures as cg_purity
 
 
 class _Doc(SimpleNamespace):
@@ -722,6 +727,62 @@ class TestPrelockBins(_StockEntryTestCase):
 
 # ----------------------------------------------------------------- before_validate
 class TestBeforeValidate(_StockEntryTestCase):
+	def setUp(self):
+		"""Pin the Customer Gold flag OFF for this class.
+
+		These cases patch ``frappe.db.get_value`` wholesale to steer the
+		pure-quantity branch, and that patch is not selective.
+		``_pure_qty_excluded_types`` calls ``is_customer_gold_enabled()``, which
+		is the route by which the wholesale patch can reach code these tests are
+		not about.
+
+		THE ROUTE, corrected -- an earlier revision of this docstring got it wrong
+		------------------------------------------------------------------------
+		It said the flag "reads a Single through the SAME patched accessor" and so
+		comes back truthy. That is not what happens, and the difference matters
+		because it is one level deeper than stated::
+
+		    is_customer_gold_enabled()
+		      -> frappe.db.get_single_value(...)          database.py:878
+		           -> frappe.qb.get_query("Singles")      :903  NOT patched -- query builder,
+		                                                       not get_value, so the flag's own
+		                                                       value is read correctly
+		           -> frappe.get_meta(doctype)            :914  <- the contamination enters HERE
+		                -> Document.load_from_db()
+		                     -> frappe.db.get_value("DocType", ...)   PATCHED
+
+		So the poisoned read is the **metadata** lookup, not the Singles lookup,
+		and the symptom was::
+
+		    AssertionError: 'Pure Gold Item' not found in
+		                    'DocType Subcontracting Settings not found'
+
+		WHY THAT NO LONGER REPRODUCES, and why the pin stays anyway
+		----------------------------------------------------------
+		Measured 2026-09-14: with this pin removed, ``TestBeforeValidate`` passes
+		on both ``gk`` and ``cg-integration.test``, and so does the whole 208-test
+		module. The failure was fixed at its source -- ``is_customer_gold_enabled``
+		now catches ``frappe.DoesNotExistError`` as well as ``InvalidColumnName``
+		and fails closed (see its own docstring), which swallows exactly this.
+
+		The pin is kept regardless, and deliberately: without it these 14 tests
+		would depend on a ``try/except`` in production code to mask a contaminated
+		mock. Narrowing that except clause -- a reasonable future change -- would
+		then break tests that have nothing to do with customer gold, and the
+		breakage would look like a customer-gold regression. The pin states the
+		intent locally instead. It is the narrow dependency boundary C03 asks for,
+		not a workaround for a live bug.
+
+		These cases are about pure-quantity arithmetic against the legacy
+		exclusion list. The flag-ON branch has its own coverage in
+		``TestPureQtyExcludedTypes`` below.
+		"""
+		patcher = patch.object(
+			cg_settings, "is_customer_gold_enabled", return_value=False
+		)
+		patcher.start()
+		self.addCleanup(patcher.stop)
+
 	def _make_se(self, items, **extra):
 		defaults = {
 			"auto_created": 0,
@@ -741,6 +802,15 @@ class TestBeforeValidate(_StockEntryTestCase):
 		return se
 
 	def _row(self, **extra):
+		"""Build a row AND register the Item variant_of it implies.
+
+		``before_validate`` no longer trusts ``row.custom_variant_of`` -- it re-derives it
+		from the Item, because the posted value survives the submit transition unchecked
+		(see the comment on ``item_map`` in ``doc_events/stock_entry.py``). So a test that
+		says "this is an M row" now has to say it about the ITEM, which is what
+		``_patched_pipeline``'s ``bulk_map`` stand-in reads. Registering it here keeps every
+		case reading exactly as before.
+		"""
 		defaults = {
 			"item_code": "M-G-18KT",
 			"s_warehouse": None,
@@ -753,7 +823,18 @@ class TestBeforeValidate(_StockEntryTestCase):
 			"qty": 5,
 		}
 		defaults.update(extra)
+		if not hasattr(self, "_variant_by_item"):
+			self._variant_by_item = {}
+		self._variant_by_item[defaults["item_code"]] = defaults.get("custom_variant_of")
 		return _Row(**defaults)
+
+	def _item_map(self, doctype, item_codes, fields):
+		"""Stand-in for ``bulk_map("Item", codes, ["has_batch_no", "variant_of"])``."""
+		registry = getattr(self, "_variant_by_item", {})
+		return {
+			code: {"has_batch_no": 0, "variant_of": registry.get(code)}
+			for code in item_codes
+		}
 
 	def _patched_pipeline(self, **overrides):
 		patches = {
@@ -769,7 +850,7 @@ class TestBeforeValidate(_StockEntryTestCase):
 				se_events, "validate_metal_properties"
 			),
 			"allow_zero_valuation": patch.object(se_events, "allow_zero_valuation"),
-			"bulk_map": patch.object(se_events, "bulk_map", return_value={}),
+			"bulk_map": patch.object(se_events, "bulk_map", side_effect=self._item_map),
 			# flt() with a precision calls rounded() -> frappe.get_system_settings(
 			# "rounding_method"), a real DB/cache read. Only the scaled-purity branch
 			# of before_validate reaches it (flt((item_purity * qty) /
@@ -1007,8 +1088,64 @@ class TestBeforeValidate(_StockEntryTestCase):
 			"get_purity_percentage"
 		], ctx["MANUFACTURER"]:
 			se_events.before_validate(se, method=None)
-		# item_purity is None -> the row is skipped, custom_pure_qty stays unset
-		self.assertIsNone(getattr(row, "custom_pure_qty", None))
+		# item_purity is None -> the computation is skipped, but the field is ZEROED, not
+		# left alone. DELIBERATE CHANGE: previously it kept whatever arrived, which meant a
+		# client-supplied custom_pure_qty survived intact whenever purity could not be
+		# resolved. Zero is the honest answer for "no purity, so no derived quantity".
+		self.assertEqual(row.custom_pure_qty, 0)
+
+	def test_forged_pure_qty_is_zeroed_when_purity_is_unresolvable(self):
+		"""The reason the case above changed: a supplied value must not survive."""
+		row = self._row(custom_variant_of="M", qty=8, custom_pure_qty=9999)
+		se = self._pure_se(row)
+		ctx = self._patched_pipeline(
+			get_value=patch.object(
+				se_events.frappe.db, "get_value", return_value="PURE-ITEM"
+			),
+			get_purity_percentage=patch.object(
+				se_events,
+				"get_purity_percentage",
+				side_effect=lambda code: {"PURE-ITEM": 1.0}.get(code),
+			),
+			MANUFACTURER=patch.object(se_events, "MANUFACTURER", None),
+		)
+		with ctx["validate_ir"], ctx["validate_loss_ownership_carried"], ctx[
+			"validate_pcs"
+		], ctx["validate_metal_properties"], ctx["bulk_map"], ctx["get_value"], ctx[
+			"get_purity_percentage"
+		], ctx["MANUFACTURER"]:
+			se_events.before_validate(se, method=None)
+		self.assertEqual(row.custom_pure_qty, 0)
+
+	def test_row_variant_of_is_rederived_from_the_item(self):
+		"""C07: the posted ``custom_variant_of`` is not trusted as the gate.
+
+		The row claims ``D``; the Item says ``M``. The Item wins, so the pure-quantity
+		block still runs and a forged quantity cannot be smuggled past it.
+		"""
+		row = self._row(custom_variant_of="M", qty=8, custom_pure_qty=9999)
+		row.custom_variant_of = "D"  # as a crafted submit payload would
+		se = self._pure_se(row)
+		purity = {"PURE-ITEM": 1.0, "M-G-18KT": 1.0}
+		ctx = self._patched_pipeline(
+			get_value=patch.object(
+				se_events.frappe.db, "get_value", return_value="PURE-ITEM"
+			),
+			get_purity_percentage=patch.object(
+				se_events,
+				"get_purity_percentage",
+				side_effect=lambda code: purity[code],
+			),
+			MANUFACTURER=patch.object(se_events, "MANUFACTURER", None),
+		)
+		with ctx["validate_ir"], ctx["validate_loss_ownership_carried"], ctx[
+			"validate_pcs"
+		], ctx["validate_metal_properties"], ctx["bulk_map"], ctx["get_value"], ctx[
+			"get_purity_percentage"
+		], ctx["MANUFACTURER"]:
+			se_events.before_validate(se, method=None)
+		self.assertEqual(row.custom_variant_of, "M")
+		self.assertEqual(row.custom_pure_qty, 8)
 
 	def test_no_company_no_pure_item_setting_throws(self):
 		row = self._row(custom_variant_of="M", qty=8)
@@ -1527,6 +1664,15 @@ class TestSeUtilsGuards(_StockEntryTestCase):
 		gv.assert_called_once_with("Serial No", "S-1", "custom_gross_wt")
 		self.assertEqual(row.gross_weight, 3.5)
 
+	def test_set_gross_wt_keeps_the_builders_weight_when_the_serial_has_none(self):
+		"""F22: a finished piece's serial is weighed after the entry is built, so it reads
+		nothing yet. The builder's weight must survive instead of being blanked."""
+		row = _Row(serial_no="KLHGX62F1119", gross_weight=5.5192)
+		se = _Doc(items=[row])
+		with patch.object(se_utils.frappe.db, "get_value", return_value=None):
+			se_utils.set_gross_wt(se)
+		self.assertEqual(row.gross_weight, 5.5192)
+
 	def test_set_gross_wt_ignores_non_serialized_rows(self):
 		row = _Row(serial_no=None, gross_weight=None)
 		se = _Doc(items=[row])
@@ -1723,7 +1869,21 @@ class TestInventoryUtilsGuards(_StockEntryTestCase):
 
 # ----------------------------------------------------- batch_rename.create_parent_batches
 class TestCreateParentBatches(_StockEntryTestCase):
-	def _run(self, doc, serial="01"):
+	def _run(self, doc, serial="01", cg_config=(None, None)):
+		"""``cg_config`` is ``(configured_receipt_type, configured_items)``.
+
+		The second element is a LIST since a customer may hand over more than one purity.
+		Passed as a list here rather than a bare string on purpose: ``_is_eligible_item``
+		normalises a string, but a test that relied on that would be exercising the
+		compatibility shim instead of the contract.
+
+		Pinned explicitly rather than left to the site. Unpatched,
+		``_customer_gold_config`` reads Subcontracting Settings from the database,
+		which is both a real query inside a suite whose contract is "every DB access
+		is patched" and a result that changes with site configuration. The default
+		``(None, None)`` is the unconfigured state every site is in today, so the
+		legacy cases below assert legacy behaviour deterministically.
+		"""
 		inserted = []
 
 		def _new_doc(doctype):
@@ -1745,6 +1905,8 @@ class TestCreateParentBatches(_StockEntryTestCase):
 			batch_rename.frappe, "new_doc", side_effect=_new_doc
 		), patch.object(
 			batch_rename.frappe.db, "exists", return_value=False
+		), patch.object(
+			batch_rename, "_customer_gold_config", return_value=cg_config
 		), patch.object(batch_rename, "datetime", mock_dt):
 			batch_rename.create_parent_batches(doc, method=None)
 		return inserted
@@ -1812,6 +1974,34 @@ class TestCreateParentBatches(_StockEntryTestCase):
 		batch.insert.assert_called_once_with(ignore_permissions=True)
 		self.assertEqual(row.batch_no, expected)
 
+	@staticmethod
+	def _batch_exists_dispatch():
+		"""``frappe.db.exists`` stub that dispatches on the DOCTYPE, not on call order.
+
+		This was ``side_effect=[True, False]`` -- a positional list, meaning "the 1st call is a
+		collision, the 2nd is free". That encodes an assumption about how many times the code
+		under test calls ``frappe.db.exists`` and in what order, which nothing enforces.
+
+		It broke the moment the Customer Gold capability check was added: that check asks
+		``frappe.db.exists("DocType", "Subcontracting Settings")`` on the same path, consumed the
+		``True``, and the batch collision probe then got the ``False`` -- so the test saw ``-01``
+		as free and the serial never incremented. The production code was right; the stub was
+		counting.
+
+		Dispatching on the doctype states the intent directly and survives any new caller.
+		"""
+		seen = {"batch": 0}
+
+		def _exists(doctype, *args, **kwargs):
+			if doctype == "Batch":
+				# First probe collides, second is free -- the behaviour under test.
+				seen["batch"] += 1
+				return seen["batch"] == 1
+			# Everything else (DocType lookups, capability checks) genuinely exists.
+			return True
+
+		return _exists
+
 	def test_batch_name_collision_increments_serial(self):
 		doc = self._se(
 			[
@@ -1833,7 +2023,7 @@ class TestCreateParentBatches(_StockEntryTestCase):
 		), patch.object(
 			batch_rename, "_source_row_rate", return_value=0.0
 		), patch.object(batch_rename.frappe, "new_doc") as new_doc, patch.object(
-			batch_rename.frappe.db, "exists", side_effect=[True, False]
+			batch_rename.frappe.db, "exists", side_effect=self._batch_exists_dispatch()
 		), patch.object(batch_rename, "datetime", mock_dt):
 			batch_rename.create_parent_batches(doc, method=None)
 		expected = "CUST-1-A05-24KT-GOLD-02"
@@ -2396,17 +2586,36 @@ class TestConsumeStockReservationEntry(_StockEntryTestCase):
 		sre = _Doc(**defaults)
 		sre.db_set = MagicMock()
 		sre.update_status = MagicMock()
+		sre.update_reserved_qty_in_voucher = MagicMock()
 		return sre
 
 	def _run(self, sre, update_bin=True):
 		bin_doc = MagicMock()
+		self.release = MagicMock()
 		with patch(
 			"erpnext.stock.utils.get_or_make_bin", return_value="BIN-1"
 		) as gomb, patch.object(
 			se_events.frappe, "get_cached_doc", return_value=bin_doc
-		) as gcd:
+		) as gcd, patch(
+			"jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.release_consumed_allocation",
+			self.release,
+		):
 			se_events.consume_stock_reservation_entry(sre, update_bin=update_bin)
 		return bin_doc, gomb, gcd
+
+	def test_the_orders_reserved_qty_is_recomputed(self):
+		"""F30: ERPNext recomputes it on submit and cancel; consumption skipped it."""
+		sre = self._sre()
+		self._run(sre, update_bin=False)
+		sre.update_reserved_qty_in_voucher.assert_called_once_with(
+			update_modified=False
+		)
+
+	def test_the_customers_gold_is_released(self):
+		"""F29: a consumed reservation releases its customer-gold allocation, as a cancel does."""
+		sre = self._sre()
+		self._run(sre, update_bin=False)
+		self.release.assert_called_once_with(sre)
 
 	def test_updates_sb_entries_delivered_qty(self):
 		entries = [self._sb_entry(2), self._sb_entry(3)]
@@ -2945,3 +3154,348 @@ class TestSetTargetInventoryDimensions(_StockEntryTestCase):
 			[r.to_inventory_type for r in rows],
 			["Regular Stock", "Customer Goods", None],
 		)
+class TestPureQtyExcludedTypes(IntegrationTestCase):
+	"""``_pure_qty_excluded_types`` — the Customer Gold flag's only effect here.
+
+	Three historical types skip the ``custom_pure_qty`` computation. When the
+	Customer Gold flow is ON, the CONFIGURED receipt type is dropped from that
+	exclusion list so a customer receipt finally gets a real pure quantity, which
+	the balance, the PMO allocation and the per-serial split all read.
+
+	This branch had no coverage. ``TestBeforeValidate`` pins the flag OFF so its
+	arithmetic cases are deterministic, which would otherwise leave the flag-ON
+	path untested entirely — so it is tested here, directly and without a database.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		# ERPNext's global bootstrap cannot run on a bench carrying
+		# gke_customization: its fixture Custom Field Holiday List-custom_company
+		# is reqd, so make_holiday_list() raises MandatoryError at import.
+		pass
+
+	def _excluded(self, enabled, configured_type=None):
+		settings = frappe._dict(customer_goods_stock_entry_type=configured_type)
+		with patch.object(
+			cg_settings, "is_customer_gold_enabled", return_value=enabled
+		), patch.object(
+			cg_settings, "get_customer_gold_settings", return_value=settings
+		):
+			return se_events._pure_qty_excluded_types()
+
+	def test_flag_off_keeps_the_legacy_list_untouched(self):
+		"""Every site today has the flag off and must be unaffected."""
+		self.assertEqual(
+			self._excluded(enabled=False),
+			se_events._PURE_QTY_LEGACY_EXCLUDED_TYPES,
+		)
+
+	def test_flag_off_ignores_a_configured_type_entirely(self):
+		self.assertEqual(
+			self._excluded(enabled=False, configured_type="Customer Goods Received"),
+			se_events._PURE_QTY_LEGACY_EXCLUDED_TYPES,
+		)
+
+	def test_flag_on_without_a_configured_type_changes_nothing(self):
+		"""An enabled-but-unconfigured site must not silently un-exclude anything."""
+		self.assertEqual(
+			self._excluded(enabled=True, configured_type=None),
+			se_events._PURE_QTY_LEGACY_EXCLUDED_TYPES,
+		)
+
+	def test_flag_on_un_excludes_only_the_configured_type(self):
+		result = self._excluded(enabled=True, configured_type="Customer Goods Received")
+		self.assertNotIn("Customer Goods Received", result)
+		# Transfer and Issue keep their historical behaviour — this project has
+		# not analysed them, and un-excluding them would be an unreviewed change.
+		self.assertIn("Customer Goods Transfer", result)
+		self.assertIn("Customer Goods Issue", result)
+
+	def test_a_configured_type_outside_the_legacy_list_removes_nothing(self):
+		result = self._excluded(enabled=True, configured_type="Some Other Type")
+		self.assertEqual(result, se_events._PURE_QTY_LEGACY_EXCLUDED_TYPES)
+
+	def test_the_result_is_a_tuple_so_a_caller_cannot_mutate_the_module_constant(self):
+		self.assertIsInstance(self._excluded(enabled=False), tuple)
+		self.assertIsInstance(
+			self._excluded(enabled=True, configured_type="Customer Goods Received"),
+			tuple,
+		)
+
+
+class TestCreateParentBatchesConfiguredDispatch(TestCreateParentBatches):
+	"""C05: the configured receipt type and item must reach batch creation.
+
+	Settings accept a configurable Material Receipt type and a configured 24KT item,
+	but this module gated on two literal type strings and a ``24KT`` substring and
+	never read Settings at all. A site that configured anything else got no parent
+	batch — and then failed at submit with "no batch could be determined", because
+	``validate_customer_gold_batches`` runs after the creators and requires one.
+
+	Both legacy rules are retained rather than replaced; see ``_is_eligible_item``.
+	"""
+
+	def _se_type(self, stock_entry_type, item_code="24KT-GOLD"):
+		return _Doc(
+			doctype="Stock Entry",
+			stock_entry_type=stock_entry_type,
+			_customer="CUST-1",
+			name="SE-1",
+			items=[
+				_Row(
+					item_code=item_code,
+					batch_no=None,
+					customer="CUST-1",
+					name="ROW-1",
+				)
+			],
+		)
+
+	def test_an_unconfigured_site_still_refuses_a_foreign_type(self):
+		"""The legacy gate is unchanged when nothing is configured."""
+		inserted = self._run(self._se_type("CG Intake"))
+		self.assertEqual(inserted, [])
+
+	def test_the_configured_type_is_accepted(self):
+		inserted = self._run(self._se_type("CG Intake"), cg_config=("CG Intake", None))
+		self.assertEqual(len(inserted), 1)
+
+	def test_the_legacy_types_still_work_alongside_a_configured_one(self):
+		"""Subcontracting Repack has purpose Repack and can never BE the configured
+		type, so replacing the list rather than extending it would kill that leg."""
+		for legacy in ("Customer Goods Received", "Subcontracting Repack"):
+			inserted = self._run(self._se_type(legacy), cg_config=("CG Intake", None))
+			self.assertEqual(len(inserted), 1, legacy)
+
+	def test_the_configured_item_is_eligible_without_a_24kt_token(self):
+		"""Eligibility by identity, not by a substring of the item code."""
+		inserted = self._run(
+			self._se_type("CG Intake", item_code="GOLD-PURE-999"),
+			cg_config=("CG Intake", ["GOLD-PURE-999"]),
+		)
+		self.assertEqual(len(inserted), 1)
+
+	def test_a_non_configured_item_without_the_token_is_still_skipped(self):
+		inserted = self._run(
+			self._se_type("CG Intake", item_code="M-G-18KT"),
+			cg_config=("CG Intake", ["GOLD-PURE-999"]),
+		)
+		self.assertEqual(inserted, [])
+
+	def test_the_24kt_token_still_qualifies_when_another_item_is_configured(self):
+		"""Retaining the token rule is what keeps the existing flow working on the
+		sites that have configured nothing."""
+		inserted = self._run(
+			self._se_type("Customer Goods Received", item_code="24KT-GOLD"),
+			cg_config=("CG Intake", ["GOLD-PURE-999"]),
+		)
+		self.assertEqual(len(inserted), 1)
+
+
+# ------------------------------------------------------- purity: corrected fixtures
+class TestPureQtyWithIsolatedPurityFixtures(TestBeforeValidate):
+	"""``custom_pure_qty`` at the real ``purity_percentage`` scale.
+
+	Subclasses ``TestBeforeValidate`` to inherit its harness and its Customer-Gold-flag
+	pin; only the fixture values differ.
+
+	WHY A SEPARATE CLASS. The sibling cases above feed purity as ``1.0`` / ``0.75`` --
+	ratios, not the percentages ``Attribute Value.purity_percentage`` actually stores
+	(99.9, 75.4). The arithmetic is a pure ratio so those cases still pass, but a
+	reference purity of ``1.0`` stands in for 100%, and at 100% reference grams and fine
+	grams are numerically identical. That makes the ratio fixtures structurally unable to
+	show the difference between the two quantities -- the one distinction this flow turns
+	on. These cases restate the same computation at the real scale, where the reference is
+	99.9 and the two numbers visibly diverge.
+
+	Every purity here comes from ``customer_gold_purity_fixtures``, which declares its
+	values explicitly under ``CG-TEST-`` names. Nothing reads the live ``99.9`` Attribute
+	Value, whose ``purity_percentage`` is 100.0 on this bench (a live-master defect
+	recorded in the P00 manifest) and which must not be repaired from a test.
+	"""
+
+	def _pure_qty(self, item_purity, reference_purity, qty):
+		"""Run the real ``before_validate`` and return the computed ``custom_pure_qty``."""
+		row = self._row(custom_variant_of="M", item_code="CG-TEST-ITEM", qty=qty)
+		se = self._pure_se(row)
+		purity = {"PURE-ITEM": reference_purity, "CG-TEST-ITEM": item_purity}
+		ctx = self._patched_pipeline(
+			get_value=patch.object(
+				se_events.frappe.db, "get_value", return_value="PURE-ITEM"
+			),
+			get_purity_percentage=patch.object(
+				se_events,
+				"get_purity_percentage",
+				side_effect=lambda code: purity[code],
+			),
+			MANUFACTURER=patch.object(se_events, "MANUFACTURER", None),
+		)
+		with ctx["validate_ir"], ctx["validate_loss_ownership_carried"], ctx[
+			"validate_pcs"
+		], ctx["validate_metal_properties"], ctx["bulk_map"], ctx["get_value"], ctx[
+			"get_purity_percentage"
+		], ctx["get_system_settings"], ctx["MANUFACTURER"]:
+			se_events.before_validate(se, method=None)
+		return row.custom_pure_qty
+
+	# -- the real operating case ---------------------------------------------------
+	def test_operating_case_75_4_against_99_9_reference(self):
+		"""100 g of 75.4% metal against a 99.9 reference is 75.475 reference grams."""
+		self.assertEqual(
+			self._pure_qty(
+				cg_purity.OPERATING_PURITY, cg_purity.DEFAULT_REFERENCE_PURITY, 100
+			),
+			75.475,
+		)
+
+	def test_operating_case_matches_the_fixture_helper(self):
+		"""The app's arithmetic and the fixture helper must not drift apart."""
+		self.assertEqual(
+			self._pure_qty(
+				cg_purity.OPERATING_PURITY, cg_purity.DEFAULT_REFERENCE_PURITY, 100
+			),
+			cg_purity.reference_grams(
+				100, cg_purity.OPERATING_PURITY, cg_purity.DEFAULT_REFERENCE_PURITY
+			),
+		)
+
+	def test_operating_case_is_reference_grams_not_fine_grams(self):
+		"""75.475 reference grams contain 75.400 fine grams. Both are correct."""
+		computed = self._pure_qty(
+			cg_purity.OPERATING_PURITY, cg_purity.DEFAULT_REFERENCE_PURITY, 100
+		)
+		fine = cg_purity.fine_grams(100, cg_purity.OPERATING_PURITY)
+		self.assertEqual(fine, 75.400)
+		self.assertNotEqual(computed, fine)
+		# custom_pure_qty is the REFERENCE figure -- the larger of the two, because the
+		# reference item is itself below 100%.
+		self.assertGreater(computed, fine)
+
+	# -- the distinction, stated at both ends ---------------------------------------
+	def test_reference_and_fine_coincide_only_at_a_100_reference(self):
+		computed = self._pure_qty(cg_purity.OPERATING_PURITY, 100.0, 100)
+		self.assertEqual(
+			computed, cg_purity.fine_grams(100, cg_purity.OPERATING_PURITY)
+		)
+		self.assertEqual(computed, 75.400)
+
+	def test_ten_grams_of_99_9_is_ten_reference_and_9_990_fine(self):
+		"""The canonical case: both numbers describe the same physical metal.
+
+		10 g of 99.9% metal measured against a 99.9% reference is exactly 10 reference
+		grams -- it IS one reference unit per gram. The same metal contains 9.990 g of
+		pure gold on the absolute scale. Neither number is wrong; they answer different
+		questions, and only the first is what ``custom_pure_qty`` holds.
+		"""
+		computed = self._pure_qty(99.9, 99.9, 10)
+		self.assertEqual(computed, 10)
+		self.assertEqual(cg_purity.fine_grams(10, 99.9), 9.990)
+
+	def test_above_reference_purity_exceeds_gross(self):
+		"""100.0% metal against a 99.9 reference is worth MORE than its gross weight."""
+		self.assertEqual(self._pure_qty(100.0, 99.9, 10), 10.010)
+
+	# -- fixtures must stay distinguishable -----------------------------------------
+	def test_nominal_75_0_is_not_substitutable_for_operating_75_4(self):
+		"""The nominal 18KT figure and the real operating figure must not collapse."""
+		nominal = self._pure_qty(75.0, cg_purity.DEFAULT_REFERENCE_PURITY, 100)
+		operating = self._pure_qty(
+			cg_purity.OPERATING_PURITY, cg_purity.DEFAULT_REFERENCE_PURITY, 100
+		)
+		self.assertEqual(nominal, 75.075)
+		self.assertEqual(operating, 75.475)
+		self.assertNotEqual(nominal, operating)
+
+	def test_22kt_operating_case(self):
+		self.assertEqual(
+			self._pure_qty(91.6, cg_purity.DEFAULT_REFERENCE_PURITY, 100), 91.692
+		)
+
+	def test_fixture_purities_are_percentages_not_ratios(self):
+		"""Guard the correction itself.
+
+		If someone re-introduces ratio-scale fixtures (0.754 for 75.4%) this fails, and
+		the fine/reference distinction silently collapses again.
+		"""
+		for item, purity in cg_purity.purity_map().items():
+			self.assertGreater(
+				purity, 1.0, f"{item} looks like a ratio, not a percentage"
+			)
+			self.assertLessEqual(purity, 100.0, f"{item} exceeds 100%")
+
+	def test_default_reference_is_not_100_percent(self):
+		"""A 100% reference would make every case above indistinguishable."""
+		self.assertNotEqual(cg_purity.DEFAULT_REFERENCE_PURITY, 100.0)
+		self.assertEqual(cg_purity.DEFAULT_REFERENCE_PURITY, 99.9)
+
+
+class TestCreateParentBatchesPurchaseReceiptLeg(TestCreateParentBatches):
+	"""The Purchase Receipt leg of ``create_parent_batches``, which had NO coverage.
+
+	``hooks.py`` registers ``create_parent_batches`` on Purchase Receipt ``before_submit``
+	as well as Stock Entry, and that branch is gated on ``purchase_type`` rather than on a
+	Stock Entry Type. No test exercised it, which is why the defect below survived.
+
+	``_customer`` is a Custom Field on **Stock Entry only** — Purchase Receipt has no such
+	field (verified against site metadata), and frappe's ``Document`` defines no
+	``__getattr__`` fallback. A bare ``doc._customer`` therefore raises ``AttributeError``
+	on this leg and the receipt cannot be submitted at all.
+
+	These PR docs deliberately omit ``_customer`` entirely, rather than setting it to
+	``None``: ``_Doc`` is a ``SimpleNamespace``, so omitting the attribute reproduces the
+	real doctype, while setting it to ``None`` would mask exactly the bug under test.
+	"""
+
+	def _pr(self, item_code="M-G-24KT-99.9-Y", purchase_type="Subcontracting"):
+		return _Doc(
+			doctype="Purchase Receipt",
+			purchase_type=purchase_type,
+			name="PR-1",
+			items=[
+				_Row(
+					item_code=item_code,
+					batch_no=None,
+					customer="CUST-1",
+					name="ROW-1",
+				)
+			],
+		)
+
+	def test_legacy_24kt_item_mints_without_crashing(self):
+		"""Pre-existing crash path: a 24KT item on a Subcontracting PR, nothing configured."""
+		inserted = self._run(self._pr())
+		self.assertEqual(len(inserted), 1)
+		self.assertEqual(inserted[0].custom_customer, "CUST-1")
+		self.assertEqual(inserted[0].custom_inventory_type, "Customer Goods")
+
+	def test_configured_item_without_the_24kt_token_mints_without_crashing(self):
+		"""The path C05 newly opened: a configured item whose code lacks ``24KT``.
+
+		Before C05 this row was skipped by the substring gate and no batch was minted.
+		C05's identity check admits it, so it now reaches the customer stamp — which is
+		precisely the line that used to raise.
+		"""
+		inserted = self._run(
+			self._pr(item_code="GOLD-PURE-999"),
+			cg_config=("CG Intake", ["GOLD-PURE-999"]),
+		)
+		self.assertEqual(len(inserted), 1)
+		self.assertEqual(inserted[0].custom_customer, "CUST-1")
+
+	def test_unconfigured_non_24kt_item_is_still_skipped(self):
+		"""The legacy gate is unchanged when nothing is configured."""
+		self.assertEqual(self._run(self._pr(item_code="GOLD-PURE-999")), [])
+
+	def test_non_subcontracting_purchase_receipt_is_ignored(self):
+		self.assertEqual(self._run(self._pr(purchase_type="Regular")), [])
+
+	def test_row_customer_is_used_when_the_header_has_no_customer_field(self):
+		"""On this leg the row is the only ownership source, and it must be honoured."""
+		inserted = self._run(self._pr())
+		self.assertEqual(inserted[0].custom_customer, "CUST-1")
+
+	def test_row_without_a_customer_mints_nothing(self):
+		"""No owner resolvable on either header or row -> skip, never an unowned batch."""
+		doc = self._pr()
+		doc.items[0].customer = None
+		self.assertEqual(self._run(doc), [])

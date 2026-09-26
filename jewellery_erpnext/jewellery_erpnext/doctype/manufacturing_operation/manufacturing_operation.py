@@ -562,8 +562,23 @@ class ManufacturingOperation(Document):
 		# Save the child document
 		child_doc.insert()
 
-	@frappe.whitelist()
 	def create_fg(self):
+		"""NOT whitelisted -- it cannot work as written, so it must not be exposed.
+
+		``create_finished_goods_bom`` requires ``mo_data`` (see its signature), and the
+		call below supplies only ``(self, se_name)``. Every invocation therefore raises
+		``TypeError``. While this carried ``@frappe.whitelist()`` that was an
+		API-reachable crash for any authenticated session.
+
+		The decorator is removed rather than the call repaired, because what ``mo_data``
+		should be on the Manufacturing Operation path is a business question, not a
+		mechanical one -- the working caller
+		(``serial_number_creator.py:1177``) builds an ``operation_data`` structure for it.
+		The only UI caller is already commented out
+		(``manufacturing_operation.js:42``), so nothing loses a working entry point.
+
+		Whoever re-enables that button must supply ``mo_data`` and re-add the decorator.
+		"""
 		se_name, _fg_serial = create_manufacturing_entry(self)
 		pmo = frappe.db.get_value(
 			"Manufacturing Work Order",
@@ -867,6 +882,58 @@ class ManufacturingOperation(Document):
 				)
 
 
+def _finished_goods_ownership(row_data):
+	"""Who owns the finished piece, derived from the metal actually consumed.
+
+	WHY THE FINISHED ROW CANNOT JUST BE "Regular Stock"
+	----------------------------------------------------
+	It was, hardcoded, and that silently broke the whole customer-gold flow. A piece made
+	entirely from one customer's metal was minted as company stock, so
+	``customer_gold_fulfilment._batch_owner`` -- which reads ``Batch.custom_customer`` and
+	``custom_inventory_type``, not the batch NAME -- returned ``None`` for it. ``record_fulfilment``
+	then skipped the row, ``settle_customer_gold_liability`` received an empty list, and delivering
+	the finished jewellery released no liability at all.
+
+	The batch is *named* after the customer (``batch_rename.create_child_batches`` takes the name
+	from the row or header), which is exactly why the bug survived: the id looked right while the
+	ownership fields said company stock. The SOP's Examples C and D -- settle the booked customer
+	value on delivery -- could never close for anything that had been manufactured.
+
+	WHY A SINGLE OWNER ONLY
+	-----------------------
+	Returning a customer for a job that consumed TWO customers' metal would put a number in the
+	liability account that nobody computed. Apportioning a finished piece across owners is a
+	business rule (which customer's grams does the delivered piece discharge, and in what ratio)
+	that has not been specified, and ``Batch Component`` is where that answer belongs once it is.
+	Until then a mixed job stays company-owned and says so out loud, which is recoverable; a
+	guessed split posted to a liability account is not.
+
+	Returns ``(inventory_type, customer)`` ready to splat onto the finished row.
+	"""
+	owners = {
+		entry.get("customer")
+		for entry in row_data or []
+		if entry.get("inventory_type") == "Customer Goods" and entry.get("customer")
+	}
+
+	if len(owners) == 1:
+		return "Customer Goods", owners.pop()
+
+	if len(owners) > 1:
+		frappe.log_error(
+			title="Customer Gold: mixed-owner manufacture left as company stock",
+			message=(
+				f"A manufacture consumed metal owned by {len(owners)} different customers "
+				f"({', '.join(sorted(owners))}). The finished row is booked as Regular Stock "
+				f"because apportioning one finished piece across owners is not defined, so "
+				f"delivering it will release no customer gold liability. Split the job per "
+				f"customer, or specify the apportionment rule."
+			),
+		)
+
+	return "Regular Stock", None
+
+
 def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if mo_data is None:
 		mo_data = []
@@ -1095,6 +1162,8 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if fg_mop_logs:
 		fg_to_wh = fg_mop_logs[0].to_warehouse
 
+	fg_inventory_type, fg_customer = _finished_goods_ownership(row_data)
+
 	se.append(
 		"items",
 		{
@@ -1104,12 +1173,18 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"s_warehouse": None,
 			"department": doc.department,
 			"to_department": doc.department,
-			"inventory_type": "Regular Stock",
+			# Derived from the consumed rows, never hardcoded -- see
+			# _finished_goods_ownership for what the hardcoded "Regular Stock" broke.
+			"inventory_type": fg_inventory_type,
+			"customer": fg_customer,
 			"manufacturing_operation": op_name,
 			"use_serial_batch_fields": 1,
 			"serial_no": sr_no,
 			"is_finished_item": 1,
-			"custom_gross_wt": doc.total_weight,
+			# F22: ``gross_weight`` is the Stock Entry Detail field. The old key,
+			# ``custom_gross_wt``, is a Serial No field that Stock Entry Detail does not have,
+			# so every finished row on kg-gk (1,302 of 1,302) recorded 0 g.
+			"gross_weight": doc.total_weight,
 		},
 	)
 
@@ -1702,11 +1777,16 @@ def _snc_se_detail_maps(se_name):
 			MAX(inventory_type = 'Customer Goods') AS is_customer_goods
 		FROM `tabStock Entry Detail`
 		WHERE parent = %s
+			AND IFNULL(s_warehouse, '') != ''
+			AND is_finished_item = 0
 		GROUP BY item_code
 		""",
 		(se_name,),
 		as_dict=True,
 	)
+	# Consumed rows only (F27). A produced row -- the finished piece, or scrap booked back as
+	# the same metal item -- would otherwise be averaged into that item's consumed rate and
+	# could mark it Customer Goods on the strength of an output.
 	rate_map = {r.item_code: r.rate for r in se_rates}
 	inv_map = {
 		r.item_code: ("Customer Goods" if r.is_customer_goods else "Regular Stock")
@@ -1724,6 +1804,18 @@ def _stone_se_rate(consumed_rate, item_valuation_rate):
 	left blank. Returns 0.0 only when neither source has a value.
 	"""
 	return flt(consumed_rate) or flt(item_valuation_rate)
+
+
+def _keep_as_built_bom_off_default(bom):
+	"""An as-built FG BOM describes one piece; it must never become the item's default (F21).
+
+	``BOM.is_default`` is ``no_copy`` with a default of 1, so ``copy_doc`` handed every as-built
+	BOM ``is_default = 1``, and ERPNext's ``manage_default_bom`` then made it the item's default
+	and unchecked the design BOM. KLHGX62F1119's own BOM became ``EA02652-001``'s default, so any
+	flow resolving the item's default BOM got one piece's composition. With 0 here ERPNext still
+	defaults it when the item has no other submitted default, and not otherwise.
+	"""
+	bom.is_default = 0
 
 
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
@@ -1817,6 +1909,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom = frappe.copy_doc(bom_doc)
 	new_bom.gold_rate_with_gst = flt(gold_rate_with_gst)
 	new_bom.is_active = 1
+	_keep_as_built_bom_off_default(new_bom)
 	new_bom.custom_creation_doctype = self.doctype
 	new_bom.custom_creation_docname = self.name
 	new_bom.company = self.company

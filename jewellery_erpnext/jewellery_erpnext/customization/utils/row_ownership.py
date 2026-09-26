@@ -42,6 +42,7 @@ CUSTOMER_INVENTORY_TYPES = ("Customer Goods", "Customer Stock")
 DEFAULT_INVENTORY_TYPE = "Regular Stock"
 PROCESS_LOSS_SE_TYPE = "Process Loss"
 REPACK_SE_TYPE = "Repack"
+METAL_CONVERSION_SE_TYPE = "Repack-Metal Conversion"
 
 # Stock Entry types that consume one item and produce another, so the produced
 # batch's ownership can only come from the consumed one. Both are guarded by

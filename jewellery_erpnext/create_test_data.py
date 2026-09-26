@@ -1176,10 +1176,38 @@ def create_test_data():
 			)
 			making_charge_price.insert(ignore_permissions=True)
 
-		if not frappe.db.exists("Purchase Type", "FG Purchase"):
-			frappe.get_doc({"doctype": "Purchase Type", "type": "FG Purchase"}).insert(
-				ignore_permissions=True
-			)
+		# EVERY Purchase Type this app's PRODUCTION code hardcodes, not just the one that
+		# happened to fail first.
+		#
+		# Purchase Order.purchase_type is a Link to Purchase Type (declared in this app's own
+		# custom_fields/purchase_order.json), so each of these masters has to exist or the save
+		# raises "Could not find Purchase Type: <x>":
+		#
+		#   Service            product_certification/doc_events/utils.py:167
+		#   FG Purchase        employee_ir.py:754
+		#   Branch Purchase    customization/sales_invoice/doc_events/utils.py:64
+		#                      customization/serial_and_batch_bundle/serial_and_batch_bundle.py:35
+		#   Subcontracting     gurukrupa_exports/.../sketch_order_form.py:243
+		#
+		# None of this was needed before, because the FIELD was never created on a CI site: this
+		# app's custom_fields/*.json are inert (the after_migrate hook that would load them is
+		# commented out at hooks.py:12), so the assignments landed on an attribute that was not
+		# a field and no link was ever validated. install.provision_schema now creates the
+		# app's own declared field, which is correct -- and that is what made these missing
+		# masters reachable, one CI round at a time.
+		#
+		# Values that appear ONLY in test files ("Invalid Type", "Regular", "Test Type",
+		# "Unknown Type") are deliberate negative-test inputs and must stay absent.
+		for purchase_type in (
+			"FG Purchase",
+			"Service",
+			"Branch Purchase",
+			"Subcontracting",
+		):
+			if not frappe.db.exists("Purchase Type", purchase_type):
+				frappe.get_doc(
+					{"doctype": "Purchase Type", "type": purchase_type}
+				).insert(ignore_permissions=True)
 
 		if not frappe.db.exists("Warehouse Type", "Scrap"):
 			frappe.get_doc({"doctype": "Warehouse Type", "__newname": "Scrap"}).insert(
@@ -3195,6 +3223,33 @@ def create_test_data():
 			)
 
 			_ensure_stock_entry_jwelex_tag_field()
+			# The Customer Gold rate snapshot fields on Stock Entry are declared only by
+			# their patch (custom_fields/*.json is inert -- after_migrate is disabled), so
+			# they must be provisioned here for test_site too, else
+			# set_customer_gold_rate_snapshot silently drops every value it writes.
+			from jewellery_erpnext.patches.add_customer_gold_rate_snapshot_fields import (
+				execute as _ensure_customer_gold_rate_fields,
+			)
+
+			_ensure_customer_gold_rate_fields()
+			# Same for the rate CHECK fields and the approver role (F1).
+			from jewellery_erpnext.patches.add_customer_gold_rate_check_fields import (
+				execute as _ensure_customer_gold_rate_check_fields,
+			)
+
+			_ensure_customer_gold_rate_check_fields()
+			# And the SNC design-tolerance override fields and role (F6).
+			from jewellery_erpnext.patches.add_snc_tolerance_override_fields import (
+				execute as _ensure_snc_tolerance_override_fields,
+			)
+
+			_ensure_snc_tolerance_override_fields()
+			# And the Material Request diamond-substitution fields and role (F11).
+			from jewellery_erpnext.patches.add_mr_diamond_substitution_fields import (
+				execute as _ensure_mr_diamond_substitution_fields,
+			)
+
+			_ensure_mr_diamond_substitution_fields()
 
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (

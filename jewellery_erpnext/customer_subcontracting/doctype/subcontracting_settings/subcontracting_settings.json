@@ -9,14 +9,17 @@
   "enable_customer_gold_flow",
   "receipt_section",
   "customer_24kt_item",
+  "customer_gold_items",
   "column_break_receipt",
   "customer_goods_stock_entry_type",
+  "customer_gold_return_stock_entry_type",
   "gold_rate_section",
   "gold_rate_source",
   "gold_rate_field",
   "column_break_gold_rate",
   "gold_rate_unit",
   "accounting_section",
+  "customer_gold_valuation_policy",
   "company_accounts",
   "repack_section",
   "category"
@@ -48,6 +51,13 @@
    "options": "Item"
   },
   {
+   "description": "Additional purities a customer may hand over, for example 99.5 alongside 99.9. Leave empty to accept only the Customer 24KT Item. Each item is booked at the Customer 24KT Item's rate scaled by its Metal Purity.",
+   "fieldname": "customer_gold_items",
+   "fieldtype": "Table",
+   "label": "Additional Customer Gold Items",
+   "options": "Customer Gold Item"
+  },
+  {
    "fieldname": "column_break_receipt",
    "fieldtype": "Column Break"
   },
@@ -57,6 +67,14 @@
    "fieldtype": "Link",
    "label": "Customer Goods Stock Entry Type",
    "options": "Stock Entry Type"
+  },
+  {
+   "fieldname": "customer_gold_return_stock_entry_type",
+   "fieldtype": "Link",
+   "options": "Stock Entry Type",
+   "label": "Customer Gold Return Stock Entry Type",
+   "depends_on": "enable_customer_gold_flow",
+   "description": "Material Issue type used when unused customer gold is physically returned. The return posts at the metal's BOOKED carrying rate, never a current market rate."
   },
   {
    "depends_on": "enable_customer_gold_flow",
@@ -96,6 +114,16 @@
    "label": "Accounting"
   },
   {
+   "default": "Zero Value",
+   "depends_on": "enable_customer_gold_flow",
+   "description": "How a Customer Gold receipt values stock. <b>Zero Value</b> (the default, and the behaviour of every existing site) books the metal at 0 and posts no GL \u2014 the resolved rate is kept as evidence only. <b>Nominal</b> books the frozen per-gram rate as stock value with an equal Customer Gold Liability. Nominal changes an accounting policy and must not be enabled on a site holding real data without the recorded authority.",
+   "fieldname": "customer_gold_valuation_policy",
+   "fieldtype": "Select",
+   "label": "Valuation Policy",
+   "options": "Zero Value\nNominal",
+   "reqd": 0
+  },
+  {
    "fieldname": "company_accounts",
    "fieldtype": "Table",
    "label": "Company Accounts",
@@ -117,7 +145,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-08-20 09:00:00.000000",
+ "modified": "2026-09-17 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Subcontracting Settings",

@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cstr, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
@@ -8,6 +8,47 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.party_link import (
 	get_linked_customer,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
+	SAMPLE_VOUCHER_TYPE,
+)
+
+# The complete option space of ``Batch.custom_customer_voucher_type`` -- kept in step with
+# ``custom_fields/batch.json`` and with the identically-optioned
+# ``Stock Entry.customer_voucher_type``.
+CUSTOMER_VOUCHER_TYPES = (
+	SAMPLE_VOUCHER_TYPE,
+	"Customer Subcontracting",
+	"Customer Repair",
+)
+
+
+def _valid_voucher_type(value):
+	"""``value`` if it is a legal Customer Voucher Type, else None.
+
+	The voucher type is copied onto the Batch from data this module does not own: the
+	Stock Entry header, an upstream Batch, a Purchase Receipt's supplier. Those sources
+	are not guaranteed to hold one of the three options -- the SE field is skipped by
+	frappe's ``_validate_selects`` on any site where its ``options`` were cleared (the
+	mechanism documented in ``patches/clear_metal_conversion_remarks_options``), a bad
+	Customize Form ``default`` seeds every new document, and a raw ``db.set_value`` or SQL
+	backfill bypasses validation entirely. A real site was carrying the literal two-character
+	value ``''`` this way.
+
+	The Batch field IS option-checked, so copying junk across does not fail where it is
+	introduced -- it fails later, on the next save of the batch, which
+	``serial_and_batch_bundle.update_parent_batch_id`` performs on every Manufacture /
+	Repack submit. That is why one bad row surfaced as
+	``Customer Voucher Type cannot be "''"`` aborting Serial Number Creator and Metal
+	Conversion submits that had nothing to do with it.
+
+	Dropping to None rather than throwing is deliberate: an unrecognised voucher type means
+	"this batch is not marked", which is the same state as a batch that was never stamped,
+	and every consumer (``is_customer_sample_batch``, ``is_repair_unpack``, the Customer
+	Goods guards) already treats an unset marker as "no special handling". Throwing instead
+	would turn stale data into the very submit failure this prevents.
+	"""
+	value = cstr(value).strip()
+	return value if value in CUSTOMER_VOUCHER_TYPES else None
 
 
 def update_inventory_dimentions(self):
@@ -45,15 +86,14 @@ def update_inventory_dimentions(self):
 				self.custom_employee = emp
 			# Batch Rate is stamped from the row that created the batch: Purchase
 			# Receipt Item.rate, or the Stock Entry Detail's own maintained rate
-			# falling back to basic_rate. Stamped only while the field is still
-			# empty (see _can_stamp_rate) so a later re-save cannot clobber the
-			# qty-weighted rate batch.on_update blends for Repack-Metal Conversion.
+			# falling back to valuation_rate, then basic_rate. Stamped only while
+			# the field is still empty (see _can_stamp_rate): this minting stamp is
+			# the Batch Rate for the life of the batch (F26).
 			#
 			# Every item gets a rate, not just metal. The split is only alloy vs
-			# everything else: an alloy batch's value belongs on custom_alloy_rate
-			# because batch.on_update blends the two pools separately for a
-			# Repack-Metal Conversion. Diamond, gemstone, finding and consumable
-			# batches were previously left at 0 -- see _rate_field_for_item.
+			# everything else: an alloy batch's value belongs on custom_alloy_rate.
+			# Diamond, gemstone, finding and consumable batches were previously
+			# left at 0 -- see _rate_field_for_item.
 			rate_field = _rate_field_for_item(self.item, alloy_item_list)
 			if _can_stamp_rate(self, rate_field):
 				setattr(
@@ -89,9 +129,26 @@ def update_inventory_dimentions(self):
 			)
 		)
 
+	# Drop a stored value that is not one of the three options before either leg
+	# runs. The field is a Select, so an illegal value already on the row makes
+	# frappe's own ``_validate_selects`` throw on the NEXT save of this batch -- and
+	# that save is not the user's: ``serial_and_batch_bundle.update_parent_batch_id``
+	# re-saves the produced batch on every Manufacture/Repack submit just to append
+	# provenance rows, so one poisoned row aborts an unrelated Serial Number Creator
+	# or Metal Conversion submit with "Customer Voucher Type cannot be ...".
+	#
+	# ``getattr`` and the emptiness test keep this a no-op on a site where the custom
+	# field was never patched on (the gap documented in ``_row_value``) and on a batch
+	# that simply has no voucher type.
+	stored_voucher_type = getattr(self, "custom_customer_voucher_type", None)
+	if stored_voucher_type and not _valid_voucher_type(stored_voucher_type):
+		self.custom_customer_voucher_type = None
+
 	if self.reference_doctype == "Stock Entry" and self.custom_customer:
-		self.custom_customer_voucher_type = frappe.db.get_value(
-			"Stock Entry", self.reference_name, "customer_voucher_type"
+		self.custom_customer_voucher_type = _valid_voucher_type(
+			frappe.db.get_value(
+				"Stock Entry", self.reference_name, "customer_voucher_type"
+			)
 		) or _source_batch_voucher_type(self)
 	elif self.reference_doctype == "Purchase Receipt" and self.custom_customer:
 		self.custom_customer_voucher_type = (
@@ -128,9 +185,7 @@ def carry_rates_from_source_batches(batch, sources):
 	"""Copy the Batch Rate / Alloy Rate pools onto a HAND-BUILT batch from its source batches.
 
 	``sources`` is ``[(batch_no, qty)]`` -- the batches consumed to make this one, with the
-	quantity taken from each. Both pools are carried, qty-weighted across the sources, which
-	is the same two-pool weighted shape ``batch.on_update`` blends from
-	``custom_origin_entries`` for a Repack-Metal Conversion.
+	quantity taken from each. Both pools are carried, qty-weighted across the sources.
 
 	**Why this exists at all.** ``update_inventory_dimentions`` stamps a new batch's rate from
 	the voucher row that minted it, but it can only do so inside
@@ -188,10 +243,10 @@ def _can_stamp_rate(batch, fieldname):
 	"""Whether the Batch Rate / Alloy Rate may still be written.
 
 	The requirement is that *newly created* batches carry the rate of the voucher
-	row that made them. Re-stamping on every save would also undo the qty-weighted
-	rate ``batch.on_update`` blends from ``custom_origin_entries`` for a
-	Repack-Metal Conversion, since ``validate`` runs before ``on_update`` only on
-	the save that does the blending -- any later save would overwrite it.
+	row that made them, and keep it: that minting stamp is the Batch Rate (F26).
+	``serial_and_batch_bundle.update_parent_batch_id`` re-saves a produced batch on
+	every Manufacture / Repack submit to record provenance, so re-stamping on every
+	save would restate the rate from whatever the row holds by then.
 
 	An empty field is always fillable (a batch that never got a rate should still
 	get one); a rate that is already set is only rewritten while the batch is new.
@@ -211,25 +266,33 @@ def _source_row_rate(batch, child_doctype, se_fieldname):
 	A Purchase Receipt Item (and any other non-Stock-Entry voucher row) carries a
 	single ``rate``. A Stock Entry Detail carries its own maintained Batch/Alloy
 	Rate -- fetched from the *consumed* batch, so it is empty on the produce row
-	that mints a new batch -- and falls back to ``basic_rate``, the valuation the
-	entry itself booked.
+	that mints a new batch unless a rate typed on a zero-valued customer row was
+	parked there (``entered_metal_rate``) -- and falls back to ``valuation_rate``,
+	then ``basic_rate``.
+
+	``valuation_rate`` first because it is what the ledger books: the Stock Entry's
+	SLE ``incoming_rate`` for a target row is ``valuation_rate``, which is
+	``basic_rate`` plus the row's share of additional costs. With batch-wise
+	valuation that is the rate every later issue of the batch is charged, so the
+	Batch Rate matches it (F26). ``basic_rate`` stays as the fallback for a row
+	whose valuation_rate is not set.
 	"""
 	if batch.reference_doctype != "Stock Entry":
 		return _row_value(child_doctype, batch.custom_voucher_detail_no, "rate")
 
-	rate = _row_value(child_doctype, batch.custom_voucher_detail_no, se_fieldname)
-	if not rate:
-		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, "basic_rate")
+	for fieldname in (se_fieldname, "valuation_rate", "basic_rate"):
+		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, fieldname)
+		if flt(rate):
+			return rate
 	return rate
 
 
 def _rate_field_for_item(item_code, alloy_item_list):
 	"""Which Batch field the minting row's rate belongs on.
 
-	Alloy is the only special case: ``batch.on_update`` blends alloy and metal
-	into two separate qty-weighted pools for a Repack-Metal Conversion
-	(``custom_alloy_rate`` vs ``custom_metal_rate``), so an alloy batch's value
-	has to land in the alloy pool or the conversion's blend double-counts it.
+	Alloy is the only special case: an alloy batch's value lands on
+	``custom_alloy_rate``, the pool ``carry_rates_from_source_batches`` carries
+	separately, not on ``custom_metal_rate``.
 
 	Everything else -- metal, diamond, gemstone, finding, consumables -- takes
 	``custom_metal_rate``. This used to be narrowed to items carrying a
@@ -310,8 +373,11 @@ def _source_batch_voucher_type(batch):
 	for batch_no in source_batches:
 		if not batch_no or batch_no == batch.name:
 			continue
-		voucher_type = frappe.db.get_value(
-			"Batch", batch_no, "custom_customer_voucher_type"
+		# Validated, not just truthy: a source batch carrying junk must be SKIPPED so a
+		# later legitimate source can still answer, rather than passing the junk on and
+		# poisoning every batch downstream of it.
+		voucher_type = _valid_voucher_type(
+			frappe.db.get_value("Batch", batch_no, "custom_customer_voucher_type")
 		)
 		if voucher_type:
 			return voucher_type

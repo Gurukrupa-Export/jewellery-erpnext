@@ -51,6 +51,9 @@ def _row(**fields):
 	defaults = {
 		"name": fields.get("name", "row-x"),
 		"item_code": "M-G-18KT-75.0-Y",
+		# A metal row. create_child_batches withholds a Batch Rate only from a Manufacture's
+		# finished piece (batch_rename._source_row_rate), so this is descriptive, not required.
+		"custom_variant_of": "M",
 		"s_warehouse": None,
 		"t_warehouse": None,
 		"batch_no": None,
@@ -402,11 +405,31 @@ class TestUpdateParentBatchIdLaneScoping(IntegrationTestCase):
 			return batch
 
 		def _get_all(doctype, filters=None, fields=None, **kwargs):
-			if doctype == "Stock Entry Detail":
+			# DISPATCH ON THE FILTER SHAPE, not on the doctype alone.
+			#
+			# Two different callers now query Stock Entry Detail with different filters:
+			#   * _conversion_lane_map      -> {"name": ["in", [...]]}
+			#   * _lane_output_share (C09)  -> {"parent": ..., "custom_conversion_lane": ...}
+			# A stub keyed only on the doctype answered the first and raised KeyError('name') on
+			# the second -- and because the caller swallows exceptions, that surfaced as a
+			# confusing secondary failure inside frappe.log_error rather than as anything about
+			# lane scoping. Same lesson as the popup/validator parity fixture: a double must
+			# dispatch on what is actually asked.
+			filters = filters or {}
+			if doctype == "Stock Entry Detail" and "name" in filters:
 				wanted = set(filters["name"][1])
 				return [
 					frappe._dict(name=n, custom_conversion_lane=lane_rows.get(n))
 					for n in wanted
+				]
+			if doctype == "Stock Entry Detail" and "custom_conversion_lane" in filters:
+				# The lane's produced rows. This class is about lane SCOPING of origin entries,
+				# not about C09 apportionment, so a single produced row is the right fixture:
+				# it makes the share exactly 1.0 and leaves the assertions below unchanged.
+				return [
+					frappe._dict(name=n, qty=10.0, t_warehouse="TGT-WH")
+					for n, tag in lane_rows.items()
+					if tag == filters["custom_conversion_lane"] and n.startswith("t")
 				]
 			return []
 
@@ -426,6 +449,20 @@ class TestUpdateParentBatchIdLaneScoping(IntegrationTestCase):
 				"frappe.db.get_value",
 				return_value=("Repack", "Repack-Metal Conversion"),
 			),
+			# Pin out the C09 component writer. This class is about ONE thing: that each
+			# target batch's origin entries come from its own lane. record_batch_components
+			# is a separate concern that update_parent_batch_id now also calls, and it has its
+			# own suites (tests/test_customer_gold_components.py and TestBatchComponents in the
+			# integration suite).
+			#
+			# Pinned rather than accommodated, because the wholesale frappe.db.get_value patch
+			# above returns a fixed TUPLE for every call -- so anything new that reads a
+			# document through it gets a tuple back. Letting the writer run here would test the
+			# mock, not the code; and because the hook swallows its exceptions, a genuine
+			# failure would surface as a confusing secondary error inside frappe.log_error
+			# rather than as anything about lane scoping. This is the narrow dependency
+			# boundary C03 prescribes.
+			patch.object(sbb_utils, "record_batch_components"),
 		):
 			sbb_utils.update_parent_batch_id(bundle)
 
