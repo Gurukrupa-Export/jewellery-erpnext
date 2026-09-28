@@ -532,6 +532,8 @@
    "fieldname": "finish_front_view",
    "fieldtype": "Attach Image",
    "label": "Finish Front View"
+,
+   "no_copy": 1
   },
   {
    "fieldname": "column_break_photoshop",
@@ -541,6 +543,8 @@
    "fieldname": "finish_left_view",
    "fieldtype": "Attach Image",
    "label": "Finish Left View"
+,
+   "no_copy": 1
   },
   {
    "fieldname": "stock_entry_details",

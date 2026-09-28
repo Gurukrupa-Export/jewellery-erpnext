@@ -338,3 +338,57 @@ class TestValidatePhotoshopImages(IntegrationTestCase):
 		with patch(f"{MOD}.frappe.flags", frappe._dict(in_test=True)):
 			ManufacturingWorkOrder.validate_photoshop_images(_mwo())
 		mock_get_value.assert_not_called()
+
+
+class TestPhotoshopImagesAreNotCopied(IntegrationTestCase):
+	"""The images belong to exactly ONE work order, so no other work order may
+	inherit them.
+
+	``create_split_work_order`` builds each child with ``get_mapped_doc("Manufacturing
+	Work Order", ...)`` and no ``field_no_map``, and ``frappe.model.mapper.map_fields``
+	copies every same-named field whose DocField is not ``no_copy``. Without the flag a
+	split child (and a plain Duplicate) starts life already carrying the parent's photos
+	and sails through ``validate_photoshop_images`` on its own submit.
+
+	Amend is deliberately unaffected: ``frappe.model.copy_doc`` skips the ``no_copy``
+	test when ``from_amend`` is set, so amending a cancelled work order still keeps its
+	own images - it is the same physical piece.
+	"""
+
+	def _docfield(self, fieldname):
+		df = frappe.get_meta("Manufacturing Work Order").get_field(fieldname)
+		self.assertIsNotNone(df, f"{fieldname} is missing from Manufacturing Work Order")
+		return df
+
+	def test_front_view_is_no_copy(self):
+		self.assertEqual(self._docfield(FRONT).no_copy, 1)
+
+	def test_left_view_is_no_copy(self):
+		self.assertEqual(self._docfield(LEFT).no_copy, 1)
+
+	def test_the_mapper_excludes_both_slots(self):
+		"""Exercise Frappe's own exclusion rule rather than trusting the flag."""
+		from frappe.model.mapper import map_fields
+
+		source = frappe.new_doc("Manufacturing Work Order")
+		source.update({FRONT: "/files/parent-front.png", LEFT: "/files/parent-left.png"})
+		target = frappe.new_doc("Manufacturing Work Order")
+
+		map_fields(source, target, {"doctype": "Manufacturing Work Order"}, None)
+
+		self.assertFalse(target.get(FRONT), "split child inherited the parent's front view")
+		self.assertFalse(target.get(LEFT), "split child inherited the parent's left view")
+
+	def test_a_mapped_child_still_fails_the_submit_gate(self):
+		"""The end of the rope: an un-photographed split child cannot submit."""
+		with patch(f"{MOD}.frappe.flags", NOT_IN_TEST), patch(
+			f"{MOD}.frappe.db.get_value"
+		) as mock_get_value:
+			mock_get_value.side_effect = _fake_get_value(is_photoshop=1)
+			child = _mwo(name="MWO-2", split_from="MWO-1")
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				ManufacturingWorkOrder.validate_photoshop_images(child)
+
+		message = str(ctx.exception)
+		self.assertIn(MWO_IMAGE_FIELDS[FRONT], message)
+		self.assertIn(MWO_IMAGE_FIELDS[LEFT], message)
