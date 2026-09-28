@@ -59,22 +59,18 @@ _LEGACY_INVENTORY_TYPES = (
 def _configured_receipt_type():
 	"""The Stock Entry Type configured for Customer Gold receipts, or ``None``.
 
-	``None`` on every site that has not enabled and configured the feature, which is the
-	state of every site today -- so the legacy behaviour below is reached unchanged unless
-	someone has deliberately configured this.
+	``None`` on every site that has not enabled and configured the feature -- so the legacy
+	behaviour below is reached unchanged unless someone has deliberately configured this.
 
-	Imported inside the function, as ``batch_rename._customer_gold_config`` does, to keep
-	this module importable when the settings doctype has not been synced.
+	Delegates to ``subcontracting_settings.get_customer_gold_receipt_type``, the one reader
+	``batch_rename`` and the Stock Entry form share. Imported inside the function to keep this
+	module importable on its own.
 	"""
 	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
-		get_customer_gold_settings,
-		is_customer_gold_enabled,
+		get_customer_gold_receipt_type,
 	)
 
-	if not is_customer_gold_enabled():
-		return None
-
-	return get_customer_gold_settings().get("customer_goods_stock_entry_type") or None
+	return get_customer_gold_receipt_type()
 
 
 def _entry_config(stock_entry_type, configured_type):

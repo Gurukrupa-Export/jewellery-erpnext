@@ -5,6 +5,12 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	get_customer_goods_eligible_items,
+)
+from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+	get_customer_gold_receipt_type,
+)
 from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
 	execute as get_report_data,
 )
@@ -28,62 +34,30 @@ _LEGACY_PARENT_BATCH_TYPES = (
 )
 
 
-def _customer_gold_config():
-	"""``(configured_receipt_type, configured_items)`` for the customer gold flow.
-
-	``(None, None)`` when the flow is off or unconfigured, which is every site today —
-	so the legacy behaviour below is reached unchanged unless someone has deliberately
-	configured this.
-
-	Imported inside the function, as ``_pure_qty_excluded_types`` does, to keep this
-	module importable when the settings doctype has not been synced.
-	"""
-	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
-		get_allowed_customer_gold_items,
-		get_customer_gold_settings,
-		is_customer_gold_enabled,
-	)
-
-	if not is_customer_gold_enabled():
-		return None, None
-
-	settings = get_customer_gold_settings()
-	return (
-		settings.get("customer_goods_stock_entry_type"),
-		get_allowed_customer_gold_items(settings),
-	)
-
-
-def _is_eligible_item(item_code, configured_items):
+def _is_eligible_item(item_code, flagged_items):
 	"""Whether this row's item should be minted a customer parent batch.
 
 	Two independent tests, either of which qualifies:
 
-	* it is ONE OF the configured receipt items — resolved from Settings; and
-	* it carries the ``24KT`` token — the historical rule.
+	* the Item master allows Customer Goods -- ``flagged_items``, the rows' items whose
+	  ``custom_inventory_type_can_be_customer_goods`` flag is on. This is the eligibility rule,
+	  the same one the Customer Gold receipt enforces; it replaced the Subcontracting Settings
+	  item list, and like that list it is consulted only while the Customer Gold flow is on; and
+	* it carries the ``24KT`` token -- the historical minting rule, retained so every legacy
+	  path (and every site with the flow off) mints exactly as before.
 
-	The token test is retained rather than replaced. Settings is unconfigured on every
-	site today, so removing it would stop minting batches for the existing flow
-	entirely. Adding identity is what lets a correctly configured item whose code
-	happens not to contain ``24KT`` work at all — the C05 gap.
-
-	Membership, not equality, since a customer may hand over more than one purity. The token
-	test alone would not cover them: an additional 99.5 item need not carry ``24KT`` in its
-	code, and without a batch the metal has no custody identity at all.
+	An item whose code lacks the token -- a 22KT purity, a finding, a diamond -- therefore gets
+	a custody identity only when its own flag says it may be customer goods.
 	"""
-	# A bare string is normalised rather than trusted. ``"X" in "PREFIX-X-SUFFIX"`` is a
-	# SUBSTRING test, so a caller passing one item code as a string -- which every caller did
-	# before this took a list -- would silently match unrelated items whose codes contain it.
-	if isinstance(configured_items, str):
-		configured_items = [configured_items]
-
-	if configured_items and item_code in configured_items:
+	if item_code in flagged_items:
 		return True
 	return "24KT" in item_code
 
 
 def create_parent_batches(doc, method=None):
-	configured_type, configured_items = _customer_gold_config()
+	# ``None`` when the Customer Gold flow is off, which leaves the legacy types and the
+	# ``24KT`` token exactly as they were.
+	configured_type = get_customer_gold_receipt_type()
 
 	if doc.doctype == "Stock Entry":
 		accepted = _LEGACY_PARENT_BATCH_TYPES + (
@@ -99,11 +73,23 @@ def create_parent_batches(doc, method=None):
 	else:
 		return
 
+	# One query for the document, and only while the flow is on -- the scope the Settings list
+	# had. With the flow off the token alone decides, as it always did. Batch controlled only:
+	# the old list was, because Settings validation demanded it, and minting a batch for a
+	# flagged Nos item would fail the submit rather than skip the row.
+	flagged_items = (
+		get_customer_goods_eligible_items(
+			(row.item_code for row in doc.items), batch_controlled=True
+		)
+		if configured_type
+		else set()
+	)
+
 	for row in doc.items:
 		if not row.item_code:
 			continue
 
-		if not _is_eligible_item(row.item_code, configured_items):
+		if not _is_eligible_item(row.item_code, flagged_items):
 			continue
 
 		if row.batch_no:

@@ -66,6 +66,9 @@ import hashlib
 import frappe
 from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOLD_TEMPLATES,
+)
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	VALUATION_NOMINAL,
 	get_customer_gold_company_settings,
@@ -407,9 +410,11 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 	if not customers:
 		return None
 
-	# Only the customer's GOLD carries a liability: nothing but a Customer Gold receipt books one.
-	# A customer who also supplied the stones has them recorded here too, and they have no booked
-	# rate and no fine gold -- counting them made every such piece unsettleable.
+	# Only the customer's GOLD is settled here. A customer who also supplied the stones has them
+	# recorded here too, with no fine gold -- counting them made every such piece unsettleable.
+	# A stone received on a Customer Gold receipt at a typed rate above zero under Nominal DOES
+	# credit the liability, and this settlement does not release that credit; receiving stones
+	# at zero avoids it (see customer_gold_receipt.apply_valuation_policy).
 	mine = [c for c in customers if _is_customer_gold_item(c.get("item_code"))]
 	if not mine:
 		# Only the customer's stones: measured, and there is no gold and no liability in them.
@@ -470,10 +475,6 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 
 	share.value = flt(total, 2)
 	return share
-
-
-#: Item templates whose items are customer GOLD: metal and findings. Stones are ``D`` / ``G``.
-CUSTOMER_GOLD_TEMPLATES = ("M", "F")
 
 
 def _is_customer_gold_item(item_code):
