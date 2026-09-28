@@ -55,12 +55,42 @@ def download_template(
 	The upstream exporter writes raw DB values, so ``Serial No`` weights export as
 	``25.3796`` while the list view and form show ``25.38`` (Float renders through
 	``get_field_precision``, rounding to the configured decimal places and trimming
-	trailing zeros). The list-view "Action → Export" and the Data Import "Export
-	Data" tab both land here, and both should produce what the user sees on screen.
+	trailing zeros). The list-view "Action -> Export" and the Data Import "Export
+	Data" / "Download Template" buttons all land here -- they build the same
+	``DataExporter`` with ``exporting_for="Insert New Records"`` and POST an identical
+	payload, so the server cannot tell them apart and all of them round.
 
 	For ``Serial No``, round Float cells with the same precision the UI uses
 	(``get_field_precision``), then emit the file; every other doctype is handed
 	straight to the original so export fidelity is untouched.
+
+	KNOWN, ACCEPTED RISK -- the Data Import template rounds too. That file is meant
+	to be edited and re-uploaded, and nothing upstream stops the rounded value being
+	written back: ``Column.parse`` sets ``skip_import`` only for missing, duplicate
+	or "Don't Import" columns (read-only is not one of them), and
+	``Importer.update_record`` saves whenever ``get_diff`` is non-empty, which a
+	rounded cell always makes true. So a Serial No "Update Existing Records" round
+	trip that includes a Float column persists the rounded weight over the precise
+	stored one.
+
+	Not gated, by decision. The server cannot distinguish the callers, so gating it
+	would need a client-side flag, and the default "Update Existing Records" template
+	ships only the ID column -- the user has to tick the Float column for the loss to
+	happen. If Serial No Data Imports ever start being used here, close the round trip
+	on the import side (restore read-only Float fields from the DB when
+	``frappe.flags.in_import`` is set) rather than by gating this endpoint: a guard
+	there holds for any file, however it was produced.
+
+	Not every export path is covered. The Report view's "Menu -> Export" posts
+	``frappe.desk.reportview.export_query``, a different endpoint that is not
+	overridden, so a Serial No exported that way still carries raw stored values.
+
+	Both CSV and Excel round. The XLSX already *rendered* at ``float_precision`` via
+	the Float ``num_format`` the XLSX writer registers, but the cell still held the
+	exact value, so formulas and copy-out saw it; the requirement is that the exported
+	value matches the UI, not just its rendering. Note a CSV cannot carry the UI's
+	trailing zero -- 4.46 and 4.460 are the same number -- so choose Excel when the
+	file has to read exactly as the form does.
 
 	MIRROR WARNING: the Serial No branch below duplicates the upstream endpoint's
 	body on purpose -- there is no hook between ``Exporter`` construction and

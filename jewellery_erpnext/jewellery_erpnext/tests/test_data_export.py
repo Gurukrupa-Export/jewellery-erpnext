@@ -8,12 +8,20 @@ XLSX/CSV response is built, using ``frappe.utils.flt`` so the exported value
 follows the same ``System Settings > rounding_method`` the Desk Float formatter
 applies. These tests pin that behaviour and the passthrough/permission contract
 for every other doctype.
+
+Most classes here are mock-only and keep ``setUpClass: pass`` (the house pattern).
+``TestSerialNoExportAgainstRealExporter`` is the exception: it writes a Serial No,
+so it calls ``super().setUpClass()`` to keep ``IntegrationTestCase``'s rollback
+cleanup and leaves nothing on the site.
 """
 
 from unittest.mock import patch
 
 import frappe
+from frappe.core.doctype.data_import.exporter import Exporter
+from frappe.model.meta import get_field_precision
 from frappe.tests import IntegrationTestCase
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.data_export import (
 	_round_float_cells,
@@ -319,6 +327,16 @@ class TestSerialNoExportEndpoint(IntegrationTestCase):
 			"exporter": patch(
 				"jewellery_erpnext.jewellery_erpnext.doc_events.data_export.Exporter"
 			),
+			# Patched so the sort tests assert the mirror's own branching and never
+			# depend on a Custom Field being present on the site under test.
+			# Serial No.custom_gross_wt is declared only in custom_fields/serial_no.json,
+			# which nothing applies -- migrate.after_migrate is disabled (hooks.py) -- so
+			# it reaches CI's test_site only via the external git_action_v16 Custom Field
+			# fixture. That holds today, but it is not this repo's to guarantee.
+			"get_meta": patch(
+				"jewellery_erpnext.jewellery_erpnext.doc_events.data_export."
+				"frappe.get_meta"
+			),
 		}
 		mocks = {name: m.start() for name, m in ctx.items()}
 		return mocks, [m.stop for m in ctx.values()]
@@ -432,8 +450,13 @@ class TestSerialNoExportEndpoint(IntegrationTestCase):
 	def test_respects_list_sort_setting(self):
 		mocks, stops = self._patch_harness()
 		try:
-			# "name" is a default field: Meta.get_field() returns None for it and the
-			# mirror nulls it, so sort on a real DocField instead.
+			# get_meta is mocked, so this pins the mirror's branching only: a sort_by
+			# that resolves to a DocField is forwarded as "<field> <order>". It must
+			# not depend on custom_gross_wt existing on the site under test -- see the
+			# note on the "get_meta" entry in _patch_harness.
+			mocks["get_meta"].return_value.get_field.return_value = _field(
+				"custom_gross_wt"
+			)
 			mocks["user_settings"].return_value = frappe.as_json(
 				{"List": {"sort_by": "custom_gross_wt", "sort_order": "asc"}}
 			)
@@ -449,6 +472,168 @@ class TestSerialNoExportEndpoint(IntegrationTestCase):
 		finally:
 			for stop in stops:
 				stop()
+
+	def test_unknown_sort_by_is_nulled(self):
+		# Meta.get_field() returns None for default fields ("name", "modified") and for
+		# a stale user setting naming a dropped column. Either way order_by must be
+		# None, not a SQL fragment naming a column that is not in the query.
+		mocks, stops = self._patch_harness()
+		try:
+			mocks["get_meta"].return_value.get_field.return_value = None
+			mocks["user_settings"].return_value = frappe.as_json(
+				{"List": {"sort_by": "name", "sort_order": "asc"}}
+			)
+			fake = FakeExporter([_field("name", "Data"), _field("custom_gross_wt")], [])
+			mocks["exporter"].return_value = fake
+			download_template(
+				"Serial No",
+				export_fields=self._export_fields(),
+				export_records="all",
+			)
+			_, kwargs = mocks["exporter"].call_args
+			self.assertIsNone(kwargs["order_by"])
+		finally:
+			for stop in stops:
+				stop()
+
+	def test_invalid_sort_order_is_nulled(self):
+		mocks, stops = self._patch_harness()
+		try:
+			mocks["get_meta"].return_value.get_field.return_value = _field(
+				"custom_gross_wt"
+			)
+			mocks["user_settings"].return_value = frappe.as_json(
+				{"List": {"sort_by": "custom_gross_wt", "sort_order": "sideways"}}
+			)
+			fake = FakeExporter([_field("name", "Data"), _field("custom_gross_wt")], [])
+			mocks["exporter"].return_value = fake
+			download_template(
+				"Serial No",
+				export_fields=self._export_fields(),
+				export_records="all",
+			)
+			_, kwargs = mocks["exporter"].call_args
+			self.assertIsNone(kwargs["order_by"])
+		finally:
+			for stop in stops:
+				stop()
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestSerialNoExportAgainstRealExporter(IntegrationTestCase):
+	"""One pass over a real ``Exporter`` -- the only class here that mocks nothing.
+
+	Every other endpoint test runs against ``FakeExporter``, which hard-codes the
+	contracts the production code leans on. This class asserts them against the real
+	class, so a frappe upgrade that changes ``Exporter`` fails here instead of
+	silently corrupting an export:
+
+	  * ``add_header`` appends exactly one row, so ``csv_array[1:]`` is data-only
+	    (exporter.py:229)
+	  * every row is ``len(fields)`` wide, which is what makes ``fields[i]`` line up
+	    with ``row[i]`` (exporter.py:152-157)
+	  * ``add_data`` extends with the same list objects, so the in-place mutation in
+	    ``_round_float_cells`` reaches the emitted file (exporter.py:251)
+	  * MariaDB ``decimal(21,9)`` comes back as a Python ``float``, so the
+	    ``isinstance(value, float)`` guard fires (mariadb/database.py:165)
+	"""
+
+	SERIAL_NO = "_T-GK-EXPORT-PRECISION-001"
+	GROSS_WT = 25.3796
+
+	@classmethod
+	def setUpClass(cls):
+		# NOT the bare `pass` the mock-only classes above use: this one writes a
+		# Serial No, so it needs IntegrationTestCase's addClassCleanup(_rollback_db)
+		# to roll it back. Nothing here commits.
+		super().setUpClass()
+
+		# Skip rather than fail when the site has no Serial No custom field / no Item
+		# / no Company: a provisioning gap is not a defect in this code, and the
+		# mock-based classes above already cover the logic either way.
+		cls.item_code = frappe.db.get_value("Item", {"disabled": 0}, "name")
+		cls.company = frappe.db.get_value("Company", {}, "name")
+		cls.runnable = bool(
+			cls.item_code
+			and cls.company
+			and frappe.db.has_column("Serial No", "custom_gross_wt")
+		)
+		if not cls.runnable:
+			return
+
+		if not frappe.db.exists("Serial No", cls.SERIAL_NO):
+			frappe.get_doc(
+				{
+					"doctype": "Serial No",
+					"serial_no": cls.SERIAL_NO,
+					"item_code": cls.item_code,
+					"company": cls.company,
+				}
+			).insert(ignore_permissions=True)
+
+		# Written past the ORM on purpose: custom_gross_wt is read_only and a
+		# fetch_from mirror of custom_bom_no.gross_weight, so a plain save would not
+		# keep an independent value. The Exporter reads the column, not the doc.
+		frappe.db.set_value(
+			"Serial No",
+			cls.SERIAL_NO,
+			"custom_gross_wt",
+			cls.GROSS_WT,
+			update_modified=False,
+		)
+
+	def setUp(self):
+		if not self.runnable:
+			self.skipTest(
+				"Serial No.custom_gross_wt / Item / Company not provisioned on this site"
+			)
+
+	def _export(self):
+		return Exporter(
+			"Serial No",
+			export_fields={"Serial No": ["name", "custom_gross_wt"]},
+			export_data=True,
+			export_filters={"name": self.SERIAL_NO},
+			file_type="CSV",
+		)
+
+	def test_header_is_exactly_one_row_and_fields_are_index_aligned(self):
+		exporter = self._export()
+		self.assertEqual(
+			len(exporter.csv_array), 2, "one header row + one data row expected"
+		)
+		# Width, not content: add_header writes df.label ("Gross Wt"), not df.fieldname,
+		# so csv_array[0] is never index-comparable to fields by name. The production
+		# code only relies on row 0 being the single header and on every row being
+		# len(fields) wide -- that is what makes fields[i] line up with row[i].
+		self.assertEqual(len(exporter.csv_array[0]), len(exporter.fields))
+		self.assertEqual(len(exporter.csv_array[1]), len(exporter.fields))
+		self.assertEqual(
+			[f.label for f in exporter.fields], list(exporter.csv_array[0])
+		)
+
+	def test_float_column_arrives_as_a_python_float(self):
+		exporter = self._export()
+		index = [f.fieldname for f in exporter.fields].index("custom_gross_wt")
+		# If the DB layer ever hands back Decimal, the isinstance guard in
+		# _round_float_cells stops firing and every export goes out unrounded.
+		self.assertIsInstance(exporter.csv_array[1][index], float)
+		self.assertEqual(exporter.csv_array[1][index], self.GROSS_WT)
+
+	def test_in_place_rounding_lands_in_the_exported_grid(self):
+		exporter = self._export()
+		index = [f.fieldname for f in exporter.fields].index("custom_gross_wt")
+		header = list(exporter.csv_array[0])
+
+		_round_float_cells(exporter.fields, exporter.csv_array[1:])
+
+		expected = flt(self.GROSS_WT, get_field_precision(exporter.fields[index]))
+		self.assertEqual(exporter.csv_array[1][index], expected)
+		self.assertIsInstance(exporter.csv_array[1][index], float)
+		self.assertEqual(exporter.csv_array[0], header, "header must not be rounded")
+		self.assertEqual(len(exporter.csv_array), 2, "no rows added or dropped")
 
 	def tearDown(self):
 		return super().tearDown()
