@@ -1725,6 +1725,11 @@ def make_stock_in_entry(source_name, target_doc=None):
 		target_doc.qty = source_doc.qty
 		if issue_left is not None:
 			target_doc.qty = issue_left.get(source_doc.name, 0.0)
+		if issue_type:
+			# Issue exactly the receipt's batch: the outward bundle must be built from the mapped
+			# batch_no, never re-picked by FIFO from a shared custody warehouse.
+			target_doc.use_serial_batch_fields = 1
+			target_doc.serial_and_batch_bundle = None
 
 	doclist = get_mapped_doc(
 		"Stock Entry",

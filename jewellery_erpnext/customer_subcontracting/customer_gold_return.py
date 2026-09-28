@@ -676,6 +676,10 @@ def prepare_return_entry(doc, method=None):
 		row.customer = plan.customer
 		row.against_stock_entry = plan.receipt.reference_docname
 		row.ste_detail = plan.receipt.cg_source_row
+		if not row.get("serial_and_batch_bundle"):
+			# Build the outward bundle from THIS batch. Left at 0 -- copied from a bundle-based
+			# receipt row -- erpnext picks by FIFO at submit, whichever customer's metal is oldest.
+			row.use_serial_batch_fields = 1
 		if nominal and plan.booked_rate:
 			row.basic_rate = plan.booked_rate
 			row.set_basic_rate_manually = 1
@@ -731,9 +735,11 @@ def record_return(doc, method=None):
 		else None
 	)
 
-	for plan in _return_plans(doc):
+	plans = _return_plans(doc)
+	released = _released_per_row(doc, plans) if nominal else {}
+	for plan in plans:
 		row = plan.row
-		value = flt(plan.booked_rate) * plan.qty if nominal else None
+		value = released.get(row.name) if nominal else None
 		event_name = _write_event(
 			cg_event_key=build_event_key(
 				doc.company, doc.doctype, row.name, None, EVENT_RETURN
@@ -751,8 +757,9 @@ def record_return(doc, method=None):
 			stock_uom=row.get("stock_uom") or row.get("uom"),
 			cg_gross_qty_delta=-plan.qty,
 			**quantity_basis(row.item_code, -plan.qty, doc.company),
-			# Negative: the booked obligation this return discharges, at the rate the receipt
-			# booked -- never today's quote.
+			# Negative: the obligation this return discharged -- exactly what the stock credit
+			# posted against the liability, which the booked-rate checks above have already held
+			# to the rate the receipt booked (never today's quote).
 			cg_carrying_value_delta=-value if nominal else None,
 			cg_currency=currency,
 		)
@@ -771,6 +778,150 @@ def record_return(doc, method=None):
 				currency,
 				total_amount=value,
 			)
+
+
+def _released_per_row(doc, plans):
+	"""{row: liability released}, to the paisa, tied to the voucher's own GL.
+
+	The amount is the row's outgoing stock value -- the number the liability leg was posted
+	from -- not ``booked rate x qty`` recomputed here. The two agree to within rounding (the
+	checks before submit hold the batch to the booked rate), but a recomputation lands on the
+	other side of a half-paisa often enough to leave the ledger, the allocation and the GL a paisa
+	apart (0.5 g at Rs.7,164.83: GL 3,582.41, recomputed 3,582.42). Any residual against the GL
+	debit on the liability account lands on the largest row, so the rows sum to the GL exactly.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+		_row_carrying_value,
+	)
+
+	values = {}
+	for plan in plans:
+		posted = _row_carrying_value(doc, plan.row)
+		values[plan.row.name] = (
+			abs(flt(posted)) if posted is not None else flt(plan.booked_rate) * plan.qty
+		)
+
+	liability = get_customer_gold_company_settings(doc.company).liability_account
+	debit = frappe.db.sql(
+		"""
+		SELECT SUM(debit - credit) FROM `tabGL Entry`
+		WHERE voucher_type = %s AND voucher_no = %s AND account = %s AND is_cancelled = 0
+		""",
+		(doc.doctype, doc.name, liability),
+	)
+	gl_total = flt(debit[0][0]) if debit and debit[0][0] is not None else None
+
+	rounded = {name: flt(value, 2) for name, value in values.items()}
+	if gl_total is not None and rounded:
+		residual = flt(gl_total - sum(rounded.values()), 2)
+		if residual and abs(residual) <= 0.01 * len(rounded):
+			largest = max(rounded, key=lambda name: rounded[name])
+			rounded[largest] = flt(rounded[largest] + residual, 2)
+	return rounded
+
+
+def fill_return_batch(doc, method=None):
+	"""``before_validate`` (FIRST) for Stock Entry: give a receipt-linked return row its batch back.
+
+	Runs before ``update_batches``, which FIFO-fills any batch-tracked row that has no batch --
+	and FIFO in a shared custody warehouse is whichever customer's metal is oldest. An amended
+	return loses ``batch_no`` (no_copy), and a row mapped from a bundle-only receipt may carry
+	none; both would otherwise be refused, or worse, pick another receipt's batch. Also forces
+	``use_serial_batch_fields`` so the outward bundle is built from THIS batch, not by FIFO.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		effective_receipt_events,
+	)
+
+	if not _applies(doc):
+		return
+
+	for row in doc.get("items") or []:
+		if not row.get("s_warehouse"):
+			continue
+		if not row.get("batch_no"):
+			receipt = None
+			if row.get("against_stock_entry") and row.get("ste_detail"):
+				found = effective_receipt_events(
+					{
+						"reference_docname": row.against_stock_entry,
+						"cg_source_row": row.ste_detail,
+					}
+				)
+				receipt = found[0] if len(found) == 1 else None
+			elif doc.get("custom_cg_issue_against"):
+				found = [
+					r
+					for r in effective_receipt_events(
+						{"reference_docname": doc.custom_cg_issue_against}
+					)
+					if r.item_code == row.get("item_code")
+				]
+				receipt = found[0] if len(found) == 1 else None
+			if receipt:
+				row.batch_no = receipt.batch_no
+		if row.get("batch_no") and not row.get("serial_and_batch_bundle"):
+			row.use_serial_batch_fields = 1
+
+
+def block_receipt_cancel_with_dispositions(doc, method=None):
+	"""``before_cancel`` for Stock Entry: a receipt with live returns or deliveries stays.
+
+	Cancelling a Customer Gold receipt after metal was returned or delivered against it used to
+	be stopped only by chance -- erpnext's negative-batch guard, when the batch was empty. A batch
+	refilled by Settle, or a return from a descendant batch, let the cancel through and left
+	Return events and allocations pointing at a receipt that no longer exists.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		ALLOCATION_DOCTYPE,
+		effective_receipt_events,
+		is_allocation_schema_ready,
+	)
+
+	if doc.doctype != "Stock Entry" or not is_ledger_schema_ready():
+		return
+	receipts = [
+		e.name for e in effective_receipt_events({"reference_docname": doc.name})
+	]
+	if not receipts:
+		return
+
+	dependents = set()
+	if is_allocation_schema_ready():
+		rows = frappe.get_all(
+			ALLOCATION_DOCTYPE,
+			filters={"receipt_event": ["in", receipts]},
+			fields=["name", "reference_docname", "gross_qty", "reversal_of"],
+		)
+		reversed_ = {r.reversal_of for r in rows if r.reversal_of}
+		dependents |= {
+			r.reference_docname
+			for r in rows
+			if not r.reversal_of and r.name not in reversed_
+		}
+	returns = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters={"cg_source_event": ["in", receipts], "cg_event_kind": EVENT_RETURN},
+		fields=["name", "reference_docname"],
+	)
+	if returns:
+		undone = set(
+			frappe.get_all(
+				LEDGER_DOCTYPE,
+				filters={"cg_reversal_of": ["in", [r.name for r in returns]]},
+				pluck="cg_reversal_of",
+			)
+		)
+		dependents |= {r.reference_docname for r in returns if r.name not in undone}
+
+	if dependents:
+		frappe.throw(
+			frappe._(
+				"{0} cannot be cancelled while customer gold received on it has been returned or "
+				"delivered through {1}. Cancel those first."
+			).format(frappe.bold(doc.name), ", ".join(sorted(dependents))),
+			title=frappe._("Customer Gold Receipt In Use"),
+		)
 
 
 @frappe.whitelist()
@@ -862,9 +1013,15 @@ def get_customer_gold_return_preview(receipt, receipt_row=None, qty=None):
 	return {"rows": rows}
 
 
+#: Stages whose metal can be requested back and, if need be, converted. Finished pieces and
+#: loss/scrap are not unused raw metal.
+RETURNABLE_STAGES = ("RM", "Transit", "WIP")
+
+
 def _choose_route(event, holdings, requested, custody_warehouse):
 	if requested <= 0:
 		return "Nothing to return", "The receipt has been fully returned or delivered."
+	holdings = [h for h in holdings if h["stage"] in RETURNABLE_STAGES]
 	direct = sum(
 		h["free_qty"]
 		for h in holdings
@@ -881,7 +1038,7 @@ def _choose_route(event, holdings, requested, custody_warehouse):
 	converted = sum(
 		min(h["free_qty"], h["qty"]) / h["qty"] * h["receipt_equivalent"]
 		for h in holdings
-		if not h["same_item"] and h["qty"]
+		if not h["same_item"] and h["qty"] and h["purity"]
 	)
 	if same_item + converted + 1e-6 >= requested:
 		return (

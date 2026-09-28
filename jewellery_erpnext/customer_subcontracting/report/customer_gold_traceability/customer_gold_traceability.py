@@ -32,6 +32,7 @@ from jewellery_erpnext.customer_subcontracting.customer_gold_trace import (
 	DISPOSITION_LOSS,
 	DISPOSITION_OTHER,
 	DISPOSITION_RETURNED,
+	SERIAL_PREFIX,
 	stage_of,
 	trace,
 )
@@ -197,8 +198,9 @@ def _settlement_columns(show_money):
 
 def _settlement_rows(receipts, replay, filters, show_money):
 	held = _held_by_stage(replay)
+	serial_held = _serial_only_holdings(replay)
 	money = _money_by_receipt(receipts, replay, filters) if show_money else {}
-	outliers = _rate_outliers(receipts)
+	outliers = _rate_outliers(receipts) if show_money else {}
 
 	rows = []
 	for receipt in receipts:
@@ -236,7 +238,18 @@ def _settlement_rows(receipts, replay, filters, show_money):
 		}
 		flags = []
 		if key in outliers:
-			flags.append(_("booked rate far from this customer's other receipts"))
+			flags.append(outliers[key])
+		serial_only = sum(
+			amount
+			for (batch_no, _warehouse), amount in serial_held.get(key, {}).items()
+		)
+		if serial_only > QTY_TOLERANCE:
+			flags.append(
+				_(
+					"{0} sits in finished pieces with no batch -- their delivery will not "
+					"release this receipt's liability (R-2)"
+				).format(_q(serial_only))
+			)
 		if abs(replay.balance(key)) > QTY_TOLERANCE:
 			flags.append(
 				_("trace does not balance by {0}").format(_q(replay.balance(key)))
@@ -278,6 +291,13 @@ def _material_status(received, delivered, returned, held):
 def _financial_status(money, owed):
 	if money.nominal is None:
 		return _("Not valued")
+	if (
+		abs(flt(money.nominal)) <= AMOUNT_TOLERANCE
+		and abs(flt(money.revaluation)) <= AMOUNT_TOLERANCE
+	):
+		# A stone typed at 0: nothing was booked, so there is nothing to settle -- "Settled" would
+		# claim a settlement that never happened.
+		return _("Nothing booked")
 	pending = flt(money.pending)
 	if abs(pending) <= AMOUNT_TOLERANCE:
 		status = _("Settled")
@@ -292,6 +312,16 @@ def _financial_status(money, owed):
 	return status
 
 
+def _serial_only_holdings(replay):
+	"""{key: {(holding, warehouse): share}} for pieces minted with a Serial No and no batch."""
+	result = defaultdict(dict)
+	for batch_no, warehouse, _qty, shares in replay.positions():
+		if str(batch_no).startswith(SERIAL_PREFIX):
+			for key, amount in shares.items():
+				result[key][(batch_no, warehouse)] = amount
+	return result
+
+
 def _held_by_stage(replay):
 	held = defaultdict(lambda: defaultdict(float))
 	for batch_no, warehouse, _qty, shares in replay.positions():
@@ -302,22 +332,48 @@ def _held_by_stage(replay):
 
 
 def _rate_outliers(receipts):
-	"""Receipts whose booked rate per unit of measure is a third or less, or three times or
-	more, of this customer's median -- the signature of a per-10 g rate booked per gram."""
-	rates = {}
+	"""{receipt key: reason} for receipts whose booked per-gram rate is outside the band the
+	receipt rate check uses, against an INDEPENDENT reference: the company's latest purchase of
+	the item, else the feed's own rate on an earlier day (``customer_gold_rate.reference_rate``).
+
+	Never the customer's other receipts: on kg-gk seven of eleven were booked at ten times the
+	per-gram rate, so their median IS the error and a peer comparison flags the correct ones.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
+		is_outlier,
+		rate_ratio,
+		reference_rate,
+	)
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_customer_gold_settings,
+	)
+
+	settings = get_customer_gold_settings()
+	flagged = {}
 	for receipt in receipts:
 		if not receipt.cg_currency or receipt.unit != "fine":
 			continue
-		fine = flt(receipt.cg_gross_qty_delta) * flt(receipt.purity) / 100.0
-		if fine > 0 and flt(receipt.cg_carrying_value_delta) > 0:
-			rates[receipt.key] = flt(receipt.cg_carrying_value_delta) / fine
-	if len(rates) < 3:
-		return set()
-	ordered = sorted(rates.values())
-	median = ordered[len(ordered) // 2]
-	return {
-		key for key, rate in rates.items() if rate >= 3 * median or rate <= median / 3
-	}
+		qty = flt(receipt.cg_gross_qty_delta)
+		if qty <= 0 or flt(receipt.cg_carrying_value_delta) <= 0:
+			continue
+		per_gram = flt(receipt.cg_carrying_value_delta) / qty
+		try:
+			reference = reference_rate(
+				receipt.item_code, receipt.company, receipt.posting_date, settings
+			)
+		except Exception:
+			reference = None
+		ratio = rate_ratio(per_gram, reference)
+		if is_outlier(ratio):
+			flagged[receipt.key] = _(
+				"booked {0}/g is {1}x the reference {2} ({3})"
+			).format(
+				flt(per_gram, 2),
+				flt(ratio, 2),
+				flt(reference.rate, 2),
+				reference.source,
+			)
+	return flagged
 
 
 def _money_by_receipt(receipts, replay, filters):
@@ -650,6 +706,7 @@ def _position_columns():
 		_col("receipt", _("Receipt"), "Link", "Stock Entry", 170),
 		_col("receipt_row", _("Receipt Row"), "Data", width=95),
 		_col("batch_no", _("Batch"), "Link", "Batch", 200),
+		_col("serial_no", _("Serial No (no batch)"), "Link", "Serial No", 150),
 		_col("item_code", _("Item"), "Link", "Item", 160),
 		_col("generation", _("Generation"), "Int", width=90),
 		_col("produced_by", _("Produced By"), "Link", "Stock Entry", 150),
@@ -676,14 +733,20 @@ def _position_rows(receipts, replay, filters):
 			receipt = by_key.get(key)
 			if not receipt:
 				continue
+			serial_no = _serial_of(batch_no)
 			if batch_no not in items:
-				items[batch_no] = frappe.db.get_value("Batch", batch_no, "item")
+				items[batch_no] = (
+					frappe.db.get_value("Serial No", serial_no, "item_code")
+					if serial_no
+					else frappe.db.get_value("Batch", batch_no, "item")
+				)
 			origin = replay.batch_origin.get(batch_no) or (None, None, None)
 			rows.append(
 				{
 					"receipt": receipt.reference_docname,
 					"receipt_row": receipt.cg_source_row,
-					"batch_no": batch_no,
+					"batch_no": None if serial_no else batch_no,
+					"serial_no": serial_no,
 					"item_code": items[batch_no],
 					"generation": origin[1],
 					"produced_by": origin[0] if origin[1] else None,
@@ -691,7 +754,9 @@ def _position_rows(receipts, replay, filters):
 					"stage": stage_of(warehouse, batch_no, replay),
 					"holding_qty": _q(qty),
 					"free_qty": _q(
-						min(
+						qty
+						if serial_no
+						else min(
 							flt(get_batch_qty(batch_no=batch_no, warehouse=warehouse)),
 							qty,
 						)
@@ -700,12 +765,23 @@ def _position_rows(receipts, replay, filters):
 					if receipt.unit == "fine"
 					else (receipt.stock_uom or "Qty"),
 					"receipt_share": _q(share),
-					"receipt_equivalent": _q(share / (flt(receipt.purity) / 100.0))
-					if receipt.unit == "fine"
-					else _q(share),
+					"receipt_equivalent": _q(_receipt_equivalent(receipt, share)),
 				}
 			)
 	return rows
+
+
+def _serial_of(holding):
+	holding = str(holding or "")
+	return holding[len(SERIAL_PREFIX) :] if holding.startswith(SERIAL_PREFIX) else None
+
+
+def _receipt_equivalent(receipt, share):
+	"""A share expressed in the receipt item's own unit, at the fine-per-unit it recorded."""
+	if receipt.unit != "fine":
+		return share
+	per_unit = flt(receipt.get("per_unit")) or flt(receipt.purity) / 100.0
+	return share / per_unit if per_unit else 0.0
 
 
 # ------------------------------------------------------------------------------------------
@@ -722,6 +798,7 @@ def _movement_columns():
 		_col("voucher_type", _("Voucher Type"), "Link", "DocType", 120),
 		_col("voucher_no", _("Voucher"), "Dynamic Link", "voucher_type", 170),
 		_col("batch_no", _("Batch"), "Link", "Batch", 200),
+		_col("serial_no", _("Serial No (no batch)"), "Link", "Serial No", 150),
 		_col("item_code", _("Item"), "Link", "Item", 160),
 		_col("from_warehouse", _("From"), "Link", "Warehouse", 170),
 		_col("to_warehouse", _("To"), "Link", "Warehouse", 170),
@@ -760,7 +837,8 @@ def _movement_rows(receipts, replay, filters):
 				"action": step["action"],
 				"voucher_type": step["voucher_type"],
 				"voucher_no": step["voucher_no"],
-				"batch_no": step["batch_no"],
+				"batch_no": None if _serial_of(step["batch_no"]) else step["batch_no"],
+				"serial_no": _serial_of(step["batch_no"]),
 				"item_code": step["item_code"],
 				"from_warehouse": step["from_warehouse"],
 				"to_warehouse": step["to_warehouse"],

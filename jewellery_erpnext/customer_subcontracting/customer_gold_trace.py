@@ -53,6 +53,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 )
 
 REGULAR_STOCK = "Regular Stock"
+#: Prefix of the holding id used for a finished piece that has a Serial No but no batch.
+SERIAL_PREFIX = "SN::"
 PRODUCING_PURPOSES = ("Repack", "Manufacture")
 
 #: Below this, a share is rounding residue, not metal. Quantities are stored to 3 dp.
@@ -116,6 +118,35 @@ class Holding:
 			self.shares.clear()
 		return moved, qty - covered
 
+	def take_preferring(self, qty, key, per_qty):
+		"""Remove ``qty``, drawing on ``key``'s share first and only the rest pro-rata.
+
+		A raw return names the receipt row it gives back. Out of a batch two receipts share, the
+		metal returned is that receipt's -- charging part of it to the other receipt would cut an
+		entitlement nobody drew on. ``per_qty`` converts stock quantity to the receipt's measure.
+		"""
+		if self.qty <= EPSILON:
+			return {}, qty
+		covered = min(qty, self.qty)
+		moved = {}
+		first = 0.0
+		if per_qty and self.shares.get(key, 0.0) > EPSILON:
+			first = min(covered, self.shares[key] / per_qty)
+			moved[key] = first * per_qty
+			self.shares[key] -= moved[key]
+			if abs(self.shares[key]) <= EPSILON:
+				del self.shares[key]
+			self.qty -= first
+		rest = covered - first
+		if rest > EPSILON and self.qty > EPSILON:
+			others, _ = self.take(min(rest, self.qty))
+			for other, amount in others.items():
+				moved[other] = moved.get(other, 0.0) + amount
+		if self.qty <= EPSILON:
+			self.qty = 0.0
+			self.shares.clear()
+		return moved, qty - covered
+
 	def put(self, qty, shares):
 		self.qty += qty
 		for key, amount in (shares or {}).items():
@@ -142,7 +173,7 @@ class AttributionReplay:
 		self.trail = []  # every step that moved a receipt's share
 		self.exceptions = []
 		self.batch_origin = {}  # batch -> (voucher_no, generation, item_code)
-		self.last_fraction = {}  # batch -> {key: share per unit}
+		self.last_fraction = {}  # batch -> {key: share per unit} as it left on a DELIVERY
 		self.loss_batches = set()
 		self.lane_fine = []  # production data-quality: per voucher lane, input vs output fine
 		self.received = defaultdict(float)
@@ -151,10 +182,24 @@ class AttributionReplay:
 	# -- measures ---------------------------------------------------------------------------
 
 	def _measure(self, receipt_key, qty, purity):
-		unit = self.receipts[receipt_key]["unit"]
-		if unit == "fine":
-			return flt(qty) * flt(purity) / 100.0
-		return flt(qty)
+		"""The receipt's measure for ``qty`` of its own item. Fine gold per unit comes from the
+		receipt's ledger event when it was recorded -- the purity in force THEN -- so a later edit
+		of a purity master does not silently restate history."""
+		receipt = self.receipts[receipt_key]
+		if receipt["unit"] != "fine":
+			return flt(qty)
+		per_unit = receipt.get("per_unit")
+		if per_unit:
+			return flt(qty) * flt(per_unit)
+		return flt(qty) * flt(purity) / 100.0
+
+	def _per_qty(self, receipt_key, purity):
+		receipt = self.receipts.get(receipt_key) or {}
+		if receipt.get("unit") != "fine":
+			return 1.0
+		if purity:
+			return flt(purity) / 100.0
+		return flt(receipt.get("per_unit")) or None
 
 	# -- driver -----------------------------------------------------------------------------
 
@@ -341,13 +386,14 @@ class AttributionReplay:
 
 	# -- primitives -------------------------------------------------------------------------
 
-	def _take(self, row, qty):
+	def _take(self, row, qty, prefer=None):
 		holding = self.holdings[(row["batch_no"], row["warehouse"])]
-		if holding.qty > EPSILON:
-			self.last_fraction[row["batch_no"]] = {
-				key: amount / holding.qty for key, amount in holding.shares.items()
-			}
-		moved, uncovered = holding.take(qty)
+		if prefer:
+			moved, uncovered = holding.take_preferring(
+				qty, prefer, self._per_qty(prefer, row.get("purity"))
+			)
+		else:
+			moved, uncovered = holding.take(qty)
 		if uncovered > 1e-6:
 			self.exceptions.append(
 				_exception(row, EXC_UNKNOWN_OUTFLOW, {}, qty=uncovered)
@@ -359,7 +405,16 @@ class AttributionReplay:
 		return shares
 
 	def _outflow(self, row, disposition):
-		moved = self._take(row, -row["qty"])
+		prefer = row.get("receipt_key") if disposition == DISPOSITION_RETURNED else None
+		moved = self._take(
+			row, -row["qty"], prefer=prefer if prefer in self.receipts else None
+		)
+		if disposition == DISPOSITION_DELIVERED and moved:
+			# What a sales return of this batch restores: the attribution AS IT LEFT, not whatever
+			# a later transfer or production of the same batch happened to take.
+			self.last_fraction[row["batch_no"]] = {
+				key: amount / -row["qty"] for key, amount in moved.items()
+			}
 		for key, amount in moved.items():
 			self.dispositions[key][disposition] += amount
 		if moved:
@@ -535,6 +590,14 @@ def load_receipts(company, customer=None, receipt=None):
 		purity = get_purity_percentage(event.item_code)
 		event.purity = flt(purity) if purity else None
 		event.unit = "fine" if event.purity else "qty"
+		# Fine gold per unit as the receipt RECORDED it -- the purity in force at the time.
+		event.per_unit = (
+			flt(event.cg_fine_gold_delta) / flt(event.cg_gross_qty_delta)
+			if event.unit == "fine"
+			and event.cg_fine_measurement_status == "Known"
+			and flt(event.cg_gross_qty_delta) > 0
+			else None
+		)
 		event.posting_date = info.posting_date
 		event.key = receipt_key(event.reference_docname, event.cg_source_row)
 		result.append(event)
@@ -552,6 +615,8 @@ def _stock_entry_rows(voucher_nos):
 		"inventory_type",
 		"customer",
 		"is_finished_item",
+		"against_stock_entry",
+		"ste_detail",
 	]
 	if frappe.db.has_column("Stock Entry Detail", "custom_conversion_lane"):
 		fields.append("custom_conversion_lane")
@@ -613,6 +678,7 @@ def _bundle_entries(batches, to_datetime=None, outward_only=False, voucher_nos=N
 			sbb.creation,
 			sbb.item_code,
 			sbe.batch_no,
+			sbe.serial_no,
 			sbe.warehouse,
 			sbe.qty,
 			sbe.stock_value_difference,
@@ -620,14 +686,42 @@ def _bundle_entries(batches, to_datetime=None, outward_only=False, voucher_nos=N
 		.where((sbb.is_cancelled == 0) & (sbb.docstatus == 1))
 	)
 	if batches is not None:
-		query = query.where(sbe.batch_no.isin(list(batches)))
+		real = [b for b in batches if not str(b).startswith(SERIAL_PREFIX)]
+		serials = [
+			str(b)[len(SERIAL_PREFIX) :]
+			for b in batches
+			if str(b).startswith(SERIAL_PREFIX)
+		]
+		condition = sbe.batch_no.isin(real or [""])
+		if serials:
+			condition = condition | (
+				sbe.serial_no.isin(serials)
+				& ((sbe.batch_no.isnull()) | (sbe.batch_no == ""))
+			)
+		query = query.where(condition)
 	if voucher_nos is not None:
 		query = query.where(sbb.voucher_no.isin(list(voucher_nos)))
 	if outward_only:
 		query = query.where(sbb.type_of_transaction == "Outward")
 	if to_datetime:
 		query = query.where(sbb.posting_datetime <= to_datetime)
-	return query.run(as_dict=True)
+	rows = query.run(as_dict=True)
+	for row in rows:
+		row.batch_no = holding_id(row)
+	return rows
+
+
+def holding_id(entry):
+	"""The batch, or -- for a piece minted with a Serial No and no batch -- the serial.
+
+	A customer's finding folded into such a piece still has to be found: without this the replay
+	lost it at the finished-goods step and reported it as unexplained (R-2).
+	"""
+	if entry.get("batch_no"):
+		return entry.get("batch_no")
+	if entry.get("serial_no"):
+		return f"{SERIAL_PREFIX}{entry.get('serial_no')}"
+	return None
 
 
 def discover_scope(root_batches, customer=None, max_rounds=50):
@@ -776,6 +870,12 @@ def load_movements(scope, receipts, to_datetime=None):
 				row["is_loss"] = info.stock_entry_type == PROCESS_LOSS_SE_TYPE
 			elif return_type and info.stock_entry_type == return_type:
 				row["disposition"] = DISPOSITION_RETURNED
+				# The receipt row the return names: it is drawn on first (see take_preferring).
+				link = sed.get(e.voucher_detail_no)
+				if link and link.get("against_stock_entry") and link.get("ste_detail"):
+					row["receipt_key"] = receipt_key(
+						link.against_stock_entry, link.ste_detail
+					)
 			elif info.stock_entry_type == PROCESS_LOSS_SE_TYPE:
 				row["disposition"] = DISPOSITION_LOSS
 		elif e.voucher_type in ("Delivery Note", "Sales Invoice"):
@@ -813,9 +913,9 @@ def trace(company, customer=None, receipt=None, to_datetime=None):
 
 	scope = discover_scope({r.batch_no for r in receipts})
 	movements = load_movements(scope, receipts, to_datetime=to_datetime)
-	replay = AttributionReplay({r.key: {"unit": r.unit} for r in receipts}).run(
-		movements
-	)
+	replay = AttributionReplay(
+		{r.key: {"unit": r.unit, "per_unit": r.get("per_unit")} for r in receipts}
+	).run(movements)
 	return receipts, replay, scope
 
 
