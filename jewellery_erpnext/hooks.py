@@ -253,6 +253,9 @@ doc_events = {
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
+			# FIRST, before update_batches FIFO-fills an empty batch: a receipt-linked Customer
+			# Gold return row gets its receipt's batch back (an amended return loses batch_no).
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.fill_return_batch",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
 			# Runs last so it sees rows after update_batches has rebuilt self.items.
@@ -300,6 +303,8 @@ doc_events = {
 			# F-002/F-012: pre-order this SE's Bins on cancel too, matching every other
 			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
+			# A Customer Gold receipt with live returns or deliveries against it cannot be cancelled.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.block_receipt_cancel_with_dispositions",
 		],
 		"on_cancel": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
