@@ -141,3 +141,121 @@ class TestRoutesCountOnlyThisReceipt(unittest.TestCase):
 		route, limit = cgr._choose_route(self.event, holdings, 10.0, "CUSTODY")
 		self.assertEqual(route, "Shortfall")
 		self.assertIn("covers only 0", limit)
+
+
+class TestSharedBatchGuards(unittest.TestCase):
+	"""Review P2s on batches two receipts share."""
+
+	def _plan(self, qty=5.0, kind="receipt"):
+		receipt = frappe._dict(
+			name="EV-A", reference_docname="SE-A", cg_source_row="RA", batch_no="B1"
+		)
+		return frappe._dict(
+			row=_row(qty=qty),
+			batch_no="B1",
+			warehouse="W",
+			customer="CUST",
+			receipt=receipt,
+			kind=kind,
+			booked_rate=7164.83,
+			qty=qty,
+		)
+
+	def test_a_batch_of_receipts_at_different_rates_is_held(self):
+		"""The stock credit is the batch's blended rate, not the named receipt's (D08)."""
+		receipts = [
+			frappe._dict(
+				cg_gross_qty_delta=10,
+				cg_carrying_value_delta=71648.30,
+				cg_currency="INR",
+			),
+			frappe._dict(
+				cg_gross_qty_delta=10,
+				cg_carrying_value_delta=74000.00,
+				cg_currency="INR",
+			),
+		]
+		with patch(f"{ALLOC}.receipts_of_batch", return_value=receipts):
+			with self.assertRaises(frappe.ValidationError) as caught:
+				cgr._check_shared_batch_rates(_doc(), [self._plan()])
+		self.assertIn("D08", str(caught.exception))
+
+	def test_a_batch_of_receipts_at_one_rate_passes(self):
+		receipts = [
+			frappe._dict(
+				cg_gross_qty_delta=10,
+				cg_carrying_value_delta=71648.30,
+				cg_currency="INR",
+			),
+			frappe._dict(
+				cg_gross_qty_delta=5,
+				cg_carrying_value_delta=35824.15,
+				cg_currency="INR",
+			),
+		]
+		with patch(f"{ALLOC}.receipts_of_batch", return_value=receipts):
+			cgr._check_shared_batch_rates(_doc(), [self._plan()])
+
+	def _replay(self, share_a, share_b):
+		from jewellery_erpnext.customer_subcontracting import customer_gold_trace as cgt
+
+		replay = cgt.AttributionReplay(
+			{
+				"SE-A|RA": {"unit": "fine", "per_unit": 0.999, "item_code": "G-24"},
+				"SE-B|RB": {"unit": "fine", "per_unit": 0.999, "item_code": "G-24"},
+			}
+		)
+		holding = replay.holdings[("B1", "W")]
+		holding.put(10.0, {"SE-A|RA": share_a, "SE-B|RB": share_b})
+		return replay
+
+	def test_a_return_beyond_the_receipts_share_of_a_shared_holding_is_refused(self):
+		"""5 g each in B1@W: 6 g against A would take 1 g of B's metal."""
+		replay = self._replay(4.995, 4.995)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			cgr._check_receipt_share([self._plan(qty=6.0)], replay)
+		self.assertIn("only", str(caught.exception))
+
+	def test_a_return_within_the_receipts_share_passes(self):
+		cgr._check_receipt_share([self._plan(qty=5.0)], self._replay(4.995, 4.995))
+
+	def test_a_holding_that_is_all_this_receipts_is_not_limited_by_this_check(self):
+		cgr._check_receipt_share([self._plan(qty=10.0)], self._replay(9.99, 0.0))
+
+
+class TestSettlementReconciliation(unittest.TestCase):
+	"""Review P3: the JE rounds the customer total once; the allocations must tie to it."""
+
+	def test_the_paisa_residual_lands_on_the_largest_allocation(self):
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_allocations as cga,
+		)
+
+		rows = [
+			frappe._dict(name="A1", customer="CUST", amount=3582.42),
+			frappe._dict(name="A2", customer="CUST", amount=3582.42),
+		]
+		with patch.object(
+			cga, "is_allocation_schema_ready", return_value=True
+		), patch.object(cga.frappe, "get_all", return_value=rows), patch.object(
+			cga.frappe.db, "set_value"
+		) as set_value:
+			cga.reconcile_to_settlement(["EV-1", "EV-2"], {"CUST": 7164.83})
+		set_value.assert_called_once()
+		name, field, value = set_value.call_args.args[1:4]
+		self.assertEqual(field, "amount")
+		self.assertAlmostEqual(value, 3582.41, places=2)
+
+	def test_a_real_difference_is_left_for_the_report(self):
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_allocations as cga,
+		)
+
+		rows = [frappe._dict(name="A1", customer="CUST", amount=100.00)]
+		with patch.object(
+			cga, "is_allocation_schema_ready", return_value=True
+		), patch.object(cga.frappe, "get_all", return_value=rows), patch.object(
+			cga.frappe.db, "set_value"
+		) as set_value:
+			cga.reconcile_to_settlement(["EV-1"], {"CUST": 150.00})
+		set_value.assert_not_called()

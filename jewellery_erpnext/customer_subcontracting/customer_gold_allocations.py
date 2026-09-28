@@ -231,6 +231,48 @@ def stamp_settlement_voucher(event_names, voucher):
 	)
 
 
+def reconcile_to_settlement(event_names, per_customer, precision=AMOUNT_PRECISION):
+	"""Tie the allocations under a settlement JE to its per-customer line, to the paisa.
+
+	Each event's allocations already sum to that event's value, but the JE rounds the customer's
+	TOTAL once, so a document of several serials can leave the decomposition a paisa off the JE.
+	The residual lands on the largest allocation; anything larger than a paisa per row is a real
+	difference and is left for the report to show rather than hidden here.
+	"""
+	if not event_names or not is_allocation_schema_ready():
+		return
+	rows = frappe.get_all(
+		ALLOCATION_DOCTYPE,
+		filters={
+			"cg_event": ["in", list(event_names)],
+			"disposition": [
+				"in",
+				[DISPOSITION_FG_DELIVERY, DISPOSITION_DELIVERY_RETURN],
+			],
+		},
+		fields=["name", "customer", "amount"],
+	)
+	by_customer = {}
+	for row in rows:
+		by_customer.setdefault(row.customer, []).append(row)
+	for customer, amount in (per_customer or {}).items():
+		mine = by_customer.get(customer) or []
+		if not mine:
+			continue
+		residual = flt(
+			flt(amount, precision) - sum(flt(r.amount) for r in mine), precision
+		)
+		if residual and abs(residual) <= 0.01 * len(mine):
+			largest = max(mine, key=lambda r: abs(flt(r.amount)))
+			frappe.db.set_value(
+				ALLOCATION_DOCTYPE,
+				largest.name,
+				"amount",
+				flt(flt(largest.amount) + residual, precision),
+				update_modified=False,
+			)
+
+
 def reverse_allocations(doc):
 	"""On cancel: one negated row per allocation ``doc`` wrote. Never an edit, never a delete,
 	and never recomputed -- a cancellation restores exactly what was drawn."""

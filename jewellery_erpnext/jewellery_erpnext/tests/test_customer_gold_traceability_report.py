@@ -1065,6 +1065,21 @@ class TestLegacyDerivedReleases(unittest.TestCase):
 			},
 		)  # fmt: skip
 
+	def test_a_report_filtered_to_one_receipt_shows_only_its_share(self):
+		"""Review P2: narrowed to R2, the legacy DN-9 event was split among R2 alone and R2 was
+		shown releasing all 60,000. The split is over every receipt the event drew on; R2 still
+		shows its 28,116.06 (see the next test for the arithmetic)."""
+		r2 = [r for r in self.receipts if r.name == "CGLE-R2"]
+		with (
+			patch("frappe.get_all", side_effect=self.reads.get_all),
+			patch(f"{ALLOCATIONS}.is_allocation_schema_ready", return_value=True),
+		):
+			money = report._money_by_receipt(
+				r2, self.replay, frappe._dict(), self.receipts
+			)
+		self.assertEqual(set(money), {"CGLE-R2"})
+		self.assertAlmostEqual(money["CGLE-R2"].released_fg, 28116.06, places=2)
+
 	def test_a_legacy_event_is_split_by_trail_share_times_booked_rate(self):
 		"""RU-18."""
 		with (

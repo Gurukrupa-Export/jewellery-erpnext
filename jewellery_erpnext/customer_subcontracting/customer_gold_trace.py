@@ -193,13 +193,19 @@ class AttributionReplay:
 			return flt(qty) * flt(per_unit)
 		return flt(qty) * flt(purity) / 100.0
 
-	def _per_qty(self, receipt_key, purity):
+	def _per_qty(self, receipt_key, row):
+		"""The receipt's measure per stock unit of ``row``'s item: the fine-per-unit the receipt
+		RECORDED when the holding is the receipt's own item (the density its share was measured
+		at), else that item's purity."""
 		receipt = self.receipts.get(receipt_key) or {}
 		if receipt.get("unit") != "fine":
 			return 1.0
-		if purity:
-			return flt(purity) / 100.0
-		return flt(receipt.get("per_unit")) or None
+		per_unit = flt(receipt.get("per_unit"))
+		if per_unit and row.get("item_code") == receipt.get("item_code"):
+			return per_unit
+		if row.get("purity"):
+			return flt(row.get("purity")) / 100.0
+		return per_unit or None
 
 	# -- driver -----------------------------------------------------------------------------
 
@@ -390,7 +396,7 @@ class AttributionReplay:
 		holding = self.holdings[(row["batch_no"], row["warehouse"])]
 		if prefer:
 			moved, uncovered = holding.take_preferring(
-				qty, prefer, self._per_qty(prefer, row.get("purity"))
+				qty, prefer, self._per_qty(prefer, row)
 			)
 		else:
 			moved, uncovered = holding.take(qty)
@@ -919,7 +925,14 @@ def trace(company, customer=None, receipt=None, to_datetime=None):
 	scope = discover_scope({r.batch_no for r in receipts})
 	movements = load_movements(scope, receipts, to_datetime=to_datetime)
 	replay = AttributionReplay(
-		{r.key: {"unit": r.unit, "per_unit": r.get("per_unit")} for r in receipts}
+		{
+			r.key: {
+				"unit": r.unit,
+				"per_unit": r.get("per_unit"),
+				"item_code": r.item_code,
+			}
+			for r in receipts
+		}
 	).run(movements)
 	return receipts, replay, scope
 

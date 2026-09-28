@@ -1962,10 +1962,12 @@ def settle_customer_gold_liability(doc, event_names):
 		)
 
 	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		reconcile_to_settlement,
 		stamp_settlement_voucher,
 	)
 
 	stamp_settlement_voucher([row.name for row in settled], je)
+	reconcile_to_settlement([row.name for row in settled], per_customer, precision)
 	return je
 
 

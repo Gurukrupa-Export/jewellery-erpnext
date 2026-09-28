@@ -66,6 +66,7 @@ def execute(filters=None):
 		receipt=filters.receipt,
 		to_datetime=_cutoff(filters),
 	)
+	all_receipts = receipts
 	receipts = _filter_receipts(receipts, filters, replay)
 
 	if view == VIEW_POSITION:
@@ -73,7 +74,7 @@ def execute(filters=None):
 	if view == VIEW_MOVEMENTS:
 		return _movement_columns(), _movement_rows(receipts, replay, filters)
 
-	rows = _settlement_rows(receipts, replay, filters, show_money)
+	rows = _settlement_rows(receipts, replay, filters, show_money, all_receipts)
 	return (
 		_settlement_columns(show_money),
 		rows,
@@ -196,10 +197,12 @@ def _settlement_columns(show_money):
 	return columns
 
 
-def _settlement_rows(receipts, replay, filters, show_money):
+def _settlement_rows(receipts, replay, filters, show_money, all_receipts=None):
 	held = _held_by_stage(replay)
 	serial_held = _serial_only_holdings(replay)
-	money = _money_by_receipt(receipts, replay, filters) if show_money else {}
+	money = (
+		_money_by_receipt(receipts, replay, filters, all_receipts) if show_money else {}
+	)
 	outliers = _rate_outliers(receipts) if show_money else {}
 
 	rows = []
@@ -376,7 +379,7 @@ def _rate_outliers(receipts):
 	return flagged
 
 
-def _money_by_receipt(receipts, replay, filters):
+def _money_by_receipt(receipts, replay, filters, all_receipts=None):
 	"""Nominal, revaluation and released amounts per receipt event.
 
 	Released comes from ``Customer Gold Allocation`` for every disposition that has rows. A
@@ -456,8 +459,16 @@ def _money_by_receipt(receipts, replay, filters):
 					m.vouchers.add(a.settlement_voucher)
 		_flag_cancelled_vouchers(result, allocations)
 
+	# A legacy event is split across EVERY receipt it drew on, and only then shown for the ones
+	# asked for: splitting it among the filtered receipts alone handed one receipt the whole event.
 	_legacy_releases(
-		result, receipts, replay, allocated_events(), company, customers, cutoff
+		result,
+		all_receipts or receipts,
+		replay,
+		allocated_events(),
+		company,
+		customers,
+		cutoff,
 	)
 	_revaluations(result, receipts, replay, company, customers, cutoff)
 
@@ -587,10 +598,9 @@ def _legacy_releases(result, receipts, replay, allocated, company, customers, cu
 		for key, amount in shares.items():
 			receipt = by_key[key]
 			rate = booked_rate_of(receipt)
+			density = flt(receipt.get("per_unit")) or flt(receipt.purity) / 100.0
 			per_measure = (
-				rate / (flt(receipt.purity) / 100.0)
-				if rate and receipt.unit == "fine"
-				else rate
+				rate / density if rate and receipt.unit == "fine" and density else rate
 			)
 			weights[key] = amount * flt(per_measure)
 		total_weight = sum(weights.values())
