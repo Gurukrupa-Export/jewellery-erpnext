@@ -83,6 +83,10 @@
   "est_delivery_days",
   "est_mfg_end_due_days",
   "mwo_details_section",
+  "photoshop_images_section",
+  "finish_front_view",
+  "column_break_photoshop",
+  "finish_left_view",
   "weight_details_section",
   "gross_wt",
   "net_wt",
@@ -517,6 +521,26 @@
    "fieldname": "mwo_details_section",
    "fieldtype": "Tab Break",
    "label": "MWO Details"
+  },
+  {
+   "depends_on": "eval:doc.for_fg",
+   "fieldname": "photoshop_images_section",
+   "fieldtype": "Section Break",
+   "label": "Photoshop Images"
+  },
+  {
+   "fieldname": "finish_front_view",
+   "fieldtype": "Attach Image",
+   "label": "Finish Front View"
+  },
+  {
+   "fieldname": "column_break_photoshop",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "finish_left_view",
+   "fieldtype": "Attach Image",
+   "label": "Finish Left View"
   },
   {
    "fieldname": "stock_entry_details",
