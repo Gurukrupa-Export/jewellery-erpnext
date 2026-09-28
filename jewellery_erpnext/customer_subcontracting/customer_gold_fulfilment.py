@@ -418,7 +418,7 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 	mine = [c for c in customers if _is_customer_gold_item(c.get("item_code"))]
 	if not mine:
 		# Only the customer's stones: measured, and there is no gold and no liability in them.
-		return frappe._dict(fine=0.0, value=0.0, reason=None)
+		return frappe._dict(fine=0.0, value=0.0, reason=None, parts=[])
 
 	# ``parts`` keeps what this function used to compute and discard: the customer's gold per
 	# SOURCE batch. The ``Customer Gold Allocation`` writer turns each part into the receipt row it
@@ -1733,7 +1733,7 @@ def _allocate_fulfilment(
 	parts = []
 	if share is not None:
 		basis = BASIS_COMPONENT
-		for source, qty, amount in share.parts:
+		for source, qty, amount in share.get("parts") or []:
 			for receipt in receipts_of_batch(doc.company, event.customer, source):
 				parts.append(
 					(
