@@ -341,9 +341,20 @@ def _applies(doc):
 
 
 def _return_plans(doc):
-	"""One resolved plan per row: which receipt row it returns against, from which batch, at
-	which booked rate. Raises on anything that is not a legitimate return of customer gold."""
-	return [_resolve_return_row(doc, row) for row in doc.get("items") or []]
+	"""One resolved plan per TRACKED row: which receipt row it returns against, from which batch,
+	at which booked rate. Raises on a tracked row that is not a legitimate return.
+
+	Rows the custody ledger has never tracked -- no batch, company stock, or a customer batch
+	received before the ledger existed -- are left exactly as the desk Issue always left them:
+	no link, no event, no entitlement check. Refusing them would strand legacy customer goods
+	that were received while the flow was off.
+	"""
+	plans = (_resolve_return_row(doc, row) for row in doc.get("items") or [])
+	return [plan for plan in plans if plan]
+
+
+def _has_ledger_history(batch_no):
+	return bool(frappe.db.exists(LEDGER_DOCTYPE, {"batch_no": batch_no}))
 
 
 def _resolve_return_row(doc, row):
@@ -358,24 +369,23 @@ def _resolve_return_row(doc, row):
 	)
 
 	batches = _row_batches(row)
-	if len(batches) != 1:
-		frappe.throw(
-			frappe._(
-				"Row {0}: a Customer Gold return must name exactly one batch, so it can be "
-				"matched to the receipt it gives back."
-			).format(row.idx),
-			title=frappe._("Customer Gold Return"),
-		)
+	if not batches:
+		return None
+	if len(batches) > 1:
+		if any(_batch_owner(b) and _has_ledger_history(b) for b in batches):
+			frappe.throw(
+				frappe._(
+					"Row {0}: a Customer Gold return must name exactly one batch, so it can be "
+					"matched to the receipt it gives back."
+				).format(row.idx),
+				title=frappe._("Customer Gold Return"),
+			)
+		return None
 	batch_no = batches[0]
 	owner = _batch_owner(batch_no)
 	if not owner:
-		frappe.throw(
-			frappe._(
-				"Row {0}: the selected batch is not customer-owned gold, so it cannot be "
-				"returned through {1}."
-			).format(row.idx, frappe.bold(doc.stock_entry_type)),
-			title=frappe._("Customer Gold Return"),
-		)
+		# Company stock: not customer gold, so nothing here governs it.
+		return None
 
 	receipt = None
 	if row.get("against_stock_entry") and row.get("ste_detail"):
@@ -385,6 +395,9 @@ def _resolve_return_row(doc, row):
 				"cg_source_row": row.ste_detail,
 			}
 		)
+		if not found and not _voucher_has_receipt_events(row.against_stock_entry):
+			# Received before the custody ledger existed: nothing to link or enforce.
+			return None
 		if len(found) != 1:
 			frappe.throw(
 				frappe._(
@@ -398,6 +411,8 @@ def _resolve_return_row(doc, row):
 		found = effective_receipt_events(
 			{"reference_docname": doc.custom_cg_issue_against}
 		)
+		if not found and not _voucher_has_receipt_events(doc.custom_cg_issue_against):
+			return None
 		matching = [r for r in found if r.batch_no == batch_no] or (
 			found if len(found) == 1 else []
 		)
@@ -411,6 +426,8 @@ def _resolve_return_row(doc, row):
 		receipt = matching[0]
 	else:
 		found = receipts_of_batch(doc.company, owner, batch_no)
+		if not found and not _has_ledger_history(batch_no):
+			return None
 		if len(found) != 1:
 			frappe.throw(
 				frappe._(
@@ -463,6 +480,16 @@ def _resolve_return_row(doc, row):
 		# the mapper copied, so an edited qty would be checked against a stale figure until submit.
 		qty=flt(row.get("qty")) * (flt(row.get("conversion_factor")) or 1.0),
 		warehouse=row.get("s_warehouse"),
+	)
+
+
+def _voucher_has_receipt_events(voucher):
+	"""Whether ANY Receipt event -- effective or reversed -- was ever written for ``voucher``."""
+	return bool(
+		frappe.db.exists(
+			LEDGER_DOCTYPE,
+			{"reference_docname": voucher, "cg_event_kind": EVENT_RECEIPT},
+		)
 	)
 
 
@@ -602,7 +629,7 @@ def _check_plans(doc, plans, for_update):
 			)
 
 
-def receipt_remaining(company, customer, receipts, for_update=False):
+def receipt_remaining(company, customer, receipts, for_update=False, replay=None):
 	"""{receipt event: quantity still returnable against it}, in the receipt item's own unit.
 
 	What has been drawn is the LARGER of two independent measures:
@@ -614,6 +641,10 @@ def receipt_remaining(company, customer, receipts, for_update=False):
 	  it also covers deliveries made before allocations existed.
 
 	Loss does NOT reduce it: the customer is still owed metal lost on the floor (SOP §5.5).
+
+	Received is the receipt row's STOCK quantity (``transfer_qty``), the unit every draw is in.
+	The ledger's own gross is the row qty in its transaction UOM (the known K43 split), which would
+	compare decagrams with grams. ``replay`` lets a caller that already traced the customer reuse it.
 	"""
 	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
 		drawn_by_receipt,
@@ -636,19 +667,32 @@ def receipt_remaining(company, customer, receipts, for_update=False):
 			(tuple(names),),
 		)
 	drawn = drawn_by_receipt(names, for_update=for_update)
-	_, replay, _ = trace(company, customer=customer)
+	if replay is None:
+		_, replay, _ = trace(company, customer=customer)
+	stock_qty = dict(
+		frappe.get_all(
+			"Stock Entry Detail",
+			filters={"name": ["in", [r.cg_source_row for r in receipts]]},
+			fields=["name", "transfer_qty"],
+			as_list=True,
+		)
+	)
 
 	result = {}
 	for receipt in receipts:
-		received = flt(receipt.cg_gross_qty_delta)
+		received = flt(stock_qty.get(receipt.cg_source_row)) or flt(
+			receipt.cg_gross_qty_delta
+		)
 		allocated = flt((drawn.get(receipt.name) or {}).get("gross"))
 		key = receipt_key(receipt.reference_docname, receipt.cg_source_row)
 		physical = 0.0
 		if key in replay.receipts:
 			left = replay.dispositions[key]
 			measure = flt(left[DISPOSITION_DELIVERED]) + flt(left[DISPOSITION_RETURNED])
-			purity = get_purity_percentage(receipt.item_code)
-			physical = measure / (flt(purity) / 100.0) if purity else measure
+			per_unit = flt(replay.receipts[key].get("per_unit"))
+			if not per_unit and replay.receipts[key].get("unit") == "fine":
+				per_unit = flt(get_purity_percentage(receipt.item_code)) / 100.0
+			physical = measure / per_unit if per_unit else measure
 		result[receipt.name] = received - max(allocated, physical)
 	return result
 
@@ -875,7 +919,6 @@ def block_receipt_cancel_with_dispositions(doc, method=None):
 	Return events and allocations pointing at a receipt that no longer exists.
 	"""
 	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
-		ALLOCATION_DOCTYPE,
 		effective_receipt_events,
 		is_allocation_schema_ready,
 	)
@@ -888,12 +931,24 @@ def block_receipt_cancel_with_dispositions(doc, method=None):
 	if not receipts:
 		return
 
+	# The same lock ``lock_return_entitlement`` takes, in the same order: a return being submitted
+	# against this receipt and this cancel serialise, and whichever waits sees the other's commit
+	# through the locking read below rather than through a stale snapshot.
+	frappe.db.sql(
+		"SELECT name FROM `tabCustomer Gold Ledger Entry` WHERE name IN %s ORDER BY name FOR UPDATE",
+		(tuple(sorted(receipts)),),
+	)
 	dependents = set()
 	if is_allocation_schema_ready():
-		rows = frappe.get_all(
-			ALLOCATION_DOCTYPE,
-			filters={"receipt_event": ["in", receipts]},
-			fields=["name", "reference_docname", "gross_qty", "reversal_of"],
+		rows = frappe.db.sql(
+			"""
+			SELECT name, reference_docname, reversal_of
+			FROM `tabCustomer Gold Allocation`
+			WHERE receipt_event IN %s
+			FOR UPDATE
+			""",
+			(tuple(receipts),),
+			as_dict=True,
 		)
 		reversed_ = {r.reversal_of for r in rows if r.reversal_of}
 		dependents |= {
@@ -931,10 +986,14 @@ def get_customer_gold_return_preview(receipt, receipt_row=None, qty=None):
 	"""What a return against ``receipt`` could give back, and how. Reads only.
 
 	Per receipt row: what was received, what is still owed back, and every place the receipt's
-	metal is now -- including converted descendants -- with how much of each is free. Then the
-	route: Direct (the receipt's own item is free in its custody warehouse), Transfer (it is free
-	elsewhere -- raise a Material Request), Settle then Issue (only another purity is left), or a
-	shortfall with its reason.
+	metal is now -- including converted descendants -- with how much of THIS receipt's share is
+	free there. Then the route: Direct (the receipt's own item is free in its custody warehouse),
+	Transfer (it is free elsewhere -- raise a Material Request), Settle then Issue (only another
+	purity is left), or a shortfall with its reason. ``direct_available`` is what can go out on an
+	Issue right now, whatever the route for the full quantity.
+
+	``fallback`` tells the desk to open the classic Issue: the flow is off, or the receipt predates
+	the custody ledger, so there is nothing to preview and nothing to enforce.
 	"""
 	from erpnext.stock.doctype.batch.batch import get_batch_qty
 
@@ -950,19 +1009,19 @@ def get_customer_gold_return_preview(receipt, receipt_row=None, qty=None):
 	entry = frappe.get_doc("Stock Entry", receipt)
 	entry.check_permission("read")
 
+	if not (is_customer_gold_enabled() and is_ledger_schema_ready()):
+		return {"rows": [], "fallback": True}
+
 	filters = {"reference_docname": receipt}
 	if receipt_row:
 		filters["cg_source_row"] = receipt_row
 	events = effective_receipt_events(filters)
 	if not events:
-		return {
-			"rows": [],
-			"message": frappe._("No effective Customer Gold receipt rows."),
-		}
+		return {"rows": [], "fallback": True}
 
 	customer = events[0].customer
-	remaining = receipt_remaining(entry.company, customer, events)
 	_, replay, _ = trace(entry.company, customer=customer)
+	remaining = receipt_remaining(entry.company, customer, events, replay=replay)
 	custody = {row.name: row.t_warehouse for row in entry.items}
 
 	rows = []
@@ -972,11 +1031,14 @@ def get_customer_gold_return_preview(receipt, receipt_row=None, qty=None):
 		requested = flt(qty) if qty else max(flt(remaining.get(event.name)), 0.0)
 		holdings = []
 		for batch_no, warehouse, held_qty, shares in replay.positions():
-			if key not in shares:
+			if key not in shares or not held_qty:
 				continue
 			item_code = frappe.db.get_value("Batch", batch_no, "item")
-			free = flt(get_batch_qty(batch_no=batch_no, warehouse=warehouse))
+			free = min(
+				flt(get_batch_qty(batch_no=batch_no, warehouse=warehouse)), held_qty
+			)
 			share = shares[key]
+			equivalent = share / (flt(purity) / 100.0) if purity else share
 			holdings.append(
 				{
 					"batch_no": batch_no,
@@ -985,16 +1047,20 @@ def get_customer_gold_return_preview(receipt, receipt_row=None, qty=None):
 					"purity": get_purity_percentage(item_code),
 					"stage": stage_of(warehouse, batch_no, replay),
 					"qty": flt(held_qty, 3),
-					"free_qty": flt(min(free, held_qty), 3),
+					"free_qty": flt(free, 3),
 					"receipt_share": flt(share, 3),
-					"receipt_equivalent": flt(share / (flt(purity) / 100.0), 3)
-					if purity
-					else flt(share, 3),
+					"receipt_equivalent": flt(equivalent, 3),
+					# Only THIS receipt's part of the free stock, in receipt-item units. A batch two
+					# receipts share is not all this receipt's to hand back.
+					"free_receipt_qty": flt(equivalent * free / held_qty, 3),
 					"same_item": item_code == event.item_code,
 				}
 			)
-		route, limit = _choose_route(
-			event, holdings, requested, custody.get(event.cg_source_row)
+		custody_warehouse = custody.get(event.cg_source_row)
+		route, limit = _choose_route(event, holdings, requested, custody_warehouse)
+		direct_available = min(
+			_direct_available(event, holdings, custody_warehouse),
+			max(flt(remaining.get(event.name)), 0.0),
 		)
 		rows.append(
 			{
@@ -1003,10 +1069,11 @@ def get_customer_gold_return_preview(receipt, receipt_row=None, qty=None):
 				"item_code": event.item_code,
 				"purity": purity,
 				"batch_no": event.batch_no,
-				"custody_warehouse": custody.get(event.cg_source_row),
+				"custody_warehouse": custody_warehouse,
 				"received": flt(event.cg_gross_qty_delta, 3),
 				"remaining": flt(remaining.get(event.name), 3),
 				"requested": flt(requested, 3),
+				"direct_available": flt(direct_available, 3),
 				"route": route,
 				"limiting_factor": limit,
 				"holdings": holdings,
@@ -1020,27 +1087,30 @@ def get_customer_gold_return_preview(receipt, receipt_row=None, qty=None):
 RETURNABLE_STAGES = ("RM", "Transit", "WIP")
 
 
+def _direct_available(event, holdings, custody_warehouse):
+	return sum(
+		h["free_receipt_qty"]
+		for h in holdings
+		if h["stage"] in RETURNABLE_STAGES
+		and h["batch_no"] == event.batch_no
+		and h["warehouse"] == custody_warehouse
+	)
+
+
 def _choose_route(event, holdings, requested, custody_warehouse):
 	if requested <= 0:
 		return "Nothing to return", "The receipt has been fully returned or delivered."
 	holdings = [h for h in holdings if h["stage"] in RETURNABLE_STAGES]
-	direct = sum(
-		h["free_qty"]
-		for h in holdings
-		if h["batch_no"] == event.batch_no and h["warehouse"] == custody_warehouse
-	)
-	if direct + 1e-6 >= requested:
+	if _direct_available(event, holdings, custody_warehouse) + 1e-6 >= requested:
 		return "Direct", None
-	same_item = sum(h["free_qty"] for h in holdings if h["same_item"])
+	same_item = sum(h["free_receipt_qty"] for h in holdings if h["same_item"])
 	if same_item + 1e-6 >= requested:
 		return (
 			"Transfer via Material Request",
 			"The receipt's item is free, but not all of it in the receipt's custody warehouse.",
 		)
 	converted = sum(
-		min(h["free_qty"], h["qty"]) / h["qty"] * h["receipt_equivalent"]
-		for h in holdings
-		if not h["same_item"] and h["qty"] and h["purity"]
+		h["free_receipt_qty"] for h in holdings if not h["same_item"] and h["purity"]
 	)
 	if same_item + converted + 1e-6 >= requested:
 		return (

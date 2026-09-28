@@ -721,10 +721,10 @@ def _position_columns():
 
 
 def _position_rows(receipts, replay, filters):
-	from erpnext.stock.doctype.batch.batch import get_batch_qty
-
 	by_key = {r.key: r for r in receipts}
 	items = {}
+	free = {}
+	cutoff = _cutoff(filters)
 	rows = []
 	for batch_no, warehouse, qty, shares in sorted(replay.positions()):
 		if filters.get("warehouse") and warehouse != filters.warehouse:
@@ -756,10 +756,7 @@ def _position_rows(receipts, replay, filters):
 					"free_qty": _q(
 						qty
 						if serial_no
-						else min(
-							flt(get_batch_qty(batch_no=batch_no, warehouse=warehouse)),
-							qty,
-						)
+						else min(_free(free, batch_no, warehouse, cutoff), qty)
 					),
 					"measure": "Fine g"
 					if receipt.unit == "fine"
@@ -769,6 +766,21 @@ def _position_rows(receipts, replay, filters):
 				}
 			)
 	return rows
+
+
+def _free(cache, batch_no, warehouse, cutoff):
+	"""Unreserved batch quantity in the warehouse, as of the report's cutoff; one lookup per
+	holding however many receipts share it."""
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+	key = (batch_no, warehouse)
+	if key not in cache:
+		cache[key] = flt(
+			get_batch_qty(
+				batch_no=batch_no, warehouse=warehouse, posting_datetime=cutoff
+			)
+		)
+	return cache[key]
 
 
 def _serial_of(holding):

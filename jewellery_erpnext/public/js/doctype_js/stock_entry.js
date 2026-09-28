@@ -1993,7 +1993,9 @@ function show_customer_gold_return_preview(frm, receipt_row, qty) {
 		callback: function (r) {
 			const rows = (r.message && r.message.rows) || [];
 			if (!rows.length) {
-				frappe.msgprint((r.message && r.message.message) || __("Nothing to return."));
+				// The flow is off, or the receipt predates the custody ledger: nothing to preview
+				// and nothing to enforce, so the Issue opens exactly as it always did.
+				open_customer_goods_issue(frm);
 				return;
 			}
 			const row =
@@ -2028,16 +2030,21 @@ function show_customer_gold_return_preview(frm, receipt_row, qty) {
 				],
 				primary_action_label: __("Create Issue"),
 				primary_action: function (values) {
-					if (row.route !== "Direct") {
-						frappe.msgprint(__("Route is {0}: {1}", [row.route, row.limiting_factor || ""]));
+					// What is free in the receipt's custody warehouse can go out now, whatever the
+					// route for the rest; anything beyond it comes back first (Material Request / Settle).
+					if (!(flt(values.qty) > 0) || flt(values.qty) > flt(row.direct_available) + 0.0005) {
+						frappe.msgprint(
+							__("Only {0} can be issued directly from {1}. Route for the rest: {2}. {3}", [
+								format_number(row.direct_available, null, 3),
+								row.custody_warehouse,
+								row.route,
+								row.limiting_factor || "",
+							])
+						);
 						return;
 					}
 					dialog.hide();
-					frappe.model.open_mapped_doc({
-						method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
-						frm: frm,
-						args: { qty: values.qty, receipt_row: values.receipt_row },
-					});
+					open_customer_goods_issue(frm, { qty: values.qty, receipt_row: values.receipt_row });
 				},
 				secondary_action_label: __("Create Material Request"),
 				secondary_action: function () {
@@ -2061,47 +2068,66 @@ function render_customer_gold_preview(row) {
 				<td class="text-right">${format_number(h.qty, null, 3)}</td>
 				<td class="text-right">${format_number(h.free_qty, null, 3)}</td>
 				<td class="text-right">${format_number(h.receipt_equivalent, null, 3)}</td>
+				<td class="text-right">${format_number(h.free_receipt_qty, null, 3)}</td>
 			</tr>`
 		)
 		.join("");
 	return `<p>${__("Received")}: <b>${format_number(row.received, null, 3)}</b> &middot;
 			${__("Still to return")}: <b>${format_number(row.remaining, null, 3)}</b> &middot;
+			${__("Can issue now")}: <b>${format_number(row.direct_available, null, 3)}</b> &middot;
 			${__("Route")}: <b>${esc(row.route)}</b></p>
 		${row.limiting_factor ? `<p class="text-muted">${esc(row.limiting_factor)}</p>` : ""}
 		<table class="table table-bordered table-condensed">
 			<thead><tr>
 				<th>${__("Batch")}</th><th>${__("Item")}</th><th>${__("Warehouse")}</th>
 				<th>${__("Stage")}</th><th>${__("Holding")}</th><th>${__("Free")}</th>
-				<th>${__("Receipt-item equivalent")}</th>
+				<th>${__("Receipt-item equivalent")}</th><th>${__("Free for this receipt")}</th>
 			</tr></thead>
-			<tbody>${lines || `<tr><td colspan="7">${__("No traced holdings")}</td></tr>`}</tbody>
+			<tbody>${lines || `<tr><td colspan="8">${__("No traced holdings")}</td></tr>`}</tbody>
 		</table>`;
 }
 
+function open_customer_goods_issue(frm, args) {
+	frappe.model.open_mapped_doc({
+		method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
+		frm: frm,
+		args: args || {},
+	});
+}
+
 function make_customer_gold_return_mr(frm, row, qty) {
-	// Bring the metal back to the receipt's custody warehouse. Same-item holdings elsewhere are
-	// requested as they are; if only another purity is left, request the receipt's item into its
-	// own batch from where that metal sits, and use the request's Settle action to convert it.
+	// Bring the metal back to the receipt's custody warehouse. Only unused raw metal is asked for
+	// (RM, transit, department WIP -- never finished pieces or scrap), and only THIS receipt's
+	// free share of it. Same-item holdings are requested as they are; another purity is requested
+	// as the receipt's item into the receipt's own batch, for the request's Settle action to convert.
+	const returnable = ["RM", "Transit", "WIP"];
 	frappe.model.with_doctype("Material Request", function () {
 		const mr = frappe.model.get_new_doc("Material Request");
 		mr.company = frm.doc.company;
 		mr.material_request_type = "Material Transfer";
 		mr.inventory_type = "Customer Goods";
 		mr._customer = frm.doc._customer;
-		let needed = flt(qty) || flt(row.remaining);
+		const receipt_row = (frm.doc.items || []).find((d) => d.name === row.receipt_row) || {};
+		let needed = Math.max(flt(qty) || flt(row.remaining), 0) - flt(row.direct_available);
 		const away = row.holdings.filter(
-			(h) => h.free_qty > 0 && !(h.same_item && h.warehouse === row.custody_warehouse)
+			(h) =>
+				returnable.includes(h.stage) &&
+				h.free_receipt_qty > 0 &&
+				!(h.batch_no === row.batch_no && h.warehouse === row.custody_warehouse)
 		);
 		away.sort((a, b) => (b.same_item ? 1 : 0) - (a.same_item ? 1 : 0));
 		away.forEach((h) => {
 			if (needed <= 0) return;
-			const take = Math.min(needed, h.same_item ? h.free_qty : h.receipt_equivalent);
+			const take = Math.min(needed, h.free_receipt_qty);
 			const item = frappe.model.add_child(mr, "items");
 			item.item_code = row.item_code;
 			item.qty = take;
+			item.uom = receipt_row.stock_uom || receipt_row.uom;
+			item.stock_uom = receipt_row.stock_uom || receipt_row.uom;
+			item.conversion_factor = 1;
 			item.from_warehouse = h.warehouse;
 			item.warehouse = row.custody_warehouse;
-			item.custom_batch_no = h.same_item ? h.batch_no : row.batch_no;
+			item.batch_no = h.same_item ? h.batch_no : row.batch_no;
 			item.schedule_date = frappe.datetime.nowdate();
 			needed -= take;
 		});

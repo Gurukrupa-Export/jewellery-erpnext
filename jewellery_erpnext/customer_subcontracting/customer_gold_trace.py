@@ -763,19 +763,24 @@ def discover_scope(root_batches, customer=None, max_rounds=50):
 		sed = _stock_entry_rows(producing)
 		owners = _batch_owners({e.batch_no for e in entries if e.batch_no})
 
+		# Grouped once per round: filtering the whole entry list per voucher was quadratic.
+		by_voucher = defaultdict(list)
+		for e in entries:
+			if e.batch_no:
+				by_voucher[e.voucher_no].append(e)
+
 		new = set()
-		for voucher in producing:
-			rows = [e for e in entries if e.voucher_no == voucher and e.batch_no]
-			in_scope_lanes = {
-				_row_lane(sed.get(e.voucher_detail_no), owners.get(e.batch_no))
+		known = scope | frontier
+		for rows in by_voucher.values():
+			lanes = [
+				(e, _row_lane(sed.get(e.voucher_detail_no), owners.get(e.batch_no)))
 				for e in rows
-				if e.qty < 0 and e.batch_no in scope | frontier
+			]
+			in_scope_lanes = {
+				lane for e, lane in lanes if e.qty < 0 and e.batch_no in known
 			}
-			for e in rows:
-				if e.qty <= 0:
-					continue
-				lane = _row_lane(sed.get(e.voucher_detail_no), owners.get(e.batch_no))
-				if lane in in_scope_lanes and e.batch_no not in scope:
+			for e, lane in lanes:
+				if e.qty > 0 and lane in in_scope_lanes and e.batch_no not in scope:
 					new.add(e.batch_no)
 		scope |= new
 		frontier = new
