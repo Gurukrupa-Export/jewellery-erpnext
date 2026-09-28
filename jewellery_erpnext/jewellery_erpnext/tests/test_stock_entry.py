@@ -1596,6 +1596,10 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 			cse_mod, "in_configured_timeslot", return_value=True
 		), patch.object(
 			cse_mod,
+			"normalize_add_to_transit",
+			side_effect=_record("normalize_add_to_transit"),
+		), patch.object(
+			cse_mod,
 			"set_manufacturing_refs",
 			side_effect=_record("set_manufacturing_refs"),
 		), patch.object(
@@ -1621,6 +1625,9 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 		self.assertEqual(
 			calls,
 			[
+				# Clears Add to Transit on receipt legs and flagged one-shot moves before
+				# StockEntry.validate rejects it for a non-Transit target.
+				"normalize_add_to_transit",
 				# Must stay ahead of set_employee, which reads
 				# self.manufacturing_operation to resolve to_employee.
 				"set_manufacturing_refs",
@@ -1633,6 +1640,203 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 				"validate_warehouse",
 			],
 		)
+
+
+# ------------------------------------------------------- normalize_add_to_transit
+class TestNormalizeAddToTransit(_StockEntryTestCase):
+	"""ERPNext v16.36.0 rejects Add to Transit into a non-Transit warehouse, and the
+	flag is fetched back from a transit Stock Entry Type whenever it is 0 -- so the
+	before_validate hook is where entries that are not in transit get it cleared."""
+
+	def _run(self, se, stock_entries=None, non_transit=()):
+		"""Run the helper with only ``Stock Entry`` reads answered from ``stock_entries``.
+
+		Every other ``frappe.db.get_value`` call falls through to the real one, so meta
+		loading is untouched. ``non_transit`` names the entries with a row that landed
+		outside a Transit warehouse. Returns the list of Stock Entry names that were read.
+		"""
+		stock_entries = stock_entries or {}
+		real_get_value = frappe.db.get_value
+		reads = []
+
+		def _get_value(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype != "Stock Entry":
+				return real_get_value(doctype, filters, fieldname, *args, **kwargs)
+			reads.append(filters)
+			row = stock_entries.get(filters)
+			if row is None:
+				return None
+			if isinstance(fieldname, (list, tuple)):
+				return frappe._dict({f: row.get(f) for f in fieldname})
+			return row.get(fieldname)
+
+		with patch.object(
+			cse_mod.frappe.db, "get_value", side_effect=_get_value
+		), patch.object(
+			cse_mod,
+			"has_non_transit_target",
+			side_effect=lambda name: name in non_transit,
+		):
+			cse_mod.normalize_add_to_transit(se)
+		return reads
+
+	def _run_expecting_throw(self, se, stock_entries=None, non_transit=()):
+		with patch.object(cse_mod.frappe, "throw", side_effect=RuntimeError) as throw:
+			with self.assertRaises(RuntimeError):
+				self._run(se, stock_entries, non_transit)
+		return throw.call_args[0][0]
+
+	# --- receipt legs ----------------------------------------------------
+
+	def test_receipt_leg_is_not_in_transit(self):
+		"""End Transit keeps the DEPARTMENT/CGT type, whose 1 the fetch writes back."""
+		se = _Doc(
+			purpose="Material Transfer", add_to_transit=1, outgoing_stock_entry="SE-OUT"
+		)
+		self._run(se, {"SE-OUT": {"add_to_transit": 1, "outgoing_stock_entry": None}})
+		self.assertEqual(se.add_to_transit, 0)
+
+	def test_receipt_of_a_receipt_throws(self):
+		msg = self._run_expecting_throw(
+			_Doc(
+				purpose="Material Transfer",
+				add_to_transit=1,
+				outgoing_stock_entry="SE-IN",
+			),
+			{"SE-IN": {"add_to_transit": 1, "outgoing_stock_entry": "SE-OUT"}},
+		)
+		self.assertIn("SE-IN", msg)
+		self.assertIn("cannot be received", msg)
+
+	def test_receipt_of_a_direct_transfer_throws(self):
+		msg = self._run_expecting_throw(
+			_Doc(
+				purpose="Material Transfer",
+				add_to_transit=1,
+				outgoing_stock_entry="SE-DIRECT",
+			),
+			{"SE-DIRECT": {"add_to_transit": 0, "outgoing_stock_entry": None}},
+		)
+		self.assertIn("SE-DIRECT", msg)
+
+	def test_receipt_of_a_flagged_entry_that_never_reached_transit_throws(self):
+		"""Older reserve entries carry add_to_transit = 1 but moved stock into Reserve/RM
+		warehouses; the flag alone does not make them receivable."""
+		msg = self._run_expecting_throw(
+			_Doc(
+				purpose="Material Transfer",
+				add_to_transit=1,
+				outgoing_stock_entry="SE-RESERVE",
+			),
+			{"SE-RESERVE": {"add_to_transit": 1, "outgoing_stock_entry": None}},
+			non_transit={"SE-RESERVE"},
+		)
+		self.assertIn("SE-RESERVE", msg)
+
+	def test_customer_goods_issue_is_not_checked_as_a_transit_receipt(self):
+		"""Customer Goods Received > Issue links the Received entry the same way; a
+		Material Issue never ends a transit, so its source is not held to that rule."""
+		se = _Doc(
+			purpose="Material Issue",
+			add_to_transit=1,
+			outgoing_stock_entry="SE-CG-RECEIVED",
+		)
+		reads = self._run(se)
+		self.assertEqual(se.add_to_transit, 0)
+		self.assertEqual(reads, [])
+
+	def test_receipt_of_a_missing_entry_throws(self):
+		msg = self._run_expecting_throw(
+			_Doc(
+				purpose="Material Transfer",
+				add_to_transit=1,
+				outgoing_stock_entry="SE-GONE",
+			)
+		)
+		self.assertIn("SE-GONE", msg)
+
+	# --- sending legs ----------------------------------------------------
+
+	def test_flagged_one_shot_move_is_not_in_transit(self):
+		se = _Doc(add_to_transit=1, flags=frappe._dict(no_transit=True))
+		reads = self._run(se)
+		self.assertEqual(se.add_to_transit, 0)
+		self.assertEqual(reads, [])
+
+	def test_real_transit_leg_keeps_add_to_transit(self):
+		"""MR > Material Transfer (In Transit) and manual DEPARTMENT entries go to a
+		Transit warehouse and must stay in transit."""
+		se = _Doc(add_to_transit=1, flags=frappe._dict())
+		reads = self._run(se)
+		self.assertEqual(se.add_to_transit, 1)
+		self.assertEqual(reads, [])
+
+	def test_doc_without_flags_is_left_alone(self):
+		se = _Doc(add_to_transit=1)
+		self._run(se)
+		self.assertEqual(se.add_to_transit, 1)
+
+	# --- amendments ------------------------------------------------------
+
+	def test_amendment_of_a_one_shot_move_stays_out_of_transit(self):
+		"""Amending keeps the stored 0, which the fetch then turns back into 1."""
+		se = _Doc(
+			add_to_transit=1,
+			amended_from="SE-DEPT-1",
+			stock_entry_type="Material Transfer (DEPARTMENT)",
+		)
+		self._run(
+			se,
+			{
+				"SE-DEPT-1": {
+					"add_to_transit": 0,
+					"stock_entry_type": "Material Transfer (DEPARTMENT)",
+				}
+			},
+		)
+		self.assertEqual(se.add_to_transit, 0)
+
+	def test_amendment_of_a_transit_leg_stays_in_transit(self):
+		se = _Doc(
+			add_to_transit=1,
+			amended_from="SE-OUT-1",
+			stock_entry_type="Material Transfer (DEPARTMENT)",
+		)
+		self._run(
+			se,
+			{
+				"SE-OUT-1": {
+					"add_to_transit": 1,
+					"stock_entry_type": "Material Transfer (DEPARTMENT)",
+				}
+			},
+		)
+		self.assertEqual(se.add_to_transit, 1)
+
+	def test_amendment_into_another_type_follows_the_new_type(self):
+		"""Changing the type on an amendment is a new decision; the original's 0 does
+		not carry over."""
+		se = _Doc(
+			add_to_transit=1,
+			amended_from="SE-DIRECT-1",
+			stock_entry_type="Material Transfer (DEPARTMENT)",
+		)
+		self._run(
+			se,
+			{
+				"SE-DIRECT-1": {
+					"add_to_transit": 0,
+					"stock_entry_type": "Material Transfer to Department",
+				}
+			},
+		)
+		self.assertEqual(se.add_to_transit, 1)
+
+	def test_amendment_already_at_zero_reads_nothing(self):
+		se = _Doc(add_to_transit=0, amended_from="SE-DEPT-1")
+		reads = self._run(se)
+		self.assertEqual(se.add_to_transit, 0)
+		self.assertEqual(reads, [])
 
 
 # --------------------------------------------------------- set_manufacturing_refs
@@ -2787,6 +2991,34 @@ class TestConsumeStockReservationEntry(_StockEntryTestCase):
 		sre.db_set.assert_called_once_with("delivered_qty", 5.0, update_modified=True)
 
 
+def _department_receipt_stub(reads, stock_entries=None, mr_item_warehouse=None):
+	"""A keyed ``frappe.db.get_value`` for the End Transit mappers.
+
+	Answers the Material Request lookup of a Transfer to Department (stamped
+	``custom_department_transfer_se`` = SE-DEPT-1, destination WH-DEST), plus the
+	optional Stock Entry / Material Request Item reads; everything else falls through.
+	"""
+	real_get_value = frappe.db.get_value
+	stock_entries = stock_entries or {}
+
+	def _get_value(doctype, filters=None, fieldname="name", *args, **kwargs):
+		if doctype == "Material Request":
+			reads.append(filters)
+			if filters == {
+				"custom_department_transfer_se": "SE-DEPT-1",
+				"docstatus": 1,
+			}:
+				return "WH-DEST"
+			return None
+		if doctype == "Stock Entry" and filters in stock_entries:
+			return stock_entries[filters]
+		if doctype == "Material Request Item" and mr_item_warehouse:
+			return mr_item_warehouse
+		return real_get_value(doctype, filters, fieldname, *args, **kwargs)
+
+	return _get_value
+
+
 # -------------------------------------------------------- make_stock_in_entry
 class TestMakeStockInEntry(_StockEntryTestCase):
 	def _run(self, source, target):
@@ -2838,6 +3070,70 @@ class TestMakeStockInEntry(_StockEntryTestCase):
 		self.assertEqual(target_row.s_warehouse, "WH-SRC")
 		self.assertEqual(target_row.qty, 5)
 
+	def test_department_transfer_is_received_into_its_destination(self):
+		"""make_department_transfer_stock_entry sends through the destination's transit
+		warehouse and carries no custom_material_request_reference; the request stamped
+		with it names where End Transit lands the material. Looked up once, not per row."""
+		source = _Doc(
+			stock_entry_type="Material Transfer (DEPARTMENT)", name="SE-DEPT-1"
+		)
+		target = _Doc(stock_entry_type="Material Transfer (DEPARTMENT)")
+		target.set_missing_values = MagicMock()
+		_, kwargs = self._run(source, target)
+		update_item = kwargs["map_dict"]["Stock Entry Detail"]["postprocess"]
+
+		source_parent = _Doc(
+			stock_entry_type="Material Transfer (DEPARTMENT)",
+			name="SE-DEPT-1",
+			custom_material_request_reference=None,
+		)
+		source_rows = [
+			_Row(item_code="ITM-1", t_warehouse="WH-TRANSIT", qty=5),
+			_Row(item_code="ITM-2", t_warehouse="WH-TRANSIT", qty=2),
+		]
+		target_rows = [_Row(), _Row()]
+		reads = []
+
+		with patch.object(
+			se_events.frappe.db,
+			"get_value",
+			side_effect=_department_receipt_stub(reads),
+		):
+			for source_row, target_row in zip(source_rows, target_rows):
+				update_item(source_row, target_row, source_parent)
+
+		self.assertEqual([r.t_warehouse for r in target_rows], ["WH-DEST", "WH-DEST"])
+		self.assertEqual([r.s_warehouse for r in target_rows], ["WH-TRANSIT"] * 2)
+		self.assertEqual(len(reads), 1)
+
+	def test_other_transit_types_are_not_looked_up(self):
+		source = _Doc(stock_entry_type="Customer Goods Transfer", name="SE-CGT-1")
+		target = _Doc(stock_entry_type="Customer Goods Transfer")
+		target.set_missing_values = MagicMock()
+		_, kwargs = self._run(source, target)
+		update_item = kwargs["map_dict"]["Stock Entry Detail"]["postprocess"]
+
+		source_parent = _Doc(
+			stock_entry_type="Customer Goods Transfer",
+			name="SE-CGT-1",
+			custom_material_request_reference=None,
+		)
+		target_row = _Row()
+		reads = []
+		with patch.object(
+			se_events.frappe.db,
+			"get_value",
+			side_effect=_department_receipt_stub(reads),
+		):
+			update_item(
+				_Row(item_code="ITM-1", t_warehouse="WH-T", qty=1),
+				target_row,
+				source_parent,
+			)
+
+		self.assertEqual(target_row.t_warehouse, "")
+		self.assertEqual(reads, [])
+
 
 # ---------------------------------------- make_stock_in_entry_on_transit_entry
 class TestMakeStockInEntryOnTransitEntry(_StockEntryTestCase):
@@ -2879,6 +3175,44 @@ class TestMakeStockInEntryOnTransitEntry(_StockEntryTestCase):
 		self.assertEqual(target_row.t_warehouse, "WH-MR")
 		self.assertEqual(target_row.s_warehouse, "WH-SRC")
 		self.assertEqual(target_row.qty, 8)
+
+	def test_department_transfer_is_received_into_its_destination(self):
+		"""Its rows' Material Request Item warehouse is the request's old set_warehouse;
+		the receipt belongs in custom_destination_warehouse instead."""
+		source = _Doc(stock_entry_type="Material Transfer (DEPARTMENT)")
+		target = _Doc()
+		target.set_missing_values = MagicMock()
+		_, kwargs = self._run(source, target)
+		update_item = kwargs["map_dict"]["Stock Entry Detail"]["postprocess"]
+
+		source_parent = _Doc(
+			stock_entry_type="Material Transfer (DEPARTMENT)", name="SE-DEPT-1"
+		)
+		source_row = _Row(
+			material_request_item="MRI-1",
+			material_request="MR-1",
+			t_warehouse="WH-TRANSIT",
+			qty=3,
+			transferred_qty=0,
+		)
+		target_row = _Row()
+		reads = []
+
+		with patch.object(
+			se_events.frappe.db,
+			"get_value",
+			side_effect=_department_receipt_stub(
+				reads,
+				stock_entries={"SE-1": 1},
+				mr_item_warehouse="WH-OLD-SET",
+			),
+		):
+			update_item(source_row, target_row, source_parent)
+
+		self.assertEqual(target_row.t_warehouse, "WH-DEST")
+		self.assertEqual(target_row.s_warehouse, "WH-TRANSIT")
+		self.assertEqual(target_row.qty, 3)
+		self.assertEqual(len(reads), 1)
 
 
 # ------------------------------------------------------------- make_mr_on_return

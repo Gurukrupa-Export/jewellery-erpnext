@@ -1708,8 +1708,43 @@ def get_warehouse_details(
 	return d_warehouse, e_warehouse
 
 
+def _department_transfer_destination(source):
+	"""Where a Transfer to Department transit leg is received into, if ``source`` is one.
+
+	``make_department_transfer_stock_entry`` sends the material to the destination's
+	transit warehouse and stamps the entry on its request as
+	``custom_department_transfer_se``; the request's ``custom_destination_warehouse`` is
+	where it lands. The entry carries no ``custom_material_request_reference`` and its rows'
+	Material Request Item warehouse is the request's old ``set_warehouse``, so neither End
+	Transit mapper's own routing fits it.
+	"""
+	if source.get("stock_entry_type") != "Material Transfer (DEPARTMENT)":
+		return None
+
+	return frappe.db.get_value(
+		"Material Request",
+		{"custom_department_transfer_se": source.get("name"), "docstatus": 1},
+		"custom_destination_warehouse",
+	)
+
+
+def _department_destination_lookup():
+	"""``_department_transfer_destination`` memoised per mapping: one query, not one per row."""
+	destinations = {}
+
+	def lookup(source):
+		key = source.get("name")
+		if key not in destinations:
+			destinations[key] = _department_transfer_destination(source)
+		return destinations[key]
+
+	return lookup
+
+
 @frappe.whitelist()
 def make_stock_in_entry(source_name, target_doc=None):
+	department_destination = _department_destination_lookup()
+
 	def set_missing_values(source, target):
 		if target.stock_entry_type == "Customer Goods Received":
 			target.stock_entry_type = "Customer Goods Issue"
@@ -1735,6 +1770,10 @@ def make_stock_in_entry(source_name, target_doc=None):
 				if wh.item_code == source_doc.item_code:
 					target_wh = wh.warehouse
 			target_doc.t_warehouse = target_wh
+
+		destination = department_destination(source_parent)
+		if destination:
+			target_doc.t_warehouse = destination
 
 		target_doc.s_warehouse = source_doc.t_warehouse
 		target_doc.qty = source_doc.qty
@@ -1936,6 +1975,11 @@ def create_material_receipt_for_sales_person(source_name):
 
 	target_doc.stock_entry_type = "Material Receipt - Sales Person"
 	target_doc.docstatus = 0
+	# The clone above copies the issue's transit fields too. A return receipt is neither
+	# in transit nor the receipt leg of a transit entry, and ERPNext rejects Add to Transit
+	# into a non-Transit warehouse.
+	target_doc.add_to_transit = 0
+	target_doc.outgoing_stock_entry = None
 	target_doc.posting_date = frappe.utils.nowdate()
 	target_doc.posting_time = frappe.utils.nowtime()
 
@@ -2028,6 +2072,9 @@ def create_material_receipt_for_customer_approval(source_name, cust_name):
 
 	target_doc.update(frappe.get_doc("Stock Entry", source_name).as_dict())
 	target_doc.docstatus = 0
+	# Same as create_material_receipt_for_sales_person: never a transit entry or leg.
+	target_doc.add_to_transit = 0
+	target_doc.outgoing_stock_entry = None
 
 	target_doc.items = []
 	for item in frappe.get_all(
@@ -2060,6 +2107,8 @@ validates serial items entered are equal to quantity or not if not appropriate e
 
 @frappe.whitelist()
 def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
+	department_destination = _department_destination_lookup()
+
 	def set_missing_values(source, target):
 		target.stock_entry_type = source.stock_entry_type
 		target.set_missing_values()
@@ -2078,6 +2127,10 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 					"warehouse",
 				)
 				target_doc.t_warehouse = warehouse
+
+		destination = department_destination(source_parent)
+		if destination:
+			target_doc.t_warehouse = destination
 
 		target_doc.s_warehouse = source_doc.t_warehouse
 		target_doc.qty = source_doc.qty - source_doc.transferred_qty
