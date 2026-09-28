@@ -1658,7 +1658,15 @@ def _customer_gold_issue_plan(source_name):
 		is_customer_gold_enabled,
 	)
 
-	source = frappe.get_doc("Stock Entry", source_name)
+	source = frappe.db.get_value(
+		"Stock Entry",
+		source_name,
+		["name", "company", "stock_entry_type", "purpose", "docstatus"],
+		as_dict=True,
+	)
+	if not source:
+		return None, None
+	source.doctype = "Stock Entry"
 	if source.stock_entry_type != "Customer Goods Received" and not (
 		is_customer_gold_enabled() and _receipt_settings(source)
 	):
@@ -1696,8 +1704,8 @@ def make_stock_in_entry(source_name, target_doc=None):
 	issue_type, issue_left = _customer_gold_issue_plan(source_name)
 
 	def set_missing_values(source, target):
-		if issue_type:
-			target.stock_entry_type = issue_type
+		if issue_type or target.stock_entry_type == "Customer Goods Received":
+			target.stock_entry_type = issue_type or "Customer Goods Issue"
 			target.purpose = "Material Issue"
 			target.custom_cg_issue_against = source.name
 		elif target.stock_entry_type == "Customer Goods Issue":

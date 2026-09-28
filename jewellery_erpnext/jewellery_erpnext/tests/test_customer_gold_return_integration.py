@@ -719,8 +719,10 @@ class TestDeskReturnPath(_ReturnCase):
 				f"the receipt cancelled with a submitted return against it: {evidence}"
 			)
 
-		# Refused by erpnext's own batch guard: the receipt's batch would go to -2 g.
-		self.assertIn("negative stock", message)
+		# Refused by the customer-gold dependency guard, which names the return -- not merely by
+		# erpnext's negative-batch guard, which a refilled or descendant batch would slip past.
+		self.assertIn("cannot be cancelled while customer gold received on it", message)
+		self.assertIn(ret.name, message)
 		self.assertEqual(
 			frappe.db.get_value("Stock Entry", receipt.name, "docstatus"), 1
 		)
