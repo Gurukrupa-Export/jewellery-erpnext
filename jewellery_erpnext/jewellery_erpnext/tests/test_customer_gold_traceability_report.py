@@ -409,9 +409,11 @@ class TestMoneyGate(_ReportUnitCase):
 	def test_with_accounts_user_the_money_columns_and_keys_appear(self):
 		"""RPT-11."""
 		receipts, replay = _settlement_fixture()
-		columns, rows, _msg, _chart, summary = self._execute(
-			{}, ["Accounts User"], receipts, replay, reads=FakeReads()
-		)
+		# The rate-outlier check reads the purchase / feed reference; it has its own tests.
+		with patch.object(report, "_rate_outliers", return_value={}):
+			columns, rows, _msg, _chart, summary = self._execute(
+				{}, ["Accounts User"], receipts, replay, reads=FakeReads()
+			)
 
 		fieldnames = [c["fieldname"] for c in columns]
 		self.assertTrue(MONEY_FIELDS <= set(fieldnames))
@@ -488,6 +490,7 @@ class TestColumns(unittest.TestCase):
 				"receipt",
 				"receipt_row",
 				"batch_no",
+				"serial_no",
 				"item_code",
 				"generation",
 				"produced_by",
@@ -513,6 +516,7 @@ class TestColumns(unittest.TestCase):
 				"voucher_type",
 				"voucher_no",
 				"batch_no",
+				"serial_no",
 				"item_code",
 				"from_warehouse",
 				"to_warehouse",
