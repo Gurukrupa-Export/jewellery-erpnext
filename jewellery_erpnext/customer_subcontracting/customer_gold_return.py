@@ -459,7 +459,9 @@ def _resolve_return_row(doc, row):
 		receipt=receipt,
 		kind=plan_kind,
 		booked_rate=booked_rate,
-		qty=flt(row.get("transfer_qty")) or flt(row.get("qty")),
+		# From qty x factor, not transfer_qty: at before_validate transfer_qty is still whatever
+		# the mapper copied, so an edited qty would be checked against a stale figure until submit.
+		qty=flt(row.get("qty")) * (flt(row.get("conversion_factor")) or 1.0),
 		warehouse=row.get("s_warehouse"),
 	)
 
