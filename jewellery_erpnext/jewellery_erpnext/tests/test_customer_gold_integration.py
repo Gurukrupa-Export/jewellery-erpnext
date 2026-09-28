@@ -82,6 +82,9 @@ OTHER_CUSTOMER = "CG-TEST-CUSTOMER-B"
 SE_TYPE = "CG Test Customer Goods Received"
 REPACK_SE_TYPE = "CG Test Repack"
 RETURN_SE_TYPE = "CG Test Customer Gold Return"
+#: A plain Material Issue that is NOT the configured return type -- metal leaving custody for
+#: the shop floor, which must not be read as a customer return.
+FLOOR_ISSUE_SE_TYPE = "CG Test Floor Issue"
 TRANSFER_SE_TYPE = "CG Test Transfer"
 MANUFACTURE_SE_TYPE = "CG Test Manufacture"
 #: Must be named exactly "Process Loss" — the dispatcher keys on the type, mirroring
@@ -596,6 +599,12 @@ class _CustomerGoldIntegrationCase(IntegrationTestCase):
 		if not frappe.db.exists("Stock Entry Type", RETURN_SE_TYPE):
 			doc = frappe.new_doc("Stock Entry Type")
 			doc.name = RETURN_SE_TYPE
+			doc.purpose = "Material Issue"
+			doc.insert(ignore_permissions=True)
+
+		if not frappe.db.exists("Stock Entry Type", FLOOR_ISSUE_SE_TYPE):
+			doc = frappe.new_doc("Stock Entry Type")
+			doc.name = FLOOR_ISSUE_SE_TYPE
 			doc.purpose = "Material Issue"
 			doc.insert(ignore_permissions=True)
 
@@ -3242,8 +3251,13 @@ class TestRawGoldReturn(TestFulfilmentLedger):
 		# 6 g leaves custody for a job, through an ordinary issue that is NOT the customer-gold
 		# return path — so no custody event is written for it. That is the whole point: the
 		# ledger will still say the customer owns 10 g.
+		#
+		# A plain Material Issue, NOT the configured return type. This fixture used to borrow
+		# RETURN_SE_TYPE, which only worked because a desk entry of that type was silently not
+		# treated as a return -- the defect the receipt-linked return hooks close. Any entry of
+		# the return type is now a real, receipt-linked return with its own custody event.
 		issue = frappe.new_doc("Stock Entry")
-		issue.stock_entry_type = RETURN_SE_TYPE
+		issue.stock_entry_type = FLOOR_ISSUE_SE_TYPE
 		issue.purpose = "Material Issue"
 		issue.company = COMPANY
 		issue.posting_date = self.posting_date

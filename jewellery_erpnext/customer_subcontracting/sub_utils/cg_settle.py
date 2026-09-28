@@ -634,7 +634,16 @@ def _convert_multi(
 	See ``_convert`` for the ``target_batch`` semantics. Multiple source rows let a
 	conversion draw the requirement from several batches when it is spread across them.
 	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
+		lane_tag,
+	)
+
 	inv = CUSTOMER_GOODS if customer else REGULAR_STOCK
+	# The ownership lane, stamped exactly as Metal Conversions stamps it. Without it the
+	# customer-gold dispatcher could not tell this Repack was a conversion, wrote no Conversion
+	# events, and a receipt batch refilled here read as holding nothing returnable. Every row of
+	# one Settle conversion is one owner, so provenance scoping is unchanged.
+	lane = lane_tag(inv, customer)
 	se = _new_se(mr, REPACK_SE_TYPE, "Repack", warehouse, warehouse, customer)
 	for sr in source_rows:
 		_append_item(
@@ -646,6 +655,7 @@ def _convert_multi(
 				"s_warehouse": warehouse,
 				"inventory_type": inv,
 				"customer": customer,
+				"custom_conversion_lane": lane,
 			},
 		)
 	produced_row = {
@@ -654,6 +664,7 @@ def _convert_multi(
 		"t_warehouse": warehouse,
 		"inventory_type": inv,
 		"customer": customer,
+		"custom_conversion_lane": lane,
 	}
 	if target_batch:
 		produced_row["batch_no"] = target_batch

@@ -1634,11 +1634,70 @@ def get_warehouse_details(
 	return d_warehouse, e_warehouse
 
 
+def _customer_gold_issue_plan(source_name):
+	"""For a Customer Gold receipt: the return type to create and what each receipt row still
+	has to give back. ``(None, None)`` for any other Stock Entry.
+
+	The Issue used to be mapped with the full receipt quantity every time, so a receipt already
+	half returned offered its whole quantity again -- and nothing downstream checked it. The
+	return hook now enforces the limit; mapping only what is left keeps the form honest too.
+	A quantity chosen in the return preview arrives as ``frappe.flags.args.qty``.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		effective_receipt_events,
+		is_allocation_schema_ready,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_receipt import (
+		_receipt_settings,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+		receipt_remaining,
+	)
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_customer_gold_settings,
+		is_customer_gold_enabled,
+	)
+
+	source = frappe.get_doc("Stock Entry", source_name)
+	if source.stock_entry_type != "Customer Goods Received" and not (
+		is_customer_gold_enabled() and _receipt_settings(source)
+	):
+		return None, None
+
+	return_type = (
+		get_customer_gold_settings().get("customer_gold_return_stock_entry_type")
+		or "Customer Goods Issue"
+	)
+	if not (is_customer_gold_enabled() and is_allocation_schema_ready()):
+		return return_type, None
+
+	events = effective_receipt_events({"reference_docname": source.name})
+	if not events:
+		return return_type, None
+	remaining = receipt_remaining(source.company, events[0].customer, events)
+	requested = flt((frappe.flags.args or {}).get("qty")) if frappe.flags.args else 0.0
+	requested_row = (
+		(frappe.flags.args or {}).get("receipt_row") if frappe.flags.args else None
+	)
+
+	left = {}
+	for event in events:
+		qty = max(flt(remaining.get(event.name)), 0.0)
+		if requested_row and requested_row != event.cg_source_row:
+			qty = 0.0
+		elif requested:
+			qty = min(qty, requested)
+		left[event.cg_source_row] = flt(qty, 3)
+	return return_type, left
+
+
 @frappe.whitelist()
 def make_stock_in_entry(source_name, target_doc=None):
+	issue_type, issue_left = _customer_gold_issue_plan(source_name)
+
 	def set_missing_values(source, target):
-		if target.stock_entry_type == "Customer Goods Received":
-			target.stock_entry_type = "Customer Goods Issue"
+		if issue_type:
+			target.stock_entry_type = issue_type
 			target.purpose = "Material Issue"
 			target.custom_cg_issue_against = source.name
 		elif target.stock_entry_type == "Customer Goods Issue":
@@ -1664,6 +1723,8 @@ def make_stock_in_entry(source_name, target_doc=None):
 
 		target_doc.s_warehouse = source_doc.t_warehouse
 		target_doc.qty = source_doc.qty
+		if issue_left is not None:
+			target_doc.qty = issue_left.get(source_doc.name, 0.0)
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -1683,7 +1744,9 @@ def make_stock_in_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				# "condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				# A receipt row with nothing left to give back is not offered again.
+				"condition": lambda doc: issue_left is None
+				or flt(issue_left.get(doc.name)) > 0,
 			},
 		},
 		target_doc,

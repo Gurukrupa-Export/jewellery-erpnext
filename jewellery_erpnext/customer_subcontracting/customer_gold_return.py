@@ -70,6 +70,9 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
+	get_purity_percentage,
+)
 
 
 def get_booked_rate(company, customer, batch_no):
@@ -209,6 +212,9 @@ def make_customer_gold_return(
 			title=frappe._("No Booked Carrying Value"),
 		)
 
+	# The Return event and its receipt allocation are written by ``record_return`` -- the
+	# Stock Entry's own on_submit hook -- so this API and the desk "Create > Issue" button go
+	# through exactly one writer and cannot disagree.
 	se = _build_return_entry(
 		company,
 		customer,
@@ -219,7 +225,6 @@ def make_customer_gold_return(
 		booked_rate,
 		posting_date,
 	)
-	_record_return_event(se, customer, batch_no, item_code, qty, booked_rate, nominal)
 	return se.name
 
 
@@ -298,30 +303,596 @@ def _build_return_entry(
 	return se
 
 
-def _record_return_event(se, customer, batch_no, item_code, qty, booked_rate, nominal):
-	"""One custody event, negative -- the metal has left the customer's holding with us."""
-	row = se.items[0]
-	_write_event(
-		cg_event_key=build_event_key(
-			se.company, se.doctype, row.name, None, EVENT_RETURN
-		),
-		cg_event_kind=EVENT_RETURN,
-		cg_stage=STAGE_RM,
-		company=se.company,
-		customer=customer,
-		reference_doctype=se.doctype,
-		reference_docname=se.name,
-		cg_source_row=row.name,
-		item_code=item_code,
+# ------------------------------------------------------------------------------------------
+# Receipt-linked return: every Stock Entry of the configured return type
+# ------------------------------------------------------------------------------------------
+#
+# WHY HOOKS, AND NOT ONLY THE API
+# -------------------------------
+# Accounts return unused gold from the receipt itself: Customer Goods Received -> Create ->
+# Issue (``doc_events/stock_entry.make_stock_in_entry``). That desk path built a Stock Entry of
+# the configured return type and submitted it with no custody event, no liability leg and no
+# check against what the receipt still had to give back -- ``record_stock_movement`` skips the
+# return type because ``make_customer_gold_return`` used to write the event itself, and nothing
+# ever called that API. So a raw return left the Customer Gold Liability standing and the ledger
+# still showing the gold as held, and the same receipt could be returned twice.
+#
+# Hooking the Stock Entry catches both paths with one writer.
+
+#: How far a DESCENDANT batch's own rate may sit from the rate its receipt booked, relative. A
+#: conversion rounds its target quantity to 3 dp, which moves a per-gram rate by well under
+#: 0.01% on any real lot; company alloy that carried value into the lane moves it by whole
+#: percents. 0.05% separates the two with room to spare, and anything beyond it is a valuation
+#: question (decision D08) rather than a return.
+DESCENDANT_RATE_TOLERANCE = 0.0005
+
+
+def _applies(doc):
+	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+		_is_customer_gold_return,
+	)
+
+	return (
+		doc.doctype == "Stock Entry"
+		and is_customer_gold_enabled()
+		and is_ledger_schema_ready()
+		and _is_customer_gold_return(doc)
+	)
+
+
+def _return_plans(doc):
+	"""One resolved plan per row: which receipt row it returns against, from which batch, at
+	which booked rate. Raises on anything that is not a legitimate return of customer gold."""
+	return [_resolve_return_row(doc, row) for row in doc.get("items") or []]
+
+
+def _resolve_return_row(doc, row):
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		booked_rate_of,
+		effective_receipt_events,
+		receipts_of_batch,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+		_batch_owner,
+		_row_batches,
+	)
+
+	batches = _row_batches(row)
+	if len(batches) != 1:
+		frappe.throw(
+			frappe._(
+				"Row {0}: a Customer Gold return must name exactly one batch, so it can be "
+				"matched to the receipt it gives back."
+			).format(row.idx),
+			title=frappe._("Customer Gold Return"),
+		)
+	batch_no = batches[0]
+	owner = _batch_owner(batch_no)
+	if not owner:
+		frappe.throw(
+			frappe._(
+				"Row {0}: the selected batch is not customer-owned gold, so it cannot be "
+				"returned through {1}."
+			).format(row.idx, frappe.bold(doc.stock_entry_type)),
+			title=frappe._("Customer Gold Return"),
+		)
+
+	receipt = None
+	if row.get("against_stock_entry") and row.get("ste_detail"):
+		found = effective_receipt_events(
+			{
+				"reference_docname": row.against_stock_entry,
+				"cg_source_row": row.ste_detail,
+			}
+		)
+		if len(found) != 1:
+			frappe.throw(
+				frappe._(
+					"Row {0}: receipt {1} has no effective Customer Gold receipt for the "
+					"linked row -- it was cancelled, or was not a Customer Gold receipt."
+				).format(row.idx, frappe.bold(row.against_stock_entry)),
+				title=frappe._("Customer Gold Return"),
+			)
+		receipt = found[0]
+	elif doc.get("custom_cg_issue_against"):
+		found = effective_receipt_events(
+			{"reference_docname": doc.custom_cg_issue_against}
+		)
+		matching = [r for r in found if r.batch_no == batch_no] or (
+			found if len(found) == 1 else []
+		)
+		if len(matching) != 1:
+			frappe.throw(
+				frappe._(
+					"Row {0}: select the row of receipt {1} this quantity is returned against."
+				).format(row.idx, frappe.bold(doc.custom_cg_issue_against)),
+				title=frappe._("Customer Gold Return"),
+			)
+		receipt = matching[0]
+	else:
+		found = receipts_of_batch(doc.company, owner, batch_no)
+		if len(found) != 1:
+			frappe.throw(
+				frappe._(
+					"Row {0}: the batch does not identify a single Customer Gold receipt. "
+					"Create the return from the receipt (Create > Issue) so it names the "
+					"receipt row it gives back."
+				).format(row.idx),
+				title=frappe._("Customer Gold Return"),
+			)
+		receipt = found[0]
+
+	if receipt.company != doc.company or receipt.customer != owner:
+		# Same rule as ``_validate_batch_owner``: name neither the owner nor the batch.
+		frappe.throw(
+			frappe._(
+				"Row {0}: the selected batch is not held for the customer of receipt {1}, so "
+				"it cannot be returned against it."
+			).format(row.idx, frappe.bold(receipt.reference_docname)),
+			title=frappe._("Customer Gold Entitlement"),
+		)
+
+	nominal = get_customer_gold_valuation_policy() == VALUATION_NOMINAL
+	if batch_no == receipt.batch_no:
+		plan_kind = "receipt"
+		# Unchanged from ``make_customer_gold_return``: the batch's own receipts' booked rate.
+		booked_rate = get_booked_rate(doc.company, owner, batch_no) if nominal else None
+	else:
+		plan_kind = "descendant"
+		_validate_descendant(row, batch_no, receipt)
+		booked_rate = booked_rate_of(receipt) if nominal else None
+
+	if nominal and booked_rate is None:
+		frappe.throw(
+			frappe._(
+				"Row {0}: receipt {1} has no booked carrying value, so the amount to release "
+				"from the Customer Gold Liability cannot be established. Returning it at a "
+				"current market rate is not permitted."
+			).format(row.idx, frappe.bold(receipt.reference_docname)),
+			title=frappe._("No Booked Carrying Value"),
+		)
+
+	return frappe._dict(
+		row=row,
 		batch_no=batch_no,
-		stock_uom=row.stock_uom or row.uom,
-		cg_gross_qty_delta=-flt(qty),
-		**quantity_basis(item_code, -flt(qty), se.company),
-		# Negative: the booked obligation this return discharges. Computed from the BOOKED rate,
-		# never from the outgoing SLE -- the SLE reflects the batch's current valuation, which is
-		# precisely the number the SOP forbids using here.
-		cg_carrying_value_delta=-flt(booked_rate) * flt(qty) if nominal else None,
-		cg_currency=frappe.get_cached_value("Company", se.company, "default_currency")
+		customer=owner,
+		receipt=receipt,
+		kind=plan_kind,
+		booked_rate=booked_rate,
+		qty=flt(row.get("transfer_qty")) or flt(row.get("qty")),
+		warehouse=row.get("s_warehouse"),
+	)
+
+
+def _validate_descendant(row, batch_no, receipt):
+	"""A batch other than the receipt's own may be returned against it only when it IS the
+	receipt's metal -- produced from it -- and is the same item the customer handed in.
+
+	Returning a different purity (22KT against a 24KT receipt) is refused rather than priced.
+	How much 22KT settles a 24KT obligation, at what rate and who bears the alloy, is decision
+	D07/D08; the supported route is to convert it back first (the Material Request's Settle
+	action) and return the receipt's own item.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_trace import (
+		discover_scope,
+	)
+
+	if row.get("item_code") != receipt.item_code:
+		frappe.throw(
+			frappe._(
+				"Row {0}: receipt {1} received {2}; this row returns {3}. Returning a "
+				"different item or purity against a receipt is not an approved settlement. "
+				"Convert it to {2} first (Material Request > Settle), then return that."
+			).format(
+				row.idx,
+				frappe.bold(receipt.reference_docname),
+				frappe.bold(receipt.item_code),
+				frappe.bold(row.get("item_code")),
+			),
+			title=frappe._("Customer Gold Return: Different Purity"),
+		)
+
+	if batch_no not in discover_scope({receipt.batch_no}):
+		frappe.throw(
+			frappe._(
+				"Row {0}: the selected batch was not produced from receipt {1}'s metal, so it "
+				"cannot be returned against that receipt."
+			).format(row.idx, frappe.bold(receipt.reference_docname)),
+			title=frappe._("Customer Gold Return"),
+		)
+
+
+def _batch_rate(batch_no, warehouse):
+	"""The batch's own carrying rate in ``warehouse``: value over quantity of its effective
+	bundle entries. This is what the outgoing Stock Ledger Entry will actually be valued at
+	under batch-wise valuation, and therefore what the liability leg will actually post."""
+	row = frappe.db.sql(
+		"""
+		SELECT SUM(sbe.qty), SUM(sbe.stock_value_difference)
+		FROM `tabSerial and Batch Entry` sbe
+		JOIN `tabSerial and Batch Bundle` sbb ON sbb.name = sbe.parent
+		WHERE sbe.batch_no = %s AND sbe.warehouse = %s
+			AND sbb.is_cancelled = 0 AND sbb.docstatus = 1
+		""",
+		(batch_no, warehouse),
+	)
+	qty, value = (row[0] if row else (None, None)) or (None, None)
+	return (flt(value) / flt(qty)) if flt(qty) > 0 else None
+
+
+def _check_plans(doc, plans, for_update):
+	"""Quantity, entitlement and valuation checks. Called twice: at validate for an early,
+	readable answer, and again at before_submit under a lock for the one that counts."""
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+	requested = {}
+	for plan in plans:
+		key = (plan.batch_no, plan.warehouse)
+		requested[key] = requested.get(key, 0.0) + plan.qty
+
+	for plan in plans:
+		if plan.qty <= 0:
+			frappe.throw(
+				frappe._("Row {0}: return quantity must be greater than zero.").format(
+					plan.row.idx
+				)
+			)
+
+	for (batch_no, warehouse), qty in requested.items():
+		free = flt(get_batch_qty(batch_no=batch_no, warehouse=warehouse))
+		if qty > free + 1e-6:
+			frappe.throw(
+				frappe._(
+					"Only {0} of the selected batch is free in {1} -- the rest is reserved, "
+					"on the shop floor or already delivered. This return asks for {2}."
+				).format(
+					frappe.bold(flt(free, 3)), frappe.bold(warehouse), frappe.bold(qty)
+				),
+				title=frappe._("Insufficient Free Customer Gold"),
+			)
+
+	for plan in plans:
+		if plan.kind != "descendant" or plan.booked_rate is None:
+			continue
+		actual = _batch_rate(plan.batch_no, plan.warehouse)
+		if actual is None or abs(actual - plan.booked_rate) > abs(
+			plan.booked_rate * DESCENDANT_RATE_TOLERANCE
+		):
+			frappe.throw(
+				frappe._(
+					"Row {0}: the batch is carried at {1} per unit, but receipt {2} booked "
+					"{3}. Returning it would release a different amount from the Customer Gold "
+					"Liability than the stock that leaves. How to settle that difference is an "
+					"open accounting decision (D08); the return is held until it is made."
+				).format(
+					plan.row.idx,
+					frappe.bold(flt(actual or 0, 2)),
+					frappe.bold(plan.receipt.reference_docname),
+					frappe.bold(flt(plan.booked_rate, 2)),
+				),
+				title=frappe._("Customer Gold Return: Valuation Differs"),
+			)
+
+	by_receipt = {}
+	for plan in plans:
+		by_receipt.setdefault(plan.receipt.name, [plan.receipt, 0.0])[1] += plan.qty
+
+	remaining = receipt_remaining(
+		doc.company,
+		plans[0].customer,
+		[entry[0] for entry in by_receipt.values()],
+		for_update=for_update,
+	)
+	for name, (receipt, qty) in by_receipt.items():
+		left = remaining.get(name, 0.0)
+		if qty > left + 1e-6:
+			frappe.throw(
+				frappe._(
+					"Receipt {0} row {1} has {2} left to return; this entry returns {3}. The "
+					"rest has already been returned or delivered."
+				).format(
+					frappe.bold(receipt.reference_docname),
+					receipt.cg_source_row,
+					frappe.bold(flt(max(left, 0), 3)),
+					frappe.bold(flt(qty, 3)),
+				),
+				title=frappe._("Customer Gold Return Exceeds Receipt"),
+			)
+
+
+def receipt_remaining(company, customer, receipts, for_update=False):
+	"""{receipt event: quantity still returnable against it}, in the receipt item's own unit.
+
+	What has been drawn is the LARGER of two independent measures:
+
+	* the ``Customer Gold Allocation`` rows -- exact, but only for dispositions written since
+	  allocations existed; read under a lock when ``for_update``, so two concurrent returns
+	  against one receipt serialise and the second sees the first;
+	* the traceability replay's delivered + returned share -- derived from the stock ledger, so
+	  it also covers deliveries made before allocations existed.
+
+	Loss does NOT reduce it: the customer is still owed metal lost on the floor (SOP §5.5).
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		drawn_by_receipt,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_trace import (
+		DISPOSITION_DELIVERED,
+		DISPOSITION_RETURNED,
+		receipt_key,
+		trace,
+	)
+
+	names = sorted(r.name for r in receipts)
+	if not names:
+		return {}
+	if for_update:
+		# Serialise on the receipt rows themselves, in a stable order, before reading what has
+		# been drawn against them.
+		frappe.db.sql(
+			"SELECT name FROM `tabCustomer Gold Ledger Entry` WHERE name IN %s ORDER BY name FOR UPDATE",
+			(tuple(names),),
+		)
+	drawn = drawn_by_receipt(names, for_update=for_update)
+	_, replay, _ = trace(company, customer=customer)
+
+	result = {}
+	for receipt in receipts:
+		received = flt(receipt.cg_gross_qty_delta)
+		allocated = flt((drawn.get(receipt.name) or {}).get("gross"))
+		key = receipt_key(receipt.reference_docname, receipt.cg_source_row)
+		physical = 0.0
+		if key in replay.receipts:
+			left = replay.dispositions[key]
+			measure = flt(left[DISPOSITION_DELIVERED]) + flt(left[DISPOSITION_RETURNED])
+			purity = get_purity_percentage(receipt.item_code)
+			physical = measure / (flt(purity) / 100.0) if purity else measure
+		result[receipt.name] = received - max(allocated, physical)
+	return result
+
+
+def prepare_return_entry(doc, method=None):
+	"""``before_validate`` (last) for Stock Entry. Makes a return a receipt-linked return.
+
+	Resolves each row's receipt row and stamps the link onto it (``against_stock_entry`` /
+	``ste_detail``, and ``custom_cg_issue_against`` on the header when it is one receipt), sets
+	the ownership columns, and -- under Nominal -- the liability contra account, so the stock
+	credit posts against the Customer Gold Liability exactly as a receipt posted it.
+	"""
+	if not _applies(doc):
+		return
+
+	plans = _return_plans(doc)
+	nominal = get_customer_gold_valuation_policy() == VALUATION_NOMINAL
+	liability = (
+		get_customer_gold_company_settings(doc.company).liability_account
 		if nominal
-		else None,
+		else None
+	)
+
+	for plan in plans:
+		row = plan.row
+		row.inventory_type = "Customer Goods"
+		row.customer = plan.customer
+		row.against_stock_entry = plan.receipt.reference_docname
+		row.ste_detail = plan.receipt.cg_source_row
+		if nominal and plan.booked_rate:
+			row.basic_rate = plan.booked_rate
+			row.set_basic_rate_manually = 1
+			row.allow_zero_valuation_rate = 0
+			row.expense_account = liability
+		elif nominal:
+			# Booked at zero -- a stone typed at 0. Nothing to release, and a zero-valued
+			# batch must be allowed out at zero, exactly as ``_build_return_entry`` does.
+			row.allow_zero_valuation_rate = 1
+
+	vouchers = {plan.receipt.reference_docname for plan in plans}
+	if len(vouchers) == 1 and not doc.get("custom_cg_issue_against"):
+		doc.custom_cg_issue_against = next(iter(vouchers))
+	customers = {plan.customer for plan in plans}
+	if len(customers) == 1 and not doc.get("_customer"):
+		doc._customer = next(iter(customers))
+
+	if plans:
+		_check_plans(doc, plans, for_update=False)
+
+
+def lock_return_entitlement(doc, method=None):
+	"""``before_submit`` for Stock Entry: the check that counts, taken under a lock."""
+	if not _applies(doc):
+		return
+	plans = _return_plans(doc)
+	if plans:
+		_check_plans(doc, plans, for_update=True)
+
+
+def record_return(doc, method=None):
+	"""``on_submit`` for Stock Entry: one Return event and its receipt allocation per row.
+
+	The event key is the one the API used to write -- company, voucher row, kind -- so a
+	document submitted before this hook existed and replayed through it collides and is absorbed
+	rather than written twice. ``cg_source_event`` names the receipt the metal is returned
+	against; this is the field's first writer.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		BASIS_RECEIPT_LINK,
+		DISPOSITION_RAW_RETURN,
+		allocate_event,
+		is_allocation_schema_ready,
+	)
+
+	if not _applies(doc):
+		return
+
+	nominal = get_customer_gold_valuation_policy() == VALUATION_NOMINAL
+	currency = (
+		frappe.get_cached_value("Company", doc.company, "default_currency")
+		if nominal
+		else None
+	)
+
+	for plan in _return_plans(doc):
+		row = plan.row
+		value = flt(plan.booked_rate) * plan.qty if nominal else None
+		event_name = _write_event(
+			cg_event_key=build_event_key(
+				doc.company, doc.doctype, row.name, None, EVENT_RETURN
+			),
+			cg_event_kind=EVENT_RETURN,
+			cg_stage=STAGE_RM,
+			company=doc.company,
+			customer=plan.customer,
+			reference_doctype=doc.doctype,
+			reference_docname=doc.name,
+			cg_source_row=row.name,
+			cg_source_event=plan.receipt.name,
+			item_code=row.item_code,
+			batch_no=plan.batch_no,
+			stock_uom=row.get("stock_uom") or row.get("uom"),
+			cg_gross_qty_delta=-plan.qty,
+			**quantity_basis(row.item_code, -plan.qty, doc.company),
+			# Negative: the booked obligation this return discharges, at the rate the receipt
+			# booked -- never today's quote.
+			cg_carrying_value_delta=-value if nominal else None,
+			cg_currency=currency,
+		)
+		if is_allocation_schema_ready():
+			allocate_event(
+				frappe._dict(
+					name=event_name,
+					company=doc.company,
+					customer=plan.customer,
+					reference_doctype=doc.doctype,
+					reference_docname=doc.name,
+				),
+				[(plan.receipt, plan.qty, value)],
+				DISPOSITION_RAW_RETURN,
+				BASIS_RECEIPT_LINK,
+				currency,
+				total_amount=value,
+			)
+
+
+@frappe.whitelist()
+def get_customer_gold_return_preview(receipt, receipt_row=None, qty=None):
+	"""What a return against ``receipt`` could give back, and how. Reads only.
+
+	Per receipt row: what was received, what is still owed back, and every place the receipt's
+	metal is now -- including converted descendants -- with how much of each is free. Then the
+	route: Direct (the receipt's own item is free in its custody warehouse), Transfer (it is free
+	elsewhere -- raise a Material Request), Settle then Issue (only another purity is left), or a
+	shortfall with its reason.
+	"""
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		effective_receipt_events,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_trace import (
+		receipt_key,
+		stage_of,
+		trace,
+	)
+
+	entry = frappe.get_doc("Stock Entry", receipt)
+	entry.check_permission("read")
+
+	filters = {"reference_docname": receipt}
+	if receipt_row:
+		filters["cg_source_row"] = receipt_row
+	events = effective_receipt_events(filters)
+	if not events:
+		return {
+			"rows": [],
+			"message": frappe._("No effective Customer Gold receipt rows."),
+		}
+
+	customer = events[0].customer
+	remaining = receipt_remaining(entry.company, customer, events)
+	_, replay, _ = trace(entry.company, customer=customer)
+	custody = {row.name: row.t_warehouse for row in entry.items}
+
+	rows = []
+	for event in events:
+		key = receipt_key(event.reference_docname, event.cg_source_row)
+		purity = get_purity_percentage(event.item_code)
+		requested = flt(qty) if qty else max(flt(remaining.get(event.name)), 0.0)
+		holdings = []
+		for batch_no, warehouse, held_qty, shares in replay.positions():
+			if key not in shares:
+				continue
+			item_code = frappe.db.get_value("Batch", batch_no, "item")
+			free = flt(get_batch_qty(batch_no=batch_no, warehouse=warehouse))
+			share = shares[key]
+			holdings.append(
+				{
+					"batch_no": batch_no,
+					"warehouse": warehouse,
+					"item_code": item_code,
+					"purity": get_purity_percentage(item_code),
+					"stage": stage_of(warehouse, batch_no, replay),
+					"qty": flt(held_qty, 3),
+					"free_qty": flt(min(free, held_qty), 3),
+					"receipt_share": flt(share, 3),
+					"receipt_equivalent": flt(share / (flt(purity) / 100.0), 3)
+					if purity
+					else flt(share, 3),
+					"same_item": item_code == event.item_code,
+				}
+			)
+		route, limit = _choose_route(
+			event, holdings, requested, custody.get(event.cg_source_row)
+		)
+		rows.append(
+			{
+				"receipt_event": event.name,
+				"receipt_row": event.cg_source_row,
+				"item_code": event.item_code,
+				"purity": purity,
+				"batch_no": event.batch_no,
+				"custody_warehouse": custody.get(event.cg_source_row),
+				"received": flt(event.cg_gross_qty_delta, 3),
+				"remaining": flt(remaining.get(event.name), 3),
+				"requested": flt(requested, 3),
+				"route": route,
+				"limiting_factor": limit,
+				"holdings": holdings,
+			}
+		)
+	return {"rows": rows}
+
+
+def _choose_route(event, holdings, requested, custody_warehouse):
+	if requested <= 0:
+		return "Nothing to return", "The receipt has been fully returned or delivered."
+	direct = sum(
+		h["free_qty"]
+		for h in holdings
+		if h["batch_no"] == event.batch_no and h["warehouse"] == custody_warehouse
+	)
+	if direct + 1e-6 >= requested:
+		return "Direct", None
+	same_item = sum(h["free_qty"] for h in holdings if h["same_item"])
+	if same_item + 1e-6 >= requested:
+		return (
+			"Transfer via Material Request",
+			"The receipt's item is free, but not all of it in the receipt's custody warehouse.",
+		)
+	converted = sum(
+		min(h["free_qty"], h["qty"]) / h["qty"] * h["receipt_equivalent"]
+		for h in holdings
+		if not h["same_item"] and h["qty"]
+	)
+	if same_item + converted + 1e-6 >= requested:
+		return (
+			"Settle, then Issue",
+			"Part of the receipt's metal is now another purity; convert it back with the "
+			"Material Request's Settle action before issuing.",
+		)
+	return (
+		"Shortfall",
+		"Free metal traceable to this receipt covers only {0} of the {1} requested; the rest "
+		"is reserved, in work or already dispatched.".format(
+			flt(same_item + converted, 3), flt(requested, 3)
+		),
 	)
