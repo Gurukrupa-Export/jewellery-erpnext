@@ -325,7 +325,13 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.refining_department = "Refinery - T"
 		re.manufacturer = "Shubh"
 		re.scan_serial_no_action(sn.name)
-		re.material_items.pop()
+		# The as-built BOM lists only what the piece consumed. It used to carry the finished item
+		# itself (the design code, 1 Nos), which this test dropped by popping the last line; that
+		# row no longer exists, so every line here is real material.
+		self.assertNotIn(
+			(sn.item_code, "BOM Component"),
+			[(row.item_code, row.source_type) for row in re.material_items],
+		)
 		re.save()
 
 		apply_workflow(re, "Send for Verification")
