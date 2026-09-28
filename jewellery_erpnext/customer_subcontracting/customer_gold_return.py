@@ -602,15 +602,21 @@ def _check_plans(doc, plans, for_update):
 				title=frappe._("Customer Gold Return: Valuation Differs"),
 			)
 
+	from jewellery_erpnext.customer_subcontracting.customer_gold_trace import trace
+
+	_check_shared_batch_rates(doc, plans)
+
 	by_receipt = {}
 	for plan in plans:
 		by_receipt.setdefault(plan.receipt.name, [plan.receipt, 0.0])[1] += plan.qty
 
+	_, replay, _ = trace(doc.company, customer=plans[0].customer)
 	remaining = receipt_remaining(
 		doc.company,
 		plans[0].customer,
 		[entry[0] for entry in by_receipt.values()],
 		for_update=for_update,
+		replay=replay,
 	)
 	for name, (receipt, qty) in by_receipt.items():
 		left = remaining.get(name, 0.0)
@@ -623,6 +629,91 @@ def _check_plans(doc, plans, for_update):
 					frappe.bold(receipt.reference_docname),
 					receipt.cg_source_row,
 					frappe.bold(flt(max(left, 0), 3)),
+					frappe.bold(flt(qty, 3)),
+				),
+				title=frappe._("Customer Gold Return Exceeds Receipt"),
+			)
+
+	_check_receipt_share(plans, replay)
+
+
+def _check_shared_batch_rates(doc, plans):
+	"""A batch holding several receipt rows at DIFFERENT booked rates cannot be returned against
+	one of them: the stock credit -- and so the liability released -- is the batch's blended rate,
+	not the named receipt's. Which receipt bears the difference is decision D08; until it is made
+	the return is held rather than posting a release that matches no receipt."""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		booked_rate_of,
+		receipts_of_batch,
+	)
+
+	for plan in plans:
+		if plan.kind != "receipt" or plan.booked_rate is None:
+			continue
+		rates = [
+			booked_rate_of(r)
+			for r in receipts_of_batch(doc.company, plan.customer, plan.batch_no)
+		]
+		rates = [r for r in rates if r is not None]
+		if len(rates) > 1 and max(rates) - min(rates) > abs(
+			max(rates) * DESCENDANT_RATE_TOLERANCE
+		):
+			frappe.throw(
+				frappe._(
+					"Row {0}: the batch holds metal from {1} receipts booked at different rates "
+					"({2} to {3}). Returning it against receipt {4} would release the batch's "
+					"blended value, not that receipt's. This is an open accounting decision (D08)."
+				).format(
+					plan.row.idx,
+					len(rates),
+					frappe.bold(flt(min(rates), 2)),
+					frappe.bold(flt(max(rates), 2)),
+					frappe.bold(plan.receipt.reference_docname),
+				),
+				title=frappe._("Customer Gold Return: Valuation Differs"),
+			)
+
+
+def _check_receipt_share(plans, replay):
+	"""A return may not take more out of a holding than the named receipt's own share of it.
+
+	Out of a batch two receipts share, anything beyond this receipt's part is the other receipt's
+	metal: the replay would charge it to that receipt, cutting an entitlement nobody drew on.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_trace import (
+		receipt_key,
+	)
+
+	requested = {}
+	for plan in plans:
+		key = (plan.batch_no, plan.warehouse, plan.receipt.name)
+		requested.setdefault(key, [plan, 0.0])[1] += plan.qty
+
+	holdings = {(b, w): shares for b, w, _qty, shares in replay.positions()}
+	for (batch_no, warehouse, _name), (plan, qty) in requested.items():
+		rkey = receipt_key(plan.receipt.reference_docname, plan.receipt.cg_source_row)
+		receipt = replay.receipts.get(rkey)
+		shares = holdings.get((batch_no, warehouse))
+		if not receipt or shares is None:
+			continue
+		share = flt(shares.get(rkey))
+		per_unit = (
+			flt(receipt.get("per_unit")) if receipt.get("unit") == "fine" else 1.0
+		)
+		if not per_unit:
+			per_unit = flt(get_purity_percentage(plan.row.item_code)) / 100.0 or 1.0
+		own = share / per_unit
+		others = sum(flt(v) for k, v in shares.items() if k != rkey)
+		if others > 1e-6 and qty > own + 0.0005:
+			frappe.throw(
+				frappe._(
+					"Row {0}: only {1} of this batch in {2} is receipt {3}'s metal; the rest belongs "
+					"to other receipts of the same customer. This return asks for {4}."
+				).format(
+					plan.row.idx,
+					frappe.bold(flt(own, 3)),
+					frappe.bold(warehouse),
+					frappe.bold(plan.receipt.reference_docname),
 					frappe.bold(flt(qty, 3)),
 				),
 				title=frappe._("Customer Gold Return Exceeds Receipt"),
