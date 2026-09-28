@@ -79,6 +79,10 @@ def get_booked_rate(company, customer, batch_no):
 	Value, or one that predates the custody ledger. The caller blocks rather than guessing: a
 	return valued at a rate nobody booked is worse than a return that does not happen.
 
+	Returns ``0.0`` for a batch that WAS valued, at zero: a stone received under Nominal at a
+	typed rate of 0. The value column cannot tell that apart from "never valued" (it is ``NOT
+	NULL DEFAULT 0``), but ``cg_currency`` can -- ``record_receipt`` stamps it only when valuing.
+
 	Averaged across Receipt events rather than taking the latest, because one batch can legitimately
 	carry metal from two receipts at different rates and the obligation is their sum, not the more
 	recent of them.
@@ -91,7 +95,7 @@ def get_booked_rate(company, customer, batch_no):
 			"batch_no": batch_no,
 			"cg_event_kind": EVENT_RECEIPT,
 		},
-		fields=["cg_gross_qty_delta", "cg_carrying_value_delta"],
+		fields=["cg_gross_qty_delta", "cg_carrying_value_delta", "cg_currency"],
 	)
 
 	qty = flt(sum(flt(r.cg_gross_qty_delta) for r in rows))
@@ -99,8 +103,10 @@ def get_booked_rate(company, customer, batch_no):
 		sum(flt(r.cg_carrying_value_delta) for r in rows if r.cg_carrying_value_delta)
 	)
 
-	if qty <= 0 or not value:
+	if qty <= 0:
 		return None
+	if not value:
+		return 0.0 if any(r.cg_currency for r in rows) else None
 
 	return value / qty
 
@@ -272,7 +278,7 @@ def _build_return_entry(
 		"customer": customer,
 	}
 
-	if booked_rate is not None:
+	if booked_rate:
 		row["basic_rate"] = booked_rate
 		row["set_basic_rate_manually"] = 1
 		row["allow_zero_valuation_rate"] = 0

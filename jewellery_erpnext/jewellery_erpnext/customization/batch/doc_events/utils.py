@@ -2,6 +2,10 @@ import frappe
 from frappe import _
 from frappe.utils import cstr, flt
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOODS_FLAG_LABEL,
+	can_be_customer_goods,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
@@ -101,9 +105,7 @@ def update_inventory_dimentions(self):
 				)
 			break
 
-	item_allows_customer_goods = frappe.db.get_value(
-		"Item", self.item, "custom_inventory_type_can_be_customer_goods"
-	)
+	item_allows_customer_goods = can_be_customer_goods(self.item)
 	is_customer_inventory = self.custom_inventory_type in [
 		"Customer Goods",
 		"Customer Stock",
@@ -119,13 +121,13 @@ def update_inventory_dimentions(self):
 		frappe.throw(
 			_(
 				"Item {0} is not allowed as {1} (customer: {2}, batch: {3}). Tick "
-				"'Inventory Type Can be Customer Goods' on the Item, or book it as "
-				"Regular Stock."
+				"'{4}' on the Item, or book it as Regular Stock."
 			).format(
 				frappe.bold(self.item),
 				self.custom_inventory_type,
 				self.custom_customer or "-",
 				frappe.bold(self.name or self.get("batch_id") or _("new")),
+				_(CUSTOMER_GOODS_FLAG_LABEL),
 			)
 		)
 

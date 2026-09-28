@@ -20,6 +20,10 @@ from frappe.utils import (
 	time_diff_in_seconds,
 )
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOODS_FLAG_LABEL,
+	can_be_customer_goods,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
 	carry_rates_from_source_batches,
 )
@@ -5832,15 +5836,17 @@ def _unused_row_ownership(row, target_item):
 	source = (inventory_type, customer)
 	if inventory_type not in ("Customer Goods", "Customer Stock"):
 		return source, source
-	if not frappe.db.get_value(
-		"Item", target_item, "custom_inventory_type_can_be_customer_goods"
-	):
+	if not can_be_customer_goods(target_item):
 		frappe.msgprint(
 			_(
 				"{0} cannot hold customer goods, so the unused/loose material received "
-				"from {1} is booked as Regular Stock. Enable <b>Inventory Type Can Be "
-				"Customer Goods</b> on {0} to retain the customer's ownership."
-			).format(frappe.bold(target_item), frappe.bold(row.item_code)),
+				"from {1} is booked as Regular Stock. Enable {2} on {0} to retain the "
+				"customer's ownership."
+			).format(
+				frappe.bold(target_item),
+				frappe.bold(row.item_code),
+				frappe.bold(_(CUSTOMER_GOODS_FLAG_LABEL)),
+			),
 			indicator="orange",
 			alert=True,
 		)

@@ -46,11 +46,12 @@ fragment of the specific message it is testing.
 """
 
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import add_days, flt, getdate, nowdate
+from frappe.utils import add_days, cint, flt, getdate, nowdate
 
 from jewellery_erpnext.customer_subcontracting import (
 	customer_gold_components as cgc,
@@ -58,9 +59,15 @@ from jewellery_erpnext.customer_subcontracting import (
 from jewellery_erpnext.customer_subcontracting import (
 	customer_gold_fulfilment as cgf,
 )
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOODS_FLAG,
+	CUSTOMER_GOODS_FLAG_LABEL,
+)
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	ENABLE_FLAG,
 	SETTINGS_DOCTYPE,
+	VALUATION_POLICY_FIELD,
+	VALUATION_ZERO,
 )
 
 from . import customer_gold_purity_fixtures as cg_purity
@@ -103,6 +110,36 @@ GST_HSN_CODE = "71081200"
 #: Per 10 g, so the per-gram rate is a non-round 7,164.83 and a lost divisor is visible.
 RAW_RATE = 71648.30
 EXPECTED_PER_GRAM = 7164.83
+
+#: A flagged, batch-controlled stone stocked in Carat with NO ``variant_of``: not gold or a
+#: finding, so the receipt takes the rate typed on the row instead of the gold rate.
+STONE = "CG-TEST-STONE-D"
+STONE_UOM = "Carat"
+#: Diamonds, worked. india_compliance requires a 6- or 8-digit HSN on every Item.
+STONE_HSN = "71023910"
+
+#: Gold variants the flag tests own outright, so flipping a flag never touches a shared fixture.
+#: The unflagged one also proves the item picker's filter leaves it out.
+UNFLAGGED_ITEM = "CG-TEST-GOLD-91.6-UNFLAGGED"
+FLIP_ITEM = "CG-TEST-GOLD-75.0-FLIP"
+
+#: An ordinary Material Receipt type -- NOT the configured Customer Gold receipt type.
+PLAIN_RECEIPT_SE_TYPE = "CG Test Plain Receipt"
+
+
+@contextmanager
+def _customer_goods_flag(item_code, value):
+	"""Set the Item's Customer Goods flag for one block, restoring it however the block ends.
+
+	Rollback is class-scoped and some paths commit mid-test, so a flipped flag could otherwise
+	outlive the test that flipped it.
+	"""
+	previous = cint(frappe.db.get_value("Item", item_code, CUSTOMER_GOODS_FLAG))
+	frappe.db.set_value("Item", item_code, CUSTOMER_GOODS_FLAG, value)
+	try:
+		yield
+	finally:
+		frappe.db.set_value("Item", item_code, CUSTOMER_GOODS_FLAG, previous)
 
 
 def _require_disposable_site():
@@ -415,8 +452,19 @@ class _CustomerGoldIntegrationCase(IntegrationTestCase):
 		return name
 
 	@classmethod
-	def _ensure_variant(cls, item_code, purity_value):
+	def _ensure_variant(cls, item_code, purity_value, flag=1):
+		"""A metal variant at ``purity_value``, with its Customer Goods flag at ``flag``.
+
+		The flag is re-applied to an item that already exists: it is the ONLY thing that makes
+		an item eligible for a Customer Gold receipt, so a run interrupted mid-flip must not
+		leave the next run's fixture refused for a reason no test intended.
+		"""
 		if frappe.db.exists("Item", item_code):
+			if (
+				cint(frappe.db.get_value("Item", item_code, CUSTOMER_GOODS_FLAG))
+				!= flag
+			):
+				frappe.db.set_value("Item", item_code, CUSTOMER_GOODS_FLAG, flag)
 			return item_code
 		item = frappe.new_doc("Item")
 		item.item_code = item_code
@@ -433,9 +481,9 @@ class _CustomerGoldIntegrationCase(IntegrationTestCase):
 		# "Item ... is not allowed as Customer Goods" whenever a batch of this item is created
 		# or re-saved outside one of that guard's bypasses. The receipt path happens to qualify
 		# for a bypass, which is why the suite got this far without it; a Repack's child-batch
-		# creation does not. The flag is simply true of this fixture: it exists to hold
-		# customer gold.
-		item.custom_inventory_type_can_be_customer_goods = 1
+		# creation does not. It is also, since the Settings item list was removed, the only
+		# thing the receipt itself accepts an item on.
+		item.set(CUSTOMER_GOODS_FLAG, flag)
 		item.append(
 			"attributes",
 			{
@@ -445,6 +493,30 @@ class _CustomerGoldIntegrationCase(IntegrationTestCase):
 		)
 		item.insert(ignore_permissions=True)
 		return item_code
+
+	@classmethod
+	def _ensure_stone(cls):
+		"""A flagged Carat stone that is not gold: no ``variant_of``, so no Metal Purity either."""
+		if not frappe.db.exists("UOM", STONE_UOM):
+			frappe.get_doc(
+				{"doctype": "UOM", "uom_name": STONE_UOM, "must_be_whole_number": 0}
+			).insert(ignore_permissions=True)
+		if frappe.db.exists("Item", STONE):
+			if not cint(frappe.db.get_value("Item", STONE, CUSTOMER_GOODS_FLAG)):
+				frappe.db.set_value("Item", STONE, CUSTOMER_GOODS_FLAG, 1)
+			return STONE
+		item = frappe.new_doc("Item")
+		item.item_code = STONE
+		item.item_name = "CG Test Customer Diamond"
+		item.item_group = cls.item_group
+		item.stock_uom = STONE_UOM
+		item.is_stock_item = 1
+		item.has_batch_no = 1
+		item.create_new_batch = 1
+		item.gst_hsn_code = STONE_HSN
+		item.set(CUSTOMER_GOODS_FLAG, 1)
+		item.insert(ignore_permissions=True)
+		return STONE
 
 	@classmethod
 	def _ensure_manufacturing_setting(cls):
@@ -578,6 +650,11 @@ class _CustomerGoldIntegrationCase(IntegrationTestCase):
 	def _configure_feature(cls):
 		settings = frappe.get_doc(SETTINGS_DOCTYPE)
 		settings.set(ENABLE_FLAG, 1)
+		# Zero Value stated, not inherited from whatever the previous class left on this Single:
+		# rollback is class-scoped and mid-test commits happen, so a Nominal class could leak its
+		# policy into the next one. Nominal classes set Nominal again after this runs.
+		if frappe.get_meta(SETTINGS_DOCTYPE).has_field(VALUATION_POLICY_FIELD):
+			settings.set(VALUATION_POLICY_FIELD, VALUATION_ZERO)
 		settings.customer_24kt_item = cls.item
 		settings.customer_goods_stock_entry_type = SE_TYPE
 		settings.gold_rate_source = RATE_SOURCE
@@ -677,6 +754,47 @@ class _CustomerGoldIntegrationCase(IntegrationTestCase):
 		se.save()
 		se.submit()
 		return se
+
+	def _stone_receipt(self, carats=2.5, rate=1500.0, **kwargs):
+		"""A receipt of ``STONE`` in its own UOM, at a rate typed on the row as a user would."""
+		return self._receipt(
+			qty=carats,
+			item_code=STONE,
+			uom=STONE_UOM,
+			stock_uom=STONE_UOM,
+			basic_rate=rate,
+			**kwargs,
+		)
+
+	def _add_stone_row(self, se, carats=2.0, rate=1500.0):
+		"""Append a typed-rate stone row to a receipt, making it a mixed gold + stone receipt."""
+		se.append(
+			"items",
+			{
+				"item_code": STONE,
+				"qty": carats,
+				"basic_rate": rate,
+				"t_warehouse": self.warehouse,
+				"uom": STONE_UOM,
+				"stock_uom": STONE_UOM,
+				"conversion_factor": 1,
+				"expense_account": self.difference_account,
+			},
+		)
+		return se
+
+	def _incoming(self, voucher_no, item_code):
+		"""One item's SLE incoming rate and value on a voucher.
+
+		The row's own rate, which the demo stock left on this site cannot move -- unlike
+		``valuation_rate``, a running average over whatever the warehouse already holds.
+		"""
+		return frappe.db.get_value(
+			"Stock Ledger Entry",
+			{"voucher_no": voucher_no, "item_code": item_code, "is_cancelled": 0},
+			["incoming_rate", "stock_value_difference"],
+			as_dict=True,
+		)
 
 	def _sles(self, voucher_no):
 		return frappe.get_all(
@@ -797,19 +915,16 @@ class TestCustomerGoldReceiptPostsCorrectly(_CustomerGoldIntegrationCase):
 		"""100 g of 75.4% metal against a 99.9 reference = 75.475 REFERENCE grams.
 
 		The same metal contains 75.400 FINE grams. custom_pure_qty holds the former.
+
+		This item is flagged but is not the Customer 24KT Item and was never on any Settings
+		list. It used to be refused ("is not configured for Customer Gold receipts"); the Item
+		flag is now the only eligibility rule, so it is received like the reference item (T03).
 		"""
 		se = self._receipt(qty=100, item_code=self.operating_item)
-		# Not one of the configured customer gold items, so the receipt validator rejects it --
-		# assert the computation on the saved draft instead of forcing an unrealistic submit.
-		#
-		# The fragment tracks the message the validator actually raises. It changed when the
-		# receipt began accepting a LIST of purities: an operating-purity item is now rejected
-		# for not being on that list rather than for not being THE 24KT item, and the message
-		# names what would have been accepted.
-		with self.assertThrowsContaining(
-			"is not configured for Customer Gold receipts"
-		):
-			se.save()
+		self._submit(se)
+		row = se.items[0]
+		self.assertEqual(row.inventory_type, "Customer Goods")
+		self.assertAlmostEqual(flt(row.custom_pure_qty), 75.475, places=3)
 
 
 class TestCustomerGoldReceiptLifecycle(_CustomerGoldIntegrationCase):
@@ -938,6 +1053,182 @@ class TestCustomerGoldOwnershipIsEnforced(_CustomerGoldIntegrationCase):
 		second = self._receipt(qty=10, customer=OTHER_CUSTOMER, batch_no=stolen)
 		with self.assertThrowsContaining(stolen):
 			self._submit(second)
+
+
+class TestCustomerGoodsFlagDecidesEligibility(_CustomerGoldIntegrationCase):
+	"""The Item's Customer Goods flag is the only eligibility rule -- on real documents.
+
+	Subcontracting Settings no longer lists accepted items; a receipt takes an item exactly when
+	``Inventory Type Can be Customer Goods`` is ticked on it, and reads that flag live.
+
+	Every flip here is on an item this class owns (``FLIP_ITEM``, ``UNFLAGGED_ITEM``) and is
+	undone in a ``finally``: rollback is class-scoped and some paths commit mid-test, so
+	flipping ``cls.item`` could leak into every class that runs after this one.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls.unflagged_item = cls._ensure_variant(UNFLAGGED_ITEM, "CG-TEST-91.6", flag=0)
+		cls.flip_item = cls._ensure_variant(FLIP_ITEM, "CG-TEST-75.0", flag=1)
+		cls._ensure_stone()
+		if not frappe.db.exists("Stock Entry Type", PLAIN_RECEIPT_SE_TYPE):
+			doc = frappe.new_doc("Stock Entry Type")
+			doc.name = PLAIN_RECEIPT_SE_TYPE
+			doc.purpose = "Material Receipt"
+			doc.insert(ignore_permissions=True)
+		cls.company_warehouse = cls._ensure_warehouse("CG Test Company Stores")
+
+	def test_an_unflagged_item_is_refused_on_a_server_built_receipt(self):
+		"""T08, the API path: no form and no item picker, so only the server check stands guard.
+
+		The message must name the flag, because ticking it is the fix.
+		"""
+		se = self._receipt(qty=10, item_code=self.unflagged_item)
+		with self.assertThrowsContaining("is not enabled for Customer Goods") as raised:
+			se.save()
+		self.assertIn(CUSTOMER_GOODS_FLAG_LABEL, str(raised.exception))
+
+	def test_unflagging_refuses_the_next_receipt(self):
+		"""T06: on -> off between two receipts. The flag is read live; nothing caches it."""
+		self._submit(self._receipt(qty=10, item_code=self.flip_item))
+
+		with _customer_goods_flag(self.flip_item, 0):
+			se = self._receipt(qty=10, item_code=self.flip_item)
+			with self.assertThrowsContaining("is not enabled for Customer Goods"):
+				se.save()
+
+	def test_reflagging_accepts_the_next_receipt(self):
+		"""T05: off -> on. Ticking the flag is all an operator has to do; there is no list to edit."""
+		with _customer_goods_flag(self.flip_item, 0):
+			refused = self._receipt(qty=10, item_code=self.flip_item)
+			with self.assertThrowsContaining("is not enabled for Customer Goods"):
+				refused.save()
+
+		with _customer_goods_flag(self.flip_item, 1):
+			se = self._receipt(qty=10, item_code=self.flip_item)
+			self._submit(se)
+			self.assertEqual(se.docstatus, 1)
+			self.assertEqual(se.items[0].inventory_type, "Customer Goods")
+
+	def test_a_receipt_booked_while_flagged_survives_unflagging(self):
+		"""T06 / T17: clearing the flag governs NEW receipts only.
+
+		A submitted receipt is history. It must still load and still cancel, or an operator who
+		unticks the flag would strand every document already booked under it.
+		"""
+		se = self._receipt(qty=10, item_code=self.flip_item)
+		self._submit(se)
+
+		with _customer_goods_flag(self.flip_item, 0):
+			reloaded = frappe.get_doc("Stock Entry", se.name)
+			self.assertEqual(reloaded.docstatus, 1)
+			self.assertEqual(reloaded.items[0].inventory_type, "Customer Goods")
+
+			reloaded.cancel()
+			self.assertEqual(reloaded.docstatus, 2)
+			self.assertEqual(
+				self._sles(se.name), [], "cancellation left live SLE rows behind"
+			)
+
+	def test_the_flag_alone_does_not_make_a_plain_receipt_customer_goods(self):
+		"""T12 / T11: the flag is a capability, never ownership -- and never a requirement elsewhere.
+
+		An ordinary Material Receipt of the flagged reference item is company stock: the row
+		stays Regular Stock and its batch carries no customer (T12). The unflagged item rides on
+		the same receipt and must go through just the same (T11): the flag gates the Customer Gold
+		receipt only, so an item nobody ticked is still ordinary stock everywhere else. Received
+		into its own warehouse so it cannot move the custody warehouse's valuation.
+		"""
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = PLAIN_RECEIPT_SE_TYPE
+		se.purpose = "Material Receipt"
+		se.company = COMPANY
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		for item_code in (self.item, self.unflagged_item):
+			se.append(
+				"items",
+				{
+					"item_code": item_code,
+					"qty": 5,
+					"t_warehouse": self.company_warehouse,
+					"uom": "Gram",
+					"stock_uom": "Gram",
+					"conversion_factor": 1,
+					"allow_zero_valuation_rate": 1,
+					"expense_account": self.difference_account,
+				},
+			)
+		self._submit(se)
+		self.assertEqual(se.docstatus, 1)
+		# The bundle is written to the row during submit, not onto this in-memory copy.
+		se.reload()
+
+		self.assertEqual(
+			[row.item_code for row in se.items], [self.item, self.unflagged_item]
+		)
+		for row in se.items:
+			self.assertEqual(row.inventory_type, "Regular Stock", row.item_code)
+			self.assertFalse(row.get("customer"), row.item_code)
+
+			# v16 keeps the batch in the bundle; ``row.batch_no`` is normally empty here.
+			batches = set(
+				frappe.get_all(
+					"Serial and Batch Entry",
+					filters={"parent": row.serial_and_batch_bundle},
+					pluck="batch_no",
+				)
+				if row.serial_and_batch_bundle
+				else []
+			)
+			if row.batch_no:
+				batches.add(row.batch_no)
+			self.assertTrue(
+				batches,
+				f"fixture: the plain receipt created no batch to inspect for {row.item_code}",
+			)
+			for batch in batches:
+				owner, inventory_type = frappe.db.get_value(
+					"Batch", batch, ["custom_customer", "custom_inventory_type"]
+				)
+				self.assertFalse(
+					owner, f"batch {batch} was stamped with customer {owner}"
+				)
+				self.assertNotEqual(inventory_type, "Customer Goods")
+
+	def test_the_item_picker_offers_flagged_items_only(self):
+		"""T09: the server side of the receipt's item picker, with the form's exact filters.
+
+		``stock_entry.js`` (``customer_goods_item_query``) hands these filters to
+		``erpnext.queries.item`` on the configured receipt type, which resolves to this query. The
+		filters are copied from the JS by hand, so this pins the server half only: renaming the
+		Item field breaks it, but an edit to the JS filters does not show up here -- keep the two
+		in step by hand.
+		"""
+		from erpnext.controllers.queries import item_query
+
+		def offered(filters):
+			return {
+				row[0] for row in item_query("Item", "CG-TEST", "name", 0, 50, filters)
+			}
+
+		receipt_picker = offered(
+			{
+				"is_stock_item": 1,
+				"has_batch_no": 1,
+				"custom_inventory_type_can_be_customer_goods": 1,
+			}
+		)
+		for item_code in (self.item, self.operating_item, self.flip_item, STONE):
+			self.assertIn(item_code, receipt_picker)
+		self.assertNotIn(self.unflagged_item, receipt_picker)
+
+		# Guard the negative: without the flag filter the unflagged item IS offered, so it was
+		# left out above for the flag and not for some other reason.
+		self.assertIn(
+			self.unflagged_item, offered({"is_stock_item": 1, "has_batch_no": 1})
+		)
 
 
 class TestCustomerGoldRateSourceIntegrity(_CustomerGoldIntegrationCase):
@@ -1141,6 +1432,403 @@ class TestNominalValuation(_CustomerGoldIntegrationCase):
 		se.cancel()
 		self.assertEqual(self._sles(se.name), [])
 		self.assertEqual(self._gles(se.name), [])
+
+
+class TestStoneReceipt(_CustomerGoldIntegrationCase):
+	"""Diamonds and gemstones on the Customer Gold receipt, under the default Zero Value policy.
+
+	A stone is received in its own UOM (Carat) at the rate typed on the row, never at the gold
+	rate -- so a receipt of nothing but stones has no use for the day's gold rate and must not
+	need one. ``STONE`` is flagged, batch controlled and has no ``variant_of``.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls._ensure_stone()
+		# Stated rather than inherited: every value assertion below is a Zero Value assertion.
+		settings = frappe.get_doc(SETTINGS_DOCTYPE)
+		settings.customer_gold_valuation_policy = "Zero Value"
+		settings.save(ignore_permissions=True)
+		frappe.clear_cache(doctype=SETTINGS_DOCTYPE)
+
+	def _rate_less_date(self):
+		"""A date in the fixture's fiscal year with no Gold Rates record, searched for.
+
+		A fixed offset is not good enough: Gold Rates rows can outlive a run (``R-2026-09-22`` is
+		committed on the disposable site), so any one offset collides on some calendar day. The
+		search starts at -4 because -1 to -3 are other classes' Gold Rates fixture dates.
+		"""
+		posting_date = getdate(self.posting_date)
+		for offset in range(-4, -61, -1):
+			candidate = getdate(add_days(posting_date, offset))
+			if candidate.year != posting_date.year:
+				break
+			if not frappe.db.exists("Gold Rates", {"date": candidate}):
+				return candidate
+		self.skipTest(
+			"needs a date without a Gold Rates record inside the fixture's fiscal year"
+		)
+
+	def test_a_stone_is_received_into_a_customer_batch(self):
+		se = self._stone_receipt()
+		self._submit(se)
+		row = se.items[0]
+		self.assertEqual(row.inventory_type, "Customer Goods")
+		self.assertEqual(row.customer, CUSTOMER)
+		self.assertTrue(row.batch_no, "the stone was minted no batch")
+		self.assertEqual(
+			frappe.db.get_value("Batch", row.batch_no, "custom_customer"), CUSTOMER
+		)
+		self.assertEqual(
+			frappe.db.get_value("Batch", row.batch_no, "custom_inventory_type"),
+			"Customer Goods",
+		)
+
+	def test_a_stones_only_receipt_freezes_no_gold_rate(self):
+		se = self._stone_receipt()
+		self._submit(se)
+		se.reload()
+		self.assertFalse(se.custom_gold_rate_source)
+		self.assertEqual(flt(se.custom_gold_rate_per_gram), 0.0)
+
+	def test_a_stones_only_receipt_needs_no_gold_rate(self):
+		"""A day the rate feed missed cannot block stones. Saved as a draft: submit refuses any
+		backdated Customer Gold receipt, stones included."""
+		se = self._stone_receipt(posting_date=self._rate_less_date())
+		se.save()
+		self.assertEqual(se.docstatus, 0)
+		self.assertFalse(se.custom_gold_rate_source)
+
+	def test_a_gold_row_on_the_same_receipt_still_needs_the_rate(self):
+		"""The rate is skipped for stones only -- one gold row brings the whole check back."""
+		se = self._add_stone_row(
+			self._receipt(qty=10, posting_date=self._rate_less_date())
+		)
+		with self.assertThrowsContaining("is not available for Posting Date"):
+			se.save()
+
+	def test_dropping_the_gold_row_clears_the_frozen_rate(self):
+		"""A draft saved with gold, then edited down to stones, must not keep a rate it no
+		longer uses -- later readers take that frozen evidence as the receipt's rate."""
+		se = self._add_stone_row(self._receipt(qty=10))
+		se.save()
+		self.assertAlmostEqual(
+			flt(se.custom_gold_rate_per_gram), EXPECTED_PER_GRAM, places=2
+		)
+
+		se.items = [row for row in se.items if row.item_code == STONE]
+		se.save()
+		se.reload()
+		self.assertFalse(se.custom_gold_rate_source)
+		self.assertEqual(flt(se.custom_gold_rate_per_gram), 0.0)
+
+	def test_a_typed_stone_rate_is_zeroed_under_zero_value(self):
+		"""Zero Value applies to every row: the typed rate does not reach the ledger."""
+		se = self._stone_receipt(rate=1500.0)
+		self._submit(se)
+		row = se.items[0]
+		self.assertEqual(flt(row.allow_zero_valuation_rate), 1.0)
+		self.assertEqual(flt(row.set_basic_rate_manually), 0.0)
+		sle = self._incoming(se.name, STONE)
+		self.assertEqual(flt(sle.incoming_rate), 0.0)
+		self.assertEqual(flt(sle.stock_value_difference), 0.0)
+		self.assertEqual(self._gles(se.name), [])
+
+	def test_the_receipt_event_records_the_stone_with_unknown_fine_gold(self):
+		"""Pins TODAY's ledger behaviour for stones; not an endorsement of it.
+
+		A stone has no Metal Purity, so ``quantity_basis`` records its fine gold as Unknown
+		rather than a known 0 -- and the customer's fine-gold position then reads as incomplete.
+		Recording stones as a measured 0 is a possible follow-up; this is the test to change.
+		"""
+		se = self._stone_receipt(carats=2.5)
+		self._submit(se)
+		events = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"reference_docname": se.name, "cg_event_kind": cgf.EVENT_RECEIPT},
+			fields=[
+				"item_code",
+				"customer",
+				"cg_gross_qty_delta",
+				"cg_fine_gold_delta",
+				"cg_fine_measurement_status",
+				"cg_measurement_reason",
+			],
+		)
+		self.assertEqual(len(events), 1, f"expected one Receipt event, got {events}")
+		(event,) = events
+		self.assertEqual(event.item_code, STONE)
+		self.assertEqual(event.customer, CUSTOMER)
+		self.assertAlmostEqual(flt(event.cg_gross_qty_delta), 2.5, places=3)
+		self.assertEqual(event.cg_fine_measurement_status, cgf.STATUS_UNKNOWN)
+		self.assertEqual(event.cg_measurement_reason, cgf.REASON_MISSING_ITEM_PURITY)
+
+
+class TestStoneReceiptUnderNominal(_CustomerGoldIntegrationCase):
+	"""Stones under Nominal: the rate the user TYPED is booked, not the gold rate.
+
+	Set up exactly as ``TestNominalValuation``, plus the return Stock Entry Type as
+	``TestRawGoldReturn`` configures it, so a received stone can also be cancelled, handed back
+	and (refused) revalued here. Only the rows' own incoming rates and values are asserted --
+	never ``valuation_rate``, which the demo stock on this site disturbs.
+	"""
+
+	STONE_RATE = 1500.0
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls._ensure_stone()
+		settings = frappe.get_doc(SETTINGS_DOCTYPE)
+		settings.customer_gold_valuation_policy = "Nominal"
+		settings.customer_gold_return_stock_entry_type = RETURN_SE_TYPE
+		settings.save(ignore_permissions=True)
+		frappe.clear_cache(doctype=SETTINGS_DOCTYPE)
+
+	def _stone_batch(self, rate, carats=2.0):
+		"""Receive ``carats`` of the stone at ``rate`` and return the customer batch holding it."""
+		se = self._stone_receipt(carats=carats, rate=rate)
+		self._submit(se)
+		batch = se.items[0].batch_no
+		self.assertTrue(batch, "fixture: the stone receipt minted no batch")
+		return batch
+
+	def _return_stone(self, batch, carats):
+		"""Hand ``carats`` of the stone back through the Customer Gold return, as the UI would."""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+			make_customer_gold_return,
+		)
+
+		return frappe.get_doc(
+			"Stock Entry",
+			make_customer_gold_return(
+				company=COMPANY,
+				customer=CUSTOMER,
+				batch_no=batch,
+				qty=carats,
+				warehouse=self.warehouse,
+				item_code=STONE,
+			),
+		)
+
+	def _booked_rate(self, batch):
+		from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+			get_booked_rate,
+		)
+
+		return get_booked_rate(COMPANY, CUSTOMER, batch)
+
+	def _custody_events(self, voucher_no, kind):
+		return frappe.get_all(
+			cgf.LEDGER_DOCTYPE,
+			filters={"reference_docname": voucher_no, "cg_event_kind": kind},
+			fields=[
+				"name",
+				"batch_no",
+				"cg_reversal_of",
+				"cg_gross_qty_delta",
+				"cg_carrying_value_delta",
+			],
+		)
+
+	def test_the_policy_is_actually_nominal_for_this_class(self):
+		"""Guard the guard -- if the setting did not stick, everything below is vacuous."""
+		from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+			get_customer_gold_valuation_policy,
+		)
+
+		self.assertEqual(get_customer_gold_valuation_policy(), "Nominal")
+
+	def test_a_typed_stone_rate_survives_into_the_ledger(self):
+		se = self._stone_receipt(carats=2.0, rate=self.STONE_RATE)
+		self._submit(se)
+		row = se.items[0]
+		self.assertAlmostEqual(flt(row.basic_rate), self.STONE_RATE, places=2)
+		self.assertEqual(flt(row.set_basic_rate_manually), 1.0)
+		self.assertEqual(flt(row.allow_zero_valuation_rate), 0.0)
+		self.assertEqual(row.expense_account, self.liability_account)
+
+		sle = self._incoming(se.name, STONE)
+		self.assertAlmostEqual(flt(sle.incoming_rate), self.STONE_RATE, places=2)
+		self.assertAlmostEqual(
+			flt(sle.stock_value_difference), 2.0 * self.STONE_RATE, places=2
+		)
+
+	def test_the_stone_value_is_credited_to_the_customer_gold_liability(self):
+		se = self._stone_receipt(carats=2.0, rate=self.STONE_RATE)
+		self._submit(se)
+		gles = self._gles(se.name)
+		credit = sum(flt(g.credit) for g in gles if g.account == self.liability_account)
+		self.assertAlmostEqual(credit, 2.0 * self.STONE_RATE, places=2, msg=f"{gles}")
+		self.assertAlmostEqual(
+			sum(flt(g.debit) for g in gles), sum(flt(g.credit) for g in gles), places=2
+		)
+
+	def test_a_stone_typed_at_zero_is_zero_valued(self):
+		"""Zero is a valid stone rate: nothing is booked and no liability is raised."""
+		se = self._stone_receipt(carats=2.0, rate=0)
+		self._submit(se)
+		row = se.items[0]
+		self.assertEqual(flt(row.allow_zero_valuation_rate), 1.0)
+		self.assertEqual(flt(row.set_basic_rate_manually), 0.0)
+		self.assertEqual(flt(self._incoming(se.name, STONE).incoming_rate), 0.0)
+		self.assertEqual(self._gles(se.name), [])
+
+	def test_a_mixed_receipt_prices_gold_from_the_rate_and_the_stone_as_typed(self):
+		se = self._add_stone_row(
+			self._receipt(qty=10), carats=2.0, rate=self.STONE_RATE
+		)
+		self._submit(se)
+		gold, stone = se.items
+		self.assertAlmostEqual(flt(gold.basic_rate), EXPECTED_PER_GRAM, places=2)
+		self.assertAlmostEqual(flt(stone.basic_rate), self.STONE_RATE, places=2)
+		self.assertAlmostEqual(
+			flt(self._incoming(se.name, self.item).incoming_rate),
+			EXPECTED_PER_GRAM,
+			places=2,
+		)
+		self.assertAlmostEqual(
+			flt(self._incoming(se.name, STONE).incoming_rate), self.STONE_RATE, places=2
+		)
+
+	# -- cancel, return, revalue ------------------------------------------------------
+	def test_cancelling_a_valued_stone_receipt_reverses_stock_gl_and_custody(self):
+		"""A stone typed above zero posts real value; cancelling must take every trace back.
+
+		The SLE and GL rows are cancelled, and the custody Receipt is answered by a Reversal
+		pointing at it -- never deleted, and undoing the value as well as the carats.
+		"""
+		se = self._stone_receipt(carats=2.0, rate=self.STONE_RATE)
+		self._submit(se)
+		# Not vacuous: there was stock value, GL and a custody Receipt to reverse.
+		self.assertTrue(self._sles(se.name), "fixture: the receipt posted no SLE")
+		self.assertTrue(
+			self._gles(se.name), "fixture: the receipt posted no GL entries"
+		)
+		receipts = self._custody_events(se.name, cgf.EVENT_RECEIPT)
+		self.assertEqual(
+			len(receipts), 1, f"expected one Receipt event, got {receipts}"
+		)
+		(receipt,) = receipts
+		self.assertAlmostEqual(
+			flt(receipt.cg_carrying_value_delta), 2.0 * self.STONE_RATE, places=2
+		)
+
+		se.cancel()
+
+		self.assertEqual(se.docstatus, 2)
+		self.assertEqual(
+			self._sles(se.name), [], "cancellation left live SLE rows behind"
+		)
+		self.assertEqual(
+			self._gles(se.name), [], "cancellation left un-cancelled GL rows behind"
+		)
+		self.assertTrue(
+			frappe.db.exists(cgf.LEDGER_DOCTYPE, receipt.name),
+			"cancelling deleted the Receipt event",
+		)
+		reversals = self._custody_events(se.name, cgf.EVENT_REVERSAL)
+		self.assertEqual(
+			len(reversals), 1, f"expected one Reversal event, got {reversals}"
+		)
+		(reversal,) = reversals
+		self.assertEqual(reversal.cg_reversal_of, receipt.name)
+		self.assertAlmostEqual(flt(reversal.cg_gross_qty_delta), -2.0, places=3)
+		self.assertAlmostEqual(
+			flt(reversal.cg_carrying_value_delta), -2.0 * self.STONE_RATE, places=2
+		)
+
+	def test_a_stone_received_at_zero_is_returned_at_zero(self):
+		"""SF2: a stone typed at 0 WAS valued -- at zero -- so it can be handed back.
+
+		Its Receipt carries no carrying value, which ``get_booked_rate`` used to read as "never
+		valued" and the return then refused outright. The booked rate is now a known 0.0, and the
+		return goes out zero-valued: no manual rate, and nothing released from the liability.
+		"""
+		batch = self._stone_batch(rate=0)
+		booked = self._booked_rate(batch)
+		self.assertIsNotNone(booked, "a stone valued at zero read as never valued")
+		self.assertEqual(booked, 0.0)
+
+		se = self._return_stone(batch, 2.0)
+
+		self.assertEqual(se.docstatus, 1)
+		row = se.items[0]
+		self.assertEqual(row.item_code, STONE)
+		self.assertEqual(flt(row.allow_zero_valuation_rate), 1.0)
+		self.assertEqual(flt(row.set_basic_rate_manually), 0.0)
+		self.assertEqual(flt(row.basic_rate), 0.0)
+		self.assertNotEqual(row.expense_account, self.liability_account)
+		self.assertFalse(
+			[g for g in self._gles(se.name) if g.account == self.liability_account],
+			"a zero-valued return moved the Customer Gold Liability",
+		)
+
+	def test_a_stone_received_at_a_typed_rate_is_returned_at_that_rate(self):
+		"""The same return for a stone typed at 1,500: it goes back at its booked 1,500."""
+		batch = self._stone_batch(rate=self.STONE_RATE)
+		booked = self._booked_rate(batch)
+		self.assertIsNotNone(booked, "a valued stone has no booked rate")
+		self.assertAlmostEqual(booked, self.STONE_RATE, places=2)
+
+		se = self._return_stone(batch, 1.0)
+
+		self.assertEqual(se.docstatus, 1)
+		row = se.items[0]
+		# ``allow_zero_valuation_rate`` is not asserted: ``doc_events.stock_entry`` stamps it on
+		# every Customer Goods row in ``before_validate``, whatever the return set. The manual
+		# rate is what carries the booked value.
+		self.assertEqual(flt(row.set_basic_rate_manually), 1.0)
+		self.assertAlmostEqual(flt(row.basic_rate), self.STONE_RATE, places=2)
+		self.assertAlmostEqual(flt(row.basic_amount), self.STONE_RATE, places=2)
+		self.assertEqual(row.expense_account, self.liability_account)
+		gles = self._gles(se.name)
+		self.assertAlmostEqual(
+			sum(flt(g.debit) for g in gles if g.account == self.liability_account),
+			self.STONE_RATE,
+			places=2,
+			msg=f"the liability was not debited by the booked value; GL was {gles}",
+		)
+
+	def test_a_stone_is_never_revalued_at_the_gold_rate(self):
+		"""SF3: revaluation restates GOLD at the gold rate; a stone is refused and nothing posts.
+
+		Restating a Carat stone at a per-gram gold rate would post the difference to the Customer
+		Gold Liability. Every earlier gate passes for this batch -- owned, free, whole, not a
+		customer-provided item -- so the refusal is the non-gold check and nothing else.
+		"""
+		from jewellery_erpnext.customer_subcontracting.customer_gold_revaluation import (
+			revalue_customer_gold,
+		)
+
+		batch = self._stone_batch(rate=self.STONE_RATE)
+		reconciliations = frappe.db.count("Stock Reconciliation", {"company": COMPANY})
+
+		with self.assertThrowsContaining("is not customer gold"):
+			revalue_customer_gold(
+				company=COMPANY,
+				customer=CUSTOMER,
+				batch_no=batch,
+				warehouse=self.warehouse,
+				item_code=STONE,
+				posting_date=self.posting_date,
+				new_rate=7500.0,
+			)
+
+		self.assertEqual(
+			frappe.db.count("Stock Reconciliation", {"company": COMPANY}),
+			reconciliations,
+			"a refused revaluation still created a Stock Reconciliation",
+		)
+		self.assertEqual(
+			frappe.get_all(
+				cgf.LEDGER_DOCTYPE,
+				filters={"batch_no": batch, "cg_event_kind": cgf.EVENT_REVALUATION},
+			),
+			[],
+		)
+		self.assertAlmostEqual(self._booked_rate(batch), self.STONE_RATE, places=2)
 
 
 class TestFulfilmentLedger(_CustomerGoldIntegrationCase):

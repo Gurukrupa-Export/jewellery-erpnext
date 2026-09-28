@@ -27,7 +27,14 @@ from jewellery_erpnext.customer_subcontracting.customer_gold_receipt import (
 	validate_customer_gold_receipt,
 )
 
-from .test_customer_gold_receipt import MOD, RATE, SETTINGS, _db_get_value, _entry
+from .test_customer_gold_receipt import (
+	MOD,
+	RATE,
+	SETTINGS,
+	_db_get_value,
+	_entry,
+	with_item_masters,
+)
 
 _REAL_GET_VALUE = frappe.db.get_value
 
@@ -146,6 +153,7 @@ class TestFeedReference(unittest.TestCase):
 		self.assertIsNone(self._run([]))
 
 
+@with_item_masters
 @patch(
 	f"{MOD}.resolve_customer_gold_rate_for_date",
 	return_value=frappe._dict(RATE, rate_factor=10.0),
@@ -202,18 +210,23 @@ class TestReceiptRateCheck(unittest.TestCase):
 			self._validate(self.OUTLIER, action="submit")
 		self.assertIn("<strong>10.0</strong>x the reference", str(raised.exception))
 
+	#: The tail of the outlier refusal. Asserted so an earlier, unrelated throw cannot pass these.
+	NEEDS_APPROVER = "may submit it after entering a Rate Override Reason"
+
 	def test_a_reason_without_the_role_is_refused(self, *_mocks):
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(frappe.ValidationError) as raised:
 			self._validate(
 				self.OUTLIER,
 				action="submit",
 				reason="feed is per 10 g today",
 				roles=["Stock User"],
 			)
+		self.assertIn(self.NEEDS_APPROVER, str(raised.exception))
 
 	def test_the_role_without_a_reason_is_refused(self, *_mocks):
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(frappe.ValidationError) as raised:
 			self._validate(self.OUTLIER, action="submit", roles=[RATE_APPROVER_ROLE])
+		self.assertIn(self.NEEDS_APPROVER, str(raised.exception))
 
 	def test_an_approver_with_a_reason_may_submit_and_is_recorded(self, *_mocks):
 		doc = self._validate(
@@ -236,6 +249,7 @@ class TestReceiptRateCheck(unittest.TestCase):
 		)
 
 
+@with_item_masters
 @patch(f"{MOD}.reference_rate", return_value=None)
 @patch(
 	f"{MOD}.resolve_customer_gold_rate_for_date",
