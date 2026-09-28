@@ -1818,6 +1818,48 @@ def _keep_as_built_bom_off_default(bom):
 	bom.is_default = 0
 
 
+def _consumed_bom_items(data, fg_item):
+	"""Standard BOM Item rows for an as-built BOM: each consumed material once, summed.
+
+	Never the finished item itself, and never a sub-assembly link: ``do_not_explode`` makes
+	ERPNext blank ``bom_no`` instead of filling it from ``Item.default_bom`` (bom.py
+	set_bom_material_details / get_bom_material_detail), so neither validate_bom_no nor the
+	recursion check can see a BOM these rows never referred to.
+	"""
+	rows = {}
+	for d in data or []:
+		item_code = d.get("item_code")
+		qty = flt(d.get("qty"))
+		if not item_code or item_code == fg_item or qty <= 0:
+			continue
+		row = rows.setdefault(
+			item_code,
+			{
+				"item_code": item_code,
+				"qty": 0.0,
+				"uom": d.get("uom"),
+				"rate": 0,
+				"do_not_explode": 1,
+			},
+		)
+		row["qty"] += qty
+	return list(rows.values())
+
+
+def _detail_tables_rebuild_items(bom):
+	"""Whether doc_events/bom.py _set_bom_items_by_child_tables will re-add standard items."""
+	return any(
+		flt(row.get("quantity"))
+		for table in (
+			"metal_detail",
+			"diamond_detail",
+			"gemstone_detail",
+			"finding_detail",
+		)
+		for row in bom.get(table) or []
+	) or bool(bom.get("other_detail"))
+
+
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	# frappe.throw("create_finished_goods_bom")
 	# If called from Serial Number Creator, use its prepared table as source of truth
@@ -1940,6 +1982,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.gemstone_detail = []
 	new_bom.other_detail = []
 	new_bom.operations = []
+	# The design BOM's standard items are not this piece's materials: a design BOM made by
+	# the order form carries the finished item itself as its only row. Copied here, ERPNext
+	# fills that row's bom_no from Item.default_bom and then refuses the draft default ("BOM
+	# ... must be submitted", SNC 48ara8a7ti) or, with a submitted default, raises BOM
+	# recursion. The as-built BOM lists what was actually consumed.
+	new_bom.items = []
+	for row in _consumed_bom_items(data, new_bom.item):
+		new_bom.append("items", row)
+	if not new_bom.items:
+		frappe.throw(
+			_(
+				"{0} {1} consumed no materials to build the finished goods BOM from"
+			).format(_(self.doctype), self.name)
+		)
 
 	# Reset header totals to avoid stale data from copied template
 	for field in [
@@ -3641,6 +3697,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		)
 
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
+	# doc_events/bom.py rebuilds the standard items from the detail tables on submit and
+	# APPENDS them without removing what is there; hand it an empty table, or every material
+	# would be listed twice. Kept only when there is nothing to rebuild from, so the BOM is
+	# never submitted without raw materials.
+	if _detail_tables_rebuild_items(new_bom):
+		new_bom.items = []
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
 	self.fg_bom = new_bom.name
