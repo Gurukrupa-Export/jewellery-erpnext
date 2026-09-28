@@ -439,6 +439,9 @@ class TestDeliveryEvent(_LineageCase):
 			),
 			patch.object(cgf, "_write_event", side_effect=write_event),
 			patch.object(cgf, "settle_customer_gold_liability"),
+			# Receipt allocation is a separate DB writer with its own integration tests; this
+			# harness isolates the event and its value.
+			patch.object(cgf, "_allocate_fulfilment"),
 			patch.object(cgf, "_row_carrying_value", self.ledger_value),
 			patch.object(cgf, "reference_purity", return_value=99.9),
 			patch(f"{cgf.__name__}.frappe.get_cached_value", return_value="INR"),

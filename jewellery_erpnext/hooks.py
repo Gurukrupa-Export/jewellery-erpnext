@@ -269,6 +269,10 @@ doc_events = {
 			# Runs last so it sees rows after update_batches has rebuilt self.items.
 			# No-op unless Customer Gold Flow is enabled on Subcontracting Settings.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_receipt",
+			# The configured Customer Gold return type only: links each row to the receipt row it
+			# gives back, sets the liability contra account and checks what the receipt still owes.
+			# Covers the desk "Create > Issue" path as well as make_customer_gold_return.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.prepare_return_entry",
 		],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
@@ -280,6 +284,9 @@ doc_events = {
 			# MUST stay after the two batch creators: a Customer Gold receipt carries no
 			# batch_no until create_parent_batches mints it.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_batches",
+			# Last, after prelock_bins: the receipt-level recheck of a Customer Gold return, under a
+			# lock on the receipt rows so two concurrent returns cannot both pass.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.lock_return_entitlement",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
@@ -295,6 +302,8 @@ doc_events = {
 			# subsystem: PC-to-Tagging, Employee IR injection and the settlement helpers each
 			# build their own Stock Entry, but every one of them arrives here.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.record_stock_movement",
+			# The Return event and its receipt allocation, for the configured return type.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.record_return",
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,

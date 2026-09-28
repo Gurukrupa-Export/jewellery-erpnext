@@ -420,7 +420,11 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 		# Only the customer's stones: measured, and there is no gold and no liability in them.
 		return frappe._dict(fine=0.0, value=0.0, reason=None)
 
-	share = frappe._dict(fine=None, value=None, reason=None)
+	# ``parts`` keeps what this function used to compute and discard: the customer's gold per
+	# SOURCE batch. The ``Customer Gold Allocation`` writer turns each part into the receipt row it
+	# came from, so one settlement stays decomposable by receipt. Each part is
+	# (source batch, source-item quantity, amount or None).
+	share = frappe._dict(fine=None, value=None, reason=None, parts=[])
 
 	# The basis covers EVERY component, not just this customer's: company alloy and stones are
 	# part of what the batch is made of.
@@ -441,6 +445,7 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 	share.fine = flt(fine, QTY_PRECISION) if fine is not None else None
 
 	if not valued:
+		share.parts = _unvalued_parts(mine, fraction)
 		return share
 
 	total = 0.0
@@ -472,9 +477,31 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 			return share
 
 		total += source_qty * fraction * flt(rate)
+		share.parts.append(
+			(source, source_qty * fraction, source_qty * fraction * flt(rate))
+		)
 
 	share.value = flt(total, 2)
 	return share
+
+
+def _unvalued_parts(components, fraction):
+	"""Quantity-only parts under Zero Value: which receipt the gold came from still matters when
+	no money moves."""
+	parts = []
+	for component in components:
+		source = component.get("source_batch")
+		if not source:
+			continue
+		source_item = frappe.db.get_value("Batch", source, "item") or component.get(
+			"item_code"
+		)
+		source_qty = _restate_qty(
+			flt(component.get("qty")), component.get("item_code"), source_item
+		)
+		if source_qty is not None:
+			parts.append((source, source_qty * fraction, None))
+	return parts
 
 
 def _is_customer_gold_item(item_code):
@@ -1603,38 +1630,224 @@ def record_fulfilment(doc, method=None):
 		else:
 			basis = quantity_basis(row.get("item_code"), signed, doc.company)
 
+		currency = (
+			frappe.get_cached_value("Company", doc.company, "default_currency")
+			if nominal
+			else None
+		)
 		for serial_no in serials:
-			written.append(
-				_write_event(
-					cg_event_key=build_event_key(
-						doc.company, doc.doctype, row.name, serial_no, kind
-					),
-					cg_event_kind=kind,
-					cg_stage=STAGE_FG if is_return else STAGE_CLOSED,
+			event_name = _write_event(
+				cg_event_key=build_event_key(
+					doc.company, doc.doctype, row.name, serial_no, kind
+				),
+				cg_event_kind=kind,
+				cg_stage=STAGE_FG if is_return else STAGE_CLOSED,
+				company=doc.company,
+				customer=customer,
+				reference_doctype=doc.doctype,
+				reference_docname=doc.name,
+				cg_source_row=row.name,
+				item_code=row.get("item_code"),
+				batch_no=batch_no,
+				serial_no=serial_no,
+				stock_uom=row.get("stock_uom") or row.get("uom"),
+				cg_gross_qty_delta=signed,
+				**basis,
+				cg_carrying_value_delta=value_per_serial,
+				# Currency is stamped whenever the policy is Nominal, even if the row turned
+				# out to carry no SLE: it records which policy was in force when the event was
+				# written, which is what makes a later reconciliation possible.
+				cg_currency=currency,
+			)
+			written.append(event_name)
+			_allocate_fulfilment(
+				doc,
+				row,
+				frappe._dict(
+					name=event_name,
 					company=doc.company,
 					customer=customer,
 					reference_doctype=doc.doctype,
 					reference_docname=doc.name,
-					cg_source_row=row.name,
-					item_code=row.get("item_code"),
-					batch_no=batch_no,
-					serial_no=serial_no,
-					stock_uom=row.get("stock_uom") or row.get("uom"),
-					cg_gross_qty_delta=signed,
-					**basis,
-					cg_carrying_value_delta=value_per_serial,
-					# Currency is stamped whenever the policy is Nominal, even if the row turned
-					# out to carry no SLE: it records which policy was in force when the event was
-					# written, which is what makes a later reconciliation possible.
-					cg_currency=frappe.get_cached_value(
-						"Company", doc.company, "default_currency"
-					)
-					if nominal
-					else None,
-				)
+				),
+				batch_no,
+				serial_no,
+				share,
+				per_serial,
+				value_per_serial,
+				len(serials),
+				currency,
 			)
 
 	settle_customer_gold_liability(doc, written)
+
+
+def _allocate_fulfilment(
+	doc,
+	row,
+	event,
+	batch_no,
+	serial_no,
+	share,
+	per_serial,
+	value_per_serial,
+	serial_count,
+	currency,
+):
+	"""Decompose one Delivery / Delivery Return event by the receipt rows it drew on.
+
+	The split is the one ``_customer_share`` already priced the settlement with -- per source
+	batch -- carried one step further to the receipt rows behind each source batch. A raw
+	receipt batch delivered as-is draws on that batch's own receipt rows.
+
+	A return does NOT re-derive the split. It restores the original delivery's rows for the same
+	serial, in the same proportions, so a cancelled or returned piece reopens exactly the receipts
+	it closed -- never whatever today's components would say.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		BASIS_COMPONENT,
+		BASIS_DIRECT,
+		DISPOSITION_DELIVERY_RETURN,
+		DISPOSITION_FG_DELIVERY,
+		allocate_event,
+		is_allocation_schema_ready,
+		receipts_of_batch,
+	)
+
+	if not is_allocation_schema_ready():
+		return
+
+	restoring = flt(row.get("qty")) < 0
+	# The event's value is negative when metal leaves; an allocation's amount is what it
+	# RELEASES, so it carries the opposite sign.
+	total_amount = -flt(value_per_serial) if value_per_serial is not None else None
+	valued_currency = currency if total_amount is not None else None
+	disposition = DISPOSITION_DELIVERY_RETURN if restoring else DISPOSITION_FG_DELIVERY
+
+	if restoring and _restore_original_allocations(
+		doc, row, event, serial_no, abs(per_serial), total_amount, valued_currency
+	):
+		return
+
+	sign = -1 if restoring else 1
+	parts = []
+	if share is not None:
+		basis = BASIS_COMPONENT
+		for source, qty, amount in share.parts:
+			for receipt in receipts_of_batch(doc.company, event.customer, source):
+				parts.append(
+					(
+						receipt,
+						sign * abs(qty) * receipt.share / serial_count,
+						sign * abs(flt(amount)) * receipt.share / serial_count,
+					)
+				)
+	elif _is_receipt_batch(doc.company, event.customer, batch_no):
+		basis = BASIS_DIRECT
+		for receipt in receipts_of_batch(doc.company, event.customer, batch_no):
+			parts.append(
+				(
+					receipt,
+					sign * abs(per_serial) * receipt.share,
+					flt(total_amount) * receipt.share,
+				)
+			)
+	else:
+		# No recorded provenance: the event stays unallocated and the report says so.
+		return
+
+	allocate_event(
+		event, parts, disposition, basis, valued_currency, total_amount=total_amount
+	)
+
+
+def _restore_original_allocations(
+	doc, row, event, serial_no, returned_qty, total_amount, currency
+):
+	"""Mirror the original delivery's allocations for this serial. False when there are none
+	(a legacy delivery), so the caller falls back to deriving them."""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		ALLOCATION_DOCTYPE,
+		DISPOSITION_DELIVERY_RETURN,
+		DISPOSITION_FG_DELIVERY,
+		allocate_event,
+	)
+
+	against = doc.get("return_against")
+	if not against:
+		return False
+
+	filters = {
+		"reference_doctype": doc.doctype,
+		"reference_docname": against,
+		"cg_event_kind": EVENT_DELIVERY,
+	}
+	if serial_no:
+		filters["serial_no"] = serial_no
+	detail = row.get("dn_detail") or row.get("sales_invoice_item")
+	if detail:
+		filters["cg_source_row"] = detail
+	originals = frappe.get_all(
+		LEDGER_DOCTYPE, filters=filters, fields=["name", "cg_gross_qty_delta"]
+	)
+	if not originals:
+		return False
+
+	allocations = frappe.get_all(
+		ALLOCATION_DOCTYPE,
+		filters={
+			"cg_event": ["in", [o.name for o in originals]],
+			"disposition": DISPOSITION_FG_DELIVERY,
+		},
+		fields=["name", "receipt_event", "gross_qty", "amount", "basis"],
+		order_by="creation",
+	)
+	if not allocations:
+		return False
+
+	delivered = sum(abs(flt(o.cg_gross_qty_delta)) for o in originals)
+	scale = min(returned_qty / delivered, 1.0) if delivered else 1.0
+	receipts = {
+		r.name: r
+		for r in frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={"name": ["in", [a.receipt_event for a in allocations]]},
+			fields=[
+				"name",
+				"reference_docname",
+				"cg_source_row",
+				"batch_no",
+				"item_code",
+			],
+		)
+	}
+
+	original_total = sum(flt(a.amount) for a in allocations) * scale
+	# Same proportions as the original; the total is the one this return actually posts, so the
+	# decomposition ties to the Journal Entry. Unvalued: the original amounts, scaled.
+	rescale = (
+		(abs(flt(total_amount)) / original_total)
+		if total_amount is not None and original_total
+		else 1.0
+	)
+	parts = [
+		(
+			receipts[a.receipt_event],
+			-flt(a.gross_qty) * scale,
+			-flt(a.amount) * scale * rescale,
+		)
+		for a in allocations
+		if a.receipt_event in receipts
+	]
+	allocate_event(
+		event,
+		parts,
+		DISPOSITION_DELIVERY_RETURN,
+		allocations[0].basis,
+		currency,
+		total_amount=total_amount,
+	)
+	return True
 
 
 def settle_customer_gold_liability(doc, event_names):
@@ -1748,6 +1961,11 @@ def settle_customer_gold_liability(doc, event_names):
 			LEDGER_DOCTYPE, row.name, "cg_settlement_voucher", je, update_modified=False
 		)
 
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		stamp_settlement_voucher,
+	)
+
+	stamp_settlement_voucher([row.name for row in settled], je)
 	return je
 
 
@@ -1873,6 +2091,7 @@ def reverse_fulfilment(doc, method=None):
 
 	_cancel_settlement_entries(doc)
 	_reverse_events(doc, [EVENT_DELIVERY, EVENT_DELIVERY_RETURN], STAGE_FG)
+	_reverse_allocations(doc)
 
 
 def _cancel_settlement_entries(doc):
@@ -1942,6 +2161,15 @@ def reverse_receipt(doc, method=None):
 	# Both Stock-Entry-borne kinds. A cancelled RETURN gives the customer their holding back
 	# just as a cancelled RECEIPT takes it away -- same document type, same handler.
 	_reverse_events(doc, list(STOCK_ENTRY_KINDS), STAGE_RM)
+	_reverse_allocations(doc)
+
+
+def _reverse_allocations(doc):
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		reverse_allocations,
+	)
+
+	reverse_allocations(doc)
 
 
 def reverse_revaluation(doc, method=None):
