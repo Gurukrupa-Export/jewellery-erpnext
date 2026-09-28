@@ -1690,6 +1690,94 @@ class ProductCertification(Document):
 		}
 
 
+def _issue_rows_by_batch(base_row, warehouse, qty, taken, posting_date=None, posting_time=None):
+	"""Fan one batchless Issue row out into one row per batch it will actually draw.
+
+	This row used to be appended with NO ``batch_no`` at all. The app's own FIFO splitter,
+	``CustomStockEntry.update_batches``, is gated on ``not self.auto_created`` and a Product
+	Certification entry sets ``auto_created = 1``, so nothing filled it in; the row reached
+	the ledger batchless and ERPNext's SLE-time auto-picker built a FIFO bundle across as
+	many batches as it took, writing back the bundle name and never the ``batch_no``. The
+	batch column on the Issue was therefore blank exactly when the draw spanned more than one
+	batch -- the case you most want to read off the document.
+
+	Same batches, same quantities, same FIFO order as the picker was already choosing; they
+	are just resolved here, up front, so each one gets its own visible row. ``inventory_type``
+	is deliberately left as the caller set it: the receipt side reads its own value from the
+	exploded rows, so stamping per-batch ownership here alone would put the two sides of one
+	certification into disagreement.
+
+	``taken`` is shared across the document so two rows of the same item cannot both spend
+	the same batch. Returns ``[base_row]`` unchanged for a serialised or non-batched item, or
+	when no batch is available -- the pre-existing behaviour, and the pre-existing error.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+		capped_auto_batch_nos,
+	)
+	from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+		allocate_in_order,
+	)
+
+	item_code = base_row.get("item_code")
+	if base_row.get("serial_no") or not item_code or not warehouse:
+		return [base_row]
+	if not frappe.get_cached_value("Item", item_code, "has_batch_no"):
+		return [base_row]
+
+	precision = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+	need = flt(qty, precision)
+	if need <= 0:
+		return [base_row]
+
+	# No ``qty`` in the kwargs: get_auto_batch_nos truncates the pool at the first batch that
+	# covers the need, which would hide the later batches this split exists to expose.
+	batches = (
+		capped_auto_batch_nos(
+			frappe._dict(
+				{
+					"item_code": item_code,
+					"warehouse": warehouse,
+					"posting_date": posting_date,
+					"posting_time": posting_time,
+				}
+			)
+		)
+		or []
+	)
+	# Keyed on (warehouse, batch): one batch can carry stock in more than one warehouse.
+	pool = [
+		((warehouse, b.batch_no), flt(b.qty)) for b in batches if flt(b.qty) > 0
+	]
+	if not pool:
+		return [base_row]
+
+	allocation, shortfall = allocate_in_order(pool, need, precision, taken=taken)
+	if shortfall > 0:
+		available = flt(sum(q for _k, q in pool), precision)
+		frappe.throw(
+			_(
+				"{0} needs {1} in {2}, but only {3} is available across its batches "
+				"(short by {4})."
+			).format(
+				frappe.bold(item_code),
+				need,
+				frappe.bold(warehouse),
+				available,
+				flt(shortfall, precision),
+			),
+			title=_("Insufficient Batch Stock"),
+		)
+
+	rows = []
+	for (_wh, batch_no), batch_qty in allocation:
+		line = dict(base_row)
+		line["batch_no"] = batch_no
+		line["qty"] = batch_qty
+		line["gross_weight"] = batch_qty
+		rows.append(line)
+	return rows
+
+
 def create_stock_entry(doc):
 	if doc.type == "Issue" or doc.service_type in [
 		"Hall Marking Service",
@@ -1796,6 +1884,8 @@ def create_stock_entry(doc):
 		# orders turned each one into a linear scan of everything added so far.
 		added_mwo = set()
 		added_serial = set()
+		# {(warehouse, batch_no): qty} claimed so far, shared by every row of this entry.
+		batch_taken = {}
 		# Shared across every get_stock_item_against_mwo call of this document -- see the
 		# Receive branch there for what it holds and why.
 		receive_context = {}
@@ -1839,24 +1929,38 @@ def create_stock_entry(doc):
 					supplier_wh = _t_warehouse_serial()
 					source_wh = s_warehouse if doc.type == "Issue" else supplier_wh
 
-					se_doc.append(
-						"items",
-						{
-							"item_code": row.item_code,
-							"serial_no": row.serial_no,
-							"qty": 1 if row.serial_no else row.gross_weight,
-							"s_warehouse": source_wh,
-							"t_warehouse": supplier_wh
-							if doc.type == "Issue"
-							else s_warehouse,
-							"Inventory_type": "Regular Stock",
-							"reference_doctype": "Serial No",
-							"reference_docname": row.serial_no,
-							"serial_and_batch_bundle": None,
-							"use_serial_batch_fields": True,
-							"gross_weight": row.gross_weight,
-						},
+					base_row = {
+						"item_code": row.item_code,
+						"serial_no": row.serial_no,
+						"qty": 1 if row.serial_no else row.gross_weight,
+						"s_warehouse": source_wh,
+						"t_warehouse": supplier_wh
+						if doc.type == "Issue"
+						else s_warehouse,
+						"Inventory_type": "Regular Stock",
+						"reference_doctype": "Serial No",
+						"reference_docname": row.serial_no,
+						"serial_and_batch_bundle": None,
+						"use_serial_batch_fields": True,
+						"gross_weight": row.gross_weight,
+					}
+					# Issue only. A Receive on this branch (Hall Marking / Diamond
+					# Certificate) draws back out of the supplier warehouse and has its own
+					# batch story; leave it exactly as it was.
+					item_rows = (
+						_issue_rows_by_batch(
+							base_row,
+							source_wh,
+							row.gross_weight,
+							batch_taken,
+							posting_date=se_doc.get("posting_date"),
+							posting_time=se_doc.get("posting_time"),
+						)
+						if doc.type == "Issue"
+						else [base_row]
 					)
+					for item_row in item_rows:
+						se_doc.append("items", item_row)
 		if not se_doc.items:
 			frappe.throw(_("No item found for Repack"))
 		se_doc.flags.throw_batch_error = True
