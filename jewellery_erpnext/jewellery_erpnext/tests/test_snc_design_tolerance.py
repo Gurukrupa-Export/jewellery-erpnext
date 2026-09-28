@@ -170,6 +170,42 @@ class TestTheFinishedPieceIsChecked(_ToleranceCase):
 		self.assertIn("piece 2", failures[0])
 
 
+class TestEachScopeIsItsOwnRequirement(_ToleranceCase):
+	"""Two diamond types banded side by side: one in range must not excuse the other."""
+
+	bands = {
+		"diamond": [
+			frappe._dict(
+				weight_type="Weight wise",
+				diamond_type="Natural",
+				from_tolerance_wt=0.452,
+				to_tolerance_wt=0.520,
+			),
+			frappe._dict(
+				weight_type="Weight wise",
+				diamond_type="Lab Grown",
+				from_tolerance_wt=0.28,
+				to_tolerance_wt=0.32,
+			),
+		]
+	}
+
+	def test_a_short_natural_is_caught_even_with_lab_stones_in_range(self):
+		failures = pt.get_snc_tolerance_failures(
+			_snc(_row(GOLD_22, 4.072), _row(NATURAL, 0.396), _row(LAB, 0.30))
+		)
+		self.assertEqual(len(failures), 1, failures)
+		self.assertIn("0.396", failures[0])
+
+	def test_both_scopes_in_range_pass(self):
+		self.assertEqual(
+			pt.get_snc_tolerance_failures(
+				_snc(_row(GOLD_22, 4.072), _row(NATURAL, 0.486), _row(LAB, 0.30))
+			),
+			[],
+		)
+
+
 class TestGemstoneScopes(_ToleranceCase):
 	bands = {
 		"gemstone": [

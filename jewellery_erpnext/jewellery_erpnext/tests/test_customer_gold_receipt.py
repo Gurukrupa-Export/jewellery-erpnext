@@ -82,6 +82,8 @@ def _entry(**overrides):
 		doctype="Stock Entry",
 		stock_entry_type=SE_TYPE,
 		posting_date="2026-08-15",
+		# An explicitly chosen date: without it the receipt posts "now", as ERPNext would.
+		set_posting_time=1,
 		company=COMPANY,
 		_customer=CUSTOMER,
 		items=[_item_row()],

@@ -260,5 +260,13 @@ class TestNoBackdating(unittest.TestCase):
 			_entry(posting_date=add_days(nowdate(), -1), _action="save")
 		)
 
+	def test_a_draft_left_to_post_now_is_not_refused_as_backdated(self, *_mocks):
+		"""With "Edit Posting Date" off ERPNext posts it today, so yesterday's draft date is moot."""
+		doc = _entry(
+			posting_date=add_days(nowdate(), -1), set_posting_time=0, _action="submit"
+		)
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(str(doc.posting_date), nowdate())
+
 	def test_todays_receipt_submits(self, *_mocks):
 		validate_customer_gold_receipt(_entry(posting_date=nowdate(), _action="submit"))

@@ -398,14 +398,22 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 		return None
 
 	components = _recorded_components(batch_no)
-	mine = [
+	customers = [
 		component
 		for component in components
 		if component.get("inventory_type") == CUSTOMER_GOODS
 		and component.get("customer") == customer
 	]
-	if not mine:
+	if not customers:
 		return None
+
+	# Only the customer's GOLD carries a liability: nothing but a Customer Gold receipt books one.
+	# A customer who also supplied the stones has them recorded here too, and they have no booked
+	# rate and no fine gold -- counting them made every such piece unsettleable.
+	mine = [c for c in customers if _is_customer_gold_item(c.get("item_code"))]
+	if not mine:
+		# Only the customer's stones: measured, and there is no gold and no liability in them.
+		return frappe._dict(fine=0.0, value=0.0, reason=None)
 
 	share = frappe._dict(fine=None, value=None, reason=None)
 
@@ -462,6 +470,34 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 
 	share.value = flt(total, 2)
 	return share
+
+
+#: Item templates whose items are customer GOLD: metal and findings. Stones are ``D`` / ``G``.
+CUSTOMER_GOLD_TEMPLATES = ("M", "F")
+
+
+def _is_customer_gold_item(item_code):
+	return bool(item_code) and (
+		frappe.db.get_value("Item", item_code, "variant_of", cache=True)
+		in CUSTOMER_GOLD_TEMPLATES
+	)
+
+
+def _is_receipt_batch(company, customer, batch_no):
+	"""Whether ``batch_no`` is the customer's own received batch -- the one case the ledger's
+	stock value IS the customer's booked value."""
+	return bool(
+		batch_no
+		and frappe.db.exists(
+			LEDGER_DOCTYPE,
+			{
+				"company": company,
+				"customer": customer,
+				"batch_no": batch_no,
+				"cg_event_kind": EVENT_RECEIPT,
+			},
+		)
+	)
 
 
 def _log_unsettled(doc, row, batch_no, reason):
@@ -1536,8 +1572,19 @@ def record_fulfilment(doc, method=None):
 		)
 		carrying_value = None
 		if nominal:
-			if share is None:
+			if share is None and _is_receipt_batch(doc.company, customer, batch_no):
 				carrying_value = _row_carrying_value(doc, row)
+			elif share is None:
+				# A customer-owned batch with no component of this customer's and no receipt of
+				# its own -- a piece whose provenance was never written. Its stock value holds
+				# company alloy, stones and making too; releasing it could exceed what the
+				# customer is owed.
+				_log_unsettled(
+					doc,
+					row,
+					batch_no,
+					"it records no component of this customer's and is not their received batch",
+				)
 			elif share.value is None:
 				_log_unsettled(doc, row, batch_no, share.reason)
 			else:
