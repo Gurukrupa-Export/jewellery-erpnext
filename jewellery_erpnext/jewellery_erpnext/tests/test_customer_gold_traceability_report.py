@@ -1345,7 +1345,8 @@ class TestMaterialPosition(_ReportUnitCase):
 			),
 			patch(
 				"erpnext.stock.doctype.batch.batch.get_batch_qty",
-				side_effect=lambda batch_no, warehouse: self.FREE.get(
+				# posting_datetime: the view asks for the free quantity as of its cutoff.
+				side_effect=lambda batch_no, warehouse, **kw: self.FREE.get(
 					(batch_no, warehouse), 0.0
 				),
 			),
