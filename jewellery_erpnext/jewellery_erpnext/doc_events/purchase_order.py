@@ -337,7 +337,7 @@ def validate_copy_bom(po_doc):
 	error at the far end of an enqueued background job instead of on the button the user pressed.
 
 	The existence check is not padding. This site works from mirrored Purchase Orders, and
-	gke_customization only replicates a BOM when setting_type == "Close" and bom_type == "Template"
+	gke_customization only replicates a BOM when setting_type == "Nova Glow" and bom_type == "Template"
 	(gke_order_forms/doc_events/item.py), so a mirrored PO can legitimately name a BOM that was
 	never pushed here. Unchecked, that surfaces as a raw DoesNotExistError inside the BOM job.
 

@@ -121,6 +121,69 @@ def _row_value(child_doctype, row_name, fieldname):
 	return frappe.db.get_value(child_doctype, row_name, fieldname)
 
 
+RATE_FIELDS = ("custom_metal_rate", "custom_alloy_rate")
+
+
+def carry_rates_from_source_batches(batch, sources):
+	"""Copy the Batch Rate / Alloy Rate pools onto a HAND-BUILT batch from its source batches.
+
+	``sources`` is ``[(batch_no, qty)]`` -- the batches consumed to make this one, with the
+	quantity taken from each. Both pools are carried, qty-weighted across the sources, which
+	is the same two-pool weighted shape ``batch.on_update`` blends from
+	``custom_origin_entries`` for a Repack-Metal Conversion.
+
+	**Why this exists at all.** ``update_inventory_dimentions`` stamps a new batch's rate from
+	the voucher row that minted it, but it can only do so inside
+	``if frappe.db.exists(row.options, self.custom_voucher_detail_no)``. A batch built by hand
+	BEFORE its Stock Entry exists -- which is what ``finding_repack._create_finding_batch`` and
+	``manufacturing_operation._create_scrap_batch`` both do, so the batch id is known in time to
+	put on the produce row -- has no ``custom_voucher_detail_no`` to resolve, so that stamper can
+	never fire for it. Every batch a plain ``Repack`` has ever minted sits at rate 0 for this
+	reason. ``customer_subcontracting/batch_rename`` hit the same wall from the other direction
+	(it bypasses the stamper via ``frappe.flags.is_batch_autoname``) and solved it the same way:
+	assign the rate directly.
+
+	Carrying BOTH pools unchanged is correct because neither of these repacks changes purity --
+	the same reasoning ``_convert_received_scrap_to_scrap_batch`` already states for its own
+	rate. Note that ``_rate_field_for_item`` choosing a single field is about which pool a
+	*minting row's* rate lands in, not a claim that a batch holds only one: a metal batch
+	minted by a Repack-Metal Conversion legitimately carries both.
+
+	Sources with no rate contribute 0 rather than being dropped, so a partly-unvalued input
+	dilutes the result honestly instead of inventing value -- the same "no fallback to the Bin
+	or Item rate" policy ``loss_valuation`` states.
+	"""
+	usable = [(b, flt(q)) for b, q in (sources or []) if b]
+	if not usable:
+		return batch
+
+	rates = {}
+	for batch_no, _qty in usable:
+		rates[batch_no] = (
+			frappe.db.get_value("Batch", batch_no, RATE_FIELDS, as_dict=True) or {}
+		)
+
+	total_qty = sum(qty for _b, qty in usable)
+	for fieldname in RATE_FIELDS:
+		if not _can_stamp_rate(batch, fieldname):
+			continue
+		if total_qty:
+			value = (
+				sum(
+					flt(rates[batch_no].get(fieldname)) * qty
+					for batch_no, qty in usable
+				)
+				/ total_qty
+			)
+		else:
+			# Every source came through at qty 0 (nothing was really consumed); fall back to a
+			# plain mean so a rate is still carried rather than divided by zero.
+			value = sum(flt(r.get(fieldname)) for r in rates.values()) / len(rates)
+		setattr(batch, fieldname, value)
+
+	return batch
+
+
 def _can_stamp_rate(batch, fieldname):
 	"""Whether the Batch Rate / Alloy Rate may still be written.
 

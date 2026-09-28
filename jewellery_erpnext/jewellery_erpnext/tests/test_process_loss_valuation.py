@@ -24,8 +24,12 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.loss_valuation impo
 class _FakeSE:
 	"""Minimal stand-in for a Stock Entry: rows are plain dicts in `items`."""
 
-	def __init__(self, items, stock_entry_type="Process Loss"):
+	def __init__(self, items, stock_entry_type="Process Loss", auto_created=1):
 		self.stock_entry_type = stock_entry_type
+		# Every in-app builder stamps auto_created; the Repack branch requires it so a
+		# hand-made Repack from the UI can never be repriced. Defaulted on so the Process
+		# Loss cases below read the same as before.
+		self.auto_created = auto_created
 		self.items = list(items)
 
 	def get(self, field):
@@ -280,3 +284,134 @@ class TestControllerWiring(IntegrationTestCase):
 		)
 
 		self.assertIsNot(CustomStockEntry.set_basic_rate, StockEntry.set_basic_rate)
+
+
+class TestRepackProduceRates(IntegrationTestCase):
+	"""The `Repack` branch, added for the finding repack engine.
+
+	`finding_repack` consumes casting-tree metal and produces finding items under the PLAIN
+	`Repack` type, with `set_basic_rate_manually = 1` on the produce rows (mandatory --
+	`validate_repack_entry` throws for a multi-finished-good Repack otherwise) and no
+	`basic_rate`. ERPNext skips manual rows entirely, so MAT-STE-28117 posted 21,352.34 of gold
+	out and 0.00 in, writing the whole lot off as a Stock Adjustment.
+
+	The branch is deliberately narrower than the Process Loss one: it fills a zero and never
+	rewrites a rate someone else set.
+	"""
+
+	def _repack(self, items):
+		return _FakeSE(items, stock_entry_type="Repack")
+
+	def test_manual_unrated_produce_row_takes_the_consumed_value(self):
+		se = self._repack(
+			[_consume("M-A", 1.23, 14624.891247705), _produce("F-A", 1.23)]
+		)
+		set_process_loss_produce_rates(se)
+		self.assertAlmostEqual(se.items[1]["basic_rate"], 14624.891247705, places=6)
+		out, inc = _totals(se)
+		self.assertEqual(out, inc)
+
+	def test_two_findings_from_one_run_each_take_their_own_share(self):
+		"""The real MAT-STE-28117 shape: consume/produce pairs, 1.23 g then 0.23 g."""
+		se = self._repack(
+			[
+				_consume("M-A", 1.23, 14624.891247705),
+				_produce("F-PO", 1.23),
+				_consume("M-A", 0.23, 14624.891247705),
+				_produce("F-SW", 0.23),
+			]
+		)
+		set_process_loss_produce_rates(se)
+		self.assertAlmostEqual(se.items[1]["basic_amount"], 17988.62, places=2)
+		self.assertAlmostEqual(se.items[3]["basic_amount"], 3363.72, places=2)
+		out, inc = _totals(se)
+		self.assertEqual(out, inc)
+
+	def test_mixed_ownership_split_values_each_owner_from_its_own_consumes(self):
+		"""_append_finding_rows emits one produce row per ownership tier; each must take the
+		value ITS consume rows gave up, not a pro-rata slice of the run."""
+		se = self._repack(
+			[
+				_consume(
+					"M-A", 1.0, 100.0, inventory_type="Customer Goods", customer="C1"
+				),
+				_consume("M-A", 2.0, 200.0),
+				_produce("F-A", 1.0, inventory_type="Customer Goods", customer="C1"),
+				_produce("F-A", 2.0),
+			]
+		)
+		set_process_loss_produce_rates(se)
+		self.assertAlmostEqual(se.items[2]["basic_amount"], 100.0, places=2)
+		self.assertAlmostEqual(se.items[3]["basic_amount"], 400.0, places=2)
+
+	def test_row_that_already_has_a_rate_is_left_alone(self):
+		"""_convert_received_scrap_to_scrap_batch prices both its legs deliberately; recomputing
+		would reprice entries already posted whenever ERPNext reposts them."""
+		se = self._repack(
+			[
+				_consume("M-A", 1.0, 100.0),
+				_produce("ML-A", 1.0, basic_rate=77.0, basic_amount=77.0),
+			]
+		)
+		set_process_loss_produce_rates(se)
+		self.assertEqual(se.items[1]["basic_rate"], 77.0)
+		self.assertEqual(se.items[1]["basic_amount"], 77.0)
+
+	def test_row_without_the_manual_flag_is_left_to_erpnext(self):
+		"""No manual flag means ERPNext's get_basic_rate_for_repacked_items prices it; this
+		module must not steal the row (main_slip and the purity repack rely on that)."""
+		se = self._repack(
+			[
+				_consume("M-A", 1.0, 100.0),
+				_produce("ML-A", 1.0, set_basic_rate_manually=0),
+			]
+		)
+		set_process_loss_produce_rates(se)
+		self.assertEqual(se.items[1]["basic_rate"], 0.0)
+
+	def test_mixed_run_skips_the_balancing_rather_than_misparking(self):
+		"""One owned row and one priced elsewhere: the owned row still takes its own share, but
+		the rounding residue must NOT be parked onto it -- that residue is the other row's."""
+		se = self._repack(
+			[
+				_consume("M-A", 1.0, 100.0),
+				_consume("M-A", 2.0, 200.0),
+				_produce("F-A", 1.0),
+				_produce("F-B", 2.0, basic_rate=50.0, basic_amount=100.0),
+			]
+		)
+		set_process_loss_produce_rates(se)
+		self.assertEqual(se.items[3]["basic_amount"], 100.0)
+		self.assertGreater(se.items[2]["basic_amount"], 0.0)
+
+	def test_process_loss_is_untouched_by_the_widened_gate(self):
+		"""Regression guard: 18,253 live batches were valued through the Process Loss branch,
+		which stays unconditional -- a Process Loss row is valued even if it already has a rate."""
+		se = _FakeSE(
+			[_consume("M-A", 1.0, 100.0), _produce("ML-A", 1.0, basic_rate=5.0)]
+		)
+		set_process_loss_produce_rates(se)
+		self.assertAlmostEqual(se.items[1]["basic_rate"], 100.0, places=6)
+
+	def test_hand_made_repack_is_never_repriced(self):
+		"""`set_basic_rate_manually` is a plain user-visible checkbox on Stock Entry Detail
+		(depends_on parent.purpose==="Repack" && doc.t_warehouse), not an internal marker.
+		An operator who ticks it on their own Repack and leaves the rate at 0 on purpose --
+		a zero-value by-product -- must keep that 0; silently handing them the whole consumed
+		value would be invisible in the document."""
+		se = _FakeSE(
+			[_consume("M-A", 1.0, 100.0), _produce("F-A", 1.0)],
+			stock_entry_type="Repack",
+			auto_created=0,
+		)
+		set_process_loss_produce_rates(se)
+		self.assertEqual(se.items[1]["basic_rate"], 0.0)
+		self.assertEqual(se.items[1]["basic_amount"], 0.0)
+
+	def test_hand_made_process_loss_is_still_valued(self):
+		"""The auto_created term is Repack-only: Process Loss stays unconditional."""
+		se = _FakeSE(
+			[_consume("M-A", 1.0, 100.0), _produce("ML-A", 1.0)], auto_created=0
+		)
+		set_process_loss_produce_rates(se)
+		self.assertAlmostEqual(se.items[1]["basic_rate"], 100.0, places=6)

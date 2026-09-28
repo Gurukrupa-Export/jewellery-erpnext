@@ -49,7 +49,12 @@ from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	PROCESS_LOSS_SE_TYPE,
+	REPACK_SE_TYPE,
 )
+
+# The types whose produce rows this module may value. They are NOT treated alike -- see
+# ``_owns_produce_row`` for why a plain Repack only gets the rows nothing else prices.
+VALUED_SE_TYPES = (PROCESS_LOSS_SE_TYPE, REPACK_SE_TYPE)
 
 
 def _get(row, fieldname):
@@ -199,8 +204,50 @@ def _allocate(consumed, produced):
 	return shares
 
 
+def _owns_produce_row(se, se_type, row):
+	"""Whether this module may write the rate on one produce row, by stock entry type.
+
+	**Process Loss: all of them, unconditionally.** Every loss builder leaves the rate
+	entirely to this module, and a repost has to re-derive it exactly as the original submit
+	did -- so this branch must stay free of any "only if still zero" condition. 18,253 live
+	batches were valued through it.
+
+	**Repack: only an auto-created entry's rows carrying ``set_basic_rate_manually`` with no
+	``basic_rate``.** That combination is what nothing else in the stack fills in: ERPNext's
+	``set_basic_rate`` skips a manual row before reaching both the ``purpose == "Repack"``
+	branch and the ``get_row_valuation_rate`` fallback, and posts it at 0 without complaint.
+	The flag itself cannot be dropped -- ``validate_repack_entry`` throws when a Repack has
+	several distinct finished goods that are not all manual-rate, which is exactly what a
+	two-finding ``finding_repack`` entry is.
+
+	All three terms are load-bearing:
+
+	* ``auto_created`` confines this to entries the app built. ``set_basic_rate_manually`` is
+	  NOT an internal marker -- it is a plain user-visible checkbox on Stock Entry Detail
+	  (``depends_on: eval:parent.purpose==="Repack" && doc.t_warehouse``), shown on every
+	  Repack produce row. Without this term, an operator hand-building a Repack who ticks it
+	  and deliberately leaves the rate at 0 (a zero-value by-product) would silently be handed
+	  the whole consumed value, with nothing in the document to show why.
+	* the manual flag: a row without it belongs to ERPNext's
+	  ``get_basic_rate_for_repacked_items`` pooling and must not be stolen from it.
+	* no ``basic_rate``: a Repack produce row that already has one was priced by its builder on
+	  purpose (``_convert_received_scrap_to_scrap_batch`` sets ``basic_rate = val_rate``), and a
+	  repost would otherwise silently reprice entries already posted.
+
+	So on a Repack this only ever fills a zero on a voucher the app itself made; it never
+	rewrites a real number and never touches a user's own document.
+	"""
+	if se_type == PROCESS_LOSS_SE_TYPE:
+		return True
+	return (
+		bool(_get(se, "auto_created"))
+		and bool(_get(row, "set_basic_rate_manually"))
+		and not flt(_get(row, "basic_rate"))
+	)
+
+
 def set_process_loss_produce_rates(se):
-	"""Value the produce rows of a Process Loss SE from the rows they consumed.
+	"""Value the produce rows of a Process Loss (or Repack) SE from the rows they consumed.
 
 	No-op for any other stock entry type. Runs AFTER ERPNext's ``set_basic_rate``, so the
 	consume rows already carry their ``basic_amount`` -- on a fresh submit from
@@ -208,15 +255,28 @@ def set_process_loss_produce_rates(se):
 	(``reset_outgoing_rate=False``) from the persisted rate. ``update_valuation_rate`` and
 	``set_total_incoming_outgoing_value`` then run next in ``calculate_rate_and_amount``,
 	so ``valuation_rate``, ``amount`` and the header totals follow automatically.
+
+	``Repack`` is included for the ``finding_repack`` engine, which consumes casting-tree
+	metal and produces finding items under the plain ``Repack`` type; see
+	``_owns_produce_row`` for how the two types differ.
 	"""
-	if _get(se, "stock_entry_type") != PROCESS_LOSS_SE_TYPE:
+	se_type = _get(se, "stock_entry_type")
+	if se_type not in VALUED_SE_TYPES:
 		return
 
 	for consumed, produced in iter_loss_runs(_get(se, "items")):
 		precision = _amount_precision(produced[0])
 		valued = []
+		unowned = 0
 
+		# Allocation is computed across the WHOLE run, so each produce row still gets the
+		# share its own owner group consumed; rows this module does not own are then simply
+		# left unwritten. Filtering before _allocate would hand their share to the others
+		# and over-value them.
 		for row, share in zip(produced, _allocate(consumed, produced)):
+			if not _owns_produce_row(se, se_type, row):
+				unowned += 1
+				continue
 			qty = flt(_get(row, "transfer_qty"))
 			if qty <= 0:
 				# set_transfer_qty() guarantees a positive transfer_qty on a submittable
@@ -232,6 +292,16 @@ def set_process_loss_produce_rates(se):
 			valued.append(row)
 
 		if not valued:
+			continue
+
+		if unowned:
+			# Part of this run is priced by someone else, so the consumed total is NOT the
+			# total of the rows written here and the balancing below would park another
+			# writer's share onto ours. Leave the rounding residue rather than mis-assign it.
+			# ``unowned`` is always 0 for Process Loss (every produce row is owned) and for
+			# the finding repack (every produce row is manual and unrated), so this keeps
+			# both of those paths on the balancing branch exactly as before; it guards only
+			# the mixed Repack run that becomes possible now the type is in scope.
 			continue
 
 		# Keep the SE header exactly balanced. total_outgoing_value sums the consume rows'

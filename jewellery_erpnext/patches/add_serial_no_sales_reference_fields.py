@@ -84,11 +84,6 @@ _CORE_LABELS = {
 	"reference_name": "Reference Docname",
 }
 
-# Fields whose description is cleared: the labels are self-explanatory and the descriptions
-# were crowding the form. ``create_custom_fields`` only writes the keys it is given, so the
-# empty string below is what actually clears an existing value.
-_DESCRIPTIONS_TO_CLEAR = ("custom_ownership_tag",)
-
 
 def ensure_serial_no_sales_reference_fields():
 	"""Create / refresh the two Serial No sales-pointer fields, directly under Brand."""
@@ -155,29 +150,6 @@ def place_pointer_under_brand():
 	)
 
 
-def clear_noisy_descriptions():
-	"""Blank the descriptions the form no longer needs (see module docstring)."""
-	cleared = []
-	for fieldname in _DESCRIPTIONS_TO_CLEAR:
-		field = frappe.db.get_value(
-			"Custom Field",
-			{"dt": "Serial No", "fieldname": fieldname},
-			["name", "description"],
-			as_dict=True,
-		)
-		if field and field.description:
-			frappe.db.set_value("Custom Field", field.name, "description", "")
-			cleared.append(fieldname)
-
-	if cleared:
-		frappe.clear_cache(doctype="Serial No")
-		frappe.logger().info(
-			"add_serial_no_sales_reference_fields: cleared descriptions -> "
-			+ ", ".join(cleared)
-		)
-	return cleared
-
-
 def ensure_serial_no_reference_labels():
 	"""Relabel the CORE Serial No reference fields. Label only — no behaviour change.
 
@@ -220,6 +192,5 @@ def ensure_serial_no_reference_labels():
 def execute():
 	ensure_serial_no_sales_reference_fields()
 	place_pointer_under_brand()
-	clear_noisy_descriptions()
 	ensure_serial_no_reference_labels()
 	frappe.db.commit()
