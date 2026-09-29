@@ -4579,6 +4579,11 @@ def _build_eod_se_rows(
 	balance from the other warehouse asks it for stock it never had and fails the MWO on a
 	phantom ``batch_short``.
 
+	A balance fully reserved at the target is a no-op only when the target also PHYSICALLY
+	covers it; reserved-but-absent falls through to normal resolution with the full balance
+	rather than being buried as a completed transfer (same standard step 0 applies to a
+	live reservation away from the target).
+
 	``noop_rows``, when a list is passed, collects the rows dropped because the target's own
 	reservation already covers the balance. The caller needs them to name what it decided
 	not to move: an empty ``items`` is what triggers marking the MWO's logs synced, and for
@@ -4605,18 +4610,43 @@ def _build_eod_se_rows(
 		move_qty = flt(qty - at_target, 3)
 
 		if move_qty <= 0:
-			# The target's own reservation covers the balance — a real completed no-op,
-			# established from ownership rather than from batch stock that may belong to
-			# any of the other work orders sharing this batch.
-			if noop_rows is not None:
-				noop_rows.append(
-					{
-						"item_code": log.item_code,
-						"batch_no": log.batch_no,
-						"qty": qty,
-					}
+			# The target's own reservation covers the balance. Ownership is what makes
+			# this a no-op rather than another work order's stock — but the reservation
+			# alone is not proof the metal is physically there, and marking the logs
+			# synced is irreversible. Step 0 already refuses to trust a live reservation
+			# AWAY from the target unless that warehouse physically covers the qty;
+			# applying the same standard here keeps one rule for one class of evidence.
+			#
+			# Reservations do drift from physical stock in this system: EOD cancels the
+			# source SREs and re-reserves at the target, so a transfer that later fails
+			# or is cancelled leaves a live reservation at the target holding nothing,
+			# and Stock Reconciliation can move qty without respecting reservations.
+			# Requiring physical cover is strictly stricter than the ownership check —
+			# it cannot re-admit the shared-pool bug, because a stranger's stock can
+			# still never get here without this MWO's own reservation.
+			if (
+				flt(
+					_eod_physical_batch_qty(log.item_code, log.batch_no, t_warehouse)
+					or 0
 				)
-			continue
+				+ 1e-6
+				>= qty
+			):
+				if noop_rows is not None:
+					noop_rows.append(
+						{
+							"item_code": log.item_code,
+							"batch_no": log.batch_no,
+							"qty": qty,
+						}
+					)
+				continue
+
+			# Reserved here but not physically here. Do NOT bury it as a no-op: fall
+			# through with the FULL balance so the normal resolution runs — a real source
+			# elsewhere becomes a transfer, no covering warehouse raises batch_short with
+			# real numbers, and no candidate at all goes to the reservation healer.
+			move_qty = qty
 
 		s_warehouse = _pick_eod_source_warehouse(
 			log.item_code,

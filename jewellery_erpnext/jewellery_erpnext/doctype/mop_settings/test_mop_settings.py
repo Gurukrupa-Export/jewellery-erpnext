@@ -1290,12 +1290,62 @@ class TestEodNoopNeedsOwnership(IntegrationTestCase):
 		self.assertEqual(skipped, [])
 
 	@patch(f"{_MOD}._eod_physical_batch_qty")
-	def test_reservation_fully_at_target_is_a_noop_without_touching_stock(
+	def test_reservation_at_target_without_stock_recovers_instead_of_burying(
 		self, mock_phys
 	):
-		# Ownership, not batch stock, decides: the target reserves the whole balance, so
-		# nothing moves even though no warehouse physically holds the batch at all.
+		# Ownership says the balance is already at the department, but the department
+		# physically holds none of it and the metal is still at WH-PREV. A reservation is
+		# not proof of physical arrival: burying this as a completed no-op would mark the
+		# logs synced having moved nothing, which is the exact damage this PR repairs.
+		mock_phys.side_effect = lambda i, b, w: {"WH-PREV": 5.0}.get(w, 0.0)
+		sre_map = {("M-1", "B1"): ["WH-PREV"]}
+		active_map = {("M-1", "B1"): {"WH-DEPT": 0.615}}
+		noop_rows = []
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1",
+			"MOP-A",
+			self._logs(0.615),
+			"WH-DEPT",
+			sre_map,
+			active_map,
+			noop_rows,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["s_warehouse"], "WH-PREV")
+		self.assertEqual(rows[0]["t_warehouse"], "WH-DEPT")
+		# The FULL balance moves: none of it had actually arrived.
+		self.assertEqual(rows[0]["qty"], 0.615)
+		self.assertEqual(skipped, [])
+		self.assertEqual(noop_rows, [])
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_reservation_at_target_without_stock_or_source_is_left_unsynced(
+		self, mock_phys
+	):
+		# Same ownership picture, but nothing anywhere covers it. The row must reach the
+		# skip list (reservation healer / visible batch_short) rather than the no-op list,
+		# so the MWO's logs stay unsynced and the divergence stays visible.
 		mock_phys.side_effect = lambda i, b, w: 0.0
+		noop_rows = []
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1",
+			"MOP-A",
+			self._logs(0.615),
+			"WH-DEPT",
+			{},
+			{("M-1", "B1"): {"WH-DEPT": 0.615}},
+			noop_rows,
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(noop_rows, [])
+		self.assertEqual(len(skipped), 1)
+		self.assertEqual(skipped[0]["qty"], 0.615)
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_reservation_at_target_with_stock_is_still_a_noop(self, mock_phys):
+		# The legitimate case must not regress: reserved at the target AND physically
+		# there, so nothing moves and the rows are named in the sync log.
+		mock_phys.side_effect = lambda i, b, w: 5.0 if w == "WH-DEPT" else 0.0
 		sre_map = {("M-1", "B1"): ["WH-DEPT"]}
 		active_map = {("M-1", "B1"): {"WH-DEPT": 0.615}}
 		noop_rows = []

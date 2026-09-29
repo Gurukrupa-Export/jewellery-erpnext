@@ -5398,14 +5398,37 @@ class TestBatchSreHeadroomWarehouseScope(IntegrationTestCase):
 		]
 		self.assertEqual(self._run(rows, "MOP-DS"), {("M-1", "B1"): 0.7})
 
-	def test_operation_tag_spanning_warehouses_takes_the_tighter_cap(self):
-		# _find_sre's choice among several op-tagged warehouses depends on row order,
-		# so the cap must be the one that cannot over-promise.
+	def test_operation_tag_spanning_warehouses_matches_the_resolver(self):
+		# _find_sre no longer picks arbitrarily among several op-tagged warehouses: both
+		# sides go through _select_sre_warehouse, which takes the largest remaining
+		# reservation. Capping at the smaller 0.4 would under-state the tier's capacity
+		# and spill the excess onto a later, customer-owned tier.
 		rows = [
 			_headroom_row("WH-A", 2.0, operation="MOP-DS"),
 			_headroom_row("WH-B", 0.4, operation="MOP-DS"),
 		]
-		self.assertEqual(self._run(rows, "MOP-DS"), {("M-1", "B1"): 0.4})
+		self.assertEqual(self._run(rows, "MOP-DS"), {("M-1", "B1"): 2.0})
+
+	def test_cap_is_independent_of_row_order(self):
+		# The query feeding _find_sre was unordered, so the resolver's warehouse could
+		# change between runs. Neither side may depend on row order any more.
+		rows = [
+			_headroom_row("WH-A", 2.0, operation="MOP-DS"),
+			_headroom_row("WH-B", 0.4, operation="MOP-DS"),
+		]
+		self.assertEqual(
+			self._run(rows, "MOP-DS"), self._run(list(reversed(rows)), "MOP-DS")
+		)
+
+	def test_equal_remaining_across_warehouses_breaks_on_name(self):
+		# Deterministic tie-break, so an exact draw cannot reintroduce the drift.
+		rows = [
+			_headroom_row("WH-B", 1.0, operation="MOP-DS"),
+			_headroom_row("WH-A", 1.0, operation="MOP-DS"),
+		]
+		self.assertEqual(
+			self._run(rows, "MOP-DS"), self._run(list(reversed(rows)), "MOP-DS")
+		)
 
 	def test_batches_are_capped_independently(self):
 		rows = [
@@ -5414,6 +5437,35 @@ class TestBatchSreHeadroomWarehouseScope(IntegrationTestCase):
 		]
 		result = self._call(rows, ["B1", "B2"], "MOP-DS")
 		self.assertEqual(result, {("M-1", "B1"): 0.020, ("M-1", "B2"): 2.980})
+
+	def test_headroom_and_find_sre_agree_on_the_warehouse(self):
+		"""The invariant F2 is about: the pre-allocation cap and the submit-time
+		resolver must confine themselves to the SAME warehouse.
+
+		They used to disagree -- the cap took the minimum across the operation's
+		warehouses while ``_find_sre`` took the first operation-matched row of an
+		unordered query. A cap below the reservation the submit actually uses starves
+		the company tier and spills gold loss onto customer-owned batches; a cap above
+		it kills the submit in ``_validate_sre_qty``.
+		"""
+		spec = [("WH-A", 2.0), ("WH-B", 0.4)]
+		operation = "MOP-525LX"
+
+		headroom = self._run(
+			[_headroom_row(wh, qty, operation=operation) for wh, qty in spec],
+			operation,
+		)
+
+		sre_rows = [
+			_sre_row(f"SRE-{wh}", qty, operation, warehouse=wh) for wh, qty in spec
+		]
+		chosen_wh = loss_stock_entry._select_sre_warehouse(
+			sre_rows, operation, loss_stock_entry._sre_remaining
+		)
+
+		# The cap equals the largest reservation in the warehouse the resolver picks.
+		expected = max(q for wh, q in spec if wh == chosen_wh)
+		self.assertEqual(headroom, {("M-1", "B1"): expected})
 
 	def test_no_rows_means_no_cap(self):
 		self.assertEqual(self._run([]), {})

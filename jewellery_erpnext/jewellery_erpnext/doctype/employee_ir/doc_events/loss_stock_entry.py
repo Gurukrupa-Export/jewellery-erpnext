@@ -455,6 +455,11 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
 	Prefer a batch-level match via the Serial and Batch Entry child table; fall back to a
 	Qty-based reservation (no sb_entries) if the batch join returns nothing. Shared by the
 	initial lookup and the post-heal re-query in ``_find_sre``.
+
+	Ordered by ``(warehouse, name)``. The order is load-bearing, not cosmetic: without it
+	MySQL decided which warehouse ``_find_sre`` confined itself to, so the same document
+	could resolve differently between runs and could never be matched by the pre-allocation
+	cap in ``get_batch_sre_headroom``. Both now go through ``_select_sre_warehouse``.
 	"""
 	rows = frappe.db.sql(
 		"""
@@ -481,6 +486,7 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
           AND sre.item_code = %s
           AND sbe.batch_no = %s
           AND sre.docstatus = 1
+        ORDER BY sre.warehouse, sre.name
         """,
 		(mwo, item_code, batch_no),
 		as_dict=True,
@@ -496,9 +502,42 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
 				"docstatus": 1,
 			},
 			_SRE_LOOKUP_FIELDS,
+			order_by="warehouse asc, name asc",
 		)
 
 	return rows
+
+
+def _select_sre_warehouse(entries, operation, remaining_of):
+	"""The ONE warehouse a batch's loss is deducted within. Shared selection rule.
+
+	``_find_sre`` confines its candidates to a single warehouse so a deduction never spans
+	physical locations, and ``get_batch_sre_headroom`` must cap the pre-allocation against
+	the SAME warehouse or the two disagree: a cap taken elsewhere either promises headroom
+	``_validate_sre_qty`` will refuse (submit dies) or under-states the company's capacity,
+	which pushes gold loss down the ownership waterfall onto customer-owned batches. Both
+	call this so the rule cannot drift.
+
+	  * Prefer SREs tagged with this loss row's ``operation``; fall back to all of them.
+	  * Within that pool take the warehouse of the largest remaining reservation — the one
+	    most likely to actually cover the loss.
+	  * Ties break on warehouse name, so the answer never depends on row order. It used to:
+	    the resolver took the first operation-matched row from an unordered query, so an
+	    operation tag spanning two warehouses resolved arbitrarily.
+
+	``remaining_of`` reads a row's remaining reservation, because the two callers carry it
+	differently (``_sre_remaining`` over SRE fields vs. a SQL-computed column).
+	"""
+	pool = [e for e in entries if e.get("warehouse")]
+	if not pool:
+		return None
+	op_matched = [
+		e for e in pool if operation and e.get("manufacturing_operation") == operation
+	]
+	pool = op_matched or pool
+	return sorted(pool, key=lambda e: (-flt(remaining_of(e)), e["warehouse"]))[0][
+		"warehouse"
+	]
 
 
 def get_batch_sre_headroom(mwo, batch_nos, operation=None):
@@ -517,14 +556,16 @@ def get_batch_sre_headroom(mwo, batch_nos, operation=None):
 	spill to the next tier instead of failing an Employee IR that submits today.
 
 	**The cap is confined to ONE warehouse, mirroring ``_find_sre``.** That resolver
-	never deducts across physical locations: it picks the operation-matched SRE's
-	warehouse, else the warehouse of the SRE with the largest remaining reservation,
-	and then only considers candidates there. A cap taken as ``MAX`` over every
-	warehouse therefore promised headroom the validation would refuse -- a batch whose
-	reservation had been left behind at the previous operation's warehouse was capped
-	at that stranded figure, the allocator handed the row a share sized by it, and the
-	submit died in ``_validate_sre_qty`` against the much smaller reservation actually
-	present at this operation. ``operation`` is the loss row's
+	never deducts across physical locations, and both pick the warehouse through the
+	shared ``_select_sre_warehouse``, so the cap is always taken where the submit will
+	actually look. A cap taken as ``MAX`` over every warehouse promised headroom the
+	validation would refuse -- a batch whose reservation had been left behind at the
+	previous operation's warehouse was capped at that stranded figure, the allocator
+	handed the row a share sized by it, and the submit died in ``_validate_sre_qty``
+	against the much smaller reservation actually present at this operation. A cap taken
+	as the MINIMUM across the operation's warehouses was no better: under-stating the
+	company tier's capacity spills loss into later, customer-owned tiers, which is a
+	silent ownership error rather than a visible failure. ``operation`` is the loss row's
 	``manufacturing_operation``; omit it and the selection falls back to the
 	largest-remaining warehouse, the same as ``_find_sre`` with an untagged row.
 
@@ -580,23 +621,11 @@ def get_batch_sre_headroom(mwo, batch_nos, operation=None):
 			wh = entry["warehouse"]
 			per_wh[wh] = max(flt(per_wh.get(wh)), flt(entry["remaining"]))
 
-		op_warehouses = sorted(
-			{
-				entry["warehouse"]
-				for entry in entries
-				if operation and entry["manufacturing_operation"] == operation
-			}
+		# Exactly the warehouse _find_sre will confine itself to at submit time.
+		chosen_wh = _select_sre_warehouse(
+			entries, operation, lambda e: flt(e["remaining"])
 		)
-		if op_warehouses:
-			# _find_sre takes the operation-matched SRE's warehouse. When the tag spans
-			# several warehouses its choice among them depends on row order, so take the
-			# smallest ceiling: a cap that is too tight only shifts loss onto other
-			# batches, while one that is too loose fails the submit.
-			chosen = min(per_wh[wh] for wh in op_warehouses)
-		else:
-			# No operation tag: _find_sre falls back to the warehouse holding the SRE
-			# with the largest remaining reservation.
-			chosen = max(per_wh.values())
+		chosen = per_wh.get(chosen_wh, 0.0)
 
 		if flt(chosen) > TOLERANCE:
 			headroom[key] = flt(chosen, 3)
@@ -622,8 +651,10 @@ def _find_sre(eir, row, mwo, table_name, qty):
 	    stock (ERPNext's Bin formula nets to zero), so it neither blocks the loss SE
 	    nor has anything left to release.
 	  * Restrict candidates to a SINGLE warehouse so we never deduct across
-	    physical locations: the warehouse of the operation-matched SRE if one
-	    exists, else the warehouse holding the largest reserved_qty.
+	    physical locations, via ``_select_sre_warehouse`` — the largest remaining
+	    reservation among the operation-matched SREs, else among all of them.
+	    ``get_batch_sre_headroom`` caps the pre-allocation through the same helper,
+	    so the tier's capacity and this resolver always agree.
 	  * Within that warehouse pick the SRE that can COVER the loss, preferring
 	    the current operation's SRE, then the largest. If none individually
 	    covers the loss, return the largest so ``_validate_sre_qty`` raises with
@@ -700,14 +731,7 @@ def _find_sre(eir, row, mwo, table_name, qty):
 	# Confine candidates to a single warehouse so deduction never spans physical
 	# locations: the operation-matched SRE's warehouse, else the warehouse with
 	# the largest remaining reservation.
-	op_matched = [
-		r for r in active if row_mop and r.get("manufacturing_operation") == row_mop
-	]
-	chosen_wh = (
-		op_matched[0]["warehouse"]
-		if op_matched
-		else max(active, key=lambda r: _sre_remaining(r))["warehouse"]
-	)
+	chosen_wh = _select_sre_warehouse(active, row_mop, _sre_remaining)
 	candidates = [r for r in active if r.get("warehouse") == chosen_wh]
 
 	# Order: current operation's SRE first, then by remaining reservation descending.
