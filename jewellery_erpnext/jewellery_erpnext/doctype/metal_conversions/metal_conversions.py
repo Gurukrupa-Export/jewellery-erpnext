@@ -813,9 +813,11 @@ def _check_lane_owners(lanes):
 def _qty_precision():
 	"""Decimals a conversion posts its quantities at: the Stock Entry row's ``transfer_qty``.
 
-	The builders used the conversion's own float precision, which follows System Settings: at
-	2 a 0.477 g source row became 0.48 g and overdrew its batch, while the row itself posts at
-	``transfer_qty``'s 3 decimals on every site.
+	ERPNext rounds each row's ``transfer_qty`` at that field's own precision
+	(``StockEntry.set_transfer_qty``), so the builder rounds exactly as the posting will. It
+	used the conversion's float precision instead: on gk (2) a 0.477 g source row became 0.48 g
+	and overdrew its batch, although the row posts at 3 there -- the app's Property Setter
+	(``property_setter_guard``) pins ``transfer_qty`` at 3, and kg-gk's float precision is 3.
 	"""
 	return cint(frappe.get_precision("Stock Entry Detail", "transfer_qty")) or 3
 
