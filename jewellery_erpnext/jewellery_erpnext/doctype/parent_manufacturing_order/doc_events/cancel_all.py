@@ -1,5 +1,7 @@
 import re
+import time
 from contextlib import contextmanager
+from functools import partial
 from unittest.mock import patch
 
 import frappe
@@ -9,6 +11,16 @@ from frappe.model import delete_doc
 
 PMO = "Parent Manufacturing Order"
 DONE_EVENT = "pmo_cancel_all_done"
+
+# PMOs whose Cancel All is queued or running: Redis hash {pmo: flag expiry (epoch seconds)}.
+# Redis, not a database row, because every session must see it at once, while the job's own
+# transaction stays open until the whole cancel is done. See block_submit_while_pmo_cancels.
+IN_PROGRESS_KEY = "pmo_cancel_all_in_progress"
+# Longer than the job timeout plus time in the queue; only a killed worker ever relies on it.
+IN_PROGRESS_SECONDS = 2 * 60 * 60
+# How long the job waits, once the gate covers its whole list, for a submit that was already past
+# the gate when it went up to finish saving -- so the job's checks can see it.
+IN_FLIGHT_GRACE_SECONDS = 15
 
 # ERPNext cancels a Stock Entry's bundles along with it and refuses to cancel a bundle on its own
 # while the voucher is still submitted, so bundles are neither cancelled nor walked through here.
@@ -400,19 +412,176 @@ def get_cancel_preview(pmo_name: str) -> dict:
 
 @frappe.whitelist()
 def enqueue_cancel_all(pmo_name: str) -> None:
+	from frappe.utils.background_jobs import is_job_enqueued
+
 	frappe.only_for("System Manager")
 	frappe.has_permission(PMO, "cancel", pmo_name, throw=True)
+	job_id = f"pmo_cancel_all::{pmo_name}"
+	# frappe.enqueue would silently skip the duplicate; checked first so a click while a job is
+	# queued or still finishing never re-raises the gate with no job behind it.
+	if is_job_enqueued(job_id):
+		frappe.throw(
+			_(
+				"Cancel All is already running for {0}. Please wait for it to finish."
+			).format(pmo_name),
+			title=_("Cancel in progress"),
+		)
+	# Submits against this PMO's records are refused from now on, including while the job waits in
+	# the queue, so nothing new can start depending on them.
+	mark_cancel_in_progress(pmo_name)
 	# The list, the per-doctype Cancel permissions and the link pre-check are all done by the job
 	# (as this user) before anything is cancelled; a failure there is sent back to the form.
-	frappe.enqueue(
-		cancel_all,
-		queue="long",
-		timeout=3600,
-		job_id=f"pmo_cancel_all::{pmo_name}",
-		deduplicate=True,
-		pmo_name=pmo_name,
-		user=frappe.session.user,
+	try:
+		frappe.enqueue(
+			cancel_all,
+			queue="long",
+			timeout=3600,
+			job_id=job_id,
+			deduplicate=True,
+			pmo_name=pmo_name,
+			user=frappe.session.user,
+		)
+	except Exception:
+		clear_cancel_in_progress(pmo_name)
+		raise
+
+
+def mark_cancel_in_progress(pmo_name: str, records=None) -> None:
+	"""Raise the submit gate for this PMO -- and, once the job knows them, for every record it is
+	about to cancel -- and refuse to go on if it did not take.
+
+	frappe.cache.hset quietly does nothing when Redis is unreachable, which would let the cancel
+	run with no gate at all, so the flag is read back and the Cancel All stopped if it is missing.
+	"""
+	frappe.cache.hset(
+		IN_PROGRESS_KEY,
+		pmo_name,
+		{
+			"until": time.time() + IN_PROGRESS_SECONDS,
+			"records": [list(key) for key in records or ()],
+		},
 	)
+	if pmo_name not in (_read_in_progress() or {}):
+		frappe.throw(
+			_(
+				"Cannot start Cancel All right now because the cache server is not reachable. "
+				"Please try again in a moment."
+			),
+			title=_("Cancel All not started"),
+		)
+
+
+def clear_cancel_in_progress(pmo_name: str) -> None:
+	frappe.cache.hdel(IN_PROGRESS_KEY, pmo_name)
+
+
+def pmos_being_cancelled() -> dict:
+	"""{PMO: records its Cancel All will cancel} for every Cancel All queued or running.
+
+	Runs on every submit, so a cache outage must not stop the whole site from submitting: if Redis
+	cannot be read this lets the submit through (a Cancel All cannot start without its flag, see
+	mark_cancel_in_progress).
+	"""
+	flags = _read_in_progress()
+	if flags is None:
+		frappe.logger().warning(
+			"PMO Cancel All: in-progress flags unreadable, submit gate skipped"
+		)
+		return {}
+	return flags
+
+
+def _read_in_progress() -> dict | None:
+	"""Unexpired flags from Redis as {PMO: {(doctype, name), ...}}, or None if Redis is unreachable."""
+	import redis
+
+	try:
+		flags = frappe.cache.hgetall(IN_PROGRESS_KEY) or {}
+	except redis.exceptions.RedisError:
+		return None
+	now = time.time()
+	busy = {}
+	for pmo, flag in flags.items():
+		if isinstance(flag, dict) and flag.get("until", 0) > now:
+			busy[pmo.decode() if isinstance(pmo, bytes) else pmo] = {
+				tuple(r) for r in flag.get("records") or ()
+			}
+	return busy
+
+
+def block_submit_while_pmo_cancels(doc, method=None):
+	"""before_submit on every doctype: refuse a submit that touches a PMO whose Cancel All runs.
+
+	The job checks for outside links and then cancels for about a minute inside one open
+	transaction. Until it commits, other sessions still see those records as submitted, so their
+	own link checks pass, and a document submitted in that window would end up pointing at a
+	cancelled record. The gate refuses such submits: anything pointing at the PMO (directly or
+	through its Work Orders / Operations) from the click on, and anything pointing at any record on
+	the job's list -- Sales Order, Plan, Quotation, Tracking BOM included -- once the job has built
+	it. A submit that was already past this check when the gate went up is covered by the job,
+	which waits for it before checking (see cancel_all). The job itself, and anything its cancels
+	submit (e.g. ERPNext's Repost Item Valuation), is let through by frappe.flags.in_pmo_cancel_all.
+	"""
+	if frappe.flags.in_pmo_cancel_all:
+		return
+	busy = pmos_being_cancelled()
+	if not busy:
+		return
+	links = _doc_links(doc)
+	hit = _pmos_touched(doc, links) & set(busy)
+	hit.update(pmo for pmo, records in busy.items() if links & records)
+	if hit:
+		frappe.throw(
+			_(
+				"Parent Manufacturing Order {0} is being cancelled with Cancel All Linked Documents. "
+				"Please try again once it has finished."
+			).format(", ".join(sorted(hit))),
+			title=_("Cancel in progress"),
+		)
+
+
+def _doc_links(doc) -> set:
+	"""(doctype, name) of every record this document or its rows link to, dynamic links included."""
+	links = set()
+	for row in [doc, *doc.get_all_children()]:
+		for df in row.meta.get_link_fields():
+			if df.fieldname != "amended_from" and row.get(df.fieldname):
+				links.add((df.options, row.get(df.fieldname)))
+		for df in row.meta.get_dynamic_link_fields():
+			if row.get(df.options) and row.get(df.fieldname):
+				links.add((row.get(df.options), row.get(df.fieldname)))
+	return links
+
+
+def _pmos_touched(doc, links=None) -> set:
+	"""PMOs this document or its rows point at, directly or through a Work Order or Operation."""
+	links = _doc_links(doc) if links is None else links
+	pmos = {dn for dt, dn in links if dt == PMO}
+	if doc.doctype == PMO:
+		pmos.add(doc.name)
+	work_orders = {dn for dt, dn in links if dt == "Manufacturing Work Order"}
+	operations = [dn for dt, dn in links if dt == "Manufacturing Operation"]
+	if operations:
+		work_orders.update(
+			frappe.get_all(
+				"Manufacturing Operation",
+				{"name": ["in", operations]},
+				pluck="manufacturing_work_order",
+				order_by=None,
+			)
+		)
+	work_orders.discard(None)
+	if work_orders:
+		pmos.update(
+			frappe.get_all(
+				"Manufacturing Work Order",
+				{"name": ["in", list(work_orders)]},
+				pluck="manufacturing_order",
+				order_by=None,
+			)
+		)
+	pmos.discard(None)
+	return pmos
 
 
 def mark_workflow_cancelled(keys: list[tuple[str, str]]) -> None:
@@ -651,8 +820,27 @@ def cancel_all(pmo_name: str, user: str) -> None:
 			description=f"{key[0]} {key[1]}",
 		)
 
+	frappe.flags.in_pmo_cancel_all = True
+	gate_cleared_on_finish = False
+
 	try:
+		# Inside the try: if the flag cannot be raised (Redis blip), the form is told and the
+		# except below lowers the button's flag instead of leaving it for IN_PROGRESS_SECONDS.
+		mark_cancel_in_progress(pmo_name)
 		plan = get_cancel_plan(pmo_name)
+		# From here the gate also covers every record on the list (Sales Order, Plan, ...).
+		mark_cancel_in_progress(pmo_name, plan)
+		# A submit that was already past the gate when it went up may still be saving. Give it time
+		# to finish, then start a fresh transaction: under REPEATABLE READ this one's snapshot dates
+		# from before the wait, so the checks below would not see it. Nothing is written yet.
+		time.sleep(IN_FLIGHT_GRACE_SECONDS)
+		frappe.db.rollback()
+		# The gate now stays up until this transaction is committed or rolled back, not just until
+		# the function returns: the job runner commits after it, and that is when others see it.
+		frappe.db.after_commit.add(partial(clear_cancel_in_progress, pmo_name))
+		frappe.db.after_rollback.add(partial(clear_cancel_in_progress, pmo_name))
+		gate_cleared_on_finish = True
+
 		missing = sorted(
 			{dt for dt, _dn in plan if not frappe.has_permission(dt, "cancel")}
 		)
@@ -713,6 +901,9 @@ def cancel_all(pmo_name: str, user: str) -> None:
 			)
 
 	except Exception as e:
+		if not gate_cleared_on_finish:
+			# Failed before anything was cancelled; lower the gate now.
+			clear_cancel_in_progress(pmo_name)
 		frappe.log_error(title=f"PMO Cancel All failed: {pmo_name}")
 		frappe.publish_realtime(
 			DONE_EVENT,
@@ -723,6 +914,7 @@ def cancel_all(pmo_name: str, user: str) -> None:
 		raise
 	finally:
 		_PlanDocs.value = frozenset()
+		frappe.flags.in_pmo_cancel_all = False
 
 	# after_commit: the job runner commits only once this returns, and the form reloads on this event.
 	frappe.publish_realtime(
