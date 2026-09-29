@@ -35,6 +35,34 @@ from jewellery_erpnext.jewellery_erpnext.tests import (
 	test_customer_gold_integration as base,
 )
 
+#: The real functions, saved before any test patches them. A fake answers only the doctypes it owns
+#: and hands every other read to the real one: ``flt(x, precision)`` looks up the rounding method
+#: through System Settings, and when a fake raises on (or mis-answers) that read, ``flt`` swallows
+#: the error and returns 0 -- but only while the cache is cold, so the test passes or fails by run
+#: order (CI ran this class first and read every amount as 0.0).
+_REAL_GET_ALL = frappe.get_all
+_REAL_GET_DOC = frappe.get_doc
+
+
+def _REAL_DB_GET_VALUE(*args, **kwargs):
+	"""The unpatched ``frappe.db.get_value``, resolved at call time: a patch of
+	``frappe.db.get_value`` sets an attribute on the connection object, so the class method is
+	still the real one."""
+	db = frappe.local.db
+	return type(db).get_value(db, *args, **kwargs)
+
+
+def _owning(doctypes, fake, real):
+	"""A side_effect that routes ``doctypes`` to ``fake`` and everything else to ``real``."""
+
+	def side_effect(doctype, *args, **kwargs):
+		if doctype in doctypes:
+			return fake(doctype, *args, **kwargs)
+		return real(doctype, *args, **kwargs)
+
+	return side_effect
+
+
 COMPANY = "CG Unit Co"
 CUSTOMER = "CG-UNIT-A"
 LANE = f"Customer Goods|{CUSTOMER}"
@@ -254,7 +282,13 @@ class FakeReads:
 		self.postings = postings or {}
 		self.cancelled_jes = set(cancelled_jes)
 
-	def get_all(self, doctype, filters=None, fields=None, pluck=None, **kwargs):
+	def get_all(self, doctype, *args, **kwargs):
+		owned = {ALLOCATION, "Journal Entry", LEDGER} | {
+			dt for dt, _name in self.postings
+		}
+		return _owning(owned, self._answer, _REAL_GET_ALL)(doctype, *args, **kwargs)
+
+	def _answer(self, doctype, filters=None, fields=None, pluck=None, **kwargs):
 		filters = filters or {}
 		if doctype == ALLOCATION:
 			if pluck == "cg_event":
@@ -284,8 +318,23 @@ class FakeReads:
 		raise AssertionError(f"unexpected read of {doctype} with {filters}")
 
 
-def _no_reads(*args, **kwargs):
-	raise AssertionError(f"unexpected frappe.get_all{args} -- the money path was read")
+#: What the money path reads. A report run without money must read none of it.
+MONEY_DOCTYPES = {
+	ALLOCATION,
+	LEDGER,
+	"Journal Entry",
+	"Stock Entry",
+	"Delivery Note",
+	"Sales Invoice",
+	"Stock Reconciliation",
+}
+
+
+def _refuse(doctype, *args, **kwargs):
+	raise AssertionError(f"unexpected read of {doctype} -- the money path was read")
+
+
+_no_reads = _owning(MONEY_DOCTYPES, _refuse, _REAL_GET_ALL)
 
 
 class _ReportUnitCase(unittest.TestCase):
@@ -1210,8 +1259,14 @@ class TestFGValuation(unittest.TestCase):
 			return entry
 
 		with (
-			patch("frappe.get_all", side_effect=get_all),
-			patch("frappe.get_doc", side_effect=get_doc),
+			patch(
+				"frappe.get_all",
+				side_effect=_owning({"Stock Ledger Entry"}, get_all, _REAL_GET_ALL),
+			),
+			patch(
+				"frappe.get_doc",
+				side_effect=_owning({"Stock Entry"}, get_doc, _REAL_GET_DOC),
+			),
 		):
 			return report._fg_valuation(
 				frappe._dict(company=COMPANY, stock_entry=entry.name), show_money
@@ -1324,8 +1379,18 @@ class TestFGValuation(unittest.TestCase):
 			patch("frappe.has_permission", return_value=True),
 			patch("frappe.get_roles", return_value=["Accounts User"]),
 			patch(f"{REPORT}.trace", side_effect=AssertionError("traced")),
-			patch("frappe.get_all", return_value=[]),
-			patch("frappe.get_doc", return_value=entry),
+			patch(
+				"frappe.get_all",
+				side_effect=_owning(
+					{"Stock Ledger Entry"}, lambda *a, **k: [], _REAL_GET_ALL
+				),
+			),
+			patch(
+				"frappe.get_doc",
+				side_effect=_owning(
+					{"Stock Entry"}, lambda *a, **k: entry, _REAL_GET_DOC
+				),
+			),
 		):
 			columns, rows = report.execute(
 				{"company": COMPANY, "view": report.VIEW_FG, "stock_entry": entry.name}
@@ -1356,7 +1421,11 @@ class TestMaterialPosition(_ReportUnitCase):
 		with (
 			patch(
 				"frappe.db.get_value",
-				side_effect=lambda dt, name, field: self.BATCH_ITEMS[name],
+				side_effect=_owning(
+					{"Batch"},
+					lambda dt, name, field, *a, **k: self.BATCH_ITEMS[name],
+					_REAL_DB_GET_VALUE,
+				),
 			),
 			patch(
 				"erpnext.stock.doctype.batch.batch.get_batch_qty",

@@ -28,6 +28,26 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_convers
 	lane_tag,
 )
 
+#: The real functions, saved before any test patches them. A fake answers only the doctypes it owns
+#: and hands every other read to the real one: ``flt(x, precision)`` looks up the rounding method
+#: through System Settings, and when a fake raises on (or mis-answers) that read, ``flt`` swallows
+#: the error and returns 0 -- but only while the cache is cold, so the test passes or fails by run
+#: order (CI ran this class first and read every amount as 0.0).
+_REAL_GET_ALL = frappe.get_all
+_REAL_GET_DOC = frappe.get_doc
+
+
+def _owning(doctypes, fake, real):
+	"""A side_effect that routes ``doctypes`` to ``fake`` and everything else to ``real``."""
+
+	def side_effect(doctype, *args, **kwargs):
+		if doctype in doctypes:
+			return fake(doctype, *args, **kwargs)
+		return real(doctype, *args, **kwargs)
+
+	return side_effect
+
+
 SETTINGS_MODULE = "jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings"
 
 C1_LANE = "Customer Goods|C1"
@@ -1379,7 +1399,11 @@ class TestDiscoverScope(unittest.TestCase):
 			patch.object(cgt, "_bundle_entries", side_effect=self.fake_bundle_entries),
 			patch.object(cgt, "_stock_entry_rows", side_effect=self.fake_sed),
 			patch.object(cgt, "_batch_owners", side_effect=self.fake_owners),
-			patch.object(cgt.frappe, "get_all", side_effect=self.fake_get_all),
+			patch.object(
+				cgt.frappe,
+				"get_all",
+				side_effect=_owning({"Stock Entry"}, self.fake_get_all, _REAL_GET_ALL),
+			),
 		):
 			return cgt.discover_scope(roots, **kwargs)
 
@@ -1488,7 +1512,15 @@ class TestLoader(unittest.TestCase):
 			patch.object(
 				cgt, "get_purity_percentage", side_effect={G24: 99.9, G22: 91.75}.get
 			),
-			patch.object(cgt.frappe, "get_all", side_effect=fake_get_all),
+			patch.object(
+				cgt.frappe,
+				"get_all",
+				side_effect=_owning(
+					{"Stock Entry", "Delivery Note", "Sales Invoice"},
+					fake_get_all,
+					_REAL_GET_ALL,
+				),
+			),
 			patch(
 				f"{SETTINGS_MODULE}.get_customer_gold_settings",
 				return_value=_d(customer_gold_return_stock_entry_type="CG Return"),

@@ -15,6 +15,26 @@ FUL = "jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment"
 ALLOC = "jewellery_erpnext.customer_subcontracting.customer_gold_allocations"
 
 
+#: The real functions, saved before any test patches them. A fake answers only the doctypes it owns
+#: and hands every other read to the real one: ``flt(x, precision)`` looks up the rounding method
+#: through System Settings, and when a fake raises on (or mis-answers) that read, ``flt`` swallows
+#: the error and returns 0 -- but only while the cache is cold, so the test passes or fails by run
+#: order (CI ran this class first and read every amount as 0.0).
+_REAL_GET_ALL = frappe.get_all
+_REAL_GET_DOC = frappe.get_doc
+
+
+def _owning(doctypes, fake, real):
+	"""A side_effect that routes ``doctypes`` to ``fake`` and everything else to ``real``."""
+
+	def side_effect(doctype, *args, **kwargs):
+		if doctype in doctypes:
+			return fake(doctype, *args, **kwargs)
+		return real(doctype, *args, **kwargs)
+
+	return side_effect
+
+
 def _row(**fields):
 	values = {"idx": 1, "item_code": "G-24", "qty": 1, "conversion_factor": 1}
 	values.update(fields)
@@ -77,9 +97,11 @@ class TestPreviewFallback(unittest.TestCase):
 		'Nothing to return' instead of opening the Issue."""
 		entry = frappe._dict(company="C", items=[])
 		entry.check_permission = lambda ptype: None
-		with patch.object(cgr.frappe, "get_doc", return_value=entry), patch.object(
-			cgr, "is_customer_gold_enabled", return_value=False
-		):
+		with patch.object(
+			cgr.frappe,
+			"get_doc",
+			side_effect=_owning({"Stock Entry"}, lambda *a, **k: entry, _REAL_GET_DOC),
+		), patch.object(cgr, "is_customer_gold_enabled", return_value=False):
 			self.assertEqual(
 				cgr.get_customer_gold_return_preview("SE-1"),
 				{"rows": [], "fallback": True},
@@ -88,7 +110,11 @@ class TestPreviewFallback(unittest.TestCase):
 	def test_a_receipt_with_no_ledger_events_opens_the_classic_issue(self):
 		entry = frappe._dict(company="C", items=[])
 		entry.check_permission = lambda ptype: None
-		with patch.object(cgr.frappe, "get_doc", return_value=entry), patch.object(
+		with patch.object(
+			cgr.frappe,
+			"get_doc",
+			side_effect=_owning({"Stock Entry"}, lambda *a, **k: entry, _REAL_GET_DOC),
+		), patch.object(
 			cgr, "is_customer_gold_enabled", return_value=True
 		), patch.object(cgr, "is_ledger_schema_ready", return_value=True), patch(
 			f"{ALLOC}.effective_receipt_events", return_value=[]
@@ -237,9 +263,13 @@ class TestSettlementReconciliation(unittest.TestCase):
 		]
 		with patch.object(
 			cga, "is_allocation_schema_ready", return_value=True
-		), patch.object(cga.frappe, "get_all", return_value=rows), patch.object(
-			cga.frappe.db, "set_value"
-		) as set_value:
+		), patch.object(
+			cga.frappe,
+			"get_all",
+			side_effect=_owning(
+				{cga.ALLOCATION_DOCTYPE}, lambda *a, **k: rows, _REAL_GET_ALL
+			),
+		), patch.object(cga.frappe.db, "set_value") as set_value:
 			cga.reconcile_to_settlement(["EV-1", "EV-2"], {"CUST": 7164.83})
 		set_value.assert_called_once()
 		name, field, value = set_value.call_args.args[1:4]
@@ -254,8 +284,12 @@ class TestSettlementReconciliation(unittest.TestCase):
 		rows = [frappe._dict(name="A1", customer="CUST", amount=100.00)]
 		with patch.object(
 			cga, "is_allocation_schema_ready", return_value=True
-		), patch.object(cga.frappe, "get_all", return_value=rows), patch.object(
-			cga.frappe.db, "set_value"
-		) as set_value:
+		), patch.object(
+			cga.frappe,
+			"get_all",
+			side_effect=_owning(
+				{cga.ALLOCATION_DOCTYPE}, lambda *a, **k: rows, _REAL_GET_ALL
+			),
+		), patch.object(cga.frappe.db, "set_value") as set_value:
 			cga.reconcile_to_settlement(["EV-1"], {"CUST": 150.00})
 		set_value.assert_not_called()
