@@ -23,6 +23,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	# validate_inventory_dimention,
 	validate_warehouse,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.transit import (
+	has_non_transit_target,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.entered_metal_rate import (
 	capture_entered_metal_rates,
 	restore_entered_metal_rates,
@@ -83,9 +86,99 @@ def set_manufacturing_refs(self):
 	self.manufacturing_operation = mop or mwo.manufacturing_operation
 
 
+def normalize_add_to_transit(self):
+	"""Hold ``add_to_transit`` at 0 on entries that are not themselves in transit.
+
+	ERPNext v16.36.0 (``StockEntry.validate_transit_warehouses``, frappe/erpnext#59192)
+	rejects an entry with Add to Transit on whose target is not a Transit warehouse. The
+	flag cannot be cleared where such an entry is built: ``Stock Entry.add_to_transit`` is
+	``fetch_from`` the Stock Entry Type with ``fetch_if_empty``, and frappe's
+	``_validate_links`` -- which runs before any hook -- treats 0 as empty and fetches the
+	type's 1 back in for "Material Transfer (DEPARTMENT)" and "Customer Goods Transfer".
+	This hook runs after that fetch and before ``StockEntry.validate``, so it is the first
+	place a 0 sticks; on submit frappe no longer refetches, so the 0 reaches the database.
+
+	Three kinds of entry are never in transit:
+
+	* a receipt leg (``outgoing_stock_entry`` set): it is what ends the transit. ERPNext
+	  hides the field on one and its own End Transit maps to a type with 0, but this app's
+	  End Transit override keeps the source's transit type;
+	* an entry whose maker set ``flags.no_transit`` because it moves the stock in one shot;
+	* an amendment of an entry stored with 0: amending keeps the 0, and the fetch would
+	  turn it back into 1.
+	"""
+	if self.get("outgoing_stock_entry"):
+		# The Customer Goods Received > Issue mapper (doc_events.stock_entry
+		# make_stock_in_entry) links its Material Issue / Receipt the same way without
+		# either being a transit receipt; only a Material Transfer can end a transit.
+		if self.get("purpose") == "Material Transfer":
+			validate_transit_receipt_source(self)
+		self.add_to_transit = 0
+		return
+
+	flags = getattr(self, "flags", None) or {}
+	if flags.get("no_transit"):
+		self.add_to_transit = 0
+		return
+
+	amended_from = self.get("amended_from")
+	if not amended_from or not self.get("add_to_transit"):
+		return
+
+	original = frappe.db.get_value(
+		"Stock Entry",
+		amended_from,
+		["add_to_transit", "stock_entry_type"],
+		as_dict=True,
+	)
+	# Only the same kind of entry: an amendment that changes the type is a new decision.
+	if (
+		original
+		and not original.add_to_transit
+		and original.stock_entry_type == self.get("stock_entry_type")
+	):
+		self.add_to_transit = 0
+
+
+def validate_transit_receipt_source(self):
+	"""A receipt leg must receive a real transit entry: one that sent stock into Transit.
+
+	Once ``normalize_add_to_transit`` clears the flag on receipt legs, the new ERPNext
+	check no longer stops End Transit being run against a receipt leg (or picking one
+	under Get Items From > Transit Entry). Every such "second hop" in the data was a no-op
+	move back into the warehouse the stock already sat in. The flag alone is not proof
+	either: thousands of older reserve entries carry add_to_transit = 1 but moved stock
+	into Reserve/RM warehouses, and still show End Transit.
+	"""
+	source_name = self.get("outgoing_stock_entry")
+	source = frappe.db.get_value(
+		"Stock Entry",
+		source_name,
+		["add_to_transit", "outgoing_stock_entry"],
+		as_dict=True,
+	)
+	if (
+		source
+		and source.add_to_transit
+		and not source.outgoing_stock_entry
+		and not has_non_transit_target(source_name)
+	):
+		return
+
+	frappe.throw(
+		_(
+			"Stock Entry {0} is not an in-transit entry, so it cannot be received. "
+			"Only a transfer that was sent to a Transit warehouse can be ended."
+		).format(frappe.bold(self.get("outgoing_stock_entry")))
+	)
+
+
 def before_validate(self, method):
 	if not in_configured_timeslot(self):
 		frappe.throw(_("Not Allowed to do entries, its freeze time"))
+	# Must precede StockEntry.validate, which rejects Add to Transit into a non-Transit
+	# warehouse; doc_event before_validate handlers all run before it.
+	normalize_add_to_transit(self)
 	# Must precede set_employee: it reads self.manufacturing_operation to resolve
 	# to_employee on Material Transfer (WORK ORDER).
 	set_manufacturing_refs(self)

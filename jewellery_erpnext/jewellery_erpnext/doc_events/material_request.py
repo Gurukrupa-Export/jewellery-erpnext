@@ -6,6 +6,7 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.utils import flt, nowdate
 
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
+	get_submitted_from_reserve_se,
 	make_department_mop_stock_entry,
 	make_department_transfer_stock_entry,
 	make_mop_stock_entry,
@@ -371,6 +372,66 @@ def _workflow_action_just_applied(self):
 	return not before or before.get("workflow_state") != self.workflow_state
 
 
+# Where a Transfer to Department sent the material, and the entry that sent it. End Transit
+# (doc_events.stock_entry._department_transfer_destination) and Transfer to MOP read the
+# destination off the request when they run, so once the entry exists these must not move.
+DEPARTMENT_TRANSFER_FROZEN_FIELDS = (
+	"custom_destination_department",
+	"custom_destination_warehouse",
+	"custom_department_transfer_se",
+)
+
+
+def _department_transfer_frozen_labels():
+	# Built per call, with literal strings, so each is translated in the user's language
+	# and picked up by the translation extractor.
+	return {
+		"custom_destination_department": _("Destination Department"),
+		"custom_destination_warehouse": _("Destination Warehouse"),
+		"custom_department_transfer_se": _("Department Transfer SE"),
+	}
+
+
+def validate_department_transfer_frozen(self):
+	"""Refuse to change a request's destination once its Transfer to Department exists.
+
+	All three fields are allow_on_submit. The form locks the destination through
+	``read_only_depends_on``, but that is client-side only: an Update from the API or a
+	``set_value`` would still reach the database, and End Transit would then land stock
+	that is already in transit somewhere else. The entry's own link is frozen too, or
+	clearing it in one save would unlock the destination for the next.
+
+	Keyed on the previous version, like ``_workflow_action_just_applied``: the save that
+	creates the entry starts without it (the maker stamps it with ``db_set``), so choosing
+	the destination and running the transfer is unaffected.
+	"""
+	before = (
+		self.get_doc_before_save() if hasattr(self, "get_doc_before_save") else None
+	)
+	transfer_se = before.get("custom_department_transfer_se") if before else None
+	if not transfer_se:
+		return
+
+	changed = [
+		fieldname
+		for fieldname in DEPARTMENT_TRANSFER_FROZEN_FIELDS
+		if (getattr(self, fieldname, None) or None) != (before.get(fieldname) or None)
+	]
+	if changed:
+		labels = _department_transfer_frozen_labels()
+		frappe.throw(
+			_(
+				"{0} cannot be changed: Stock Entry {1} has already sent this request's "
+				"material to {2}."
+			).format(
+				", ".join(labels[fieldname] for fieldname in changed),
+				frappe.bold(transfer_se),
+				frappe.bold(before.get("custom_destination_warehouse")),
+			),
+			title=_("Department Transfer Already Made"),
+		)
+
+
 def before_update_after_submit(self, method):
 	"""Dispatch the workflow's final step, whichever route ``custom_operation_type`` chose.
 
@@ -386,6 +447,9 @@ def before_update_after_submit(self, method):
 	departments -- including a plain Update where the user is just looking at the form before
 	deciding to click "Transfer to MOP".
 	"""
+	# Every update-after-submit save, workflow action or not: the lock has to hold against
+	# a plain Update and the API as much as the form.
+	validate_department_transfer_frozen(self)
 
 	# This hook rather than before_validate, which is where an "on save" check would
 	# normally go. frappe runs before_validate only for _action "save"/"submit", never
@@ -601,18 +665,9 @@ def _create_transfer_se(mr_name):
 		return
 
 	# Belt-and-suspenders idempotency: a submitted transfer SE already linked to this MR.
-	existing = frappe.db.sql(
-		"""
-		SELECT se.name FROM `tabStock Entry` se
-		JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-		WHERE se.stock_entry_type = 'Material Transfer From Reserve'
-		  AND se.docstatus = 1 AND sed.material_request = %s
-		LIMIT 1
-		""",
-		(mr_name,),
-	)
+	existing = get_submitted_from_reserve_se(mr_name)
 	if existing:
-		mr.db_set("custom_transfer_se", existing[0][0], update_modified=False)
+		mr.db_set("custom_transfer_se", existing, update_modified=False)
 		mr.db_set("custom_transfer_se_state", "Done", update_modified=False)
 		return
 
@@ -620,6 +675,12 @@ def _create_transfer_se(mr_name):
 	new_se_doc = frappe.copy_doc(se_doc)
 
 	new_se_doc.stock_entry_type = "Material Transfer From Reserve"
+	# copy_doc keeps no_copy fields, so a reserve SE saved with add_to_transit = 1 (every
+	# one created before create_stock_entry started clearing it) would carry it here, and a
+	# 1 is never fetched away. ERPNext rejects Add to Transit into the Reserve/RM targets
+	# below. Clearing it lets the type's 0 come back; the flag holds it regardless of type.
+	new_se_doc.add_to_transit = 0
+	new_se_doc.flags.no_transit = True
 
 	mr_item_to_alternative = {}
 	for item_row in mr.items:
@@ -929,7 +990,11 @@ def create_stock_entry(self, method):
 	# Every row lands in the department's Reserve warehouse, never a Transit one, and
 	# ERPNext rejects add_to_transit on a non-Transit target. Nothing reads this entry as
 	# an outgoing transit leg either: the follow-up transfers copy it and re-route rows.
+	# The 0 alone does not survive a Transfer Type whose Stock Entry Type carries
+	# add_to_transit (the fetch treats 0 as empty); the flag holds it through
+	# normalize_add_to_transit.
 	se_doc.add_to_transit = 0
+	se_doc.flags.no_transit = True
 
 	# Rows nearly always share a handful of source warehouses, so each distinct one is
 	# resolved once rather than costing two queries on every row. The two lookups are
