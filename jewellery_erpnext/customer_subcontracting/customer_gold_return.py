@@ -184,6 +184,13 @@ def make_customer_gold_return(
 
 	_validate_batch_owner(batch_no, customer)
 
+	# Converted metal is named for what it is, straight after the owner check. This only ADDS a
+	# refusal: a batch with a booked rate, or with no recorded lineage, meets the checks below in
+	# the order it always did.
+	booked_rate = get_booked_rate(company, customer, batch_no)
+	if booked_rate is None:
+		_refuse_converted_metal(company, customer, batch_no)
+
 	available = get_returnable_qty(company, customer, batch_no, warehouse, item_code)
 	if qty > available:
 		frappe.throw(
@@ -200,7 +207,9 @@ def make_customer_gold_return(
 		)
 
 	nominal = get_customer_gold_valuation_policy() == VALUATION_NOMINAL
-	booked_rate = get_booked_rate(company, customer, batch_no) if nominal else None
+	if not nominal:
+		# Zero Value: nothing is released, whatever the batch was booked at.
+		booked_rate = None
 
 	if nominal and booked_rate is None:
 		frappe.throw(
@@ -242,6 +251,74 @@ def _validate_batch_owner(batch_no, customer):
 			).format(frappe.bold(customer)),
 			title=frappe._("Customer Gold Entitlement"),
 		)
+
+
+def _refuse_converted_metal(company, customer, batch_no):
+	"""Refuse to return CONVERTED customer metal, naming the receipts it was made from.
+
+	A conversion mints a batch with no Receipt event of its own, so ``get_booked_rate`` has
+	nothing for it, and "no booked carrying value" was all this API used to say -- the wrong
+	cause, since the metal WAS booked, on the receipts it came from. The refusal itself is
+	deliberate: whether converted metal may be returned against a receipt, in what unit and at
+	what value, and who bears the alloy inside it, is Finance decision D07/D08.
+
+	Another item or purity is refused naming the receipts and those decisions, and sends the
+	user to Accounts. It prescribes no route. ``_validate_descendant``'s route, "Material
+	Request > Settle, then Create > Issue", failed when it was run on MCON00333's shape: the
+	desk's Material Request is same-warehouse with no customer, Settle draws receipts
+	oldest-first, its mirror leg found no target batch, and the Issue after it is a
+	receipt-batch return that skips the D08 tolerance (Rs 40.14 over-released, 2.893 g
+	stranded). The same item keeps ``_resolve_return_row``'s "Create > Issue" wording, since
+	that return is held to the D08 tolerance.
+
+	Which of the two it is follows the batch's OWN item, never the caller's ``item_code``, so a
+	wrong ``item_code`` cannot make the message misstate what the batch is.
+
+	Returns quietly when the batch has no recorded lineage (``lineage_receipts``), leaving the
+	refusal it always had. Only the verified owner's receipts are ever read or named.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		lineage_receipts,
+	)
+
+	receipts = lineage_receipts(company, customer, batch_no)
+	if not receipts:
+		return
+
+	batch_item = frappe.db.get_value("Batch", batch_no, "item")
+	received = list(dict.fromkeys(r.item_code for r in receipts))
+	if any(item != batch_item for item in received):
+		frappe.throw(
+			frappe._(
+				"Batch {0} is {1} made from {2} received on {3}. Returning a different item or "
+				"purity against a receipt is not an approved settlement: whether converted "
+				"metal may be returned, in what unit and at what value, awaits Finance "
+				"decisions D07/D08. Ask Accounts how to proceed."
+			).format(
+				frappe.bold(batch_no),
+				frappe.bold(batch_item),
+				", ".join(frappe.bold(item) for item in received),
+				_receipt_names(receipts),
+			),
+			title=frappe._("Customer Gold Return: Different Purity"),
+		)
+
+	frappe.throw(
+		frappe._(
+			"Batch {0} was made from customer gold received on {1} and has no receipt of its "
+			"own. Create the return from the receipt (Create > Issue) so it names the receipt "
+			"row it gives back."
+		).format(frappe.bold(batch_no), _receipt_names(receipts)),
+		title=frappe._("Customer Gold Return"),
+	)
+
+
+def _receipt_names(receipts):
+	"""Each receipt voucher once, in the order given, for a message."""
+	return ", ".join(
+		frappe.bold(name)
+		for name in dict.fromkeys(r.reference_docname for r in receipts)
+	)
 
 
 def _build_return_entry(

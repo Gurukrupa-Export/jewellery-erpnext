@@ -59,6 +59,7 @@ from .test_customer_gold_integration import (
 	MANUFACTURER,
 	OTHER_CUSTOMER,
 	RAW_RATE,
+	RETURN_SE_TYPE,
 	TRANSFER_SE_TYPE,
 	_CustomerGoldIntegrationCase,
 )
@@ -1172,3 +1173,211 @@ class TestLargeConversionStaysLinear(_MetalConversionCase):
 		# 5x the lanes; quadratic work would be ~25x. Allow generous constant overheads.
 		self.assertLess(large["sql"], small["sql"] * 7.5)
 		self.assertEqual(large["commit"], small["commit"])
+
+
+class TestConvertedMetalIsRefusedByName(_MetalConversionCase):
+	"""R4 / D2 Tier 1: MCON00333's shape can be neither returned nor revalued, and every refusal
+	names the receipt the metal came from.
+
+	MCON00333 (kg-gk, 29 Sep 2026) drew all 1.327 g of one receipt's batch and 18.673 g of
+	another's 20 g, with company alloy, into 22KT. Handing that 22KT back against a 24KT receipt,
+	or restating it at today's rate, is an open decision (D05/D07/D08), so all three paths
+	refuse: the desk through its existing D07 check, the API and the revaluation through the
+	lineage the conversion recorded. None of them may write anything.
+
+	The API and the revaluation name the receipt and the open decisions and send the user to
+	Accounts. They prescribe no route: "Material Request > Settle, then Create > Issue" did not
+	hold when it was run on this shape.
+	"""
+
+	#: Tables whose row counts prove a refusal wrote nothing.
+	COUNTED = (
+		"Stock Entry",
+		"Customer Gold Ledger Entry",
+		"Customer Gold Allocation",
+		"GL Entry",
+		"Stock Reconciliation",
+		"Journal Entry",
+	)
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# The configured return type, as ``_ReturnCase`` sets it: without one a typed return is
+		# a plain Material Issue that no Customer Gold rule governs.
+		settings = frappe.get_doc(SETTINGS_DOCTYPE)
+		settings.customer_gold_return_stock_entry_type = RETURN_SE_TYPE
+		settings.save(ignore_permissions=True)
+		frappe.clear_cache(doctype=SETTINGS_DOCTYPE)
+
+	def _counts(self):
+		return {doctype: frappe.db.count(doctype) for doctype in self.COUNTED}
+
+	@staticmethod
+	def _receipt_of(batch):
+		"""The Receipt event that booked ``batch``, read straight from the ledger."""
+		(event,) = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"batch_no": batch, "cg_event_kind": "Receipt"},
+			fields=["reference_docname", "cg_source_row"],
+		)
+		return event
+
+	@staticmethod
+	def _last_title():
+		message = frappe.local.message_log[-1]
+		return (
+			frappe.parse_json(message) if isinstance(message, str) else message
+		).get("title")
+
+	def _typed_return(self, receipt, batch, warehouse, qty):
+		"""A return typed by hand against one receipt row, as the desk Issue would build it."""
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = RETURN_SE_TYPE
+		se.purpose = "Material Issue"
+		se.company = COMPANY
+		se.posting_date = nowdate()
+		se.set_posting_time = 1
+		se._customer = CUSTOMER
+		se.append(
+			"items",
+			{
+				"item_code": TARGET_ITEM,
+				"qty": qty,
+				"s_warehouse": warehouse,
+				"batch_no": batch,
+				"use_serial_batch_fields": 1,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"against_stock_entry": receipt.reference_docname,
+				"ste_detail": receipt.cg_source_row,
+			},
+		)
+		return se
+
+	def test_mcon00333_shape_is_refused_by_desk_api_and_revaluation_naming_the_receipt(
+		self,
+	):
+		from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+			make_customer_gold_return,
+		)
+		from jewellery_erpnext.customer_subcontracting.customer_gold_revaluation import (
+			revalue_customer_gold,
+		)
+
+		wh = self._fresh_warehouse()
+		a, _ = self._customer_batch(wh, 1.327)
+		b, _ = self._customer_batch(wh, 20)
+		alloy, _ = self._company_batch(wh, ALLOY_ITEM, 2, ALLOY_RATE)
+		mc = self._conversion(wh, 20)
+		mc.submit()
+		se = self._entry(mc)
+
+		# Guard the guard: all of A and 18.673 g of B, and B made its own 22KT target -- 18.673 g
+		# at 100% is 20.352 g at 91.75%, the 1.679 g difference being the company's alloy.
+		self.assertEqual(
+			[(row.batch, flt(row.qty, 3)) for row in mc.source_batch_details],
+			[(a, 1.327), (b, 18.673)],
+		)
+		(target,) = self._group_of_source(se, b)[1]["targets"]
+		converted = self._bundle_batch(target)
+		self.assertAlmostEqual(flt(target.qty), 20.352, places=3)
+		receipt_a, receipt_b = self._receipt_of(a), self._receipt_of(b)
+
+		# The lineage every refusal below reads: B's gold is the customer's, the alloy stays
+		# the company's.
+		components = sorted(
+			(c.inventory_type, c.customer or None, c.source_batch, flt(c.qty, 3))
+			for c in self._components(converted)
+		)
+		self.assertEqual(
+			components,
+			[
+				("Customer Goods", CUSTOMER, b, 18.673),
+				("Regular Stock", None, alloy, 1.679),
+			],
+		)
+
+		before = self._counts()
+
+		# The desk: typed against B's receipt row. The existing D07 refusal, pinned. Its
+		# "Material Request > Settle" advice is a known issue for this shape, left as it is.
+		frappe.clear_messages()
+		with self.assertThrowsContaining("different item or purity") as caught:
+			self._typed_return(receipt_b, converted, wh, 1).insert()
+		self.assertEqual(self._last_title(), "Customer Gold Return: Different Purity")
+		self.assertIn(receipt_b.reference_docname, str(caught.exception))
+
+		# The API: refused as a different purity too, naming the receipt -- only B's, never A's
+		# -- and the open decisions. It says what the batch holds, whichever item it is sent.
+		for item_code in (TARGET_ITEM, SOURCE_ITEM):
+			with self.subTest(item_code=item_code):
+				frappe.clear_messages()
+				with self.assertThrowsContaining("different item or purity") as caught:
+					make_customer_gold_return(
+						company=COMPANY,
+						customer=CUSTOMER,
+						batch_no=converted,
+						qty=1,
+						warehouse=wh,
+						item_code=item_code,
+					)
+				message = str(caught.exception)
+				self.assertEqual(
+					self._last_title(), "Customer Gold Return: Different Purity"
+				)
+				for fragment in (
+					receipt_b.reference_docname,
+					frappe.bold(TARGET_ITEM),
+					frappe.bold(SOURCE_ITEM),
+					"D07",
+					"Accounts",
+				):
+					self.assertIn(fragment, message)
+				for fragment in (
+					"Material Request > Settle",
+					"Create > Issue",
+					receipt_a.reference_docname,
+				):
+					self.assertNotIn(fragment, message)
+
+		# The revaluation: refused by name, not sent to split a batch or told it has no value.
+		frappe.clear_messages()
+		with self.assertThrowsContaining("revalue before converting") as caught:
+			revalue_customer_gold(
+				COMPANY, CUSTOMER, converted, wh, TARGET_ITEM, new_rate=7500
+			)
+		message = str(caught.exception)
+		self.assertEqual(
+			self._last_title(), "Customer Gold Revaluation: Converted Metal"
+		)
+		for fragment in (receipt_b.reference_docname, "D05", "Accounts"):
+			self.assertIn(fragment, message)
+		for fragment in ("Material Request > Settle", receipt_a.reference_docname):
+			self.assertNotIn(fragment, message)
+
+		# A lineage that cannot be read never raises: the API gives the refusal it gave before,
+		# and the failure is logged.
+		frappe.clear_messages()
+		with patch(
+			"jewellery_erpnext.customer_subcontracting.customer_gold_components"
+			"._recorded_components",
+			side_effect=RuntimeError("Unknown column 'source_batch'"),
+		), patch.object(frappe, "log_error") as log_error:
+			with self.assertThrowsContaining("no booked carrying value"):
+				make_customer_gold_return(
+					company=COMPANY,
+					customer=CUSTOMER,
+					batch_no=converted,
+					qty=1,
+					warehouse=wh,
+					item_code=TARGET_ITEM,
+				)
+		log_error.assert_called_once_with(
+			title="Customer Gold: lineage lookup failed", defer_insert=True
+		)
+
+		self.assertEqual(self._counts(), before)
