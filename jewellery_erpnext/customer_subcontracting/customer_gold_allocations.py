@@ -10,6 +10,7 @@ same business operation computes the same key and is absorbed, exactly like the 
 """
 
 import hashlib
+from contextlib import suppress
 
 import frappe
 from frappe.utils import flt, now_datetime
@@ -157,6 +158,72 @@ def open_receipts_of_batch(company, customer, batch_no):
 	for receipt in receipts:
 		receipt.share = open_qty[receipt.name] / total
 	return receipts
+
+
+def lineage_receipts(company, customer, batch_no):
+	"""The receipts a CONVERTED batch was made from -- to name them, never to price them.
+
+	A conversion mints a batch with no Receipt event of its own, so ``receipts_of_batch`` finds
+	nothing behind it. What it holds is recorded only in its ``Batch Component`` rows, whose
+	``source_batch`` is the batch each part came from; this follows the customer's parts back to
+	the receipts of those batches, so a refusal can say where the metal came from.
+
+	Only ``customer``'s gold is followed -- ``Customer Goods`` components of that customer whose
+	item is gold, the rows ``_customer_share`` settles -- so the company's alloy and another
+	customer's receipts are never named. Effective receipts only, each once, oldest first.
+
+	``[]`` when the batch has effective Receipt events of its own (it is a receipt batch, not a
+	converted one), when no component leads to a receipt, and on ANY failure: every caller is
+	already refusing, and a lineage that cannot be read must leave the refusal it would have
+	given anyway, never raise a different error. Reads only; a failure is logged as "Customer
+	Gold: lineage lookup failed".
+	"""
+	try:
+		from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
+			_recorded_components,
+		)
+		from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+			CUSTOMER_GOODS,
+			_is_customer_gold_item,
+		)
+
+		if not (company and customer and batch_no) or receipts_of_batch(
+			company, customer, batch_no
+		):
+			return []
+
+		found = {}
+		for component in _recorded_components(batch_no):
+			source = component.get("source_batch")
+			if (
+				source
+				and component.get("inventory_type") == CUSTOMER_GOODS
+				and component.get("customer") == customer
+				and _is_customer_gold_item(component.get("item_code"))
+			):
+				for receipt in receipts_of_batch(company, customer, source):
+					found.setdefault(receipt.name, receipt)
+		if not found:
+			return []
+
+		oldest_first = frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={"name": ["in", list(found)]},
+			order_by="creation asc",
+			pluck="name",
+		)
+		rank = {name: index for index, name in enumerate(oldest_first)}
+		return sorted(found.values(), key=lambda r: rank.get(r.name, len(rank)))
+	except Exception:
+		# Never raises, but never silently either: a failure here quietly turns the named
+		# refusal back into the generic one, and only this log says so. Deferred, because every
+		# caller goes on to refuse, and the request's rollback would take an ordinary insert
+		# with it; suppressed, because a log that cannot be written must not raise either.
+		with suppress(Exception):
+			frappe.log_error(
+				title="Customer Gold: lineage lookup failed", defer_insert=True
+			)
+		return []
 
 
 def booked_rate_of(event):
