@@ -76,6 +76,11 @@ frappe.query_reports["Customer Gold Traceability"] = {
 			label: __("As Of"),
 			fieldtype: "Date",
 			default: frappe.datetime.get_today(),
+			// The same reading as ERPNext's Stock Ledger and General Ledger "as of" a date: the
+			// books as they stand today, where a cancelled document never posted at all.
+			description: __(
+				"The position on this date in today's books. A document cancelled later counts as never posted, as in the Stock Ledger and General Ledger."
+			),
 		},
 		{
 			fieldname: "stock_entry",
