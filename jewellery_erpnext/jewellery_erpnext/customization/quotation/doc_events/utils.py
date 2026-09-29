@@ -66,11 +66,12 @@ def validate_po(self):
 
 
 def update_customer_details(self, row):
-	# Outright/Outwork fix material ownership for the whole order, so always refetch from the
-	# header: filling only blank rows let an item-table edit (or a value left from an earlier
-	# Sales Type) reach the Sales Order and fail at the Parent Manufacturing Order's
-	# Sales Type / Is Customer Diamond check. Other Sales Types may still differ per row.
-	if getattr(self, "custom_sales_type", None) in ("Outright", "Outwork"):
+	# Outright/Outwork/Hybrid fix material ownership for the whole order (the form locks these
+	# fields for them), so always refetch from the header: filling only blank rows let an
+	# item-table edit (or a value left from an earlier Sales Type) reach the Sales Order and fail
+	# at the Parent Manufacturing Order's Sales Type / Is Customer Diamond check. Other Sales
+	# Types may still differ per row.
+	if getattr(self, "custom_sales_type", None) in ("Outright", "Outwork", "Hybrid"):
 		row.custom_customer_gold = self.custom_customer_gold
 		row.custom_customer_diamond = self.custom_customer_diamond
 		row.custom_customer_stone = self.custom_customer_stone
