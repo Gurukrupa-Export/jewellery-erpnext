@@ -248,3 +248,39 @@ class TestCustomerLossFormatters(IntegrationTestCase):
 		self.assertIn("&lt;b&gt;X&lt;/b&gt;", lines[0])
 		self.assertNotIn("<b>X</b>", lines[0])
 		self.assertEqual(lines[-1], "Total: 0.01 Gram + 0.05 Carat")
+
+
+class TestSubmitPathDeadlocks(IntegrationTestCase):
+	"""A deadlock means InnoDB rolled the whole submit back; no step may swallow it.
+
+	Logging it and carrying on would commit the rest of on_submit in a fresh
+	transaction: an Employee IR reported submitted while it is still a Draft.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _refresh(self, error):
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+				"main_slip_inject._resolve_source_warehouse_raw_material",
+				return_value="MSL - T",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking."
+				"recalculate_msl_tracking",
+				side_effect=error,
+			),
+			patch("frappe.log_error") as log_error,
+		):
+			EmployeeIR._refresh_msl_tracking(_Doc())
+		return log_error
+
+	def test_the_msl_refresh_lets_a_deadlock_through(self):
+		with self.assertRaises(frappe.QueryDeadlockError):
+			self._refresh(frappe.QueryDeadlockError("1213"))
+
+	def test_the_msl_refresh_still_only_logs_other_failures(self):
+		self._refresh(RuntimeError("boom")).assert_called_once()

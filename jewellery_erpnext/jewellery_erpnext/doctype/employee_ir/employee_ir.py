@@ -788,6 +788,10 @@ class EmployeeIR(Document):
 			msl_wh = _resolve_source_warehouse_raw_material(self)
 			if msl_wh:
 				recalculate_msl_tracking(msl_wh)
+		except frappe.QueryDeadlockError:
+			# InnoDB has already rolled back the whole submit; logging and carrying on
+			# would commit the rest of on_submit in a fresh transaction, as half a submit.
+			raise
 		except Exception:
 			frappe.log_error(
 				title="Employee IR: MSL tracking refresh failed",
