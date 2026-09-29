@@ -331,6 +331,79 @@ class TestCustomerGoldAllocationIntegration(base._CustomerGoldIntegrationCase):
 			result[a.receipt_event] = a
 		return result
 
+	def test_a_delivery_after_a_receipt_linked_return_draws_on_what_is_left(self):
+		"""Review F2 (29 Sep): receipts A and B, 5 g each at one rate, share one batch. A's 5 g
+		go back on a return linked to A's row, so the 5 g left in the batch are B's. The Delivery
+		Note of those 5 g must draw on B alone. Before the fix it split 2.5 / 2.5 by what each
+		RECEIVED: A drawn 7.5 g of its 5, B left 2.5 g "open" with no metal behind it.
+
+		Same rate on purpose: a return from a batch holding receipts at DIFFERENT booked rates is
+		held by the D08 guard, so that combination never reaches this path.
+		"""
+		qty = Decimal("5")
+		a = self._receive_at(RAW_RATES[0], qty=qty)
+		self._ensure_gold_rate(self.posting_date, float(RAW_RATES[0]))
+		try:
+			# create_parent_batches keeps a batch the row already names, so B lands in A's batch.
+			se_b = self._receipt(
+				qty=float(qty), batch_no=a.batch, use_serial_batch_fields=1
+			)
+			self._submit(se_b)
+		finally:
+			self._ensure_gold_rate(self.posting_date, base.RAW_RATE)
+		self.assertEqual(
+			frappe.db.get_value("Stock Entry Detail", se_b.items[0].name, "batch_no"),
+			a.batch,
+			"fixture: receipt B did not land in receipt A's batch",
+		)
+		b_event = frappe.db.get_value(
+			LEDGER, {"reference_docname": se_b.name, "cg_event_kind": "Receipt"}, "name"
+		)
+		self.assertTrue(b_event, "receipt B wrote no Receipt event")
+
+		# A's 5 g back to the customer, linked to A's receipt row.
+		ret = frappe.new_doc("Stock Entry")
+		ret.stock_entry_type = base.RETURN_SE_TYPE
+		ret.purpose = "Material Issue"
+		ret.company = base.COMPANY
+		ret.posting_date = self.posting_date
+		ret.set_posting_time = 1
+		ret._customer = base.CUSTOMER
+		ret.append(
+			"items",
+			{
+				"item_code": self.item,
+				"qty": float(qty),
+				"s_warehouse": self.warehouse,
+				"batch_no": a.batch,
+				"use_serial_batch_fields": 1,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"conversion_factor": 1,
+				"inventory_type": "Customer Goods",
+				"customer": base.CUSTOMER,
+				"against_stock_entry": a.se,
+				"ste_detail": a.row,
+			},
+		)
+		ret.insert()
+		ret.submit()
+
+		dn = self._deliver_raw(a.batch, qty)
+		on_dn = {
+			row.receipt_event: D(flt(row.gross_qty, 6))
+			for row in self._allocations(dn.name)
+		}
+		self.assertEqual(on_dn.get(a.event, Decimal("0")), Decimal("0"), on_dn)
+		self.assertEqual(on_dn.get(b_event), qty, on_dn)
+
+		value = money(qty * a.rate)
+		for event in (a.event, b_event):
+			with self.subTest(receipt=event):
+				gross, amount = self._net_for_receipt(event)
+				self.assertEqual(gross, qty)
+				self.assertEqual(amount, value)
+
 	def _net_for_receipt(self, receipt_event):
 		rows = frappe.get_all(
 			ALLOCATION,
