@@ -75,6 +75,7 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 	get_customer_gold_settings,
 	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
+	settings_fix_hint,
 	validate_settlement_accounts,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
@@ -1758,19 +1759,22 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 	obligation shrinks -- **Dr Customer Gold Liability / Cr Customer Gold COGS Adjustment**, the
 	SOP's Example C posting. A physical return inverts both legs.
 	"""
-	# The settings are validated again HERE, not trusted from save time (F4). The save-time
-	# validator returns early while the feature flag is off and never sees a configuration that
-	# changed afterwards -- which is how the KGJPL row posted KGJPL-JE-JE-26-00018, Dr Customer
-	# Goods Receive / Cr Advances from Customers, liability to liability.
+	# The settings are validated again HERE, not trusted from save time (F4). A saved row is only
+	# as good as the rules in force when it was saved: the KGJPL row was saved, with the flag on,
+	# before the adjustment account had a root-type rule, and it posted KGJPL-JE-JE-26-00018,
+	# Dr Customer Goods Receive / Cr Advances from Customers, liability to liability. Save-time
+	# validation also skips every row while the feature flag is off.
 	#
 	# Blocking fails the delivery, and that is the right outcome: the alternative is a JE that
 	# erpnext accepts, that discharges nothing, and that permanently claims the events via
-	# cg_settlement_voucher so no later correction can settle them.
+	# cg_settlement_voucher so no later correction can settle them. The message says where the
+	# row is corrected, because the operator on this document cannot see it.
 	validate_settlement_accounts(
 		doc.company,
 		accounts.liability_account,
 		accounts.cogs_adjustment_account,
 		where=f"{doc.doctype} {doc.name}",
+		fix_hint=settings_fix_hint(doc.company),
 	)
 
 	# A party is set only when the account actually demands one. A Customer Gold Liability
@@ -1785,6 +1789,7 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 	je.voucher_type = "Journal Entry"
 	je.company = doc.company
 	je.posting_date = doc.get("posting_date") or frappe.utils.nowdate()
+	cost_center = _settlement_cost_center(je)
 	# The structural link is the ledger's own ``cg_settlement_voucher``, which points from every
 	# settled event to this JE; each event carries its customer, document row, serial and batch,
 	# and the batch's Batch Components name the customer's source receipts. The remark repeats
@@ -1811,6 +1816,7 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 		# own ``cg_settlement_voucher``, which points the other way and is not restricted.
 		line = {
 			"account": accounts.liability_account,
+			"cost_center": cost_center,
 			"debit_in_account_currency": amount if amount > 0 else 0,
 			"credit_in_account_currency": -amount if amount < 0 else 0,
 		}
@@ -1823,6 +1829,7 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 		"accounts",
 		{
 			"account": accounts.cogs_adjustment_account,
+			"cost_center": cost_center,
 			"credit_in_account_currency": total if total > 0 else 0,
 			"debit_in_account_currency": -total if total < 0 else 0,
 		},
@@ -1832,6 +1839,25 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 	je.insert()
 	je.submit()
 	return je.name
+
+
+def _settlement_cost_center(je):
+	"""The cost center for both settlement lines: what Frappe's defaults give, else the company's.
+
+	``Journal Entry Account.cost_center`` defaults to the submitting user's own default Cost
+	Center and, failing that, to ``:Company``. Frappe drops ``:Company`` for a user whose Cost
+	Center user permissions exclude the company's (``frappe/model/create_new.py``,
+	``get_default_based_on_another_field``); the Profit and Loss line is then left without one,
+	and erpnext refuses it with "Missing Cost Center" (``gl_entry.py``,
+	``pl_must_have_cost_center``). Only that case falls back to the company's cost center, so
+	a user whose defaults already give one keeps it.
+	"""
+	defaults = frappe.new_doc(
+		"Journal Entry Account", parent_doc=je, parentfield="accounts", as_dict=True
+	)
+	return defaults.get("cost_center") or frappe.get_cached_value(
+		"Company", je.company, "cost_center"
+	)
 
 
 def reverse_fulfilment(doc, method=None):
