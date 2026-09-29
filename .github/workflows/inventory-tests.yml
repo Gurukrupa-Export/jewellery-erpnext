@@ -105,3 +105,5 @@ jobs:
           # Same for the receipt-linked return and settlement-allocation suites:
           #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_return_integration
           #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_allocation_integration
+          # And MCON00333's conversion accounting (value, GL, liability, precision) on real Metal Conversions:
+          #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_metal_conversion_accounting
