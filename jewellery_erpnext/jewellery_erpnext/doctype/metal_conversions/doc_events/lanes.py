@@ -159,6 +159,26 @@ def split_conversion(lanes, target_qty, precision=3):
 	return lanes
 
 
+def split_with_alloy(lanes, alloy_qty, needs, precision=3, release=False):
+	"""Give each lane its share of the document's alloy; its target is its source plus it.
+
+	``alloy_qty`` is the figure STORED on the document -- the one the operator saw, the Bin
+	check passed and ``update_alloy_betch`` allocated batches for -- so it is apportioned, not
+	re-derived: re-deriving it from a differently rounded target refused conversions whose two
+	figures fell either side of a rounding tie. It is shared by each lane's own ``needs``: in
+	proportion to its source qty for one source item, and by fine gold across purities, where
+	a lane already at the target purity needs none and gets none. Each lane's target is then
+	exactly its source plus (``release``: minus) its own alloy, so no lane's grams depend on
+	another lane's rounding.
+	"""
+	shares = apportion(alloy_qty, needs, precision)
+	sign = -1 if release else 1
+	for lane, share in zip(lanes, shares):
+		lane["alloy_qty"] = flt(sign * share, precision)
+		lane["target_qty"] = flt(lane["source_qty"] + lane["alloy_qty"], precision)
+	return lanes
+
+
 def split_allocations(allocations, needs, precision=3):
 	"""Hand out one FIFO allocation pool across several ``needs``, in order.
 
