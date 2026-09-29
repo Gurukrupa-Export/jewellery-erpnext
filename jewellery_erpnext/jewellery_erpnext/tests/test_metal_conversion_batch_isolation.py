@@ -18,9 +18,10 @@ reasons ``test_customer_gold_integration`` gives: it writes Singles, masters and
 test's FIFO draw can never pick up another test's batches.
 
 It runs at the site's own float precision -- 2 here, as on gk; 3 on kg-gk. A conversion posts at
-Stock Entry Detail ``transfer_qty``'s three decimals either way (``metal_conversions._qty_precision``).
-The suite used to force 3: the builder rounded at the document's float precision and, at 2,
-booked batch 11's 0.477 g as 0.48 g and overdrew it.
+Stock Entry Detail ``transfer_qty``'s precision (``metal_conversions._qty_precision``), which the
+app's Property Setter pins at 3 here and on gk. The suite used to force float precision 3: the
+builder rounded at the document's float precision and, at 2, booked batch 11's 0.477 g as 0.48 g
+and overdrew it.
 
 HOW THE EXPECTATIONS ARE MADE
 -----------------------------
