@@ -35,8 +35,13 @@ from batch 11, so a copied or pooled rate cannot pass.
 
 import time
 from decimal import ROUND_HALF_UP, Decimal
+from unittest.mock import patch
 
 import frappe
+from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
+	BatchNegativeStockError,
+)
+from erpnext.stock.stock_ledger import NegativeStockError
 from frappe.utils import flt, nowdate
 
 from jewellery_erpnext.customer_subcontracting import customer_gold_fulfilment as cgf
@@ -54,6 +59,7 @@ from .test_customer_gold_integration import (
 	MANUFACTURER,
 	OTHER_CUSTOMER,
 	RAW_RATE,
+	TRANSFER_SE_TYPE,
 	_CustomerGoldIntegrationCase,
 )
 
@@ -393,6 +399,23 @@ class _MetalConversionCase(_CustomerGoldIntegrationCase):
 			],
 		)
 
+	def _assert_undone(self, se, warehouse, sources, targets):
+		"""T40's reading of a cancelled conversion: the entry is cancelled, every source
+		batch holds what it held before, every target is empty, and the entry's ledger rows
+		net to zero per batch."""
+		self.assertEqual(frappe.db.get_value("Stock Entry", se.name, "docstatus"), 2)
+		for batch, qty in sources.items():
+			self.assertEqual(self._balance(batch, warehouse), qty, batch)
+		for batch in targets:
+			self.assertEqual(self._balance(batch, warehouse), 0.0, batch)
+		net = {}
+		for event in self._ledger(se.name):
+			net[event.batch_no] = flt(
+				net.get(event.batch_no, 0) + flt(event.cg_gross_qty_delta), 6
+			)
+		self.assertTrue(net)
+		self.assertTrue(all(value == 0 for value in net.values()), net)
+
 
 class TestMCON00332Shape(_MetalConversionCase):
 	"""T57/T58/T59/T60: the reported conversion's exact shape, through the real controller.
@@ -727,6 +750,34 @@ class TestConversionLifecycle(_MetalConversionCase):
 		mc.submit()
 		return wh, b11, b12, mc
 
+	def _move(self, batch, qty, source, target):
+		"""A Material Transfer of part of a conversion output, as TestCustodyTransfer makes one."""
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = TRANSFER_SE_TYPE
+		se.purpose = "Material Transfer"
+		se.company = COMPANY
+		se.manufacturer = MANUFACTURER
+		se.posting_date = self.posting_date
+		se.set_posting_time = 1
+		se.append(
+			"items",
+			{
+				"item_code": TARGET_ITEM,
+				"qty": qty,
+				"s_warehouse": source,
+				"t_warehouse": target,
+				"batch_no": batch,
+				"use_serial_batch_fields": 1,
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"expense_account": self.difference_account,
+			},
+		)
+		se.flags.ignore_mandatory = True
+		se.save()
+		se.submit()
+		return se
+
 	def test_a_repeated_submit_makes_nothing_new(self):
 		"""T35/T36: a retried submit of an already submitted conversion (a lost response,
 		then the user clicks again) creates nothing. Frappe treats it as a save of the
@@ -839,6 +890,23 @@ class TestConversionLifecycle(_MetalConversionCase):
 		self.assertTrue(all(value == 0 for value in net.values()), net)
 		assert_unchanged("cancelled")
 
+	def test_a_conversion_saved_without_its_link_still_cancels_its_entry(self):
+		"""T40 for the conversions submitted before the link was saved: all 327 on kg-gk have
+		a NULL stock_entry. The cascade finds the entry by its reverse reference alone."""
+		wh, b11, b12, mc = self._converted()
+		se = self._entry(mc)
+		targets = [self._bundle_batch(row) for row in se.items if row.t_warehouse]
+		frappe.db.set_value(
+			"Metal Conversions", mc.name, "stock_entry", None, update_modified=False
+		)
+		self.assertIsNone(
+			frappe.db.get_value("Metal Conversions", mc.name, "stock_entry")
+		)
+
+		frappe.get_doc("Metal Conversions", mc.name).cancel()
+
+		self._assert_undone(se, wh, {b11: 1.0, b12: 2.0}, targets)
+
 	def test_amending_converts_again_without_double_consumption(self):
 		"""T42: the amended conversion posts new outputs; the cancelled history stays."""
 		wh, b11, b12, mc = self._converted()
@@ -919,16 +987,62 @@ class TestConversionLifecycle(_MetalConversionCase):
 		self.assertEqual(frappe.db.get_value("Stock Entry", first.name, "docstatus"), 1)
 		self.assertEqual(frappe.db.get_value("Stock Entry", se2.name, "docstatus"), 1)
 
+	def test_a_refused_cancel_commits_nothing_and_writes_no_reversal(self):
+		"""T41 in MCON00333's shape: MAT-STE-19750 moved part of its 22KT on, so ERPNext
+		refuses the entry's cancel. The refusal must leave nothing a request's rollback would
+		miss: no commit and no Reversal row. Frappe writes docstatus 2 before on_cancel, so
+		the ledger means something only before the rollback, the docstatus only after it."""
+		wh, _b11, b12, mc = self._converted()
+		se = self._entry(mc)
+		targets = [self._bundle_batch(row) for row in se.items if row.t_warehouse]
+		elsewhere = self._fresh_warehouse()
+		# 1 g of the 2.180 g batch 12 made.
+		self._move(
+			self._bundle_batch(self._group_of_source(se, b12)[1]["targets"][0]),
+			1.0,
+			wh,
+			elsewhere,
+		)
+		balances = {
+			(batch, warehouse): self._balance(batch, warehouse)
+			for batch in targets
+			for warehouse in (wh, elsewhere)
+		}
+
+		frappe.db.savepoint("refused_cancel")
+		with patch.object(
+			frappe.local.db, "commit", wraps=frappe.local.db.commit
+		) as commit:
+			with self.assertRaises(frappe.ValidationError) as refused:
+				frappe.get_doc("Metal Conversions", mc.name).cancel()
+		# Refused for the used output, not by an earlier check that wrote nothing at all.
+		self.assertIsInstance(
+			refused.exception, (BatchNegativeStockError, NegativeStockError)
+		)
+		commit.assert_not_called()
+		self.assertEqual(
+			[row for row in self._ledger(se.name) if row.cg_event_kind == "Reversal"],
+			[],
+		)
+
+		frappe.db.rollback(save_point="refused_cancel")
+		self.assertEqual(
+			frappe.db.get_value("Metal Conversions", mc.name, "docstatus"), 1
+		)
+		self.assertEqual(frappe.db.get_value("Stock Entry", se.name, "docstatus"), 1)
+		self.assertEqual({key: self._balance(*key) for key in balances}, balances)
+
 
 class TestMultipleConverterSplitsCustomerBatches(_MetalConversionCase):
 	"""T15/T19: the multiple converter isolates customer batches the same way."""
 
-	def test_each_customer_batch_is_its_own_target(self):
+	def _submitted(self):
+		"""Two batches of one customer and a company batch, converted in multiple mode."""
 		wh = self._fresh_warehouse()
 		a1, _ = self._customer_batch(wh, 3.0)
 		a2, _ = self._customer_batch(wh, 2.0, raw_rate=RAW_RATE_12)
 		reg, _ = self._company_batch(wh, SOURCE_ITEM, 1.0, REGULAR_RATE)
-		self._company_batch(wh, ALLOY_ITEM, 1.0, ALLOY_RATE)
+		alloy, _ = self._company_batch(wh, ALLOY_ITEM, 1.0, ALLOY_RATE)
 
 		doc = frappe.new_doc("Metal Conversions")
 		doc.update(
@@ -963,6 +1077,10 @@ class TestMultipleConverterSplitsCustomerBatches(_MetalConversionCase):
 		doc.alloy_check = 0
 		doc.insert(ignore_permissions=True)
 		doc.submit()
+		return wh, a1, a2, reg, alloy, doc
+
+	def test_each_customer_batch_is_its_own_target(self):
+		_wh, a1, a2, reg, _alloy, doc = self._submitted()
 
 		se = self._entry(doc)
 		self.assertEqual(
@@ -988,6 +1106,17 @@ class TestMultipleConverterSplitsCustomerBatches(_MetalConversionCase):
 					),
 					owner,
 				)
+
+	def test_cancelling_it_cancels_its_entry(self):
+		"""T40 in multiple mode. This builder always saved its link, yet cancelling the
+		conversion left the entry submitted too, until the cascade."""
+		wh, a1, a2, reg, alloy, doc = self._submitted()
+		se = self._entry(doc)
+		targets = [self._bundle_batch(row) for row in se.items if row.t_warehouse]
+
+		frappe.get_doc("Metal Conversions", doc.name).cancel()
+
+		self._assert_undone(se, wh, {a1: 3.0, a2: 2.0, reg: 1.0, alloy: 1.0}, targets)
 
 
 class TestLargeConversionStaysLinear(_MetalConversionCase):
