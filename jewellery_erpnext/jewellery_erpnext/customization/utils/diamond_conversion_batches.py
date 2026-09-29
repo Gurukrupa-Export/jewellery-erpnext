@@ -43,13 +43,25 @@ hijacking DocType meta loading.
 import frappe
 
 STOCK_ENTRY = "Stock Entry"
+DIAMOND_CONVERSION = "Diamond Conversion"
+
+# Only the output of a re-sieve bars a batch from being re-sieved again.
+#
+# "Sieve Size Range to Sieve Size" is the UPSTREAM step -- it breaks a bagged range parcel down
+# into individual sieve sizes -- so its output is the normal feed for a "Sieve Size to Sieve
+# Size" conversion and has to stay selectable. Barring it (which an earlier "any Diamond
+# Conversion" rule did) hid 80 of the 87 conversion-produced batches on the live bench from both
+# the picker and the FIFO auto-pick, which then reported the item as short.
+BARRED_PRODUCER_TYPES = ("Sieve Size to Sieve Size",)
 
 
 def get_diamond_conversion_target_batches(batch_nos):
-	"""``{batch_no: diamond_conversion}`` for batches minted as a Diamond Conversion TARGET.
+	"""``{batch_no: diamond_conversion}`` for batches minted by a ``BARRED_PRODUCER_TYPES``
+	conversion.
 
 	Only conversion output appears in the result, so a caller can test membership
-	(``batch in result``) and still have the producing document's name for the message.
+	(``batch in result``) and still have the producing document's name for the message. A batch
+	produced by any OTHER conversion type is absent, i.e. treated as freely usable.
 	Returns ``{}`` for an empty / all-None input WITHOUT querying, so the FIFO and picker paths
 	pay nothing when there is nothing to check.
 	"""
@@ -111,13 +123,28 @@ def get_diamond_conversion_target_batches(batch_nos):
 	if not conversion_by_se:
 		return {}
 
+	# Keep only the conversions whose own type bars their output. Driven from the resolved
+	# conversion names, so it stays a primary-key lookup like the three queries above.
+	barring_conversions = set(
+		frappe.db.get_all(
+			DIAMOND_CONVERSION,
+			filters={
+				"name": ["in", sorted({c for c in conversion_by_se.values() if c})],
+				"conversion_type": ["in", list(BARRED_PRODUCER_TYPES)],
+			},
+			pluck="name",
+		)
+	)
+	if not barring_conversions:
+		return {}
+
 	conversion_by_batch = {}
 	for batch in batches:
 		se_name = detail_parent.get(batch.custom_voucher_detail_no)
 		if not se_name and batch.reference_doctype == STOCK_ENTRY:
 			se_name = batch.reference_name
 		conversion = conversion_by_se.get(se_name)
-		if conversion:
+		if conversion in barring_conversions:
 			conversion_by_batch[batch.name] = conversion
 
 	return conversion_by_batch

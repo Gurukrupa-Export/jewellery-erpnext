@@ -454,10 +454,15 @@ def validate_source_batches(self):
 		if producing_conversion:
 			frappe.throw(
 				_(
-					"Row #{0}: Batch {1} was created by Diamond Conversion {2}, so it cannot be "
-					"used as a source batch here. Clear the batch and pick another."
+					"Row #{0}: Batch {1} was produced by {2} conversion {3}, so it cannot be "
+					"re-converted here. Clear the batch and pick another. Batches produced by a "
+					"{4} conversion are allowed."
 				).format(
-					row.idx, frappe.bold(row.batch), frappe.bold(producing_conversion)
+					row.idx,
+					frappe.bold(row.batch),
+					frappe.bold(SIEVE_TO_SIEVE),
+					frappe.bold(producing_conversion),
+					frappe.bold("Sieve Size Range to Sieve Size"),
 				),
 				title=_("Batch Already Converted"),
 			)

@@ -506,7 +506,14 @@ class TestDiamondConversionSourceBatches(DiamondConversionUnitTestCase):
 class TestDiamondConversionBatchProvenance(DiamondConversionUnitTestCase):
 	"""``get_diamond_conversion_target_batches`` -- the two-hop Batch -> SE -> conversion walk."""
 
-	def _side_effect(self, batches, details, stock_entries):
+	def _side_effect(self, batches, details, stock_entries, barring=None):
+		"""``barring`` -- conversions whose type bars their output; defaults to all of them.
+
+		The helper's fourth query filters Diamond Conversion by ``conversion_type``, so the stub
+		honours the filter it is handed rather than returning everything: that is what makes the
+		"produced by a Range conversion" cases meaningful.
+		"""
+
 		def get_all(doctype, *args, **kwargs):
 			if doctype == "Batch":
 				return [frappe._dict(row) for row in batches]
@@ -514,6 +521,14 @@ class TestDiamondConversionBatchProvenance(DiamondConversionUnitTestCase):
 				return [frappe._dict(row) for row in details]
 			if doctype == "Stock Entry":
 				return [frappe._dict(row) for row in stock_entries]
+			if doctype == "Diamond Conversion":
+				asked = kwargs.get("filters", {}).get("name", [None, []])[1]
+				allowed = (
+					{se["custom_diamond_conversion"] for se in stock_entries}
+					if barring is None
+					else set(barring)
+				)
+				return [name for name in asked if name in allowed]
 			return frappe.get_all(doctype, *args, **kwargs)
 
 		return get_all
@@ -564,6 +579,54 @@ class TestDiamondConversionBatchProvenance(DiamondConversionUnitTestCase):
 
 		self.assertEqual(
 			get_diamond_conversion_target_batches(["BATCH-A"]), {"BATCH-A": "DCON00086"}
+		)
+
+	@patch("frappe.db.get_all")
+	def test_output_of_a_range_to_size_conversion_is_not_barred(self, mock_get_all):
+		"""A "Sieve Size Range to Sieve Size" output is the normal feed for a re-sieve.
+
+		Live case: KG2F095-DNTROX7G00G05-2S1T6, produced by DCON00075 (a Range -> Size
+		conversion), must stay selectable. Barring it hid 80 of 87 conversion-produced batches
+		from both the picker and the FIFO auto-pick.
+		"""
+		mock_get_all.side_effect = self._side_effect(
+			[
+				{
+					"name": "KG2F095-DNTROX7G00G05-2S1T6",
+					"reference_doctype": "Stock Entry",
+					"reference_name": "MAT-STE-18828",
+					"custom_voucher_detail_no": "5v204nvrku",
+				}
+			],
+			[{"name": "5v204nvrku", "parent": "MAT-STE-18828"}],
+			[{"name": "MAT-STE-18828", "custom_diamond_conversion": "DCON00075"}],
+			barring=[],  # DCON00075 is Range -> Size, so it does not bar its output
+		)
+
+		self.assertEqual(
+			get_diamond_conversion_target_batches(["KG2F095-DNTROX7G00G05-2S1T6"]), {}
+		)
+
+	@patch("frappe.db.get_all")
+	def test_output_of_a_size_to_size_conversion_is_barred(self, mock_get_all):
+		"""Only a re-sieve's own output is barred from being re-sieved again."""
+		mock_get_all.side_effect = self._side_effect(
+			[
+				{
+					"name": "BATCH-A",
+					"reference_doctype": "Stock Entry",
+					"reference_name": "STE-1",
+					"custom_voucher_detail_no": None,
+				}
+			],
+			[],
+			[{"name": "STE-1", "custom_diamond_conversion": "DCON-RESIEVE"}],
+			barring=["DCON-RESIEVE"],
+		)
+
+		self.assertEqual(
+			get_diamond_conversion_target_batches(["BATCH-A"]),
+			{"BATCH-A": "DCON-RESIEVE"},
 		)
 
 	@patch("frappe.db.get_all")
