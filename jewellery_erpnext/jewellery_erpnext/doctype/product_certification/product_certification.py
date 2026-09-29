@@ -28,6 +28,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
 	create_material_receipt_for_certification,
 	create_po,
+	earring_units,
 	process_fire_assy_xrf_submit,
 	update_bom_details,
 	validate_po_configuration,
@@ -465,15 +466,6 @@ class ProductCertification(Document):
 							"Row #{0}: HUID is mandatory for Hall Marking Service"
 						).format(row.idx)
 					)
-				if (
-					self.service_type == "Diamond Certificate service"
-					and not row.certification
-				):
-					frappe.throw(
-						_(
-							"Row #{0}: Certification No is mandatory for Diamond Certificate service"
-						).format(row.idx)
-					)
 
 		if self.type == "Issue":
 			return
@@ -801,8 +793,8 @@ class ProductCertification(Document):
 	def validate_fire_assy_report(self):
 		"""A submitted Fire Assy Receive must carry the lab's answer on the row it belongs to.
 
-		The assay report is issued against the metal that went out, so Certification, Report No
-		and Report Result belong on each group's Touch row -- not on the pure recovered from it,
+		The assay report is issued against the metal that went out, so Report No and Report
+		Result belong on each group's Touch row -- not on the pure recovered from it,
 		and not on the loss written off. ``set_assay_row_types`` has already labelled the rows
 		in ``validate``, which Frappe runs immediately before ``before_submit``, so this reads
 		the label instead of re-deriving it from item codes.
@@ -815,8 +807,10 @@ class ProductCertification(Document):
 		``report_result`` is a Float, and the client-side mandatory check passes on 0
 		(``is_null(0)`` is false), so this is the only gate that actually holds it.
 
-		XRF is excluded: it has no pure row and no assay report -- its Touch row keeps the
-		plain Certification requirement and nothing more.
+		XRF is excluded: it has no pure row and no assay report, so nothing here applies to
+		it at all. (It used to be said that XRF "keeps the plain Certification requirement":
+		that came from the ``certification`` field's own client-side ``mandatory_depends_on``,
+		which carried no service_type clause. The field is gone, and with it that gate.)
 		"""
 		if self.type != "Receive" or self.service_type != "Fire Assy Service":
 			return
@@ -835,17 +829,13 @@ class ProductCertification(Document):
 				or row.item_code
 			)
 
-			for fieldname, label in (
-				("certification", _("Certification No")),
-				("report_no", _("Report No")),
-			):
-				if not row.get(fieldname):
-					frappe.throw(
-						_("Row #{0}: {1} is required for {2}.").format(
-							row.idx, label, frappe.bold(subject)
-						),
-						title=_("Assay Report Missing"),
-					)
+			if not row.report_no:
+				frappe.throw(
+					_("Row #{0}: Report No is required for {1}.").format(
+						row.idx, frappe.bold(subject)
+					),
+					title=_("Assay Report Missing"),
+				)
 
 			if flt(row.report_result) <= 0:
 				frappe.throw(
@@ -934,17 +924,24 @@ class ProductCertification(Document):
 	def distribute_amount(self):
 		if not self.exploded_product_details:
 			return
-		length = len(self.exploded_product_details)
 		if self.type == "Issue":
 			self.total_amount = 0
-		amt = flt(self.total_amount) / length
+
+		# Split by piece, not by row: an Earrings row is two pieces on one row and takes two
+		# shares of the entered total. With no earring in the table every unit is 1, so
+		# sum(units) is the row count and this is exactly the flat split it replaces.
+		# sum(units) IS billable_units, the count create_po raises the service Purchase Order
+		# for -- one rule (earring_units) behind both, so the PO qty and this table can never
+		# tell two different stories about one document.
+		units = [earring_units(row) for row in self.exploded_product_details]
+		amt = flt(self.total_amount) / sum(units)
 
 		# Fire Assy / XRF weights are owned by calculate_fire_assy_loss_weight — the
 		# remainder back-fill below is un-purity-converted and would overwrite the
 		# computed loss row. Only the amount split applies there.
 		if self.service_type in ["Fire Assy Service", "XRF Services"]:
-			for row in self.exploded_product_details:
-				row.amount = amt
+			for row, unit in zip(self.exploded_product_details, units):
+				row.amount = amt * unit
 			return
 
 		qty_data = {}
@@ -955,7 +952,7 @@ class ProductCertification(Document):
 			)
 			qty_data[key] = flt(qty_data.get(key)) + flt(row.total_weight)
 
-		for row in self.exploded_product_details:
+		for row, unit in zip(self.exploded_product_details, units):
 			# Keyed on THIS row's own order — it used to reuse the `common_order` left
 			# over from the loop above (the last Product Details row's order), which only
 			# happened to be right when every row shared one order.
@@ -969,7 +966,7 @@ class ProductCertification(Document):
 					qty_data[key] = 0
 				else:
 					qty_data[key] -= row.gross_weight
-			row.amount = amt
+			row.amount = amt * unit
 
 	def on_submit(self):
 		if self.service_type in ["Fire Assy Service", "XRF Services"]:
@@ -1009,8 +1006,8 @@ class ProductCertification(Document):
 			self.receive_status = update_receive_status(self.name)
 
 	def update_huid(self):
-		"""Stamp HUID / certification numbers onto the Serial Nos and Parent Manufacturing
-		Orders behind the exploded rows.
+		"""Stamp HUIDs onto the Serial Nos and Parent Manufacturing Orders behind the
+		exploded rows.
 
 		Grouped by order: this used to load the Parent Manufacturing Order and run a full
 		``save()`` for EVERY exploded row, so ten rows of one order meant ten loads and ten
@@ -1021,9 +1018,9 @@ class ProductCertification(Document):
 		for row in self.exploded_product_details:
 			if row.serial_no:
 				add_to_serial_no(row.serial_no, self, row)
-			elif (row.manufacturing_work_order or row.parent_manufacturing_order) and (
-				row.huid or row.certification
-			):
+			elif (
+				row.manufacturing_work_order or row.parent_manufacturing_order
+			) and row.huid:
 				pending.append(row)
 
 		if not pending:
@@ -1055,15 +1052,13 @@ class ProductCertification(Document):
 		for pmo, rows in rows_by_pmo.items():
 			pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
 			for row in rows:
+				# `date` is unconditional: every row in `pending` has a truthy `huid` by
+				# construction, so the old `if row.huid else None` guard was tautological.
 				pmo_doc.append(
 					"product_certification_details",
 					{
 						"huid": row.huid,
-						"certification_no": row.certification,
-						"date": self.date if row.huid else None,
-						"certification_date": self.certification_date
-						if row.certification
-						else None,
+						"date": self.date,
 					},
 				)
 			pmo_doc.save()
@@ -1162,7 +1157,11 @@ class ProductCertification(Document):
 			# the per-row `limit=1` query used.
 			for operation in frappe.get_all(
 				"Manufacturing Operation",
-				filters={"manufacturing_work_order": ("in", list(mwos))},
+				# Revert = left behind by a cancelled IR, never a Work Order's current operation.
+				filters={
+					"manufacturing_work_order": ("in", list(mwos)),
+					"department_ir_status": ("!=", "Revert"),
+				},
 				fields=["manufacturing_work_order", "diamond_pcs", "gemstone_pcs"],
 				order_by="creation desc",
 			):
@@ -1513,7 +1512,6 @@ class ProductCertification(Document):
 				if (
 					flt(orphan.gross_weight)
 					or flt(orphan.conversion_quantity)
-					or orphan.get("certification")
 					or orphan.get("report_no")
 				):
 					subject = (
@@ -1696,6 +1694,94 @@ class ProductCertification(Document):
 		}
 
 
+def _issue_rows_by_batch(base_row, warehouse, qty, taken, posting_date=None, posting_time=None):
+	"""Fan one batchless Issue row out into one row per batch it will actually draw.
+
+	This row used to be appended with NO ``batch_no`` at all. The app's own FIFO splitter,
+	``CustomStockEntry.update_batches``, is gated on ``not self.auto_created`` and a Product
+	Certification entry sets ``auto_created = 1``, so nothing filled it in; the row reached
+	the ledger batchless and ERPNext's SLE-time auto-picker built a FIFO bundle across as
+	many batches as it took, writing back the bundle name and never the ``batch_no``. The
+	batch column on the Issue was therefore blank exactly when the draw spanned more than one
+	batch -- the case you most want to read off the document.
+
+	Same batches, same quantities, same FIFO order as the picker was already choosing; they
+	are just resolved here, up front, so each one gets its own visible row. ``inventory_type``
+	is deliberately left as the caller set it: the receipt side reads its own value from the
+	exploded rows, so stamping per-batch ownership here alone would put the two sides of one
+	certification into disagreement.
+
+	``taken`` is shared across the document so two rows of the same item cannot both spend
+	the same batch. Returns ``[base_row]`` unchanged for a serialised or non-batched item, or
+	when no batch is available -- the pre-existing behaviour, and the pre-existing error.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+		capped_auto_batch_nos,
+	)
+	from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+		allocate_in_order,
+	)
+
+	item_code = base_row.get("item_code")
+	if base_row.get("serial_no") or not item_code or not warehouse:
+		return [base_row]
+	if not frappe.get_cached_value("Item", item_code, "has_batch_no"):
+		return [base_row]
+
+	precision = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+	need = flt(qty, precision)
+	if need <= 0:
+		return [base_row]
+
+	# No ``qty`` in the kwargs: get_auto_batch_nos truncates the pool at the first batch that
+	# covers the need, which would hide the later batches this split exists to expose.
+	batches = (
+		capped_auto_batch_nos(
+			frappe._dict(
+				{
+					"item_code": item_code,
+					"warehouse": warehouse,
+					"posting_date": posting_date,
+					"posting_time": posting_time,
+				}
+			)
+		)
+		or []
+	)
+	# Keyed on (warehouse, batch): one batch can carry stock in more than one warehouse.
+	pool = [
+		((warehouse, b.batch_no), flt(b.qty)) for b in batches if flt(b.qty) > 0
+	]
+	if not pool:
+		return [base_row]
+
+	allocation, shortfall = allocate_in_order(pool, need, precision, taken=taken)
+	if shortfall > 0:
+		available = flt(sum(q for _k, q in pool), precision)
+		frappe.throw(
+			_(
+				"{0} needs {1} in {2}, but only {3} is available across its batches "
+				"(short by {4})."
+			).format(
+				frappe.bold(item_code),
+				need,
+				frappe.bold(warehouse),
+				available,
+				flt(shortfall, precision),
+			),
+			title=_("Insufficient Batch Stock"),
+		)
+
+	rows = []
+	for (_wh, batch_no), batch_qty in allocation:
+		line = dict(base_row)
+		line["batch_no"] = batch_no
+		line["qty"] = batch_qty
+		line["gross_weight"] = batch_qty
+		rows.append(line)
+	return rows
+
+
 def create_stock_entry(doc):
 	if doc.type == "Issue" or doc.service_type in [
 		"Hall Marking Service",
@@ -1802,6 +1888,8 @@ def create_stock_entry(doc):
 		# orders turned each one into a linear scan of everything added so far.
 		added_mwo = set()
 		added_serial = set()
+		# {(warehouse, batch_no): qty} claimed so far, shared by every row of this entry.
+		batch_taken = {}
 		# Shared across every get_stock_item_against_mwo call of this document -- see the
 		# Receive branch there for what it holds and why.
 		receive_context = {}
@@ -1845,24 +1933,38 @@ def create_stock_entry(doc):
 					supplier_wh = _t_warehouse_serial()
 					source_wh = s_warehouse if doc.type == "Issue" else supplier_wh
 
-					se_doc.append(
-						"items",
-						{
-							"item_code": row.item_code,
-							"serial_no": row.serial_no,
-							"qty": 1 if row.serial_no else row.gross_weight,
-							"s_warehouse": source_wh,
-							"t_warehouse": supplier_wh
-							if doc.type == "Issue"
-							else s_warehouse,
-							"Inventory_type": "Regular Stock",
-							"reference_doctype": "Serial No",
-							"reference_docname": row.serial_no,
-							"serial_and_batch_bundle": None,
-							"use_serial_batch_fields": True,
-							"gross_weight": row.gross_weight,
-						},
+					base_row = {
+						"item_code": row.item_code,
+						"serial_no": row.serial_no,
+						"qty": 1 if row.serial_no else row.gross_weight,
+						"s_warehouse": source_wh,
+						"t_warehouse": supplier_wh
+						if doc.type == "Issue"
+						else s_warehouse,
+						"Inventory_type": "Regular Stock",
+						"reference_doctype": "Serial No",
+						"reference_docname": row.serial_no,
+						"serial_and_batch_bundle": None,
+						"use_serial_batch_fields": True,
+						"gross_weight": row.gross_weight,
+					}
+					# Issue only. A Receive on this branch (Hall Marking / Diamond
+					# Certificate) draws back out of the supplier warehouse and has its own
+					# batch story; leave it exactly as it was.
+					item_rows = (
+						_issue_rows_by_batch(
+							base_row,
+							source_wh,
+							row.gross_weight,
+							batch_taken,
+							posting_date=se_doc.get("posting_date"),
+							posting_time=se_doc.get("posting_time"),
+						)
+						if doc.type == "Issue"
+						else [base_row]
 					)
+					for item_row in item_rows:
+						se_doc.append("items", item_row)
 		if not se_doc.items:
 			frappe.throw(_("No item found for Repack"))
 		se_doc.flags.throw_batch_error = True

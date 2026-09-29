@@ -179,7 +179,22 @@ function scan_mwo_or_serial(frm, scanned_value) {
 					return Promise.resolve(0);
 				};
 
-				get_total_weight().then((total_weight) => {
+				// An MWO carries no Ref Customer of its own -- the Parent Manufacturing Order it
+				// belongs to does. Fired ALONGSIDE get_total_weight rather than after it: the two
+				// reads are independent, and the scanner is a hot path, so chaining them would
+				// cost every MWO scan a second serialised round trip.
+				let get_ref_customer = () => {
+					if (!mwo.manufacturing_order) {
+						return Promise.resolve("");
+					}
+					return frappe.db
+						.get_value("Parent Manufacturing Order", mwo.manufacturing_order, "ref_customer")
+						.then((pmo_res) => {
+							return (pmo_res && pmo_res.message && pmo_res.message.ref_customer) || "";
+						});
+				};
+
+				Promise.all([get_total_weight(), get_ref_customer()]).then(([total_weight, ref_customer]) => {
 					frm.add_child("product_details", {
 						manufacturing_work_order: mwo.name,
 						item_code: mwo.item_code || "",
@@ -187,6 +202,7 @@ function scan_mwo_or_serial(frm, scanned_value) {
 						parent_manufacturing_order: mwo.manufacturing_order,
 						jewelex_batch_no: mwo.jewelex_batch_no,
 						total_weight: total_weight,
+						ref_customer: ref_customer,
 					});
 
 					frappe.show_alert({
@@ -206,6 +222,7 @@ function scan_mwo_or_serial(frm, scanned_value) {
 					"custom_gross_wt",
 					"custom_jwelex_tag_no",
 					"custom_bom_no",
+					"custom_ref_customer",
 				])
 				.then((sn_res) => {
 					if (sn_res && sn_res.message && sn_res.message.name) {
@@ -231,6 +248,9 @@ function scan_mwo_or_serial(frm, scanned_value) {
 									category: item_data.item_category || "",
 									sub_category: item_data.item_subcategory || "",
 									bom: sn.custom_bom_no || "",
+									// The serial IS the piece, so its own Ref Customer is the answer --
+									// no hop to the order it was made on.
+									ref_customer: sn.custom_ref_customer || "",
 								});
 
 								frappe.show_alert({
@@ -260,10 +280,18 @@ frappe.ui.form.on("Product Details", {
 	serial_no: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
 		if (row.serial_no) {
-			frappe.db.get_value("Serial No", row.serial_no, ["item_code", "custom_gross_wt"], (r) => {
-				frappe.model.set_value(cdt, cdn, "item_code", r.item_code);
-				frappe.model.set_value(cdt, cdn, "total_weight", r.custom_gross_wt);
-			});
+			frappe.db.get_value(
+				"Serial No",
+				row.serial_no,
+				["item_code", "custom_gross_wt", "custom_ref_customer"],
+				(r) => {
+					frappe.model.set_value(cdt, cdn, "item_code", r.item_code);
+					frappe.model.set_value(cdt, cdn, "total_weight", r.custom_gross_wt);
+					// `|| ""` because get_value DROPS a field the site has no column for
+					// rather than erroring, so the key can simply be absent.
+					frappe.model.set_value(cdt, cdn, "ref_customer", r.custom_ref_customer || "");
+				}
+			);
 		}
 	},
 	manufacturing_work_order(frm, cdt, cdn) {
@@ -272,17 +300,42 @@ frappe.ui.form.on("Product Details", {
 			return;
 		}
 		if (row.serial_no) {
-			frappe.db.get_value("Serial No", row.serial_no, ["item_code", "custom_bom_no as bom"], (r) => {
-				frappe.model.set_value(cdt, cdn, r);
-			});
+			frappe.db.get_value(
+				"Serial No",
+				row.serial_no,
+				["item_code", "custom_bom_no as bom", "custom_ref_customer as ref_customer"],
+				(r) => {
+					frappe.model.set_value(cdt, cdn, r);
+				}
+			);
 		} else {
 			frappe.db.get_value(
 				"Manufacturing Work Order",
 				row.manufacturing_work_order,
-				["item_code", "master_bom as bom", "gross_wt as total_weight", "manufacturing_operation"],
+				[
+					"item_code",
+					"master_bom as bom",
+					"gross_wt as total_weight",
+					"manufacturing_operation",
+					"manufacturing_order",
+				],
 				(r) => {
 					frappe.model.set_value(cdt, cdn, "item_code", r.item_code);
 					frappe.model.set_value(cdt, cdn, "bom", r.bom);
+					// The MWO has no Ref Customer; the order it belongs to does. This trigger
+					// deliberately does not set parent_manufacturing_order (that would feed
+					// distribute_amount's grouping key), so the hop has to be made here or a
+					// hand-picked MWO row never gets a customer.
+					if (r.manufacturing_order) {
+						frappe.db.get_value(
+							"Parent Manufacturing Order",
+							r.manufacturing_order,
+							"ref_customer",
+							(pmo) => {
+								frappe.model.set_value(cdt, cdn, "ref_customer", pmo.ref_customer || "");
+							}
+						);
+					}
 					if (r.manufacturing_operation) {
 						frappe.db.get_value(
 							"Manufacturing Operation",
@@ -318,14 +371,19 @@ frappe.ui.form.on("Product Details", {
 			}
 		);
 		if (row.serial_no) {
-			frappe.db.get_value("Serial No", row.serial_no, ["item_code", "custom_bom_no as bom"], (r) => {
-				frappe.model.set_value(cdt, cdn, r);
-			});
+			frappe.db.get_value(
+				"Serial No",
+				row.serial_no,
+				["item_code", "custom_bom_no as bom", "custom_ref_customer as ref_customer"],
+				(r) => {
+					frappe.model.set_value(cdt, cdn, r);
+				}
+			);
 		} else {
 			frappe.db.get_value(
 				"Parent Manufacturing Order",
 				row.parent_manufacturing_order,
-				["item_code", "master_bom as bom"],
+				["item_code", "master_bom as bom", "ref_customer"],
 				(r) => {
 					frappe.model.set_value(cdt, cdn, r);
 				}

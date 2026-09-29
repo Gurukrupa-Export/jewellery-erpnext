@@ -55,6 +55,81 @@
    "options": "Item"
   },
   {
+   "dt": "Material Request Item",
+   "fieldname": "custom_bom_gross_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_variant_of",
+   "label": "Gross Weight",
+   "module": "Jewellery Erpnext",
+   "precision": "3",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_bom_metal_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_bom_gross_weight",
+   "label": "Metal Weight",
+   "module": "Jewellery Erpnext",
+   "precision": "3",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_bom_finding_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_bom_metal_weight",
+   "label": "Finding Weight",
+   "module": "Jewellery Erpnext",
+   "precision": "3",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_bom_diamond_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_bom_finding_weight",
+   "label": "Diamond Weight",
+   "module": "Jewellery Erpnext",
+   "precision": "3",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_bom_total_diamond_pcs",
+   "fieldtype": "Int",
+   "insert_after": "custom_bom_diamond_weight",
+   "label": "Diamond Pcs",
+   "module": "Jewellery Erpnext",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_bom_gemstone_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_bom_total_diamond_pcs",
+   "label": "Gemstone Weight",
+   "module": "Jewellery Erpnext",
+   "precision": "3",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_bom_total_gemstone_pcs",
+   "fieldtype": "Int",
+   "insert_after": "custom_bom_gemstone_weight",
+   "label": "Gemstone Pcs",
+   "module": "Jewellery Erpnext",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
    "allow_on_submit": 1,
    "dt": "Material Request Item",
    "fetch_from": "item_code.gst_hsn_code",

@@ -24,21 +24,24 @@ Two rules every custom on_submit / hook must follow:
 
 **THE STAMPING COUNTER IS TERMINAL.** ``Serial No.custom_stamping_no`` claims its number
 from a ``tabSeries`` row (``doc_events.serial_no.reserve_stamping_sequence``). That is
-nominally position 2, and the three paths that mint one -- Serial Number Creator
-(``update_new_serial_no``), Product Certification (``update_huid`` -> ``add_to_serial_no``)
-and Job Card (``create_serial_no``) -- all do so while already holding Bin locks, which
-looks like an inversion. It is safe ONLY because every one of them takes it LAST and then
-commits, so they can queue on it but never form a cycle. Note also that Serial No's autoname
-is ``field:serial_no``, so a Serial No insert takes no other naming lock: for Job Card and
-desk edits the stamping row is the only shared row in the transaction, and a single lock
-cannot be half a cycle.
+nominally position 2, and the ONE path that mints a number -- Serial Number Creator
+(``update_new_serial_no``) -- does so while already holding Bin locks, which looks like an
+inversion. It is safe ONLY because it takes the counter LAST and then commits, so
+concurrent submits queue on it but never form a cycle.
+
+There used to be three such paths: ``set_stamping_no`` was a ``before_save`` hook on Serial
+No, so Product Certification (``update_huid`` -> ``add_to_serial_no``), Job Card
+(``create_serial_no``) and every desk edit minted numbers too. The hook is gone -- a
+stamping number identifies an SNC-produced piece, so the SNC calls ``set_stamping_no``
+explicitly and nothing else touches this counter. Fewer claimants only shortens the queue;
+the ordering argument is unchanged.
 
 RULE C -- mint the stamping number last. If you add a path that needs a Bin (or any
 position 2-8 row) AFTER a Serial No save, pre-lock with :func:`prelock_stamping_series`
 instead of relying on that ordering.
 
 Deliberately NOT pre-locked by default: it is one site-wide row, so pinning it at the start
-of a cascade would make every concurrent SNC/PC submit queue on it for the cascade's whole
+of a cascade would make every concurrent SNC submit queue on it for the cascade's whole
 duration -- exactly the hot-row pathology ``patches/shard_stock_entry_naming_by_type.py``
 was written to escape. Minting late holds it for milliseconds instead.
 

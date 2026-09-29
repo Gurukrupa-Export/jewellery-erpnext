@@ -107,7 +107,11 @@ class ManufacturingWorkOrder(Document):
 			# Pull the last MOP name per sibling MWO
 			mop_names = frappe.db.get_all(
 				"Manufacturing Operation",
-				{"manufacturing_work_order": ["in", sibling_mwos]},
+				# Revert = left behind by a cancelled IR, never a Work Order's current operation.
+				{
+					"manufacturing_work_order": ["in", sibling_mwos],
+					"department_ir_status": ["!=", "Revert"],
+				},
 				["name", "manufacturing_work_order"],
 				order_by="creation desc",
 			)
@@ -146,7 +150,6 @@ class ManufacturingWorkOrder(Document):
 						SUM(other_wt) AS other_wt,
 						SUM(received_gross_wt) AS received_gross_wt,
 						SUM(received_net_wt) AS received_net_wt,
-						SUM(loss_wt) AS loss_wt,
 						SUM(diamond_pcs) AS diamond_pcs,
 						SUM(gemstone_pcs) AS gemstone_pcs
 					FROM `tabManufacturing Operation`
@@ -168,9 +171,11 @@ class ManufacturingWorkOrder(Document):
 					self.other_wt = flt(agg.get("other_wt"))
 					self.received_gross_wt = flt(agg.get("received_gross_wt"))
 					self.received_net_wt = flt(agg.get("received_net_wt"))
-					self.loss_wt = flt(agg.get("loss_wt"))
 					self.diamond_pcs = flt(agg.get("diamond_pcs"))
 					self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
+					# Loss is the one weight that does NOT live on the latest operation (F14):
+					# see cumulative_loss_wt. Summed over the latest operations it was always 0.
+					self.loss_wt = cumulative_loss_wt(sibling_mwos)
 
 		# The carat->gram twins are DERIVED, never summed: SUM(diamond_wt_in_gram) over
 		# siblings adds values that were each already rounded to 3, so it drifts from
@@ -209,12 +214,9 @@ class ManufacturingWorkOrder(Document):
 		# (MOP) so that the SNC submission picks up correct weights.
 		fg_mop = getattr(self, "manufacturing_operation", None)
 		if not fg_mop:
-			fg_mop = frappe.db.get_value(
-				"Manufacturing Operation",
-				{"manufacturing_work_order": self.name},
-				"name",
-				order_by="creation desc",
-			)
+			from jewellery_erpnext.utils import latest_operation
+
+			fg_mop = latest_operation(self.name)
 
 		if fg_mop:
 			frappe.db.set_value(
@@ -834,14 +836,13 @@ class ManufacturingWorkOrder(Document):
 		return se.name
 
 	def validate_photoshop_images(self):
-		"""Block FG submission when the Finished Item is flagged 'Is Photoshop
-		Images' but the mandatory Front View / Left View finish images are missing.
+		"""Block FG submission when the Design Code Item is flagged 'Is Photoshop
+		Images' but this work order's Front View / Left View finish images are missing.
 
-		The Item is the master: both views must be present on the Item. They are
-		then mirrored onto the Master BOM here, and the BOM is re-read to confirm
-		it really carries the pair - submission is blocked when it does not (no
-		Master BOM linked, or the mirroring write did not land). BOM images are
-		never read back into the Item; the flow is one-way by design.
+		The images belong to the WORK ORDER. Nothing is read from, or written to,
+		the Item master or the Master BOM — each work order is photographed
+		separately, so mirroring onto the shared Item / BOM would let one MWO
+		overwrite another's images.
 
 		Runs from ``before_submit`` ONLY, never from validate/save: Parent
 		Manufacturing Order submission saves the FG work order, so a save-time
@@ -860,56 +861,86 @@ class ManufacturingWorkOrder(Document):
 		if not self.for_fg:
 			return
 
-		is_photoshop = frappe.db.get_value(
-			"Item", self.item_code, "custom_is_photoshop_images"
-		)
-		if not is_photoshop:
+		if not _photoshop_required_for_item(self.item_code):
 			return
 
-		# The Finished Item is the master and must carry BOTH mandatory views.
-		missing_item = _get_empty_item_image_fields(self.item_code)
-		if missing_item:
-			frappe.throw(
-				_(
-					"MWO cannot be submitted. Finished Item <b>{0}</b> is missing "
-					"the mandatory finish image(s): <b>{1}</b>.<br>Front View and "
-					"Left View are both required - use the <b>Upload Missing "
-					"Images</b> action to upload them before submitting."
-				).format(
-					self.item_code,
-					", ".join(ITEM_IMAGE_FIELDS[f] for f in missing_item),
-				),
-				title=_("Missing Photoshop Images"),
-			)
+		missing = _get_empty_mwo_image_fields(self)
+		if not missing:
+			return
 
-		# Mirror the Item onto the Master BOM, then re-read the BOM to confirm
-		# the pair actually landed there too.
-		missing_bom = list(REQUIRED_BOM_IMAGE_FIELDS)
-		if self.master_bom:
-			missing_bom = _get_empty_bom_image_fields(self.master_bom)
-			if missing_bom:
-				_sync_item_images_to_bom(self.item_code, self.master_bom)
-				missing_bom = _get_empty_bom_image_fields(self.master_bom)
-
-		if missing_bom:
-			frappe.throw(
-				_(
-					"MWO cannot be submitted. Master BOM <b>{0}</b> is still "
-					"missing the mandatory finish image(s): <b>{1}</b>.<br>They "
-					"could not be copied from Finished Item <b>{2}</b> - check "
-					"that a Design Code BOM is linked on this work order, then "
-					"re-upload the images."
-				).format(
-					self.master_bom or _("not set"),
-					", ".join(BOM_IMAGE_FIELDS[f] for f in missing_bom),
-					self.item_code,
-				),
-				title=_("Missing Photoshop Images"),
-			)
+		frappe.throw(
+			_(
+				"MWO cannot be submitted. This work order is missing the mandatory "
+				"finish image(s): <b>{0}</b>.<br>Front View and Left View are both "
+				"required because Design Code <b>{1}</b> is marked <b>Is Photoshop "
+				"Images</b> - attach them in the <b>Photoshop Images</b> section, or "
+				"use the <b>Upload Missing Images</b> action, before submitting."
+			).format(
+				", ".join(MWO_IMAGE_FIELDS[f] for f in missing),
+				self.item_code,
+			),
+			title=_("Missing Photoshop Images"),
+		)
 
 	@frappe.whitelist()
 	def create_mfg_entry(self):
 		create_se_entry(self)
+
+
+def cumulative_loss_wt(sibling_mwos):
+	"""The FG work order's process loss: every LOSS recorded on an operation of its siblings.
+
+	Every other header weight is a balance, so the latest operation carries it forward and
+	sync_mwo_weights reads it there. loss_wt is not a balance -- it is the change measured
+	on the one operation that was received (Employee IR writes received_gross_wt - gross_wt
+	on it), and the operation Employee IR creates next starts at 0. Summed over the latest
+	operations it was therefore always 0 (F14).
+
+	Only an operation with a SUBMITTED Employee IR receive counts. That is the only real
+	writer of loss_wt; every other value on an operation is a leftover: a cancelled receive
+	leaves its figure behind, Department IR's copy_doc carries no_copy fields forward (it zeroes
+	them only for a refined work order), and create_manufacturing_operation seeds a split
+	child's first operation from the header the split copied from its parent.
+
+	Only the negative values are losses. The field is "Loss / Increase Wt", and an increase
+	is material coming IN, not a process gain: the casting operation is issued at gross 0 and
+	received at the whole cast weight, and assembly receives the findings it attaches. On
+	kg-gk 2,153 of 2,183 positive Casting rows equal the entire cast weight. Netting them
+	against the losses gave PMO-KGJPL-NE05090-002-0001 a "loss" of +34.25 g for a piece that
+	lost 5.63 g. The per-operation reports read loss the same way (only negative loss_wt).
+
+	The result keeps the field's sign: negative, or 0 when nothing was lost. Reports that list
+	operations must not also list the FG work order, or the loss shows twice -- they filter
+	for_fg = 0.
+	"""
+	if not sibling_mwos:
+		return 0.0
+	operations = frappe.db.sql(
+		"""
+		SELECT name, loss_wt
+		FROM `tabManufacturing Operation`
+		WHERE manufacturing_work_order IN %s
+		""",
+		(tuple(sibling_mwos),),
+	)
+	if not operations:
+		return 0.0
+	received = {
+		row[0]
+		for row in frappe.db.sql(
+			"""
+			SELECT DISTINCT eiro.manufacturing_operation
+			FROM `tabEmployee IR Operation` eiro
+			INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+			WHERE eir.type = 'Receive' AND eir.docstatus = 1
+				AND eiro.manufacturing_operation IN %s
+			""",
+			(tuple(name for name, _loss in operations),),
+		)
+	}
+	return flt(
+		sum(min(flt(loss), 0.0) for name, loss in operations if name in received), 3
+	)
 
 
 @frappe.whitelist()
@@ -1153,8 +1184,143 @@ def create_manufacturing_operation(doc):
 		create_snc_from_mwo_submit(doc.name)
 
 
+# Compared against Department.department_name, not the link: the Department's name
+# carries the company suffix (and on live data a double space before it), e.g.
+# "Manufacturing Plan & Management  - KGJPL".
+SPLIT_ALLOWED_DEPARTMENT = "Manufacturing Plan & Management"
+
+
+def validate_split_eligibility(docname):
+	"""A work order may be split only while it is still in planning with no material on it.
+
+	The weight is checked on the current Manufacturing Operation as well as on the MWO
+	header: the header gross_wt is only ever written for FG work orders (sync_mwo_weights),
+	so on every other MWO it reads 0 regardless of what has been issued. Material sitting
+	on the parent's MOP is not carried to the split children -- they start from the
+	parent's header weights -- so splitting it would strand that weight on a closed MWO.
+	"""
+	mwo = frappe.db.get_value(
+		"Manufacturing Work Order",
+		docname,
+		[
+			"docstatus",
+			"has_split_mwo",
+			"department",
+			"gross_wt",
+			"manufacturing_operation",
+		],
+		as_dict=True,
+	)
+	if not mwo or cint(mwo.docstatus) != 1:
+		frappe.throw(
+			_("Work Order {0} must be submitted before it can be split.").format(
+				docname
+			)
+		)
+
+	# A split parent keeps its department and zero weight, and its pending operations are
+	# marked Finished, so without this it would pass every check below a second time.
+	if cint(mwo.has_split_mwo):
+		frappe.throw(_("Work Order {0} has already been split.").format(docname))
+
+	department_name = (
+		frappe.db.get_value("Department", mwo.department, "department_name")
+		if mwo.department
+		else None
+	)
+	if department_name != SPLIT_ALLOWED_DEPARTMENT:
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only in {1} department. It is currently in {2}."
+			).format(
+				docname,
+				frappe.bold(SPLIT_ALLOWED_DEPARTMENT),
+				frappe.bold(mwo.department or _("no department")),
+			)
+		)
+
+	if flt(mwo.gross_wt, 3):
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only when Gross Wt is 0. Current Gross Wt: {1}"
+			).format(docname, flt(mwo.gross_wt, 3))
+		)
+
+	mop_gross_wt = (
+		frappe.db.get_value(
+			"Manufacturing Operation", mwo.manufacturing_operation, "gross_wt"
+		)
+		if mwo.manufacturing_operation
+		else 0
+	)
+	if flt(mop_gross_wt, 3):
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only when Gross Wt is 0. Current Gross Wt: {1} on Manufacturing Operation {2}"
+			).format(
+				docname,
+				flt(mop_gross_wt, 3),
+				get_link_to_form(
+					"Manufacturing Operation", mwo.manufacturing_operation
+				),
+			)
+		)
+
+	# The split cancels these Material Requests by writing docstatus directly, which does
+	# not reverse their Stock Entries -- any stock they already moved would be left in the
+	# reserve/department warehouse against a cancelled MR and a closed work order.
+	# Ownership is read from the Stock Entry rows, not the MR's custom_*_se links: those
+	# links are copied between MRs (copy_doc, desk Duplicate) and can point at another
+	# MR's entry.
+	material_requests = _get_split_material_requests(docname)
+	if material_requests:
+		moved = frappe.get_all(
+			"Stock Entry Detail",
+			filters={"material_request": ["in", material_requests], "docstatus": 1},
+			fields=["material_request", "parent"],
+			limit=1,
+		)
+		if moved:
+			frappe.throw(
+				_(
+					"Material Request {0} has already moved stock through Stock Entry {1}. Reverse that stock before splitting Work Order {2}."
+				).format(
+					get_link_to_form("Material Request", moved[0].material_request),
+					get_link_to_form("Stock Entry", moved[0].parent),
+					docname,
+				)
+			)
+
+
+def _get_split_material_requests(docname):
+	"""The open Material Requests that splitting this work order cancels.
+
+	An original work order's MRs are the PMO-level MRDs no split has claimed yet
+	(custom_manufacturing_work_order not set). A split child's MR is the one minted for
+	it on submit (create_mr_for_split_work_order), stamped with its own name: its PMO's
+	originals were cancelled when its parent was split, and an unstamped MRD still open
+	in that PMO is an amendment issuing stock to a sibling, not this work order's MR.
+	"""
+	pmo, split_from = frappe.db.get_value(
+		"Manufacturing Work Order", docname, ["manufacturing_order", "split_from"]
+	)
+	if split_from:
+		filters = {"custom_manufacturing_work_order": docname}
+	else:
+		filters = {
+			"manufacturing_order": pmo,
+			"title": ["like", "MRD%"],
+			"custom_manufacturing_work_order": ["is", "not set"],
+		}
+	filters["docstatus"] = ["!=", 2]
+	# get_all, not get_list: this is the split's own clean-up, and a permission-scoped
+	# list would silently leave an MR open (or let it slip past the stock check above).
+	return frappe.get_all("Material Request", filters=filters, pluck="name")
+
+
 @frappe.whitelist()
 def create_split_work_order(docname, company, manufacturer, count=1):
+	validate_split_eligibility(docname)
 	# limit = cint(frappe.db.get_value("Manufacturing Setting", {"company", company}, "wo_split_limit"))
 	limit = cint(
 		frappe.db.get_value(
@@ -1190,7 +1356,13 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 		mop.save()
 	pending_operations = frappe.get_all(
 		"Manufacturing Operation",
-		{"manufacturing_work_order": docname, "status": "Not Started"},
+		# Revert leftovers of cancelled IRs stay as they are: marked Finished they would show up
+		# in the Department IR Issue picker.
+		{
+			"manufacturing_work_order": docname,
+			"status": "Not Started",
+			"department_ir_status": ["!=", "Revert"],
+		},
 		pluck="name",
 	)
 	if pending_operations:  # to prevent this workorder from showing in any IR doc
@@ -1201,24 +1373,10 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 		"Manufacturing Work Order", docname, {"has_split_mwo": 1, "status": "Closed"}
 	)
 	# frappe.db.set_value("Manufacturing Work Order", docname, "status", "Closed")
-	pmo = frappe.db.get_value(
-		"Manufacturing Work Order", docname, "manufacturing_order"
-	)
-	mr_list = frappe.db.get_list(
-		"Material Request",
-		filters={
-			"manufacturing_order": pmo,
-			"title": ["like", "MRD%"],
-			"custom_manufacturing_work_order": ["is", "not set"],
-		},
-		fields=["name"],
-	)
-	if mr_list:
-		for mr in mr_list:
-			frappe.db.set_value("Material Request", mr.name, "docstatus", "2")
-			frappe.db.set_value(
-				"Material Request", mr.name, "workflow_state", "Cancelled"
-			)
+	for mr in _get_split_material_requests(docname):
+		frappe.db.set_value(
+			"Material Request", mr, {"docstatus": 2, "workflow_state": "Cancelled"}
+		)
 
 
 @frappe.whitelist()
@@ -1271,16 +1429,23 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 	new_mr.workflow_state = "Draft"
 	new_mr.title = new_mr.title[:-1] + str(int(total_mr_count) + 1)
 	new_mr.custom_manufacturing_work_order = docname
-	new_mr.custom_manufacturing_operation = frappe.db.get_value(
-		"Manufacturing Work Order", docname, "manufacturing_operation"
-	)
 	# copy_doc carries these stage stamps over from old_mr verbatim. Left as-is, the new
 	# split MR thinks it already has a Reserve/MOP/Department Transfer Stock Entry -- the
 	# old_mr's -- and later re-copies that stale entry instead of making its own, which
 	# fails once old_mr is cancelled (its rows still link to old_mr, now a cancelled doc).
+	# The same goes for the "Material Transfer From Reserve" stamp: carried over as "Done",
+	# MR.on_submit takes it as this MR's own transfer and never creates one, so the stock
+	# the new MR reserves stays in the reserve warehouse.
 	new_mr.custom_reserve_se = None
 	new_mr.custom_mop_se = None
 	new_mr.custom_department_transfer_se = None
+	new_mr.custom_transfer_se = None
+	new_mr.custom_transfer_se_state = None
+	new_mr.custom_transfer_se_error = None
+	# custom_manufacturing_operation is a manual field the user picks from the dropdown
+	# themselves -- clear the value copy_doc carried over from old_mr so it actually starts
+	# blank on the new split MR instead of silently inheriting the previous MWO's operation.
+	new_mr.custom_manufacturing_operation = None
 	new_mr_items = []
 	for i in new_mr.items:
 		i.qty = 0
@@ -1296,187 +1461,107 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 
 # ---------- Photoshop Image Validation Helpers ----------
 
-# Finished Item image field map:  fieldname -> label
-ITEM_IMAGE_FIELDS = {
+# The photoshop finish images live on the WORK ORDER, and nowhere else. The Item
+# master and the Master BOM carry their own ``finish_*_view`` / ``*_view_finish``
+# fields, but this flow neither reads nor writes them: each work order is
+# photographed on its own, so mirroring one MWO's images onto the shared Item /
+# BOM would overwrite another's.
+#
+# ``Item.custom_is_photoshop_images`` remains the gate — it says *whether* this
+# design needs photoshop images, not *where* they are stored.
+
+# MWO image field map:  fieldname -> label
+MWO_IMAGE_FIELDS = {
 	"finish_front_view": "Finish Front View",
-	"finish__back_view": "Finish Back View",
 	"finish_left_view": "Finish Left View",
-	"finish_right_view": "Finish Right View",
-	"finish_top_view": "Finish Top View",
-	"finish_bottom_view": "Finish Bottom View",
 }
 
-# Master BOM image field map:  fieldname -> label
-BOM_IMAGE_FIELDS = {
-	"front_view_finish": "BOM Finish Images Front View",
-	"back_view_finish": "BOM Finish Images Back View",
-	"left_view_finish": "BOM Finish Images Left View",
-	"right_view_finish": "BOM Finish Images Right View",
-	"top_view_finish": "BOM Finish Images Top View",
-	"bottom_view_finish": "BOM Finish Images Bottom View",
-}
-
-# Item finish-image field -> corresponding Master BOM finish-image field.
-# The Item is the master; its images are mirrored onto the BOM.
-ITEM_TO_BOM_IMAGE_FIELD = {
-	"finish_front_view": "front_view_finish",
-	"finish__back_view": "back_view_finish",
-	"finish_left_view": "left_view_finish",
-	"finish_right_view": "right_view_finish",
-	"finish_top_view": "top_view_finish",
-	"finish_bottom_view": "bottom_view_finish",
-}
-
-# FG submit gate: Front View + Left View are the mandatory pair. They must be on
-# the Item (the master) and, mirrored from it, on the Master BOM. The other four
-# views stay optional and are only offered as extra upload slots.
-REQUIRED_ITEM_IMAGE_FIELDS = ("finish_front_view", "finish_left_view")
-
-REQUIRED_BOM_IMAGE_FIELDS = tuple(
-	ITEM_TO_BOM_IMAGE_FIELD[f] for f in REQUIRED_ITEM_IMAGE_FIELDS
-)
+# Front View + Left View are the mandatory pair, and the only pair. There are no
+# optional extra slots on the work order.
+REQUIRED_MWO_IMAGE_FIELDS = tuple(MWO_IMAGE_FIELDS)
 
 
-def _get_empty_item_image_fields(item_code, fields=None):
-	"""Return the Item finish-image fieldnames that are still empty.
+def _get_empty_mwo_image_fields(doc):
+	"""Return the mandatory MWO finish-image fieldnames that are still empty.
 
-	``fields`` defaults to the mandatory Front/Left pair; pass the full
-	``ITEM_IMAGE_FIELDS`` map to inspect all six slots in one query.
+	Takes the document (or any mapping-ish object exposing ``get``) rather than a
+	name so ``before_submit`` can judge the in-memory values the user is about to
+	submit, not a stale row read back from the database.
 	"""
-	fields = list(fields or REQUIRED_ITEM_IMAGE_FIELDS)
-	values = frappe.db.get_value("Item", item_code, fields, as_dict=True) or {}
-	return [f for f in fields if not values.get(f)]
+	return [f for f in REQUIRED_MWO_IMAGE_FIELDS if not doc.get(f)]
 
 
-def _get_empty_bom_image_fields(master_bom, fields=None):
-	"""Return the Master BOM finish-image fieldnames that are still empty.
-
-	``fields`` defaults to the mandatory Front/Left pair (the BOM counterparts
-	of ``REQUIRED_ITEM_IMAGE_FIELDS``).
-	"""
-	fields = list(fields or REQUIRED_BOM_IMAGE_FIELDS)
-	values = frappe.db.get_value("BOM", master_bom, fields, as_dict=True) or {}
-	return [f for f in fields if not values.get(f)]
-
-
-def _sync_item_images_to_bom(item_code, master_bom):
-	"""Copy each finish image set on the Item onto its corresponding Master BOM
-	field, so the BOM mirrors the Item.
-
-	Only fields the Item actually carries are written - a BOM image is never
-	cleared, so a BOM-only image (e.g. a left view imported from CAD) survives.
-	"""
-	item_values = (
-		frappe.db.get_value(
-			"Item", item_code, list(ITEM_IMAGE_FIELDS.keys()), as_dict=True
-		)
-		or {}
-	)
-	updates = {
-		bom_field: item_values.get(item_field)
-		for item_field, bom_field in ITEM_TO_BOM_IMAGE_FIELD.items()
-		if item_values.get(item_field)
-	}
-	if updates:
-		frappe.db.set_value("BOM", master_bom, updates, update_modified=True)
-
-
-def _get_missing_photoshop_images(item_code, master_bom=None):
-	"""Report the finish-image gaps that block MWO submission.
-
-	Returns ``{}`` when nothing blocks, otherwise a dict of FIELDNAMES::
-
-	    {
-	        "item": ["finish_front_view", "finish_left_view"],
-	        "bom": ["front_view_finish", "left_view_finish"],
-	    }
-
-	``item`` lists the mandatory Front/Left views still empty on the Finished
-	Item.  ``bom`` is only populated when NO Master BOM is linked: with a BOM
-	linked, every BOM gap is either filled from the Item on submit (the mirror)
-	or already reported under ``item``, so reporting it again would be noise.
-	"""
-	missing = {}
-
-	item_gaps = _get_empty_item_image_fields(item_code)
-	if item_gaps:
-		missing["item"] = item_gaps
-
-	if not master_bom:
-		# No Master BOM to mirror onto - an Item upload cannot fix this.
-		missing["bom"] = list(REQUIRED_BOM_IMAGE_FIELDS)
-
-	return missing
+def _photoshop_required_for_item(item_code):
+	"""True when this design's Item is flagged 'Is Photoshop Images'."""
+	if not item_code:
+		return False
+	return bool(frappe.db.get_value("Item", item_code, "custom_is_photoshop_images"))
 
 
 @frappe.whitelist()
-def get_missing_photoshop_images(item_code, master_bom=None):
-	"""Whitelisted helper for the MWO client: what still blocks submission, and
-	which slots the upload dialog should offer.
+def get_missing_photoshop_images(
+	manufacturing_work_order=None, item_code=None, master_bom=None
+):
+	"""Whitelisted helper for the MWO client: what still blocks submission.
 
-	``missing`` carries FIELDNAMES (v2 payload - it used to carry labels), and
-	being non-empty means submission is blocked.  ``optional_item`` lists the
-	non-mandatory Item slots that are empty; they are offered for convenience
-	and never block.
+	``missing`` carries the MWO FIELDNAMES that are still empty; being non-empty
+	means submission is blocked.
+
+	``item_code`` and ``master_bom`` are accepted and ignored. A browser running a
+	cached copy of the previous client bundle still posts them, and the old bundle
+	posted no ``manufacturing_work_order`` at all — that call now resolves to
+	``check_required: False``, which merely hides the button until the page is
+	reloaded. The server-side gate in ``validate_photoshop_images`` is what
+	actually enforces the rule, so a stale bundle can never let an unphotographed
+	work order through.
 	"""
-	is_photoshop = frappe.db.get_value("Item", item_code, "custom_is_photoshop_images")
-	if not is_photoshop:
+	if not manufacturing_work_order:
 		return {"check_required": False}
 
-	empty_item = _get_empty_item_image_fields(item_code, list(ITEM_IMAGE_FIELDS))
-	optional_item = [f for f in empty_item if f not in REQUIRED_ITEM_IMAGE_FIELDS]
+	doc = frappe.get_doc("Manufacturing Work Order", manufacturing_work_order)
+
+	if not doc.for_fg or not _photoshop_required_for_item(doc.item_code):
+		return {"check_required": False}
 
 	return {
 		"check_required": True,
-		"missing": _get_missing_photoshop_images(item_code, master_bom),
-		"optional_item": optional_item,
-		"item_image_fields": ITEM_IMAGE_FIELDS,
-		"bom_image_fields": BOM_IMAGE_FIELDS,
-		"required_item_fields": list(REQUIRED_ITEM_IMAGE_FIELDS),
+		"missing": _get_empty_mwo_image_fields(doc),
+		"image_fields": MWO_IMAGE_FIELDS,
 	}
 
 
 @frappe.whitelist()
-def update_photoshop_images(
-	item_code, master_bom=None, item_images=None, bom_images=None
-):
-	"""Write uploaded finish images to the Item master and mirror them onto the
-	Master BOM.
+def update_photoshop_images(manufacturing_work_order, images=None):
+	"""Write uploaded finish images onto the work order itself.
 
-	Called from the MWO upload dialog, which offers Item slots only: the
-	mandatory Front/Left pair plus the four optional views.  Partial uploads are
-	allowed - ``validate_photoshop_images`` on ``before_submit`` is the single
-	gate.  `item_images` (and the retained `bom_images`, kept for backward
-	compat with cached client bundles) are JSON dicts of {fieldname: file_url}.
+	Called from the MWO upload dialog. Partial uploads are allowed —
+	``validate_photoshop_images`` on ``before_submit`` is the single gate.
+	``images`` is a JSON dict of {fieldname: file_url}. Nothing is written to the
+	Item or the BOM.
 	"""
 	import json
 
-	if isinstance(item_images, str):
-		item_images = json.loads(item_images)
-	if isinstance(bom_images, str):
-		bom_images = json.loads(bom_images)
+	if isinstance(images, str):
+		images = json.loads(images)
 
-	if item_images:
-		valid = {k: v for k, v in item_images.items() if k in ITEM_IMAGE_FIELDS and v}
-		if valid:
-			frappe.db.set_value("Item", item_code, valid, update_modified=True)
-			# Mirror the uploaded Item images onto the corresponding BOM fields.
-			if master_bom:
-				bom_updates = {
-					ITEM_TO_BOM_IMAGE_FIELD[k]: v
-					for k, v in valid.items()
-					if k in ITEM_TO_BOM_IMAGE_FIELD
-				}
-				if bom_updates:
-					frappe.db.set_value(
-						"BOM", master_bom, bom_updates, update_modified=True
-					)
+	doc = frappe.get_doc("Manufacturing Work Order", manufacturing_work_order)
+	doc.check_permission("write")
 
-	# Retained for backward-compat; the dialog no longer sends BOM slots.
-	if bom_images and master_bom:
-		valid = {k: v for k, v in bom_images.items() if k in BOM_IMAGE_FIELDS and v}
-		if valid:
-			frappe.db.set_value("BOM", master_bom, valid, update_modified=True)
+	# The images are a submit precondition and the fields are not
+	# ``allow_on_submit``; writing them onto a submitted or cancelled work order
+	# would silently do nothing useful.
+	if doc.docstatus != 0:
+		frappe.throw(
+			_("Photoshop images can only be uploaded while {0} is a draft.").format(
+				doc.name
+			),
+			title=_("Work Order Not Editable"),
+		)
 
-	frappe.db.commit()
-	return {"success": True}
+	valid = {k: v for k, v in (images or {}).items() if k in MWO_IMAGE_FIELDS and v}
+	if valid:
+		frappe.db.set_value(
+			"Manufacturing Work Order", doc.name, valid, update_modified=True
+		)
+
+	return {"success": True, "updated": sorted(valid)}

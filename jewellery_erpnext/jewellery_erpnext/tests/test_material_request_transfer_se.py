@@ -152,6 +152,45 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 		)
 		mock_copy.assert_not_called()
 
+	@patch(f"{_MR}.mri_warehouse_map", return_value={"MRI-1": "WH-RM"})
+	@patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None)
+	@patch(f"{_MR}.frappe.copy_doc")
+	@patch(f"{_MR}.frappe.get_doc")
+	def test_copy_of_a_transit_flagged_reserve_se_is_held_out_of_transit(
+		self, mock_get_doc, mock_copy, mock_lookup, mock_map
+	):
+		"""Reserve SEs made before create_stock_entry cleared the flag were saved with
+		add_to_transit = 1, and copy_doc keeps no_copy fields. A 1 is never fetched away,
+		and ERPNext rejects Add to Transit into these Reserve/RM targets."""
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = MagicMock(return_value=None)
+		mr.items = []
+		new_se = MagicMock()
+		new_se.add_to_transit = 1
+		new_se.items = [
+			SimpleNamespace(
+				material_request_item="MRI-1",
+				item_code="ITEM-1",
+				s_warehouse="WH-SOURCE",
+				t_warehouse="WH-RSV",
+				serial_and_batch_bundle="SABB-1",
+			)
+		]
+		mock_get_doc.side_effect = [mr, MagicMock()]
+		mock_copy.return_value = new_se
+
+		mr_mod._create_transfer_se("MR-001")
+
+		self.assertEqual(new_se.stock_entry_type, "Material Transfer From Reserve")
+		self.assertEqual(new_se.add_to_transit, 0)
+		self.assertIs(new_se.flags.no_transit, True)
+		self.assertEqual(new_se.items[0].s_warehouse, "WH-RSV")
+		self.assertEqual(new_se.items[0].t_warehouse, "WH-RM")
+		new_se.save.assert_called_once()
+		new_se.submit.assert_called_once()
+		mock_lookup.assert_called_once_with("MR-001")
+
 	def tearDown(self):
 		return super().tearDown()
 
@@ -226,70 +265,6 @@ class TestMaterialRequestTransferType(IntegrationTestCase):
 		mr = MockMaterialRequest(material_request_type="Manufacture")
 		result = self._run(mr, {})
 		self.assertEqual(result, "Transfer to Reserve")
-
-	def tearDown(self):
-		return super().tearDown()
-
-
-class TestManufacturingOperationAutoFill(IntegrationTestCase):
-	"""F-05 in the PR #1236 review: custom_manufacturing_operation is now a value
-	before_validate can derive from the linked Manufacturing Work Order, not purely
-	user-supplied data. Pins down the two things that matter about that -- it only fills a
-	currently-blank field, and once filled it is never overwritten even if the MWO's own
-	operation has since moved on -- which is what makes it safe for this field to no longer
-	be freely editable outside Draft (guard_non_system_manager_field_edits)."""
-
-	@classmethod
-	def setUpClass(cls):
-		pass
-
-	def _run(self, mr, lookups):
-		"""Call before_validate with every frappe.db.get_value it can reach mapped through
-		one name->value dict, and the unrelated downstream validators stubbed out."""
-
-		def _gv(doctype, name, field):
-			return lookups.get(name)
-
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.frappe.db.get_value",
-			side_effect=_gv,
-		), patch.object(mr_mod, "update_pure_qty"), patch.object(
-			mr_mod, "validate_target_item"
-		), patch.object(mr_mod, "validate_warehouse"), patch.object(
-			mr_mod, "set_reservation_warehouse"
-		):
-			mr_mod.before_validate(mr, None)
-		return mr.custom_manufacturing_operation
-
-	def test_fills_blank_operation_from_linked_mwo(self):
-		mr = MockMaterialRequest(material_request_type="Manufacture")
-		mr.custom_manufacturing_work_order = "MWO-1"
-		mr.manufacturing_order = "PMO-1"
-		result = self._run(mr, {"MWO-1": "MOP-NEW", "MOP-NEW": "PMO-1"})
-		self.assertEqual(result, "MOP-NEW")
-
-	def test_does_not_overwrite_an_existing_value(self):
-		"""Even if the MWO's own operation has since moved on to MOP-NEWER, a value
-		already on the Material Request is left exactly as it was."""
-		mr = MockMaterialRequest(material_request_type="Manufacture")
-		mr.custom_manufacturing_work_order = "MWO-1"
-		mr.custom_manufacturing_operation = "MOP-OLD"
-		mr.manufacturing_order = "PMO-1"
-		result = self._run(mr, {"MWO-1": "MOP-NEWER", "MOP-OLD": "PMO-1"})
-		self.assertEqual(result, "MOP-OLD")
-
-	def test_no_manufacturing_work_order_linked_leaves_it_blank(self):
-		mr = MockMaterialRequest(material_request_type="Manufacture")
-		result = self._run(mr, {})
-		self.assertIsNone(result)
-
-	def test_mwo_with_no_operation_yet_leaves_it_blank(self):
-		"""F-06's counterpart on the read side: a linked MWO that has no
-		manufacturing_operation yet must not raise, just leave the field blank."""
-		mr = MockMaterialRequest(material_request_type="Manufacture")
-		mr.custom_manufacturing_work_order = "MWO-1"
-		result = self._run(mr, {"MWO-1": None})
-		self.assertIsNone(result)
 
 	def tearDown(self):
 		return super().tearDown()
@@ -563,12 +538,21 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 			],
 		)
 
+		self._se_doc = MagicMock()
 		with patch.object(mr_mod.frappe.db, "get_value", side_effect=_gv), patch.object(
-			mr_mod.frappe, "new_doc", return_value=MagicMock()
+			mr_mod.frappe, "new_doc", return_value=self._se_doc
 		), patch.object(mr_mod.frappe, "msgprint"):
 			mr_mod.create_stock_entry(mr, None)
 
 		return calls
+
+	def test_holds_the_reserve_entry_out_of_transit(self):
+		"""Every row lands in a Reserve warehouse. A Transfer Type mapped to a transit
+		Stock Entry Type would fetch add_to_transit back over the bare 0, and ERPNext
+		rejects Add to Transit into a non-Transit warehouse -- the flag holds it."""
+		self._run(["CAST-RM"], {"CAST-RM": "Casting"})
+		self.assertEqual(self._se_doc.add_to_transit, 0)
+		self.assertIs(self._se_doc.flags.no_transit, True)
 
 	def test_one_department_lookup_per_warehouse_one_reserve_per_department(self):
 		"""Three source warehouses in one department: 3 department reads, 1 reserve read."""

@@ -1064,3 +1064,269 @@ class TestSetGstDetails(_SIBase):
 		self.assertEqual(si.items[0].gst_treatment, "Taxable")
 		self.assertEqual(si.items[0].cgst_rate, 1.5)
 		self.assertEqual(si.items[0].cgst_amount, 15.0)
+
+
+def _mc_qb_mock(rows):
+	"""``update_making_charges`` builds a longer chain than ``_qb_chain_mock`` covers.
+
+	Every method returns the same object so the whole
+	``from_ -> left_join -> on -> select -> where -> where -> limit -> run`` chain
+	resolves, whatever order it is called in.
+	"""
+	chain = MagicMock()
+	for method in (
+		"from_",
+		"left_join",
+		"on",
+		"select",
+		"where",
+		"limit",
+		"orderby",
+		"groupby",
+	):
+		getattr(chain, method).return_value = chain
+	chain.run.return_value = rows
+	chain.DocType.return_value = _QbExpr()
+	return chain
+
+
+class _QbExpr:
+	"""Stands in for a pypika field/criterion.
+
+	The query is assembled with real Python operators -- ``MCP.from_gold_rate <= rate``,
+	``(a) & (b)``, ``child.subcategory.isnull()`` -- so a bare MagicMock raises TypeError
+	on the first comparison, long before ``.run()``. Every operation returns self, so any
+	shape of expression collapses to one harmless object.
+	"""
+
+	def __getattr__(self, _name):
+		return self
+
+	def __call__(self, *_args, **_kwargs):
+		return self
+
+	def _self(self, *_args):
+		return self
+
+	__le__ = __ge__ = __lt__ = __gt__ = _self
+	__eq__ = __ne__ = _self
+	__and__ = __or__ = __rand__ = __ror__ = _self
+	__invert__ = _self
+	__hash__ = object.__hash__
+
+
+def _metal_row(**overrides):
+	"""A BOM Metal Detail row as the pricing block reads and writes it."""
+	fields = dict(
+		is_customer_item=0,
+		parentfield="metal_detail",
+		metal_type="Gold",
+		metal_touch="18K",
+		metal_purity=75.0,
+		quantity=10.0,
+		rate=0.0,
+		amount=0.0,
+		making_rate=0.0,
+		making_amount=0.0,
+		wastage_rate=0.0,
+		wastage_amount=0.0,
+		customer_metal_purity=0.0,
+		additional_net_weight=0.0,
+		fg_purchase_rate=0.0,
+		fg_purchase_amount=0.0,
+		finding_type=None,
+	)
+	fields.update(overrides)
+	row = SimpleNamespace(**fields)
+	row.get = lambda key, default=None: getattr(row, key, default)
+	return row
+
+
+class TestUpdateMakingChargesCustomerItem(_SIBase):
+	"""SOP §4: "Customer gold is sold at zero."
+
+	This function had NO test of any kind — the one test that referenced it patched it
+	out — which is how the caller came to overwrite its decision unnoticed. These two
+	classes are deliberately split: this one pins what the function DECIDES, the next
+	pins that the caller HONOURS it. A fake in the caller test is only honest while
+	this one holds it to the real contract.
+	"""
+
+	MC_ROW = {
+		"rate_per_gm": 500.0,
+		"rate_per_pc": 300.0,
+		"rate_per_gm_threshold": 2.0,
+		"wastage": 4.0,
+		"subcontracting_rate": 120.0,
+		"subcontracting_wastage": 2.0,
+		"wastage_per_pcs": 1.0,
+		"supplier_fg_purchase_rate": 0.0,
+	}
+
+	def _run(self, bom_row):
+		bom_doc = _bom(
+			customer="CUST-1",
+			company="Test Company",
+			metal_and_finding_weight=10.0,
+			metal_purity=75.0,
+			set_additional_rate=False,
+			total_diamond_weight=0,
+			total_diamond_weight_per_gram=0,
+			metal_detail=[bom_row],
+			finding_detail=[],
+		)
+		row = StubItemRow(item_code="Gold Ring")
+
+		def _get_value(doctype, name, fields=None, as_dict=False):
+			if doctype == "Item":
+				return frappe._dict(item_subcategory="Casual", setting_type="Close")
+			if doctype == "Customer":
+				return 2 if fields == "custom_precision_variable" else "External"
+			return None
+
+		with (
+			patch(f"{SI}.frappe.db.get_value", side_effect=_get_value),
+			patch(f"{SI}.frappe.qb", _mc_qb_mock([self.MC_ROW])),
+		):
+			si_events.update_making_charges(row, bom_doc, bom_row, 6000.0)
+		return bom_row
+
+	def test_a_customer_row_is_priced_at_zero(self):
+		"""The metal is the customer's. It is not sold to them."""
+		row = self._run(_metal_row(is_customer_item=1))
+		self.assertEqual(row.rate, 0)
+
+	def test_a_customer_row_still_bills_the_subcontracting_charge(self):
+		"""Zero metal does NOT mean zero invoice — the making charge is GK's to bill."""
+		row = self._run(_metal_row(is_customer_item=1))
+		self.assertEqual(row.making_rate, self.MC_ROW["subcontracting_rate"])
+		self.assertEqual(
+			row.making_amount, self.MC_ROW["subcontracting_rate"] * row.quantity
+		)
+		self.assertEqual(row.wastage_rate, self.MC_ROW["subcontracting_wastage"])
+
+	def test_a_company_row_is_not_zeroed(self):
+		"""Guard the guard: company metal keeps its own making rate, not zero."""
+		row = self._run(_metal_row(is_customer_item=0, quantity=10.0))
+		self.assertEqual(row.making_rate, self.MC_ROW["rate_per_gm"])
+		self.assertEqual(row.wastage_rate, self.MC_ROW["wastage"])
+
+
+class TestCustomerMetalIsNotRepricedByTheInvoice(_SIBase):
+	"""The defect: the caller overwrote the zero two lines after asking for it.
+
+	``before_validate`` called ``update_making_charges`` -- which sets ``rate = 0`` for a
+	customer row -- and then unconditionally recomputed ``rate`` from the customer's metal
+	purity and the full gold rate, and ``amount`` from that. ``bom_doc.save()`` persisted
+	it, so the stored BOM carried the customer's own metal at full value and
+	``total_metal_amount`` summed it in.
+
+	NOT an over-billing defect today, and the distinction is worth stating precisely:
+	``row_s.rate`` is built from the STORED ``total_bom_amount``, and nothing recomputes
+	that on save -- ``doc_events/bom.py:validate`` returns early for any BOM that is not a
+	Quotation, and ``set_bom_rate`` is commented out. So the corrupted rows never reached
+	the invoice total. They are inconsistent with ``total_bom_amount`` and with the
+	Delivery Note e-invoice breakup, which skips ``is_customer_item`` rows -- and the
+	moment anything recomputes the total from the rows, it becomes real money.
+
+	``update_making_charges`` is faked here so the assertions isolate the CALLER. The fake
+	reproduces only the one line that matters, and ``TestUpdateMakingChargesCustomerItem``
+	above is what keeps that faithful.
+	"""
+
+	GOLD_RATE_WITH_GST = 6180.0
+	GST = 3
+	CUSTOMER_PURITY = 75.0
+
+	def _run(self, rows):
+		bom_doc = _bom(
+			customer="CUST-1",
+			company="Test Company",
+			metal_detail=rows,
+			finding_detail=[],
+			total_metal_amount=0,
+			total_finding_amount=0,
+			total_wastage_amount=0,
+			name="BOM-1",
+		)
+		bom_doc.save = MagicMock()
+		si = DummySalesInvoice(
+			company="Test Company",
+			gold_rate_with_gst=self.GOLD_RATE_WITH_GST,
+			items=[StubItemRow(bom="BOM-1", item_code="Gold Ring")],
+		)
+
+		def _get_value(doctype, name, fields=None, as_dict=False):
+			if doctype == "Customer":
+				# Two different reads: customer_group gates the pricing block,
+				# custom_precision_variable is handed to round() and must be an int.
+				return 2 if fields == "custom_precision_variable" else "External"
+			return None
+
+		def _fake_making_charges(row_s, bom, bom_row, gold_rate):
+			# The one line of the real function these assertions depend on --
+			# see TestUpdateMakingChargesCustomerItem.
+			if bom_row.is_customer_item:
+				bom_row.rate = 0
+
+		with (
+			patch(f"{SI}.frappe.db.get_value", side_effect=_get_value),
+			patch(f"{SI}.frappe.get_doc", return_value=bom_doc),
+			patch(
+				f"{SI}.frappe.db.get_single_value", return_value=self.GST
+			),
+			patch(f"{SI}.frappe.db.sql", return_value=[{"metal_purity": self.CUSTOMER_PURITY}]),
+			patch(f"{SI}.update_making_charges", side_effect=_fake_making_charges),
+			patch(f"{SI}.update_income_account"),
+			patch(f"{SI}.update_si_data"),
+			patch(f"{SI}.update_payment_terms"),
+		):
+			si_events.before_validate(si, None)
+		return bom_doc
+
+	#: What the unguarded code produced: purity x gold rate, GST-adjusted.
+	def _full_rate(self):
+		return round(
+			(self.CUSTOMER_PURITY * self.GOLD_RATE_WITH_GST) / (100 + self.GST), 2
+		)
+
+	def test_the_customer_row_keeps_the_zero_it_was_given(self):
+		customer_row = _metal_row(is_customer_item=1, quantity=10.0)
+		self._run([customer_row])
+
+		self.assertNotEqual(
+			customer_row.rate,
+			self._full_rate(),
+			msg="the customer's own metal was repriced at the full gold rate",
+		)
+		self.assertEqual(customer_row.rate, 0)
+
+	def test_the_customer_row_amount_is_zero_not_stale(self):
+		"""``update_making_charges`` sets only ``rate``; a stale ``amount`` would survive."""
+		customer_row = _metal_row(is_customer_item=1, quantity=10.0, amount=99999.0)
+		self._run([customer_row])
+
+		self.assertEqual(customer_row.amount, 0)
+		self.assertEqual(customer_row.wastage_amount, 0)
+
+	def test_a_company_row_is_still_priced_normally(self):
+		"""The other half. Zeroing everything would be just as wrong."""
+		company_row = _metal_row(is_customer_item=0, quantity=10.0)
+		self._run([company_row])
+
+		self.assertEqual(company_row.rate, self._full_rate())
+		self.assertEqual(
+			company_row.amount, round(self._full_rate() * 10.0, 2)
+		)
+
+	def test_total_metal_amount_excludes_the_customers_metal(self):
+		"""The figure that gets persisted, and the one a later recompute would read."""
+		customer_row = _metal_row(is_customer_item=1, quantity=10.0)
+		company_row = _metal_row(is_customer_item=0, quantity=4.0)
+		bom_doc = self._run([customer_row, company_row])
+
+		self.assertEqual(
+			bom_doc.total_metal_amount,
+			round(self._full_rate() * 4.0, 2),
+			msg="total_metal_amount included metal the customer supplied",
+		)

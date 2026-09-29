@@ -770,6 +770,9 @@ def _ledger_row(tree, item_code):
 			"item_code": item_code,
 			"issue_qty": 0,
 			"receive_qty": 0,
+			"wo_receive_qty": 0,
+			"manual_receive_qty": 0,
+			"wo_received_gross_wt": 0,
 			"loss_qty": 0,
 			"pending_qty": 0,
 		},
@@ -1064,6 +1067,12 @@ def receive_material(tree, rows):
 	for p in plan:
 		md = p["md"]
 		md.receive_qty = flt(md.receive_qty) + p["recv"]
+		# manual_receive_qty is NOT written here. It is the button's share of
+		# receive_qty, and TreeNumber.validate derives it as receive_qty minus the
+		# Employee IR half on the save below -- one writer, so the two halves cannot
+		# drift apart. Accumulating the raw p["recv"] here (un-rounded, while the
+		# Employee IR path re-rounds receive_qty to the ledger precision) is exactly
+		# what used to strand a rounding residue on every interleaved write.
 		md.loss_qty = flt(md.loss_qty) + p["loss"]
 		_recompute_pending(md)
 	if not tree.get("msl_warehouse"):

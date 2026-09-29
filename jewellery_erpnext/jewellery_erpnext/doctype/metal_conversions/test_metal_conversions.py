@@ -1,13 +1,14 @@
 # Copyright (c) 2024, Nirali and Contributors
 # See license.txt
 
-import os
 import json
-import frappe
+import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from frappe.tests import IntegrationTestCase
+
+import frappe
 from frappe.exceptions import ValidationError
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions import (
 	metal_conversions as mc,
@@ -21,7 +22,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_convers
 	render_remark_options,
 	template_index,
 )
-
 
 _MC_PATH = (
 	"jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions"
@@ -91,7 +91,10 @@ class TestBuildLanes(IntegrationTestCase):
 
 		# Ordered by FIRST appearance, and A1/A2 merge into one lane.
 		self.assertEqual(
-			[(l["inventory_type"], l["customer"], l["source_qty"]) for l in result],
+			[
+				(lane["inventory_type"], lane["customer"], lane["source_qty"])
+				for lane in result
+			],
 			[
 				("Customer Goods", "CUST-A", 4.0),
 				("Regular Stock", None, 2.0),
@@ -170,13 +173,15 @@ class TestSplitConversion(IntegrationTestCase):
 		self.assertEqual(lanes[0]["alloy_qty"], 2.667)
 		self.assertEqual(lanes[1]["alloy_qty"], 4.0)
 		self.assertAlmostEqual(
-			sum(l["alloy_qty"] for l in lanes), 26.667 - 20.0, places=9
+			sum(lane["alloy_qty"] for lane in lanes), 26.667 - 20.0, places=9
 		)
 
 	def test_alloy_sums_to_total_even_with_awkward_rounding(self):
 		lanes = lanes_mod.split_conversion(self._lanes(1.0, 1.0, 1.0), 10.0, 3)
-		self.assertAlmostEqual(sum(l["target_qty"] for l in lanes), 10.0, places=9)
-		self.assertAlmostEqual(sum(l["alloy_qty"] for l in lanes), 7.0, places=9)
+		self.assertAlmostEqual(
+			sum(lane["target_qty"] for lane in lanes), 10.0, places=9
+		)
+		self.assertAlmostEqual(sum(lane["alloy_qty"] for lane in lanes), 7.0, places=9)
 
 	def test_tiny_lane_may_round_to_zero_alloy(self):
 		"""Near-equal purities give a wide zero-alloy window for a small lane.
@@ -192,17 +197,19 @@ class TestSplitConversion(IntegrationTestCase):
 		self.assertEqual(lanes[1]["alloy_qty"], 0.0)
 		self.assertGreater(lanes[0]["alloy_qty"], 0.0)
 		self.assertAlmostEqual(
-			sum(l["alloy_qty"] for l in lanes), total_target - total_source, places=9
+			sum(lane["alloy_qty"] for lane in lanes),
+			total_target - total_source,
+			places=9,
 		)
 
 	def test_alloy_sign_is_uniform_across_lanes(self):
 		"""Source and target purity are shared, so no lane can be opposite."""
 		# Purity up: target < source -> every lane's alloy is <= 0.
 		lanes = lanes_mod.split_conversion(self._lanes(8.0, 12.0), 15.0, 3)
-		self.assertTrue(all(l["alloy_qty"] <= 0 for l in lanes))
+		self.assertTrue(all(lane["alloy_qty"] <= 0 for lane in lanes))
 		# Purity down: target > source -> every lane's alloy is >= 0.
 		lanes = lanes_mod.split_conversion(self._lanes(8.0, 12.0), 26.667, 3)
-		self.assertTrue(all(l["alloy_qty"] >= 0 for l in lanes))
+		self.assertTrue(all(lane["alloy_qty"] >= 0 for lane in lanes))
 
 	def test_single_lane_takes_the_whole_target(self):
 		lanes = lanes_mod.split_conversion(self._lanes(20.0), 26.667, 3)
@@ -334,7 +341,23 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 			source_batch_details=[_alloc(8.0, "REG"), _alloc(12.0, "CG")], **overrides
 		)
 
-	def _build(self, doc, lane_map=None):
+	def _build(self, doc, lane_map=None, company_component_qty=0.0):
+		"""Build the Stock Entry a Metal Conversion would make.
+
+		``company_component_qty`` is the C09 carve-out input: how many grams of the lane's
+		source batches are RECORDED (in ``Batch Component``) as company-owned. It is patched
+		rather than left to the real reader for two reasons, and the default is what matters
+		most:
+
+		* **Default 0.0 reproduces today's behaviour exactly**, so every test written before
+		  C09 asserts the same thing it always did. That is not a coincidence to be relied on
+		  -- it is the carve-out's own contract: nothing recorded, nothing carved out.
+		* **It makes these tests deterministic.** Without the patch they would depend on
+		  ``_recorded_components`` failing closed against a site that happens not to have the
+		  ``Batch Component`` DocType. That passes today and would start failing the moment
+		  the doctype is migrated onto the test site -- a test that breaks when unrelated
+		  schema arrives is a trap, not coverage.
+		"""
 		lane_map = lane_map or {
 			"REG": ("Regular Stock", None),
 			"CG": ("Customer Goods", "TNCU0001"),
@@ -351,6 +374,9 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 			patch("frappe.get_doc", side_effect=_get_doc),
 			patch("frappe.new_doc", side_effect=lambda dt: _FakeSE({})),
 			patch.object(mc, "get_batch_lane_map", return_value=lane_map),
+			patch.object(
+				mc, "get_company_component_qty", return_value=company_component_qty
+			),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.lock_order.preallocate_series_for_docs"
 			),
@@ -456,6 +482,124 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		self.assertEqual(alloy_rows[1].customer, "TNCU0001")
 		self.assertAlmostEqual(sum(r.qty for r in alloy_rows), 5.0, places=9)
 
+	# ------------------------------------------------------- C09 released-alloy carve-out
+	def test_released_alloy_is_carved_out_by_recorded_company_component(self):
+		"""C09. Alloy freed by raising purity is not automatically the customer's.
+
+		The defect: when company alloy was blended into a customer lane by an EARLIER
+		conversion, raising the purity again frees some of that same company alloy. Handing
+		all of it back tagged to the customer turns company stock into customer stock with no
+		transaction and no counterparty -- a silent transfer of value.
+
+		The document releases 5.0 g in total, and that is apportioned across lanes by source
+		share BEFORE this code sees it -- 8 g / 20 g Regular and 12 g / 20 g Customer, so the
+		customer lane's release is 3.0 g, not 5.0 g. Of that 3.0 g, 2.0 g is recorded as
+		company metal, so the customer keeps 1.0 g and 2.0 g goes back as Regular Stock.
+		"""
+		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		se = self._build(doc, company_component_qty=2.0)
+
+		alloy_rows = [row for row in se.items if row.item_code == "talloy"]
+		# Regular lane: 1 row (no carve-out -- it is already company stock).
+		# Customer lane: 2 rows -- the customer's share and the carved-out company share.
+		self.assertEqual(len(alloy_rows), 3)
+
+		customer_rows = [r for r in alloy_rows if r.get("customer")]
+		self.assertEqual(len(customer_rows), 1)
+		self.assertAlmostEqual(customer_rows[0].qty, 1.0, places=9)
+		self.assertEqual(customer_rows[0].inventory_type, "Customer Goods")
+
+		carved = [
+			r
+			for r in alloy_rows
+			if not r.get("customer")
+			and r.custom_conversion_lane == "Customer Goods|TNCU0001"
+		]
+		self.assertEqual(len(carved), 1)
+		self.assertAlmostEqual(carved[0].qty, 2.0, places=9)
+		self.assertEqual(carved[0].inventory_type, "Regular Stock")
+
+		# Nothing is created or destroyed by the split.
+		self.assertAlmostEqual(sum(r.qty for r in alloy_rows), 5.0, places=9)
+
+	def test_the_carved_out_row_keeps_the_lane_tag(self):
+		"""Ownership changes; lane attribution does not.
+
+		The lane tag is what makes a row's Batch Rate contribution attributable to the right
+		target batch. The carved-out alloy still funded THIS lane, so it keeps the tag -- only
+		``inventory_type``/``customer`` differ. Dropping the tag would misattribute its rate.
+		"""
+		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		se = self._build(doc, company_component_qty=2.0)
+
+		carved = next(
+			r
+			for r in se.items
+			if r.item_code == "talloy"
+			and not r.get("customer")
+			and r.custom_conversion_lane == "Customer Goods|TNCU0001"
+		)
+		self.assertEqual(carved.custom_conversion_lane, "Customer Goods|TNCU0001")
+
+	def test_carve_out_never_exceeds_what_was_released(self):
+		"""A recorded company component larger than the release must not invent alloy.
+
+		The customer lane's release is 3.0 g (12/20 of the document's 5.0 g). Without the
+		``min()`` this would emit a 9 g company row and a -6 g customer row: stock from
+		nowhere, and a negative quantity that erpnext would reject far downstream with a
+		message naming neither C09 nor this code.
+		"""
+		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		se = self._build(doc, company_component_qty=9.0)
+
+		alloy_rows = [row for row in se.items if row.item_code == "talloy"]
+		self.assertTrue(
+			all(r.qty > 0 for r in alloy_rows), "a non-positive row was emitted"
+		)
+		self.assertAlmostEqual(sum(r.qty for r in alloy_rows), 5.0, places=9)
+
+		# The whole release is company metal, so the customer gets no row at all.
+		self.assertEqual([r for r in alloy_rows if r.get("customer")], [])
+
+	def test_no_recorded_components_means_no_carve_out(self):
+		"""The contract that makes this safe to ship: a site with no component history keeps
+		byte-identical behaviour. This is the same assertion as
+		``test_target_alloy_belongs_to_its_lane_including_the_customer``, stated from the
+		carve-out's side so the guarantee is pinned even if that test is ever changed."""
+		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		se = self._build(doc, company_component_qty=0.0)
+
+		alloy_rows = [row for row in se.items if row.item_code == "talloy"]
+		self.assertEqual(len(alloy_rows), 2)
+		self.assertEqual(alloy_rows[1].inventory_type, "Customer Goods")
+		self.assertEqual(alloy_rows[1].customer, "TNCU0001")
+		# 12/20 of the document's 5.0 g release -- the lane apportionment, untouched.
+		self.assertAlmostEqual(alloy_rows[1].qty, 3.0, places=9)
+		self.assertAlmostEqual(sum(r.qty for r in alloy_rows), 5.0, places=9)
+
+	def test_a_regular_lane_is_never_carved_out(self):
+		"""There is nothing to carve out of company stock, and doing so would split one
+		Regular Stock row into two identical ones for no reason."""
+		doc = self._doc(
+			source_batch_details=[_alloc(20.0, "REG")],
+			target_alloy="talloy",
+			target_alloy_qty=5.0,
+		)
+		doc.conversion_lanes = [
+			frappe._dict(
+				inventory_type="Regular Stock",
+				customer=None,
+				source_qty=20.0,
+				target_qty=26.667,
+				alloy_qty=6.667,
+			)
+		]
+		se = self._build(doc, company_component_qty=2.0)
+
+		alloy_rows = [row for row in se.items if row.item_code == "talloy"]
+		self.assertEqual(len(alloy_rows), 1)
+		self.assertAlmostEqual(alloy_rows[0].qty, 5.0, places=9)
+
 	def test_single_lane_voucher_is_shaped_exactly_as_before(self):
 		"""Regression: an unmixed conversion must be unchanged by the lane work."""
 		doc = self._doc(source_batch_details=[_alloc(20.0, "CG")])
@@ -520,7 +664,9 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 				self._build(doc)
 
 
-from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events import (
+# Imported here, beside the classes that use it, rather than at the top of the file:
+# moving it would change import order for the suites defined above.
+from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events import (  # noqa: E402
 	melting_loss,
 	utils,
 )
@@ -1082,9 +1228,7 @@ class TestUpdateSourceBatch(IntegrationTestCase):
 _MODULE = (
 	"jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions"
 )
-_DOCTYPE_JSON = os.path.join(
-	os.path.dirname(mc.__file__), "metal_conversions.json"
-)
+_DOCTYPE_JSON = os.path.join(os.path.dirname(mc.__file__), "metal_conversions.json")
 
 
 def _doc(percentage=None, remarks=None, precision=3):

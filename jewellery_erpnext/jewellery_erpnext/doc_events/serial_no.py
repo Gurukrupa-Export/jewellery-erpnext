@@ -14,14 +14,31 @@ _YEAR_CODE_EPOCH = 2021
 _STAMPING_SERIES_NS = "#JWL-STAMP-"
 
 
-def set_stamping_no(self, method=None):
-	"""Stamp a Serial No with a unique, year-scoped sequential number -- once.
+def set_stamping_no(self):
+	"""Mint this Serial No's unique, year-scoped stamping number -- once.
+
+	THE CALL SITE IS THE POINT. This is NOT a doc_event hook and must never be wired as
+	one. A stamping number goes onto physical metal and means "the Serial Number Creator
+	produced this piece", so only the SNC may mint one: it calls this explicitly in
+	``serial_number_creator.update_new_serial_no``, immediately before saving the finished-
+	good Serial No the SNC just produced. Every other path that saves a Serial No -- Job
+	Card tagging (``doc_events.job_card.create_serial_no``), Product Certification
+	(``product_certification.add_to_serial_no``), the ``serial_reference`` sales hooks and
+	plain desk edits -- must leave ``custom_stamping_no`` untouched.
+
+	The single-argument signature is load-bearing. Frappe invokes a doc_event as
+	``fn(doc, method)``, so re-wiring this into ``hooks.py`` fails loudly on the first
+	Serial No save instead of silently reinstating the old stamp-everything behaviour.
 
 	Format is "2" + year code + a 4-digit sequence that restarts each year, so the
 	third piece serialised in 2026 is ``2F0003``.
+
+	Idempotent: a piece that already carries a number keeps it and the counter is NOT
+	advanced, so re-running the SNC cascade over the same finished-good serial can neither
+	re-stamp a piece nor burn a number.
 	"""
 	if self.get(STAMPING_NO_FIELD):
-		# before_save fires on every later update too -- never re-stamp a piece.
+		# Never re-stamp a piece -- the number is already on the metal.
 		return
 
 	if not _has_stamping_no_field():
@@ -37,7 +54,7 @@ def _has_stamping_no_field():
 	The column is provisioned only by ``add_serial_no_stamping_no_field``, and
 	``bench install-app`` marks every patch as already applied on a fresh site -- so a
 	freshly installed site never runs it and has no column. Without this guard the
-	attribute lookup takes down EVERY Serial No save with ``AttributeError``.
+	attribute lookup takes down every Serial Number Creator submit with ``AttributeError``.
 	``frappe.get_meta`` is request-cached, so the check is effectively free.
 	"""
 	return frappe.get_meta("Serial No").has_field(STAMPING_NO_FIELD)

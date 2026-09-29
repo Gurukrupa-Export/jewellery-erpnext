@@ -5,6 +5,12 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	get_customer_goods_eligible_items,
+)
+from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+	get_customer_gold_receipt_type,
+)
 from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
 	execute as get_report_data,
 )
@@ -15,13 +21,49 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	CUSTOMER_INVENTORY_TYPES,
 )
 
+#: Stock Entry Types that have always minted customer parent batches. Kept as a literal
+#: list because they are not interchangeable with the configured receipt type:
+#: "Subcontracting Repack" has purpose `Repack`, while the settings validator requires the
+#: configured type to have purpose `Material Receipt`
+#: (``subcontracting_settings.RECEIPT_PURPOSE``). It can therefore never BE the configured
+#: type, and replacing this list with the configured one alone would silently kill the
+#: Subcontracting Repack leg.
+_LEGACY_PARENT_BATCH_TYPES = (
+	"Customer Goods Received",
+	"Subcontracting Repack",
+)
+
+
+def _is_eligible_item(item_code, flagged_items):
+	"""Whether this row's item should be minted a customer parent batch.
+
+	Two independent tests, either of which qualifies:
+
+	* the Item master allows Customer Goods -- ``flagged_items``, the rows' items whose
+	  ``custom_inventory_type_can_be_customer_goods`` flag is on. This is the eligibility rule,
+	  the same one the Customer Gold receipt enforces; it replaced the Subcontracting Settings
+	  item list, and like that list it is consulted only while the Customer Gold flow is on; and
+	* it carries the ``24KT`` token -- the historical minting rule, retained so every legacy
+	  path (and every site with the flow off) mints exactly as before.
+
+	An item whose code lacks the token -- a 22KT purity, a finding, a diamond -- therefore gets
+	a custody identity only when its own flag says it may be customer goods.
+	"""
+	if item_code in flagged_items:
+		return True
+	return "24KT" in item_code
+
 
 def create_parent_batches(doc, method=None):
+	# ``None`` when the Customer Gold flow is off, which leaves the legacy types and the
+	# ``24KT`` token exactly as they were.
+	configured_type = get_customer_gold_receipt_type()
+
 	if doc.doctype == "Stock Entry":
-		if getattr(doc, "stock_entry_type", None) not in [
-			"Customer Goods Received",
-			"Subcontracting Repack",
-		]:
+		accepted = _LEGACY_PARENT_BATCH_TYPES + (
+			(configured_type,) if configured_type else ()
+		)
+		if getattr(doc, "stock_entry_type", None) not in accepted:
 			return
 
 	elif doc.doctype == "Purchase Receipt":
@@ -31,11 +73,23 @@ def create_parent_batches(doc, method=None):
 	else:
 		return
 
+	# One query for the document, and only while the flow is on -- the scope the Settings list
+	# had. With the flow off the token alone decides, as it always did. Batch controlled only:
+	# the old list was, because Settings validation demanded it, and minting a batch for a
+	# flagged Nos item would fail the submit rather than skip the row.
+	flagged_items = (
+		get_customer_goods_eligible_items(
+			(row.item_code for row in doc.items), batch_controlled=True
+		)
+		if configured_type
+		else set()
+	)
+
 	for row in doc.items:
 		if not row.item_code:
 			continue
 
-		if "24KT" not in row.item_code:
+		if not _is_eligible_item(row.item_code, flagged_items):
 			continue
 
 		if row.batch_no:
@@ -73,7 +127,17 @@ def create_parent_batches(doc, method=None):
 			# Stock Entry leg only; on a Purchase Receipt the owning customer arrives on
 			# the row, resolved from the supplier's Party Link by
 			# purchase_receipt/doc_events/utils.py::update_inventory_type.
-			batch.custom_customer = doc._customer or customer
+			# getattr, not bare attribute access: ``_customer`` is a Custom Field on
+			# Stock Entry only. Purchase Receipt has no such field, so the bare form
+			# raised AttributeError on the Purchase Receipt leg (frappe's Document
+			# defines no __getattr__ fallback). That crash is pre-existing for any
+			# ``24KT`` item on a Subcontracting receipt; configuring a customer item
+			# whose code lacks the token newly routes THOSE rows here too, turning a
+			# row that used to be skipped into a hard submit failure.
+			# Precedence is deliberately unchanged -- header first, then the row value
+			# already resolved above -- because which customer owns a batch on a mixed
+			# voucher is an ownership decision, not a crash fix. See HANDOFF.md C7.
+			batch.custom_customer = getattr(doc, "_customer", None) or customer
 			batch.custom_inventory_type = "Customer Goods"
 			batch.custom_customer_voucher_type = "Customer Subcontracting"
 			batch.custom_metal_rate = _source_row_rate(doc, row)
@@ -92,13 +156,28 @@ def _source_row_rate(doc, row):
 	rate stamping in ``customization/batch/doc_events/utils.py`` never runs for them
 	and they were created with no Batch Rate at all. Read it straight off the row
 	that is minting the batch instead: the Stock Entry Detail's maintained rate
-	falling back to ``basic_rate``, or the Purchase Receipt Item's ``rate``.
+	falling back to ``valuation_rate`` and then ``basic_rate``, or the Purchase
+	Receipt Item's ``rate``. ``valuation_rate`` is the ledger's incoming rate for the
+	row (``basic_rate`` plus its share of additional costs), and that minting stamp
+	stays the batch's rate: nothing restates it later (F26).
 
-	Only 24KT metal reaches this module (callers filter on the item code), so the
-	value always belongs on ``custom_metal_rate`` -- never ``custom_alloy_rate``.
+	A Manufacture's finished piece gets none (F8). ``create_child_batches`` also mints the piece's
+	batch on a customer order, and that row's rate is the whole piece -- customer gold, company
+	alloy and diamond, production cost. Stamped as a Batch Rate it read Rs.8,01,654.99 on
+	KLHGX62F1119's batch, and anything that trusts Batch Rate over ``basic_rate`` took the company
+	diamond as metal. Every other row keeps its rate, stones included -- the app deliberately
+	gives diamond and gemstone batches a Batch Rate (``_rate_field_for_item``).
 	"""
 	if doc.doctype == "Stock Entry":
-		return flt(row.get("custom_metal_rate")) or flt(row.get("basic_rate"))
+		if getattr(doc, "purpose", None) == "Manufacture" and row.get(
+			"is_finished_item"
+		):
+			return 0.0
+		return (
+			flt(row.get("custom_metal_rate"))
+			or flt(row.get("valuation_rate"))
+			or flt(row.get("basic_rate"))
+		)
 
 	return flt(row.get("rate"))
 

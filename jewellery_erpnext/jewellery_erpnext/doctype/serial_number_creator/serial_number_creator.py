@@ -18,6 +18,14 @@ from frappe.utils import (
 	nowdate,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+	normalize_ownership,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import set_stamping_no
+from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance import (
+	validate_snc_design_tolerance,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
 )
@@ -37,6 +45,10 @@ class SerialNumberCreator(Document):
 	# 	if not self.fg_details:
 	# 		self.load_raw_materials()
 
+	def before_submit(self):
+		# F6: the finished piece against its design's product tolerance, before any stock moves.
+		validate_snc_design_tolerance(self)
+
 	def on_submit(self):
 		validate_qty(self)
 		calulate_id_wise_sum_up(self)
@@ -50,6 +62,9 @@ class SerialNumberCreator(Document):
 		# retry kept in the codebase is bounded_retry on idempotent *background* jobs.
 		to_prepare_data_for_make_mnf_stock_entry(self)
 		update_new_serial_no(self)
+
+	def on_cancel(self):
+		release_tracking_bom_for_finished_goods(self)
 
 	def _render_fg_details(self):
 		"""Build source_table (batch-wise) and fg_details (aggregated) from MOP Log."""
@@ -729,8 +744,17 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 			) or (None, None)
 			if batch_inventory_type:
 				inventory_type = batch_inventory_type
+				# BOTH customer-owned classes, not just Customer Goods.
+				#
+				# "Customer Stock" is a first-class ownership class -- ``row_ownership.py``
+				# defines CUSTOMER_INVENTORY_TYPES as both, and the sibling resolver in
+				# ``manufacturing_operation.py`` already accepts both. Testing only
+				# "Customer Goods" here threw the customer away for a Customer Stock batch,
+				# so metal that belongs to someone was carried into manufacture as unowned.
 				customer = (
-					batch_customer if batch_inventory_type == "Customer Goods" else None
+					batch_customer
+					if batch_inventory_type in CUSTOMER_INVENTORY_TYPES
+					else None
 				)
 
 		row_data.append(
@@ -761,9 +785,22 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		"manufacturing_order",
 	)
 
+	from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+		resolve_target_item_code,
+	)
+
+	# manufacturing_order alone scopes to the whole Parent Manufacturing Order, which
+	# can carry Manufacturing Operations for other items/routes entirely -- narrow
+	# (never replace; a repeat/rework run can share the same item across a different,
+	# unrelated PMO) by ANDing in this SNC's own target item when it's resolvable.
+	mop_filters = {"manufacturing_order": pmo, "docstatus": ["!=", 2]}
+	target_item = resolve_target_item_code(self)
+	if target_item:
+		mop_filters["item_code"] = target_item
+
 	operation_data = frappe.get_all(
 		"Manufacturing Operation",
-		{"manufacturing_order": pmo, "docstatus": ["!=", 2]},
+		mop_filters,
 		["name as manufacturing_operation", "employee", "total_minutes", "operation"],
 	)
 
@@ -1495,6 +1532,16 @@ def update_new_serial_no(self):
 				"certification_date": row.certification_date,
 			},
 		)
+	# THE ONLY PLACE a stamping number is ever minted. It goes onto physical metal and
+	# means "the SNC produced this piece", so it is claimed here rather than from a
+	# `before_save` hook on Serial No -- which stamped every Job Card tag, every Product
+	# Certification write-back and every desk edit as well. set_stamping_no is idempotent,
+	# so a re-run over an already-stamped piece keeps its number and burns none.
+	#
+	# Minting LAST satisfies lock_order RULE C: update_new_serial_no is the final call in
+	# on_submit, so the terminal `tabSeries` counter is taken after every Bin lock this
+	# cascade needs and is released on the commit that immediately follows.
+	set_stamping_no(new_sn_doc)
 	new_sn_doc.save()
 
 	if self.serial_no and self.fg_details and self.fg_details[0].serial_no:
@@ -1548,11 +1595,8 @@ def update_new_serial_no(self):
 		serial_doc.save()
 
 
-def submit_tracking_bom_for_finished_goods(doc):
-	"""Update and submit linked Tracking BOM when SNC creates FG BOM."""
-	if not doc.get("fg_bom"):
-		return
-
+def _linked_tracking_bom(doc):
+	"""The Tracking BOM of the SNC's work order, else of its Parent Manufacturing Order."""
 	tracking_bom_name = frappe.db.get_value(
 		"Manufacturing Work Order", doc.manufacturing_work_order, "custom_tracking_bom"
 	)
@@ -1562,28 +1606,74 @@ def submit_tracking_bom_for_finished_goods(doc):
 			doc.parent_manufacturing_order,
 			"custom_tracking_bom",
 		)
+	return tracking_bom_name
+
+
+def release_tracking_bom_for_finished_goods(doc):
+	"""On cancel, clear a Tracking BOM pointer at this SNC's FG BOM.
+
+	Since F7 an SNC no longer writes that pointer (see submit_tracking_bom_for_finished_goods), but SNCs
+	submitted before it did, and a Tracking BOM left pointing at the FG BOM blocks cancelling that BOM.
+	The Tracking BOM is per item and shared by every order of it, so it stays submitted; only the
+	pointer is cleared, and only while it still points at this SNC's FG BOM (a later SNC may have moved
+	it on).
+	"""
+	tracking_bom_name = doc.get("fg_bom") and _linked_tracking_bom(doc)
+	if not tracking_bom_name:
+		return
+
+	reference = frappe.db.get_value(
+		"Tracking Bom",
+		tracking_bom_name,
+		["reference_doctype", "reference_docname"],
+		as_dict=True,
+	)
+	if (
+		reference
+		and reference.reference_doctype == "BOM"
+		and reference.reference_docname == doc.fg_bom
+	):
+		frappe.db.set_value(
+			"Tracking Bom",
+			tracking_bom_name,
+			{"reference_doctype": None, "reference_docname": None},
+			update_modified=True,
+		)
+
+
+def submit_tracking_bom_for_finished_goods(doc):
+	"""Submit the linked Tracking BOM when the SNC creates the FG BOM -- and change nothing else on it.
+
+	The Tracking BOM stays the PLANNED composition. The as-built BOM is ``doc.fg_bom``, already linked
+	from the SNC, from ``Serial No.custom_bom_no`` and from the BOM's own ``custom_creation_docname``.
+
+	This used to relabel it "Finished Goods" and point ``reference_docname`` at the FG BOM without
+	rebuilding its tables (F7): a record that claimed to be the finished piece but held the plan
+	(KLHGX62F1119: 4.169 g / 1.570 g finding / 0.486 ct against the piece's 5.5192 / 0 / 0.396). Nothing
+	read the label or the pointer. One Tracking BOM serves every sibling PMO of a Manufacturing Plan
+	row, so one pointer could never name each piece's BOM. Rebuilding the tables would have been worse:
+	a later sibling PMO reads them for its tolerance bands, Material Requests and finding work orders.
+	And the pointer blocked cancelling the FG BOM, through Frappe's back-link check.
+
+	One pointer IS cleared: a draft whose reference is a Manufacturing Work Order. Every MWO's
+	``after_insert`` writes itself there, so it names whichever sibling work order was inserted last,
+	and once the Tracking BOM is submitted that dynamic link would stop anyone deleting or cancelling
+	that work order for good. The old re-point used to lift it as a side effect; nothing reads it.
+	"""
+	if not doc.get("fg_bom"):
+		return
+
+	tracking_bom_name = _linked_tracking_bom(doc)
 	if not tracking_bom_name:
 		return
 
 	tracking_bom = frappe.get_doc("Tracking Bom", tracking_bom_name)
 	if tracking_bom.docstatus == 0:
-		tracking_bom.bom_type = "Finished Goods"
-		tracking_bom.reference_doctype = "BOM"
-		tracking_bom.reference_docname = doc.fg_bom
-		tracking_bom.flags.ignore_validate_update_after_submit = True
-		tracking_bom.save(ignore_permissions=True)
+		if tracking_bom.reference_doctype == "Manufacturing Work Order":
+			tracking_bom.reference_doctype = None
+			tracking_bom.reference_docname = None
+		tracking_bom.flags.ignore_permissions = True
 		tracking_bom.submit()
-	else:
-		frappe.db.set_value(
-			"Tracking Bom",
-			tracking_bom_name,
-			{
-				"bom_type": "Finished Goods",
-				"reference_doctype": "BOM",
-				"reference_docname": doc.fg_bom,
-			},
-			update_modified=True,
-		)
 
 
 # def _resolve_mwo_qty(mwo):
@@ -1631,6 +1721,28 @@ def submit_tracking_bom_for_finished_goods(doc):
 # 		)
 # 		else 0
 # 	)
+
+
+def _source_row_ownership(batch_no, inventory_type=None, customer=None):
+	"""``(inventory_type, customer)`` for an SNC source row: the batch's own lane first (F23).
+
+	Ownership used to come only from a Stock Entry Detail, so a MOP Log balance row written by
+	any other voucher showed none -- blank on all 5,196 SNC source rows on kg-gk. The batch is
+	the physical truth, the same rule ``update_batches`` applies (F5). A batch that records no
+	lane falls back to what the Stock Entry Detail said.
+	"""
+	if batch_no:
+		batch = frappe.db.get_value(
+			"Batch",
+			batch_no,
+			["custom_inventory_type", "custom_customer"],
+			as_dict=True,
+		)
+		if batch and batch.custom_inventory_type:
+			return normalize_ownership(
+				batch.custom_inventory_type, batch.custom_customer, batch_no=batch_no
+			)
+	return inventory_type, customer
 
 
 def _get_source_raw_materials(mop_name, snc_doc):
@@ -1719,6 +1831,9 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				sub_setting_type = sed_data.custom_sub_setting_type
 				inventory_type = sed_data.inventory_type
 				customer = sed_data.customer
+		inventory_type, customer = _source_row_ownership(
+			batch_no, inventory_type, customer
+		)
 
 		s_wh = None
 		# ── Warehouse resolution for SNC fetch (same priorities as submit) ──

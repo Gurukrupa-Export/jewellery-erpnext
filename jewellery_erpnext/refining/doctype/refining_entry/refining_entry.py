@@ -3,6 +3,9 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	can_be_customer_goods,
+)
 from jewellery_erpnext.refining.constants import (
 	BATCH_TYPE_UNUSED,
 	REFINING_TYPE_SCRAP,
@@ -1697,15 +1700,11 @@ class RefiningEntry(Document):
 				#
 				# Queried per the LAST NOT-STARTED Manufacturing Operation on the MWO — where the
 				# material physically sits — falling back to the MWO's manufacturing_operation.
+				from jewellery_erpnext.utils import latest_operation
+
 				last_mop = (
-					frappe.db.get_value(
-						"Manufacturing Operation",
-						{
-							"manufacturing_work_order": mwo_row.manufacturing_work_order,
-							"status": "Not Started",
-						},
-						"name",
-						order_by="creation desc",
+					latest_operation(
+						mwo_row.manufacturing_work_order, status="Not Started"
 					)
 					or mwo_row.manufacturing_operation
 				)
@@ -3128,7 +3127,12 @@ class RefiningEntry(Document):
 			# pending operation plus any further (downstream) operations in the route.
 			pending_mops = frappe.db.get_all(
 				"Manufacturing Operation",
-				filters={"manufacturing_work_order": mwo, "status": "Not Started"},
+				# Revert = left behind by a cancelled IR, not part of the route any more.
+				filters={
+					"manufacturing_work_order": mwo,
+					"status": "Not Started",
+					"department_ir_status": ["!=", "Revert"],
+				},
 				pluck="name",
 			)
 			for mop in pending_mops:
@@ -3178,11 +3182,46 @@ class RefiningEntry(Document):
 		if not added:
 			return
 
+		self.set_dust_receipt_difference_account(se)
+
 		se.insert(ignore_permissions=True)
 		se.submit()
 
 		self.db_set("receiving_se", se.name)
 		self.db_set("dust_received", 1)
+
+	def set_dust_receipt_difference_account(self, se):
+		# Left blank, ERPNext takes the Difference Account from the item's (then item
+		# group's) default expense account. On a Refining Scrap item that default can be the
+		# scrap warehouse's own Stock account, which ERPNext rejects outright -- and the
+		# submission dies inside on_submit. The shortfall is a stock gain, so keep a
+		# configured account only when it is usable and otherwise book the gain to the
+		# company's Stock Adjustment Account.
+		from erpnext.setup.doctype.item_group.item_group import get_item_group_defaults
+		from erpnext.stock.doctype.item.item import get_item_defaults
+
+		stock_adjustment_account = frappe.get_cached_value(
+			"Company", self.company, "stock_adjustment_account"
+		)
+
+		for row in se.items:
+			if row.expense_account:
+				continue
+
+			configured = get_item_defaults(row.item_code, self.company).get(
+				"expense_account"
+			) or get_item_group_defaults(row.item_code, self.company).get(
+				"expense_account"
+			)
+
+			if (
+				configured
+				and frappe.get_cached_value("Account", configured, "account_type")
+				!= "Stock"
+			):
+				row.expense_account = configured
+			else:
+				row.expense_account = stock_adjustment_account
 
 	def create_repack_se(self):
 		# Savepoint taken at entry so a failed attempt (see the submit except below) can be
@@ -4113,11 +4152,7 @@ class RefiningEntry(Document):
 		"""True when the Item permits a Customer Goods inventory type. Minting a Customer
 		Goods batch for an item without this flag hard-fails in
 		Batch.update_inventory_dimentions, so recovered-output tagging is gated on it."""
-		return bool(
-			frappe.db.get_value(
-				"Item", item_code, "custom_inventory_type_can_be_customer_goods"
-			)
-		)
+		return can_be_customer_goods(item_code)
 
 	def _stamp_batch_ownership(self, se):
 		"""Stamp inventory_type + customer on every batched row of ``se`` from its batch's

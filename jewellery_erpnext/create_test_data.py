@@ -1176,10 +1176,38 @@ def create_test_data():
 			)
 			making_charge_price.insert(ignore_permissions=True)
 
-		if not frappe.db.exists("Purchase Type", "FG Purchase"):
-			frappe.get_doc({"doctype": "Purchase Type", "type": "FG Purchase"}).insert(
-				ignore_permissions=True
-			)
+		# EVERY Purchase Type this app's PRODUCTION code hardcodes, not just the one that
+		# happened to fail first.
+		#
+		# Purchase Order.purchase_type is a Link to Purchase Type (declared in this app's own
+		# custom_fields/purchase_order.json), so each of these masters has to exist or the save
+		# raises "Could not find Purchase Type: <x>":
+		#
+		#   Service            product_certification/doc_events/utils.py:167
+		#   FG Purchase        employee_ir.py:754
+		#   Branch Purchase    customization/sales_invoice/doc_events/utils.py:64
+		#                      customization/serial_and_batch_bundle/serial_and_batch_bundle.py:35
+		#   Subcontracting     gurukrupa_exports/.../sketch_order_form.py:243
+		#
+		# None of this was needed before, because the FIELD was never created on a CI site: this
+		# app's custom_fields/*.json are inert (the after_migrate hook that would load them is
+		# commented out at hooks.py:12), so the assignments landed on an attribute that was not
+		# a field and no link was ever validated. install.provision_schema now creates the
+		# app's own declared field, which is correct -- and that is what made these missing
+		# masters reachable, one CI round at a time.
+		#
+		# Values that appear ONLY in test files ("Invalid Type", "Regular", "Test Type",
+		# "Unknown Type") are deliberate negative-test inputs and must stay absent.
+		for purchase_type in (
+			"FG Purchase",
+			"Service",
+			"Branch Purchase",
+			"Subcontracting",
+		):
+			if not frappe.db.exists("Purchase Type", purchase_type):
+				frappe.get_doc(
+					{"doctype": "Purchase Type", "type": purchase_type}
+				).insert(ignore_permissions=True)
 
 		if not frappe.db.exists("Warehouse Type", "Scrap"):
 			frappe.get_doc({"doctype": "Warehouse Type", "__newname": "Scrap"}).insert(
@@ -3109,6 +3137,15 @@ def create_test_data():
 
 			_ensure_order_sales_flow_type_fields()
 
+			# Quotation / Sales Order.custom_design_type is patch-only for the same reason,
+			# and must come after the flow type patch above -- custom_flow_type is its
+			# insert_after anchor on both doctypes.
+			from jewellery_erpnext.patches.add_design_type_fields import (
+				execute as _ensure_design_type_fields,
+			)
+
+			_ensure_design_type_fields()
+
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
 			# Without them every Sales Order / Delivery Note / Sales Invoice save raises
@@ -3121,8 +3158,8 @@ def create_test_data():
 
 			# Serial No.custom_stamping_no is patch-only for the same reason. `bench
 			# install-app` marks every patch as already applied on a fresh site, so
-			# `bench migrate` never runs it and set_stamping_no -- a before_save hook on
-			# EVERY Serial No -- had no field to read.
+			# `bench migrate` never runs it and set_stamping_no -- which every Serial
+			# Number Creator submit calls -- had no field to read.
 			from jewellery_erpnext.patches.add_serial_no_stamping_no_field import (
 				execute as _ensure_serial_no_stamping_no_field,
 			)
@@ -3138,6 +3175,18 @@ def create_test_data():
 			)
 
 			_ensure_serial_no_stamping_unique_index()
+
+			# The FG-serial BOM weight block on Material Request Item / Stock Entry Detail
+			# (custom_bom_gross_weight ... custom_bom_total_gemstone_pcs). Patch-only for
+			# the same reason as the Serial No fields above, and the git_action_v16 Custom
+			# Field fixture predates it, so without this the columns are missing on
+			# test_site and everything validate_fg_serial_rows / set_fg_bom_weights stamps
+			# is silently dropped on save.
+			from jewellery_erpnext.patches.add_fg_serial_bom_weight_fields import (
+				execute as _ensure_fg_serial_bom_weight_fields,
+			)
+
+			_ensure_fg_serial_bom_weight_fields()
 
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
@@ -3175,6 +3224,33 @@ def create_test_data():
 			)
 
 			_ensure_stock_entry_jwelex_tag_field()
+			# The Customer Gold rate snapshot fields on Stock Entry are declared only by
+			# their patch (custom_fields/*.json is inert -- after_migrate is disabled), so
+			# they must be provisioned here for test_site too, else
+			# set_customer_gold_rate_snapshot silently drops every value it writes.
+			from jewellery_erpnext.patches.add_customer_gold_rate_snapshot_fields import (
+				execute as _ensure_customer_gold_rate_fields,
+			)
+
+			_ensure_customer_gold_rate_fields()
+			# Same for the rate CHECK fields and the approver role (F1).
+			from jewellery_erpnext.patches.add_customer_gold_rate_check_fields import (
+				execute as _ensure_customer_gold_rate_check_fields,
+			)
+
+			_ensure_customer_gold_rate_check_fields()
+			# And the SNC design-tolerance override fields and role (F6).
+			from jewellery_erpnext.patches.add_snc_tolerance_override_fields import (
+				execute as _ensure_snc_tolerance_override_fields,
+			)
+
+			_ensure_snc_tolerance_override_fields()
+			# And the Material Request diamond-substitution fields and role (F11).
+			from jewellery_erpnext.patches.add_mr_diamond_substitution_fields import (
+				execute as _ensure_mr_diamond_substitution_fields,
+			)
+
+			_ensure_mr_diamond_substitution_fields()
 
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:

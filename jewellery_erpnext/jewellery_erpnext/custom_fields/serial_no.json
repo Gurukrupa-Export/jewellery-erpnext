@@ -82,6 +82,15 @@
   },
   {
    "dt": "Serial No",
+   "fieldname": "custom_ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "brand",
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer"
+  },
+  {
+   "dt": "Serial No",
    "fieldname": "custom_reference_doctype",
    "fieldtype": "Link",
    "insert_after": "brand",

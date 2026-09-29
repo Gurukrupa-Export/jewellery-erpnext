@@ -1937,6 +1937,7 @@ def _doc(**fields):
 		"msl_warehouse": "EMP-0001 RM - GK",
 		"scrap_warehouse": "Casting Scrap - GK",
 		"stock_entry": None,
+		"subcontracting": "No",
 		"items": [_se_row("M-G-18KT-75.4-Y", 5.0)],
 	}
 	defaults.update(fields)
@@ -1980,6 +1981,40 @@ class TestResolvers(IntegrationTestCase):
 		with self.assertRaises(ValidationError):
 			ele._resolve_msl_warehouse(_doc(employee=None))
 
+	def test_process_loss_route_keeps_item_and_warehouse_consistent(self):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		combinations = [(0, "No"), (1, "No"), (0, "Yes"), (1, "Yes")]
+
+		for is_raw, sub in combinations:
+			eir = _doc(
+				is_raw_material=is_raw, subcontracting=sub, subcontractor="Sub-1"
+			)
+			row = SimpleNamespace(
+				item_code="ORIGINAL-ITEM", variant_of="VARIANT", idx=1, loss_type="Loss"
+			)
+
+			with patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+				return_value="Scrap - GK",
+			), patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+				return_value="LOSS-ITEM-1",
+			), patch("frappe.db.get_value", return_value="Some Value"):
+				t_warehouse = loss_stock_entry._resolve_t_warehouse(
+					eir, "employee_loss_details"
+				)
+				loss_item = loss_stock_entry._resolve_loss_item(
+					eir, row, "employee_loss_details"
+				)
+
+				self.assertEqual(t_warehouse, "Scrap - GK")
+				self.assertEqual(loss_item, "LOSS-ITEM-1")
+
 	def test_scrap_warehouse(self):
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse",
@@ -2017,6 +2052,79 @@ class TestResolvers(IntegrationTestCase):
 			self.assertEqual(
 				ele._resolve_loss_item(_doc(), "M-G-18KT-75.4-Y"), "ML-G-18KT-75.4-Y"
 			)
+
+
+class TestProcessLossStockEntryFinalRows(IntegrationTestCase):
+	def test_produce_row_uses_correct_item_and_warehouse(self):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		# Internal Employee route
+		eir_internal = _doc(subcontracting="No")
+		row_internal = SimpleNamespace(
+			item_code="ORIGINAL-ITEM",
+			variant_of="VARIANT",
+			idx=1,
+			loss_type="Loss",
+			batch_no="B1",
+			manufacturing_work_order="MWO-1",
+			proportionally_loss=5.0,
+		)
+
+		# Subcontractor route
+		eir_sub = _doc(subcontracting="Yes", subcontractor="Sub-1")
+		row_sub = SimpleNamespace(
+			item_code="ORIGINAL-ITEM",
+			variant_of="VARIANT",
+			idx=1,
+			loss_type="Loss",
+			batch_no="B1",
+			manufacturing_work_order="MWO-1",
+			proportionally_loss=5.0,
+		)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+			return_value="Scrap - GK",
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+			return_value="LOSS-ITEM-1",
+		), patch("frappe.db.get_value", return_value="Some Value"), patch(
+			"frappe.get_precision", return_value=3
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry.batch_owner_no_wastage",
+			return_value=False,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._find_sre",
+			return_value=(
+				SimpleNamespace(
+					warehouse="Source WH - GK", name="SRE-1", get=lambda x: None
+				),
+				[],
+			),
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._sre_remaining",
+			return_value=10.0,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_batch_inventory",
+			return_value=("Internal", None),
+		):
+			res_internal = loss_stock_entry._prepare_loss_row(
+				eir_internal, row_internal, "employee_loss_details"
+			)
+			self.assertEqual(res_internal["loss_item"], "LOSS-ITEM-1")
+			self.assertEqual(res_internal["t_warehouse"], "Scrap - GK")
+			self.assertEqual(res_internal["s_warehouse"], "Source WH - GK")
+
+			res_sub = loss_stock_entry._prepare_loss_row(
+				eir_sub, row_sub, "employee_loss_details"
+			)
+			self.assertEqual(res_sub["loss_item"], "LOSS-ITEM-1")
+			self.assertEqual(res_sub["t_warehouse"], "Scrap - GK")
+			self.assertEqual(res_sub["s_warehouse"], "Source WH - GK")
 
 
 class TestFifoBatches(IntegrationTestCase):
@@ -4269,8 +4377,16 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def _run(self, mop_log_rows, gwt, r_gwt, booking_map=None, category_map=None):
-		doc = _DocStub()
+	def _run(
+		self,
+		mop_log_rows,
+		gwt,
+		r_gwt,
+		booking_map=None,
+		category_map=None,
+		manual_rows=None,
+	):
+		doc = _DocStub(manual_rows=manual_rows)
 		patches = [
 			patch(f"{EIR}.frappe.db.get_all", return_value=mop_log_rows),
 			patch(
@@ -4281,6 +4397,11 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 				f"{EIR}.get_finding_category_map",
 				return_value=category_map if category_map is not None else {},
 			),
+			# _DocStub carries a real operation name, so without this the blanket
+			# per-material gate would issue a live Department Operation lookup.
+			# An empty set is its fail-open state: these cases exercise the
+			# finding-category gate only.
+			patch(f"{EIR}.get_blocked_loss_variants", return_value=set()),
 		]
 		for p in patches:
 			p.start()
@@ -4385,18 +4506,83 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 		self.assertEqual(flt(by_item[CLASP]["proportionally_loss"], 3), 0.286)
 		self.assertEqual(flt(sum(e["proportionally_loss"] for e in result), 3), 1.000)
 
-	def test_all_eligible_rows_blocked_throws(self):
-		"""Nothing left to book against => a clear throw, not a silent empty table."""
+	def test_all_eligible_rows_blocked_books_nothing_without_throwing(self):
+		"""An emptied pool is not an error on the save path.
+
+		This used to throw here, testing the RAW gross_wt - received_gross_wt
+		before ``total_mannual_loss`` had been computed 57 lines further down. A
+		shortfall the operator had already hand-booked in carats therefore could
+		not suppress it and the document could not be saved at all. The
+		submit-time ``validate_loss_gates_left_nothing_to_book`` explains an empty
+		table instead, and stays silent once either loss table is populated.
+		"""
 		rows = [_row_loss(CHAIN, "B-F", 20.0)]
-		with self.assertRaises(ValidationError) as ctx:
-			self._run(
-				rows,
-				gwt=20.0,
-				r_gwt=19.0,
-				booking_map={"Chains": 0},
-				category_map={CHAIN: "Chains"},
+		result = self._run(
+			rows,
+			gwt=20.0,
+			r_gwt=19.0,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+		)
+		self.assertEqual(result, [])
+
+	def test_manual_booking_lets_a_fully_blocked_pool_save(self):
+		"""The regression: 0.010 ct covers a 0.002 g shortfall exactly.
+
+		Mirrors EMP-IR-Labh-2026-12933 -- every eligible row gated out, and the
+		operator has already booked the whole shortfall by hand against a diamond
+		the operation still allows. That must save.
+		"""
+		manual = [
+			frappe._dict(
+				{
+					"item_code": "D-NT-RO-4-+12.5-13",
+					"manufacturing_work_order": "MWO-1",
+					"stock_uom": "Carat",
+					"proportionally_loss": 0.010,
+				}
 			)
-		self.assertIn("Chains", str(ctx.exception))
+		]
+		rows = [_row_loss(CHAIN, "B-F", 20.0)]
+		result = self._run(
+			rows,
+			gwt=4.787,
+			r_gwt=4.785,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+			manual_rows=manual,
+		)
+		self.assertEqual(result, [])
+
+	def test_manual_carat_row_converts_without_stock_uom(self):
+		"""``total_mannual_loss`` keys on the item code, not the fetched UOM.
+
+		``stock_uom`` is a read_only ``fetch_from`` field that is not ``reqd``, so
+		a row written with ``flags.ignore_links`` or straight through
+		``frappe.db.set_value`` carries none. Counting that carat qty as grams
+		would be a silent 5x under-deduction.
+		"""
+		manual = [
+			frappe._dict(
+				{
+					"item_code": "D-NT-RO-4-+12.5-13",
+					"manufacturing_work_order": "MWO-1",
+					"stock_uom": None,
+					"proportionally_loss": 0.500,
+				}
+			)
+		]
+		rows = [_row_loss(METAL, "B-M", 20.0)]
+		# Shortfall 0.200 g. 0.500 ct = 0.100 g, so 0.100 g is left for the metal
+		# row. Read as 0.500 *grams* the residual would be negative and the metal
+		# would book nothing -- the two readings give different answers here, which
+		# is what makes this a real guard.
+		result = self._run(rows, gwt=10.302, r_gwt=10.102, manual_rows=manual)
+		self.assertEqual(
+			flt(sum(e["proportionally_loss"] for e in result), 3),
+			0.100,
+			"a blank stock_uom must not turn 0.500 ct into 0.500 g",
+		)
 
 	def test_gain_on_receive_does_not_throw_when_all_blocked(self):
 		"""r_gwt > gwt is not a shortfall, so there is nothing to attribute."""
