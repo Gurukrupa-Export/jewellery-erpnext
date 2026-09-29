@@ -61,13 +61,15 @@ from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
 	get_booked_rate,
 	get_returnable_qty,
 )
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOLD_TEMPLATES,
+)
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	VALUATION_NOMINAL,
 	get_customer_gold_company_settings,
 	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
 )
-
 
 # Bound on how many times one batch/rate/date may be revalued and cancelled before the
 # retry is treated as a loop rather than a correction. See ``_resolve_revaluation_event_key``.
@@ -141,6 +143,7 @@ def revalue_customer_gold(
 
 	_reject_partial(batch_no, warehouse, item_code, free)
 	_reject_zero_value_item(item_code)
+	_reject_non_gold_item(item_code)
 
 	booked_rate = get_booked_rate(company, customer, batch_no)
 	if booked_rate is None:
@@ -177,7 +180,9 @@ def revalue_customer_gold(
 	#
 	# The rate is formatted at fixed precision so that 7500 and 7500.0 produce one key rather
 	# than two.
-	event_key = _resolve_revaluation_event_key(company, batch_no, posting_date, new_rate)
+	event_key = _resolve_revaluation_event_key(
+		company, batch_no, posting_date, new_rate
+	)
 
 	entry = _build_revaluation_entry(
 		company,
@@ -216,7 +221,6 @@ def revalue_customer_gold(
 	)
 
 	return entry, delta
-
 
 
 def _resolve_revaluation_event_key(company, batch_no, posting_date, new_rate):
@@ -321,7 +325,9 @@ def _revaluation_event_is_live(row):
 	A row with no usable reference is treated as LIVE. That is the safe direction: it refuses a
 	second posting rather than risking a double one.
 	"""
-	if row.get("reference_doctype") != "Stock Reconciliation" or not row.get("reference_docname"):
+	if row.get("reference_doctype") != "Stock Reconciliation" or not row.get(
+		"reference_docname"
+	):
 		return True
 
 	docstatus = frappe.db.get_value(
@@ -376,6 +382,26 @@ def _reject_zero_value_item(item_code):
 				"reconciliation value to zero. Clear that flag before revaluing customer gold."
 			).format(frappe.bold(item_code)),
 			title=frappe._("Item Would Be Zero-Valued"),
+		)
+
+
+def _reject_non_gold_item(item_code):
+	"""Only customer GOLD moves with the gold rate; a stone is never restated against it.
+
+	Stones (diamonds, gemstones) are received on a Customer Gold receipt at the rate the user
+	types, in their own UOM. Restating one here would book the gold per-gram rate against carats
+	and post the difference to the Customer Gold Liability.
+	"""
+	if (
+		frappe.db.get_value("Item", item_code, "variant_of")
+		not in CUSTOMER_GOLD_TEMPLATES
+	):
+		frappe.throw(
+			frappe._(
+				"Item {0} is not customer gold (metal or finding), so it is not revalued at the "
+				"Customer Gold rate. It keeps the rate it was received at."
+			).format(frappe.bold(item_code)),
+			title=frappe._("Not Customer Gold"),
 		)
 
 

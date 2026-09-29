@@ -325,7 +325,25 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.refining_department = "Refinery - T"
 		re.manufacturer = "Shubh"
 		re.scan_serial_no_action(sn.name)
-		re.material_items.pop()
+		# The as-built BOM lists only what the piece consumed. It used to carry the finished item
+		# itself (the design code, 1 Nos), which this test dropped by popping the last line; that
+		# row no longer exists, so every line here is real material. Pinned by content, not
+		# position: refining fetches BOM Items without an order, so line order is not a contract.
+		bom_lines = {
+			row.item_code: row
+			for row in re.material_items
+			if row.source_type == "BOM Component"
+		}
+		self.assertEqual(set(bom_lines), {"M-G-22KT-91.6-Y", "D-NT-RO-6B-+9-9.5"})
+		self.assertEqual(flt(bom_lines["M-G-22KT-91.6-Y"].qty), 1.3)
+		self.assertEqual(
+			[
+				row.source_type
+				for row in re.material_items
+				if row.item_code == sn.item_code
+			],
+			["Serial Number"],
+		)
 		re.save()
 
 		apply_workflow(re, "Send for Verification")

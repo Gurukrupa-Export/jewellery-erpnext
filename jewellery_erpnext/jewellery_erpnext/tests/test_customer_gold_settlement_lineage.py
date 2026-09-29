@@ -39,6 +39,8 @@ PIECE = "EA02652-001"
 
 PURITY = {GOLD_24: 99.9, GOLD_22: 91.8, ALLOY: 0.0, PIECE: None, DIAMOND: None}
 UOM = {GOLD_24: "Gram", GOLD_22: "Gram", ALLOY: "Gram", DIAMOND: "Carat", PIECE: "Nos"}
+#: Item templates: metal ``M``, stones ``D``; the piece has none.
+TEMPLATE = {GOLD_24: "M", GOLD_22: "M", ALLOY: "M", DIAMOND: "D", PIECE: None}
 
 #: Rupees per gram of 24KT, as a receipt would have booked it.
 RATE_A = 7164.83
@@ -86,6 +88,8 @@ class _LineageCase(unittest.TestCase):
 		def get_value(doctype, name, fieldname=None, *args, **kwargs):
 			if doctype == "Batch" and fieldname == "item":
 				return self.batch_item.get(name)
+			if doctype == "Item" and fieldname == "variant_of":
+				return TEMPLATE.get(name)
 			raise AssertionError(f"unexpected read: {doctype} {name} {fieldname}")
 
 		patches = [
@@ -164,6 +168,39 @@ class TestNosPieceSettlesItsCustomerGold(_LineageCase):
 		share = self.share("FG-1", 1, valued=False)
 		self.assertIsNone(share.value)
 		self.assertAlmostEqual(share.fine, 4.986, places=3)
+
+
+class TestCustomerSuppliedStones(_LineageCase):
+	"""A customer who supplies the stones as well as the gold: only the gold carries a liability."""
+
+	graph = {
+		"FG-1": [
+			_component(
+				CUSTOMER_IN_PIECE, GOLD_24, customer=CUSTOMER, source_batch="RCPT-A"
+			),
+			_component(0.396, DIAMOND, customer=CUSTOMER, source_batch="CUST-DIA"),
+		],
+		"FG-STONES": [
+			_component(0.396, DIAMOND, customer=CUSTOMER, source_batch="CUST-DIA")
+		],
+	}
+	produced = {"FG-1": 1.0, "FG-STONES": 1.0}
+	batch_item = {"FG-1": PIECE, "FG-STONES": PIECE, "RCPT-A": GOLD_24}
+	#: The stone's source has no booked rate: only a Customer Gold receipt books one.
+	booked = {(CUSTOMER, "RCPT-A"): RATE_A}
+
+	def test_the_gold_settles_and_the_customers_stones_do_not_block_it(self):
+		"""Before the fix the stone had no booked rate and no purity, so the whole piece went unsettled."""
+		share = self.share("FG-1", 1)
+		self.assertIsNone(share.reason)
+		self.assertAlmostEqual(
+			share.value, round(CUSTOMER_IN_PIECE * RATE_A, 2), places=2
+		)
+		self.assertAlmostEqual(share.fine, 4.986, places=3)
+
+	def test_a_piece_of_only_the_customers_stones_releases_nothing(self):
+		share = self.share("FG-STONES", 1)
+		self.assertEqual((share.value, share.fine), (0.0, 0.0))
 
 
 class TestTwoReceiptLayers(_LineageCase):
@@ -467,11 +504,11 @@ class TestDeliveryEvent(_LineageCase):
 			)
 			self.assertAlmostEqual(event.cg_fine_gold_delta, -4.995, places=3)
 
-	def test_a_raw_batch_still_settles_from_the_stock_ledger(self):
-		self.batch_item["RCPT-A"] = GOLD_24
-		self.serials["RCPT-A"] = [None]
+	def _deliver_raw(self, batch, is_receipt):
+		self.batch_item[batch] = GOLD_24
+		self.serials[batch] = [None]
 		row = frappe._dict(
-			name="ROW-1", item_code=GOLD_24, qty=4, batch_no="RCPT-A", stock_uom="Gram"
+			name="ROW-1", item_code=GOLD_24, qty=4, batch_no=batch, stock_uom="Gram"
 		)
 		doc = frappe._dict(
 			doctype="Delivery Note",
@@ -480,9 +517,21 @@ class TestDeliveryEvent(_LineageCase):
 			is_return=0,
 			items=[row],
 		)
-		cgf.record_fulfilment(doc)
+		with patch.object(cgf, "_is_receipt_batch", return_value=is_receipt):
+			cgf.record_fulfilment(doc)
+
+	def test_a_raw_receipt_batch_still_settles_from_the_stock_ledger(self):
+		self._deliver_raw("RCPT-A", is_receipt=True)
 		self.ledger_value.assert_called_once()
 		self.assertEqual(self.events[0].cg_carrying_value_delta, -11.58)
+
+	def test_a_customer_batch_with_no_provenance_never_settles_its_stock_value(self):
+		"""No component of the customer's, not their received batch: the stock value may hold
+		company material, so nothing is released and the gap is logged."""
+		self._deliver_raw("FG-NO-COMPONENTS", is_receipt=False)
+		self.ledger_value.assert_not_called()
+		self.assertIsNone(self.events[0].cg_carrying_value_delta)
+		self.log_error.assert_called_once()
 
 
 class TestFineBasisMatchesQuantityBasis(unittest.TestCase):

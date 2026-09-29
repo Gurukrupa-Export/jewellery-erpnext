@@ -34,7 +34,8 @@ RECEIPT_PURPOSE = "Material Receipt"
 #: which surfaces as a framework traceback at return time instead of a readable message here.
 RETURN_PURPOSE = "Material Issue"
 
-#: The Customer Gold rate basis is per gram, so the receipt item must be stocked in grams.
+#: The Customer Gold rate basis is per gram, so an item priced from it -- gold and findings --
+#: must be stocked in grams. Stones are received in their own UOM at a typed rate.
 RECEIPT_STOCK_UOM = "Gram"
 
 #: Account types that require a Party on every GL Entry (``gl_entry.py:139-152``).
@@ -117,32 +118,14 @@ def validate_customer_gold_receipt_config(doc):
 			title=_("Customer Gold Configuration Incomplete"),
 		)
 
+	# The Customer 24KT Item is the RATE REFERENCE -- the configured Gold Rate is quoted for it
+	# and every other gold purity is priced relative to it -- so it must still be a batch
+	# controlled item stocked in grams. It is no longer an eligibility list: which items a
+	# receipt accepts is the Item's own ``custom_inventory_type_can_be_customer_goods`` flag
+	# (``customer_goods_eligibility``). Its flag is deliberately NOT required here, so a site
+	# whose reference item is unflagged can still save its Settings; receipts of that item are
+	# refused until the flag is ticked, like any other item.
 	_validate_receipt_item(doc.customer_24kt_item, _("Customer 24KT Item"))
-
-	# Additional purities the customer may hand over -- 99.5 alongside 99.9, say. Held to
-	# EXACTLY the same standard as the primary item: an extra item that is not batch controlled
-	# or not stocked in grams breaks custody tracking and rate arithmetic the same way, and
-	# there is no reason for the secondary list to be the lenient one.
-	seen_items = {doc.customer_24kt_item}
-	for row in doc.get("customer_gold_items") or []:
-		if not row.item:
-			frappe.throw(
-				_(
-					"Row #{0}: Item is mandatory in Additional Customer Gold Items."
-				).format(row.idx)
-			)
-		if row.item in seen_items:
-			frappe.throw(
-				_(
-					"Row #{0}: Item {1} is already accepted -- it is either the Customer 24KT "
-					"Item or a duplicate row."
-				).format(row.idx, frappe.bold(row.item)),
-				title=_("Duplicate Customer Gold Item"),
-			)
-		seen_items.add(row.item)
-		_validate_receipt_item(
-			row.item, _("Additional Customer Gold Item (Row #{0})").format(row.idx)
-		)
 
 	if not doc.get("customer_goods_stock_entry_type"):
 		frappe.throw(
@@ -173,19 +156,30 @@ def validate_customer_gold_receipt_config(doc):
 		)
 
 
-def _validate_receipt_item(item_code, label):
-	"""Every item a customer may hand over must clear the same four gates.
+#: Item fields ``_validate_receipt_item`` reads. A receipt fetches them for all its rows in one
+#: query (``customer_gold_receipt._receipt_item_details``) and passes each row's dict in.
+RECEIPT_ITEM_FIELDS = ("disabled", "is_stock_item", "has_batch_no", "stock_uom")
 
-	Extracted so the additional-purity rows cannot drift into a weaker standard than the
-	primary item. ``label`` names which field is at fault, because with several items
-	configured "Customer 24KT Item is disabled" would point at the wrong row.
+
+def _validate_receipt_item(item_code, label, item=None, require_gram=True):
+	"""The technical gates an item must clear to be received as customer goods.
+
+	Applies to the Customer 24KT Item when Settings are saved, and to every receipt row. These
+	gates are about whether the receipt can be BOOKED, not about whether the item is ALLOWED --
+	that is the Item's own Customer Goods flag, checked before this.
+
+	``item`` is the row's prefetched Item dict; it is read here only when not supplied, so a
+	receipt of many rows costs one query in total rather than one per row. ``label`` names the
+	field or row at fault.
+
+	``require_gram`` is for items priced from the gold rate (gold and findings): the rate is per
+	gram, so any other stock UOM would book a wrong value. Stones are received in their own UOM
+	(Carat) at a rate the user types, so they skip it.
 	"""
-	item = frappe.db.get_value(
-		"Item",
-		item_code,
-		["disabled", "is_stock_item", "has_batch_no", "stock_uom"],
-		as_dict=True,
-	)
+	if item is None:
+		item = frappe.db.get_value(
+			"Item", item_code, list(RECEIPT_ITEM_FIELDS), as_dict=True
+		)
 	if not item:
 		frappe.throw(_("{0} {1} does not exist.").format(label, frappe.bold(item_code)))
 	if item.disabled:
@@ -197,11 +191,11 @@ def _validate_receipt_item(item_code, label):
 	if not item.has_batch_no:
 		frappe.throw(
 			_(
-				"{0} {1} must be batch controlled, because customer gold is tracked per batch."
+				"{0} {1} must be batch controlled, because customer goods are tracked per batch."
 			).format(label, frappe.bold(item_code))
 		)
 
-	if item.stock_uom != RECEIPT_STOCK_UOM:
+	if require_gram and item.stock_uom != RECEIPT_STOCK_UOM:
 		# Load-bearing, not cosmetic. ``customer_gold_rate.convert_gold_rate_to_per_gram``
 		# turns a "Per 10 Gram" quote into a per-gram rate by dividing by 10, and
 		# ``apply_valuation_policy`` then books that figure as ``basic_rate`` -- which
@@ -220,27 +214,6 @@ def _validate_receipt_item(item_code, label):
 			),
 			title=_("Unsupported Stock UOM"),
 		)
-
-
-def get_allowed_customer_gold_items(settings=None):
-	"""Every item a customer may hand over, primary first.
-
-	The primary ``customer_24kt_item`` is always included, so a site that configures no
-	additional purities behaves exactly as it did when the receipt tested one item for equality.
-	Returns a list rather than a set: the primary item's position is meaningful -- it is the item
-	the configured Gold Rate is quoted against, and every other purity is priced relative to it.
-	"""
-	settings = settings or get_customer_gold_settings()
-
-	allowed = []
-	primary = settings.get("customer_24kt_item")
-	if primary:
-		allowed.append(primary)
-	for row in settings.get("customer_gold_items") or []:
-		item = row.get("item") if isinstance(row, dict) else row.item
-		if item and item not in allowed:
-			allowed.append(item)
-	return allowed
 
 
 def validate_customer_gold_rate_config(doc):
@@ -587,6 +560,21 @@ def is_nominal_valuation():
 def get_customer_gold_settings():
 	"""Return the Customer Gold configuration once per request."""
 	return frappe.get_cached_doc(SETTINGS_DOCTYPE)
+
+
+@frappe.whitelist()
+def get_customer_gold_receipt_type():
+	"""The Stock Entry Type configured for Customer Gold receipts, or ``None`` when the flow is off.
+
+	Whitelisted for the Stock Entry form, which filters the item picker to Customer Goods items
+	only on this type: the Single itself is readable by System Managers alone, and the type name
+	is all the form needs. Enabling the flow requires this type
+	(``validate_customer_gold_receipt_config``), so a non-``None`` answer means the flow is on.
+	"""
+	if not is_customer_gold_enabled():
+		return None
+
+	return get_customer_gold_settings().get("customer_goods_stock_entry_type") or None
 
 
 def get_customer_gold_company_settings(company):

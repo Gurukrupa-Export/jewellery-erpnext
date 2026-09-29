@@ -4,8 +4,9 @@
 """Batch Rate stamping for newly created batches.
 
 A new Batch must carry the rate of the voucher row that created it -- Stock Entry
-Detail ``basic_rate``, or Purchase Receipt Item ``rate`` -- and a batch received
-against a customer's supplier must be labelled Customer Subcontracting.
+Detail ``valuation_rate`` (else ``basic_rate``), or Purchase Receipt Item ``rate`` --
+and keep it: since F26 nothing restates it later. A batch received against a
+customer's supplier must be labelled Customer Subcontracting.
 
 DB-free per the suite convention: ``setUpClass`` is neutralized and the logic runs
 against ``SimpleNamespace`` docs with ``frappe.db`` mocked.
@@ -118,6 +119,42 @@ class TestBatchRateStamping(IntegrationTestCase):
 			batch_utils.update_inventory_dimentions(batch)
 
 		self.assertEqual(batch.custom_metal_rate, 5900)
+
+	def test_stock_entry_prefers_valuation_rate_over_basic_rate(self):
+		"""F26: the ledger books valuation_rate (basic_rate plus additional costs)."""
+		batch = _batch()
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Stock Entry Detail", "custom_metal_rate"): None,
+			("Stock Entry Detail", "valuation_rate"): 6125.0,
+			("Stock Entry Detail", "basic_rate"): 6120.5,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(batch.custom_metal_rate, 6125.0)
+
+	def test_maintained_rate_still_wins_over_valuation_rate(self):
+		"""A rate parked on custom_metal_rate (entered_metal_rate) stays first."""
+		batch = _batch()
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Stock Entry Detail", "custom_metal_rate"): 7308.62,
+			("Stock Entry Detail", "valuation_rate"): 12.5,
+			("Stock Entry Detail", "basic_rate"): 0.0,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(batch.custom_metal_rate, 7308.62)
 
 	# --- Requirement B: Purchase Receipt -> rate ----------------------------------
 
@@ -466,6 +503,39 @@ class TestSubcontractingBatchRate(IntegrationTestCase):
 		)
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 5900)
 
+	def test_stock_entry_row_prefers_valuation_rate_over_basic_rate(self):
+		"""F26: the target row's ledger incoming rate is its valuation_rate."""
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Repack")
+		row = SimpleNamespace(
+			get=lambda f: {"valuation_rate": 144642.733945, "basic_rate": 144640.0}.get(
+				f
+			)
+		)
+		self.assertEqual(batch_rename._source_row_rate(doc, row), 144642.733945)
+
+	def test_stock_entry_row_maintained_rate_beats_valuation_rate(self):
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Material Receipt")
+		row = SimpleNamespace(
+			get=lambda f: {
+				"custom_metal_rate": 7308.62,
+				"valuation_rate": 12.5,
+				"basic_rate": 0.0,
+			}.get(f)
+		)
+		self.assertEqual(batch_rename._source_row_rate(doc, row), 7308.62)
+
+	def test_a_manufactured_piece_gets_no_batch_rate_even_with_a_valuation_rate(self):
+		"""F8 holds with the F26 fallback: the piece's valuation_rate is the whole piece too."""
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Manufacture")
+		row = SimpleNamespace(
+			get=lambda f: {
+				"valuation_rate": 801666.57,
+				"basic_rate": 801654.99,
+				"is_finished_item": 1,
+			}.get(f)
+		)
+		self.assertEqual(batch_rename._source_row_rate(doc, row), 0.0)
+
 	def test_purchase_receipt_row_uses_rate(self):
 		doc = SimpleNamespace(doctype="Purchase Receipt")
 		row = SimpleNamespace(
@@ -473,28 +543,24 @@ class TestSubcontractingBatchRate(IntegrationTestCase):
 		)
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 7420)
 
-	def test_a_finding_row_is_metal_too(self):
-		doc = SimpleNamespace(doctype="Stock Entry")
-		row = SimpleNamespace(
-			get=lambda f: {"basic_rate": 6100.0, "custom_variant_of": "F"}.get(f)
-		)
+	def test_a_finding_row_keeps_its_rate(self):
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Repack")
+		row = SimpleNamespace(get=lambda f: {"basic_rate": 6100.0}.get(f))
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 6100.0)
 
-	def test_a_finished_piece_gets_no_metal_rate(self):
+	def test_a_manufactured_piece_gets_no_batch_rate(self):
 		"""F8: KLHGX62F1119's batch was stamped Rs.8,01,654.99 -- the whole piece, diamond included."""
-		doc = SimpleNamespace(doctype="Stock Entry")
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Manufacture")
 		row = SimpleNamespace(
-			get=lambda f: {"basic_rate": 801666.57, "item_code": "EA02652-001"}.get(f)
-		)
-		with patch.object(batch_rename.frappe, "get_cached_value", return_value=None):
-			self.assertEqual(batch_rename._source_row_rate(doc, row), 0.0)
-
-	def test_a_diamond_row_gets_no_metal_rate(self):
-		doc = SimpleNamespace(doctype="Stock Entry")
-		row = SimpleNamespace(
-			get=lambda f: {"basic_rate": 37370.0, "custom_variant_of": "D"}.get(f)
+			get=lambda f: {"basic_rate": 801666.57, "is_finished_item": 1}.get(f)
 		)
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 0.0)
+
+	def test_a_stone_row_keeps_its_batch_rate(self):
+		"""Diamond and gemstone batches carry a Batch Rate by design (``_rate_field_for_item``)."""
+		doc = SimpleNamespace(doctype="Stock Entry", purpose="Manufacture")
+		row = SimpleNamespace(get=lambda f: {"basic_rate": 37370.0}.get(f))
+		self.assertEqual(batch_rename._source_row_rate(doc, row), 37370.0)
 
 
 def _doc(**fields):
@@ -742,9 +808,28 @@ def _origin(batch_no, item_code, qty, rate):
 
 _ALLOY_ITEM = "M-Genia-221"
 
+# The 22KT conversion target of the KLHGX62F1119 audit: 5 g of 24KT at 157,655 plus
+# 0.45 g of company alloy at 62 make 5.45 g of 22KT. The ledger books the target at
+# (5 * 157655 + 0.45 * 62) / 5.45; the retired blend restated it as 157655 * 91.75 / 100.
+LEDGER_22KT_RATE = (5 * 157655.0 + 0.45 * 62.0) / 5.45  # 144,642.733945
+BLENDED_22KT_RATE = 157655.0 * 91.75 / 100  # 144,648.4625
+
+
+def _22kt_origins():
+	return [
+		_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 157655.0),
+		_origin("SRC-ALLOY", _ALLOY_ITEM, 0.45, 62.0),
+	]
+
+
+_22KT_SOURCE_RATES = {
+	"SRC-24KT": {"custom_metal_rate": 157655.0, "custom_alloy_rate": 0.0},
+	"SRC-ALLOY": {"custom_metal_rate": 0.0, "custom_alloy_rate": 62.0},
+}
+
 
 def _run_blend(batch, source_rates, se_type="Repack-Metal Conversion"):
-	"""Drive ``batch_module.on_update`` with the site reads stubbed.
+	"""Drive ``batch_module.on_update`` with every input the retired blend used to read.
 
 	``source_rates`` maps batch name -> {custom_metal_rate, custom_alloy_rate}, i.e. what the
 	source Batch masters actually hold today.
@@ -777,45 +862,43 @@ def _run_blend(batch, source_rates, se_type="Repack-Metal Conversion"):
 	return batch
 
 
-class TestOriginRateBlend(IntegrationTestCase):
-	"""The blend must read the SOURCE BATCH's rate, not the frozen ledger copy.
+class TestConversionKeepsTheMintingRate(IntegrationTestCase):
+	"""F26: a conversion target's Batch Rate is the rate it was minted with.
 
-	``custom_origin_entries.rate`` is a copy of ``Serial and Batch Entry.incoming_rate`` taken on
-	bundle ``after_insert``. ``StockEntry.on_submit`` creates those bundles before
-	``update_stock_ledger`` prices them, and ERPNext never prices a draft Stock Entry bundle, so
-	any produced row that already carries a ``batch_no`` -- every customer lane, because
-	``batch_rename`` pre-mints one -- freezes 0.
-
-	Measured on kg-gk: the frozen rate is 0 on all 24 customer-lane origin rows, while 33,512 of
-	33,784 rows site-wide are fine. It is per-flow, not per-run.
+	``batch.on_update`` used to restate it on every provenance save from a qty-weighted,
+	purity-scaled mix of the source batches' rates. That mix left the company alloy out of
+	the metal rate and divided by 100 instead of the source purity, so it drifted from the
+	ledger's incoming rate -- the rate batch-wise valuation charges on every issue. The
+	blend is retired and no longer registered; these pin that nothing restates the stamp.
 	"""
 
 	@classmethod
 	def setUpClass(cls):
 		pass
 
-	def test_frozen_zero_recovers_from_the_source_batch(self):
-		"""The reported defect. Source master holds 159000; the frozen copy holds nothing."""
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_origin_entries=[_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 0.0)],
-		)
-		_run_blend(
-			batch,
-			{"SRC-24KT": {"custom_metal_rate": 159000.0, "custom_alloy_rate": 0.0}},
-		)
+	def test_the_blend_is_no_longer_registered(self):
+		from jewellery_erpnext import hooks
 
-		self.assertAlmostEqual(
-			batch.custom_metal_rate,
-			159000.0,
-			places=4,
-			msg="the blend fell back to the unpriced frozen copy",
-		)
+		self.assertNotIn("on_update", hooks.doc_events["Batch"])
 
-	def test_purity_conversion_applies_to_the_recovered_rate(self):
-		"""24KT source into a 22KT target: the recovered rate converts, same as a frozen one."""
+	def test_the_22kt_batch_keeps_its_ledger_rate(self):
+		"""The audit's 22KT batch: the blend's inputs no longer move the stamped rate."""
 		batch = _BlendBatch(
 			item="M-G-22KT-91.75-Y",
+			custom_metal_rate=LEDGER_22KT_RATE,
+			custom_origin_entries=_22kt_origins(),
+		)
+		_run_blend(batch, _22KT_SOURCE_RATES)
+
+		self.assertEqual(batch.writes, [], msg="the retired blend wrote a rate")
+		self.assertAlmostEqual(batch.custom_metal_rate, 144642.733945, places=6)
+		self.assertNotAlmostEqual(batch.custom_metal_rate, BLENDED_22KT_RATE, places=2)
+		self.assertEqual(batch.custom_alloy_rate, 0.0)
+
+	def test_a_zero_ledger_rate_is_not_filled_from_the_sources(self):
+		"""A Zero Value customer lane mints at 0; the sources' rates must not refill it."""
+		batch = _BlendBatch(
+			item="M-G-24KT-99.9-Y",
 			custom_origin_entries=[_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 0.0)],
 		)
 		_run_blend(
@@ -823,105 +906,42 @@ class TestOriginRateBlend(IntegrationTestCase):
 			{"SRC-24KT": {"custom_metal_rate": 159000.0, "custom_alloy_rate": 0.0}},
 		)
 
-		self.assertAlmostEqual(
-			batch.custom_metal_rate, 159000.0 * 91.75 / 100, places=4
+		self.assertEqual(batch.writes, [])
+		self.assertEqual(batch.custom_metal_rate, 0.0)
+
+	def test_the_minting_stamp_survives_the_origin_entry_save(self):
+		"""Mint from the 22KT row, then re-save the way ``update_parent_batch_id`` does."""
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Stock Entry Detail", "custom_metal_rate"): None,
+			("Stock Entry Detail", "valuation_rate"): LEDGER_22KT_RATE,
+			("Stock Entry Detail", "basic_rate"): LEDGER_22KT_RATE,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		batch = _batch(item="M-G-22KT-91.75-Y", is_new=lambda: True)
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+		self.assertAlmostEqual(batch.custom_metal_rate, 144642.733945, places=6)
+
+		# The provenance save: the batch is no longer new and its origin entries are set.
+		batch.is_new = lambda: False
+		values[("Stock Entry Detail", "valuation_rate")] = BLENDED_22KT_RATE
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+		saved = _BlendBatch(
+			item=batch.item,
+			custom_metal_rate=batch.custom_metal_rate,
+			custom_origin_entries=_22kt_origins(),
 		)
+		_run_blend(saved, _22KT_SOURCE_RATES)
 
-	def test_alloy_pool_recovers_from_the_source_alloy_rate(self):
-		"""Pool-matched: an alloy source's rate lives on custom_alloy_rate, not custom_metal_rate."""
-		batch = _BlendBatch(
-			custom_origin_entries=[_origin("SRC-ALLOY", _ALLOY_ITEM, 0.45, 0.0)],
-		)
-		_run_blend(
-			batch,
-			{"SRC-ALLOY": {"custom_metal_rate": 999.0, "custom_alloy_rate": 62.0}},
-		)
+		self.assertEqual(saved.writes, [])
+		self.assertAlmostEqual(saved.custom_metal_rate, 144642.733945, places=6)
 
-		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
-		self.assertEqual(
-			batch.custom_metal_rate,
-			0.0,
-			msg="an alloy source leaked into the metal pool",
-		)
-
-	def test_the_two_pools_are_blended_separately(self):
-		"""The real MAT-STE-17890 shape: 5 g of 24KT plus 0.45 g of alloy."""
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_origin_entries=[
-				_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 0.0),
-				_origin("SRC-ALLOY", _ALLOY_ITEM, 0.45, 0.0),
-			],
-		)
-		_run_blend(
-			batch,
-			{
-				"SRC-24KT": {"custom_metal_rate": 159000.0, "custom_alloy_rate": 0.0},
-				"SRC-ALLOY": {"custom_metal_rate": 0.0, "custom_alloy_rate": 62.0},
-			},
-		)
-
-		self.assertAlmostEqual(batch.custom_metal_rate, 159000.0, places=4)
-		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
-
-	def test_sources_are_qty_weighted(self):
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_origin_entries=[
-				_origin("SRC-A", "M-G-24KT-99.9-Y", 1.0, 0.0),
-				_origin("SRC-B", "M-G-24KT-99.9-Y", 3.0, 0.0),
-			],
-		)
-		_run_blend(
-			batch,
-			{
-				"SRC-A": {"custom_metal_rate": 100.0, "custom_alloy_rate": 0.0},
-				"SRC-B": {"custom_metal_rate": 200.0, "custom_alloy_rate": 0.0},
-			},
-		)
-
-		# (100*1 + 200*3) / 4
-		self.assertAlmostEqual(batch.custom_metal_rate, 175.0, places=6)
-
-	def test_source_without_a_maintained_rate_keeps_the_frozen_rate(self):
-		"""Legacy no-regression: a source minted before rates were carried still blends as today."""
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_origin_entries=[_origin("SRC-OLD", "M-G-24KT-99.9-Y", 2.0, 4321.0)],
-		)
-		_run_blend(
-			batch, {"SRC-OLD": {"custom_metal_rate": 0.0, "custom_alloy_rate": 0.0}}
-		)
-
-		self.assertAlmostEqual(batch.custom_metal_rate, 4321.0, places=4)
-
-	def test_a_source_batch_that_no_longer_exists_falls_back_to_the_frozen_rate(self):
-		"""``batch_rates.get(row.batch_no)`` returns None for a deleted or renamed source.
-
-		Distinct from a source that EXISTS holding 0: that path exercises ``rate or flt(row.rate)``,
-		this one exercises the ``or {}`` guard. Without it the lookup raises AttributeError inside
-		a submit hook.
-		"""
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_origin_entries=[_origin("SRC-GONE", "M-G-24KT-99.9-Y", 2.0, 777.0)],
-		)
-		_run_blend(batch, {})
-
-		self.assertAlmostEqual(batch.custom_metal_rate, 777.0, places=4)
-
-	def test_an_origin_row_with_no_batch_no_still_blends(self):
-		"""A hand-built origin row can carry an item and a qty but no batch."""
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_origin_entries=[_origin(None, "M-G-24KT-99.9-Y", 2.0, 555.0)],
-		)
-		_run_blend(batch, {})
-
-		self.assertAlmostEqual(batch.custom_metal_rate, 555.0, places=4)
-
-	def test_a_non_conversion_voucher_still_does_not_blend(self):
-		"""The gate is unchanged: only Repack-Metal Conversion reaches the blend."""
+	def test_a_non_conversion_voucher_does_not_write_either(self):
 		batch = _BlendBatch(
 			custom_metal_rate=145876.678899083,
 			custom_origin_entries=[_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 0.0)],
@@ -930,91 +950,4 @@ class TestOriginRateBlend(IntegrationTestCase):
 			batch, {"SRC-24KT": {"custom_metal_rate": 159000.0}}, se_type="Repack"
 		)
 
-		self.assertEqual(batch.writes, [], msg="a non-conversion voucher wrote a rate")
-
-
-class TestBlendGuard(IntegrationTestCase):
-	"""A blend that carries no information must not overwrite a rate that does.
-
-	``batch_rename.create_child_batches`` stamps the correct rate at ``before_submit``; the blend
-	then ran at ``on_submit`` and wrote 0 over it unconditionally.
-	"""
-
-	@classmethod
-	def setUpClass(cls):
-		pass
-
-	def test_blend_to_zero_does_not_clobber_a_stamped_rate(self):
-		"""The regression test for the reported bug, with the real MAT-STE-17890 numbers."""
-		batch = _BlendBatch(
-			custom_metal_rate=145876.678899083,
-			custom_origin_entries=[
-				_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 0.0),
-				_origin("SRC-ALLOY", _ALLOY_ITEM, 0.45, 0.0),
-			],
-		)
-		_run_blend(
-			batch,
-			{
-				"SRC-24KT": {"custom_metal_rate": 0.0, "custom_alloy_rate": 0.0},
-				"SRC-ALLOY": {"custom_metal_rate": 0.0, "custom_alloy_rate": 0.0},
-			},
-		)
-
-		self.assertAlmostEqual(
-			batch.custom_metal_rate,
-			145876.678899083,
-			places=6,
-			msg="the stamped rate was overwritten by an uninformative blend",
-		)
-		self.assertNotIn(
-			("custom_metal_rate", 0.0),
-			batch.writes,
-			msg="a zero was written to custom_metal_rate",
-		)
-
-	def test_empty_alloy_pool_leaves_the_alloy_rate_alone(self):
-		"""A metal-only conversion says nothing about the target's alloy rate."""
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_alloy_rate=62.0,
-			custom_origin_entries=[_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 0.0)],
-		)
-		_run_blend(
-			batch,
-			{"SRC-24KT": {"custom_metal_rate": 159000.0, "custom_alloy_rate": 0.0}},
-		)
-
-		self.assertAlmostEqual(batch.custom_alloy_rate, 62.0, places=4)
-		self.assertNotIn(
-			"custom_alloy_rate",
-			[field for field, _ in batch.writes],
-			msg="an empty alloy pool still wrote a rate",
-		)
-
-	def test_a_real_blend_still_overwrites_the_stamped_rate(self):
-		"""Proves the guard did not become 'never overwrite'."""
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_metal_rate=100.0,
-			custom_origin_entries=[_origin("SRC-24KT", "M-G-24KT-99.9-Y", 5.0, 0.0)],
-		)
-		_run_blend(
-			batch,
-			{"SRC-24KT": {"custom_metal_rate": 159000.0, "custom_alloy_rate": 0.0}},
-		)
-
-		self.assertAlmostEqual(batch.custom_metal_rate, 159000.0, places=4)
-
-	def test_zero_blend_on_an_unrated_batch_is_still_written(self):
-		"""The contract is only 'a set rate is not clobbered', not 'never write zero'."""
-		batch = _BlendBatch(
-			item="M-G-24KT-99.9-Y",
-			custom_metal_rate=0.0,
-			custom_origin_entries=[_origin("SRC-OLD", "M-G-24KT-99.9-Y", 2.0, 0.0)],
-		)
-		_run_blend(
-			batch, {"SRC-OLD": {"custom_metal_rate": 0.0, "custom_alloy_rate": 0.0}}
-		)
-
-		self.assertIn(("custom_metal_rate", 0.0), batch.writes)
+		self.assertEqual(batch.writes, [])

@@ -3,6 +3,9 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	can_be_customer_goods,
+)
 from jewellery_erpnext.refining.constants import (
 	BATCH_TYPE_UNUSED,
 	REFINING_TYPE_SCRAP,
@@ -4149,11 +4152,7 @@ class RefiningEntry(Document):
 		"""True when the Item permits a Customer Goods inventory type. Minting a Customer
 		Goods batch for an item without this flag hard-fails in
 		Batch.update_inventory_dimentions, so recovered-output tagging is gated on it."""
-		return bool(
-			frappe.db.get_value(
-				"Item", item_code, "custom_inventory_type_can_be_customer_goods"
-			)
-		)
+		return can_be_customer_goods(item_code)
 
 	def _stamp_batch_ownership(self, se):
 		"""Stamp inventory_type + customer on every batched row of ``se`` from its batch's

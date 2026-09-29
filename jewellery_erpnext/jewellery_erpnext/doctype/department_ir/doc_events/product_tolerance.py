@@ -579,6 +579,15 @@ def _check_piece_stone(doc, label, bucket, band_rows, kind, weight_field, stone_
 				return bucket.scoped.get((field, band.get(field)), 0.0)
 		return bucket.get(weight_field)
 
-	return _check_bands(
-		doc, label, bucket, band_rows, stone_label, _("cts"), actual_for
-	)
+	# One verdict per SCOPE. ``_check_bands`` passes a weight type if the actual sits inside ANY of
+	# its bands, which is right for a legacy schedule of alternative bands but wrong across scopes:
+	# a Natural band and a Lab-grown band are two requirements, and Lab stones in range must not
+	# excuse a Natural shortfall.
+	failures = []
+	for scoped_rows in group_tolerance_rows(
+		band_rows, lambda band: tuple(band.get(f) for f in SCOPE_FIELDS[kind])
+	).values():
+		failures += _check_bands(
+			doc, label, bucket, scoped_rows, stone_label, _("cts"), actual_for
+		)
+	return failures

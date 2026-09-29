@@ -338,8 +338,9 @@ class CustomStockEntry(StockEntry):
 		entered_rates = capture_entered_metal_rates(self)
 		super().set_basic_rate(reset_outgoing_rate, raise_error_if_no_rate)
 		restore_entered_metal_rates(entered_rates)
-		settle_derived_outputs(released)
 		set_process_loss_produce_rates(self)
+		# After the lane pricer, so the flag follows the rate the row will actually carry.
+		settle_derived_outputs(released)
 
 
 @frappe.whitelist()

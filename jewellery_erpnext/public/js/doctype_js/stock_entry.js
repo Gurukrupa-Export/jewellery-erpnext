@@ -311,6 +311,15 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	setup: function (frm) {
+		// The Stock Entry Type the server treats as a Customer Gold receipt, or null when the flow
+		// is off. Fetched once because Subcontracting Settings is readable by System Managers only.
+		frm._cg_receipt_type = null;
+		frappe.call({
+			method: "jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings.get_customer_gold_receipt_type",
+			callback: (r) => {
+				frm._cg_receipt_type = r.message || null;
+			},
+		});
 		frm.set_query("item_template", function (doc) {
 			return { filters: { has_variants: 1 } };
 		});
@@ -451,6 +460,15 @@ frappe.ui.form.on("Stock Entry", {
 		});
 	},
 	stock_entry_type(frm) {
+		// On the Customer Gold receipt, offer only items whose master allows Customer Goods --
+		// the same rule the server enforces for every path (scanner, API, import). Evaluated
+		// when the picker opens, so it follows every type change, including the early-return
+		// branches below that install no query of their own; any other type gets ERPNext's
+		// default. The transfer branches further down replace it for their own types, and the
+		// final branch keeps the receipt filter (see customer_goods_item_query).
+		frm.fields_dict["items"].grid.get_field("item_code").get_query = function () {
+			return customer_goods_item_query(frm) || erpnext.queries.item({ is_stock_item: 1 });
+		};
 		if (
 			["Customer Goods Issue", "Customer Goods Received", "Customer Goods Transfer"].includes(
 				frm.doc.stock_entry_type
@@ -525,12 +543,9 @@ frappe.ui.form.on("Stock Entry", {
 				};
 			}
 		} else {
-			frm.fields_dict["items"].grid.get_field("item_code").get_query = function (frm, cdt, cdn) {
-				return {
-					filters: {
-						is_stock_item: 1,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("item_code").get_query = function () {
+				// A configured receipt type outside the literal Customer Goods list lands here.
+				return customer_goods_item_query(frm) || { filters: { is_stock_item: 1 } };
 			};
 			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function (frm, cdt, cdn) {
 				return {
@@ -1904,6 +1919,19 @@ erpnext.show_serial_batch_selector = function (frm, d, callback, on_close, show_
 		);
 	});
 };
+
+// The item query for the configured Customer Gold receipt, or null for any other Stock Entry Type.
+// frm._cg_receipt_type is fetched in setup and is null while the Customer Gold flow is off.
+function customer_goods_item_query(frm) {
+	if (!frm.doc.stock_entry_type || frm.doc.stock_entry_type !== frm._cg_receipt_type) {
+		return null;
+	}
+	return erpnext.queries.item({
+		is_stock_item: 1,
+		has_batch_no: 1,
+		custom_inventory_type_can_be_customer_goods: 1,
+	});
+}
 
 function return_receipt_button_click(frm) {
 	frappe.call({
