@@ -13,6 +13,7 @@ from frappe.utils import (
 	get_datetime,
 	get_first_day,
 	get_last_day,
+	get_link_to_form,
 	getdate,
 	now_datetime,
 	nowdate,
@@ -24,10 +25,15 @@ from frappe.utils import (
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
 	batch_priority_map,
+	describe_customer_loss_posted,
 	describe_customer_spill,
 	is_customer_rank,
 	loss_rank,
 	tiered_allocate,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+	PROCESS_LOSS_SE_TYPE,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
@@ -158,6 +164,7 @@ class EmployeeIR(Document):
 				self.create_subcontracting_order()
 		else:
 			self.on_submit_receive()
+			self._announce_customer_loss_posted()
 
 	def before_validate(self):
 		if self.docstatus != 0:
@@ -1217,50 +1224,251 @@ class EmployeeIR(Document):
 		)
 
 	def _warn_customer_loss_spill(self):
-		"""Emit ONE orange warning naming the customer metal that absorbed loss.
+		"""Preview, on a draft save, the customer-owned metal the loss is booked on.
 
-		Warns whenever a customer tier was funded at all -- not only when the
-		waterfall overflowed. The ordinary business case is "regular stock ran out
-		and the remainder landed on the customer's gold", which produces no overflow
-		and is exactly what the operator needs to see.
+		ONE orange message for the whole document whenever a customer tier is funded --
+		not only when the waterfall overflowed. The ordinary case is "company metal ran
+		out, or there was none, and the rest lands on the customer's gold", which is
+		exactly what the operator needs to see. Customer-owned batches in the manually
+		booked table are listed too, so this preview and the note posted after a
+		successful submit (``_announce_customer_loss_posted``) name the same metal.
+
+		Future tense on purpose: this runs from ``validate`` on a draft save only
+		(``validate_process_loss`` returns once docstatus is 1), so nothing is posted
+		yet -- the Process Loss entry is made on submit, which is queued and can still
+		fail. The old "was booked" wording read as a completed posting
+		(EMP-IR-Labh-2026-14111).
 
 		Never throws: spilling is allowed. The one hard stop remains
 		``batch_owner_no_wastage`` below, and that batch is ranked last precisely so
 		the waterfall reaches it only when nothing else can absorb the loss.
 		"""
 		spill = self.flags.get("customer_loss_spill") or []
-		if not spill:
+		manual = _manual_customer_loss_rows(self)
+		if not spill and not manual:
 			return
 
 		merged = {}
-		for row in spill:
-			key = (row["customer"], row["item_code"], row["batch_no"])
-			merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), 3)
+		for rows, booked_manually in ((spill, False), (manual, True)):
+			for row in rows:
+				key = (
+					row["customer"],
+					row["item_code"],
+					row["batch_no"],
+					booked_manually,
+				)
+				merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), 3)
 
 		lines = describe_customer_spill(
 			[
-				{"customer": c, "item_code": i, "batch_no": b, "qty": q}
-				for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
+				{
+					"customer": customer,
+					"item_code": item_code,
+					"batch_no": batch_no,
+					"qty": qty,
+					"note": _("booked manually") if booked_manually else None,
+				}
+				for (customer, item_code, batch_no, booked_manually), qty in sorted(
+					merged.items(), key=lambda kv: str(kv[0])
+				)
 			]
 		)
-		total = flt(sum(merged.values()), 3)
-		frappe.msgprint(
-			_(
-				"Company stock could not absorb the whole process loss, so {0} g was "
-				"booked against customer-owned material:"
-			).format(frappe.bold(total))
-			+ "<br><br>"
-			+ "<br>".join(lines),
-			title=_("Customer Material Absorbed Loss"),
-			indicator="orange",
+		customer_total = flt(sum(merged.values()), 3)
+		booked_total = flt(
+			sum(
+				flt(_row_get(row, "proportionally_loss"), 3)
+				for row in (getattr(self, "employee_loss_details", None) or [])
+			)
+			+ sum(
+				get_loss_qty_in_grams(
+					_row_get(row, "item_code"), _row_get(row, "proportionally_loss")
+				)
+				for row in (getattr(self, "manually_book_loss_details", None) or [])
+			),
+			3,
 		)
-		# Durable trace: Employee IR submit runs on queue="long" (CustomSubmissionQueue),
-		# where a msgprint lands in the job log rather than the operator's browser.
-		self.flags.customer_loss_spill_total = total
+		company_total = flt(booked_total - customer_total, 3)
+
+		if company_total > 0:
+			message = _(
+				"Of the {0} g process loss, {1} g is booked on company-owned metal and {2} g "
+				"on customer-owned material:"
+			).format(
+				frappe.bold(booked_total),
+				frappe.bold(company_total),
+				frappe.bold(customer_total),
+			)
+		else:
+			message = _(
+				"All {0} g of the process loss is booked on customer-owned material; this "
+				"receive has no company-owned metal that can absorb it:"
+			).format(frappe.bold(customer_total))
+		message += "<br><br>" + "<br>".join(lines)
+
+		overflow = flt(
+			sum(flt(row.get("qty")) for row in (self.flags.get("loss_overflow") or [])),
+			3,
+		)
+		if overflow > 0 and company_total > 0:
+			message += "<br><br>" + _(
+				"The company-owned figure includes {0} g beyond the operation's recorded balance."
+			).format(frappe.bold(overflow))
+
+		message += "<br><br>" + _(
+			"Nothing has been posted yet. On submit, the customer's share moves from their "
+			"batch to customer-owned scrap."
+		)
+		frappe.msgprint(
+			message, title=_("Customer Material Will Absorb Loss"), indicator="orange"
+		)
+
+	def _announce_customer_loss_posted(self):
+		"""After a successful Receive submit, record which customer metal the loss was posted on.
+
+		The draft-save preview is long gone by then, and a queued submit's ``msgprint``
+		never reaches the browser. So the note goes on the timeline as an Info comment
+		and to the submitting user as a realtime message -- both only once the submit
+		commits (``after_commit``; a rollback discards them). It is built from the posted
+		Process Loss rows, not from the draft, so it names the scrap batch actually made.
+
+		Advisory: it must never be able to fail the submit that posted the loss.
+		"""
+		try:
+			rows = _posted_customer_loss_rows(self.name)
+			if not rows:
+				return
+
+			entries = ", ".join(
+				get_link_to_form("Stock Entry", name)
+				for name in dict.fromkeys(row.stock_entry for row in rows)
+			)
+			message = (
+				_(
+					"Process Loss {0} moved customer-owned material to customer-owned scrap:"
+				).format(entries)
+				+ "<br><br>"
+				+ "<br>".join(describe_customer_loss_posted(rows))
+			)
+			self.add_comment("Info", message)
+			frappe.publish_realtime(
+				"msgprint",
+				{
+					"message": message,
+					"title": _("Customer Material Absorbed Loss"),
+					"indicator": "orange",
+				},
+				user=frappe.session.user,
+				after_commit=True,
+			)
+		except frappe.QueryDeadlockError:
+			# InnoDB has already rolled back the whole submit; swallowing this would let
+			# on_submit carry on in a fresh transaction and commit half a submit.
+			raise
+		except Exception:
+			frappe.log_error(
+				title="Employee IR customer-loss announcement failed",
+				reference_doctype=self.doctype,
+				reference_name=self.name,
+			)
 
 	@frappe.whitelist()
 	def get_summary_data(self):
 		return get_summary_data(self)
+
+
+def _row_get(row, fieldname):
+	"""Read a field off a child row that may be a Document, a ``frappe._dict`` or a stub."""
+	return row.get(fieldname) if hasattr(row, "get") else getattr(row, fieldname, None)
+
+
+def _manual_customer_loss_rows(doc):
+	"""Manually booked loss rows on customer-owned batches, with ``qty`` in grams.
+
+	Module-level rather than a method: tests drive ``_warn_customer_loss_spill`` through
+	a stub document. Ownership is the batch's, as it is when the loss is posted
+	(``row_ownership.resolve_batch_ownership`` lets the batch win over the row).
+	"""
+	rows = [
+		row
+		for row in (getattr(doc, "manually_book_loss_details", None) or [])
+		if _row_get(row, "batch_no")
+		and flt(_row_get(row, "proportionally_loss"), 3) > 0
+	]
+	if not rows:
+		return []
+
+	ownership = batch_priority_map([_row_get(row, "batch_no") for row in rows])
+	customer_rows = []
+	for row in rows:
+		meta = ownership.get(_row_get(row, "batch_no"))
+		if not meta or not is_customer_rank(loss_rank(meta.inventory_type)):
+			continue
+		customer_rows.append(
+			{
+				"customer": meta.customer,
+				"item_code": _row_get(row, "item_code"),
+				"batch_no": _row_get(row, "batch_no"),
+				"qty": get_loss_qty_in_grams(
+					_row_get(row, "item_code"), _row_get(row, "proportionally_loss")
+				),
+			}
+		)
+	return customer_rows
+
+
+def _posted_customer_loss_rows(employee_ir):
+	"""Customer-owned produce rows of this IR's submitted Process Loss entry.
+
+	Each produce row is paired with the consume row right before it: the builder emits
+	one consume/produce pair per loss (``loss_stock_entry._build_combined_loss_se``).
+	The scrap batch is on the row once ``batch_rename.create_child_batches`` has minted
+	it; for a parent that module cannot extend, the Serial-and-Batch path minted it into
+	the row's bundle instead.
+	"""
+	return frappe.db.sql(
+		"""
+		SELECT
+			se.name AS stock_entry,
+			produce.customer,
+			produce.item_code AS loss_item,
+			produce.t_warehouse AS warehouse,
+			produce.qty,
+			produce.stock_uom,
+			COALESCE(
+				NULLIF(produce.batch_no, ''),
+				(
+					SELECT MIN(sbe.batch_no)
+					FROM `tabSerial and Batch Entry` sbe
+					WHERE sbe.parent = produce.serial_and_batch_bundle
+				)
+			) AS scrap_batch,
+			consume.item_code AS source_item,
+			consume.batch_no AS source_batch
+		FROM `tabStock Entry` se
+		JOIN `tabStock Entry Detail` produce
+			ON produce.parent = se.name AND produce.parenttype = 'Stock Entry'
+		LEFT JOIN `tabStock Entry Detail` consume
+			ON consume.parent = se.name
+			AND consume.parenttype = 'Stock Entry'
+			AND consume.idx = produce.idx - 1
+			AND IFNULL(consume.s_warehouse, '') != ''
+		WHERE se.employee_ir = %(employee_ir)s
+			AND se.stock_entry_type = %(stock_entry_type)s
+			AND se.auto_created = 1
+			AND se.docstatus = 1
+			AND IFNULL(produce.t_warehouse, '') != ''
+			AND IFNULL(produce.s_warehouse, '') = ''
+			AND IFNULL(produce.customer, '') != ''
+			AND produce.inventory_type IN %(inventory_types)s
+		ORDER BY se.name, produce.idx
+		""",
+		{
+			"employee_ir": employee_ir,
+			"stock_entry_type": PROCESS_LOSS_SE_TYPE,
+			"inventory_types": CUSTOMER_INVENTORY_TYPES,
+		},
+		as_dict=True,
+	)
 
 
 def _bulk_variant_of(item_codes):
