@@ -314,8 +314,8 @@ def _resolve_loss_item(doc):
 
 def cancel_melting_loss_stock_entries(doc):
 	"""Scoped cancel cascade: cancel ONLY the auto-created "Process Loss" SEs owned
-	by this document. Legacy conversion SEs (Repack-Metal Conversion) are left
-	untouched, preserving today's behaviour. A no-op for conversion-mode documents.
+	by this document. A no-op for conversion-mode documents, whose Repack-Metal
+	Conversion entry ``metal_conversions.cancel_conversion_stock_entries`` cancels.
 	"""
 	for se_name in frappe.db.get_all(
 		"Stock Entry",

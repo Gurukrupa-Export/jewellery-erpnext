@@ -44,9 +44,10 @@ FIELD = {
 	"print_hide": 1,
 	"translatable": 0,
 	"description": (
-		"Ownership lane this row belongs to, as "
-		"'<inventory type>|<customer>'. Stamped by Metal Conversions so child-batch "
-		"minting and Batch Rate origin entries stay scoped to one lane."
+		"Conversion lane this row belongs to: '<inventory type>|<customer>|<source batch>' "
+		"for a customer batch (each converts on its own), '<inventory type>|' for pooled "
+		"company stock. Stamped by Metal Conversions so child-batch minting and Batch Rate "
+		"origin entries stay scoped to one lane."
 	),
 }
 

@@ -239,12 +239,34 @@ def _row_lane_key(row):
 	)
 
 
+def _row_group_key(row):
+	"""The group a row is minted in: its conversion lane when the builder tagged one.
+
+	Metal Conversions tags every row with its lane (``metal_conversions.lane_tag``), and a
+	customer batch is a lane of its own -- so two batches of ONE customer are two groups,
+	each minted from its own source batch. An untagged voucher (SNC, Settle, Customer
+	Goods Received, Subcontracting Repack) groups by ownership, as it always has.
+	"""
+	return getattr(row, "custom_conversion_lane", None) or _row_lane_key(row)
+
+
 def _lane_parent_batches(doc):
-	"""``{lane key: first source batch of that lane}``, in row order."""
+	"""``{group key: first source batch of that group}``, in row order.
+
+	In a tagged group only a customer-owned source row can be the parent: the lane's
+	alloy is consumed under the same tag as Regular Stock, and a company alloy batch
+	must never lend its serial to the customer's converted batch.
+	"""
 	parents = {}
 	for row in doc.items:
-		if row.s_warehouse and row.batch_no:
-			parents.setdefault(_row_lane_key(row), row.batch_no)
+		if not (row.s_warehouse and row.batch_no):
+			continue
+		if (
+			getattr(row, "custom_conversion_lane", None)
+			and _row_lane_key(row)[0] not in CUSTOMER_INVENTORY_TYPES
+		):
+			continue
+		parents.setdefault(_row_group_key(row), row.batch_no)
 	return parents
 
 
@@ -272,7 +294,13 @@ def create_child_batches(doc, method=None):
 	# Received, Subcontracting Repack) builds such a voucher, so their behaviour is
 	# unchanged by the lane handling below -- which matters because SNC reads its target
 	# batch back off Stock Entry Detail and throws if nothing was minted.
-	single_lane = len(parents) <= 1
+	#
+	# A lane-tagged voucher (Metal Conversions) always takes the per-row path, even with
+	# one lane: its rows say which lane -- and so which parent -- each output belongs to,
+	# and the single-lane path would mint its Regular Stock rows (the C09 company alloy
+	# carve-out) as the customer's.
+	tagged = any(getattr(row, "custom_conversion_lane", None) for row in doc.items)
+	single_lane = not tagged and len(parents) <= 1
 
 	if not parents:
 		return
@@ -297,7 +325,7 @@ def create_child_batches(doc, method=None):
 			if lane_key[0] not in CUSTOMER_INVENTORY_TYPES:
 				continue
 
-			parent_batch = parents.get(lane_key)
+			parent_batch = parents.get(_row_group_key(row))
 			if not parent_batch:
 				continue
 

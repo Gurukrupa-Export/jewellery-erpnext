@@ -4,11 +4,18 @@
 """Ownership-lane split for a single Metal Conversion.
 
 One source qty is FIFO-allocated across whatever batches the source warehouse
-holds, which may span several ownerships at once. Each distinct
-``(inventory_type, customer)`` in that allocation is a **lane**: it converts to
-the target purity on its own and lands in its own target batch, because a
-Regular Stock target batch and a customer's target batch are different stock and
-must never be merged into one.
+holds, which may span several ownerships at once. The allocation is split into
+**lanes**, and each lane converts to the target purity on its own and lands in
+its own target batch:
+
+* every **customer-owned batch** is a lane of its own -- two batches of the same
+  customer are two receipts with their own lineage and value, so they never share
+  a target batch (MCON00332 merged batches 11 and 12 of one customer into one
+  target named after 11); and
+* **company stock** (Regular Stock) pools into one lane per ownership, as before.
+
+A Regular Stock target batch and a customer's target batch are different stock
+and must never be merged into one.
 
 Everything here is a pure function -- no DB access, no Document API -- so the
 whole split is unit-testable without a site, which is how this suite works.
@@ -26,16 +33,26 @@ rather than computed a second time from the purities.
 
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+)
+
 REGULAR_STOCK = "Regular Stock"
 
 
-def lane_key(inventory_type, customer):
-	"""Canonical, None-safe ownership key.
+def lane_key(inventory_type, customer, batch=None):
+	"""Canonical, None-safe lane key: ``(inventory_type, customer, batch)``.
 
 	An empty ``custom_inventory_type`` means company stock, not a third kind of
 	ownership -- normalising here is what keeps untyped batches allocatable.
+
+	``batch`` is kept only for customer-owned inventory, so each customer batch is
+	its own lane while company stock of one ownership pools (``batch`` is None).
 	"""
-	return (inventory_type or REGULAR_STOCK, customer or None)
+	inventory_type = inventory_type or REGULAR_STOCK
+	if inventory_type not in CUSTOMER_INVENTORY_TYPES:
+		batch = None
+	return (inventory_type, customer or None, batch or None)
 
 
 def build_lanes(allocations, lane_map):
@@ -53,9 +70,13 @@ def build_lanes(allocations, lane_map):
 	    {
 	        "inventory_type": str,
 	        "customer": str | None,
+	        "batch": str | None,  # the customer batch this lane converts; None when pooled
 	        "source_qty": float,
 	        "batches": [{"batch": str, "qty": float}, ...],
 	    }
+
+	A batch listed twice folds into its one lane, so its rows are converted -- and
+	checked against its balance -- together.
 	"""
 	lanes = {}
 	order = []
@@ -67,11 +88,12 @@ def build_lanes(allocations, lane_map):
 		if not batch or qty <= 0:
 			continue
 
-		key = lane_key(*lane_map.get(batch, (REGULAR_STOCK, None)))
+		key = lane_key(*lane_map.get(batch, (REGULAR_STOCK, None)), batch)
 		if key not in lanes:
 			lanes[key] = {
 				"inventory_type": key[0],
 				"customer": key[1],
+				"batch": key[2],
 				"source_qty": 0.0,
 				"batches": [],
 			}
