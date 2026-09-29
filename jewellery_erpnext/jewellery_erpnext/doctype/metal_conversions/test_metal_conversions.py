@@ -9,6 +9,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
+from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
+	BatchNegativeStockError,
+)
 from frappe.exceptions import ValidationError
 from frappe.tests import IntegrationTestCase
 from frappe.utils import flt as _frappe_flt
@@ -715,13 +718,6 @@ class TestMakeMetalStockEntry(_BuilderCase):
 			],
 		)
 
-	def test_saved_submitted_and_linked_back(self):
-		doc = self._two_lane_doc()
-		se = self._build(doc)
-		self.assertTrue(se.saved)
-		self.assertTrue(se.submitted)
-		self.assertEqual(doc.stock_entry, "SE-CONV-0001")
-
 	def test_throws_when_nothing_is_allocated(self):
 		doc = self._doc(source_batch_details=[])
 		with self.assertRaisesRegex(ValidationError, "No source batches are allocated"):
@@ -1199,7 +1195,8 @@ class TestSingleModeGuards(_BuilderCase):
 			self.assertNotIn("set_basic_rate_manually", row)
 
 	def test_the_link_is_written_with_db_set(self):
-		"""T60, R6. The Stock Entry link is written through db_set, once, with the entry built.
+		"""T60, R6. The entry is saved and submitted, and its link is written through db_set,
+		once, with the entry built.
 
 		on_submit runs after the row is written, so a plain ``self.stock_entry = ...`` was
 		never saved and every single-mode conversion lost its link. The fake's db_set also
@@ -1208,6 +1205,8 @@ class TestSingleModeGuards(_BuilderCase):
 		doc = self._two_lane_doc()
 		with patch.object(doc, "db_set", wraps=doc.db_set) as db_set:
 			se = self._build(doc)
+		self.assertTrue(se.saved)
+		self.assertTrue(se.submitted)
 		db_set.assert_called_once_with("stock_entry", "SE-CONV-0001")
 		self.assertEqual(se.name, "SE-CONV-0001")
 
@@ -2207,8 +2206,14 @@ class TestCancelCascade(IntegrationTestCase):
 			captured.update(doctype=doctype, filters=filters, pluck=pluck)
 			return []
 
+		# The doc carries a forward link that is not its own, and the query must still be the
+		# reverse reference alone. On gk, 20 submitted conversions name another document in
+		# stock_entry: MCON00305/309/312/313/382 all name Material Receipt GE-SE-MR-24-00038.
+		# A lookup by that link would cancel someone else's entry.
 		with patch.object(mc.frappe.db, "get_all", side_effect=_get_all):
-			mc.cancel_conversion_stock_entries(frappe._dict(name="MCON-T-1"))
+			mc.cancel_conversion_stock_entries(
+				frappe._dict(name="MCON-T-1", stock_entry="GE-SE-MR-24-00038")
+			)
 		self.assertEqual(captured["doctype"], "Stock Entry")
 		self.assertEqual(
 			captured["filters"],
@@ -2245,6 +2250,42 @@ class TestCancelCascade(IntegrationTestCase):
 			MetalConversions.on_cancel(doc)
 		loss.assert_called_once_with(doc)
 		conversion.assert_called_once_with(doc)
+
+	def test_a_refused_entry_cancel_propagates_after_the_loss_cascade(self):
+		"""T41: ERPNext refuses the entry's cancel once an output was used, and the refusal
+		must reach the caller. A try/except anywhere on the way would leave the conversion
+		cancelled over a live entry."""
+		order = []
+
+		def _refuse():
+			order.append("SE-CONV-1")
+			raise BatchNegativeStockError("Batch T-12-A has negative stock")
+
+		def _get_doc(doctype, name=None, *args, **kwargs):
+			if doctype == "Stock Entry":
+				return SimpleNamespace(cancel=_refuse)
+			return _REAL_GET_DOC(doctype, name, *args, **kwargs)
+
+		# Only the entry lookup is answered; any other read on the way goes to the real one.
+		real_get_all = mc.frappe.db.get_all
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "Stock Entry":
+				return ["SE-CONV-1"]
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch.object(
+				mc,
+				"cancel_melting_loss_stock_entries",
+				side_effect=lambda doc: order.append("loss"),
+			),
+			patch.object(mc.frappe.db, "get_all", side_effect=_get_all),
+			patch.object(mc.frappe, "get_doc", side_effect=_get_doc),
+		):
+			with self.assertRaises(BatchNegativeStockError):
+				MetalConversions.on_cancel(frappe._dict(name="MCON-T-1"))
+		self.assertEqual(order, ["loss", "SE-CONV-1"])
 
 
 def _source_row(
