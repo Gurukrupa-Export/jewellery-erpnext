@@ -402,6 +402,114 @@ class TestValidateDepartmentTransferReceived(IntegrationTestCase):
 		self.assertEqual(reads, [])
 
 
+class TestDepartmentTransferIsFrozen(IntegrationTestCase):
+	"""Once the Transfer to Department entry exists, where it is going must not move.
+
+	The destination fields are allow_on_submit and locked only by the form's
+	``read_only_depends_on``, so an Update through the API or ``set_value`` still reached the
+	database -- and End Transit then landed stock already in transit wherever the request
+	pointed by then.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	_SENT = {
+		"workflow_state": "Material Transferred to Department",
+		"custom_operation_type": "Transfer to Department",
+		"custom_destination_department": _DEST_DEPT,
+		"custom_destination_warehouse": _DEST_WH,
+		"custom_department_transfer_se": "SE-DEPT-1",
+	}
+
+	def _doc(self, before=None, **changes):
+		"""The request as this save carries it; ``before`` is its previous version,
+		which defaults to the one the transfer entry was made from."""
+		values = dict(self._SENT, **changes)
+		doc = SimpleNamespace(**values)
+		previous = frappe._dict(self._SENT if before is None else before)
+		doc.get_doc_before_save = lambda: previous
+		return doc
+
+	def _run_expecting_throw(self, doc):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mr_mod.validate_department_transfer_frozen(doc)
+		return str(ctx.exception)
+
+	def test_changing_the_destination_warehouse_throws(self):
+		msg = self._run_expecting_throw(
+			self._doc(custom_destination_warehouse="Pre Polish RSV - GEPL")
+		)
+		self.assertIn("Destination Warehouse", msg)
+		self.assertIn("SE-DEPT-1", msg)
+		self.assertIn(_DEST_WH, msg)
+
+	def test_changing_the_destination_department_throws(self):
+		msg = self._run_expecting_throw(
+			self._doc(custom_destination_department="Pre Polish - GEPL")
+		)
+		self.assertIn("Destination Department", msg)
+
+	def test_clearing_the_transfer_link_throws(self):
+		"""Otherwise one save could clear it and the next move the destination."""
+		msg = self._run_expecting_throw(self._doc(custom_department_transfer_se=None))
+		self.assertIn("Department Transfer SE", msg)
+
+	def test_unchanged_request_passes(self):
+		mr_mod.validate_department_transfer_frozen(self._doc())
+
+	def test_other_fields_may_still_change(self):
+		"""The request goes on to Transfer to MOP from this state."""
+		mr_mod.validate_department_transfer_frozen(
+			self._doc(
+				custom_operation_type="Transfer to MOP",
+				custom_manufacturing_operation="MOP-1",
+			)
+		)
+
+	def test_blank_and_unset_count_as_unchanged(self):
+		before = dict(self._SENT, custom_destination_department="")
+		mr_mod.validate_department_transfer_frozen(
+			self._doc(before=before, custom_destination_department=None)
+		)
+
+	def test_the_save_that_makes_the_transfer_passes(self):
+		"""The maker stamps the entry with db_set, so the save that runs it -- where the
+		operator picked the destination -- starts from a version without it."""
+		before = dict(
+			self._SENT,
+			workflow_state="Material Transferred",
+			custom_destination_warehouse=None,
+			custom_department_transfer_se=None,
+		)
+		mr_mod.validate_department_transfer_frozen(self._doc(before=before))
+
+	def test_document_without_a_previous_version_passes(self):
+		mr_mod.validate_department_transfer_frozen(SimpleNamespace(**self._SENT))
+
+	def test_update_after_submit_checks_before_anything_else(self):
+		"""A plain Update or API save reaches before_update_after_submit too; the lock runs
+		first, so a refused save never reaches a Stock Entry maker."""
+		doc = _submitted(
+			"Material Transferred to Department",
+			"Material Transferred",
+			custom_operation_type="Transfer to Department",
+		)
+		with patch.object(
+			mr_mod,
+			"validate_department_transfer_frozen",
+			side_effect=frappe.ValidationError("frozen"),
+		) as frozen, patch.object(
+			mr_mod, "make_department_transfer_stock_entry"
+		) as maker:
+			with self.assertRaises(frappe.ValidationError):
+				mr_mod.before_update_after_submit(doc, None)
+
+		frozen.assert_called_once_with(doc)
+		maker.assert_not_called()
+
+
 class TestBeforeUpdateAfterSubmitDispatch(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
