@@ -1741,9 +1741,30 @@ def _department_destination_lookup():
 	return lookup
 
 
+def _remaining_transit_qty(row, precision):
+	"""Stock-UOM quantity of a transit row not received yet.
+
+	ERPNext's own ``make_stock_in_entry`` rule. ``transferred_qty`` is kept in stock UOM
+	(``StockEntry.update_transferred_qty`` sums the receipts' ``transfer_qty``), so it is
+	taken off ``transfer_qty``, never off the row's transaction-UOM ``qty``. A row with
+	nothing left is not mapped again, and a later End Transit carries only the remainder.
+	"""
+	return flt(
+		flt(row.get("transfer_qty")) - flt(row.get("transferred_qty")), precision
+	)
+
+
+def _remaining_transit_row_qty(row, precision):
+	"""``_remaining_transit_qty`` in the row's own UOM, for the receipt's ``qty``."""
+	return _remaining_transit_qty(row, precision) / (
+		flt(row.get("conversion_factor")) or 1
+	)
+
+
 @frappe.whitelist()
 def make_stock_in_entry(source_name, target_doc=None):
 	department_destination = _department_destination_lookup()
+	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
 
 	def set_missing_values(source, target):
 		if target.stock_entry_type == "Customer Goods Received":
@@ -1776,7 +1797,7 @@ def make_stock_in_entry(source_name, target_doc=None):
 			target_doc.t_warehouse = destination
 
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = source_doc.qty
+		target_doc.qty = _remaining_transit_row_qty(source_doc, qty_precision)
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -1796,7 +1817,7 @@ def make_stock_in_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				# "condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				"condition": lambda doc: _remaining_transit_qty(doc, qty_precision) > 0,
 			},
 		},
 		target_doc,
@@ -2108,6 +2129,7 @@ validates serial items entered are equal to quantity or not if not appropriate e
 @frappe.whitelist()
 def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 	department_destination = _department_destination_lookup()
+	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
 
 	def set_missing_values(source, target):
 		target.stock_entry_type = source.stock_entry_type
@@ -2133,7 +2155,7 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 			target_doc.t_warehouse = destination
 
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = source_doc.qty - source_doc.transferred_qty
+		target_doc.qty = _remaining_transit_row_qty(source_doc, qty_precision)
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -2153,7 +2175,7 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				"condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				"condition": lambda doc: _remaining_transit_qty(doc, qty_precision) > 0,
 			},
 		},
 		target_doc,

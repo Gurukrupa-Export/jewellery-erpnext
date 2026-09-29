@@ -3019,8 +3019,64 @@ def _department_receipt_stub(reads, stock_entries=None, mr_item_warehouse=None):
 	return _get_value
 
 
+class _RemainingTransitQtyCases:
+	"""Shared by both End Transit mappers (``_run`` comes from the test class).
+
+	Each receipt maps only what the source row has not handed over yet, in the row's own
+	UOM: ERPNext keeps ``transferred_qty`` in stock UOM, so the remainder is
+	``(transfer_qty - transferred_qty) / conversion_factor``, and a fully received row is
+	not mapped at all. Mapping the original ``qty`` again made a second End Transit exceed
+	the source.
+	"""
+
+	def _row_rules(self):
+		source = _Doc(stock_entry_type="Material Transfer", name="SE-OUT-1")
+		target = _Doc(stock_entry_type="Material Transfer")
+		target.set_missing_values = MagicMock()
+		_, kwargs = self._run(source, target)
+		detail = kwargs["map_dict"]["Stock Entry Detail"]
+		return detail["postprocess"], detail["condition"]
+
+	def _receive(self, **row):
+		update_item, _ = self._row_rules()
+		source_row = _Row(
+			item_code="ITM-1",
+			t_warehouse="WH-TRANSIT",
+			material_request=None,
+			material_request_item=None,
+			**row,
+		)
+		target_row = _Row()
+		source_parent = _Doc(
+			stock_entry_type="Material Transfer",
+			name="SE-OUT-1",
+			custom_material_request_reference=None,
+		)
+		update_item(source_row, target_row, source_parent)
+		return target_row
+
+	def test_second_receipt_maps_only_the_remaining_qty(self):
+		"""10 sent, 4 already received: the next End Transit carries 6."""
+		target_row = self._receive(
+			qty=10, transfer_qty=10, transferred_qty=4, conversion_factor=1
+		)
+		self.assertEqual(target_row.qty, 6)
+
+	def test_remaining_qty_is_converted_back_to_the_row_uom(self):
+		"""5 boxes of 2 = 10 in stock UOM, 4 received: 6 left, which is 3 boxes."""
+		target_row = self._receive(
+			qty=5, transfer_qty=10, transferred_qty=4, conversion_factor=2
+		)
+		self.assertEqual(target_row.qty, 3)
+
+	def test_fully_received_rows_are_not_mapped_again(self):
+		_, condition = self._row_rules()
+		self.assertFalse(condition(_Row(transfer_qty=10, transferred_qty=10)))
+		self.assertTrue(condition(_Row(transfer_qty=10, transferred_qty=4)))
+
+
 # -------------------------------------------------------- make_stock_in_entry
-class TestMakeStockInEntry(_StockEntryTestCase):
+class TestMakeStockInEntry(_RemainingTransitQtyCases, _StockEntryTestCase):
 	def _run(self, source, target):
 		return _run_mapped(se_events.make_stock_in_entry, source, target)
 
@@ -3059,7 +3115,13 @@ class TestMakeStockInEntry(_StockEntryTestCase):
 		update_item = kwargs["map_dict"]["Stock Entry Detail"]["postprocess"]
 
 		source_parent = _Doc(custom_material_request_reference="MR-1")
-		source_row = _Row(item_code="ITM-1", t_warehouse="WH-SRC", qty=5)
+		source_row = _Row(
+			item_code="ITM-1",
+			t_warehouse="WH-SRC",
+			qty=5,
+			transfer_qty=5,
+			conversion_factor=1,
+		)
 		target_row = _Row()
 		mr_doc = _Doc(items=[_Row(item_code="ITM-1", warehouse="WH-MR")])
 
@@ -3088,8 +3150,20 @@ class TestMakeStockInEntry(_StockEntryTestCase):
 			custom_material_request_reference=None,
 		)
 		source_rows = [
-			_Row(item_code="ITM-1", t_warehouse="WH-TRANSIT", qty=5),
-			_Row(item_code="ITM-2", t_warehouse="WH-TRANSIT", qty=2),
+			_Row(
+				item_code="ITM-1",
+				t_warehouse="WH-TRANSIT",
+				qty=5,
+				transfer_qty=5,
+				conversion_factor=1,
+			),
+			_Row(
+				item_code="ITM-2",
+				t_warehouse="WH-TRANSIT",
+				qty=2,
+				transfer_qty=2,
+				conversion_factor=1,
+			),
 		]
 		target_rows = [_Row(), _Row()]
 		reads = []
@@ -3126,7 +3200,13 @@ class TestMakeStockInEntry(_StockEntryTestCase):
 			side_effect=_department_receipt_stub(reads),
 		):
 			update_item(
-				_Row(item_code="ITM-1", t_warehouse="WH-T", qty=1),
+				_Row(
+					item_code="ITM-1",
+					t_warehouse="WH-T",
+					qty=1,
+					transfer_qty=1,
+					conversion_factor=1,
+				),
 				target_row,
 				source_parent,
 			)
@@ -3136,7 +3216,9 @@ class TestMakeStockInEntry(_StockEntryTestCase):
 
 
 # ---------------------------------------- make_stock_in_entry_on_transit_entry
-class TestMakeStockInEntryOnTransitEntry(_StockEntryTestCase):
+class TestMakeStockInEntryOnTransitEntry(
+	_RemainingTransitQtyCases, _StockEntryTestCase
+):
 	def _run(self, source, target):
 		return _run_mapped(
 			se_events.make_stock_in_entry_on_transit_entry, source, target
@@ -3163,7 +3245,9 @@ class TestMakeStockInEntryOnTransitEntry(_StockEntryTestCase):
 			material_request="MR-1",
 			t_warehouse="WH-SRC",
 			qty=10,
+			transfer_qty=10,
 			transferred_qty=2,
+			conversion_factor=1,
 		)
 		target_row = _Row()
 
@@ -3193,7 +3277,9 @@ class TestMakeStockInEntryOnTransitEntry(_StockEntryTestCase):
 			material_request="MR-1",
 			t_warehouse="WH-TRANSIT",
 			qty=3,
+			transfer_qty=3,
 			transferred_qty=0,
+			conversion_factor=1,
 		)
 		target_row = _Row()
 		reads = []

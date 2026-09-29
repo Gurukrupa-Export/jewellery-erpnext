@@ -241,7 +241,9 @@ frappe.ui.form.on("Stock Entry", {
 					"Customer Goods Transfer",
 					"Metal Conversion Repack",
 					"Material Transfer (WORK ORDER)",
-					"Material Transfer (Department)",
+					// The Stock Entry Type's exact name; includes() is case-sensitive, and the
+					// Transfer to Department transit leg carries Customer Goods rows as they are.
+					"Material Transfer (DEPARTMENT)",
 					"Material Transfer (Employee)",
 					"Material Transfer",
 				].includes(frm.doc.stock_entry_type) &&
