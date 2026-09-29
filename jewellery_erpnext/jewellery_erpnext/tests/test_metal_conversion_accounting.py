@@ -16,6 +16,8 @@ zero hides, on real Metal Conversions documents:
   account; a Stock Adjustment line only when a produce row carries a hand-set rate;
 * liability: neither the liability account nor the customer's position moves, and the conversion's
   events carry the same fine gold out and in, at no value; the alloy stays the company's;
+* settlement: delivering part of the converted 22KT releases the customer's booked gold for the fine
+  gold delivered -- never the 22KT's carrying value, whose company alloy stays out of the liability;
 * precision: the header keeps 21.798365123 g, the rows book 21.798 g, pure quantity stays 20.000;
 * cancel and amend post once; a mixed-owner conversion shifts no value between owners; a repost
   leaves the conversion whole.
@@ -46,7 +48,7 @@ test.
 """
 
 from collections import Counter
-from decimal import ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from unittest.mock import patch
 
 import frappe
@@ -55,6 +57,10 @@ from frappe.utils import add_days, flt, nowdate
 
 from jewellery_erpnext.customer_subcontracting import (
 	customer_gold_fulfilment as cgf,
+)
+from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+	VALUATION_NOMINAL,
+	get_customer_gold_valuation_policy,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry import (
 	stock_entry as custom_stock_entry,
@@ -69,6 +75,7 @@ from .test_customer_gold_integration import (
 	CUSTOMER,
 	OTHER_CUSTOMER,
 	RAW_RATE,
+	SALES_TYPE,
 )
 from .test_metal_conversion_batch_isolation import (
 	ALLOY_ITEM,
@@ -876,3 +883,281 @@ class TestMCON00333Repost(_MCON00333Case):
 					flt(self._sle(se, row).incoming_rate), rates[row.name], places=2
 				)
 		self.assertEqual(self._gl(se.name), [])
+
+
+class TestMCON00333Delivery(_MCON00333Case):
+	"""Delivering part of the converted 22KT releases only the customer's booked gold (Phase 7).
+
+	The conversion leaves the liability alone (``TestMCON00333Conversion``), so it is the delivery
+	of the 22KT that must release it -- and release only what the customer handed over. At
+	MCON00333's own figures the whole 21.798 g would release 303,802.00, the 20 g fine at the
+	receipts' booked 15,190.10/g: never its 303,913.48 carrying value, which holds 111.48 of
+	company alloy, nor 21.798 g at the 24KT rate, 331,113.80.
+
+	Per-batch lanes put receipt -13's 18.673 g and 1.679 g of company alloy into one 20.352 g
+	batch of 22KT. Ten grams of it ship on a Sales Order and a Delivery Note, under the Nominal
+	policy the fixtures set inside the class transaction. The batch's customer components say
+	whose gold it holds -- receipt -13's alone -- and the ten grams carry it pro rata, each
+	component at its own receipt's booked rate::
+
+	    customer fine gold   18.673 x 10 / 20.352 g               =      9.175 g
+	    released             9.17502 g x 7,164.83                 =  65,737.46
+	    carrying value       the same plus 0.825 g of alloy at 62 =  65,788.60
+	    ten grams at 24KT    10 g x 7,164.83                      =  71,648.30
+
+	Only the released line is the customer's. It follows the lane's recorded make-up -- 18.673 of
+	20.352 g, 91.7502% customer gold -- not the item's nominal 91.75%, which would say 65,737.32.
+	"""
+
+	#: Stock quantities persist at 2 places on this site (only transfer_qty and the bundle carry
+	#: 3), so the part delivered is a whole 10 g.
+	DELIVERED_QTY = 10.0
+	#: Lane -13's make-up, written out by hand: 18.673 g of the customer's 24KT and its share of
+	#: the alloy, 1.798 x 18.673 / 20 = 1.679 g -- 20.352 g of 22KT.
+	LANE_GOLD = 18.673
+	LANE_ALLOY = 1.679
+	LANE_QTY = 20.352
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls.conv = cls._mcon00333()
+		cls.batch = cls._target_made_from(cls.conv.se, cls.conv.b13)
+		cls.before = cls._custody()
+		cls.dn = cls._deliver(cls.conv.wh, cls.batch, cls.DELIVERED_QTY)
+		cls.after = cls._custody()
+
+	@classmethod
+	def _target_made_from(cls, se, source_batch):
+		"""The 22KT batch that ``source_batch``'s lane of ``se`` produced."""
+		(lane,) = {
+			row.custom_conversion_lane
+			for row in se.items
+			if row.s_warehouse and cls._bundle_batch(row) == source_batch
+		}
+		(target,) = [
+			row
+			for row in se.items
+			if row.t_warehouse and row.custom_conversion_lane == lane
+		]
+		return cls._bundle_batch(target)
+
+	@classmethod
+	def _deliver(cls, warehouse, batch_no, qty):
+		"""``qty`` of the 22KT in ``batch_no``, on a Sales Order and its Delivery Note.
+
+		``TestConvertedPieceSettlesTheSourceValue._deliver_operating_item``'s path: gke's
+		validator refuses a Delivery Note row without its Sales Order, and an Outwork order reads
+		the customer's Payment Terms.
+		"""
+		if not frappe.db.exists("Sales Type", SALES_TYPE):
+			frappe.get_doc(
+				{"doctype": "Sales Type", "type": SALES_TYPE, "tax_rate": 0}
+			).insert(ignore_permissions=True)
+		if not frappe.db.exists("Customer Payment Terms", {"customer": CUSTOMER}):
+			frappe.get_doc(
+				{"doctype": "Customer Payment Terms", "customer": CUSTOMER}
+			).insert(ignore_permissions=True)
+		row = {
+			"item_code": TARGET_ITEM,
+			"qty": qty,
+			"rate": 0,
+			"warehouse": warehouse,
+			"uom": "Gram",
+			"stock_uom": "Gram",
+			"conversion_factor": 1,
+		}
+
+		so = frappe.new_doc("Sales Order")
+		so.company = COMPANY
+		so.customer = CUSTOMER
+		so.sales_type = SALES_TYPE
+		so.transaction_date = cls.posting_date
+		so.delivery_date = cls.posting_date
+		so.append("items", dict(row, delivery_date=cls.posting_date))
+		so.flags.ignore_mandatory = True
+		so.save()
+		so.submit()
+
+		dn = frappe.new_doc("Delivery Note")
+		dn.company = COMPANY
+		dn.customer = CUSTOMER
+		dn.posting_date = cls.posting_date
+		dn.set_posting_time = 1
+		dn.append(
+			"items",
+			dict(
+				row,
+				batch_no=batch_no,
+				use_serial_batch_fields=1,
+				against_sales_order=so.name,
+				so_detail=so.items[0].name,
+			),
+		)
+		dn.flags.ignore_mandatory = True
+		dn.save()
+		dn.submit()
+		return dn
+
+	@staticmethod
+	def _booked_rate(batch):
+		"""What the receipt of ``batch`` booked per gram: its Receipt events' value over grams."""
+		receipts = frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={"batch_no": batch, "cg_event_kind": "Receipt"},
+			fields=["cg_gross_qty_delta", "cg_carrying_value_delta"],
+		)
+		return sum(_d(r.cg_carrying_value_delta) for r in receipts) / sum(
+			_d(r.cg_gross_qty_delta) for r in receipts
+		)
+
+	def _expected(self):
+		"""What the ten grams hold, from the lane's make-up and the site's own rates.
+
+		Pro rata over the batch's customer components, each at its own receipt's booked rate;
+		the alloy at the rate its company receipt posted.
+		"""
+		share = _d(self.DELIVERED_QTY) / _d(self.LANE_QTY)
+		customer = {self.conv.b13: _d(self.LANE_GOLD)}
+		return frappe._dict(
+			# 24KT reads 100% here, as on kg-gk: the customer's grams are fine grams.
+			fine=sum(qty * share for qty in customer.values()),
+			release=sum(
+				qty * share * self._booked_rate(source)
+				for source, qty in customer.items()
+			),
+			alloy=_d(self.LANE_ALLOY) * share * self.conv.r_alloy,
+		)
+
+	def _delivery_events(self):
+		return frappe.get_all(
+			"Customer Gold Ledger Entry",
+			filters={
+				"reference_doctype": "Delivery Note",
+				"reference_docname": self.dn.name,
+			},
+			fields=[
+				"cg_event_kind",
+				"customer",
+				"batch_no",
+				"cg_fine_gold_delta",
+				"cg_carrying_value_delta",
+				"cg_settlement_voucher",
+			],
+		)
+
+	def _released(self):
+		"""What the liability account let go of across the delivery: before less after."""
+		return _d(flt(self.before.liability - self.after.liability, 2))
+
+	def test_the_fixture_ships_ten_grams_of_one_lane(self):
+		"""Guard the guard: Nominal; receipt -13's 18.673 g beside 1.679 g of company alloy in a
+		batch valued on its own; ten of its 20.352 g gone; the receipt booked what it posted."""
+		conv = self.conv
+		self.assertEqual(get_customer_gold_valuation_policy(), VALUATION_NOMINAL)
+		self.assertEqual(
+			{
+				c.source_batch: (c.customer or None, c.inventory_type, flt(c.qty, 3))
+				for c in self._components(self.batch)
+			},
+			{
+				conv.b13: (CUSTOMER, "Customer Goods", self.LANE_GOLD),
+				conv.alloy: (None, "Regular Stock", self.LANE_ALLOY),
+			},
+		)
+		# Batch-wise valuation: the ten grams leave at this batch's own rate, not at a
+		# warehouse average with the -12 lane's 22KT.
+		self.assertEqual(
+			frappe.db.get_value("Batch", self.batch, "use_batchwise_valuation"), 1
+		)
+		self.assertAlmostEqual(
+			self._balance(self.batch, conv.wh),
+			self.LANE_QTY - self.DELIVERED_QTY,
+			places=3,
+		)
+		self.assertLessEqual(
+			abs(self._booked_rate(conv.b13) - conv.r13), Decimal("0.000001")
+		)
+
+	def test_the_liability_releases_the_customers_gold_for_the_fine_delivered(self):
+		"""The ten grams hold 9.175 g of the customer's fine gold; the liability lets go of
+		exactly that, at receipt -13's booked rate.
+
+		One Delivery event carries the fine grams and the value; one Journal Entry debits the
+		liability and credits COGS Adjustment by the same amount; the liability account and the
+		customer's fine position fall by exactly that, and by nothing more.
+		"""
+		expected = self._expected()
+		events = self._delivery_events()
+		self.assertEqual([e.cg_event_kind for e in events], ["Delivery"])
+		(event,) = events
+		self.assertEqual((event.customer, event.batch_no), (CUSTOMER, self.batch))
+		self.assertAlmostEqual(
+			flt(event.cg_fine_gold_delta), -float(expected.fine), places=3
+		)
+		self.assertAlmostEqual(
+			self.after.fine - self.before.fine, flt(event.cg_fine_gold_delta), places=3
+		)
+
+		released = self._released()
+		self.assertLessEqual(
+			abs(released - expected.release),
+			PAISA,
+			"the liability did not release the customer's booked gold for the fine delivered",
+		)
+		self.assertTrue(
+			event.cg_settlement_voucher, "the delivery posted no settlement"
+		)
+		je = frappe.get_doc("Journal Entry", event.cg_settlement_voucher)
+		self.assertEqual(je.docstatus, 1)
+		self.assertEqual(
+			sorted(
+				(
+					line.account,
+					flt(line.debit_in_account_currency, 2),
+					flt(line.credit_in_account_currency, 2),
+				)
+				for line in je.accounts
+			),
+			sorted(
+				[
+					(self.liability_account, float(released), 0.0),
+					(self.cogs_account, 0.0, float(released)),
+				]
+			),
+		)
+		self.assertEqual(flt(event.cg_carrying_value_delta, 2), -float(released))
+
+	def test_neither_the_22kt_carrying_value_nor_its_alloy_is_released(self):
+		"""The ten grams left the stock at their carrying value and the liability at the
+		customer's share. The gap is the company alloy in them -- 0.825 g at 62.00 -- which the
+		invoice recovers and the liability never held. Nor is the release ten grams at the
+		24KT's booked rate: the 22KT's gram count priced as the customer's 24KT.
+		"""
+		expected = self._expected()
+		released = self._released()
+		carrying = -sum(
+			_d(sle.stock_value_difference)
+			for sle in frappe.get_all(
+				"Stock Ledger Entry",
+				filters={"voucher_no": self.dn.name, "is_cancelled": 0},
+				fields=["stock_value_difference"],
+			)
+		)
+		self.assertNotAlmostEqual(
+			float(released),
+			float(carrying),
+			delta=1.0,
+			msg="the liability released the 22KT's carrying value, company alloy and all",
+		)
+		self.assertLessEqual(
+			abs(carrying - released - expected.alloy),
+			2 * PAISA,
+			"what the release left out is not exactly the company alloy's share",
+		)
+		self.assertNotAlmostEqual(
+			float(released),
+			float(_d(self.DELIVERED_QTY) * self._booked_rate(self.conv.b13)),
+			delta=1.0,
+			msg="the liability released the 22KT's grams at the 24KT's booked rate",
+		)
