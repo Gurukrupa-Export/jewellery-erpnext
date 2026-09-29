@@ -35,6 +35,14 @@ frappe.ui.form.on("Metal Conversions", {
 			set_alloy_filter(frm, "alloy");
 		}
 	},
+	onload(frm) {
+		// The desk's Amend copies no-copy fields, so an amendment arrives naming the Stock
+		// Entry its cancelled original made. Frappe checks links before any server hook runs
+		// and will not save a link to a cancelled document; only a submit writes this one.
+		if (frm.is_new() && frm.doc.stock_entry) {
+			frm.set_value("stock_entry", null);
+		}
+	},
 	employee(frm) {
 		get_detail_tab_value(frm);
 	},

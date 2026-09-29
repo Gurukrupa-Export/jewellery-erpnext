@@ -17,6 +17,11 @@ reasons ``test_customer_gold_integration`` gives: it writes Singles, masters and
 ``IntegrationTestCase`` rolls back once per CLASS. Every test takes a fresh warehouse, so one
 test's FIFO draw can never pick up another test's batches.
 
+It runs at the site's own float precision -- 2 here, as on gk; 3 on kg-gk. A conversion posts at
+Stock Entry Detail ``transfer_qty``'s three decimals either way (``metal_conversions._qty_precision``).
+The suite used to force 3: the builder rounded at the document's float precision and, at 2,
+booked batch 11's 0.477 g as 0.48 g and overdrew it.
+
 HOW THE EXPECTATIONS ARE MADE
 -----------------------------
 Quantities are written out by hand (10 g at 100% -> 91.75% is 10.899182561 g; per batch
@@ -82,7 +87,6 @@ class _MetalConversionCase(_CustomerGoldIntegrationCase):
 	@classmethod
 	def setUpClass(cls):
 		super().setUpClass()
-		cls._use_production_precision()
 		cls._ensure_conversion_masters()
 		settings = frappe.get_doc(SETTINGS_DOCTYPE)
 		settings.customer_gold_valuation_policy = "Nominal"
@@ -94,31 +98,6 @@ class _MetalConversionCase(_CustomerGoldIntegrationCase):
 		settings.save(ignore_permissions=True)
 		frappe.clear_cache(doctype=SETTINGS_DOCTYPE)
 		cls._warehouses = 0
-
-	# ---------------------------------------------------------------- precision
-	@classmethod
-	def _use_production_precision(cls):
-		"""Post stock quantities at 3 dp, as kg-gk does (System Settings float precision 3).
-
-		This disposable site is at 2, where ERPNext itself rounds a 0.477 g row to 0.48 g and
-		overdraws the batch -- the reported conversion cannot be posted there at all. The
-		change is made inside the class transaction, undone by the class cleanup and then
-		rolled back with everything else.
-		"""
-		previous = frappe.db.get_single_value("System Settings", "float_precision")
-		cls._set_float_precision("3")
-		cls.addClassCleanup(cls._set_float_precision, previous)
-
-	@staticmethod
-	def _set_float_precision(value):
-		from frappe.core.doctype.system_settings.system_settings import (
-			clear_system_settings_cache,
-		)
-
-		frappe.db.set_single_value("System Settings", "float_precision", value)
-		frappe.db.set_default("float_precision", value)
-		clear_system_settings_cache()
-		frappe.local.system_settings = None
 
 	# ------------------------------------------------------------------ masters
 	@classmethod
@@ -801,12 +780,19 @@ class TestConversionLifecycle(_MetalConversionCase):
 		}
 		frappe.get_doc("Metal Conversions", mc.name).cancel()
 
-		# As the desk's Amend does: no_copy fields (the old ``stock_entry`` link) stay behind.
-		amended = frappe.copy_doc(
-			frappe.get_doc("Metal Conversions", mc.name), ignore_no_copy=False
-		)
+		# As the desk's Amend does (frappe.model.copy_doc with from_amend): no-copy fields come
+		# along, the cancelled entry's ``stock_entry`` link among them, and Frappe checks links
+		# before any hook runs -- so saved as it is, the amendment is refused ...
+		amended = frappe.copy_doc(frappe.get_doc("Metal Conversions", mc.name))
 		amended.amended_from = mc.name
 		amended.docstatus = 0
+		self.assertEqual(amended.stock_entry, old_se.name)
+		frappe.db.savepoint("amend_as_copied")
+		with self.assertRaises(frappe.CancelledLinkError):
+			frappe.copy_doc(amended).insert(ignore_permissions=True)
+		frappe.db.rollback(save_point="amend_as_copied")
+		# ... which is why the form drops it on load (metal_conversions.js, onload).
+		amended.stock_entry = None
 		amended.insert(ignore_permissions=True)
 		amended.submit()
 
