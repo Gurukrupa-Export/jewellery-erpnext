@@ -903,6 +903,66 @@ class TestEachCustomerBatchConvertsOnItsOwn(_BuilderCase):
 			[row.qty for row in se.items if row.get("t_warehouse")], [0.52, 9.453]
 		)
 
+	def test_mcon00333_two_batches_make_1_446_and_20_352(self):
+		"""MCON00333 (kg-gk, 29 Sep 2026): 20 g of one customer's 24KT from two batches.
+
+		FIFO drew the whole of batch -12 (1.327 g) and 18.673 g of batch -13, plus 1.798 g of
+		alloy, into 20 x 100 / 91.75 = 21.798365123 g of 22KT; MAT-STE-19749 booked it as ONE
+		21.798 g target. Per batch, the stored alloy is shared by source: 1.798 x 1.327 / 20 =
+		0.1193 -> 0.119 g, and 1.798 x 18.673 / 20 = 1.6787 -> 1.679 g (0.119 + 1.679 = 1.798, no
+		residual). So -12 makes 1.327 + 0.119 = 1.446 g and -13 makes 18.673 + 1.679 = 20.352 g,
+		21.798 g in all -- the same metal, now in the batch it came from.
+		"""
+		doc = self._doc(
+			source_item="M-G-24KT-99.9-Y",
+			source_qty=20.0,
+			target_item="M-G-22KT-91.75-Y",
+			target_qty=21.798365123,
+			source_alloy="M-Genia-221",
+			source_alloy_qty="1.798",
+			source_batch_details=[_alloc(1.327, "C-12"), _alloc(18.673, "C-13")],
+			alloy_batch_details=[_alloc(1.798, "AL-04")],
+		)
+		se = self._build(
+			doc,
+			lane_map={
+				"C-12": ("Customer Goods", "GJCU0009"),
+				"C-13": ("Customer Goods", "GJCU0009"),
+				"AL-04": ("Regular Stock", None),
+			},
+		)
+
+		self.assertEqual(
+			self._groups(se),
+			{
+				"Customer Goods|GJCU0009|C-12": {
+					"source": [("C-12", 1.327)],
+					"alloy": [("AL-04", 0.119)],
+					"target": [("GJCU0009", 1.446)],
+				},
+				"Customer Goods|GJCU0009|C-13": {
+					"source": [("C-13", 18.673)],
+					"alloy": [("AL-04", 1.679)],
+					"target": [("GJCU0009", 20.352)],
+				},
+			},
+		)
+		# The alloy is the company's in both lanes; only the lane tag says whose metal it joined.
+		self.assertEqual(
+			[
+				(row.inventory_type, row.get("customer"))
+				for row in se.items
+				if row.item_code == "M-Genia-221"
+			],
+			[("Regular Stock", None), ("Regular Stock", None)],
+		)
+		self.assertAlmostEqual(
+			sum(row.qty for row in se.items if row.get("t_warehouse")), 21.798, places=9
+		)
+		# One owner across both lanes, so the voucher still names it.
+		self.assertEqual(se.payload["inventory_type"], "Customer Goods")
+		self.assertEqual(se.payload["_customer"], "GJCU0009")
+
 
 # ------------------------------------------------------------------------------------------
 # lane_tag, the single-mode guards, the per-lane balance property, validate_target_qty, the
