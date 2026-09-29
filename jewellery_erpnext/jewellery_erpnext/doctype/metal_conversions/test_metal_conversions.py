@@ -27,6 +27,10 @@ _MC_PATH = (
 	"jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions"
 )
 
+#: The real functions, saved before any test patches them (see ``_BuilderCase._build``).
+_REAL_GET_DOC = frappe.get_doc
+_REAL_NEW_DOC = frappe.new_doc
+
 
 def _det_flt(value, precision=None, rounding_method=None):
 	"""Deterministic stand-in for frappe.utils.flt (see the melting-loss suite)."""
@@ -74,7 +78,8 @@ class TestBuildLanes(IntegrationTestCase):
 		self.assertEqual(result[1]["customer"], "TNCU0001")
 		self.assertEqual(result[1]["source_qty"], 12.0)
 
-	def test_two_customers_make_three_lanes(self):
+	def test_every_customer_batch_is_its_own_lane(self):
+		"""Two batches of one customer are two lanes -- same customer is not same batch."""
 		allocations = [
 			_alloc(3.0, "A1"),
 			_alloc(2.0, "REG"),
@@ -89,19 +94,46 @@ class TestBuildLanes(IntegrationTestCase):
 		}
 		result = lanes_mod.build_lanes(allocations, lane_map)
 
-		# Ordered by FIRST appearance, and A1/A2 merge into one lane.
+		# Ordered by FIRST appearance; A1 and A2 stay apart although both are CUST-A's.
 		self.assertEqual(
 			[
-				(lane["inventory_type"], lane["customer"], lane["source_qty"])
+				(
+					lane["inventory_type"],
+					lane["customer"],
+					lane["batch"],
+					lane["source_qty"],
+				)
 				for lane in result
 			],
 			[
-				("Customer Goods", "CUST-A", 4.0),
-				("Regular Stock", None, 2.0),
-				("Customer Goods", "CUST-B", 5.0),
+				("Customer Goods", "CUST-A", "A1", 3.0),
+				("Regular Stock", None, None, 2.0),
+				("Customer Goods", "CUST-B", "B1", 5.0),
+				("Customer Goods", "CUST-A", "A2", 1.0),
 			],
 		)
-		self.assertEqual([b["batch"] for b in result[0]["batches"]], ["A1", "A2"])
+		self.assertEqual([b["batch"] for b in result[0]["batches"]], ["A1"])
+
+	def test_regular_stock_batches_still_pool(self):
+		"""Company stock is one ownership: its batches share one lane, as before."""
+		result = lanes_mod.build_lanes(
+			[_alloc(2.0, "R1"), _alloc(3.0, "R2")],
+			{"R1": ("Regular Stock", None), "R2": ("Regular Stock", None)},
+		)
+		self.assertEqual(len(result), 1)
+		self.assertIsNone(result[0]["batch"])
+		self.assertEqual(result[0]["source_qty"], 5.0)
+		self.assertEqual([b["batch"] for b in result[0]["batches"]], ["R1", "R2"])
+
+	def test_a_batch_listed_twice_folds_into_its_one_lane(self):
+		"""Both rows convert together, so the batch is checked against its balance once."""
+		result = lanes_mod.build_lanes(
+			[_alloc(2.0, "A1"), _alloc(1.5, "A1")],
+			{"A1": ("Customer Goods", "CUST-A")},
+		)
+		self.assertEqual(len(result), 1)
+		self.assertEqual(result[0]["source_qty"], 3.5)
+		self.assertEqual(len(result[0]["batches"]), 2)
 
 	def test_unmapped_and_null_batches_are_regular_stock(self):
 		"""An untyped batch is company stock, not a third ownership."""
@@ -268,6 +300,9 @@ class _FakeMCDoc:
 		getattr(self, table).append(row)
 		return row
 
+	def db_set(self, fieldname, value, *args, **kwargs):
+		setattr(self, fieldname, value)
+
 
 class _FakeSE:
 	"""Captures the Stock Entry payload the builder constructs."""
@@ -289,8 +324,8 @@ class _FakeSE:
 		self.submitted = True
 
 
-class TestMakeMetalStockEntry(IntegrationTestCase):
-	"""One voucher, rows grouped lane by lane, every row carrying its lane tag."""
+class _BuilderCase(IntegrationTestCase):
+	"""Shared harness for the Stock Entry builder: a fake document, a captured voucher."""
 
 	@classmethod
 	def setUpClass(cls):
@@ -365,14 +400,27 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		}
 		captured = {}
 
-		def _get_doc(payload):
-			se = _FakeSE(payload)
-			captured["se"] = se
-			return se
+		# The fakes answer ONLY the Stock Entry the builder makes and hand every other read to
+		# the real functions. ``flt(x, precision)`` reads the rounding method through System
+		# Settings; a fake that answered that read too made ``flt`` swallow the error and
+		# return 0, so every lane target read 0.0 -- but only while the cache was cold, which
+		# made the builder tests pass or fail by run order.
+		def _get_doc(*args, **kwargs):
+			payload = args[0] if args else kwargs
+			if isinstance(payload, dict) and payload.get("doctype") == "Stock Entry":
+				se = _FakeSE(payload)
+				captured["se"] = se
+				return se
+			return _REAL_GET_DOC(*args, **kwargs)
+
+		def _new_doc(doctype, *args, **kwargs):
+			if doctype == "Stock Entry":
+				return _FakeSE({})
+			return _REAL_NEW_DOC(doctype, *args, **kwargs)
 
 		with (
 			patch("frappe.get_doc", side_effect=_get_doc),
-			patch("frappe.new_doc", side_effect=lambda dt: _FakeSE({})),
+			patch("frappe.new_doc", side_effect=_new_doc),
 			patch.object(mc, "get_batch_lane_map", return_value=lane_map),
 			patch.object(
 				mc, "get_company_component_qty", return_value=company_component_qty
@@ -385,6 +433,10 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 			mc.make_metal_stock_entry(doc)
 
 		return captured["se"]
+
+
+class TestMakeMetalStockEntry(_BuilderCase):
+	"""One voucher, rows grouped lane by lane, every row carrying its lane tag."""
 
 	def test_one_voucher_with_source_target_source_target(self):
 		se = self._build(self._two_lane_doc())
@@ -415,8 +467,8 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 
 		self.assertEqual(regular_source.custom_conversion_lane, "Regular Stock|")
 		self.assertEqual(regular_target.custom_conversion_lane, "Regular Stock|")
-		self.assertEqual(cg_source.custom_conversion_lane, "Customer Goods|TNCU0001")
-		self.assertEqual(cg_target.custom_conversion_lane, "Customer Goods|TNCU0001")
+		self.assertEqual(cg_source.custom_conversion_lane, "Customer Goods|TNCU0001|CG")
+		self.assertEqual(cg_target.custom_conversion_lane, "Customer Goods|TNCU0001|CG")
 
 	def test_target_qtys_are_per_lane_and_sum_to_the_document(self):
 		se = self._build(self._two_lane_doc())
@@ -464,12 +516,14 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		# contribution attributable to the right target batch.
 		self.assertEqual(
 			[r.custom_conversion_lane for r in alloy_rows],
-			["Regular Stock|", "Customer Goods|TNCU0001"],
+			["Regular Stock|", "Customer Goods|TNCU0001|CG"],
 		)
 		self.assertAlmostEqual(sum(r.qty for r in alloy_rows), 6.667, places=9)
 
 	def test_target_alloy_belongs_to_its_lane_including_the_customer(self):
-		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		doc = self._two_lane_doc(
+			target_qty=15.0, target_alloy="talloy", target_alloy_qty=5.0
+		)
 		se = self._build(doc)
 
 		alloy_rows = [row for row in se.items if row.item_code == "talloy"]
@@ -496,7 +550,9 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		customer lane's release is 3.0 g, not 5.0 g. Of that 3.0 g, 2.0 g is recorded as
 		company metal, so the customer keeps 1.0 g and 2.0 g goes back as Regular Stock.
 		"""
-		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		doc = self._two_lane_doc(
+			target_qty=15.0, target_alloy="talloy", target_alloy_qty=5.0
+		)
 		se = self._build(doc, company_component_qty=2.0)
 
 		alloy_rows = [row for row in se.items if row.item_code == "talloy"]
@@ -513,7 +569,7 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 			r
 			for r in alloy_rows
 			if not r.get("customer")
-			and r.custom_conversion_lane == "Customer Goods|TNCU0001"
+			and r.custom_conversion_lane == "Customer Goods|TNCU0001|CG"
 		]
 		self.assertEqual(len(carved), 1)
 		self.assertAlmostEqual(carved[0].qty, 2.0, places=9)
@@ -529,7 +585,9 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		target batch. The carved-out alloy still funded THIS lane, so it keeps the tag -- only
 		``inventory_type``/``customer`` differ. Dropping the tag would misattribute its rate.
 		"""
-		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		doc = self._two_lane_doc(
+			target_qty=15.0, target_alloy="talloy", target_alloy_qty=5.0
+		)
 		se = self._build(doc, company_component_qty=2.0)
 
 		carved = next(
@@ -537,9 +595,9 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 			for r in se.items
 			if r.item_code == "talloy"
 			and not r.get("customer")
-			and r.custom_conversion_lane == "Customer Goods|TNCU0001"
+			and r.custom_conversion_lane == "Customer Goods|TNCU0001|CG"
 		)
-		self.assertEqual(carved.custom_conversion_lane, "Customer Goods|TNCU0001")
+		self.assertEqual(carved.custom_conversion_lane, "Customer Goods|TNCU0001|CG")
 
 	def test_carve_out_never_exceeds_what_was_released(self):
 		"""A recorded company component larger than the release must not invent alloy.
@@ -549,7 +607,9 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		nowhere, and a negative quantity that erpnext would reject far downstream with a
 		message naming neither C09 nor this code.
 		"""
-		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		doc = self._two_lane_doc(
+			target_qty=15.0, target_alloy="talloy", target_alloy_qty=5.0
+		)
 		se = self._build(doc, company_component_qty=9.0)
 
 		alloy_rows = [row for row in se.items if row.item_code == "talloy"]
@@ -566,7 +626,9 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		byte-identical behaviour. This is the same assertion as
 		``test_target_alloy_belongs_to_its_lane_including_the_customer``, stated from the
 		carve-out's side so the guarantee is pinned even if that test is ever changed."""
-		doc = self._two_lane_doc(target_alloy="talloy", target_alloy_qty=5.0)
+		doc = self._two_lane_doc(
+			target_qty=15.0, target_alloy="talloy", target_alloy_qty=5.0
+		)
 		se = self._build(doc, company_component_qty=0.0)
 
 		alloy_rows = [row for row in se.items if row.item_code == "talloy"]
@@ -582,6 +644,7 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		Regular Stock row into two identical ones for no reason."""
 		doc = self._doc(
 			source_batch_details=[_alloc(20.0, "REG")],
+			target_qty=15.0,
 			target_alloy="talloy",
 			target_alloy_qty=5.0,
 		)
@@ -612,13 +675,17 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		self.assertEqual(se.items[1].qty, 26.667)
 		self.assertTrue(all(r.customer == "TNCU0001" for r in se.items))
 
-	def test_one_lane_per_ownership_not_per_batch(self):
-		"""Two batches of the same ownership are ONE lane, hence one target row."""
+	def test_one_lane_per_customer_batch_not_per_customer(self):
+		"""Two batches of the same customer are TWO lanes, hence two target rows.
+
+		Until MCON00332 this pinned the opposite: 12 g of one customer's metal across two
+		batches made one 16 g target, named after the first batch only.
+		"""
 		doc = self._doc(
 			source_batch_details=[
-				_alloc(5.0, "CG"),
+				_alloc(6.0, "CG"),
 				_alloc(8.0, "REG"),
-				_alloc(7.0, "CG2"),
+				_alloc(6.0, "CG2"),
 			]
 		)
 		se = self._build(
@@ -631,13 +698,14 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		)
 
 		targets = [r for r in se.items if r.get("t_warehouse")]
-		self.assertEqual(len(targets), 2)
-		# Lanes keep FIFO first-appearance order: Customer Goods was seen first.
-		self.assertEqual(targets[0].customer, "TNCU0001")
-		self.assertIsNone(targets[1].customer)
-		# 12 g of the customer's metal across two batches -> one 16 g target row.
-		self.assertEqual(targets[0].qty, 16.0)
-		self.assertEqual(targets[1].qty, 10.667)
+		self.assertEqual(
+			[(r.customer, r.qty, r.custom_conversion_lane) for r in targets],
+			[
+				("TNCU0001", 8.0, "Customer Goods|TNCU0001|CG"),
+				(None, 10.667, "Regular Stock|"),
+				("TNCU0001", 8.0, "Customer Goods|TNCU0001|CG2"),
+			],
+		)
 
 	def test_saved_submitted_and_linked_back(self):
 		doc = self._two_lane_doc()
@@ -662,6 +730,174 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		with patch.object(mc, "split_conversion", side_effect=_shrink_last_lane):
 			with self.assertRaisesRegex(ValidationError, "does not match"):
 				self._build(doc)
+
+
+class TestEachCustomerBatchConvertsOnItsOwn(_BuilderCase):
+	"""MCON00332 (kg-gk, 29 Sep 2026): two batches of ONE customer must not share a target.
+
+	Single-converter mode drew, FIFO: customer batch 11 (0.477 g), a Regular batch (0.850 g),
+	customer batch 12 (8.673 g) -- same customer -- plus 0.899 g of company alloy, into 22KT
+	(10 g x 100 / 91.75 = 10.899182561 g). MAT-STE-19453 booked ONE customer target
+	(``...-11-B``, 9.973 g) for both batches, so batch 12's metal sat in a batch named after
+	11 at a blended rate. Each customer batch now converts on its own: its own target row,
+	its own share of the alloy, its own lane tag.
+
+	Every expected figure below is written out by hand (Decimal arithmetic in the evidence
+	report), never computed with the helpers under test: 0.477 x 100 / 91.75 = 0.519891 ->
+	0.520 g (alloy 0.043); 0.850 -> 0.926430 -> 0.926 g (0.076); 8.673 -> 9.452861 ->
+	9.453 g (0.780). 0.520 + 0.926 + 9.453 = 10.899 and 0.043 + 0.076 + 0.780 = 0.899.
+	"""
+
+	LANE_MAP = {
+		"C-11": ("Customer Goods", "CUST-1"),
+		"REG": ("Regular Stock", None),
+		"C-12": ("Customer Goods", "CUST-1"),
+		"AL-04": ("Regular Stock", None),
+	}
+
+	def _mcon00332(self, order=("C-11", "REG", "C-12")):
+		qty = {"C-11": 0.477, "REG": 0.85, "C-12": 8.673}
+		return self._doc(
+			source_item="M-G-24KT-99.9-Y",
+			source_qty=10.0,
+			target_item="M-G-22KT-91.75-Y",
+			target_qty=10.899182561,
+			source_alloy="M-Genia-221",
+			# A Data field: the real document stores the string "0.899".
+			source_alloy_qty="0.899",
+			source_batch_details=[_alloc(qty[batch], batch) for batch in order],
+			alloy_batch_details=[_alloc(0.899, "AL-04")],
+		)
+
+	@staticmethod
+	def _groups(se):
+		"""``{lane tag: {"source": [(batch, qty)], "alloy": [...], "target": [...]}}``."""
+		groups = {}
+		for row in se.items:
+			group = groups.setdefault(
+				row.custom_conversion_lane, {"source": [], "alloy": [], "target": []}
+			)
+			if row.get("t_warehouse"):
+				group["target"].append((row.customer, row.qty))
+			elif row.item_code == "M-Genia-221":
+				group["alloy"].append((row.batch_no, row.qty))
+			else:
+				group["source"].append((row.batch_no, row.qty))
+		return groups
+
+	def test_two_batches_of_one_customer_make_two_targets(self):
+		se = self._build(self._mcon00332(), lane_map=self.LANE_MAP)
+
+		customer_targets = [
+			row for row in se.items if row.get("t_warehouse") and row.customer
+		]
+		# Grouping by inventory type, or by customer without the batch, gives ONE here.
+		self.assertEqual(len(customer_targets), 2)
+		self.assertEqual(
+			sorted(row.qty for row in customer_targets), [0.52, 9.453], customer_targets
+		)
+		self.assertTrue(all(row.customer == "CUST-1" for row in customer_targets))
+
+	def test_each_target_is_its_own_source_plus_its_own_alloy(self):
+		groups = self._groups(self._build(self._mcon00332(), lane_map=self.LANE_MAP))
+
+		self.assertEqual(
+			groups["Customer Goods|CUST-1|C-11"],
+			{
+				"source": [("C-11", 0.477)],
+				"alloy": [("AL-04", 0.043)],
+				"target": [("CUST-1", 0.52)],
+			},
+		)
+		self.assertEqual(
+			groups["Customer Goods|CUST-1|C-12"],
+			{
+				"source": [("C-12", 8.673)],
+				"alloy": [("AL-04", 0.78)],
+				"target": [("CUST-1", 9.453)],
+			},
+		)
+		# Regular Stock still pools (a single Regular batch here, so one lane either way).
+		self.assertEqual(
+			groups["Regular Stock|"],
+			{
+				"source": [("REG", 0.85)],
+				"alloy": [("AL-04", 0.076)],
+				"target": [(None, 0.926)],
+			},
+		)
+
+	def test_the_alloy_is_consumed_once_in_total(self):
+		se = self._build(self._mcon00332(), lane_map=self.LANE_MAP)
+		alloy = [row.qty for row in se.items if row.item_code == "M-Genia-221"]
+		# Handing the whole 0.899 g to every group would read 2.697 here.
+		self.assertAlmostEqual(sum(alloy), 0.899, places=9)
+		self.assertTrue(
+			all(
+				row.inventory_type == "Regular Stock"
+				for row in se.items
+				if row.item_code == "M-Genia-221"
+			)
+		)
+
+	def test_targets_still_sum_to_the_document_at_posting_precision(self):
+		se = self._build(self._mcon00332(), lane_map=self.LANE_MAP)
+		targets = [row.qty for row in se.items if row.get("t_warehouse")]
+		self.assertAlmostEqual(sum(targets), 10.899, places=9)
+
+	def test_each_group_is_contiguous_so_it_is_valued_on_its_own(self):
+		"""The lane pricer values ROW-ORDER runs (sources, then produce). A group whose rows
+		were interleaved with another's would be priced with the other's metal."""
+		se = self._build(self._mcon00332(), lane_map=self.LANE_MAP)
+		shape = [
+			(row.custom_conversion_lane, "out" if row.get("s_warehouse") else "in")
+			for row in se.items
+		]
+		self.assertEqual(
+			shape,
+			[
+				("Customer Goods|CUST-1|C-11", "out"),
+				("Customer Goods|CUST-1|C-11", "out"),
+				("Customer Goods|CUST-1|C-11", "in"),
+				("Regular Stock|", "out"),
+				("Regular Stock|", "out"),
+				("Regular Stock|", "in"),
+				("Customer Goods|CUST-1|C-12", "out"),
+				("Customer Goods|CUST-1|C-12", "out"),
+				("Customer Goods|CUST-1|C-12", "in"),
+			],
+		)
+
+	def test_row_order_does_not_decide_owner_or_quantity(self):
+		"""T05: the same batches in another FIFO order map to the same results."""
+		expected = {
+			"Customer Goods|CUST-1|C-11": ("CUST-1", 0.52),
+			"Customer Goods|CUST-1|C-12": ("CUST-1", 9.453),
+			"Regular Stock|": (None, 0.926),
+		}
+		for order in (("REG", "C-12", "C-11"), ("C-12", "C-11", "REG")):
+			with self.subTest(order=order):
+				groups = self._groups(
+					self._build(self._mcon00332(order=order), lane_map=self.LANE_MAP)
+				)
+				self.assertEqual(
+					{tag: group["target"][0] for tag, group in groups.items()}, expected
+				)
+
+	def test_a_single_customer_voucher_keeps_its_header_ownership(self):
+		"""Two batches, one customer and nothing else: the voucher still has ONE owner."""
+		doc = self._mcon00332(order=("C-11", "C-12"))
+		doc.source_qty = 9.15
+		doc.target_qty = 9.972752044
+		doc.source_alloy_qty = "0.823"
+		doc.alloy_batch_details = [_alloc(0.823, "AL-04")]
+		se = self._build(doc, lane_map=self.LANE_MAP)
+
+		self.assertEqual(se.payload["inventory_type"], "Customer Goods")
+		self.assertEqual(se.payload["_customer"], "CUST-1")
+		self.assertEqual(
+			[row.qty for row in se.items if row.get("t_warehouse")], [0.52, 9.453]
+		)
 
 
 # Imported here, beside the classes that use it, rather than at the top of the file:

@@ -269,14 +269,26 @@ def get_linked_batches(batch_no):
 	# no longer needs the expansion -- it returns the borrowed batch as itself -- but
 	# the extra linked batches are harmless to the report (they surface their own
 	# CGR / usage / return rows).
+	#
+	# A Metal Conversion tags every row with its lane, and each lane converts on its own:
+	# a consumed batch's children there are its own lane's outputs only, not another
+	# customer's (or the company's) target in the same voucher. Untagged rows keep the
+	# voucher-wide match.
+	lane_scope = ""
+	if frappe.db.has_column("Stock Entry Detail", "custom_conversion_lane"):
+		lane_scope = """
+            AND (
+                IFNULL(parent_sed.custom_conversion_lane, '') = ''
+                OR child_sed.custom_conversion_lane = parent_sed.custom_conversion_lane
+            )"""
 	repack_children = frappe.db.sql(
-		"""
+		f"""
         SELECT DISTINCT child_sed.batch_no
         FROM `tabStock Entry` se
         JOIN `tabStock Entry Detail` parent_sed
             ON parent_sed.parent = se.name AND parent_sed.is_finished_item = 0
         JOIN `tabStock Entry Detail` child_sed
-            ON child_sed.parent = se.name AND child_sed.is_finished_item = 1
+            ON child_sed.parent = se.name AND child_sed.is_finished_item = 1{lane_scope}
         WHERE se.stock_entry_type IN ('Repack-Metal Conversion', 'Subcontracting Repack')
 		AND se.docstatus = 1
         AND parent_sed.batch_no = %s
