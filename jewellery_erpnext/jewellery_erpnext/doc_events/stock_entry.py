@@ -1771,6 +1771,8 @@ def _customer_gold_issue_plan(source_name):
 			qty = min(qty, requested)
 		left[event.cg_source_row] = flt(qty, 3)
 	return return_type, left
+
+
 def _department_transfer_destination(source):
 	"""Where a Transfer to Department transit leg is received into, if ``source`` is one.
 
@@ -1824,6 +1826,26 @@ def _remaining_transit_row_qty(row, precision):
 	)
 
 
+def _issue_row_qty(row, issue_left, precision):
+	"""Quantity a Create > Issue / End Transit maps for ``row``.
+
+	A Customer Gold receipt maps only what that receipt row still has to give back
+	(``_customer_gold_issue_plan``: the preview's row and quantity, capped at what remains).
+	Any other entry maps the part of a transit row not received yet.
+	"""
+	if issue_left is not None:
+		return flt(issue_left.get(row.get("name")), precision)
+	return _remaining_transit_row_qty(row, precision)
+
+
+def _issue_row_mapped(row, issue_left, precision):
+	"""Whether ``row`` is offered at all: a receipt row with nothing left to give back, or a
+	transit row already received in full, is not mapped again."""
+	if issue_left is not None:
+		return flt(issue_left.get(row.get("name"))) > 0
+	return _remaining_transit_qty(row, precision) > 0
+
+
 @frappe.whitelist()
 def make_stock_in_entry(source_name, target_doc=None):
 	issue_type, issue_left = _customer_gold_issue_plan(source_name)
@@ -1861,7 +1883,12 @@ def make_stock_in_entry(source_name, target_doc=None):
 			target_doc.t_warehouse = destination
 
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = _remaining_transit_row_qty(source_doc, qty_precision)
+		target_doc.qty = _issue_row_qty(source_doc, issue_left, qty_precision)
+		if issue_type:
+			# Issue exactly the receipt's batch: the outward bundle must be built from the mapped
+			# batch_no, never re-picked by FIFO from a shared custody warehouse.
+			target_doc.use_serial_batch_fields = 1
+			target_doc.serial_and_batch_bundle = None
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -1881,7 +1908,11 @@ def make_stock_in_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				"condition": lambda doc: _remaining_transit_qty(doc, qty_precision) > 0,
+				# A receipt row with nothing left to give back, or a transit row already
+				# received in full, is not offered again.
+				"condition": lambda doc: _issue_row_mapped(
+					doc, issue_left, qty_precision
+				),
 			},
 		},
 		target_doc,

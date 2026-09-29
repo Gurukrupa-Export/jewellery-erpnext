@@ -293,3 +293,57 @@ class TestSettlementReconciliation(unittest.TestCase):
 		), patch.object(cga.frappe.db, "set_value") as set_value:
 			cga.reconcile_to_settlement(["EV-1"], {"CUST": 150.00})
 		set_value.assert_not_called()
+
+
+class TestCreateIssueMapsOnlyWhatIsOwed(unittest.TestCase):
+	"""Review F1 (29 Sep): a kggk_uat merge left Create > Issue mapping the transit remainder,
+	so a receipt of 20 g already returned down to 2 g offered 20 g again. The mapper's two rules
+	now live in helpers the merge cannot silently drop; these tests pin them."""
+
+	@staticmethod
+	def _row(name, qty=20.0, transferred=0.0, factor=1.0):
+		return frappe._dict(
+			name=name,
+			qty=qty,
+			transfer_qty=qty * factor,
+			transferred_qty=transferred,
+			conversion_factor=factor,
+		)
+
+	def _helpers(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events import stock_entry as se
+
+		return se._issue_row_qty, se._issue_row_mapped
+
+	def test_a_receipt_row_maps_only_what_it_still_owes(self):
+		row_qty, mapped = self._helpers()
+		left = {"R1": 2.0}
+		self.assertEqual(row_qty(self._row("R1"), left, 3), 2.0)
+		self.assertTrue(mapped(self._row("R1"), left, 3))
+
+	def test_an_exhausted_receipt_row_is_not_offered(self):
+		row_qty, mapped = self._helpers()
+		left = {"R1": 0.0, "R2": 1.5}
+		self.assertFalse(mapped(self._row("R1"), left, 3))
+		self.assertTrue(mapped(self._row("R2"), left, 3))
+
+	def test_only_the_row_chosen_in_the_preview_is_mapped(self):
+		"""The plan zeroes every row but the preview's; an unlisted row is not mapped either."""
+		row_qty, mapped = self._helpers()
+		left = {"R1": 0.0, "R2": 0.5}
+		self.assertEqual(
+			[r for r in ("R1", "R2", "R3") if mapped(self._row(r), left, 3)], ["R2"]
+		)
+		self.assertEqual(row_qty(self._row("R2"), left, 3), 0.5)
+
+	def test_any_other_entry_keeps_the_transit_remainder(self):
+		"""Not a Customer Gold receipt (no plan): End Transit maps what is not received yet,
+		in the row's own UOM."""
+		row_qty, mapped = self._helpers()
+		row = self._row("T1", qty=10.0, transferred=4.0)
+		self.assertEqual(row_qty(row, None, 3), 6.0)
+		self.assertTrue(mapped(row, None, 3))
+		done = self._row("T2", qty=10.0, transferred=10.0)
+		self.assertFalse(mapped(done, None, 3))
+		boxes = self._row("T3", qty=5.0, transferred=4.0, factor=2.0)
+		self.assertEqual(row_qty(boxes, None, 3), 3.0)
