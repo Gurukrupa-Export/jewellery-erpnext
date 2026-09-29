@@ -154,6 +154,22 @@ class TestRealEntries(_Base):
 				},
 			)
 
+	def test_w06_metal_conversion_reports_source_alloy_and_target(self):
+		"""MAT-STE-19749 (MCON00333): 1.327 + 18.673 g of 24KT and 1.798 g of alloy M-Genia-221
+		went in, 21.798 g of 22KT came out -- all three items are variants of M. The header's
+		43.596 is every row on both sides, as W01 counts a repack: a display total, not the
+		metal held, and nothing values from it."""
+		t = self.totals(
+			[
+				row("M", 1.327),
+				row("M", 18.673),
+				row("M", 1.798),
+				produce("M", 21.798),
+			]
+		)
+		self.assertAlmostEqual(t["metal"], 43.596, places=3)
+		self.assertAlmostEqual(t["finding"], 0.0, places=3)
+
 
 # ---------------------------------------------------------------------------
 # W10-W14: what must NOT count -- the whole point of "not item wise"

@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	allow_zero_valuation,
@@ -535,3 +535,54 @@ class TestCustomerGoldFinishedGoodValuation(IntegrationTestCase):
 		se = _entry("Manufacture", [_finished()])
 		allow_zero_valuation(se)
 		self.assertEqual(_fg(se).allow_zero_valuation_rate, 1)
+
+	def test_mcon00333_conversion_output_survives_save_and_submit(self):
+		"""MAT-STE-19749 through the REAL lane pricer: its 22KT output is valued on both passes.
+
+		MCON00333 converted 1.327 g + 18.673 g of customer 24KT at 15,190.10 and 1.798 g of company
+		alloy at 62.00 into 21.798 g of 22KT. The output is a derived Customer Goods row, so its
+		allow-zero flag is released before ERPNext prices it and settled only after the pricer has:
+		303,913.476 / 21.798 = 13,942.264244426, booked 303,913.48, unflagged. Were the flag to
+		ride into the second pass, ERPNext would zero the row and expense the lot (MAT-STE-17967).
+		"""
+		se = _entry(
+			"Repack",
+			[
+				_consumed(
+					"M-G-24KT-99.9-Y",
+					1.327,
+					15190.10,
+					CUSTOMER_GOODS,
+					customer="GJCU0009",
+				),
+				_consumed(
+					"M-G-24KT-99.9-Y",
+					18.673,
+					15190.10,
+					CUSTOMER_GOODS,
+					customer="GJCU0009",
+				),
+				_consumed("M-Genia-221", 1.798, ALLOY_RATE, REGULAR_STOCK),
+				_finished("M-G-22KT-91.75-Y", 21.798, customer="GJCU0009"),
+			],
+		)
+		# What Metal Conversions builds: the type the lane pricer prices, on an app-built entry.
+		se.stock_entry_type = "Repack-Metal Conversion"
+		se.auto_created = 1
+		_pass(se)  # save()
+		_pass(se)  # submit()
+
+		fg = _fg(se)
+		self.assertAlmostEqual(flt(fg.basic_rate), 13942.264244426, places=6)
+		self.assertAlmostEqual(flt(fg.basic_amount), 303913.48, places=2)
+		self.assertEqual(fg.allow_zero_valuation_rate, 0)
+		# The flag stays where it belongs: on the customer's inputs, not the company alloy.
+		self.assertEqual(
+			[
+				cint(row.allow_zero_valuation_rate)
+				for row in se.items
+				if row.s_warehouse
+			],
+			[1, 1, 0],
+		)
+		self.assertFalse(flt(fg.custom_metal_rate))
