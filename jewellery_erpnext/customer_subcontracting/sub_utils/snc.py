@@ -394,7 +394,22 @@ def create_repack_metal_conversion(
 	if target_qty <= 0:
 		target_qty = flt(required_qty, 3)
 
+	from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
+		lane_tag,
+	)
+
 	inventory_type = _owner_inventory_type(owner_customer)
+	# A customer's metal converts in the customer's lane, stamped as Settle
+	# (``cg_settle._convert_multi``) stamps it. Without it the custody dispatcher could not
+	# tell this Repack was a conversion: both rows wrote no Conversion events and were logged
+	# as unclassified one-sided movements (MAT-STE-19254). One source row and one output share
+	# the lane, so the output's child batch keeps its name. Company metal writes no custody
+	# event with or without a lane, so the Regular Stock leg is left untagged.
+	lane = (
+		{"custom_conversion_lane": lane_tag(inventory_type, owner_customer)}
+		if owner_customer
+		else {}
+	)
 	se = frappe.new_doc("Stock Entry")
 	se.update(
 		{
@@ -421,6 +436,7 @@ def create_repack_metal_conversion(
 			"s_warehouse": source_batch["warehouse"],
 			"inventory_type": inventory_type,
 			"customer": owner_customer,
+			**lane,
 		},
 	)
 	_append_item(
@@ -431,6 +447,7 @@ def create_repack_metal_conversion(
 			"t_warehouse": source_batch["warehouse"],
 			"inventory_type": inventory_type,
 			"customer": owner_customer,
+			**lane,
 		},
 	)
 	se.insert(ignore_permissions=True)

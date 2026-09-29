@@ -151,9 +151,9 @@ class TestCreateChildBatches(IntegrationTestCase):
 	def test_single_lane_voucher_unchanged(self):
 		"""The pre-existing shape: one ownership, one parent, customer child batch.
 
-		Every existing caller (SNC's create_repack_metal_conversion, Customer Goods
-		Received, Subcontracting Repack) builds this, and SNC throws if nothing is
-		minted -- so this path must not start declining.
+		Customer Goods Received and Subcontracting Repack build this, as SNC's
+		create_repack_metal_conversion did until it tagged a customer's conversion with
+		the owner's lane -- so this path must not start declining.
 		"""
 		doc = _FakeSE(
 			[
@@ -1061,9 +1061,9 @@ class TestTaggedOneLaneVoucherCarveOut(_BatchTableCase):
 class TestUntaggedVouchersKeepTheirGrouping(_BatchTableCase):
 	"""Every voucher without lane tags keeps exactly today's minting.
 
-	SNC, Settle, Customer Goods Received and Subcontracting Repack never tag rows, and
-	neither did any voucher submitted before the column existed. The lane-tag rule is
-	scoped to vouchers the Metal Conversion builder tagged; these pin that it stays so.
+	Customer Goods Received, Subcontracting Repack and SNC's company-metal leg never tag
+	rows, and neither did any voucher submitted before the column existed. The lane-tag
+	rule is scoped to vouchers a conversion builder tagged; these pin that it stays so.
 	"""
 
 	def test_a_single_ownership_voucher_mints_every_output_from_its_one_parent(self):

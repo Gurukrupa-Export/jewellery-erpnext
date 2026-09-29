@@ -358,8 +358,10 @@ def _row_group_key(row):
 
 	Metal Conversions tags every row with its lane (``metal_conversions.lane_tag``), and a
 	customer batch is a lane of its own -- so two batches of ONE customer are two groups,
-	each minted from its own source batch. An untagged voucher (SNC, Settle, Customer
-	Goods Received, Subcontracting Repack) groups by ownership, as it always has.
+	each minted from its own source batch. Settle and SNC tag a customer's conversion with
+	the owner's lane alone, one group as before. An untagged voucher (Customer Goods
+	Received, Subcontracting Repack, SNC's company-metal leg) groups by ownership, as it
+	always has.
 	"""
 	return getattr(row, "custom_conversion_lane", None) or _row_lane_key(row)
 
@@ -537,17 +539,17 @@ def create_child_batches(doc, method=None):
 
 	parents = _lane_parent_batches(doc)
 
-	# A voucher whose rows are all one ownership is handled exactly as before: one
-	# parent batch for the whole entry, every batch-less produce row minted from it.
-	# Every pre-existing caller (SNC's create_repack_metal_conversion, Customer Goods
-	# Received, Subcontracting Repack) builds such a voucher, so their behaviour is
-	# unchanged by the lane handling below -- which matters because SNC reads its target
-	# batch back off Stock Entry Detail and throws if nothing was minted.
+	# An untagged voucher whose rows are all one ownership is handled exactly as before:
+	# one parent batch for the whole entry, every batch-less produce row minted from it.
+	# Customer Goods Received and Subcontracting Repack build such a voucher.
 	#
 	# A lane-tagged voucher (Metal Conversions) always takes the per-row path, even with
 	# one lane: its rows say which lane -- and so which parent -- each output belongs to,
 	# and the single-lane path would mint its Regular Stock rows (the C09 company alloy
-	# carve-out) as the customer's.
+	# carve-out) as the customer's. SNC's create_repack_metal_conversion tags a customer's
+	# conversion too: its one source row and one output share the owner's lane, so this
+	# path finds the same parent and mints the same name -- which matters because SNC
+	# reads its target batch back off Stock Entry Detail and throws if nothing was minted.
 	tagged = any(getattr(row, "custom_conversion_lane", None) for row in doc.items)
 	single_lane = not tagged and len(parents) <= 1
 
