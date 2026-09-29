@@ -70,6 +70,9 @@ class _BatchTable:
 		self.hidden = set(hidden)
 		self.statements = []
 		self.minted = []
+		self.attempts = 0
+		# InnoDB with innodb_snapshot_isolation on reports such a clash as a deadlock.
+		self.deadlock = False
 
 	def taken(self, name):
 		folded = name.casefold()
@@ -121,6 +124,9 @@ class _FakeBatch:
 		self.custom_customer_voucher_type = None
 
 	def insert(self, ignore_permissions=False):
+		self._table.attempts += 1
+		if self._table.deadlock:
+			raise frappe.QueryDeadlockError("1213")
 		if self._table.taken(self.batch_id):
 			# What BaseDocument.db_insert does on a primary-key clash.
 			frappe.msgprint(f"Batch {self.batch_id} already exists")
@@ -328,7 +334,13 @@ class TestCreateChildBatchesNamespace(IntegrationTestCase):
 		self._run(doc, _BatchTable())
 		self.assertEqual(fg.batch_no, "GJCU0009-2F09-RI00210-004-03-A-A")
 
-	def test_parents_are_locked_once_in_sorted_order_before_any_read(self):
+	def test_no_batch_row_is_locked(self):
+		"""The primary key already serialises two inserts of one name.
+
+		An early lock on the parent would not refresh the snapshot; it would only hold a
+		Batch row across the ledger posting, against transfers that lock batches in
+		another order.
+		"""
 		table = _BatchTable(
 			{
 				"GJCU0009-2F09-M-G-22KT-91.75-Y-10-A",
@@ -344,10 +356,26 @@ class TestCreateChildBatchesNamespace(IntegrationTestCase):
 			]
 		)
 		self._run(doc, table)
-		locks = [i for i, s in enumerate(table.statements) if "for update" in s]
-		reads = [i for i, s in enumerate(table.statements) if " like " in s]
-		self.assertEqual(len(locks), 1)
-		self.assertTrue(reads and locks[0] < min(reads))
+		self.assertEqual(len(table.minted), 2)
+		self.assertFalse(
+			[
+				s
+				for s in table.statements
+				if "for update" in s or "lock in share mode" in s
+			]
+		)
+
+	def test_a_deadlock_is_not_retried(self):
+		"""With snapshot isolation on, a clash is a deadlock and InnoDB has rolled the whole
+		transaction back: retrying inside it would be wrong, so it must propagate."""
+		table = _BatchTable({PARENT_12_A})
+		table.deadlock = True
+		with self.assertRaises(frappe.QueryDeadlockError):
+			self._run(_entry([_consume("c1", PARENT_12_A), _produce("p1")]), table)
+		self.assertEqual(table.attempts, 1)
+		self.assertFalse(
+			any(s.startswith("rollback to savepoint") for s in table.statements)
+		)
 
 	def test_a_stale_snapshot_collision_takes_the_next_name(self):
 		"""Another submit committed '-A' after this one's snapshot: retry, don't fail."""
@@ -370,7 +398,10 @@ class TestCreateChildBatchesNamespace(IntegrationTestCase):
 
 	def test_repeated_collisions_end_in_an_actionable_error(self):
 		base = "GJCU0009-2F09-ML-G-22KT-91.75-Y-12-A"
-		hidden = {f"{base}-{batch_rename.encode_child_suffix(n)}" for n in range(1, 40)}
+		hidden = {
+			f"{base}-{batch_rename.encode_child_suffix(n)}"
+			for n in range(1, batch_rename._CHILD_BATCH_ATTEMPTS + 10)
+		}
 		table = _BatchTable({PARENT_12_A}, hidden=hidden)
 		with self.assertRaises(frappe.ValidationError) as caught:
 			self._run(_entry([_consume("c1", PARENT_12_A), _produce("p1")]), table)
@@ -379,6 +410,7 @@ class TestCreateChildBatchesNamespace(IntegrationTestCase):
 		self.assertIn(PARENT_12_A, message)
 		self.assertNotIn("26", message)
 		self.assertEqual(table.minted, [])
+		self.assertEqual(table.attempts, batch_rename._CHILD_BATCH_ATTEMPTS)
 
 	def test_an_overlong_name_is_refused_before_insert(self):
 		long_item = "ML-" + "X" * 130
@@ -409,6 +441,22 @@ class TestCreateChildBatchesNamespace(IntegrationTestCase):
 		self._run(doc, table)
 		self.assertIsNone(regular.batch_no)
 		self.assertEqual(table.statements, [])
+
+
+def _isolation():
+	"""``(isolation level, innodb_snapshot_isolation on?)`` of the current connection."""
+	values = dict(
+		frappe.db.sql(
+			"""SHOW SESSION VARIABLES WHERE Variable_name IN
+			('tx_isolation', 'transaction_isolation', 'innodb_snapshot_isolation')"""
+		)
+	)
+	isolation = values.get("transaction_isolation") or values.get("tx_isolation")
+	snapshot = str(values.get("innodb_snapshot_isolation", "OFF")).upper() in (
+		"ON",
+		"1",
+	)
+	return isolation, snapshot
 
 
 def _raw_item(item_code):
@@ -515,7 +563,9 @@ class TestCreateChildBatchesStaleSnapshot(_RealTableCase):
 
 	Commits on a second connection, so it runs only on a site flagged
 	``customer_gold_disposable_site``. The old allocator read the stale snapshot,
-	chose the same name and failed the whole submit with DuplicateEntryError.
+	chose the same name and failed the whole submit with DuplicateEntryError. Needs
+	REPEATABLE READ; with innodb_snapshot_isolation on, the clash is a deadlock that
+	must propagate rather than be retried inside a rolled-back transaction.
 	"""
 
 	@classmethod
@@ -543,6 +593,9 @@ class TestCreateChildBatchesStaleSnapshot(_RealTableCase):
 		self.addCleanup(_remove_committed_child)
 
 		with self.primary_connection():
+			isolation, snapshot_isolation = _isolation()
+			if isolation != "REPEATABLE-READ":
+				self.skipTest(f"needs REPEATABLE READ; this server runs {isolation}")
 			frappe.db.sql("SELECT name FROM `tabBatch` LIMIT 1")  # fixes the read view
 
 		with self.secondary_connection():
@@ -556,7 +609,20 @@ class TestCreateChildBatchesStaleSnapshot(_RealTableCase):
 
 		frappe.local.db = self._primary_connection
 		doc, produce = self._loss_entry(parent)
-		with self.primary_connection():
+		with (
+			self.primary_connection(),
+			patch.object(frappe.db, "rollback", wraps=frappe.db.rollback) as rollback,
+		):
+			if snapshot_isolation:
+				# MariaDB >= 11.6.2 default: the clash is ER_CHECKREAD, reported as a
+				# deadlock; the submit fails whole and is simply resubmitted.
+				with self.assertRaises(frappe.QueryDeadlockError):
+					batch_rename.create_child_batches(doc)
+				return
 			batch_rename.create_child_batches(doc)
 
 		self.assertEqual(produce.batch_no, f"{base}-B")
+		# The name was taken by a clash and a savepoint rollback, not by a fresh read.
+		self.assertTrue(
+			any(c.kwargs.get("save_point") for c in rollback.call_args_list)
+		)

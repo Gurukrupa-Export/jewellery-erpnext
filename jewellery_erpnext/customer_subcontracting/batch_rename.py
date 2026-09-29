@@ -241,10 +241,10 @@ def highest_receipt_serial(names):
 
 #: ``tabBatch.name`` and ``batch_id`` are varchar(140), as is every column storing a batch.
 _BATCH_NAME_LENGTH = 140
-#: Enough to step past children that concurrent submits commit after this transaction's
-#: snapshot. More consecutive clashes than this means something else is wrong, so the
-#: submit stops and says so instead of looping.
-_CHILD_BATCH_ATTEMPTS = 5
+#: Each clash is one child that another submit committed on the same pool after this
+#: transaction's snapshot, so the budget only has to exceed realistic concurrency on one
+#: parent. A clash costs one savepoint and one rejected insert; the cap stops a loop.
+_CHILD_BATCH_ATTEMPTS = 50
 
 
 def encode_child_suffix(ordinal):
@@ -288,8 +288,9 @@ def child_batch_base(parent_batch, parent_item, customer, child_item):
 
 	Item and customer codes contain hyphens, so the path is found by stripping the known
 	owner and ``parent_item`` rather than by splitting. A name that does not parse keeps
-	the old ``parts[1]`` / ``parts[-1]`` base -- which is also why every child of a
-	receipt batch keeps exactly the name it always had.
+	the old ``parts[1]`` / ``parts[-1]`` base. Children of a receipt batch therefore keep
+	the names they always had -- except where the customer code itself contains a hyphen,
+	whose year-month segment the old split misread and which is now the real one.
 
 	``None`` for a parent with fewer than four segments (a Serial-and-Batch autoname
 	such as ``KG2F093-MGL229175Y0-604EO``): this module did not name it, so there is no
@@ -415,30 +416,21 @@ def _run_sources(doc):
 	return sources
 
 
-def _lock_parent_batches(parent_batches):
-	"""Row-lock the parents, sorted, before any child of theirs is named.
-
-	Serialises submits that draw on the same parent. Record locks on existing primary
-	keys only -- no gap lock -- taken in the Batch slot of ``lock_order``'s canonical
-	order (``prelock_bins`` already holds the Series and Bin locks). ERPNext's
-	``update_batch_qty`` X-locks these same rows later in the submit anyway; this takes
-	them earlier and in a fixed order.
-	"""
-	names = sorted({name for name in parent_batches if name})
-	if names:
-		frappe.db.sql(
-			"SELECT name FROM `tabBatch` WHERE name IN %(names)s ORDER BY name FOR UPDATE",
-			{"names": tuple(names)},
-		)
-
-
 def _mint_child_batch(doc, row, row_number, parent_batch, customer, base_name):
 	"""Insert the next free child of ``base_name`` for ``row`` and return its name.
 
 	The pool is read with a plain snapshot read, so under REPEATABLE READ it can miss a
 	child another submit committed after this transaction began. The primary key still
-	rejects that name, so a clash rolls back to a savepoint and takes the next suffix:
-	the ordinal only moves forward, even past a name the parser cannot read.
+	rejects that name, so a clash (ER_DUP_ENTRY) rolls back to a savepoint and takes the
+	next suffix: the ordinal only moves forward, even past a name the parser cannot read.
+
+	No row is locked for this. The primary key already serialises two inserts of one name
+	-- the second waits for the first transaction and then clashes -- and an early lock on
+	the parent would not refresh the snapshot; it would only hold a Batch row across the
+	Serial-and-Batch and ledger posting, against transfers that lock batches in another
+	order. With ``innodb_snapshot_isolation`` on (the MariaDB default from 11.6.2) the
+	clash surfaces as a deadlock instead; that is not caught here, so the submit fails
+	and is simply retried.
 	"""
 	existing = frappe.db.sql(
 		"SELECT name FROM `tabBatch` WHERE name LIKE %s",
@@ -624,7 +616,6 @@ def create_child_batches(doc, method=None):
 	if not plan:
 		return
 
-	_lock_parent_batches(parent_batch for _row, _number, parent_batch, _c, _b in plan)
 	for row, row_number, parent_batch, customer, base_name in plan:
 		row.batch_no = _mint_child_batch(
 			doc, row, row_number, parent_batch, customer, base_name
