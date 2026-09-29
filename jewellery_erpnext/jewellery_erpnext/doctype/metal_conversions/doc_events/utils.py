@@ -15,6 +15,11 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import
 	get_sample_batches,
 )
 
+#: Batch balances are float sums: 1.09 g + 2.18 g of stock reads 3.2699999999999996, so
+#: converting exactly the 3.27 g on hand was refused as "not available". Allocation totals
+#: are compared within this tolerance -- far below any stock precision -- never exactly.
+_QTY_TOLERANCE = 1e-9
+
 
 def update_batch_details(self):
 	rows_to_append = []
@@ -205,9 +210,9 @@ def update_source_betch(self):
 		if is_melting_loss and inventory_type != "Regular Stock":
 			continue
 
-		if total_qty != required_qty:
+		if abs(total_qty - required_qty) > _QTY_TOLERANCE:
 			# If the current batch has more quantity than needed, use the difference
-			if required_qty > remaining_qty + i.qty:
+			if required_qty - (remaining_qty + i.qty) > _QTY_TOLERANCE:
 				qty = i.qty
 				remaining_qty += i.qty
 			else:
@@ -218,10 +223,10 @@ def update_source_betch(self):
 			# Append details to source_batch_details, preserving FIFO order
 			self.append("source_batch_details", {"qty": qty, "batch": i.batch_no})
 
-		if remaining_qty >= required_qty:
+		if remaining_qty >= required_qty - _QTY_TOLERANCE:
 			break  # Stop if we have filled the required quantity
 
-	if total_qty != required_qty:
+	if abs(total_qty - required_qty) > _QTY_TOLERANCE:
 		frappe.throw(
 			_(
 				"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
