@@ -2427,6 +2427,16 @@ def block_delete_with_customer_gold_events(doc, method=None):
 #: Everything else -- Transfer, Conversion, Production, Allocation, Release, Revaluation --
 #: changes the STAGE or the VALUE of metal the customer still has. Summing those into a holding
 #: is how a ledger starts reporting metal that does not exist.
+#:
+#: ``Reversal`` is listed, but a Reversal's own kind does not say what it undoes, so it counts
+#: only where its ORIGINAL counts. Undoing a Receipt or a Delivery changes custody. Undoing a
+#: Transfer, Conversion, Production or Revaluation undoes an event this list never counted, and
+#: counting it moves the holding for nothing: cancelling MCON00333's conversion would read 24KT
+#: +20.000 g and 22KT -21.798 g. A Reversal with no ``cg_reversal_of``, or naming a row that no
+#: longer exists, keeps counting -- it is §5.4's explicit correction. A Reversal is never itself
+#: reversed (no ``_reverse_events`` caller passes it), so looking one level up is exact.
+#: :func:`_position_rows` applies this for every reader; SQL that filters on these kinds must
+#: exclude the same Reversals through a join on ``cg_reversal_of``.
 POSITION_KINDS = (
 	EVENT_RECEIPT,
 	EVENT_DELIVERY,
@@ -2548,15 +2558,11 @@ def get_customer_gold_position_report(company, customer, item_code=None, basis="
 	status_field = _STATUS_FIELD.get(field)
 	fields = [field, "cg_measurement_reason"] + ([status_field] if status_field else [])
 
-	filters = {
-		"company": company,
-		"customer": customer,
-		"cg_event_kind": ["in", POSITION_KINDS],
-	}
+	filters = {"company": company, "customer": customer}
 	if item_code:
 		filters["item_code"] = item_code
 
-	rows = frappe.get_all(LEDGER_DOCTYPE, filters=filters, fields=fields)
+	rows = _position_rows(filters, fields)
 
 	total = known = 0.0
 	counts = {STATUS_UNKNOWN: 0, STATUS_INVALID: 0}
@@ -2597,18 +2603,55 @@ def get_customer_gold_position_report(company, customer, item_code=None, basis="
 
 
 def _position(company, customer, field, item_code=None):
-	"""Sum ``field`` over the position-changing kinds only.
+	"""Sum ``field`` over the position rows only -- see :func:`_position_rows`.
 
 	A bare sum: an unmeasured row contributes its stored 0.0 and leaves no trace here. Use
 	:func:`get_customer_gold_position_report` wherever that matters.
 	"""
-	filters = {
-		"company": company,
-		"customer": customer,
-		"cg_event_kind": ["in", POSITION_KINDS],
-	}
+	filters = {"company": company, "customer": customer}
 	if item_code:
 		filters["item_code"] = item_code
 
-	rows = frappe.get_all(LEDGER_DOCTYPE, filters=filters, fields=[field])
+	rows = _position_rows(filters, [field])
 	return flt(sum(flt(r.get(field)) for r in rows), QTY_PRECISION)
+
+
+def _position_rows(filters, fields):
+	"""The ledger rows matching ``filters`` that make up the position.
+
+	Rows of the ``POSITION_KINDS`` kinds, except a Reversal whose original is not one of them
+	-- the rule is set out on ``POSITION_KINDS``. Every position reader goes through here, so
+	the scalar and the report can never count different rows. The originals are read in one
+	primary-key query, and only when a Reversal names one.
+	"""
+	rows = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters={**filters, "cg_event_kind": ["in", POSITION_KINDS]},
+		fields=list(dict.fromkeys([*fields, "cg_event_kind", "cg_reversal_of"])),
+	)
+
+	originals = {
+		row.cg_reversal_of
+		for row in rows
+		if row.cg_event_kind == EVENT_REVERSAL and row.cg_reversal_of
+	}
+	if not originals:
+		return rows
+
+	kind_of = {
+		original.name: original.cg_event_kind
+		for original in frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={"name": ["in", list(originals)]},
+			fields=["name", "cg_event_kind"],
+		)
+	}
+	# A Reversal that is unlinked, or names a row that is gone, is an explicit correction and
+	# still counts; one that names an original counts only where that original did.
+	return [
+		row
+		for row in rows
+		if row.cg_event_kind != EVENT_REVERSAL
+		or row.cg_reversal_of not in kind_of
+		or kind_of[row.cg_reversal_of] in POSITION_KINDS
+	]

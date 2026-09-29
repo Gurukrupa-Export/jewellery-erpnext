@@ -39,6 +39,7 @@ from decimal import ROUND_HALF_UP, Decimal
 import frappe
 from frappe.utils import flt, nowdate
 
+from jewellery_erpnext.customer_subcontracting import customer_gold_fulfilment as cgf
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	SETTINGS_DOCTYPE,
 )
@@ -771,6 +772,72 @@ class TestConversionLifecycle(_MetalConversionCase):
 			)
 		self.assertTrue(net)
 		self.assertTrue(all(value == 0 for value in net.values()), net)
+
+	def test_cancelling_the_conversion_leaves_each_items_position(self):
+		"""D1a / R3: the MCON00333 shape, cancelled, leaves 24KT, 22KT and fine where they were.
+
+		MCON00333 drew 1.327 g from batch -12 and 18.673 g from batch -13, and made 21.798 g
+		of 22KT with 1.798 g of company alloy. The cancel writes one Reversal per conversion
+		event. The Conversion events never counted in the position, so their Reversals must
+		not either -- counted, the source item read +20.000 g and the target -21.798 g.
+		Deltas only: the class shares one transaction and the site keeps residue.
+		"""
+		wh = self._fresh_warehouse()
+		self._customer_batch(wh, 1.327)
+		self._customer_batch(wh, 18.673)
+		self._company_batch(wh, ALLOY_ITEM, 2.0, ALLOY_RATE)
+
+		def position():
+			return {
+				"source": cgf.get_customer_gold_position(
+					COMPANY, CUSTOMER, SOURCE_ITEM
+				),
+				"target": cgf.get_customer_gold_position(
+					COMPANY, CUSTOMER, TARGET_ITEM
+				),
+				"fine": cgf.get_customer_gold_fine_position(COMPANY, CUSTOMER),
+			}
+
+		before = position()
+
+		def assert_unchanged(when):
+			for basis, value in position().items():
+				with self.subTest(when=when, basis=basis):
+					self.assertAlmostEqual(value, before[basis], places=3)
+
+		mc = self._conversion(wh, 20)
+		# Guard the guard: 20 g at 100% -> 91.75% is 21.798365 g, with 1.798 g of alloy.
+		self.assertAlmostEqual(flt(mc.target_qty), 21.798365, places=6)
+		self.assertEqual(mc.source_alloy_qty, "1.798")
+		mc.submit()
+		se = self._entry(mc)
+		assert_unchanged("submitted")
+
+		frappe.get_doc("Metal Conversions", mc.name).cancel()
+
+		self.assertEqual(frappe.db.get_value("Stock Entry", se.name, "docstatus"), 2)
+		events = self._ledger(se.name)
+		reversals = [e for e in events if e.cg_event_kind == "Reversal"]
+		self.assertEqual(len(reversals), 4, events)
+		self.assertTrue(all(e.cg_reversal_of for e in reversals), reversals)
+		# One Out and one In per customer batch: each batch is its own lane.
+		self.assertEqual(
+			sorted(
+				frappe.get_all(
+					"Customer Gold Ledger Entry",
+					filters={"name": ["in", [e.cg_reversal_of for e in reversals]]},
+					pluck="cg_event_kind",
+				)
+			),
+			["Conversion In", "Conversion In", "Conversion Out", "Conversion Out"],
+		)
+		net = {}
+		for event in events:
+			net[event.batch_no] = flt(
+				net.get(event.batch_no, 0) + flt(event.cg_gross_qty_delta), 6
+			)
+		self.assertTrue(all(value == 0 for value in net.values()), net)
+		assert_unchanged("cancelled")
 
 	def test_amending_converts_again_without_double_consumption(self):
 		"""T42: the amended conversion posts new outputs; the cancelled history stays."""
