@@ -33,6 +33,8 @@ import json
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from jewellery_erpnext.patches.field_order_utils import rewrite_insert_after_chain
+
 DOCTYPE = "Item"
 
 # --- Move 1: customer_items from Manufacturing tab to Sales tab ---
@@ -40,6 +42,9 @@ SALES_ANCHOR = "no_of_months"  # last field in Sales tab before uom_tab
 SALES_SECTION = "custom_section_customer_items"
 SALES_SECTION_LABEL = "Customer Items"
 SALES_TABLE = "customer_items"
+# Inherited from erpnext's `customer_details` Section Break, which is the only
+# thing gating `customer_items` today (the table has no depends_on of its own).
+SALES_SECTION_DEPENDS_ON = "eval:!doc.is_fixed_asset"
 
 # --- Move 2: design_attribute gets its own section in Design Attribute tab ---
 DA_ANCHOR = "custom_zodiac"  # last field before design_attribute
@@ -60,28 +65,31 @@ def execute():
 					"label": SALES_SECTION_LABEL,
 					"fieldtype": "Section Break",
 					"insert_after": SALES_ANCHOR,
+					# erpnext gates `customer_items` through its enclosing
+					# `customer_details` section; carry that gate over so the table
+					# does not start showing on fixed-asset Items.
+					"depends_on": SALES_SECTION_DEPENDS_ON,
 				},
 				{
 					"fieldname": DA_SECTION,
 					"label": DA_SECTION_LABEL,
 					"fieldtype": "Section Break",
-					"insert_after": DA_TABLE,
+					"insert_after": DA_ANCHOR,
 				},
 			]
 		},
 		update=True,
 	)
-	# Correct insert_after: section comes BEFORE its table
-	for sec_field, table_field in (
-		(SALES_SECTION, SALES_TABLE),
-		(DA_SECTION, DA_TABLE),
-	):
-		frappe.db.set_value(
-			"Custom Field",
-			{"dt": DOCTYPE, "fieldname": sec_field},
-			"insert_after",
-			table_field,
-		)
+	# Anchor each Section Break on the field that PRECEDES it and chain its table
+	# off the section, so the insert_after chain on its own yields the intended
+	# order where no field_order Property Setter exists. rewrite_insert_after_chain
+	# skips block members with no Custom Field row, so the standard `customer_items`
+	# field is left untouched while `design_attribute` is re-anchored on its section.
+	rewrite_insert_after_chain(DOCTYPE, (SALES_SECTION, SALES_TABLE), SALES_ANCHOR)
+	rewrite_insert_after_chain(DOCTYPE, (DA_SECTION, DA_TABLE), DA_ANCHOR)
+
+	# Drop any insert_after Property Setter that would override the chain above.
+	for sec_field in ALL_NEW_SECTIONS:
 		frappe.db.delete(
 			"Property Setter",
 			{
