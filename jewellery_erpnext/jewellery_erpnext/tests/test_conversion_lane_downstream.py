@@ -767,6 +767,9 @@ class _BatchTableCase(IntegrationTestCase):
 			self.assertTrue(pattern.endswith("-%"), pattern)
 			self.assertFalse({"%", "_"} & set(prefix), pattern)
 			names = sorted((n for n in table if n.startswith(prefix)), reverse=True)
+			# frappe.db.sql(..., pluck=True) returns the names themselves.
+			if kwargs.get("pluck"):
+				return names
 			return [frappe._dict(name=n) for n in names]
 
 		def _exists(doctype, name=None, *args, **kwargs):
