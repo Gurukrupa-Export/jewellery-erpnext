@@ -1,6 +1,7 @@
 import frappe
 from frappe.query_builder import Case
 from frappe.query_builder.functions import Locate
+from frappe.utils import cint
 
 
 @frappe.whitelist()
@@ -105,9 +106,29 @@ def get_filters_cond(filters):
 	Warehouse = frappe.qb.DocType("Warehouse")
 	conditions = []
 
-	if filters["stock_entry_type"] == "Material Transfer (DEPARTMENT)" and filters.get(
-		"department"
-	):
+	is_department = filters["stock_entry_type"] == "Material Transfer (DEPARTMENT)"
+	is_target = filters.get("field") == "t_warehouse"
+	is_receipt = cint(filters.get("receive_leg"))
+
+	if is_department and is_target and is_receipt:
+		# The receipt leg (End Transit) lands the stock in the receiving department --
+		# its RM, Manufacturing, FG or, after a Transfer to Department, Reserve warehouse.
+		# A Transit target would leave it in transit.
+		if filters.get("department"):
+			conditions.append(
+				(Warehouse.department == filters.get("department"))
+				& (Warehouse.warehouse_type != "Transit")
+			)
+		else:
+			conditions.append(Warehouse.warehouse_type != "Transit")
+
+	elif is_department and is_target and cint(filters.get("add_to_transit")):
+		# A sending leg in transit: ERPNext rejects any target that is not a Transit
+		# warehouse (validate_transit_warehouses, v16.36.0) -- whether or not the user
+		# has a department.
+		conditions.append(Warehouse.warehouse_type == "Transit")
+
+	elif is_department and filters.get("department"):
 		raw_department = frappe.db.get_value(
 			"Warehouse",
 			{
