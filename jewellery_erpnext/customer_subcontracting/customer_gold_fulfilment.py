@@ -1711,7 +1711,7 @@ def _allocate_fulfilment(
 		DISPOSITION_FG_DELIVERY,
 		allocate_event,
 		is_allocation_schema_ready,
-		receipts_of_batch,
+		open_receipts_of_batch,
 	)
 
 	if not is_allocation_schema_ready():
@@ -1734,7 +1734,7 @@ def _allocate_fulfilment(
 	if share is not None:
 		basis = BASIS_COMPONENT
 		for source, qty, amount in share.get("parts") or []:
-			for receipt in receipts_of_batch(doc.company, event.customer, source):
+			for receipt in open_receipts_of_batch(doc.company, event.customer, source):
 				parts.append(
 					(
 						receipt,
@@ -1744,7 +1744,7 @@ def _allocate_fulfilment(
 				)
 	elif _is_receipt_batch(doc.company, event.customer, batch_no):
 		basis = BASIS_DIRECT
-		for receipt in receipts_of_batch(doc.company, event.customer, batch_no):
+		for receipt in open_receipts_of_batch(doc.company, event.customer, batch_no):
 			parts.append(
 				(
 					receipt,

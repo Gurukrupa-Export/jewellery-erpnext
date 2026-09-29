@@ -126,6 +126,39 @@ def receipts_of_batch(company, customer, batch_no):
 	return events
 
 
+def open_receipts_of_batch(company, customer, batch_no):
+	"""``receipts_of_batch``, each receipt's share taken from what it still has OPEN.
+
+	A shared batch splits a draw pro-rata by what each receipt row RECEIVED only while no
+	receipt has drawn on it alone. A receipt-linked raw return takes metal from one receipt:
+	with A 5 g + B 5 g in one batch and A's 5 g returned, what is left is B's, and splitting the
+	next 5 g delivery 50/50 drew A to 7.5 g and left B 2.5 g "open" with no metal behind it
+	(review F2, 29 Sep). Each share is therefore ``received - net drawn`` (net of reversals and
+	returns, ``drawn_by_receipt``), floored at zero.
+
+	A batch of one receipt is unchanged. When nothing is open -- an over-draw the report flags --
+	the received proportions stand. A plain read on purpose: the stock layer already stops a
+	physical over-draw, and a locking read here would add a lock-order path with returns.
+	"""
+	receipts = receipts_of_batch(company, customer, batch_no)
+	if len(receipts) < 2:
+		return receipts
+
+	drawn = drawn_by_receipt([r.name for r in receipts])
+	open_qty = {
+		r.name: max(
+			flt(r.cg_gross_qty_delta) - flt((drawn.get(r.name) or {}).get("gross")), 0.0
+		)
+		for r in receipts
+	}
+	total = sum(open_qty.values())
+	if total <= 0:
+		return receipts
+	for receipt in receipts:
+		receipt.share = open_qty[receipt.name] / total
+	return receipts
+
+
 def booked_rate_of(event):
 	"""Rate per receipt-item unit this receipt booked, or None when it was never valued."""
 	qty = flt(event.cg_gross_qty_delta)

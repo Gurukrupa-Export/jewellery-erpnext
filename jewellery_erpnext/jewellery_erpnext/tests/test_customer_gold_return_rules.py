@@ -347,3 +347,100 @@ class TestCreateIssueMapsOnlyWhatIsOwed(unittest.TestCase):
 		self.assertFalse(mapped(done, None, 3))
 		boxes = self._row("T3", qty=5.0, transferred=4.0, factor=2.0)
 		self.assertEqual(row_qty(boxes, None, 3), 3.0)
+
+
+class TestDeliveriesDrawOnOpenReceiptShares(unittest.TestCase):
+	"""Review F2 (29 Sep): receipts A 5 g and B 5 g share batch B1. A raw return takes A's 5 g
+	back, so the metal left in B1 is B's. The next 5 g delivered from B1 was split 50/50 by what
+	each RECEIVED: A drawn to 7.5 g of 5, B left 2.5 g "open" with no metal behind it."""
+
+	@staticmethod
+	def _receipts():
+		# Fresh rows per call, as receipts_of_batch returns them -- carrying the received
+		# proportion -- since open_receipts_of_batch overwrites each row's share.
+		return [
+			frappe._dict(name="EV-A", cg_gross_qty_delta=5.0, share=0.5),
+			frappe._dict(name="EV-B", cg_gross_qty_delta=5.0, share=0.5),
+		]
+
+	def _shares(self, drawn):
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_allocations as cga,
+		)
+
+		with patch.object(
+			cga, "receipts_of_batch", side_effect=lambda *a: self._receipts()
+		), patch.object(cga, "drawn_by_receipt", return_value=drawn):
+			return {
+				r.name: r.share for r in cga.open_receipts_of_batch("C", "CUST", "B1")
+			}
+
+	def test_a_receipt_returned_in_full_takes_none_of_the_next_delivery(self):
+		shares = self._shares({"EV-A": frappe._dict(gross=5.0)})
+		self.assertEqual(shares, {"EV-A": 0.0, "EV-B": 1.0})
+
+	def test_with_nothing_drawn_the_received_proportions_stand(self):
+		self.assertEqual(self._shares({}), {"EV-A": 0.5, "EV-B": 0.5})
+
+	def test_a_partial_return_leaves_the_open_proportions(self):
+		"""A returned 2 g: A has 3 open, B 5 -> 3/8 and 5/8."""
+		shares = self._shares({"EV-A": frappe._dict(gross=2.0)})
+		self.assertAlmostEqual(shares["EV-A"], 3 / 8, places=9)
+		self.assertAlmostEqual(shares["EV-B"], 5 / 8, places=9)
+
+	def test_when_nothing_is_open_the_received_proportions_stand(self):
+		"""An over-draw the report flags: do not divide by zero, keep the old split."""
+		drawn = {"EV-A": frappe._dict(gross=5.0), "EV-B": frappe._dict(gross=6.0)}
+		self.assertEqual(self._shares(drawn), {"EV-A": 0.5, "EV-B": 0.5})
+
+	def test_a_batch_of_one_receipt_reads_no_draws(self):
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_allocations as cga,
+		)
+
+		one = [frappe._dict(name="EV-A", cg_gross_qty_delta=5.0, share=1.0)]
+		with patch.object(cga, "receipts_of_batch", return_value=one), patch.object(
+			cga, "drawn_by_receipt"
+		) as drawn:
+			self.assertEqual(
+				cga.open_receipts_of_batch("C", "CUST", "B1")[0].share, 1.0
+			)
+		drawn.assert_not_called()
+
+	def test_the_delivery_after_the_return_is_allocated_to_b_alone(self):
+		"""End to end through the allocation writer: 5 g delivered straight from B1 at
+		Rs.7,000/g after A's return -> B 5 g / Rs.35,000, A nothing. With A's 5 g return, each
+		receipt has drawn exactly its 5 g and neither is left pending."""
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_allocations as cga,
+		)
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_fulfilment as cgf,
+		)
+
+		with patch.object(
+			cga, "receipts_of_batch", side_effect=lambda *a: self._receipts()
+		), patch.object(
+			cga, "drawn_by_receipt", return_value={"EV-A": frappe._dict(gross=5.0)}
+		), patch.object(
+			cga, "is_allocation_schema_ready", return_value=True
+		), patch.object(cgf, "_is_receipt_batch", return_value=True), patch.object(
+			cga, "allocate_event"
+		) as allocate:
+			cgf._allocate_fulfilment(
+				frappe._dict(company="C", doctype="Delivery Note"),
+				frappe._dict(qty=5.0),
+				frappe._dict(name="EV-DN", customer="CUST"),
+				"B1",
+				None,
+				None,
+				5.0,
+				-35000.0,
+				1,
+				"INR",
+			)
+		parts = {
+			receipt.name: (qty, amount)
+			for receipt, qty, amount in allocate.call_args.args[1]
+		}
+		self.assertEqual(parts, {"EV-A": (0.0, 0.0), "EV-B": (5.0, 35000.0)})
