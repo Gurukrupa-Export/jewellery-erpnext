@@ -1,7 +1,10 @@
 import frappe
 from frappe.utils import flt
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice import set_gst_details
+from jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice import (
+	get_allowed_item_types,
+	set_gst_details,
+)
 
 
 def validate(self, method):
@@ -95,6 +98,9 @@ def update_dn_einvoice_items(self, bom_cache=None):
 	is_branch_customer = frappe.db.get_value(
 		"Sales Type Multiselect", {"parent": self.customer, "sales_type": "Branch"}
 	)
+	# A customer can carry both Outright and Branch; only a Branch Sales
+	# document drops making charges (the Sales Order bills them otherwise).
+	skip_making = is_branch_customer and self.sales_type == "Branch Sales"
 	matching_parents = _matching_e_invoice_item_parents(self.sales_type)
 	einvoice_items = frappe.get_all(
 		"E Invoice Item",
@@ -135,9 +141,20 @@ def update_dn_einvoice_items(self, bom_cache=None):
 	def get_einvoice_item(filters):
 		return _match_einvoice_item(einvoice_items, filters) or (None, None, None)
 
-	hallmarking_item, hallmarking_hsn, hallmarking_uom = get_einvoice_item(
-		{"is_for_hallmarking": 1}
+	# Prefer the hallmarking item on the customer's Payment Terms (same as the
+	# Sales Order); fall back to the newest one only if none is configured.
+	allowed_item_types = get_allowed_item_types(self.customer, self.sales_type)
+	hallmarking_item, hallmarking_hsn, hallmarking_uom = (
+		get_einvoice_item(
+			{"is_for_hallmarking": 1, "name": ["in", list(allowed_item_types)]}
+		)
+		if allowed_item_types
+		else (None, None, None)
 	)
+	if not hallmarking_item:
+		hallmarking_item, hallmarking_hsn, hallmarking_uom = get_einvoice_item(
+			{"is_for_hallmarking": 1}
+		)
 	certification_item, certification_hsn, certification_uom = get_einvoice_item(
 		{"is_for_certification": 1}
 	)
@@ -190,7 +207,7 @@ def update_dn_einvoice_items(self, bom_cache=None):
 				flt(i.quantity),
 			)
 
-			if not is_branch_customer:
+			if not skip_making:
 				making_item, making_hsn, making_uom = get_einvoice_item(
 					{
 						"is_for_making": 1,
@@ -248,7 +265,7 @@ def update_dn_einvoice_items(self, bom_cache=None):
 					flt(i.quantity),
 				)
 
-			if not is_branch_customer:
+			if not skip_making:
 				making_amount = flt(i.making_amount) + flt(i.wastage_amount)
 				finding_making_item, fm_hsn, fm_uom = get_einvoice_item(
 					{
