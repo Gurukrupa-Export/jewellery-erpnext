@@ -258,11 +258,18 @@ doc_events = {
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
+			# FIRST, before update_batches FIFO-fills an empty batch: a receipt-linked Customer
+			# Gold return row gets its receipt's batch back (an amended return loses batch_no).
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.fill_return_batch",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
 			# Runs last so it sees rows after update_batches has rebuilt self.items.
 			# No-op unless Customer Gold Flow is enabled on Subcontracting Settings.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_receipt",
+			# The configured Customer Gold return type only: links each row to the receipt row it
+			# gives back, sets the liability contra account and checks what the receipt still owes.
+			# Covers the desk "Create > Issue" path as well as make_customer_gold_return.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.prepare_return_entry",
 		],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
@@ -274,6 +281,9 @@ doc_events = {
 			# MUST stay after the two batch creators: a Customer Gold receipt carries no
 			# batch_no until create_parent_batches mints it.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_batches",
+			# Last, after prelock_bins: the receipt-level recheck of a Customer Gold return, under a
+			# lock on the receipt rows so two concurrent returns cannot both pass.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.lock_return_entitlement",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
@@ -289,6 +299,8 @@ doc_events = {
 			# subsystem: PC-to-Tagging, Employee IR injection and the settlement helpers each
 			# build their own Stock Entry, but every one of them arrives here.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.record_stock_movement",
+			# The Return event and its receipt allocation, for the configured return type.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.record_return",
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,
@@ -296,6 +308,8 @@ doc_events = {
 			# F-002/F-012: pre-order this SE's Bins on cancel too, matching every other
 			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
+			# A Customer Gold receipt with live returns or deliveries against it cannot be cancelled.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.block_receipt_cancel_with_dispositions",
 		],
 		"on_cancel": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",

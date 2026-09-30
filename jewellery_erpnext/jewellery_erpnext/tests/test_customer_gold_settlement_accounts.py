@@ -4,9 +4,10 @@
 """F4 -- the settlement Journal Entry revalidates its accounts, and posts once.
 
 ``KGJPL-JE-JE-26-00018`` posted Dr Customer Goods Receive / Cr Advances from Customers: two
-liability accounts. Nothing was discharged. The KGJPL settings row had never been validated,
-because save-time validation returns early while the feature flag is off. So the rules now run
-again at posting time, before anything is inserted.
+liability accounts. Nothing was discharged. The KGJPL settings row was saved, with the flag on,
+before the adjustment account had a root-type rule, and a row is never re-checked unless it is
+saved again. So the rules now run again at posting time, before anything is inserted, and the
+message says where the row is corrected.
 
 Pure-logic per the suite convention: no document is created and every DB read is patched. The
 settings-side rules are in ``test_subcontracting_settings``; real JEs are in
@@ -40,6 +41,26 @@ ACCOUNTS = {
 	),
 	ADVANCES: frappe._dict(
 		company=COMPANY, root_type="Liability", is_group=0, disabled=0, account_type=""
+	),
+	# One account per remaining refusal, so every ``_throw`` site is reached at posting.
+	"Group Expense - CG": frappe._dict(
+		company=COMPANY, root_type="Expense", is_group=1, disabled=0, account_type=""
+	),
+	"Disabled Expense - CG": frappe._dict(
+		company=COMPANY, root_type="Expense", is_group=0, disabled=1, account_type=""
+	),
+	"Payable - CG": frappe._dict(
+		company=COMPANY,
+		root_type="Liability",
+		is_group=0,
+		disabled=0,
+		account_type="Payable",
+	),
+	"Stock In Hand - CG": frappe._dict(
+		company=COMPANY, root_type="Asset", is_group=0, disabled=0, account_type="Stock"
+	),
+	"Expense - Other Co": frappe._dict(
+		company="Other Co", root_type="Expense", is_group=0, disabled=0, account_type=""
 	),
 }
 
@@ -96,6 +117,116 @@ class TestPostingRevalidatesTheAccounts(unittest.TestCase):
 			self._post(LIABILITY, None)
 		self.assertIn("is mandatory", str(raised.exception))
 		self.new_doc.assert_not_called()
+
+	def test_every_refusal_at_posting_says_where_to_correct_the_row(self):
+		"""The operator on a Delivery Note cannot see the settings row the message is about.
+
+		DN-26-00025 stopped with a message that named the account but not where to change it.
+		"""
+		for liability, adjustment, reason in (
+			(LIABILITY, None, "is mandatory"),
+			(LIABILITY, "No Such Account - CG", "does not exist"),
+			(LIABILITY, "Group Expense - CG", "is a group account"),
+			(LIABILITY, "Disabled Expense - CG", "is disabled"),
+			(LIABILITY, "Payable - CG", "requires a Party"),
+			(LIABILITY, "Stock In Hand - CG", "is a Stock account"),
+			(LIABILITY, "Expense - Other Co", "belongs to Company"),
+			(ADJUSTMENT, ADJUSTMENT, "must be of root type"),
+			(LIABILITY, LIABILITY, "are both set to"),
+			(LIABILITY, ADVANCES, "would move the obligation"),
+		):
+			with self.subTest(reason=reason):
+				with self.assertRaises(frappe.ValidationError) as raised:
+					self._post(liability, adjustment)
+				message = str(raised.exception)
+				self.assertIn(reason, message)
+				self.assertIn("Company Accounts, on the row for Company", message)
+				self.assertIn(frappe.bold(COMPANY), message)
+				self.new_doc.assert_not_called()
+
+
+class TestSettlementLinesCostCenter(unittest.TestCase):
+	"""A Profit and Loss line without a cost center is refused by erpnext ("Missing Cost Center").
+
+	Both lines take the cost center Frappe's defaults give the submitting user, as they always did.
+	When those defaults give none -- Frappe drops ``:Company`` for a user whose Cost Center user
+	permissions exclude the company's -- they fall back to the company's cost center.
+	"""
+
+	COMPANY_COST_CENTER = "Main - CG"
+	USER_COST_CENTER = "Branch - CG"
+
+	def setUp(self):
+		self.entry = MagicMock()
+		self.row_defaults = {}
+		self.new_doc = MagicMock(
+			side_effect=lambda doctype, **kwargs: dict(self.row_defaults)
+			if doctype == "Journal Entry Account"
+			else self.entry
+		)
+		real_get_cached_value = frappe.get_cached_value
+
+		def cached_value(doctype, *args, **kwargs):
+			# Answer only the two exact reads this path makes; everything else reads the site.
+			if doctype == "Company" and args[:2] == (COMPANY, "cost_center"):
+				return self.COMPANY_COST_CENTER
+			if doctype == "Account" and args[:2] == (LIABILITY, "account_type"):
+				return ""
+			return real_get_cached_value(doctype, *args, **kwargs)
+
+		for p in (
+			patch.object(cgf, "validate_settlement_accounts"),
+			patch.object(cgf.frappe, "new_doc", self.new_doc),
+			patch.object(cgf.frappe, "get_cached_value", side_effect=cached_value),
+		):
+			p.start()
+			self.addCleanup(p.stop)
+
+	def _lines(self, per_customer, total):
+		accounts = frappe._dict(
+			liability_account=LIABILITY, cogs_adjustment_account=ADJUSTMENT
+		)
+		cgf._build_settlement_entry(_doc(), accounts, per_customer, total, 2)
+		return [
+			c.args[1]
+			for c in self.entry.append.call_args_list
+			if c.args[0] == "accounts"
+		]
+
+	def test_with_no_default_from_the_user_both_legs_take_the_company_cost_center(self):
+		lines = self._lines({"CUST": 100.0}, 100.0)
+		self.assertEqual([line["account"] for line in lines], [LIABILITY, ADJUSTMENT])
+		self.assertEqual(
+			{line["cost_center"] for line in lines}, {self.COMPANY_COST_CENTER}
+		)
+
+	def test_a_cost_center_from_the_users_defaults_is_kept(self):
+		"""Nothing changes for a user whose defaults already give a cost center."""
+		self.row_defaults = {"cost_center": self.USER_COST_CENTER}
+		lines = self._lines({"CUST": 100.0}, 100.0)
+		self.assertEqual(
+			{line["cost_center"] for line in lines}, {self.USER_COST_CENTER}
+		)
+
+	def test_the_defaults_are_those_of_this_entrys_rows(self):
+		"""``:Company`` resolves through the parent, so the entry must be passed as parent_doc."""
+		self._lines({"CUST": 100.0}, 100.0)
+		self.new_doc.assert_any_call(
+			"Journal Entry Account",
+			parent_doc=self.entry,
+			parentfield="accounts",
+			as_dict=True,
+		)
+		self.assertEqual(self.entry.company, COMPANY)
+
+	def test_both_legs_of_a_return_carry_the_same_cost_center(self):
+		"""A physical return inverts both legs; the cost center must not depend on direction."""
+		lines = self._lines({"CUST": -40.0}, -40.0)
+		self.assertEqual(lines[0]["credit_in_account_currency"], 40.0)
+		self.assertEqual(lines[1]["debit_in_account_currency"], 40.0)
+		self.assertEqual(
+			{line["cost_center"] for line in lines}, {self.COMPANY_COST_CENTER}
+		)
 
 
 class TestSettlementClaimsOnce(unittest.TestCase):

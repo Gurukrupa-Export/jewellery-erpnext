@@ -682,3 +682,85 @@ class TestMetalConversionLaneRates(IntegrationTestCase):
 
 		self.assertEqual(se.items[2]["basic_rate"], 5123.45)
 		self.assertEqual(se.items[5]["basic_rate"], 6595.18)
+
+	# ------------------------------------------------------------------ MCON00333
+
+	#: ERPNext's pooled rate for MAT-STE-19749: the ROUNDED consumed amounts over the output,
+	#: (20,157.26 + 283,644.74 + 111.48) / 21.798.
+	MCON00333_POOLED = 13942.264427929
+
+	@staticmethod
+	def _mcon00333_source(qty, batch):
+		"""A consumed 24KT row of customer GJCU0009, booked at MCON00333's 15,190.10/g."""
+		return _consume(
+			"M-G-24KT-99.9-Y",
+			qty,
+			15190.10,
+			batch_no=batch,
+			inventory_type="Customer Goods",
+			customer="GJCU0009",
+		)
+
+	def _mcon00333_output(self, qty):
+		return _cv_produce(
+			"M-G-22KT-91.75-Y",
+			qty,
+			self.MCON00333_POOLED,
+			inventory_type="Customer Goods",
+			customer="GJCU0009",
+		)
+
+	def test_mcon00333_one_lane_two_batches_and_alloy(self):
+		"""MCON00333 (kg-gk, 29 Sep 2026) as MAT-STE-19749 posted it: one lane, two batches.
+
+		1.327 g of batch -12 and 18.673 g of batch -13 at 15,190.10, plus 1.798 g of company alloy
+		at 62.00, into 21.798 g of 22KT. The lane gave up 20,157.2627 + 283,644.7373 + 111.476 =
+		303,913.476, and 303,913.476 / 21.798 = 13,942.264244426 -- the rate on MAT-STE-19749.
+		ERPNext's own 13,942.264427929 divides the rounded amounts instead, so finding it on the
+		row would mean the pricer never ran. Out and in are both 303,913.48: on one stock account
+		the entry nets to no GL at all, which is the zero the meeting read as "no impact".
+		"""
+		se = self._conversion(
+			[
+				self._mcon00333_source(1.327, "GJCU0009-2F09-M-G-24KT-99.9-Y-12"),
+				self._mcon00333_source(18.673, "GJCU0009-2F09-M-G-24KT-99.9-Y-13"),
+				_consume("M-Genia-221", 1.798, 62.0, batch_no="KG2D082-ML7-04"),
+				self._mcon00333_output(21.798),
+			]
+		)
+		set_process_loss_produce_rates(se)
+
+		produced = se.items[3]
+		self.assertAlmostEqual(produced["basic_rate"], 13942.264244426, places=9)
+		self.assertNotAlmostEqual(
+			produced["basic_rate"], self.MCON00333_POOLED, places=6
+		)
+		self.assertEqual(produced["basic_amount"], 303913.48)
+		self.assertEqual(_totals(se), (303913.48, 303913.48))
+
+	def test_mcon00333_per_batch_lanes_keep_the_voucher_whole(self):
+		"""The same conversion as the per-batch builder books it: a lane per customer batch.
+
+		Batch -12's lane: (20,157.2627 + 0.119 g x 62 = 7.378) / 1.446 = 13,945.118049793, booked
+		20,164.64. Batch -13's: (283,644.7373 + 1.679 g x 62 = 104.098) / 20.352 = 13,942.061482901,
+		booked 283,748.84. Splitting the lane moves no value: 303,913.48 out and in, as before.
+		"""
+		se = self._conversion(
+			[
+				self._mcon00333_source(1.327, "GJCU0009-2F09-M-G-24KT-99.9-Y-12"),
+				_consume("M-Genia-221", 0.119, 62.0, batch_no="KG2D082-ML7-04"),
+				self._mcon00333_output(1.446),
+				self._mcon00333_source(18.673, "GJCU0009-2F09-M-G-24KT-99.9-Y-13"),
+				_consume("M-Genia-221", 1.679, 62.0, batch_no="KG2D082-ML7-04"),
+				self._mcon00333_output(20.352),
+			]
+		)
+		set_process_loss_produce_rates(se)
+
+		self.assertAlmostEqual(se.items[2]["basic_rate"], 13945.118049793, places=6)
+		self.assertAlmostEqual(se.items[5]["basic_rate"], 13942.061482901, places=6)
+		self.assertEqual(
+			(se.items[2]["basic_amount"], se.items[5]["basic_amount"]),
+			(20164.64, 283748.84),
+		)
+		self.assertEqual(_totals(se), (303913.48, 303913.48))

@@ -1,0 +1,254 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-09-28 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "identity_section",
+  "allocation_key",
+  "disposition",
+  "basis",
+  "column_break_identity",
+  "company",
+  "customer",
+  "links_section",
+  "cg_event",
+  "reference_doctype",
+  "reference_docname",
+  "settlement_voucher",
+  "reversal_of",
+  "column_break_links",
+  "receipt_event",
+  "receipt_voucher",
+  "receipt_row",
+  "source_batch",
+  "quantity_section",
+  "gross_qty",
+  "fine_qty",
+  "column_break_qty",
+  "amount",
+  "currency",
+  "recorded_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Allocation"
+  },
+  {
+   "fieldname": "allocation_key",
+   "fieldtype": "Data",
+   "label": "Allocation Key",
+   "reqd": 1,
+   "unique": 1,
+   "read_only": 1,
+   "length": 140,
+   "description": "Deterministic server-derived identity: the disposition event, the receipt event and the source batch. A retry computes the same key and is absorbed by the unique constraint."
+  },
+  {
+   "fieldname": "disposition",
+   "fieldtype": "Select",
+   "label": "Disposition",
+   "options": "FG Delivery\nDelivery Return\nRaw Return\nReversal",
+   "reqd": 1,
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "basis",
+   "fieldtype": "Select",
+   "label": "Basis",
+   "options": "Component Share\nDirect Batch\nReceipt Link",
+   "read_only": 1,
+   "description": "How the receipt was identified. Component Share: the delivered piece's recorded composition. Direct Batch: the receipt's own batch left. Receipt Link: the return names the receipt row."
+  },
+  {
+   "fieldname": "column_break_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "reqd": 1,
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "links_section",
+   "fieldtype": "Section Break",
+   "label": "Links"
+  },
+  {
+   "fieldname": "cg_event",
+   "fieldtype": "Link",
+   "label": "Disposition Event",
+   "options": "Customer Gold Ledger Entry",
+   "reqd": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference Doctype",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_docname",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Name",
+   "options": "reference_doctype",
+   "read_only": 1,
+   "in_list_view": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "settlement_voucher",
+   "fieldtype": "Link",
+   "label": "Settlement Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "description": "The Journal Entry that released this amount. Empty for a raw return, whose own Stock Entry posts the liability leg."
+  },
+  {
+   "fieldname": "reversal_of",
+   "fieldtype": "Link",
+   "label": "Reversal Of",
+   "options": "Customer Gold Allocation",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_links",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "receipt_event",
+   "fieldtype": "Link",
+   "label": "Receipt Event",
+   "options": "Customer Gold Ledger Entry",
+   "reqd": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "receipt_voucher",
+   "fieldtype": "Link",
+   "label": "Receipt",
+   "options": "Stock Entry",
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "receipt_row",
+   "fieldtype": "Data",
+   "label": "Receipt Row",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_batch",
+   "fieldtype": "Link",
+   "label": "Receipt Batch",
+   "options": "Batch",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quantity_section",
+   "fieldtype": "Section Break",
+   "label": "Quantities"
+  },
+  {
+   "fieldname": "gross_qty",
+   "fieldtype": "Float",
+   "label": "Receipt Item Qty",
+   "read_only": 1,
+   "description": "Quantity in the receipt item's own stock unit. Positive draws on the receipt; a reversal or a delivery return is negative."
+  },
+  {
+   "fieldname": "fine_qty",
+   "fieldtype": "Float",
+   "label": "Fine Gold (g)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_qty",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Released Amount",
+   "options": "currency",
+   "read_only": 1,
+   "description": "Customer Gold Liability released against this receipt, at its booked rate. Positive releases; negative restores."
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "recorded_at",
+   "fieldtype": "Datetime",
+   "label": "Recorded At",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "is_submittable": 0,
+ "links": [],
+ "modified": "2026-09-28 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Customer Subcontracting",
+ "name": "Customer Gold Allocation",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Stock Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

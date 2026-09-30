@@ -75,6 +75,7 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 	get_customer_gold_settings,
 	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
+	settings_fix_hint,
 	validate_settlement_accounts,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
@@ -418,9 +419,13 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 	mine = [c for c in customers if _is_customer_gold_item(c.get("item_code"))]
 	if not mine:
 		# Only the customer's stones: measured, and there is no gold and no liability in them.
-		return frappe._dict(fine=0.0, value=0.0, reason=None)
+		return frappe._dict(fine=0.0, value=0.0, reason=None, parts=[])
 
-	share = frappe._dict(fine=None, value=None, reason=None)
+	# ``parts`` keeps what this function used to compute and discard: the customer's gold per
+	# SOURCE batch. The ``Customer Gold Allocation`` writer turns each part into the receipt row it
+	# came from, so one settlement stays decomposable by receipt. Each part is
+	# (source batch, source-item quantity, amount or None).
+	share = frappe._dict(fine=None, value=None, reason=None, parts=[])
 
 	# The basis covers EVERY component, not just this customer's: company alloy and stones are
 	# part of what the batch is made of.
@@ -441,6 +446,7 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 	share.fine = flt(fine, QTY_PRECISION) if fine is not None else None
 
 	if not valued:
+		share.parts = _unvalued_parts(mine, fraction)
 		return share
 
 	total = 0.0
@@ -472,9 +478,31 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 			return share
 
 		total += source_qty * fraction * flt(rate)
+		share.parts.append(
+			(source, source_qty * fraction, source_qty * fraction * flt(rate))
+		)
 
 	share.value = flt(total, 2)
 	return share
+
+
+def _unvalued_parts(components, fraction):
+	"""Quantity-only parts under Zero Value: which receipt the gold came from still matters when
+	no money moves."""
+	parts = []
+	for component in components:
+		source = component.get("source_batch")
+		if not source:
+			continue
+		source_item = frappe.db.get_value("Batch", source, "item") or component.get(
+			"item_code"
+		)
+		source_qty = _restate_qty(
+			flt(component.get("qty")), component.get("item_code"), source_item
+		)
+		if source_qty is not None:
+			parts.append((source, source_qty * fraction, None))
+	return parts
 
 
 def _is_customer_gold_item(item_code):
@@ -1603,38 +1631,224 @@ def record_fulfilment(doc, method=None):
 		else:
 			basis = quantity_basis(row.get("item_code"), signed, doc.company)
 
+		currency = (
+			frappe.get_cached_value("Company", doc.company, "default_currency")
+			if nominal
+			else None
+		)
 		for serial_no in serials:
-			written.append(
-				_write_event(
-					cg_event_key=build_event_key(
-						doc.company, doc.doctype, row.name, serial_no, kind
-					),
-					cg_event_kind=kind,
-					cg_stage=STAGE_FG if is_return else STAGE_CLOSED,
+			event_name = _write_event(
+				cg_event_key=build_event_key(
+					doc.company, doc.doctype, row.name, serial_no, kind
+				),
+				cg_event_kind=kind,
+				cg_stage=STAGE_FG if is_return else STAGE_CLOSED,
+				company=doc.company,
+				customer=customer,
+				reference_doctype=doc.doctype,
+				reference_docname=doc.name,
+				cg_source_row=row.name,
+				item_code=row.get("item_code"),
+				batch_no=batch_no,
+				serial_no=serial_no,
+				stock_uom=row.get("stock_uom") or row.get("uom"),
+				cg_gross_qty_delta=signed,
+				**basis,
+				cg_carrying_value_delta=value_per_serial,
+				# Currency is stamped whenever the policy is Nominal, even if the row turned
+				# out to carry no SLE: it records which policy was in force when the event was
+				# written, which is what makes a later reconciliation possible.
+				cg_currency=currency,
+			)
+			written.append(event_name)
+			_allocate_fulfilment(
+				doc,
+				row,
+				frappe._dict(
+					name=event_name,
 					company=doc.company,
 					customer=customer,
 					reference_doctype=doc.doctype,
 					reference_docname=doc.name,
-					cg_source_row=row.name,
-					item_code=row.get("item_code"),
-					batch_no=batch_no,
-					serial_no=serial_no,
-					stock_uom=row.get("stock_uom") or row.get("uom"),
-					cg_gross_qty_delta=signed,
-					**basis,
-					cg_carrying_value_delta=value_per_serial,
-					# Currency is stamped whenever the policy is Nominal, even if the row turned
-					# out to carry no SLE: it records which policy was in force when the event was
-					# written, which is what makes a later reconciliation possible.
-					cg_currency=frappe.get_cached_value(
-						"Company", doc.company, "default_currency"
-					)
-					if nominal
-					else None,
-				)
+				),
+				batch_no,
+				serial_no,
+				share,
+				per_serial,
+				value_per_serial,
+				len(serials),
+				currency,
 			)
 
 	settle_customer_gold_liability(doc, written)
+
+
+def _allocate_fulfilment(
+	doc,
+	row,
+	event,
+	batch_no,
+	serial_no,
+	share,
+	per_serial,
+	value_per_serial,
+	serial_count,
+	currency,
+):
+	"""Decompose one Delivery / Delivery Return event by the receipt rows it drew on.
+
+	The split is the one ``_customer_share`` already priced the settlement with -- per source
+	batch -- carried one step further to the receipt rows behind each source batch. A raw
+	receipt batch delivered as-is draws on that batch's own receipt rows.
+
+	A return does NOT re-derive the split. It restores the original delivery's rows for the same
+	serial, in the same proportions, so a cancelled or returned piece reopens exactly the receipts
+	it closed -- never whatever today's components would say.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		BASIS_COMPONENT,
+		BASIS_DIRECT,
+		DISPOSITION_DELIVERY_RETURN,
+		DISPOSITION_FG_DELIVERY,
+		allocate_event,
+		is_allocation_schema_ready,
+		open_receipts_of_batch,
+	)
+
+	if not is_allocation_schema_ready():
+		return
+
+	restoring = flt(row.get("qty")) < 0
+	# The event's value is negative when metal leaves; an allocation's amount is what it
+	# RELEASES, so it carries the opposite sign.
+	total_amount = -flt(value_per_serial) if value_per_serial is not None else None
+	valued_currency = currency if total_amount is not None else None
+	disposition = DISPOSITION_DELIVERY_RETURN if restoring else DISPOSITION_FG_DELIVERY
+
+	if restoring and _restore_original_allocations(
+		doc, row, event, serial_no, abs(per_serial), total_amount, valued_currency
+	):
+		return
+
+	sign = -1 if restoring else 1
+	parts = []
+	if share is not None:
+		basis = BASIS_COMPONENT
+		for source, qty, amount in share.get("parts") or []:
+			for receipt in open_receipts_of_batch(doc.company, event.customer, source):
+				parts.append(
+					(
+						receipt,
+						sign * abs(qty) * receipt.share / serial_count,
+						sign * abs(flt(amount)) * receipt.share / serial_count,
+					)
+				)
+	elif _is_receipt_batch(doc.company, event.customer, batch_no):
+		basis = BASIS_DIRECT
+		for receipt in open_receipts_of_batch(doc.company, event.customer, batch_no):
+			parts.append(
+				(
+					receipt,
+					sign * abs(per_serial) * receipt.share,
+					flt(total_amount) * receipt.share,
+				)
+			)
+	else:
+		# No recorded provenance: the event stays unallocated and the report says so.
+		return
+
+	allocate_event(
+		event, parts, disposition, basis, valued_currency, total_amount=total_amount
+	)
+
+
+def _restore_original_allocations(
+	doc, row, event, serial_no, returned_qty, total_amount, currency
+):
+	"""Mirror the original delivery's allocations for this serial. False when there are none
+	(a legacy delivery), so the caller falls back to deriving them."""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		ALLOCATION_DOCTYPE,
+		DISPOSITION_DELIVERY_RETURN,
+		DISPOSITION_FG_DELIVERY,
+		allocate_event,
+	)
+
+	against = doc.get("return_against")
+	if not against:
+		return False
+
+	filters = {
+		"reference_doctype": doc.doctype,
+		"reference_docname": against,
+		"cg_event_kind": EVENT_DELIVERY,
+	}
+	if serial_no:
+		filters["serial_no"] = serial_no
+	detail = row.get("dn_detail") or row.get("sales_invoice_item")
+	if detail:
+		filters["cg_source_row"] = detail
+	originals = frappe.get_all(
+		LEDGER_DOCTYPE, filters=filters, fields=["name", "cg_gross_qty_delta"]
+	)
+	if not originals:
+		return False
+
+	allocations = frappe.get_all(
+		ALLOCATION_DOCTYPE,
+		filters={
+			"cg_event": ["in", [o.name for o in originals]],
+			"disposition": DISPOSITION_FG_DELIVERY,
+		},
+		fields=["name", "receipt_event", "gross_qty", "amount", "basis"],
+		order_by="creation",
+	)
+	if not allocations:
+		return False
+
+	delivered = sum(abs(flt(o.cg_gross_qty_delta)) for o in originals)
+	scale = min(returned_qty / delivered, 1.0) if delivered else 1.0
+	receipts = {
+		r.name: r
+		for r in frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={"name": ["in", [a.receipt_event for a in allocations]]},
+			fields=[
+				"name",
+				"reference_docname",
+				"cg_source_row",
+				"batch_no",
+				"item_code",
+			],
+		)
+	}
+
+	original_total = sum(flt(a.amount) for a in allocations) * scale
+	# Same proportions as the original; the total is the one this return actually posts, so the
+	# decomposition ties to the Journal Entry. Unvalued: the original amounts, scaled.
+	rescale = (
+		(abs(flt(total_amount)) / original_total)
+		if total_amount is not None and original_total
+		else 1.0
+	)
+	parts = [
+		(
+			receipts[a.receipt_event],
+			-flt(a.gross_qty) * scale,
+			-flt(a.amount) * scale * rescale,
+		)
+		for a in allocations
+		if a.receipt_event in receipts
+	]
+	allocate_event(
+		event,
+		parts,
+		DISPOSITION_DELIVERY_RETURN,
+		allocations[0].basis,
+		currency,
+		total_amount=total_amount,
+	)
+	return True
 
 
 def settle_customer_gold_liability(doc, event_names):
@@ -1748,6 +1962,13 @@ def settle_customer_gold_liability(doc, event_names):
 			LEDGER_DOCTYPE, row.name, "cg_settlement_voucher", je, update_modified=False
 		)
 
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		reconcile_to_settlement,
+		stamp_settlement_voucher,
+	)
+
+	stamp_settlement_voucher([row.name for row in settled], je)
+	reconcile_to_settlement([row.name for row in settled], per_customer, precision)
 	return je
 
 
@@ -1758,19 +1979,22 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 	obligation shrinks -- **Dr Customer Gold Liability / Cr Customer Gold COGS Adjustment**, the
 	SOP's Example C posting. A physical return inverts both legs.
 	"""
-	# The settings are validated again HERE, not trusted from save time (F4). The save-time
-	# validator returns early while the feature flag is off and never sees a configuration that
-	# changed afterwards -- which is how the KGJPL row posted KGJPL-JE-JE-26-00018, Dr Customer
-	# Goods Receive / Cr Advances from Customers, liability to liability.
+	# The settings are validated again HERE, not trusted from save time (F4). A saved row is only
+	# as good as the rules in force when it was saved: the KGJPL row was saved, with the flag on,
+	# before the adjustment account had a root-type rule, and it posted KGJPL-JE-JE-26-00018,
+	# Dr Customer Goods Receive / Cr Advances from Customers, liability to liability. Save-time
+	# validation also skips every row while the feature flag is off.
 	#
 	# Blocking fails the delivery, and that is the right outcome: the alternative is a JE that
 	# erpnext accepts, that discharges nothing, and that permanently claims the events via
-	# cg_settlement_voucher so no later correction can settle them.
+	# cg_settlement_voucher so no later correction can settle them. The message says where the
+	# row is corrected, because the operator on this document cannot see it.
 	validate_settlement_accounts(
 		doc.company,
 		accounts.liability_account,
 		accounts.cogs_adjustment_account,
 		where=f"{doc.doctype} {doc.name}",
+		fix_hint=settings_fix_hint(doc.company),
 	)
 
 	# A party is set only when the account actually demands one. A Customer Gold Liability
@@ -1785,6 +2009,7 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 	je.voucher_type = "Journal Entry"
 	je.company = doc.company
 	je.posting_date = doc.get("posting_date") or frappe.utils.nowdate()
+	cost_center = _settlement_cost_center(je)
 	# The structural link is the ledger's own ``cg_settlement_voucher``, which points from every
 	# settled event to this JE; each event carries its customer, document row, serial and batch,
 	# and the batch's Batch Components name the customer's source receipts. The remark repeats
@@ -1811,6 +2036,7 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 		# own ``cg_settlement_voucher``, which points the other way and is not restricted.
 		line = {
 			"account": accounts.liability_account,
+			"cost_center": cost_center,
 			"debit_in_account_currency": amount if amount > 0 else 0,
 			"credit_in_account_currency": -amount if amount < 0 else 0,
 		}
@@ -1823,6 +2049,7 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 		"accounts",
 		{
 			"account": accounts.cogs_adjustment_account,
+			"cost_center": cost_center,
 			"credit_in_account_currency": total if total > 0 else 0,
 			"debit_in_account_currency": -total if total < 0 else 0,
 		},
@@ -1832,6 +2059,25 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 	je.insert()
 	je.submit()
 	return je.name
+
+
+def _settlement_cost_center(je):
+	"""The cost center for both settlement lines: what Frappe's defaults give, else the company's.
+
+	``Journal Entry Account.cost_center`` defaults to the submitting user's own default Cost
+	Center and, failing that, to ``:Company``. Frappe drops ``:Company`` for a user whose Cost
+	Center user permissions exclude the company's (``frappe/model/create_new.py``,
+	``get_default_based_on_another_field``); the Profit and Loss line is then left without one,
+	and erpnext refuses it with "Missing Cost Center" (``gl_entry.py``,
+	``pl_must_have_cost_center``). Only that case falls back to the company's cost center, so
+	a user whose defaults already give one keeps it.
+	"""
+	defaults = frappe.new_doc(
+		"Journal Entry Account", parent_doc=je, parentfield="accounts", as_dict=True
+	)
+	return defaults.get("cost_center") or frappe.get_cached_value(
+		"Company", je.company, "cost_center"
+	)
 
 
 def reverse_fulfilment(doc, method=None):
@@ -1873,6 +2119,7 @@ def reverse_fulfilment(doc, method=None):
 
 	_cancel_settlement_entries(doc)
 	_reverse_events(doc, [EVENT_DELIVERY, EVENT_DELIVERY_RETURN], STAGE_FG)
+	_reverse_allocations(doc)
 
 
 def _cancel_settlement_entries(doc):
@@ -1942,6 +2189,15 @@ def reverse_receipt(doc, method=None):
 	# Both Stock-Entry-borne kinds. A cancelled RETURN gives the customer their holding back
 	# just as a cancelled RECEIPT takes it away -- same document type, same handler.
 	_reverse_events(doc, list(STOCK_ENTRY_KINDS), STAGE_RM)
+	_reverse_allocations(doc)
+
+
+def _reverse_allocations(doc):
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		reverse_allocations,
+	)
+
+	reverse_allocations(doc)
 
 
 def reverse_revaluation(doc, method=None):
@@ -2171,6 +2427,16 @@ def block_delete_with_customer_gold_events(doc, method=None):
 #: Everything else -- Transfer, Conversion, Production, Allocation, Release, Revaluation --
 #: changes the STAGE or the VALUE of metal the customer still has. Summing those into a holding
 #: is how a ledger starts reporting metal that does not exist.
+#:
+#: ``Reversal`` is listed, but a Reversal's own kind does not say what it undoes, so it counts
+#: only where its ORIGINAL counts. Undoing a Receipt or a Delivery changes custody. Undoing a
+#: Transfer, Conversion, Production or Revaluation undoes an event this list never counted, and
+#: counting it moves the holding for nothing: cancelling MCON00333's conversion would read 24KT
+#: +20.000 g and 22KT -21.798 g. A Reversal with no ``cg_reversal_of``, or naming a row that no
+#: longer exists, keeps counting -- it is §5.4's explicit correction. A Reversal is never itself
+#: reversed (no ``_reverse_events`` caller passes it), so looking one level up is exact.
+#: :func:`_position_rows` applies this for every reader; SQL that filters on these kinds must
+#: exclude the same Reversals through a join on ``cg_reversal_of``.
 POSITION_KINDS = (
 	EVENT_RECEIPT,
 	EVENT_DELIVERY,
@@ -2292,15 +2558,11 @@ def get_customer_gold_position_report(company, customer, item_code=None, basis="
 	status_field = _STATUS_FIELD.get(field)
 	fields = [field, "cg_measurement_reason"] + ([status_field] if status_field else [])
 
-	filters = {
-		"company": company,
-		"customer": customer,
-		"cg_event_kind": ["in", POSITION_KINDS],
-	}
+	filters = {"company": company, "customer": customer}
 	if item_code:
 		filters["item_code"] = item_code
 
-	rows = frappe.get_all(LEDGER_DOCTYPE, filters=filters, fields=fields)
+	rows = _position_rows(filters, fields)
 
 	total = known = 0.0
 	counts = {STATUS_UNKNOWN: 0, STATUS_INVALID: 0}
@@ -2341,18 +2603,55 @@ def get_customer_gold_position_report(company, customer, item_code=None, basis="
 
 
 def _position(company, customer, field, item_code=None):
-	"""Sum ``field`` over the position-changing kinds only.
+	"""Sum ``field`` over the position rows only -- see :func:`_position_rows`.
 
 	A bare sum: an unmeasured row contributes its stored 0.0 and leaves no trace here. Use
 	:func:`get_customer_gold_position_report` wherever that matters.
 	"""
-	filters = {
-		"company": company,
-		"customer": customer,
-		"cg_event_kind": ["in", POSITION_KINDS],
-	}
+	filters = {"company": company, "customer": customer}
 	if item_code:
 		filters["item_code"] = item_code
 
-	rows = frappe.get_all(LEDGER_DOCTYPE, filters=filters, fields=[field])
+	rows = _position_rows(filters, [field])
 	return flt(sum(flt(r.get(field)) for r in rows), QTY_PRECISION)
+
+
+def _position_rows(filters, fields):
+	"""The ledger rows matching ``filters`` that make up the position.
+
+	Rows of the ``POSITION_KINDS`` kinds, except a Reversal whose original is not one of them
+	-- the rule is set out on ``POSITION_KINDS``. Every position reader goes through here, so
+	the scalar and the report can never count different rows. The originals are read in one
+	primary-key query, and only when a Reversal names one.
+	"""
+	rows = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters={**filters, "cg_event_kind": ["in", POSITION_KINDS]},
+		fields=list(dict.fromkeys([*fields, "cg_event_kind", "cg_reversal_of"])),
+	)
+
+	originals = {
+		row.cg_reversal_of
+		for row in rows
+		if row.cg_event_kind == EVENT_REVERSAL and row.cg_reversal_of
+	}
+	if not originals:
+		return rows
+
+	kind_of = {
+		original.name: original.cg_event_kind
+		for original in frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={"name": ["in", list(originals)]},
+			fields=["name", "cg_event_kind"],
+		)
+	}
+	# A Reversal that is unlinked, or names a row that is gone, is an explicit correction and
+	# still counts; one that names an original counts only where that original did.
+	return [
+		row
+		for row in rows
+		if row.cg_event_kind != EVENT_REVERSAL
+		or row.cg_reversal_of not in kind_of
+		or kind_of[row.cg_reversal_of] in POSITION_KINDS
+	]

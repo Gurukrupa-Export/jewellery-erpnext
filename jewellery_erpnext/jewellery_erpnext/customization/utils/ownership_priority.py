@@ -33,7 +33,7 @@ proportional split, so a site with no customer-owned batches sees no change.
 """
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import escape_html, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	CUSTOMER_INVENTORY_TYPES,
@@ -496,20 +496,66 @@ def describe_customer_spill(spill_rows, precision=3):
 	"""Human-readable ``customer / item / batch / qty`` lines for the spill warning.
 
 	``spill_rows`` is an iterable of dicts carrying ``customer``, ``item_code``,
-	``batch_no`` and ``qty``.
+	``batch_no`` and ``qty``, and optionally a ``note`` shown in brackets after the qty.
 	"""
 	lines = []
 	for row in spill_rows:
 		get = row.get if hasattr(row, "get") else lambda k: getattr(row, k, None)
+		note = get("note")
 		lines.append(
-			"{0} &mdash; {1} / {2}: {3}".format(
-				frappe.bold(get("customer") or _unknown()),
-				get("item_code") or "",
-				get("batch_no") or "",
+			"{0} &mdash; {1} / {2}: {3}{4}".format(
+				frappe.bold(_escape(get("customer") or _unknown())),
+				_escape(get("item_code")),
+				_escape(get("batch_no")),
 				flt(get("qty"), int(precision or 3)),
+				f" ({_escape(note)})" if note else "",
 			)
 		)
 	return lines
+
+
+def describe_customer_loss_posted(rows, precision=3):
+	"""Lines for the note left after a submitted Process Loss wrote off customer metal.
+
+	``rows`` carry ``customer``, ``source_item``, ``source_batch``, ``loss_item``,
+	``scrap_batch``, ``warehouse``, ``qty`` and ``stock_uom``. Each quantity keeps its own
+	UOM -- a customer diamond loss is in carats -- and the closing total is given per UOM,
+	so carats are never added to grams.
+	"""
+	precision = int(precision or 3)
+	lines = []
+	totals = {}
+	for row in rows:
+		get = row.get if hasattr(row, "get") else lambda k: getattr(row, k, None)
+		qty = flt(get("qty"), precision)
+		uom = get("stock_uom") or ""
+		totals[uom] = flt(totals.get(uom, 0) + qty, precision)
+		lines.append(
+			"{0} &mdash; {1} / {2} &rarr; {3} / {4} ({5}): {6} {7}".format(
+				frappe.bold(_escape(get("customer") or _unknown())),
+				_escape(get("source_item")),
+				_escape(get("source_batch")),
+				_escape(get("loss_item")),
+				_escape(get("scrap_batch")),
+				_escape(get("warehouse")),
+				qty,
+				_escape(uom),
+			).rstrip()
+		)
+	if totals:
+		lines.append(
+			frappe._("Total: {0}").format(
+				" + ".join(
+					f"{qty} {_escape(uom)}".rstrip() for uom, qty in totals.items()
+				)
+			)
+		)
+	return lines
+
+
+def _escape(value):
+	"""HTML-escape a code for a message; ``None`` becomes an empty string."""
+	return escape_html(str(value)) if value is not None else ""
 
 
 def _unknown():

@@ -58,6 +58,7 @@ from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
 	resolve_customer_gold_rate_for_date,
 )
 from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+	_receipt_names,
 	get_booked_rate,
 	get_returnable_qty,
 )
@@ -131,6 +132,14 @@ def revalue_customer_gold(
 			title=frappe._("Customer Gold Entitlement"),
 		)
 
+	# Converted metal is named for what it is, straight after the owner check -- ahead of the
+	# partial check, which would send it to split a batch that is not revaluable whole either.
+	# This only ADDS a refusal: a batch with a booked rate, or with no recorded lineage, meets
+	# the checks below in the order it always did.
+	booked_rate = get_booked_rate(company, customer, batch_no)
+	if booked_rate is None:
+		_refuse_converted_metal(company, customer, batch_no)
+
 	free = get_returnable_qty(company, customer, batch_no, warehouse, item_code)
 	if free <= 0:
 		frappe.throw(
@@ -145,7 +154,6 @@ def revalue_customer_gold(
 	_reject_zero_value_item(item_code)
 	_reject_non_gold_item(item_code)
 
-	booked_rate = get_booked_rate(company, customer, batch_no)
 	if booked_rate is None:
 		frappe.throw(
 			frappe._(
@@ -338,6 +346,39 @@ def _revaluation_event_is_live(row):
 		return False
 
 	return cint(docstatus) != 2
+
+
+def _refuse_converted_metal(company, customer, batch_no):
+	"""Refuse to revalue CONVERTED customer metal, naming the receipts it was made from.
+
+	Its carrying value is the customer's booked value plus company alloy, it has no Receipt event
+	of its own to take a baseline from, and today's quote is for the receipt's purity, not its
+	own. Whether it may be revalued at all, and at what rate, is Finance decision D05/D08; the
+	SOP's answer for metal kept for the next order is to revalue it before converting it
+	(Example E: revalue, then repack). Until Finance decides, the refusal names the receipts and
+	sends the user to Accounts; it prescribes no route.
+
+	Returns quietly when the batch has no recorded lineage (``lineage_receipts``), leaving the
+	refusal it always had. Only the verified owner's receipts are ever read or named.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		lineage_receipts,
+	)
+
+	receipts = lineage_receipts(company, customer, batch_no)
+	if not receipts:
+		return
+
+	frappe.throw(
+		frappe._(
+			"Batch {0} was converted from customer gold received on {1} and carries no booked "
+			"value of its own. Under the SOP you revalue before converting (Example E: revalue, "
+			"then repack); whether converted metal may be revalued at all, and at what rate "
+			"with the company's alloy inside it, awaits Finance decisions D05/D08. Ask "
+			"Accounts how to proceed."
+		).format(frappe.bold(batch_no), _receipt_names(receipts)),
+		title=frappe._("Customer Gold Revaluation: Converted Metal"),
+	)
 
 
 def _reject_partial(batch_no, warehouse, item_code, free):

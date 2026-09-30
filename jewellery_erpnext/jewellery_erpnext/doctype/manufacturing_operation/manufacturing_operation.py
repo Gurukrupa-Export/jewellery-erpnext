@@ -6351,8 +6351,8 @@ def _report_inherited_negative_baselines(new_mop, negative_baselines):
 
 	* ``frappe.log_error`` -- the durable one. Employee IR submit can run through
 	  Frappe's Submission Queue, where a ``msgprint`` lands in the job log and
-	  never reaches the operator (same reason ``_warn_customer_loss_spill`` in
-	  employee_ir.py keeps a durable ``flags`` trace alongside its message).
+	  never reaches the operator (the same reason employee_ir.py's
+	  ``_announce_customer_loss_posted`` leaves a timeline comment).
 	* ``frappe.msgprint`` without ``alert=True`` -- a dialog the operator must
 	  dismiss, not a toast that vanishes during the submit's form reload.
 

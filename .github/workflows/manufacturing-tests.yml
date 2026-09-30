@@ -63,6 +63,11 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_unpack_repair_bom
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_conversion_lane_downstream
+          # Added 2026-09-29 (EMP-IR-Labh-2026-14111): the customer child-batch allocator --
+          # one name pool per parent serial path, suffixes past Z, and the retry when another
+          # submit took the name first. The two-connection case skips outside disposable sites.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_child_batch_suffix_allocator
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_create_child_batches_namespace
           # Added 2026-09-14. This suite was never in the allowlist despite covering the lane
           # apportionment that conversion_lane_downstream depends on, and it now also carries the
           # C09 released-alloy carve-out cases.

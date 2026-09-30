@@ -198,6 +198,33 @@ class TestCustomerSuppliedStones(_LineageCase):
 		)
 		self.assertAlmostEqual(share.fine, 4.986, places=3)
 
+	def test_a_stones_only_share_carries_no_parts(self):
+		"""Review P1: the stones-only early return had no ``parts``, so the allocation writer
+		iterated None and the Delivery Note submit raised TypeError."""
+		share = self.share("FG-STONES", 1)
+		self.assertEqual(share.parts, [])
+		with patch(
+			"jewellery_erpnext.customer_subcontracting.customer_gold_allocations"
+			".is_allocation_schema_ready",
+			return_value=True,
+		), patch(
+			"jewellery_erpnext.customer_subcontracting.customer_gold_allocations.allocate_event"
+		) as allocate:
+			cgf._allocate_fulfilment(
+				frappe._dict(company=COMPANY),
+				frappe._dict(qty=1),
+				frappe._dict(name="EV-1", customer=CUSTOMER),
+				"FG-STONES",
+				None,
+				share,
+				1.0,
+				0.0,
+				1,
+				"INR",
+			)
+		allocate.assert_called_once()
+		self.assertEqual(allocate.call_args.args[1], [])
+
 	def test_a_piece_of_only_the_customers_stones_releases_nothing(self):
 		share = self.share("FG-STONES", 1)
 		self.assertEqual((share.value, share.fine), (0.0, 0.0))
@@ -439,6 +466,9 @@ class TestDeliveryEvent(_LineageCase):
 			),
 			patch.object(cgf, "_write_event", side_effect=write_event),
 			patch.object(cgf, "settle_customer_gold_liability"),
+			# Receipt allocation is a separate DB writer with its own integration tests; this
+			# harness isolates the event and its value.
+			patch.object(cgf, "_allocate_fulfilment"),
 			patch.object(cgf, "_row_carrying_value", self.ledger_value),
 			patch.object(cgf, "reference_purity", return_value=99.9),
 			patch(f"{cgf.__name__}.frappe.get_cached_value", return_value="INR"),

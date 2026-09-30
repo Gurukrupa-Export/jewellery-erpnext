@@ -285,6 +285,22 @@ def _source_row_rate(batch, child_doctype, se_fieldname):
 	if batch.reference_doctype != "Stock Entry":
 		return _row_value(child_doctype, batch.custom_voucher_detail_no, "rate")
 
+	# F8, applied here too: a Manufacture's finished PIECE gets no Batch Rate. Its row rate is
+	# the whole piece -- metal, diamond, making -- and ``batch_rename._source_row_rate`` already
+	# withholds it at mint. This stamper runs again on the provenance re-save
+	# (``update_parent_batch_id``), sees the 0 as "empty" and used to stamp the piece value back:
+	# kg-gk's MAT-STE-19067 piece read a "Batch Rate" of Rs.73,478.13.
+	#
+	# A piece only: a Manufacture whose finished output is itself metal or a finding -- refined
+	# 24KT from a Refining Entry -- keeps its rate, which IS a metal rate.
+	if (
+		_row_value(child_doctype, batch.custom_voucher_detail_no, "is_finished_item")
+		and frappe.db.get_value("Item", batch.item, "variant_of") not in ("M", "F")
+		and frappe.db.get_value("Stock Entry", batch.reference_name, "purpose")
+		== "Manufacture"
+	):
+		return 0.0
+
 	for fieldname in (se_fieldname, "valuation_rate", "basic_rate"):
 		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, fieldname)
 		if flt(rate):
