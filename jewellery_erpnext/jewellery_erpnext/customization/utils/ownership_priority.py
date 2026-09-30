@@ -56,16 +56,15 @@ LOSS_PRIORITY = {
 }
 
 # Any loss allocation landing at or beyond this rank means a customer absorbed
-# wastage -- the trigger for the operator warning. NOT "the waterfall overflowed":
-# the ordinary business case (regular stock exhausted, remainder on customer gold)
-# leaves no overflow at all and must still warn.
+# wastage. NOT "the waterfall overflowed": the ordinary business case (regular
+# stock exhausted, remainder on customer gold) leaves no overflow at all.
 CUSTOMER_LOSS_RANK = 2
 
 # A `Customer.custom_no_wastage` batch sorts behind every ordinary customer, so the
 # loss waterfall reaches it only when nothing else on the operation has capacity.
 # That is exactly where validate_process_loss' existing hard throw is the right
 # answer -- the operator must return the full weight. Ranking it merely "last among
-# customers" would let a routine spill turn a warning into a blocked submit.
+# customers" would let a routine, allowed spill become a blocked submit.
 NO_WASTAGE_RANK = 8
 
 # Consume direction only: an inventory type we do not know about must never be
@@ -490,28 +489,6 @@ def stamp_produce_rows_from_consumes(se, precision=3, row_to_dict=None):
 	for d in rebuilt:
 		se.append("items", row_to_dict(d))
 	return True
-
-
-def describe_customer_spill(spill_rows, precision=3):
-	"""Human-readable ``customer / item / batch / qty`` lines for the spill warning.
-
-	``spill_rows`` is an iterable of dicts carrying ``customer``, ``item_code``,
-	``batch_no`` and ``qty``, and optionally a ``note`` shown in brackets after the qty.
-	"""
-	lines = []
-	for row in spill_rows:
-		get = row.get if hasattr(row, "get") else lambda k: getattr(row, k, None)
-		note = get("note")
-		lines.append(
-			"{0} &mdash; {1} / {2}: {3}{4}".format(
-				frappe.bold(_escape(get("customer") or _unknown())),
-				_escape(get("item_code")),
-				_escape(get("batch_no")),
-				flt(get("qty"), int(precision or 3)),
-				f" ({_escape(note)})" if note else "",
-			)
-		)
-	return lines
 
 
 def describe_customer_loss_posted(rows, precision=3):
