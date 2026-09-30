@@ -11,6 +11,27 @@ app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
 # after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
+# Deliberately NOT the line above, which would apply every custom_fields/*.json in the app.
+# This re-asserts one form layout, for two reasons that apply to different environments:
+#
+#   CI         `bench install-app` marks every patches.txt entry completed without running it
+#              (frappe/installer.py:358), so the following `bench migrate` skips the patch
+#              that creates these fields and the form has no Total Pcs at all.
+#   Production the same, PLUS sync_fixtures re-imports gke_customization's Custom Field rows
+#              on every migrate and resets two anchors this layout depends on. migrate.py
+#              runs after_migrate at the end of post_schema_updates, after sync_fixtures, so
+#              this is the only hook that can put them back.
+#
+# Only the first reason is reachable in CI: install.sh moves gke_customization/fixtures aside
+# before installing anything and never restores it. The fixture-reset path is covered instead
+# by TestTotalPcsFieldLayout in tests/test_material_request_customizations.
+#
+# Idempotent. Non-fatal by design, but it prints as well as logging, so a failure is visible
+# in the migrate output rather than only in the Error Log.
+after_migrate = (
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
+)
+
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
 	"Customer": "public/js/doctype_js/customer.js",
@@ -183,6 +204,10 @@ doc_events = {
 			# t_warehouse there, and validate_customer_gold_receipt (last before_validate
 			# hook) still rewrites inventory_type afterwards. See the function docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.set_target_inventory_dimensions",
+			# Header totals per material family (metal / finding / diamond / gemstone, plus
+			# stone pcs). At `validate` because before_validate's update_batches REPLACES
+			# self.items wholesale, and because the six fields are allow_on_submit = 0.
+			"jewellery_erpnext.jewellery_erpnext.customization.utils.material_weights.set_material_totals",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
 			# Per-role Stock Entry Type whitelist. Fires only on a direct user save of
 			# the Stock Entry itself, never on the dozen cascades that mint one from
@@ -375,6 +400,7 @@ override_whitelisted_methods = {
 	# Core returns None when a title-link doctype's title_field is empty, which blanks the
 	# Link input until a page reload (Manufacturing Operation with no `operation`).
 	"frappe.desk.search.get_link_title": "jewellery_erpnext.jewellery_erpnext.doc_events.search.get_link_title",
+	"frappe.core.doctype.data_import.data_import.download_template": "jewellery_erpnext.jewellery_erpnext.doc_events.data_export.download_template",
 }
 
 override_doctype_class = {

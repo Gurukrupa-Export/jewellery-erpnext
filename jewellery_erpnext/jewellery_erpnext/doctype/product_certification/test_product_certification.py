@@ -3057,9 +3057,10 @@ class TestPerSampleLossWeight(IntegrationTestCase):
 class TestEarringAmountSplit(IntegrationTestCase):
 	"""Total Amount is split per PIECE, not per row.
 
-	Hall Marking and Fire Assy are billed per piece and an earring pair is two pieces sitting
-	on ONE exploded row, so that row takes two shares: 150 across an Earrings row and one
-	other row is 100 / 50, not 75 / 75.
+	Certification is billed per piece and an earring pair is two pieces sitting on ONE exploded
+	row, so that row takes two shares: 150 across an Earrings row and one other row is 100 / 50,
+	not 75 / 75. All four service types, since the weighting is a property of the goods and not
+	of the service.
 
 	The row is never split in two. TestExplodedRowPerProductRow owns the row count and it
 	stays one exploded row per Product Details row -- only the share changes.
@@ -3118,15 +3119,17 @@ class TestEarringAmountSplit(IntegrationTestCase):
 		doc = self._doc("Fire Assy Service", 150, ["Earrings", None])
 		self.assertEqual(self._amounts(doc), [100.0, 50.0])
 
-	def test_diamond_certificate_keeps_the_flat_split(self):
-		"""certification_amount is already priced off diamond_weight, which carries both
-		stones of a pair -- weighting the row on top would count the pair twice."""
+	def test_diamond_certificate_earring_takes_two_of_three_shares(self):
+		"""Weighted like every other service. This used to hold a flat 75 / 75 on the grounds
+		that certification_amount is priced off diamond_weight, which already carries both
+		stones of a pair -- but the split never reads diamond_weight. It apportions one entered
+		total, and a pair is two pieces there as it is anywhere else."""
 		doc = self._doc("Diamond Certificate service", 150, ["Earrings", "Ring"])
-		self.assertEqual(self._amounts(doc), [75.0, 75.0])
+		self.assertEqual(self._amounts(doc), [100.0, 50.0])
 
-	def test_xrf_keeps_the_flat_split(self):
+	def test_xrf_earring_takes_two_of_three_shares(self):
 		doc = self._doc("XRF Services", 150, ["Earrings", "Ring"])
-		self.assertEqual(self._amounts(doc), [75.0, 75.0])
+		self.assertEqual(self._amounts(doc), [100.0, 50.0])
 
 	def test_an_issue_carries_no_amount(self):
 		doc = self._doc(
@@ -3134,3 +3137,107 @@ class TestEarringAmountSplit(IntegrationTestCase):
 		)
 		self.assertEqual(self._amounts(doc), [0.0, 0.0])
 		self.assertEqual(doc.total_amount, 0)
+
+
+class _FakePurchaseOrder:
+	"""Just enough Purchase Order to capture what create_po computes, without needing a
+	Supplier, a charge Item or a Manufacturing Setting chain."""
+
+	def __init__(self):
+		self.items = []
+
+	def append(self, _table, row):
+		self.items.append(frappe._dict(row))
+		return self.items[-1]
+
+	def save(self, *args, **kwargs):
+		pass
+
+
+class TestCertificationPoQty(IntegrationTestCase):
+	"""The service Purchase Order is raised for PIECES, not exploded rows.
+
+	Certification is billed per piece and an earring pair is two pieces on one row, so two
+	Earrings and one Necklace is a qty of 5. create_po used to take len(exploded_product_details)
+	and raise it for 3, under-billing the supplier by one unit for every pair -- while
+	distribute_amount, reading the same table, had already split the amount five ways. One
+	count now feeds both (billable_units), so they cannot disagree.
+
+	custom_gross_wt is a physical weight and stays a plain sum: an earring pair is two pieces
+	but it is not two grams.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _po_for(self, service_type, categories, weights=None):
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
+			utils as pc_utils,
+		)
+
+		weights = weights or [1.0] * len(categories)
+		doc = frappe._dict(
+			name="PC-TEST-001",
+			type="Issue",
+			company="Test_Company",
+			date="2026-01-01",
+			supplier="Test_Supplier",
+			customer=None,
+			service_type=service_type,
+			exploded_product_details=[
+				frappe._dict(category=category, gross_weight=weight)
+				for category, weight in zip(categories, weights)
+			],
+		)
+
+		created = []
+
+		def _new_doc(doctype, *args, **kwargs):
+			self.assertEqual(doctype, "Purchase Order")
+			po = _FakePurchaseOrder()
+			created.append(po)
+			return po
+
+		with (
+			patch.object(pc_utils, "po_is_expected", return_value=True),
+			patch.object(pc_utils, "resolve_po_supplier", return_value="Test_Supplier"),
+			patch.object(
+				pc_utils,
+				"validate_po_configuration",
+				return_value={"purchase_item": "CERT-CHARGE", "rate": 100},
+			),
+			patch.object(frappe.db, "exists", return_value=None),
+			patch.object(frappe.db, "get_value", return_value=None),
+			patch.object(frappe, "new_doc", side_effect=_new_doc),
+		):
+			create_po(doc)
+
+		self.assertEqual(len(created), 1)
+		return created[0]
+
+	def test_two_earrings_and_a_necklace_is_five_pieces(self):
+		"""The reported case: the grid shows three rows and the PO is raised for five."""
+		po = self._po_for("Hall Marking Service", ["Earrings", "Earrings", "Necklace"])
+		self.assertEqual(po.items[0].qty, 5)
+
+	def test_diamond_certificate_is_weighted_too(self):
+		"""Two rows, three pieces -- the qty proves the weighting rather than the row count."""
+		po = self._po_for("Diamond Certificate service", ["Earrings", "Ring"])
+		self.assertEqual(po.items[0].qty, 3)
+
+	def test_no_earring_is_the_row_count_it_replaces(self):
+		po = self._po_for("Hall Marking Service", ["Ring", "Bangle", "Necklace"])
+		self.assertEqual(po.items[0].qty, 3)
+
+	def test_a_blank_category_is_one_piece(self):
+		"""A Fire Assy pure / loss row is appended with no category of its own."""
+		po = self._po_for("Fire Assy Service", ["Earrings", None])
+		self.assertEqual(po.items[0].qty, 3)
+
+	def test_gross_weight_is_not_weighted(self):
+		po = self._po_for(
+			"Hall Marking Service", ["Earrings", "Ring"], weights=[2.5, 1.5]
+		)
+		self.assertEqual(po.items[0].custom_gross_wt, 4.0)

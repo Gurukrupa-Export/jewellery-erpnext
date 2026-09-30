@@ -3241,6 +3241,21 @@ def create_test_data():
 
 
 def setup_data():
+	# Must run before the first Item is inserted, not with the rest of the Stock Settings
+	# block further down: erpnext's Item.validate now throws "Cannot enable Has Batch No as
+	# Activate Serial / Batch No for Item is disabled in Stock Settings" for any item that
+	# turns on has_batch_no / has_serial_no while this flag is off, so the 13 batch-tracked
+	# items in create_users_data cannot be created before it is set. erpnext made the same
+	# reordering in its own bootstrap (update_stock_settings moved ahead of make_item).
+	#
+	# set_single_value, not get_single(...).save(): this runs against a freshly migrated site
+	# before any warehouse or UOM exists, and a full save would run StockSettings.validate
+	# against that empty site. It writes the Singles row directly and clears the document
+	# cache, which is what frappe.get_single_value reads.
+	frappe.db.set_single_value(
+		"Stock Settings", "enable_serial_and_batch_no_for_item", 1
+	)
+
 	if not frappe.db.exists("Stock Entry Type", "Process Loss"):
 		frappe.get_doc(
 			{

@@ -492,6 +492,231 @@ class TestUpdatePureQty(IntegrationTestCase):
 		self.assertIn("Select Manufacturer in session defaults", str(ctx.exception))
 
 
+def _totals_row(qty=0.0, pcs=None, variant="D", item_code="ITEM-1"):
+	"""One Material Request Item row, as ``update_pure_qty`` reads it.
+
+	``SimpleNamespace`` rather than ``MagicMock``: a MagicMock hands back a truthy mock
+	for ``.pcs``, which ``cint`` quietly turns into 0 -- so a broken sum would still pass.
+	"""
+	return SimpleNamespace(
+		custom_variant_of=variant,
+		item_code=item_code,
+		custom_alternative_item=None,
+		qty=qty,
+		pcs=pcs,
+		custom_pure_qty=None,
+	)
+
+
+def _totals_mr(rows):
+	return SimpleNamespace(
+		custom_transfer_type="Transfer to Reserve",
+		custom_manufacturer="Manu-1",
+		items=rows,
+		custom_total_quantity=None,
+		custom_total_pcs=None,
+	)
+
+
+@patch(_MR_BV + ".prefetch_purity_percentages")
+class TestUpdateTotalPcs(IntegrationTestCase):
+	"""``custom_total_pcs`` -- the Total Pcs header total.
+
+	Diamond ("D") rows are used throughout except where stated: ``_is_pure_qty_row`` is
+	False for them, so the purity branch never runs and these stay pure arithmetic.
+	"""
+
+	def test_sums_the_pcs_column(self, _mock_prefetch):
+		# The real numbers from KGJPL-MR-MF-26-34263.
+		mr = _totals_mr(
+			[_totals_row(qty=0.066, pcs="1"), _totals_row(qty=0.640, pcs="32")]
+		)
+
+		mr_before_validate.update_pure_qty(mr)
+
+		self.assertEqual(mr.custom_total_pcs, 33)
+		self.assertAlmostEqual(mr.custom_total_quantity, 0.706, places=3)
+
+	def test_blank_and_missing_pcs_count_as_zero(self, _mock_prefetch):
+		# pcs is nullable on 9,069 of the live rows, and a Data field so it can also be "".
+		mr = _totals_mr(
+			[
+				_totals_row(qty=1.0, pcs="5"),
+				_totals_row(qty=2.0, pcs=None),
+				_totals_row(qty=3.0, pcs=""),
+			]
+		)
+
+		mr_before_validate.update_pure_qty(mr)
+
+		self.assertEqual(mr.custom_total_pcs, 5)
+
+	def test_no_items_totals_zero(self, _mock_prefetch):
+		mr = _totals_mr([])
+
+		mr_before_validate.update_pure_qty(mr)
+
+		self.assertEqual(mr.custom_total_pcs, 0)
+
+	def test_recomputing_does_not_double(self, _mock_prefetch):
+		mr = _totals_mr([_totals_row(qty=1.0, pcs="7")])
+
+		mr_before_validate.update_pure_qty(mr)
+		mr_before_validate.update_pure_qty(mr)
+
+		self.assertEqual(mr.custom_total_pcs, 7)
+
+	@patch(_MR_BV + ".get_purity_percentage")
+	@patch("frappe.db.get_value")
+	def test_counts_a_row_that_total_quantity_skips(
+		self, mock_get_value, mock_purity, _mock_prefetch
+	):
+		"""A purity-less metal row still counts toward Total Pcs.
+
+		``update_pure_qty`` has a ``continue`` for a metal/findings row whose item carries
+		no purity percentage, which drops that row out of ``custom_total_quantity``. Total
+		Pcs is accumulated before that branch on purpose, so it stays a faithful count of
+		the grid. This pins the divergence so neither side drifts unnoticed.
+		"""
+
+		# Scoped to this call only, and keyed on the argument, rather than a blanket
+		# return_value: a blanket patch of frappe.db.get_value also hijacks meta loading.
+		def _get_value(doctype, *args, **kwargs):
+			self.assertEqual(doctype, "Manufacturing Setting")
+			return "PURE-GOLD"
+
+		mock_get_value.side_effect = _get_value
+		# Truthy for the pure item, falsy for the row's own item -> hits the ``continue``.
+		mock_purity.side_effect = lambda item: 100.0 if item == "PURE-GOLD" else None
+
+		mr = _totals_mr(
+			[_totals_row(qty=5.0, pcs="4", variant="M", item_code="ITEM-ALLOY")]
+		)
+
+		mr_before_validate.update_pure_qty(mr)
+
+		self.assertEqual(mr.custom_total_pcs, 4)
+		self.assertEqual(mr.custom_total_quantity, 0)
+
+
+class TestTotalPcsFieldLayout(IntegrationTestCase):
+	"""The rendered layout, not just the arithmetic.
+
+	Worth its own test because the layout is provisioned by two different routes -- the
+	patch on a migrated site, ``install.after_sync`` on a fresh one -- and an earlier
+	revision of this change was correct on a migrated site while landing Total Pcs in the
+	Terms tab on a fresh install. Only a meta-level assertion catches that.
+
+	The last test here covers something CI structurally cannot: ``install.sh`` moves
+	``gke_customization/fixtures`` aside before installing any app, so the fixture re-import
+	that resets this layout on every production migrate never happens on a test site. It is
+	simulated by hand instead.
+	"""
+
+	EXPECTED = [
+		"items",
+		"custom_total_section",
+		"custom_total_quantity",
+		"custom_column_break_total_pcs",
+		"custom_total_pcs",
+		"custom_order_details",
+	]
+
+	def test_total_pcs_renders_beside_total_quantity(self):
+		meta = frappe.get_meta("Material Request")
+		order = [df.fieldname for df in meta.fields]
+		start = order.index("items")
+
+		self.assertEqual(order[start : start + len(self.EXPECTED)], self.EXPECTED)
+
+	def test_items_grid_keeps_its_own_section(self):
+		# A Column Break sharing items_section would halve the grid: Frappe splits a
+		# section's width evenly across its columns, with no exception for Table fields.
+		meta = frappe.get_meta("Material Request")
+		order = [df.fieldname for df in meta.fields]
+		between = order[
+			order.index("items_section") + 1 : order.index("custom_total_section")
+		]
+
+		self.assertEqual(between, ["items"])
+
+	def test_total_pcs_is_a_read_only_int(self):
+		df = frappe.get_meta("Material Request").get_field("custom_total_pcs")
+
+		self.assertIsNotNone(df)
+		self.assertEqual(df.fieldtype, "Int")
+		self.assertTrue(df.read_only)
+		# allow_on_submit stays off: update_pure_qty only runs up to submit.
+		self.assertFalse(df.allow_on_submit)
+
+	def test_layout_recovers_after_a_fixture_reset(self):
+		"""The production condition CI cannot reach, performed by hand.
+
+		On a real site ``sync_fixtures()`` re-imports gke_customization's Custom Field rows
+		on every migrate, putting ``custom_total_quantity`` back on ``items`` and
+		``custom_order_details`` back on ``custom_total_quantity``. ``after_migrate`` runs
+		afterwards and is what repairs it. CI never sees this because ``install.sh`` disables
+		those fixtures, so without this test the repair path is only ever exercised on
+		production -- the worst possible place to discover it does not work.
+
+		Everything written here is rolled back by the harness at class teardown; the explicit
+		re-apply below also leaves the site correct for any test that runs after it, since
+		Property Setter changes escape the meta cache.
+		"""
+		from jewellery_erpnext.patches.add_material_request_total_pcs_field import (
+			after_migrate,
+		)
+
+		def order():
+			frappe.clear_cache(doctype="Material Request")
+			fields = [df.fieldname for df in frappe.get_meta("Material Request").fields]
+			start = fields.index("items")
+			return fields[start : start + len(self.EXPECTED)]
+
+		self.addCleanup(after_migrate)
+
+		# What the gke fixture restores, plus the Property Setters a Customize Form "Reset
+		# Layout" would remove -- together, the worst state the hook has to recover from.
+		frappe.db.delete(
+			"Property Setter",
+			{"doc_type": "Material Request", "property": "field_order"},
+		)
+		frappe.db.delete(
+			"Property Setter",
+			{"doc_type": "Material Request", "property": "insert_after"},
+		)
+		frappe.db.set_value(
+			"Custom Field",
+			"Material Request-custom_total_quantity",
+			"insert_after",
+			"items",
+		)
+		frappe.db.set_value(
+			"Custom Field",
+			"Material Request-custom_order_details",
+			"insert_after",
+			"custom_total_quantity",
+		)
+
+		self.assertNotEqual(
+			order(), self.EXPECTED, msg="the reset did not break the layout"
+		)
+
+		before = frappe.db.count(
+			"Error Log", {"method": ["like", "%Total Pcs layout%"]}
+		)
+		after_migrate()
+
+		self.assertEqual(order(), self.EXPECTED)
+		# after_migrate swallows exceptions, so a silent failure would otherwise look like a
+		# pass on a site that happened to already be correct.
+		self.assertEqual(
+			frappe.db.count("Error Log", {"method": ["like", "%Total Pcs layout%"]}),
+			before,
+			msg="after_migrate logged an error instead of applying the layout",
+		)
+
+
 class TestValidateWarehouse(IntegrationTestCase):
 	def test_throws_if_set_warehouse_same(self):
 		mr = MagicMock(

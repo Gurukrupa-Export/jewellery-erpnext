@@ -933,7 +933,10 @@ def create_stock_entry(self, method):
 
 	se_doc.stock_entry_type = stock_entry_type
 	se_doc.purpose = "Material Transfer"
-	se_doc.add_to_transit = True
+	# Every row lands in the department's Reserve warehouse, never a Transit one, and
+	# ERPNext rejects add_to_transit on a non-Transit target. Nothing reads this entry as
+	# an outgoing transit leg either: the follow-up transfers copy it and re-route rows.
+	se_doc.add_to_transit = 0
 
 	# Rows nearly always share a handful of source warehouses, so each distinct one is
 	# resolved once rather than costing two queries on every row. The two lookups are

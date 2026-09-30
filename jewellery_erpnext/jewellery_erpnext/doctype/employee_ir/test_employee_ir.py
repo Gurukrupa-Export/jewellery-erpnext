@@ -772,3 +772,120 @@ def get_rows_to_append(doc, mwo, mop, mop_data, department_wh, employee_wh):
 			rows_to_append.append(duplicate_row)
 
 	return rows_to_append
+
+
+class TestDuplicateWorkOrderGuard(IntegrationTestCase):
+	"""``validate_duplication_and_gr_wt`` must reject the same work order twice on one IR.
+
+	The existing guards key on ``manufacturing_operation``. ``create_operation_for_next_op`` mints
+	a NEW operation per cycle, so a re-scanned work order arrives carrying a different MOP and
+	sails past them. Only the scan field guarded this, client-side — the Get Operations dialog,
+	Load Full Casting Tree, grid bulk-edit and the REST API had nothing.
+	"""
+
+	MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils"
+
+	@classmethod
+	def setUpClass(cls):
+		# Same as every other class here: skip the ERPNext master bootstrap, which this pure-logic
+		# suite does not need and which fails on this bench (_Test Holiday List: custom_company).
+		pass
+
+	WEIGHTS = {
+		"gross_wt": 1.0,
+		"net_wt": 1.0,
+		"finding_wt": 0.0,
+		"diamond_wt": 0.0,
+		"gemstone_wt": 0.0,
+		"diamond_pcs": 0,
+		"gemstone_pcs": 0,
+	}
+
+	def _doc(self, rows):
+		return FrappeDict(
+			{
+				"name": "EIR-TEST",
+				"type": "Receive",
+				"operation": "Casting - TEST",
+				"is_raw_material": 1,
+				"main_slip": None,
+				"employee_ir_operations": [FrappeDict(r) for r in rows],
+			}
+		)
+
+	def _run(self, rows):
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			validation_utils as vu,
+		)
+
+		def _gv(doctype, *a, **kw):
+			if doctype == "Department Operation":
+				return 0
+			return FrappeDict(dict(self.WEIGHTS))
+
+		qb = MagicMock()
+		qb.from_.return_value.left_join.return_value.on.return_value.select.return_value.where.return_value.run.return_value = []
+		with (
+			patch.object(vu.frappe.db, "get_single_value", return_value=3),
+			patch.object(vu.frappe.db, "get_value", side_effect=_gv),
+			patch.object(vu.frappe, "qb", qb),
+			patch.object(vu, "get_loss_details", return_value={}),
+		):
+			return vu.validate_duplication_and_gr_wt(self._doc(rows))
+
+	def test_same_work_order_twice_throws_even_with_different_operations(self):
+		with self.assertRaises(frappe.ValidationError) as cm:
+			self._run(
+				[
+					{
+						"manufacturing_work_order": "MWO-1",
+						"manufacturing_operation": "MOP-1",
+					},
+					{
+						"manufacturing_work_order": "MWO-1",
+						"manufacturing_operation": "MOP-2",
+					},
+				]
+			)
+		self.assertIn("MWO-1", str(cm.exception))
+		self.assertIn("already scanned", str(cm.exception))
+
+	def test_distinct_work_orders_pass(self):
+		self._run(
+			[
+				{
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-1",
+				},
+				{
+					"manufacturing_work_order": "MWO-2",
+					"manufacturing_operation": "MOP-2",
+				},
+			]
+		)
+
+	def test_blank_work_orders_are_not_treated_as_duplicates(self):
+		"""``manufacturing_work_order`` is fetch_if_empty, so rows can legitimately arrive blank."""
+		self._run(
+			[
+				{"manufacturing_work_order": None, "manufacturing_operation": "MOP-1"},
+				{"manufacturing_work_order": "", "manufacturing_operation": "MOP-2"},
+			]
+		)
+
+	def test_the_operation_guard_still_fires(self):
+		"""The pre-existing MOP-keyed check must keep working alongside the new one."""
+		with self.assertRaises(frappe.ValidationError) as cm:
+			self._run(
+				[
+					{
+						"manufacturing_work_order": "MWO-1",
+						"manufacturing_operation": "MOP-1",
+					},
+					{
+						"manufacturing_work_order": "MWO-2",
+						"manufacturing_operation": "MOP-1",
+					},
+				]
+			)
+		self.assertIn("appeared multiple times", str(cm.exception))

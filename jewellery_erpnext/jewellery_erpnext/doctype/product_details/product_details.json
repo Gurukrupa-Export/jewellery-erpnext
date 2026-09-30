@@ -26,7 +26,8 @@
   "pending_weight",
   "main_slip",
   "loss_item",
-  "issue_row"
+  "issue_row",
+  "ref_customer"
  ],
  "fields": [
   {
@@ -167,12 +168,18 @@
    "fieldname": "jewelex_batch_no",
    "fieldtype": "Data",
    "label": "Jewelex Batch No"
+  },
+  {
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "label": "Ref Customer",
+   "options": "Customer"
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-09-15 11:44:09.274756",
+ "modified": "2026-09-17 12:40:13.130892",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Product Details",

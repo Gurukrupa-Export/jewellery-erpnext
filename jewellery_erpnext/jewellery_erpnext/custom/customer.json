@@ -2605,5 +2605,5 @@
    "value": "territory.default_price_list"
   }
  ],
- "sync_on_migrate": 1
+ "sync_on_migrate": 0
 }

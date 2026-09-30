@@ -3178,11 +3178,46 @@ class RefiningEntry(Document):
 		if not added:
 			return
 
+		self.set_dust_receipt_difference_account(se)
+
 		se.insert(ignore_permissions=True)
 		se.submit()
 
 		self.db_set("receiving_se", se.name)
 		self.db_set("dust_received", 1)
+
+	def set_dust_receipt_difference_account(self, se):
+		# Left blank, ERPNext takes the Difference Account from the item's (then item
+		# group's) default expense account. On a Refining Scrap item that default can be the
+		# scrap warehouse's own Stock account, which ERPNext rejects outright -- and the
+		# submission dies inside on_submit. The shortfall is a stock gain, so keep a
+		# configured account only when it is usable and otherwise book the gain to the
+		# company's Stock Adjustment Account.
+		from erpnext.setup.doctype.item_group.item_group import get_item_group_defaults
+		from erpnext.stock.doctype.item.item import get_item_defaults
+
+		stock_adjustment_account = frappe.get_cached_value(
+			"Company", self.company, "stock_adjustment_account"
+		)
+
+		for row in se.items:
+			if row.expense_account:
+				continue
+
+			configured = get_item_defaults(row.item_code, self.company).get(
+				"expense_account"
+			) or get_item_group_defaults(row.item_code, self.company).get(
+				"expense_account"
+			)
+
+			if (
+				configured
+				and frappe.get_cached_value("Account", configured, "account_type")
+				!= "Stock"
+			):
+				row.expense_account = configured
+			else:
+				row.expense_account = stock_adjustment_account
 
 	def create_repack_se(self):
 		# Savepoint taken at entry so a failed attempt (see the submit except below) can be
