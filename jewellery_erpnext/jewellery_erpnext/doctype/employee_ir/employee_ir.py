@@ -35,6 +35,11 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	CUSTOMER_INVENTORY_TYPES,
 	PROCESS_LOSS_SE_TYPE,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
+	get_blocked_finding_batches,
+	is_customer_goods_finding_blocked,
+	validate_customer_goods_finding_loss_rows,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
 )
@@ -158,6 +163,10 @@ class EmployeeIR(Document):
 		# The blanket per-material flags are submit-only by design, and this is
 		# their ONLY throw for operator-entered rows.
 		validate_loss_rows_against_material_gate(self)
+		# Customer-supplied findings, same submit-only contract and for the same
+		# reason: book_metal_loss already excludes these batches from the automatic
+		# table, so this is the only throw operator-entered rows ever see.
+		validate_customer_goods_finding_loss_rows(self)
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
@@ -206,6 +215,10 @@ class EmployeeIR(Document):
 		# drops blocked items from the automatic pool and redistributes their share,
 		# and a manually booked row is only refused at submit
 		# (see validate_loss_rows_against_material_gate in material_loss_gate.py).
+		# The customer-supplied-finding gate is omitted here for the same reason:
+		# on an operation whose only material is the customer's finding an emptied
+		# automatic pool is the normal case, so refusing the save would make the
+		# document unsaveable (see customer_finding_loss_gate.py).
 		# valid_reparing_or_next_operation(self)
 		validate_loss_qty(self)
 		# Resolve the casting tree onto the rows BEFORE the receive guard reads them:
@@ -1065,6 +1078,15 @@ class EmployeeIR(Document):
 				else {}
 			)
 
+			# Customer-supplied findings, resolved from the balance rows themselves.
+			# Deliberately NOT carried on self.flags nor taken as a parameter, unlike
+			# blocked_variants: the batch set is derived from mop_balance_table, which
+			# only exists inside this method. So there is nothing to hoist into
+			# validate_process_loss, no getattr self-heal is needed for the qc.py
+			# caller, and a whitelisted caller cannot switch the gate off by posting
+			# the truthy string "[]" -- the hazard documented above for blocked_variants.
+			blocked_cg_finding_batches = get_blocked_finding_batches(mop_balance_table)
+
 			# Keep only the latest qty snapshot per (item_code, batch_no).
 			# qty_after_transaction_batch_based is a running balance so the last
 			# row in creation order is the current stock for that batch.
@@ -1085,6 +1107,14 @@ class EmployeeIR(Document):
 					continue
 				# Blanket per-material flag.
 				if variant_map.get(child["item_code"]) in blocked_variants:
+					continue
+				# Customer-supplied finding: a finding on a Customer Goods batch that
+				# came in on a Customer Goods Received Stock Entry or a Purchase Receipt
+				# never carries loss. Skipped, never thrown on -- company metal absorbs
+				# the share instead. See customer_finding_loss_gate.
+				if is_customer_goods_finding_blocked(
+					child["batch_no"], blocked_cg_finding_batches
+				):
 					continue
 				latest_per_batch[(child["item_code"], child["batch_no"])] = child
 

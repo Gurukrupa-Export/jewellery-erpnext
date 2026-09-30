@@ -1957,7 +1957,9 @@ def create_test_data():
 
 		stock = frappe.get_single("Stock Settings")
 		stock.stock_uom = "Nos"
-		stock.enable_serial_and_batch_no_for_item = 1
+		# enable_serial_and_batch_no_for_item is NOT set here: it has to be on before
+		# the first batch-tracked Item is created, which happens ~400 lines above this
+		# block. setup_data() owns it now -- see the note there.
 		stock.do_not_update_serial_batch_on_creation_of_auto_bundle = 0
 		stock.over_delivery_receipt_allowance = 5
 		stock.mr_qty_allowance = 10
@@ -3308,6 +3310,32 @@ def create_test_data():
 
 
 def setup_data():
+	# Activate serial/batch BEFORE anything creates an Item.
+	#
+	# erpnext a6fbb0c7 ("fix: respect serial / batch activation in stock settings and
+	# item", 2026-09-29, version-16) made Item.validate throw "Cannot enable Has Batch
+	# No as Activate Serial / Batch No for Item is disabled in Stock Settings" whenever
+	# has_batch_no is set while the Stock Settings flag is off. The flag ships default
+	# 0, and install.sh tracks `version-16` unpinned, so CI picked the change up the
+	# moment it landed.
+	#
+	# create_test_data() calls setup_data() first and create_users_data() after, and
+	# create_users_data creates batch-tracked Items (the first at line ~1541) roughly
+	# 400 lines BEFORE it configured Stock Settings. Every one of them threw. Setting
+	# the flag here is what makes the ordering correct for good: nothing in setup_data
+	# creates an Item, so this always runs first.
+	#
+	# Delegated to the patch so there is ONE implementation, per the app convention: the
+	# patch reaches existing sites, this call reaches fresh / CI ones (install-app marks
+	# patches complete without running them). The assignment that used to sit in
+	# create_users_data's Stock Settings block is gone. Note the sibling patch calls in
+	# create_users_data cannot be used here -- they run ~1500 lines after the first Item.
+	from jewellery_erpnext.patches.enable_serial_and_batch_no_for_item import (
+		execute as _enable_serial_and_batch_no_for_item,
+	)
+
+	_enable_serial_and_batch_no_for_item()
+
 	if not frappe.db.exists("Stock Entry Type", "Process Loss"):
 		frappe.get_doc(
 			{
