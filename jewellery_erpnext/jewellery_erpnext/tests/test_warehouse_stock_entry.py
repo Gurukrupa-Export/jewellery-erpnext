@@ -962,7 +962,7 @@ class TestCustomerLossGuard(IntegrationTestCase):
 				ranks,
 			)
 
-	def test_ordinary_customer_warns_once_and_does_not_throw(self):
+	def test_ordinary_customer_is_allowed_silently(self):
 		ranks = {
 			"B-CG": frappe._dict(
 				inventory_type="Customer Goods", customer="C1", no_wastage=False
@@ -988,7 +988,7 @@ class TestCustomerLossGuard(IntegrationTestCase):
 			],
 			ranks,
 		)
-		mp.assert_called_once()
+		mp.assert_not_called()
 
 	def test_company_metal_is_silent(self):
 		ranks = {
