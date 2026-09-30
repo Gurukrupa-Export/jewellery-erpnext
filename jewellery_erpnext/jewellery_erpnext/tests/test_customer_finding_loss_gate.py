@@ -5,7 +5,7 @@
 
 A finding the customer supplied comes back at its issued weight, so no process loss
 may be booked against it. The gate refuses a loss row when all three hold: the item's
-``Item.variant_of`` is ``"F"``, its Batch is ``custom_inventory_type = "Customer
+item code starts with ``"F-"``, its Batch is ``custom_inventory_type = "Customer
 Goods"``, and that Batch was minted by a ``Customer Goods Received`` Stock Entry or by
 a Purchase Receipt.
 
@@ -60,13 +60,6 @@ METAL = "M-G-22KT-91.9-Y"
 CHAIN = "F-G-22KT-91.9-Y-CHA-KC-2.50 MM"
 CLASP = "F-G-18KT-75.0-Y-CLA-LB-1.00 MM"
 FINDING_LOSS = "FL-G-22KT-91.9-Y"
-
-VARIANTS = {
-	METAL: "M",
-	CHAIN: "F",
-	CLASP: "F",
-	FINDING_LOSS: "FL",
-}
 
 CG_BATCH = "B-CG-FINDING"
 REG_BATCH = "B-REGULAR"
@@ -192,7 +185,6 @@ class TestGetBlockedFindingBatches(IntegrationTestCase):
 		has_detail=True,
 	):
 		patches = [
-			patch(f"{GATE}.get_variant_of_map", return_value=VARIANTS),
 			patch(f"{GATE}.frappe.db.has_column", return_value=has_detail),
 			patch(
 				f"{GATE}.get_customer_goods_receipt_se_types",
@@ -293,7 +285,7 @@ class TestGetBlockedFindingBatches(IntegrationTestCase):
 		self.assertEqual(blocked, {})
 
 	def test_finding_loss_variant_not_caught(self):
-		# Exact variant_of equality: "FL" is not "F". Documented, deliberate — an FL
+		# The "F-" prefix excludes "FL-". Documented, deliberate — an FL
 		# item is minted loss, never customer-received.
 		blocked = self._run(
 			[_mop_row(FINDING_LOSS, CG_BATCH, 5.0)],
@@ -347,6 +339,35 @@ class TestGetBlockedFindingBatches(IntegrationTestCase):
 		)
 		self.assertEqual(blocked, {CG_BATCH: RECEIPT_SE})
 
+	def test_never_reads_item_even_under_a_blanket_get_all_stub(self):
+		"""Regression: the gate must not resolve variant_of through an Item read.
+
+		It used to call ``material_loss_gate.get_variant_of_map``. Several suites --
+		``TestBookMetalLossFindingGate`` among them -- stub ``frappe.db.get_all``
+		wholesale with a flat ``return_value`` of MOP Log rows, and because
+		``frappe.db`` is one shared object that patch is global. The Item read then
+		came back as MOP Log rows and raised ``KeyError: 'name'`` from inside
+		``book_metal_loss``, breaking twelve pre-existing tests.
+
+		Findings are decided from the item code, so no Item read happens at all and a
+		nonsense answer to the Batch read degrades to "nothing blocked".
+		"""
+		seen = []
+
+		def blanket(doctype, *args, **kwargs):
+			seen.append(doctype)
+			# Whatever is asked for, answer with MOP Log rows -- the shape that broke it.
+			return [{"item_code": CHAIN, "batch_no": CG_BATCH, "qty": 20.0, "pcs": 0}]
+
+		with patch(f"{GATE}.frappe.db.get_all", side_effect=blanket), patch(
+			f"{GATE}.frappe.db.has_column", return_value=True
+		):
+			self.assertEqual(
+				get_blocked_finding_batches([_mop_row(CHAIN, CG_BATCH, 20.0)]), {}
+			)
+
+		self.assertNotIn("Item", seen, "the gate must never read Item")
+
 	def test_empty_input_costs_no_query_at_all(self):
 		with patch(f"{GATE}.frappe.db.get_all") as get_all:
 			self.assertEqual(get_blocked_finding_batches([]), {})
@@ -359,9 +380,7 @@ class TestGetBlockedFindingBatches(IntegrationTestCase):
 		The item-code prefix narrows before anything is read, so an operation carrying
 		no findings at all never touches Item or Batch.
 		"""
-		with patch(f"{GATE}.frappe.db.get_all") as get_all, patch(
-			f"{GATE}.get_variant_of_map"
-		) as variant_map:
+		with patch(f"{GATE}.frappe.db.get_all") as get_all:
 			self.assertEqual(
 				get_blocked_finding_batches(
 					[_mop_row(METAL, CG_BATCH, 80.0), _mop_row(METAL, REG_BATCH, 20.0)]
@@ -369,7 +388,6 @@ class TestGetBlockedFindingBatches(IntegrationTestCase):
 				{},
 			)
 			get_all.assert_not_called()
-			variant_map.assert_not_called()
 
 	def test_rows_without_a_batch_cost_no_query(self):
 		with patch(f"{GATE}.frappe.db.get_all") as get_all:
@@ -410,7 +428,7 @@ class TestBookMetalLossCustomerFindingGate(IntegrationTestCase):
 			patch(f"{EIR}.get_loss_booking_map", return_value={}),
 			patch(f"{EIR}.get_finding_category_map", return_value={}),
 			patch(f"{EIR}.get_blocked_loss_variants", return_value=set()),
-			patch(f"{EIR}.get_variant_of_map", return_value=VARIANTS),
+			patch(f"{EIR}.get_variant_of_map", return_value={}),
 			patch(
 				f"{EIR}.get_blocked_finding_batches",
 				return_value=blocked if blocked is not None else {},

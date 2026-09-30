@@ -7,7 +7,7 @@ A finding (clasp, jump ring, chain part) the customer supplied is expected back 
 its issued weight, so no process loss may be booked against it. This gate refuses such a row
 on Employee IR -- automatic or manual -- when all three of these hold:
 
-  * the item's ``Item.variant_of`` is ``"F"`` (a finding);
+  * the item code starts with ``"F-"`` (a finding -- see ``FINDING_CODE_PREFIX``);
   * the row's Batch carries ``custom_inventory_type = "Customer Goods"``; and
   * that Batch was minted by a ``Customer Goods Received`` Stock Entry, or by a Purchase
     Receipt.
@@ -96,23 +96,34 @@ KNOWN LIMITS
   here has to move.
 * **``Customer Stock`` is not blocked**, only ``Customer Goods``. ``row_ownership`` defines
   two customer types; this rule names one.
-* **``FL-`` items are not caught**, because matching is on exact ``variant_of == "F"`` -- the
-  same deliberate choice ``material_loss_gate`` makes. An ``FL`` item is minted loss, never
-  customer-received.
+* **``FL-`` items are not caught** -- the ``"F-"`` prefix excludes them, the same distinction
+  ``material_loss_gate`` draws with exact ``variant_of`` equality. An ``FL`` item is minted
+  loss, never customer-received.
+* **A finding whose item code does not follow the ``F-`` convention is not caught.** The whole
+  loss engine already rests on that convention -- ``book_metal_loss`` admits only ``M``/``F``
+  codes to its pool -- so the gate is exactly as wide as the pool it filters.
 """
 
 import frappe
 from frappe import _
 
-from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.material_loss_gate import (
-	get_variant_of_map,
-)
-
 #: The one inventory type this gate refuses. ``Customer Stock`` is deliberately excluded.
 CUSTOMER_GOODS = "Customer Goods"
 
-#: Exact ``Item.variant_of`` for a finding, matching ``material_loss_gate.LOSS_BLOCK_FLAGS``.
-FINDING_TEMPLATE = "F"
+#: A finding is identified by its item-code prefix, NOT by reading ``Item.variant_of``.
+#:
+#: The trailing hyphen is what carries the meaning: it matches the ``F`` template ("F-G-22KT-…")
+#: and excludes the ``FL`` loss template ("FL-G-22KT-…"), which is the same distinction
+#: ``material_loss_gate`` draws with exact ``variant_of`` equality. An ``FL`` item is minted
+#: loss, never customer-received, so it must not be caught. Literal non-variant codes such as
+#: "FINDING LOSS" are excluded too.
+#:
+#: Prefix rather than a lookup for three reasons: the surrounding engine already assumes this
+#: convention (``book_metal_loss`` filters its pool on ``item_code[0] in ("M", "F")`` and
+#: ``finding_loss_gate`` keys on the same first character); it removes an ``Item`` round-trip
+#: from every call; and it keeps the gate off the shared ``get_variant_of_map`` helper, whose
+#: ``Item`` read several suites hijack by stubbing ``frappe.db.get_all`` wholesale.
+FINDING_CODE_PREFIX = "F-"
 
 STOCK_ENTRY = "Stock Entry"
 PURCHASE_RECEIPT = "Purchase Receipt"
@@ -210,26 +221,17 @@ def get_blocked_finding_batches(rows):
 	message. Returns ``{}`` -- without querying at all where possible -- whenever nothing can
 	match, so the default path pays nothing.
 	"""
-	pairs = [(_get(row, "item_code"), _get(row, "batch_no")) for row in rows or []]
-	# Narrow on the item-code prefix BEFORE any query. Free, and it keeps the promise the
-	# sibling gates make: an operation carrying no findings at all -- the common case on a
-	# metal-only operation -- issues zero extra queries. The prefix also catches "FL-", so
-	# variant_of still has to be resolved below to exclude it; this only decides whether
-	# that lookup happens, never what it answers. Same prefilter
-	# ``finding_loss_gate.get_finding_category_map`` applies, for the same reason.
-	pairs = [
-		(item, batch)
-		for item, batch in pairs
-		if item and batch and item[0] == FINDING_TEMPLATE
-	]
-	if not pairs:
-		return {}
-
-	# 1. Findings only, on EXACT variant_of, resolved through the shared map so this gate
-	#    and material_loss_gate read variant_of through one code path.
-	variant_map = get_variant_of_map({item for item, _batch in pairs})
+	# 1. Findings only, decided on the item code alone -- see FINDING_CODE_PREFIX. Costs no
+	#    query, so an operation carrying no findings (the common case on a metal-only
+	#    operation) reads nothing at all, which is the promise the sibling gates make.
 	finding_batches = sorted(
-		{batch for item, batch in pairs if variant_map.get(item) == FINDING_TEMPLATE}
+		{
+			batch
+			for batch, item in (
+				(_get(row, "batch_no"), _get(row, "item_code")) for row in rows or []
+			)
+			if batch and item and item.startswith(FINDING_CODE_PREFIX)
+		}
 	)
 	if not finding_batches:
 		return {}

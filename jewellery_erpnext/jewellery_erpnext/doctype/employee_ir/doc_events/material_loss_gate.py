@@ -279,9 +279,11 @@ def validate_loss_gates_left_nothing_to_book(doc):
 		return
 	eligible = {r["item_code"] for r in eligible_rows}
 
-	# Local import: customer_finding_loss_gate imports get_variant_of_map from THIS
-	# module, so a module-level import here would be a cycle. Same idiom sample_goods
-	# uses for the same reason.
+	# Local import, kept deliberately: this whole function only ever runs on the failure
+	# path, so the sibling gate is loaded when a document is already about to be refused
+	# rather than on every import of this module. (It is no longer a cycle -- the gate
+	# stopped importing get_variant_of_map from here -- but there is still nothing to
+	# gain from hoisting it.)
 	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
 		get_blocked_finding_batches,
 		is_customer_goods_finding_blocked,
