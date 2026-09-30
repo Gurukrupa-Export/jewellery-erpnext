@@ -24,6 +24,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.su
 from jewellery_erpnext.jewellery_erpnext.customization.utils.bom_weights import (
 	apply_bom_weights,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	normalize_ownership,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
 	SAMPLE_ALLOWED_SE_TYPES,
 	is_customer_sample_batch,
@@ -217,6 +220,16 @@ def get_fifo_batches(self, row, consumed=None):
 			[batch.batch_no for batch in batch_data],
 			["custom_inventory_type", "custom_customer"],
 		)
+	# F5: the lane a row is booked in comes from the batch it actually draws, not from what the
+	# PMO expected. KLHGX62F1119's company diamond (a Regular Stock batch, no customer) was
+	# allowed in place of the customer's diamond and travelled as Customer Goods with a NULL
+	# customer through MAT-STE-18637/38/39. ``expected`` is what the PMO asked for; each
+	# allocation below stamps the lane of the batch it took.
+	expected_lane = (row.inventory_type, row.get("customer"))
+	# The branch tests below read these, never the row: an allocation relabels the row, and
+	# the next batch must still be matched against what the PMO asked for.
+	expected_type, expected_customer = expected_lane
+
 	for batch in batch_data:
 		# reduce this batch's availability by what earlier rows already took
 		batch_key = (warehouse, batch.batch_no)
@@ -236,14 +249,16 @@ def get_fifo_batches(self, row, consumed=None):
 		):
 			continue
 		if (
-			row.inventory_type in ["Customer Goods", "Customer Stock"]
+			expected_type in ["Customer Goods", "Customer Stock"]
 			and (batch_info.get(batch.batch_no) or {}).get("custom_inventory_type")
-			== row.inventory_type
+			== expected_type
 			and (batch_info.get(batch.batch_no) or {}).get("custom_customer")
-			== row.customer
+			== expected_customer
 		):
 			if total_qty > 0 and batch.qty > 0:
+				lane = expected_lane
 				if not existing_updated:
+					_stamp_lane(row, lane)
 					row.db_set("qty", min(total_qty, batch.qty))
 					if self.get("date"):
 						row.db_set("batch", batch.batch_no)
@@ -263,6 +278,7 @@ def get_fifo_batches(self, row, consumed=None):
 					temp_row["batch_no"] = batch.batch_no
 					temp_row["transfer_qty"] = 0
 					temp_row["qty"] = flt(min(total_qty, batch.qty), 4)
+					temp_row["inventory_type"], temp_row["customer"] = lane
 					rows_to_append.append(temp_row)
 					consumed[batch_key] = consumed.get(batch_key, 0) + min(
 						total_qty, batch.qty
@@ -270,13 +286,21 @@ def get_fifo_batches(self, row, consumed=None):
 					total_qty -= batch.qty
 
 		elif (
-			row.inventory_type in ["Customer Goods", "Customer Stock"]
+			expected_type in ["Customer Goods", "Customer Stock"]
 			and (batch_info.get(batch.batch_no) or {}).get("custom_inventory_type")
-			!= row.inventory_type
+			!= expected_type
 			and allow_customer_goods == 1
 		):
 			if total_qty > 0 and batch.qty > 0:
+				info = batch_info.get(batch.batch_no) or {}
+				lane = normalize_ownership(
+					info.get("custom_inventory_type"),
+					info.get("custom_customer"),
+					batch_no=batch.batch_no,
+					item_code=row.item_code,
+				)
 				if not existing_updated:
+					_stamp_lane(row, lane)
 					row.db_set("qty", min(total_qty, batch.qty))
 					if self.get("date"):
 						row.db_set("batch", batch.batch_no)
@@ -296,13 +320,14 @@ def get_fifo_batches(self, row, consumed=None):
 					temp_row["batch_no"] = batch.batch_no
 					temp_row["transfer_qty"] = 0
 					temp_row["qty"] = flt(min(total_qty, batch.qty), 4)
+					temp_row["inventory_type"], temp_row["customer"] = lane
 					rows_to_append.append(temp_row)
 					consumed[batch_key] = consumed.get(batch_key, 0) + min(
 						total_qty, batch.qty
 					)
 					total_qty -= batch.qty
 
-		elif row.inventory_type not in ["Customer Goods", "Customer Stock"]:
+		elif expected_type not in ["Customer Goods", "Customer Stock"]:
 			if self.flags.only_regular_stock_allowed and (
 				batch_info.get(batch.batch_no) or {}
 			).get("custom_inventory_type") in ["Customer Goods", "Customer Stock"]:
@@ -348,6 +373,15 @@ def get_fifo_batches(self, row, consumed=None):
 			frappe.msgprint(message)
 
 	return rows_to_append
+
+
+def _stamp_lane(row, lane):
+	"""Book ``row`` in ``lane`` -- ``(inventory_type, customer)`` -- if it is not already."""
+	inventory_type, customer = lane
+	if row.inventory_type != inventory_type:
+		row.db_set("inventory_type", inventory_type)
+	if row.get("customer") != customer:
+		row.db_set("customer", customer)
 
 
 def get_batch_data_from_msl(item_code, main_slip, warehouse):
@@ -464,7 +498,11 @@ def set_gross_wt(self):
 			gross_weight = frappe.db.get_value(
 				"Serial No", row.serial_no, "custom_gross_wt"
 			)
-			row.gross_weight = gross_weight
+			# F22: a finished piece's serial is weighed after this entry is built, so its
+			# serial reads nothing yet. Blanking the row then erased the weight the builder
+			# had set; keep it unless the serial actually carries one.
+			if gross_weight:
+				row.gross_weight = gross_weight
 
 
 def set_fg_bom_weights(self):

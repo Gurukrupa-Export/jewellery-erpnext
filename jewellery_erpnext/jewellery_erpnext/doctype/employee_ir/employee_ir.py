@@ -13,6 +13,7 @@ from frappe.utils import (
 	get_datetime,
 	get_first_day,
 	get_last_day,
+	get_link_to_form,
 	getdate,
 	now_datetime,
 	nowdate,
@@ -24,10 +25,14 @@ from frappe.utils import (
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
 	batch_priority_map,
-	describe_customer_spill,
+	describe_customer_loss_posted,
 	is_customer_rank,
 	loss_rank,
 	tiered_allocate,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+	PROCESS_LOSS_SE_TYPE,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
@@ -158,6 +163,7 @@ class EmployeeIR(Document):
 				self.create_subcontracting_order()
 		else:
 			self.on_submit_receive()
+			self._announce_customer_loss_posted()
 
 	def before_validate(self):
 		if self.docstatus != 0:
@@ -779,6 +785,10 @@ class EmployeeIR(Document):
 			msl_wh = _resolve_source_warehouse_raw_material(self)
 			if msl_wh:
 				recalculate_msl_tracking(msl_wh)
+		except frappe.QueryDeadlockError:
+			# InnoDB has already rolled back the whole submit; logging and carrying on
+			# would commit the rest of on_submit in a fresh transaction, as half a submit.
+			raise
 		except Exception:
 			frappe.log_error(
 				title="Employee IR: MSL tracking refresh failed",
@@ -953,9 +963,6 @@ class EmployeeIR(Document):
 					"customer": row.get("customer"),
 				},
 			)
-
-		# ONE warning for the whole document, after every operation row is booked.
-		self._warn_customer_loss_spill()
 
 		# Pre-deduction MOP baseline: total loss available from the operations
 		# before any manual deduction. Drives downstream caps and serves as the
@@ -1170,7 +1177,7 @@ class EmployeeIR(Document):
 					# Loss exceeded every batch's capacity on this operation. The
 					# excess is anchored on the FIRST funded tier (company metal) by
 					# tiered_allocate — never on the customer — so nothing here has
-					# to redistribute it, but it is worth surfacing.
+					# to redistribute it.
 					doc._collect_loss_overflow(mwo, opt, alloc_info.overflow)
 			elif total_qty != 0 and ms_consum:
 				# Gain: nothing is lost, the operation drew extra from the Main Slip.
@@ -1192,13 +1199,13 @@ class EmployeeIR(Document):
 		return data
 
 	def _collect_customer_loss_spill(self, entry, qty):
-		"""Record that customer-owned metal absorbed loss, for ONE warning later.
+		"""Record that customer-owned metal absorbed loss.
 
-		Deliberately data, not a ``msgprint``. ``book_metal_loss`` is reached from
-		``validate`` on every draft save and runs once per operation row, so warning
-		in place would fire repeatedly per save and again from every whitelisted
-		caller. ``validate_process_loss`` emits a single deduplicated message after
-		the loop instead.
+		Nothing shows this to the operator: a draft save stays silent, and after a
+		successful submit ``_announce_customer_loss_posted`` notes the posted rows on
+		the timeline. The call in ``book_metal_loss`` is kept, like
+		``_collect_loss_overflow``'s, because the loss-waterfall tests observe the
+		allocation by overriding these two hooks.
 		"""
 		spill = self.flags.setdefault("customer_loss_spill", [])
 		spill.append(
@@ -1216,51 +1223,103 @@ class EmployeeIR(Document):
 			{"mwo": mwo, "operation": opt, "qty": flt(qty, 3)}
 		)
 
-	def _warn_customer_loss_spill(self):
-		"""Emit ONE orange warning naming the customer metal that absorbed loss.
+	def _announce_customer_loss_posted(self):
+		"""After a successful Receive submit, record which customer metal the loss was posted on.
 
-		Warns whenever a customer tier was funded at all -- not only when the
-		waterfall overflowed. The ordinary business case is "regular stock ran out
-		and the remainder landed on the customer's gold", which produces no overflow
-		and is exactly what the operator needs to see.
+		The note goes on the timeline as an Info comment and nowhere else -- no dialog,
+		on save or on submit. It is written in the submit's own transaction, so a
+		rollback discards it, and unlike a ``msgprint`` it also survives a queued submit.
+		It is built from the posted Process Loss rows, not from the draft, so it names
+		the scrap batch actually made.
 
-		Never throws: spilling is allowed. The one hard stop remains
-		``batch_owner_no_wastage`` below, and that batch is ranked last precisely so
-		the waterfall reaches it only when nothing else can absorb the loss.
+		Advisory: it must never be able to fail the submit that posted the loss.
 		"""
-		spill = self.flags.get("customer_loss_spill") or []
-		if not spill:
-			return
+		try:
+			rows = _posted_customer_loss_rows(self.name)
+			if not rows:
+				return
 
-		merged = {}
-		for row in spill:
-			key = (row["customer"], row["item_code"], row["batch_no"])
-			merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), 3)
-
-		lines = describe_customer_spill(
-			[
-				{"customer": c, "item_code": i, "batch_no": b, "qty": q}
-				for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
-			]
-		)
-		total = flt(sum(merged.values()), 3)
-		frappe.msgprint(
-			_(
-				"Company stock could not absorb the whole process loss, so {0} g was "
-				"booked against customer-owned material:"
-			).format(frappe.bold(total))
-			+ "<br><br>"
-			+ "<br>".join(lines),
-			title=_("Customer Material Absorbed Loss"),
-			indicator="orange",
-		)
-		# Durable trace: Employee IR submit runs on queue="long" (CustomSubmissionQueue),
-		# where a msgprint lands in the job log rather than the operator's browser.
-		self.flags.customer_loss_spill_total = total
+			entries = ", ".join(
+				get_link_to_form("Stock Entry", name)
+				for name in dict.fromkeys(row.stock_entry for row in rows)
+			)
+			message = (
+				_(
+					"Process Loss {0} moved customer-owned material to customer-owned scrap:"
+				).format(entries)
+				+ "<br><br>"
+				+ "<br>".join(describe_customer_loss_posted(rows))
+			)
+			self.add_comment("Info", message)
+		except frappe.QueryDeadlockError:
+			# InnoDB has already rolled back the whole submit; swallowing this would let
+			# on_submit carry on in a fresh transaction and commit half a submit.
+			raise
+		except Exception:
+			frappe.log_error(
+				title="Employee IR customer-loss announcement failed",
+				reference_doctype=self.doctype,
+				reference_name=self.name,
+			)
 
 	@frappe.whitelist()
 	def get_summary_data(self):
 		return get_summary_data(self)
+
+
+def _posted_customer_loss_rows(employee_ir):
+	"""Customer-owned produce rows of this IR's submitted Process Loss entry.
+
+	Each produce row is paired with the consume row right before it: the builder emits
+	one consume/produce pair per loss (``loss_stock_entry._build_combined_loss_se``).
+	The scrap batch is on the row once ``batch_rename.create_child_batches`` has minted
+	it; for a parent that module cannot extend, the Serial-and-Batch path minted it into
+	the row's bundle instead.
+	"""
+	return frappe.db.sql(
+		"""
+		SELECT
+			se.name AS stock_entry,
+			produce.customer,
+			produce.item_code AS loss_item,
+			produce.t_warehouse AS warehouse,
+			produce.qty,
+			produce.stock_uom,
+			COALESCE(
+				NULLIF(produce.batch_no, ''),
+				(
+					SELECT MIN(sbe.batch_no)
+					FROM `tabSerial and Batch Entry` sbe
+					WHERE sbe.parent = produce.serial_and_batch_bundle
+				)
+			) AS scrap_batch,
+			consume.item_code AS source_item,
+			consume.batch_no AS source_batch
+		FROM `tabStock Entry` se
+		JOIN `tabStock Entry Detail` produce
+			ON produce.parent = se.name AND produce.parenttype = 'Stock Entry'
+		LEFT JOIN `tabStock Entry Detail` consume
+			ON consume.parent = se.name
+			AND consume.parenttype = 'Stock Entry'
+			AND consume.idx = produce.idx - 1
+			AND IFNULL(consume.s_warehouse, '') != ''
+		WHERE se.employee_ir = %(employee_ir)s
+			AND se.stock_entry_type = %(stock_entry_type)s
+			AND se.auto_created = 1
+			AND se.docstatus = 1
+			AND IFNULL(produce.t_warehouse, '') != ''
+			AND IFNULL(produce.s_warehouse, '') = ''
+			AND IFNULL(produce.customer, '') != ''
+			AND produce.inventory_type IN %(inventory_types)s
+		ORDER BY se.name, produce.idx
+		""",
+		{
+			"employee_ir": employee_ir,
+			"stock_entry_type": PROCESS_LOSS_SE_TYPE,
+			"inventory_types": CUSTOMER_INVENTORY_TYPES,
+		},
+		as_dict=True,
+	)
 
 
 def _bulk_variant_of(item_codes):

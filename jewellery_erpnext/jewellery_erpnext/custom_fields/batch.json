@@ -92,6 +92,16 @@
    "fieldtype": "Section Break",
    "insert_after": "produced_qty",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_batch_components",
+   "fieldtype": "Table",
+   "insert_after": "custom_origin_entries",
+   "label": "Batch Components",
+   "module": "Customer Subcontracting",
+   "options": "Batch Component",
+   "description": "C09. What this batch is actually MADE OF, with each component's owner recorded as at the moment of mixing. Distinct from Batch MultiSelect above, which records which batches were consumed -- see the Batch Component docstring for the six measured differences."
   }
  ]
 }

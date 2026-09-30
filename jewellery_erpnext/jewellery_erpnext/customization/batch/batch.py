@@ -237,7 +237,8 @@ def generate_unique_alphanumeric():
 
 # Purities within this tolerance (percentage points) count as equal, so a
 # same-purity conversion (e.g. 18KT metal -> 18KT finding) inherits the source
-# Batch Rate unchanged instead of being re-scaled.
+# Batch Rate unchanged instead of being re-scaled. Used by the retired blend's
+# one-off backfill (patches/backfill_blended_batch_metal_rate) -- see on_update.
 PURITY_TOLERANCE = 0.01
 
 
@@ -274,58 +275,30 @@ def _resolve_metal_purity(item_code):
 		return 0.0
 
 
-def on_update(doc, method):
-	if not doc.flags.is_update_origin_entries:
-		return
+# Which Batch fields may hold a source row's own rate, in preference order. Only
+# patches/backfill_blended_batch_metal_rate reads these now: the blend they served is retired
+# (see on_update).
+ALLOY_SOURCE_RATE_FIELDS = ("custom_alloy_rate", "custom_metal_rate")
+METAL_SOURCE_RATE_FIELDS = ("custom_metal_rate",)
 
-	if not doc.custom_origin_entries:
-		return
 
-	if doc.reference_doctype != "Stock Entry" or not doc.custom_voucher_detail_no:
-		return
+def on_update(doc, method=None):
+	"""Retired (F26). No longer registered in hooks.py; kept so a stale hooks cache cannot
+	break a Batch save between deploy and cache clear.
 
-	se_type = frappe.db.get_value(
-		doc.reference_doctype, doc.reference_name, "stock_entry_type"
-	)
-	if se_type != "Repack-Metal Conversion":
-		return
+	This used to restate a Repack-Metal Conversion target's ``custom_metal_rate`` and
+	``custom_alloy_rate`` from its origin entries on every provenance save: a qty-weighted,
+	purity-scaled mix of the source batches' rates. That overwrote the rate the batch was
+	minted with -- the minting row's own rate, which is the ledger's incoming rate and so the
+	figure batch-wise valuation charges on every issue (or, on a zero-valued customer row, the
+	rate the user entered). The mix also left the company alloy out of the metal rate,
+	divided by 100 instead of the source purity, and depended on an alloy classifier that
+	differs between sites; on the 22KT batch of the KLHGX62F1119 audit it read 144,648.4625
+	against a ledger rate of 144,642.733945.
 
-	target_purity = _resolve_metal_purity(doc.item)
-
-	def _is_alloy(item_code):
-		item = frappe.get_doc("Item", item_code)
-		res = False
-
-		if item.item_group == "Alloy":
-			res = True
-		elif len(item.attributes) == 1:
-			res = True
-
-		return res
-
-	# Qty-weighted blend of the source batches' Batch Rates. Metal sources are
-	# converted to the target purity (Batch Rate = source rate x target_purity / 100),
-	# except when source and target purity match, where the rate is inherited
-	# unchanged. Alloy sources are blended separately into custom_alloy_rate.
-	alloy_value = alloy_qty = 0.0
-	metal_value = metal_qty = 0.0
-
-	for row in doc.custom_origin_entries:
-		row_qty = flt(row.qty) or 1.0
-		if _is_alloy(row.item_code):
-			alloy_value += flt(row.rate) * row_qty
-			alloy_qty += row_qty
-		else:
-			source_purity = _resolve_metal_purity(row.item_code)
-			if target_purity and abs(source_purity - target_purity) > PURITY_TOLERANCE:
-				converted_rate = (flt(row.rate) * target_purity) / 100
-			else:
-				converted_rate = flt(row.rate)
-			metal_value += converted_rate * row_qty
-			metal_qty += row_qty
-
-	alloy_rate = (alloy_value / alloy_qty) if alloy_qty else 0.0
-	metal_rate = (metal_value / metal_qty) if metal_qty else 0.0
-
-	doc.db_set("custom_alloy_rate", alloy_rate)
-	doc.db_set("custom_metal_rate", metal_rate)
+	Batch Rate is now the minting stamp alone: ``batch_rename._source_row_rate`` for batches
+	minted by hand, ``doc_events.utils._source_row_rate`` for the rest. Origin entries are
+	still recorded as provenance, and Batch Component is unchanged. Batches already restated
+	by the blend are re-stamped by ``patches/restamp_batch_rate_from_ledger``.
+	"""
+	return

@@ -95,10 +95,6 @@ class _StubEIR:
 		# isolation from the proportional-distribution algorithm.
 		return self._bml_returns
 
-	def _warn_customer_loss_spill(self):
-		# Real method lives on EmployeeIR; the stub only needs it to be callable.
-		EmployeeIR._warn_customer_loss_spill(self)
-
 
 class TestMopLossDetailsTotalBaseline(IntegrationTestCase):
 	"""mop_loss_details_total reflects the MOP baseline available for loss,
@@ -199,6 +195,112 @@ class TestMopLossDetailsTotalBaseline(IntegrationTestCase):
 
 		EmployeeIR.validate_process_loss(stub)
 		self.assertAlmostEqual(stub.mop_loss_details_total, 3.0, places=3)
+
+
+class TestDraftSaveCustomerLossIsSilent(IntegrationTestCase):
+	"""A draft save that books loss on customer-owned metal shows no dialog.
+
+	Runs the real validate_process_loss with only the loss engine stubbed, and the
+	stub records the customer spill exactly as the real engine does. Both triggers of
+	the old save-time popup are present -- an automatic row and a manually booked
+	row, each on a customer batch -- and the loss must still be booked.
+	"""
+
+	ROW = {
+		"item_code": "M-T",
+		"qty": 1.0,
+		"batch_no": "B-CUST",
+		"manufacturing_work_order": "MWO-T",
+		"manufacturing_operation": "MOP-T",
+		"proportionally_loss": 0.01,
+		"received_gross_weight": 0.99,
+		"customer": "CUST-T",
+	}
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _stub(self):
+		row = self.ROW
+
+		class SpillingStub(_StubEIR):
+			def __getattr__(self, name):
+				# Anything the stub lacks runs the real EmployeeIR code, so a helper
+				# put back on the save path is exercised here rather than skipped.
+				attr = getattr(EmployeeIR, name)
+				return attr.__get__(self) if hasattr(attr, "__get__") else attr
+
+			def book_metal_loss(self, *args, **kwargs):
+				# What the real engine does once a customer tier is funded.
+				EmployeeIR._collect_customer_loss_spill(
+					self, dict(row, _customer="CUST-T"), row["proportionally_loss"]
+				)
+				return [dict(row)]
+
+		stub = SpillingStub(
+			[
+				frappe._dict(
+					{
+						"manufacturing_work_order": "MWO-T",
+						"manufacturing_operation": "MOP-T",
+						"gross_wt": 1.0,
+						"received_gross_wt": 0.99,
+					}
+				)
+			]
+		)
+		stub.manually_book_loss_details = [
+			frappe._dict(
+				{
+					"item_code": "M-T",
+					"batch_no": "B-CUST-M",
+					"proportionally_loss": 0.02,
+				}
+			)
+		]
+		return stub
+
+	def _validate(self, stub, no_wastage_batches=()):
+		# The manual row's batch is customer-owned, so anything that classified the
+		# manual table again would find customer metal there too.
+		ownership = {
+			"B-CUST-M": frappe._dict(inventory_type="Customer Goods", customer="CUST-T")
+		}
+		with (
+			patch.object(employee_ir.frappe, "get_cached_value", return_value=None),
+			patch.object(employee_ir, "_bulk_variant_of", return_value={}),
+			patch.object(
+				employee_ir,
+				"_bulk_no_wastage_batches",
+				return_value=set(no_wastage_batches),
+			),
+			patch.object(employee_ir, "batch_priority_map", return_value=ownership),
+			patch("frappe.msgprint") as msgprint,
+			patch("frappe.publish_realtime") as publish,
+		):
+			EmployeeIR.validate_process_loss(stub)
+		return msgprint, publish
+
+	def test_a_no_wastage_customer_batch_still_throws(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(self._stub(), no_wastage_batches={"B-CUST"})
+
+	def test_loss_on_customer_metal_is_booked_without_a_dialog(self):
+		stub = self._stub()
+		msgprint, publish = self._validate(stub)
+
+		# The condition that used to raise the popup held...
+		self.assertEqual(
+			[s["batch_no"] for s in stub.flags.customer_loss_spill], ["B-CUST"]
+		)
+		# ...and nothing was shown.
+		msgprint.assert_not_called()
+		publish.assert_not_called()
+		# The loss is still booked on the customer's batch.
+		(booked,) = stub.employee_loss_details
+		self.assertEqual(booked.batch_no, "B-CUST")
+		self.assertEqual(booked.proportionally_loss, 0.01)
 
 
 class TestBookMetalLossPrecisionResidual(IntegrationTestCase):
@@ -3695,7 +3797,7 @@ class TestBookMetalLossWaterfall(IntegrationTestCase):
 	"""Loss is booked Regular Stock -> Pure Metal -> Customer Goods.
 
 	The customer's gold absorbs wastage only when nothing else on the operation
-	has capacity left, and doing so warns rather than blocks.
+	has capacity left, and doing so is allowed, not blocked.
 	"""
 
 	@classmethod

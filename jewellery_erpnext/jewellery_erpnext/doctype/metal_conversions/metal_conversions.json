@@ -424,7 +424,7 @@
    "link_fieldname": "custom_metal_conversion_reference"
   }
  ],
- "modified": "2026-07-29 12:55:07.264354",
+ "modified": "2026-09-29 16:30:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Metal Conversions",
@@ -432,6 +432,8 @@
  "owner": "Administrator",
  "permissions": [
   {
+   "amend": 1,
+   "cancel": 1,
    "create": 1,
    "delete": 1,
    "email": 1,
@@ -439,6 +441,7 @@
    "read": 1,
    "role": "System Manager",
    "share": 1,
+   "submit": 1,
    "write": 1
   }
  ],

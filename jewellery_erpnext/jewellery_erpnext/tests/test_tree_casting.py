@@ -2815,6 +2815,14 @@ class TestReceiveTwoPassOwnership(IntegrationTestCase):
 		self.assertEqual(self._by_batch(se_recv), {"B-CUST": 1.0})
 		self.assertEqual(self._by_batch(se_loss), {"B-REG": 2.0, "B-CUST": 3.0})
 
+	def test_loss_on_customer_metal_raises_no_popup(self):
+		with patch.object(tse.frappe, "msgprint") as msgprint:
+			_se_recv, se_loss = self._receive(
+				1.0, 5.0, owed=[("B-CUST", 10.0), ("B-REG", 2.0)]
+			)
+		self.assertEqual(self._by_batch(se_loss), {"B-REG": 2.0, "B-CUST": 3.0})
+		msgprint.assert_not_called()
+
 	def test_legs_never_double_book_the_same_batch_qty(self):
 		se_recv, se_loss = self._receive(
 			7.0, 4.0, owed=[("B-CUST", 8.0), ("B-REG", 5.0)]

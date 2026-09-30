@@ -47,10 +47,7 @@ frappe.ui.form.on("Stock Entry", {
 			frm.add_custom_button(
 				__("Issue"),
 				function () {
-					frappe.model.open_mapped_doc({
-						method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
-						frm: frm,
-					});
+					show_customer_gold_return_preview(frm);
 				},
 				__("Create")
 			);
@@ -311,6 +308,15 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	setup: function (frm) {
+		// The Stock Entry Type the server treats as a Customer Gold receipt, or null when the flow
+		// is off. Fetched once because Subcontracting Settings is readable by System Managers only.
+		frm._cg_receipt_type = null;
+		frappe.call({
+			method: "jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings.get_customer_gold_receipt_type",
+			callback: (r) => {
+				frm._cg_receipt_type = r.message || null;
+			},
+		});
 		frm.set_query("item_template", function (doc) {
 			return { filters: { has_variants: 1 } };
 		});
@@ -451,6 +457,15 @@ frappe.ui.form.on("Stock Entry", {
 		});
 	},
 	stock_entry_type(frm) {
+		// On the Customer Gold receipt, offer only items whose master allows Customer Goods --
+		// the same rule the server enforces for every path (scanner, API, import). Evaluated
+		// when the picker opens, so it follows every type change, including the early-return
+		// branches below that install no query of their own; any other type gets ERPNext's
+		// default. The transfer branches further down replace it for their own types, and the
+		// final branch keeps the receipt filter (see customer_goods_item_query).
+		frm.fields_dict["items"].grid.get_field("item_code").get_query = function () {
+			return customer_goods_item_query(frm) || erpnext.queries.item({ is_stock_item: 1 });
+		};
 		if (
 			["Customer Goods Issue", "Customer Goods Received", "Customer Goods Transfer"].includes(
 				frm.doc.stock_entry_type
@@ -525,12 +540,9 @@ frappe.ui.form.on("Stock Entry", {
 				};
 			}
 		} else {
-			frm.fields_dict["items"].grid.get_field("item_code").get_query = function (frm, cdt, cdn) {
-				return {
-					filters: {
-						is_stock_item: 1,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("item_code").get_query = function () {
+				// A configured receipt type outside the literal Customer Goods list lands here.
+				return customer_goods_item_query(frm) || { filters: { is_stock_item: 1 } };
 			};
 			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function (frm, cdt, cdn) {
 				return {
@@ -1905,6 +1917,19 @@ erpnext.show_serial_batch_selector = function (frm, d, callback, on_close, show_
 	});
 };
 
+// The item query for the configured Customer Gold receipt, or null for any other Stock Entry Type.
+// frm._cg_receipt_type is fetched in setup and is null while the Customer Gold flow is off.
+function customer_goods_item_query(frm) {
+	if (!frm.doc.stock_entry_type || frm.doc.stock_entry_type !== frm._cg_receipt_type) {
+		return null;
+	}
+	return erpnext.queries.item({
+		is_stock_item: 1,
+		has_batch_no: 1,
+		custom_inventory_type_can_be_customer_goods: 1,
+	});
+}
+
 function return_receipt_button_click(frm) {
 	frappe.call({
 		method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_material_receipt_for_sales_person",
@@ -1954,5 +1979,158 @@ function set_html(frm) {
 				);
 			}
 		},
+	});
+}
+
+// Customer Gold return preview. Reads only: what this receipt can still give back, where its
+// metal is now (including converted descendants), and which route applies -- Direct Issue,
+// a Material Request to bring it back to custody, or Settle to convert it first.
+function show_customer_gold_return_preview(frm, receipt_row, qty) {
+	frappe.call({
+		method: "jewellery_erpnext.customer_subcontracting.customer_gold_return.get_customer_gold_return_preview",
+		args: { receipt: frm.doc.name, receipt_row: receipt_row || null, qty: qty || null },
+		freeze: true,
+		callback: function (r) {
+			const rows = (r.message && r.message.rows) || [];
+			if (!rows.length) {
+				// The flow is off, or the receipt predates the custody ledger: nothing to preview
+				// and nothing to enforce, so the Issue opens exactly as it always did.
+				open_customer_goods_issue(frm);
+				return;
+			}
+			const row =
+				rows.find((x) => x.receipt_row === receipt_row) ||
+				rows.find((x) => x.remaining > 0) ||
+				rows[0];
+			const dialog = new frappe.ui.Dialog({
+				title: __("Return Customer Gold"),
+				size: "extra-large",
+				fields: [
+					{
+						fieldname: "receipt_row",
+						label: __("Receipt Row"),
+						fieldtype: "Select",
+						options: rows.map((x) => x.receipt_row),
+						default: row.receipt_row,
+						onchange: function () {
+							const chosen = dialog.get_value("receipt_row");
+							if (chosen && chosen !== row.receipt_row) {
+								dialog.hide();
+								show_customer_gold_return_preview(frm, chosen);
+							}
+						},
+					},
+					{
+						fieldname: "qty",
+						label: __("Quantity to Return ({0})", [row.item_code]),
+						fieldtype: "Float",
+						default: row.requested,
+					},
+					{ fieldname: "preview", fieldtype: "HTML" },
+				],
+				primary_action_label: __("Create Issue"),
+				primary_action: function (values) {
+					// What is free in the receipt's custody warehouse can go out now, whatever the
+					// route for the rest; anything beyond it comes back first (Material Request / Settle).
+					if (!(flt(values.qty) > 0) || flt(values.qty) > flt(row.direct_available) + 0.0005) {
+						frappe.msgprint(
+							__("Only {0} can be issued directly from {1}. Route for the rest: {2}. {3}", [
+								format_number(row.direct_available, null, 3),
+								row.custody_warehouse,
+								row.route,
+								row.limiting_factor || "",
+							])
+						);
+						return;
+					}
+					dialog.hide();
+					open_customer_goods_issue(frm, { qty: values.qty, receipt_row: values.receipt_row });
+				},
+				secondary_action_label: __("Create Material Request"),
+				secondary_action: function () {
+					dialog.hide();
+					make_customer_gold_return_mr(frm, row, dialog.get_value("qty"));
+				},
+			});
+			dialog.fields_dict.preview.$wrapper.html(render_customer_gold_preview(row));
+			dialog.show();
+		},
+	});
+}
+
+function render_customer_gold_preview(row) {
+	const esc = frappe.utils.escape_html;
+	const lines = row.holdings
+		.map(
+			(h) => `<tr>
+				<td>${esc(h.batch_no)}</td><td>${esc(h.item_code || "")}</td>
+				<td>${esc(h.warehouse)}</td><td>${esc(h.stage)}</td>
+				<td class="text-right">${format_number(h.qty, null, 3)}</td>
+				<td class="text-right">${format_number(h.free_qty, null, 3)}</td>
+				<td class="text-right">${format_number(h.receipt_equivalent, null, 3)}</td>
+				<td class="text-right">${format_number(h.free_receipt_qty, null, 3)}</td>
+			</tr>`
+		)
+		.join("");
+	return `<p>${__("Received")}: <b>${format_number(row.received, null, 3)}</b> &middot;
+			${__("Still to return")}: <b>${format_number(row.remaining, null, 3)}</b> &middot;
+			${__("Can issue now")}: <b>${format_number(row.direct_available, null, 3)}</b> &middot;
+			${__("Route")}: <b>${esc(row.route)}</b></p>
+		${row.limiting_factor ? `<p class="text-muted">${esc(row.limiting_factor)}</p>` : ""}
+		<table class="table table-bordered table-condensed">
+			<thead><tr>
+				<th>${__("Batch")}</th><th>${__("Item")}</th><th>${__("Warehouse")}</th>
+				<th>${__("Stage")}</th><th>${__("Holding")}</th><th>${__("Free")}</th>
+				<th>${__("Receipt-item equivalent")}</th><th>${__("Free for this receipt")}</th>
+			</tr></thead>
+			<tbody>${lines || `<tr><td colspan="8">${__("No traced holdings")}</td></tr>`}</tbody>
+		</table>`;
+}
+
+function open_customer_goods_issue(frm, args) {
+	frappe.model.open_mapped_doc({
+		method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
+		frm: frm,
+		args: args || {},
+	});
+}
+
+function make_customer_gold_return_mr(frm, row, qty) {
+	// Bring the metal back to the receipt's custody warehouse. Only unused raw metal is asked for
+	// (RM, transit, department WIP -- never finished pieces or scrap), and only THIS receipt's
+	// free share of it. Same-item holdings are requested as they are; another purity is requested
+	// as the receipt's item into the receipt's own batch, for the request's Settle action to convert.
+	const returnable = ["RM", "Transit", "WIP"];
+	frappe.model.with_doctype("Material Request", function () {
+		const mr = frappe.model.get_new_doc("Material Request");
+		mr.company = frm.doc.company;
+		mr.material_request_type = "Material Transfer";
+		mr.inventory_type = "Customer Goods";
+		mr._customer = frm.doc._customer;
+		const receipt_row = (frm.doc.items || []).find((d) => d.name === row.receipt_row) || {};
+		let needed = Math.max(flt(qty) || flt(row.remaining), 0) - flt(row.direct_available);
+		const away = row.holdings.filter(
+			(h) =>
+				returnable.includes(h.stage) &&
+				h.free_receipt_qty > 0 &&
+				!(h.batch_no === row.batch_no && h.warehouse === row.custody_warehouse)
+		);
+		away.sort((a, b) => (b.same_item ? 1 : 0) - (a.same_item ? 1 : 0));
+		away.forEach((h) => {
+			if (needed <= 0) return;
+			const take = Math.min(needed, h.free_receipt_qty);
+			const item = frappe.model.add_child(mr, "items");
+			item.item_code = row.item_code;
+			item.qty = take;
+			item.uom = receipt_row.stock_uom || receipt_row.uom;
+			item.stock_uom = receipt_row.stock_uom || receipt_row.uom;
+			item.conversion_factor = 1;
+			item.from_warehouse = h.warehouse;
+			item.warehouse = row.custody_warehouse;
+			item.batch_no = h.same_item ? h.batch_no : row.batch_no;
+			item.schedule_date = frappe.datetime.nowdate();
+			needed -= take;
+		});
+		frappe.set_route("Form", "Material Request", mr.name);
 	});
 }

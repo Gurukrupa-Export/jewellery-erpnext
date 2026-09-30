@@ -1,6 +1,7 @@
 # Copyright (c) 2024, Nirali and contributors
 # For license information, please see license.txt
 
+import hashlib
 import re
 
 import frappe
@@ -8,14 +9,24 @@ from erpnext.controllers.queries import get_batch_no
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import cint, flt, nowtime
 
+from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
+	get_company_component_qty,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+	capped_auto_batch_nos,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.lanes import (
 	REGULAR_STOCK,
-	apportion,
 	build_lanes,
+	lane_key,
 	split_allocations,
 	split_conversion,
+	split_with_alloy,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.melting_loss import (
 	cancel_melting_loss_stock_entries,
@@ -28,6 +39,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 	update_batch_details,
 	update_source_betch,
 )
+
+#: The Stock Entry Type every conversion voucher is booked under.
+CONVERSION_SE_TYPE = "Repack-Metal Conversion"
+
+#: ``Stock Entry Detail.custom_conversion_lane`` is a Data field.
+LANE_TAG_LENGTH = 140
 
 # Remark sentences offered by the Remarks dropdown. Add a sentence here and it shows up
 # in the form with no other change; use "{percentage}" where the document's Percentage
@@ -73,6 +90,7 @@ class MetalConversions(Document):
 			make_melting_loss_stock_entry(self)
 			return
 		if self.multiple_metal_converter == 0:
+			self.validate_target_qty()
 			if (
 				self.target_item
 				and self.target_item.startswith("M")
@@ -100,6 +118,12 @@ class MetalConversions(Document):
 
 	def before_validate(self):
 		update_batch_details(self)
+		_stamp_source_ownership(self)
+		if self.docstatus == 0:
+			# Only a submit writes this link, so a draft keeps none. (An amendment copies it --
+			# Amend copies no-copy fields -- but Frappe checks links before this hook runs, so
+			# the form drops that one on load: metal_conversions.js.)
+			self.stock_entry = None
 
 	def validate(self):
 		# if not self.batch and self.multiple_metal_converter == 0:
@@ -145,9 +169,48 @@ class MetalConversions(Document):
 		return render_remark_options(self.percentage, self.precision("percentage"))
 
 	def on_cancel(self):
-		# Scoped cascade: cancels only auto-created Process Loss SEs owned by this
-		# document; a no-op for conversion-mode documents.
+		# Scoped cascade: the auto-created entries this document owns -- its Process Loss
+		# (melting-loss mode) and its Repack-Metal Conversion -- are cancelled through the
+		# standard controller, so a conversion whose output was already used cannot be
+		# cancelled at all rather than half-cancelled.
 		cancel_melting_loss_stock_entries(self)
+		cancel_conversion_stock_entries(self)
+
+	def validate_target_qty(self):
+		"""Target Qty must be what the purity masters make of Source Qty, to one posting unit.
+
+		The form computes it (``calculate_metal_conversion``) and clears it whenever the
+		source changes, but the server never checked it, so an API caller -- or a draft
+		left stale by a purity-master edit -- could post a target the source metal cannot
+		produce. The builder then books Source Qty plus the stored alloy, and requires that
+		to agree with this figure too (``_check_target_total``).
+		"""
+		if not (
+			flt(self.source_qty)
+			and flt(self.target_qty)
+			and self.source_item
+			and self.target_item
+		):
+			# Nothing to compare: the builder's own messages (no batches allocated, a zero
+			# quantity) say what is missing.
+			return
+		precision = _qty_precision()
+		expected, _alloy = self.calculate_metal_conversion()
+		# Raw figures, one unit at posting precision apart at most: the form stores the target
+		# unrounded, and rounding both sides here -- by a different method than the form's
+		# round() -- refused documents whose figures sat on either side of a tie.
+		if abs(flt(self.target_qty) - flt(expected)) > _qty_unit(precision):
+			frappe.throw(
+				_(
+					"Target Qty {0} is not what {1} of {2} converts to at the configured purities ({3}). "
+					"Select the Target Item again to recalculate."
+				).format(
+					flt(self.target_qty, precision),
+					flt(self.source_qty, precision),
+					self.source_item,
+					flt(expected, precision),
+				)
+			)
 
 	@frappe.whitelist()
 	def clear_fields(self):
@@ -447,21 +510,16 @@ def make_metal_stock_entry(self):
 			(self.target_alloy, target_wh),
 		]
 	)
-	precision = self.precision("target_qty") or 3
+	precision = _qty_precision()
 
 	# The ownership split is derived here, from what the document already holds: the
 	# FIFO allocation in source_batch_details plus each batch's own ownership on
 	# tabBatch. Nothing about the lanes is stored -- the Batch stays the single source
 	# of truth for who owns what, and the Stock Entry below records what was booked.
-	lanes = split_conversion(
-		build_lanes(
-			self.source_batch_details or [],
-			get_batch_lane_map(
-				[row.batch for row in (self.source_batch_details or [])]
-			),
-		),
-		flt(self.target_qty),
-		precision,
+	# Every customer batch is a lane of its own (lanes.lane_key); company stock pools.
+	lanes = build_lanes(
+		self.source_batch_details or [],
+		get_batch_lane_map([row.batch for row in (self.source_batch_details or [])]),
 	)
 	if not lanes:
 		frappe.throw(
@@ -469,130 +527,152 @@ def make_metal_stock_entry(self):
 				"No source batches are allocated for this document. Please re-save it and try again."
 			)
 		)
+	_check_lane_owners(lanes)
 
-	weights = [lane["source_qty"] for lane in lanes]
+	# The alloy the operator confirmed (and the Bin check and update_alloy_betch sized) is
+	# the stored figure, so it is shared out, not re-derived: each lane takes its part in
+	# proportion to its source (one source item, one purity), and its target is exactly
+	# its source plus that part. The target total therefore follows the stored alloy and
+	# must agree with Target Qty to within one unit -- the most two correct figures,
+	# rounded by different methods, can differ. Without an alloy item the targets are
+	# shared out as before.
+	consume = bool(self.source_alloy and flt(self.source_alloy_qty) > 0)
+	release = bool(self.target_alloy and flt(self.target_alloy_qty) > 0)
+	if consume and release:
+		frappe.throw(
+			_(
+				"Source Alloy and Target Alloy are both set. Select the Target Item again to recalculate the conversion."
+			)
+		)
+	source_qty = flt(sum(lane["source_qty"] for lane in lanes), precision)
+	if consume or release:
+		alloy_total = flt(
+			self.source_alloy_qty if consume else self.target_alloy_qty, precision
+		)
+		_check_target_total(
+			self.target_qty,
+			flt(source_qty + (alloy_total if consume else -alloy_total), precision),
+			precision,
+		)
+		split_with_alloy(
+			lanes,
+			alloy_total,
+			[lane["source_qty"] for lane in lanes],
+			precision,
+			release=release,
+		)
+	else:
+		split_conversion(lanes, flt(self.target_qty), precision)
 
-	# The alloy totals are apportioned from what is STORED on the document -- not
-	# recomputed from the purities -- because those are the figures the operator saw
-	# and the figures get_alloy_bailance checked against Bin. Apportioning guarantees
-	# the lane shares sum back to the validated total exactly, so no lane can quietly
-	# consume alloy that was never confirmed available.
-	source_alloy_needs = target_alloy_qtys = [0.0 for _ in lanes]
+	source_alloy_needs = [max(lane["alloy_qty"], 0.0) for lane in lanes]
+	target_alloy_qtys = [
+		max(-lane["alloy_qty"], 0.0) if release else 0.0 for lane in lanes
+	]
 	source_alloy_rows = [[] for _ in lanes]
-
-	if self.source_alloy and flt(self.source_alloy_qty) > 0:
-		source_alloy_needs = apportion(flt(self.source_alloy_qty), weights, precision)
+	if consume:
 		source_alloy_rows = split_allocations(
 			self.alloy_batch_details or [], source_alloy_needs, precision
 		)
-	if self.target_alloy and flt(self.target_alloy_qty) > 0:
-		target_alloy_qtys = apportion(flt(self.target_alloy_qty), weights, precision)
+		_check_alloy_covered(
+			self.source_alloy, source_alloy_rows, source_alloy_needs, precision
+		)
 
-	# The header can only describe an unambiguous voucher. inventory_type is set only
-	# for a single-lane draw; _customer opens create_child_batches' gate (which is now
-	# row-aware) and is left blank when no lane is customer-owned so that path is
-	# skipped entirely for an all-Regular conversion.
-	single_lane = lanes[0]["inventory_type"] if len(lanes) == 1 else None
-	header_customer = next(
-		(lane["customer"] for lane in lanes if lane["customer"]), None
-	)
+	se = frappe.get_doc(_conversion_header(self, lanes))
+	common = {
+		"department": self.department,
+		"employee": self.employee,
+		"manufacturer": self.manufacturer,
+	}
 
-	se = frappe.get_doc(
-		{
-			"doctype": "Stock Entry",
-			"stock_entry_type": "Repack-Metal Conversion",
-			"purpose": "Repack",
-			"company": self.company,
-			"custom_metal_conversion_reference": self.name,
-			"inventory_type": single_lane,
-			"_customer": header_customer,
-			"auto_created": 1,
-			"branch": self.branch,
-		}
-	)
-
-	def _common():
-		return {
-			"department": self.department,
-			"employee": self.employee,
-			"manufacturer": self.manufacturer,
-		}
-
-	# Rows are emitted lane by lane -- each lane's sources immediately followed by its
-	# target -- so the voucher reads source/target/source/target and every row carries
-	# the lane it belongs to.
+	# Rows are emitted lane by lane -- each lane's sources, its alloy, then its target --
+	# so every lane is one contiguous run: the lane pricer (loss_valuation) values each
+	# run from its own consumed rows, and every row carries the lane it belongs to.
 	booked_target = 0.0
 
 	for idx, lane in enumerate(lanes):
-		tag = lane_tag(lane["inventory_type"], lane["customer"])
+		tag = lane_tag(lane["inventory_type"], lane["customer"], lane.get("batch"))
 		lane_inv_type = lane["inventory_type"] or REGULAR_STOCK
-
-		for allocation in lane["batches"]:
-			se.append(
-				"items",
-				dict(
-					_common(),
-					item_code=self.source_item,
-					qty=flt(allocation["qty"], precision),
-					inventory_type=lane_inv_type,
-					customer=lane["customer"],
-					batch_no=allocation["batch"],
-					s_warehouse=source_wh,
-					custom_conversion_lane=tag,
-					use_serial_batch_fields=True,
-				),
-			)
-
-		# Alloy stays "Regular Stock" -- it IS company stock being consumed -- but it is
-		# tagged to the lane it funds so its origin entries and Batch Rate contribution
-		# can be attributed to the right target batch.
-		for allocation in source_alloy_rows[idx]:
-			se.append(
-				"items",
-				dict(
-					_common(),
-					item_code=self.source_alloy,
-					qty=flt(allocation["qty"], precision),
-					inventory_type=REGULAR_STOCK,
-					batch_no=allocation["batch"],
-					s_warehouse=source_wh,
-					custom_conversion_lane=tag,
-					use_serial_batch_fields=True,
-				),
-			)
-
-		se.append(
-			"items",
-			dict(
-				_common(),
-				item_code=self.target_item,
-				qty=flt(lane["target_qty"], precision),
-				inventory_type=lane_inv_type,
-				customer=lane["customer"],
-				t_warehouse=target_wh,
-				custom_conversion_lane=tag,
-			),
-		)
 		booked_target = flt(
-			booked_target + flt(lane["target_qty"], precision), precision
+			booked_target
+			+ _append_lane_rows(
+				se,
+				lane,
+				tag,
+				common,
+				source_item=self.source_item,
+				source_wh=source_wh,
+				alloy_item=self.source_alloy,
+				alloy_rows=source_alloy_rows[idx],
+				target_item=self.target_item,
+				target_wh=target_wh,
+				precision=precision,
+			),
+			precision,
 		)
 
-		if flt(target_alloy_qtys[idx], precision) > 0:
+		released_alloy = flt(target_alloy_qtys[idx], precision)
+		if released_alloy > 0:
 			# Alloy freed by raising the purity belongs to the lane whose metal freed
 			# it, customer included -- otherwise a customer's alloy would silently
 			# become company stock.
-			se.append(
-				"items",
-				dict(
-					_common(),
-					item_code=self.target_alloy,
-					qty=flt(target_alloy_qtys[idx], precision),
-					inventory_type=lane_inv_type,
-					customer=lane["customer"],
-					t_warehouse=target_wh,
-					custom_conversion_lane=tag,
-				),
-			)
+			#
+			# C09 CARVE-OUT. That rule is right for metal the customer supplied, and
+			# wrong for the part of the melt the COMPANY supplied. When company alloy
+			# was blended into a customer lane on an earlier conversion, raising the
+			# purity again frees some of that same company alloy -- and handing all of
+			# it back tagged to the customer converts company stock into customer
+			# stock with no transaction and no counterparty.
+			#
+			# The split is taken from RECORDED components (customer_gold_components),
+			# never re-derived from the source batches' current tags, which are mutable.
+			# ``get_company_component_qty`` returns 0.0 for a batch with no recorded
+			# components, so on a site with no component history this branch emits
+			# exactly the single row it always did -- which is why shipping it changes
+			# no existing behaviour and no existing test.
+			company_alloy = 0.0
+			if lane["customer"]:
+				company_alloy = min(
+					released_alloy,
+					flt(
+						get_company_component_qty(
+							[allocation["batch"] for allocation in lane["batches"]]
+						),
+						precision,
+					),
+				)
+
+			customer_alloy = flt(released_alloy - company_alloy, precision)
+
+			if customer_alloy > 0:
+				se.append(
+					"items",
+					dict(
+						common,
+						item_code=self.target_alloy,
+						qty=customer_alloy,
+						inventory_type=lane_inv_type,
+						customer=lane["customer"],
+						t_warehouse=target_wh,
+						custom_conversion_lane=tag,
+					),
+				)
+
+			if company_alloy > 0:
+				# Same lane tag on purpose: it funded this lane and its Batch Rate
+				# contribution still belongs to this lane's target batch. Only the
+				# OWNERSHIP differs.
+				se.append(
+					"items",
+					dict(
+						common,
+						item_code=self.target_alloy,
+						qty=company_alloy,
+						inventory_type=REGULAR_STOCK,
+						customer=None,
+						t_warehouse=target_wh,
+						custom_conversion_lane=tag,
+					),
+				)
 
 	# Replaces the old "Inventory types in Source Table are not consistent" throw. That
 	# guard existed only because this voucher used to be single-ownership by
@@ -600,8 +680,7 @@ def make_metal_stock_entry(self):
 	# lane targets sum back to the document's Target Qty -- i.e. apportioning across
 	# lanes neither invented nor dropped metal. (Per-lane source qty needs no check: the
 	# consume rows are emitted straight from the lane's own allocation.)
-	tolerance = 1.0 / (10 ** (precision + 1))
-	if abs(booked_target - flt(self.target_qty, precision)) > tolerance:
+	if abs(booked_target - flt(self.target_qty)) > _qty_unit(precision):
 		frappe.throw(
 			_(
 				"Target Qty {0} does not match the {1} booked across conversion lanes. Please re-save the document."
@@ -610,31 +689,183 @@ def make_metal_stock_entry(self):
 
 	se.save()
 	se.submit()
-	self.stock_entry = se.name
+	# db_set, not an attribute: on_submit runs after the document row is written, so a
+	# plain assignment was never saved and every single-mode conversion lost this link.
+	self.db_set("stock_entry", se.name)
 
 
-def _allocations_by_lane(self):
-	"""``{lane key: [{batch, qty}]}`` for the whole allocation, in FIFO order.
+def _conversion_header(doc, lanes):
+	"""The Stock Entry header for a conversion voucher built from ``lanes``.
 
-	The lane rows carry their batches as a display string only, so the authoritative
-	allocation is re-read from ``source_batch_details`` and grouped with the same
-	``get_batch_lane_map`` the lanes were built from -- the two therefore cannot
-	disagree. Built once per voucher rather than once per lane, since it costs a
-	query.
+	The header can only describe an unambiguous voucher. ``inventory_type`` is set only
+	when every lane has ONE ownership -- a customer's two batches are two lanes but still
+	one owner. ``_customer`` opens create_child_batches' gate (which is row-aware) and is
+	left blank when no lane is customer-owned, so that path is skipped entirely for an
+	all-Regular conversion.
 	"""
-	rows = list(self.source_batch_details or [])
-	lane_map = get_batch_lane_map([row.batch for row in rows])
+	ownerships = {(lane["inventory_type"], lane["customer"]) for lane in lanes}
+	return {
+		"doctype": "Stock Entry",
+		"stock_entry_type": CONVERSION_SE_TYPE,
+		"purpose": "Repack",
+		"company": doc.company,
+		"custom_metal_conversion_reference": doc.name,
+		"inventory_type": lanes[0]["inventory_type"] if len(ownerships) == 1 else None,
+		"_customer": next(
+			(lane["customer"] for lane in lanes if lane["customer"]), None
+		),
+		"auto_created": 1,
+		"branch": doc.branch,
+	}
 
-	grouped = {}
-	for row in rows:
-		inventory_type, customer = lane_map.get(row.batch, (REGULAR_STOCK, None))
-		key = (inventory_type or REGULAR_STOCK, customer or None)
-		grouped.setdefault(key, []).append({"batch": row.batch, "qty": flt(row.qty)})
 
-	return grouped
+def _append_lane_rows(
+	se,
+	lane,
+	tag,
+	common,
+	*,
+	source_item,
+	source_wh,
+	alloy_item,
+	alloy_rows,
+	target_item,
+	target_wh,
+	precision,
+):
+	"""Append one lane's rows -- its sources, the alloy it consumes, its target -- and
+	return the target qty booked.
+
+	Every row carries ``tag``: provenance (``update_parent_batch_id``), child-batch naming
+	(``create_child_batches``) and the Customer Gold ledger all read the lane from it, and
+	the rows stay contiguous so the lane pricer values the lane on its own.
+	"""
+	lane_inv_type = lane["inventory_type"] or REGULAR_STOCK
+
+	for allocation in lane["batches"]:
+		se.append(
+			"items",
+			dict(
+				common,
+				item_code=allocation.get("item_code") or source_item,
+				qty=flt(allocation["qty"], precision),
+				inventory_type=lane_inv_type,
+				customer=lane["customer"],
+				batch_no=allocation["batch"],
+				s_warehouse=source_wh,
+				custom_conversion_lane=tag,
+				use_serial_batch_fields=True,
+			),
+		)
+
+	# Alloy stays "Regular Stock" -- it IS company stock being consumed -- but it is
+	# tagged to the lane it funds so its origin entries and Batch Rate contribution
+	# can be attributed to the right target batch.
+	for allocation in alloy_rows:
+		se.append(
+			"items",
+			dict(
+				common,
+				item_code=alloy_item,
+				qty=flt(allocation["qty"], precision),
+				inventory_type=REGULAR_STOCK,
+				batch_no=allocation["batch"],
+				s_warehouse=source_wh,
+				custom_conversion_lane=tag,
+				use_serial_batch_fields=True,
+			),
+		)
+
+	target_qty = flt(lane["target_qty"], precision)
+	se.append(
+		"items",
+		dict(
+			common,
+			item_code=target_item,
+			qty=target_qty,
+			inventory_type=lane_inv_type,
+			customer=lane["customer"],
+			t_warehouse=target_wh,
+			custom_conversion_lane=tag,
+		),
+	)
+	return target_qty
+
+
+def _check_lane_owners(lanes):
+	"""A customer-owned lane must name its customer.
+
+	Its target batch is minted for that customer. With none, ``create_child_batches``
+	falls back to the voucher's first customer and would hand this batch's metal to
+	another owner, so the conversion is refused rather than guessed: the batch master
+	needs its customer first.
+	"""
+	for lane in lanes:
+		if lane["inventory_type"] in CUSTOMER_INVENTORY_TYPES and not lane["customer"]:
+			frappe.throw(
+				_(
+					"Batch {0} is {1} but names no customer, so its converted metal would "
+					"have no owner. Set the customer on the batch, then convert it."
+				).format(frappe.bold(lane.get("batch") or ""), lane["inventory_type"])
+			)
+
+
+def _qty_precision():
+	"""Decimals a conversion posts its quantities at: the Stock Entry row's ``transfer_qty``.
+
+	ERPNext rounds each row's ``transfer_qty`` at that field's own precision
+	(``StockEntry.set_transfer_qty``), so the builder rounds exactly as the posting will. It
+	used the conversion's float precision instead: on gk (2) a 0.477 g source row became 0.48 g
+	and overdrew its batch, although the row posts at 3 there -- the app's Property Setter
+	(``property_setter_guard``) pins ``transfer_qty`` at 3, and kg-gk's float precision is 3.
+	"""
+	return cint(frappe.get_precision("Stock Entry Detail", "transfer_qty")) or 3
+
+
+def _qty_unit(precision):
+	"""One unit at ``precision``, plus float slack: the most two correct figures -- the form's
+	round() and the server's Banker's flt() -- can differ by on a rounding tie."""
+	return 1.0 / (10**precision) + 1e-9
+
+
+def _check_target_total(target_qty, booked_total, precision):
+	"""The targets the stored alloy makes (source +/- alloy) must be Target Qty, to one unit.
+
+	A larger gap means the stored alloy and the target disagree -- a stale draft or an edited
+	figure -- and posting it would create or lose metal.
+	"""
+	if abs(flt(target_qty) - flt(booked_total)) > _qty_unit(precision):
+		frappe.throw(
+			_(
+				"Target Qty {0} does not match the {1} that the source quantity and the stored alloy "
+				"quantity make. Recalculate the conversion and try again."
+			).format(flt(target_qty, precision), flt(booked_total, precision))
+		)
+
+
+def _check_alloy_covered(alloy_item, rows, needs, precision):
+	"""Every lane's alloy must come from an allocated batch -- none may be booked short."""
+	handed = flt(
+		sum(flt(row["qty"]) for lane_rows in rows for row in lane_rows), precision
+	)
+	needed = flt(sum(needs), precision)
+	if abs(handed - needed) > _qty_unit(precision):
+		frappe.throw(
+			_(
+				"Alloy {0}: the allocated batches cover {1} but this conversion needs {2}. "
+				"Please re-save the document."
+			).format(alloy_item, handed, needed)
+		)
 
 
 def make_multiple_metal_stock_entry(self):
+	lane_map = get_batch_lane_map([row.batch for row in self.mc_source_table])
+	if _has_customer_owned_source(self.mc_source_table, lane_map):
+		# The legacy build below groups by inventory type alone and appends its targets
+		# without a customer, so customer metal came out ownerless and merged. A document
+		# with no customer metal keeps exactly that build.
+		return make_multiple_customer_metal_stock_entry(self, lane_map)
+
 	source_wh = self.source_warehouse
 	# RULE B (canonical lock order): pre-lock source + target Bins in sorted order so
 	# concurrent conversions acquire shared item+warehouse Bins in the same sequence.
@@ -777,6 +1008,222 @@ def make_multiple_metal_stock_entry(self):
 	frappe.db.set_value(self.doctype, self.name, "stock_entry", se.name)
 
 
+def _has_customer_owned_source(rows, lane_map):
+	"""True when any source row is customer metal -- by its batch, which is the physical truth
+	(``row_ownership`` rule 1); a row without a batch is judged by its own type."""
+	for row in rows:
+		inventory_type = (
+			lane_map.get(row.batch, (REGULAR_STOCK, None))[0]
+			if row.get("batch")
+			else row.get("inventory_type")
+		)
+		if inventory_type in CUSTOMER_INVENTORY_TYPES:
+			return True
+	return False
+
+
+def _stamp_source_ownership(doc):
+	"""Show each MC Source Table row the ownership of the batch it names.
+
+	The batch wins over the row (``row_ownership`` rule 1). The form fills a row's read-only
+	type from the header of the entry that minted the batch, which is blank for a mixed-
+	ownership conversion, so a customer's converted batch arrived typed "Regular Stock" and
+	its owner could neither see nor correct it. A customer type names its customer; company
+	stock names none (rule 2).
+	"""
+	rows = [row for row in (doc.get("mc_source_table") or []) if row.get("batch")]
+	if not rows:
+		return
+	lane_map = get_batch_lane_map([row.batch for row in rows])
+	for row in rows:
+		inventory_type, customer = lane_map.get(row.batch, (REGULAR_STOCK, None))
+		row.inventory_type = inventory_type
+		row.customer = customer if inventory_type in CUSTOMER_INVENTORY_TYPES else None
+
+
+def make_multiple_customer_metal_stock_entry(self, lane_map):
+	"""Multiple-converter mode with customer metal: each customer batch converts on its own.
+
+	Exactly as in single mode, every customer batch is a lane of its own and Regular
+	Stock rows pool; ownership is the batch's. Rows of different purities are the point of
+	this mode, so each lane NEEDS alloy in proportion to its own fine gold (fine / target
+	purity - source): the stored Alloy Qty is shared by those needs, and each lane's target
+	is its source plus its share -- a lane already at the target purity needs none and gets
+	none. A lane that would need alloy taken OUT cannot be converted here: netting it
+	against another lane's addition would move metal between owners, so it is refused.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_bins,
+		preallocate_series_for_docs,
+	)
+
+	source_wh = self.source_warehouse
+	target_wh = self.get("target_warehouse") or source_wh
+	precision = _qty_precision()
+
+	# Same canonical lock order as single mode: the naming-series row, then the Bins --
+	# the alloy's included, since its batches are drawn here.
+	_series_stub = frappe.new_doc("Stock Entry")
+	_series_stub.company = self.company
+	_series_stub.stock_entry_type = CONVERSION_SE_TYPE
+	preallocate_series_for_docs(_series_stub)
+	lock_bins(
+		[(row.item_code, source_wh) for row in self.mc_source_table]
+		+ [(self.m_target_item, target_wh), (self.alloy, source_wh)]
+	)
+
+	target_purity = get_metal_purity_percentage(self.m_target_item)
+	if not target_purity:
+		frappe.throw(_("Error: Target Item Purity value is zero."))
+
+	lanes = {}
+	order = []
+	for row in self.mc_source_table:
+		if not row.batch:
+			frappe.throw(
+				_("Row {0}: select the batch to convert for {1}.").format(
+					row.idx, row.item_code
+				)
+			)
+		inventory_type, customer = lane_map.get(row.batch, (REGULAR_STOCK, None))
+
+		key = lane_key(inventory_type, customer, row.batch)
+		lane = lanes.get(key)
+		if lane is None:
+			lane = lanes[key] = {
+				"inventory_type": key[0],
+				"customer": key[1],
+				"batch": key[2],
+				"source_qty": 0.0,
+				"fine": 0.0,
+				"batches": [],
+			}
+			order.append(key)
+
+		qty = flt(row.qty, precision)
+		lane["source_qty"] = flt(lane["source_qty"] + qty, precision)
+		lane["fine"] += qty * get_metal_purity_percentage(row.item_code)
+		lane["batches"].append(
+			{"batch": row.batch, "qty": qty, "item_code": row.item_code}
+		)
+
+	lanes = [lanes[key] for key in order]
+	if not lanes:
+		frappe.throw(_("Source Item Missing"))
+	_check_lane_owners(lanes)
+
+	# The server's own figure, not the client's ``total`` column: the target is what the
+	# purity masters make of the source rows. Raw figures, one unit apart at most: the form
+	# stores its round(..., 3), and rounding both sides again refused ties.
+	expected = sum(lane["fine"] for lane in lanes) / target_purity
+	if abs(flt(self.m_target_qty) - flt(expected)) > _qty_unit(precision):
+		frappe.throw(
+			_(
+				"Target Qty {0} is not what the source rows convert to at the configured "
+				"purities ({1}). Press Calculate again."
+			).format(flt(self.m_target_qty, precision), flt(expected, precision))
+		)
+
+	needs = []
+	for lane in lanes:
+		need = lane["fine"] / target_purity - lane["source_qty"]
+		if need < -1e-9:
+			frappe.throw(
+				_(
+					"{0} would need alloy taken out to reach {1}, which the Multiple Metal "
+					"Converter cannot do without mixing it with other owners' metal. "
+					"Convert it on its own."
+				).format(
+					_("Batch {0}").format(frappe.bold(lane["batch"]))
+					if lane["batch"]
+					else _("The Regular Stock rows"),
+					self.m_target_item,
+				)
+			)
+		needs.append(max(need, 0.0))
+
+	source_qty = flt(sum(lane["source_qty"] for lane in lanes), precision)
+	alloy_total = flt(self.alloy_qty, precision) if sum(needs) > 1e-9 else 0.0
+	if alloy_total and self.alloy_check:
+		frappe.throw(
+			_(
+				"This conversion needs alloy added, but Alloy Check says alloy comes out. "
+				"Press Calculate again."
+			)
+		)
+	_check_target_total(
+		self.m_target_qty, flt(source_qty + alloy_total, precision), precision
+	)
+	split_with_alloy(lanes, alloy_total, needs, precision)
+
+	shares = [max(lane["alloy_qty"], 0.0) for lane in lanes]
+	alloy_rows = [[] for _ in lanes]
+	if alloy_total:
+		alloy_rows = split_allocations(
+			_alloy_pool(self, alloy_total), shares, precision
+		)
+		_check_alloy_covered(self.alloy, alloy_rows, shares, precision)
+
+	se = frappe.get_doc(_conversion_header(self, lanes))
+	common = {
+		"department": self.department,
+		"employee": self.employee,
+		"manufacturer": self.manufacturer,
+	}
+	booked_target = 0.0
+	for lane, lane_alloy_rows in zip(lanes, alloy_rows):
+		booked_target = flt(
+			booked_target
+			+ _append_lane_rows(
+				se,
+				lane,
+				lane_tag(lane["inventory_type"], lane["customer"], lane["batch"]),
+				common,
+				source_item=None,
+				source_wh=source_wh,
+				alloy_item=self.alloy,
+				alloy_rows=lane_alloy_rows,
+				target_item=self.m_target_item,
+				target_wh=target_wh,
+				precision=precision,
+			),
+			precision,
+		)
+
+	if abs(booked_target - flt(self.m_target_qty)) > _qty_unit(precision):
+		frappe.throw(
+			_(
+				"Target Qty {0} does not match the {1} booked across conversion lanes. Please re-save the document."
+			).format(flt(self.m_target_qty, precision), booked_target)
+		)
+
+	se.save()
+	se.submit()
+	frappe.db.set_value(self.doctype, self.name, "stock_entry", se.name)
+
+
+def _alloy_pool(self, qty):
+	"""The alloy batches this conversion draws: the picked batch, else FIFO."""
+	if self.get("alloy_batch"):
+		return [{"batch": self.alloy_batch, "qty": qty}]
+	return [
+		{"batch": row.batch_no, "qty": flt(row.qty)}
+		for row in capped_auto_batch_nos(
+			frappe._dict(
+				{
+					"posting_date": self.get("posting_date") or self.get("date"),
+					"posting_time": self.get("posting_time") or nowtime(),
+					"item_code": self.alloy,
+					"warehouse": self.source_warehouse,
+					"qty": qty,
+				}
+			)
+		)
+		or []
+		if row.batch_no
+	]
+
+
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def get_filtered_batches(doctype, txt, searchfield, start, page_len, filters):
@@ -789,7 +1236,7 @@ def get_batch_details(batch):
 	return batch_details
 
 
-def lane_tag(inventory_type, customer):
+def lane_tag(inventory_type, customer, batch=None):
 	"""The value stamped onto ``Stock Entry Detail.custom_conversion_lane``.
 
 	The lane a row belongs to cannot be re-derived downstream for every row: alloy
@@ -797,5 +1244,40 @@ def lane_tag(inventory_type, customer):
 	and no per-lane alloy proportion is stored anywhere else. So the builder writes
 	the lane explicitly and ``create_child_batches`` /
 	``update_parent_batch_id`` key off it.
+
+	A customer batch is a lane of its own (``lanes.lane_key``), so its tag names the
+	batch: ``"Customer Goods|<customer>|<batch>"``. Company stock keeps
+	``"<inventory type>|"``. Every reader compares tags within one voucher and none
+	parses them; a tag too long for the Data field names the batch by a stable digest.
 	"""
-	return f"{inventory_type or REGULAR_STOCK}|{customer or ''}"
+	tag = f"{inventory_type or REGULAR_STOCK}|{customer or ''}"
+	if not batch:
+		return tag
+
+	tagged = f"{tag}|{batch}"
+	if len(tagged) <= LANE_TAG_LENGTH:
+		return tagged
+	digest = hashlib.sha1(batch.encode()).hexdigest()[:12]
+	return f"{tag}|#{digest}"[:LANE_TAG_LENGTH]
+
+
+def cancel_conversion_stock_entries(doc):
+	"""Cancel the conversion Stock Entry this document generated, through its controller.
+
+	Found by the reverse link every generated entry carries
+	(``custom_metal_conversion_reference``), so conversions submitted before the forward
+	``stock_entry`` link was saved are covered too. ERPNext refuses the cancel when an
+	output batch has already been used, and that refusal blocks this cancellation as a
+	whole: a conversion is never left half-cancelled.
+	"""
+	for se_name in frappe.db.get_all(
+		"Stock Entry",
+		{
+			"custom_metal_conversion_reference": doc.name,
+			"stock_entry_type": CONVERSION_SE_TYPE,
+			"auto_created": 1,
+			"docstatus": 1,
+		},
+		pluck="name",
+	):
+		frappe.get_doc("Stock Entry", se_name).cancel()

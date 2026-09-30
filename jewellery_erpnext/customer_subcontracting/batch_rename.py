@@ -1,27 +1,72 @@
-import string
 from datetime import datetime
 
 import frappe
 from frappe import _
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	get_customer_goods_eligible_items,
+)
+from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+	get_customer_gold_receipt_type,
+)
 from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
 	execute as get_report_data,
 )
 from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
 	get_linked_batches,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.loss_valuation import (
+	iter_loss_runs,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	CUSTOMER_INVENTORY_TYPES,
+	PROCESS_LOSS_SE_TYPE,
+)
+
+#: Stock Entry Types that have always minted customer parent batches. Kept as a literal
+#: list because they are not interchangeable with the configured receipt type:
+#: "Subcontracting Repack" has purpose `Repack`, while the settings validator requires the
+#: configured type to have purpose `Material Receipt`
+#: (``subcontracting_settings.RECEIPT_PURPOSE``). It can therefore never BE the configured
+#: type, and replacing this list with the configured one alone would silently kill the
+#: Subcontracting Repack leg.
+_LEGACY_PARENT_BATCH_TYPES = (
+	"Customer Goods Received",
+	"Subcontracting Repack",
 )
 
 
+def _is_eligible_item(item_code, flagged_items):
+	"""Whether this row's item should be minted a customer parent batch.
+
+	Two independent tests, either of which qualifies:
+
+	* the Item master allows Customer Goods -- ``flagged_items``, the rows' items whose
+	  ``custom_inventory_type_can_be_customer_goods`` flag is on. This is the eligibility rule,
+	  the same one the Customer Gold receipt enforces; it replaced the Subcontracting Settings
+	  item list, and like that list it is consulted only while the Customer Gold flow is on; and
+	* it carries the ``24KT`` token -- the historical minting rule, retained so every legacy
+	  path (and every site with the flow off) mints exactly as before.
+
+	An item whose code lacks the token -- a 22KT purity, a finding, a diamond -- therefore gets
+	a custody identity only when its own flag says it may be customer goods.
+	"""
+	if item_code in flagged_items:
+		return True
+	return "24KT" in item_code
+
+
 def create_parent_batches(doc, method=None):
+	# ``None`` when the Customer Gold flow is off, which leaves the legacy types and the
+	# ``24KT`` token exactly as they were.
+	configured_type = get_customer_gold_receipt_type()
+
 	if doc.doctype == "Stock Entry":
-		if getattr(doc, "stock_entry_type", None) not in [
-			"Customer Goods Received",
-			"Subcontracting Repack",
-		]:
+		accepted = _LEGACY_PARENT_BATCH_TYPES + (
+			(configured_type,) if configured_type else ()
+		)
+		if getattr(doc, "stock_entry_type", None) not in accepted:
 			return
 
 	elif doc.doctype == "Purchase Receipt":
@@ -31,11 +76,23 @@ def create_parent_batches(doc, method=None):
 	else:
 		return
 
+	# One query for the document, and only while the flow is on -- the scope the Settings list
+	# had. With the flow off the token alone decides, as it always did. Batch controlled only:
+	# the old list was, because Settings validation demanded it, and minting a batch for a
+	# flagged Nos item would fail the submit rather than skip the row.
+	flagged_items = (
+		get_customer_goods_eligible_items(
+			(row.item_code for row in doc.items), batch_controlled=True
+		)
+		if configured_type
+		else set()
+	)
+
 	for row in doc.items:
 		if not row.item_code:
 			continue
 
-		if "24KT" not in row.item_code:
+		if not _is_eligible_item(row.item_code, flagged_items):
 			continue
 
 		if row.batch_no:
@@ -73,7 +130,17 @@ def create_parent_batches(doc, method=None):
 			# Stock Entry leg only; on a Purchase Receipt the owning customer arrives on
 			# the row, resolved from the supplier's Party Link by
 			# purchase_receipt/doc_events/utils.py::update_inventory_type.
-			batch.custom_customer = doc._customer or customer
+			# getattr, not bare attribute access: ``_customer`` is a Custom Field on
+			# Stock Entry only. Purchase Receipt has no such field, so the bare form
+			# raised AttributeError on the Purchase Receipt leg (frappe's Document
+			# defines no __getattr__ fallback). That crash is pre-existing for any
+			# ``24KT`` item on a Subcontracting receipt; configuring a customer item
+			# whose code lacks the token newly routes THOSE rows here too, turning a
+			# row that used to be skipped into a hard submit failure.
+			# Precedence is deliberately unchanged -- header first, then the row value
+			# already resolved above -- because which customer owns a batch on a mixed
+			# voucher is an ownership decision, not a crash fix. See HANDOFF.md C7.
+			batch.custom_customer = getattr(doc, "_customer", None) or customer
 			batch.custom_inventory_type = "Customer Goods"
 			batch.custom_customer_voucher_type = "Customer Subcontracting"
 			batch.custom_metal_rate = _source_row_rate(doc, row)
@@ -92,13 +159,28 @@ def _source_row_rate(doc, row):
 	rate stamping in ``customization/batch/doc_events/utils.py`` never runs for them
 	and they were created with no Batch Rate at all. Read it straight off the row
 	that is minting the batch instead: the Stock Entry Detail's maintained rate
-	falling back to ``basic_rate``, or the Purchase Receipt Item's ``rate``.
+	falling back to ``valuation_rate`` and then ``basic_rate``, or the Purchase
+	Receipt Item's ``rate``. ``valuation_rate`` is the ledger's incoming rate for the
+	row (``basic_rate`` plus its share of additional costs), and that minting stamp
+	stays the batch's rate: nothing restates it later (F26).
 
-	Only 24KT metal reaches this module (callers filter on the item code), so the
-	value always belongs on ``custom_metal_rate`` -- never ``custom_alloy_rate``.
+	A Manufacture's finished piece gets none (F8). ``create_child_batches`` also mints the piece's
+	batch on a customer order, and that row's rate is the whole piece -- customer gold, company
+	alloy and diamond, production cost. Stamped as a Batch Rate it read Rs.8,01,654.99 on
+	KLHGX62F1119's batch, and anything that trusts Batch Rate over ``basic_rate`` took the company
+	diamond as metal. Every other row keeps its rate, stones included -- the app deliberately
+	gives diamond and gemstone batches a Batch Rate (``_rate_field_for_item``).
 	"""
 	if doc.doctype == "Stock Entry":
-		return flt(row.get("custom_metal_rate")) or flt(row.get("basic_rate"))
+		if getattr(doc, "purpose", None) == "Manufacture" and row.get(
+			"is_finished_item"
+		):
+			return 0.0
+		return (
+			flt(row.get("custom_metal_rate"))
+			or flt(row.get("valuation_rate"))
+			or flt(row.get("basic_rate"))
+		)
 
 	return flt(row.get("rate"))
 
@@ -124,28 +206,139 @@ def get_year_code():
 
 
 def get_next_serial(customer, year_code, month):
-	prefix = f"{customer}-{year_code}{month}"
+	"""Next receipt serial for ``customer`` in this year-month, across every item.
 
-	batch = frappe.db.sql(
-		"""
-        SELECT name
-        FROM `tabBatch`
-        WHERE name LIKE %s
-        ORDER BY name DESC
-        LIMIT 1
-        """,
-		(prefix + "%",),
-		as_dict=True,
+	Serials are per customer and month. The old query took the lexically greatest name,
+	which became a child batch (``...-Y-A-Z``) as soon as children existed, so each item
+	restarted at ``01`` and receipts of different items shared a serial
+	(``...-M-G-22KT-91.75-Y-04`` and ``...-M-G-24KT-99.9-Y-04``) -- and with it a child
+	name pool (see ``child_batch_base``).
+	"""
+	prefix = f"{customer}-{year_code}{month}-"
+	names = frappe.db.sql(
+		"SELECT name FROM `tabBatch` WHERE name LIKE %s",
+		(_escape_like(prefix) + "%",),
+		pluck=True,
 	)
+	return str(highest_receipt_serial(names) + 1).zfill(2)
 
-	if batch:
-		last_serial = batch[0].name.split("-")[-1]
 
-		if last_serial.isdigit():
-			next_serial = int(last_serial) + 1
-			return str(next_serial).zfill(2)
+def highest_receipt_serial(names):
+	"""Highest numeric serial among receipt batch names; 0 when there is none.
 
-	return "01"
+	A receipt batch ends in its serial (``...-Y-12``) and a child ends in letters
+	(``...-Y-12-A``), so only an all-digit last segment counts.
+	"""
+	highest = 0
+	for name in names or ():
+		if not isinstance(name, str):
+			continue
+		last = name.rsplit("-", 1)[-1]
+		if last.isascii() and last.isdigit():
+			highest = max(highest, int(last))
+	return highest
+
+
+#: ``tabBatch.name`` and ``batch_id`` are varchar(140), as is every column storing a batch.
+_BATCH_NAME_LENGTH = 140
+#: Each clash is one child that another submit committed on the same pool after this
+#: transaction's snapshot, so the budget only has to exceed realistic concurrency on one
+#: parent. A clash costs one savepoint and one rejected insert; the cap stops a loop.
+_CHILD_BATCH_ATTEMPTS = 50
+
+
+def encode_child_suffix(ordinal):
+	"""Child suffix for ``ordinal``: 1 -> A, 26 -> Z, 27 -> AA, 702 -> ZZ, 703 -> AAA.
+
+	Bijective base 26: the letters never run out, and every existing A-Z name keeps
+	its ordinal.
+	"""
+	if ordinal < 1:
+		raise ValueError(f"child suffix ordinal must be positive, got {ordinal}")
+	letters = []
+	while ordinal:
+		ordinal, remainder = divmod(ordinal - 1, 26)
+		letters.append(chr(ord("A") + remainder))
+	return "".join(reversed(letters))
+
+
+def decode_child_suffix(suffix):
+	"""Ordinal of a child suffix, or ``None`` when ``suffix`` is not ASCII letters.
+
+	Case-insensitive like ``tabBatch.name`` (utf8mb4_unicode_ci): ``...-a`` occupies the
+	``...-A`` slot.
+	"""
+	if not suffix or not suffix.isascii() or not suffix.isalpha():
+		return None
+	ordinal = 0
+	for letter in suffix.upper():
+		ordinal = ordinal * 26 + (ord(letter) - ord("A") + 1)
+	return ordinal
+
+
+def child_batch_base(parent_batch, parent_item, customer, child_item):
+	"""The name pool a child of ``parent_batch`` is minted in, or ``None``.
+
+	``{customer}-{year-month}-{child item}-{parent serial path}``, where the serial path
+	is everything after the parent's own item code: ``12`` for the receipt
+	``GJCU0009-2F09-M-G-24KT-99.9-Y-12`` and ``12-A`` for its conversion child
+	``GJCU0009-2F09-M-G-22KT-91.75-Y-12-A``. The old base kept only the parent's last
+	segment, so every ``...-NN-A`` parent shared one pool that filled up at Z
+	(EMP-IR-Labh-2026-14111).
+
+	Item and customer codes contain hyphens, so the path is found by stripping the known
+	owner and ``parent_item`` rather than by splitting. A name that does not parse keeps
+	the old ``parts[1]`` / ``parts[-1]`` base. Children of a receipt batch therefore keep
+	the names they always had -- except where the customer code itself contains a hyphen,
+	whose year-month segment the old split misread and which is now the real one.
+
+	``None`` for a parent with fewer than four segments (a Serial-and-Batch autoname
+	such as ``KG2F093-MGL229175Y0-604EO``): this module did not name it, so there is no
+	serial to extend.
+	"""
+	parts = (parent_batch or "").split("-")
+	if len(parts) < 4:
+		return None
+
+	year_month, serial_path = parts[1], parts[-1]
+	owner = (
+		customer if customer and parent_batch.startswith(f"{customer}-") else parts[0]
+	)
+	head, separator, tail = parent_batch[len(owner) + 1 :].partition("-")
+	item_prefix = f"{parent_item}-" if parent_item else None
+	if (
+		head
+		and separator
+		and item_prefix
+		and tail.startswith(item_prefix)
+		and len(tail) > len(item_prefix)
+	):
+		year_month, serial_path = head, tail[len(item_prefix) :]
+
+	return f"{customer or parts[0]}-{year_month}-{child_item}-{serial_path}"
+
+
+def highest_child_ordinal(base_name, names):
+	"""Highest ordinal among ``names`` that are exactly ``base_name-<letters>``; 0 if none.
+
+	Compared as numbers, never as text (``Z`` sorts after ``AA``). Deeper descendants
+	(``base-A-B``), non-letter suffixes and prefix siblings do not count. Gaps are left
+	alone, so no name is ever handed out a second time.
+	"""
+	prefix = f"{base_name}-"
+	folded_prefix = prefix.casefold()
+	highest = 0
+	for name in names or ():
+		if not isinstance(name, str) or name[: len(prefix)].casefold() != folded_prefix:
+			continue
+		ordinal = decode_child_suffix(name[len(prefix) :])
+		if ordinal and ordinal > highest:
+			highest = ordinal
+	return highest
+
+
+def _escape_like(value):
+	return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _row_lane_key(row):
@@ -160,25 +353,184 @@ def _row_lane_key(row):
 	)
 
 
+def _row_group_key(row):
+	"""The group a row is minted in: its conversion lane when the builder tagged one.
+
+	Metal Conversions tags every row with its lane (``metal_conversions.lane_tag``), and a
+	customer batch is a lane of its own -- so two batches of ONE customer are two groups,
+	each minted from its own source batch. Settle and SNC tag a customer's conversion with
+	the owner's lane alone, one group as before. An untagged voucher (Customer Goods
+	Received, Subcontracting Repack, SNC's company-metal leg) groups by ownership, as it
+	always has.
+	"""
+	return getattr(row, "custom_conversion_lane", None) or _row_lane_key(row)
+
+
 def _lane_parent_batches(doc):
-	"""``{lane key: first source batch of that lane}``, in row order."""
+	"""``{group key: first source batch of that group}``, in row order.
+
+	In a tagged group only a customer-owned source row can be the parent: the lane's
+	alloy is consumed under the same tag as Regular Stock, and a company alloy batch
+	must never lend its serial to the customer's converted batch.
+	"""
 	parents = {}
 	for row in doc.items:
-		if row.s_warehouse and row.batch_no:
-			parents.setdefault(_row_lane_key(row), row.batch_no)
+		if not (row.s_warehouse and row.batch_no):
+			continue
+		if (
+			getattr(row, "custom_conversion_lane", None)
+			and _row_lane_key(row)[0] not in CUSTOMER_INVENTORY_TYPES
+		):
+			continue
+		parents.setdefault(_row_group_key(row), row.batch_no)
 	return parents
+
+
+def _run_sources(doc):
+	"""``{id(produce row): the consume row it was lost from}`` for a Process Loss entry.
+
+	Every Process Loss builder emits runs of consume rows followed by the produce rows
+	they feed (``loss_valuation.iter_loss_runs``): the Employee IR and Tree Number
+	builders one pair per loss, the warehouse receive ``[consume..., produce...]`` split
+	by owner. A produce row's parent is the first consume row, in its own lane, of its
+	OWN run. Naming it from the lane's first source instead mislabelled every loss after
+	the first (MAT-STE-17857: the loss drawn from ``...-Y-04`` was named as a child of
+	``...-Y-03-A``). Other entry types keep the lane-level parent.
+	"""
+	if getattr(doc, "stock_entry_type", None) != PROCESS_LOSS_SE_TYPE:
+		return {}
+
+	sources = {}
+	for consumed, produced in iter_loss_runs(doc.items):
+		for row in produced:
+			lane_key = _row_lane_key(row)
+			source = next(
+				(
+					candidate
+					for candidate in consumed
+					if getattr(candidate, "batch_no", None)
+					and _row_lane_key(candidate) == lane_key
+				),
+				None,
+			)
+			if source is not None:
+				sources[id(row)] = source
+	return sources
+
+
+def _mint_child_batch(doc, row, row_number, parent_batch, customer, base_name):
+	"""Insert the next free child of ``base_name`` for ``row`` and return its name.
+
+	The pool is read with a plain snapshot read, so under REPEATABLE READ it can miss a
+	child another submit committed after this transaction began. The primary key still
+	rejects that name, so a clash (ER_DUP_ENTRY) rolls back to a savepoint and takes the
+	next suffix: the ordinal only moves forward, even past a name the parser cannot read.
+
+	No row is locked for this. The primary key already serialises two inserts of one name
+	-- the second waits for the first transaction and then clashes -- and an early lock on
+	the parent would not refresh the snapshot; it would only hold a Batch row across the
+	Serial-and-Batch and ledger posting, against transfers that lock batches in another
+	order. With ``innodb_snapshot_isolation`` on (the MariaDB default from 11.6.2) the
+	clash surfaces as a deadlock instead; that is not caught here, so the submit fails
+	and is simply retried.
+	"""
+	existing = frappe.db.sql(
+		"SELECT name FROM `tabBatch` WHERE name LIKE %s",
+		(_escape_like(base_name) + "-%",),
+		pluck=True,
+	)
+	ordinal = highest_child_ordinal(base_name, existing)
+
+	for _attempt in range(_CHILD_BATCH_ATTEMPTS):
+		ordinal += 1
+		batch_name = f"{base_name}-{encode_child_suffix(ordinal)}"
+		if len(batch_name) > _BATCH_NAME_LENGTH:
+			_throw_child_batch_error(
+				doc,
+				row,
+				row_number,
+				parent_batch,
+				customer,
+				_(
+					"the next name, {0}, is longer than the {1} characters a batch name can hold."
+				).format(batch_name, _BATCH_NAME_LENGTH),
+			)
+
+		savepoint = f"child_batch_{frappe.generate_hash(length=10)}"
+		message_count = len(frappe.local.message_log)
+		frappe.db.savepoint(savepoint)
+		try:
+			_insert_child_batch(doc, row, customer, batch_name)
+		except (frappe.DuplicateEntryError, frappe.UniqueValidationError):
+			frappe.db.rollback(save_point=savepoint)
+			# db_insert announced "Batch ... already exists" before raising; that clash is
+			# handled here, so it must not reach the operator.
+			del frappe.local.message_log[message_count:]
+			continue
+		frappe.db.release_savepoint(savepoint)
+		return batch_name
+
+	_throw_child_batch_error(
+		doc,
+		row,
+		row_number,
+		parent_batch,
+		customer,
+		_(
+			"{0} names in a row under {1} were taken by submissions running at the same time. Submit again."
+		).format(_CHILD_BATCH_ATTEMPTS, base_name),
+	)
+
+
+def _insert_child_batch(doc, row, customer, batch_name):
+	previous_autoname_flag = frappe.flags.is_batch_autoname
+	frappe.flags.is_batch_autoname = True
+
+	try:
+		batch = frappe.new_doc("Batch")
+		batch.batch_id = batch_name
+		batch.item = row.item_code
+		batch.reference_doctype = doc.doctype
+		batch.reference_name = doc.name
+		batch.custom_voucher_detail_no = row.name
+		# The owning customer comes from the ROW on a mixed voucher: the header
+		# describes at most one lane, and stamping it everywhere is what would
+		# mislabel another lane's target batch.
+		batch.custom_customer = customer
+		batch.custom_inventory_type = "Customer Goods"
+		batch.custom_customer_voucher_type = "Customer Subcontracting"
+		batch.custom_metal_rate = _source_row_rate(doc, row)
+		batch.insert(ignore_permissions=True)
+	finally:
+		frappe.flags.is_batch_autoname = previous_autoname_flag
+
+
+def _throw_child_batch_error(doc, row, row_number, parent_batch, customer, reason):
+	source = _("Stock Entry {0}").format(doc.name)
+	if getattr(doc, "employee_ir", None):
+		source = _("{0} (Employee IR {1})").format(source, doc.employee_ir)
+	frappe.throw(
+		_(
+			"Cannot create the customer child batch for row {0} ({1}) of {2}, drawn from "
+			"parent batch {3} of customer {4}: {5}"
+		).format(row_number, row.item_code, source, parent_batch, customer, reason),
+		title=_("Child Batch Not Created"),
+	)
 
 
 def create_child_batches(doc, method=None):
 	if doc.doctype != "Stock Entry":
 		return
 
-	# create_child_batches mints "Customer Goods" child batches for the customer-
-	# subcontracting orchestration, which signals itself with doc._customer. A Metal
-	# Conversion that draws across mixed ownership has no single owning customer on the
-	# header, so a row-level customer also opens the gate. SEs outside either case (e.g.
-	# auto-created "Process Loss") must not mint child batches -- their batch-tracked
-	# produce items auto-create a batch on submit.
+	# The gate. A voucher mints customer child batches here when its header names the
+	# owning customer (the customer-subcontracting orchestration sets ``doc._customer``)
+	# or any of its rows carries one. The row test admits Metal Conversion lanes AND the
+	# auto-created Process Loss entries of the Employee IR, Tree Number and warehouse
+	# receive builders, whose customer-owned scrap is named here as a child of the batch
+	# it was lost from: a customer-coded name that shows its lineage. (Custody does not
+	# depend on it -- record_stock_movement reads the row's bundle or batch either way.)
+	# Rows with no customer anywhere -- Regular Stock loss, melting loss -- still mint
+	# through the Serial-and-Batch path on submit.
 	header_customer = getattr(doc, "_customer", None)
 	if not header_customer and not any(
 		getattr(row, "customer", None) for row in doc.items
@@ -187,18 +539,32 @@ def create_child_batches(doc, method=None):
 
 	parents = _lane_parent_batches(doc)
 
-	# A voucher whose rows are all one ownership is handled exactly as before: one
-	# parent batch for the whole entry, every batch-less produce row minted from it.
-	# Every pre-existing caller (SNC's create_repack_metal_conversion, Customer Goods
-	# Received, Subcontracting Repack) builds such a voucher, so their behaviour is
-	# unchanged by the lane handling below -- which matters because SNC reads its target
-	# batch back off Stock Entry Detail and throws if nothing was minted.
-	single_lane = len(parents) <= 1
+	# An untagged voucher whose rows are all one ownership is handled exactly as before:
+	# one parent batch for the whole entry, every batch-less produce row minted from it.
+	# Customer Goods Received and Subcontracting Repack build such a voucher.
+	#
+	# A lane-tagged voucher (Metal Conversions) always takes the per-row path, even with
+	# one lane: its rows say which lane -- and so which parent -- each output belongs to,
+	# and the single-lane path would mint its Regular Stock rows (the C09 company alloy
+	# carve-out) as the customer's. SNC's create_repack_metal_conversion tags a customer's
+	# conversion too: its one source row and one output share the owner's lane, so this
+	# path finds the same parent and mints the same name -- which matters because SNC
+	# reads its target batch back off Stock Entry Detail and throws if nothing was minted.
+	tagged = any(getattr(row, "custom_conversion_lane", None) for row in doc.items)
+	single_lane = not tagged and len(parents) <= 1
 
 	if not parents:
 		return
 
-	for row in doc.items:
+	source_items = {
+		row.batch_no: row.item_code
+		for row in doc.items
+		if row.s_warehouse and row.batch_no
+	}
+	run_sources = _run_sources(doc)
+
+	plan = []
+	for row_number, row in enumerate(doc.items, start=1):
 		if row.s_warehouse or row.batch_no:
 			continue
 
@@ -218,90 +584,44 @@ def create_child_batches(doc, method=None):
 			if lane_key[0] not in CUSTOMER_INVENTORY_TYPES:
 				continue
 
-			parent_batch = parents.get(lane_key)
+			parent_batch = parents.get(_row_group_key(row))
 			if not parent_batch:
 				continue
 
 			customer = lane_key[1] or header_customer
 
-		parts = parent_batch.split("-")
-		if len(parts) < 4:
+		source = run_sources.get(id(row))
+		if source is not None:
+			parent_batch = source.batch_no
+			parent_item = source.item_code
+		else:
+			parent_item = source_items.get(parent_batch)
+
+		base_name = child_batch_base(parent_batch, parent_item, customer, row.item_code)
+		if not base_name:
 			# The parent was not named by this module (e.g. a Customer Goods batch
 			# created by a customer Purchase Receipt has only three segments), so there
 			# is no serial to extend. Skip this row and let the Serial-and-Batch path
 			# mint it -- historically this aborted the whole voucher.
 			continue
 
-		item_code = row.item_code
-		parent_serial = parts[-1]
-
-		if customer:
-			prefix = f"{customer}-{parts[1]}"
-		else:
-			prefix = f"{parts[0]}-{parts[1]}"
-		base_name = f"{prefix}-{item_code}-{parent_serial}"
-
-		batches = frappe.db.sql(
-			"""
-            SELECT name
-            FROM `tabBatch`
-            WHERE name LIKE %s
-            ORDER BY name DESC
-            """,
-			(base_name + "-%",),
-			as_dict=True,
+		plan.append(
+			(
+				row,
+				getattr(row, "idx", None) or row_number,
+				parent_batch,
+				customer or header_customer,
+				base_name,
+			)
 		)
 
-		alphabet = "A"
-		if batches:
-			last_alpha = batches[0].name.split("-")[-1]
-			if last_alpha in string.ascii_uppercase:
-				idx = string.ascii_uppercase.index(last_alpha)
-				if idx + 1 >= len(string.ascii_uppercase):
-					frappe.throw(
-						_(
-							"Cannot create child batch for {0}: parent batch {1} "
-							"already uses all 26 child suffixes (A-Z)."
-						).format(base_name, parent_batch)
-					)
-				alphabet = string.ascii_uppercase[idx + 1]
+	if not plan:
+		return
 
-		batch_name = f"{base_name}-{alphabet}"
-
-		while frappe.db.exists("Batch", batch_name):
-			if alphabet == "Z":
-				frappe.throw(
-					_(
-						"Cannot create a unique child batch for {0}: all 26 child "
-						"suffixes (A-Z) are already used."
-					).format(base_name)
-				)
-
-			alphabet = chr(ord(alphabet) + 1)
-			batch_name = f"{base_name}-{alphabet}"
-
-		previous_autoname_flag = frappe.flags.is_batch_autoname
-		frappe.flags.is_batch_autoname = True
-
-		try:
-			batch = frappe.new_doc("Batch")
-			batch.batch_id = batch_name
-			batch.item = item_code
-			batch.reference_doctype = doc.doctype
-			batch.reference_name = doc.name
-			batch.custom_voucher_detail_no = row.name
-			# The owning customer comes from the ROW on a mixed voucher: the header
-			# describes at most one lane, and stamping it everywhere is what would
-			# mislabel another lane's target batch.
-			batch.custom_customer = customer or header_customer
-			batch.custom_inventory_type = "Customer Goods"
-			batch.custom_customer_voucher_type = "Customer Subcontracting"
-			batch.custom_metal_rate = _source_row_rate(doc, row)
-			batch.insert(ignore_permissions=True)
-		finally:
-			frappe.flags.is_batch_autoname = previous_autoname_flag
-
-		row.batch_no = batch_name
+	for row, row_number, parent_batch, customer, base_name in plan:
+		row.batch_no = _mint_child_batch(
+			doc, row, row_number, parent_batch, customer, base_name
+		)
 
 
 def get_purity(item_code):
