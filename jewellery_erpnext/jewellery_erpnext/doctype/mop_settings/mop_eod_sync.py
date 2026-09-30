@@ -1005,8 +1005,16 @@ def _plan_mwo_group(
 	sre_map = _preload_sre_warehouse_map(mwo)
 	active_map = _preload_active_sre_warehouse_map(mwo)
 	noop_rows = []
+	short_rows = []
 	items, skipped_rows = _build_eod_se_rows(
-		mwo, last_mop_name, last_logs, t_warehouse, sre_map, active_map, noop_rows
+		mwo,
+		last_mop_name,
+		last_logs,
+		t_warehouse,
+		sre_map,
+		active_map,
+		noop_rows,
+		short_rows,
 	)
 
 	if skipped_rows and _heal_missing_sre_in_plan(
@@ -1016,8 +1024,16 @@ def _plan_mwo_group(
 		sre_map = _preload_sre_warehouse_map(mwo)
 		active_map = _preload_active_sre_warehouse_map(mwo)
 		noop_rows = []
+		short_rows = []
 		items, skipped_rows = _build_eod_se_rows(
-			mwo, last_mop_name, last_logs, t_warehouse, sre_map, active_map, noop_rows
+			mwo,
+			last_mop_name,
+			last_logs,
+			t_warehouse,
+			sre_map,
+			active_map,
+			noop_rows,
+			short_rows,
 		)
 
 	# Missing-SRE rows have no source warehouse and cannot be transferred or even placed
@@ -1082,6 +1098,13 @@ def _plan_mwo_group(
 			}
 		)
 	short_keys = _check_eod_source_batch_stock(items) if items else {}
+	# Rows that resolved to the target without the full balance physically there built no
+	# transfer row, so the check above cannot see them. Report them the same way; an empty
+	# ``items`` must not let the MWO fall through to the no-op branch and mark logs synced.
+	for short in short_rows:
+		key = (short["warehouse"], short["item_code"], short["batch_no"])
+		req_qty = flt(short_keys.get(key, (0, 0))[0] + short["qty"], 3)
+		short_keys[key] = (req_qty, short["physical"])
 	if short_keys:
 		invalid = True
 		for (wh, item_code, batch_no), (req_qty, physical) in short_keys.items():
@@ -4448,7 +4471,8 @@ def _pick_eod_source_warehouse(
 	      3. else the first candidate (legacy choice) -> a transfer row is still built so the
 	         downstream ``_check_eod_source_batch_stock`` reports an accurate ``batch_short``
 	         (require X, have Y); when that candidate is the target (the SRE reserves at the
-	         department itself) it stays a clean source == target no-op.
+	         department itself) the EOD caller reports it as ``batch_short`` rather than a
+	         no-op, because the target was already shown not to cover the qty.
 	      4. else ``None`` (no candidate at all) -> reported as no_sre_warehouse.
 
 	**Why step 0 exists.** ``_eod_physical_batch_qty`` asks "is there enough of this batch
@@ -4563,7 +4587,14 @@ def _stamp_eod_row_ownership(row, ownership):
 
 
 def _build_eod_se_rows(
-	mwo, last_mop_name, last_logs, t_warehouse, sre_map, active_map=None, noop_rows=None
+	mwo,
+	last_mop_name,
+	last_logs,
+	t_warehouse,
+	sre_map,
+	active_map=None,
+	noop_rows=None,
+	short_rows=None,
 ):
 	"""Build Stock Entry item rows for the EOD material transfer.
 
@@ -4589,6 +4620,15 @@ def _build_eod_se_rows(
 	not to move: an empty ``items`` is what triggers marking the MWO's logs synced, and for
 	2,035 runs that decision was recorded as a blank sync log line with no item, batch or
 	qty, which is why a whole class of silent divergence stayed invisible.
+
+	``short_rows``, when a list is passed, collects batch rows that resolved to the target
+	but whose FULL balance is not physically there. The picker lands on the target in two
+	ways that are not proof of arrival: its last-resort fallback when the target is the
+	first SRE candidate and nothing covers the qty, and step 1 checking only the shortfall
+	of a split reservation, which other work orders' stock in a shared batch can satisfy.
+	Either way no row is built, so without this list an MWO whose only row is one of these
+	would reach the caller with empty ``items`` and have its logs marked synced. The
+	caller turns each entry into a ``batch_short`` failure against the target.
 	"""
 	rows = []
 	skipped = []
@@ -4665,6 +4705,28 @@ def _build_eod_se_rows(
 			continue
 
 		if s_warehouse == t_warehouse:
+			# Resolving to the target only means nothing better was found. It is a
+			# completed no-op only when the target physically holds the WHOLE balance —
+			# not just the shortfall, which a shared batch can cover with other work
+			# orders' metal. Non-batch lines keep the legacy first-candidate behaviour.
+			if log.batch_no:
+				physical = flt(
+					_eod_physical_batch_qty(log.item_code, log.batch_no, t_warehouse)
+					or 0,
+					3,
+				)
+				if physical + 1e-6 < qty:
+					if short_rows is not None:
+						short_rows.append(
+							{
+								"item_code": log.item_code,
+								"batch_no": log.batch_no,
+								"warehouse": t_warehouse,
+								"qty": qty,
+								"physical": physical,
+							}
+						)
+					continue
 			# Stock already sits at the target — nothing to transfer (completed no-op).
 			if noop_rows is not None:
 				noop_rows.append(

@@ -1137,12 +1137,30 @@ class TestBuildEodSeRows(IntegrationTestCase):
 		self.assertEqual(len(skipped), 1)
 		self.assertEqual(skipped[0]["item_code"], "M-TEST")
 
-	def test_same_source_and_target_skips_row(self):
+	@patch(f"{_MOD}._eod_physical_batch_qty", return_value=2.0)
+	def test_same_source_and_target_skips_row(self, _mock_phys):
 		sre_map = {("M-TEST", "B1"): ["WH-SAME"]}
 		logs = [_log(qty_after_transaction_batch_based=2.0)]
 		rows, skipped = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-SAME", sre_map)
 		self.assertEqual(rows, [])
 		self.assertEqual(skipped, [])  # same-WH is a clean skip, not a missing SRE
+
+	@patch(f"{_MOD}._eod_physical_batch_qty", return_value=0.0)
+	def test_same_source_and_target_without_stock_is_short(self, _mock_phys):
+		# The SRE sits at the target but the target holds none of the batch: the picker's
+		# last-resort fallback lands on the target, which is not proof of arrival.
+		sre_map = {("M-TEST", "B1"): ["WH-SAME"]}
+		logs = [_log(qty_after_transaction_batch_based=2.0)]
+		noop_rows, short_rows = [], []
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1", "MOP-A", logs, "WH-SAME", sre_map, None, noop_rows, short_rows
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+		self.assertEqual(noop_rows, [])
+		self.assertEqual(len(short_rows), 1)
+		self.assertEqual(short_rows[0]["warehouse"], "WH-SAME")
+		self.assertEqual(short_rows[0]["qty"], 2.0)
 
 	def test_zero_qty_log_skipped(self):
 		sre_map = {("M-TEST", "B1"): ["WH-SRE"]}
@@ -1322,11 +1340,37 @@ class TestEodNoopNeedsOwnership(IntegrationTestCase):
 	def test_reservation_at_target_without_stock_or_source_is_left_unsynced(
 		self, mock_phys
 	):
-		# Same ownership picture, but nothing anywhere covers it. The row must reach the
-		# skip list (reservation healer / visible batch_short) rather than the no-op list,
+		# Same ownership picture, but nothing anywhere covers it. A live SRE at WH-DEPT
+		# means the preload always lists WH-DEPT as a candidate, so the picker's fallback
+		# resolves to the target. That must be reported short, not recorded as a no-op,
 		# so the MWO's logs stay unsynced and the divergence stays visible.
 		mock_phys.side_effect = lambda i, b, w: 0.0
-		noop_rows = []
+		noop_rows, short_rows = [], []
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1",
+			"MOP-A",
+			self._logs(0.615),
+			"WH-DEPT",
+			{("M-1", "B1"): ["WH-DEPT"]},
+			{("M-1", "B1"): {"WH-DEPT": 0.615}},
+			noop_rows,
+			short_rows,
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+		self.assertEqual(noop_rows, [])
+		self.assertEqual(len(short_rows), 1)
+		self.assertEqual(short_rows[0]["warehouse"], "WH-DEPT")
+		self.assertEqual(short_rows[0]["qty"], 0.615)
+		self.assertEqual(short_rows[0]["physical"], 0.0)
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_reservation_at_target_without_any_candidate_goes_to_healer(
+		self, mock_phys
+	):
+		# No SRE candidate at all (sre_map empty): still the reservation healer's case.
+		mock_phys.side_effect = lambda i, b, w: 0.0
+		noop_rows, short_rows = [], []
 		rows, skipped = _build_eod_se_rows(
 			"MWO-1",
 			"MOP-A",
@@ -1335,11 +1379,59 @@ class TestEodNoopNeedsOwnership(IntegrationTestCase):
 			{},
 			{("M-1", "B1"): {"WH-DEPT": 0.615}},
 			noop_rows,
+			short_rows,
 		)
 		self.assertEqual(rows, [])
 		self.assertEqual(noop_rows, [])
+		self.assertEqual(short_rows, [])
 		self.assertEqual(len(skipped), 1)
 		self.assertEqual(skipped[0]["qty"], 0.615)
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_split_reservation_needs_full_balance_at_target_for_noop(self, mock_phys):
+		# Balance 0.615: 0.020 reserved at the department, 0.595 at WH-PREV which has been
+		# emptied. The department holds 0.600 of the shared batch -- enough for the
+		# shortfall, but not for the full balance, so part of it is other work orders'
+		# metal. That must not pass as a completed transfer.
+		mock_phys.side_effect = lambda i, b, w: {"WH-DEPT": 0.600}.get(w, 0.0)
+		noop_rows, short_rows = [], []
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1",
+			"MOP-A",
+			self._logs(0.615),
+			"WH-DEPT",
+			{("M-1", "B1"): ["WH-DEPT", "WH-PREV"]},
+			{("M-1", "B1"): {"WH-DEPT": 0.020, "WH-PREV": 0.595}},
+			noop_rows,
+			short_rows,
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+		self.assertEqual(noop_rows, [])
+		self.assertEqual(len(short_rows), 1)
+		self.assertEqual(short_rows[0]["qty"], 0.615)
+		self.assertEqual(short_rows[0]["physical"], 0.6)
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_split_reservation_with_full_balance_at_target_is_noop(self, mock_phys):
+		# Same split, but the department physically holds the full balance: the stock
+		# really did move, so the no-op stands.
+		mock_phys.side_effect = lambda i, b, w: {"WH-DEPT": 0.615}.get(w, 0.0)
+		noop_rows, short_rows = [], []
+		rows, skipped = _build_eod_se_rows(
+			"MWO-1",
+			"MOP-A",
+			self._logs(0.615),
+			"WH-DEPT",
+			{("M-1", "B1"): ["WH-DEPT", "WH-PREV"]},
+			{("M-1", "B1"): {"WH-DEPT": 0.020, "WH-PREV": 0.595}},
+			noop_rows,
+			short_rows,
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+		self.assertEqual(short_rows, [])
+		self.assertEqual(len(noop_rows), 1)
 
 	@patch(f"{_MOD}._eod_physical_batch_qty")
 	def test_reservation_at_target_with_stock_is_still_a_noop(self, mock_phys):
@@ -3907,14 +3999,19 @@ class TestPlanMwoGroupBranches(IntegrationTestCase):
 		self.assertEqual(stats["failed_mwos"], 1)
 		self.assertTrue(any(f.get("step") == "no_t_warehouse" for f in failures))
 
+	@patch(f"{_MOD}._eod_physical_batch_qty", return_value=1.0)
+	@patch(f"{_MOD}._preload_active_sre_warehouse_map", return_value={})
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
 	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
 	@patch(
 		f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-TO"]}
 	)
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
-	def test_same_warehouse_genuine_noop(self, _art, _sre, mock_mark, _val):
-		# SRE warehouse == last op to_warehouse → row dropped → genuine no-op.
+	def test_same_warehouse_genuine_noop(
+		self, _art, _sre, mock_mark, _val, _active, _phys
+	):
+		# SRE warehouse == last op to_warehouse and the batch is physically there → row
+		# dropped → genuine no-op.
 		logs = [
 			_log(
 				item_code="M-1",
@@ -3931,6 +4028,46 @@ class TestPlanMwoGroupBranches(IntegrationTestCase):
 		self.assertIsNone(result)
 		self.assertEqual(stats["processed_mwos"], 1)
 		mock_mark.assert_called_once()
+
+	@patch(f"{_MOD}._eod_physical_batch_qty", return_value=0.0)
+	@patch(
+		f"{_MOD}._preload_active_sre_warehouse_map",
+		return_value={("M-1", "B1"): {"WH-TO": 1.0}},
+	)
+	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
+	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
+	@patch(
+		f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-TO"]}
+	)
+	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
+	def test_same_warehouse_without_stock_is_batch_short_not_synced(
+		self, _art, _sre, mock_mark, _val, _active, _phys
+	):
+		# The balance is reserved at the target but the target physically holds none of
+		# it. No transfer row is built, yet the MWO must fail as batch_short rather than
+		# fall through to the empty-items no-op that marks its logs synced.
+		logs = [
+			_log(
+				item_code="M-1",
+				batch_no="B1",
+				to_warehouse="WH-TO",
+				qty_after_transaction_batch_based=1.0,
+			)
+		]
+		mop_data_list = [{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": logs}]
+		failures, stats = [], {"processed_mwos": 0, "failed_mwos": 0}
+		result = _plan_mwo_group(
+			("Test Co", "MWO-1"), mop_data_list, failures, stats, sync_log_name=None
+		)
+		self.assertEqual(result["kind"], "failed")
+		self.assertEqual(result["issues_rows"], [])
+		self.assertEqual(stats["failed_mwos"], 1)
+		self.assertEqual(stats["processed_mwos"], 0)
+		short = [f for f in failures if f.get("step") == "batch_short"]
+		self.assertEqual(len(short), 1)
+		self.assertEqual(short[0]["s_warehouse"], "WH-TO")
+		self.assertIn("require 1.0, have 0.0", short[0]["error_message"])
+		mock_mark.assert_not_called()
 
 	@patch(f"{_MOD}._eod_physical_batch_qty")
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
