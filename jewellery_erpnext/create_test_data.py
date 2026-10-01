@@ -3254,6 +3254,16 @@ def create_test_data():
 
 			_ensure_mr_diamond_substitution_fields()
 
+			# Sales Order Item ownership-split amounts (custom_company_owned_amount /
+			# custom_customer_supplied_amount). Declared only in the inert
+			# custom_fields/sales_order_item.json, so provision them here for test_site too,
+			# else _update_bom_totals silently drops every value it writes.
+			from jewellery_erpnext.patches.add_sales_order_item_ownership_amount_fields import (
+				execute as _ensure_so_item_ownership_amount_fields,
+			)
+
+			_ensure_so_item_ownership_amount_fields()
+
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:
 			# it must be provisioned here for test_site, else get_or_create_zero_tax_template
