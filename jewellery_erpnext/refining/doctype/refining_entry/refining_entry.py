@@ -157,6 +157,13 @@ class RefiningEntry(Document):
 					)
 
 	def on_submit(self):
+		# The transfer moves one Stock Entry line per batch, and each line writes its own
+		# bundles, ledger entries and bins (~16-28 writes): RFN-SCP-26-00022's 12,298 lines
+		# crossed frappe's 200k writes-per-transaction cap and were reverted
+		# (TooManyWritesError). Same approach as Main Slip's loss entries; x4 keeps the cap
+		# in step with the 4500 s long-queue budget the submission runs under.
+		frappe.db.MAX_WRITES_PER_TRANSACTION *= 4
+
 		if cint(self.is_external):
 			self.on_submit_external()
 			return

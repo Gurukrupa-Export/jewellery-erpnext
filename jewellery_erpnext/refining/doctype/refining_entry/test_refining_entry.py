@@ -3006,3 +3006,45 @@ class TestDustShortfallFloatResidue(IntegrationTestCase):
 			[(row.item_code, row.qty) for row in se.items], [("REF-CF-001", 29258.5)]
 		)
 		se.insert.assert_called_once()
+
+
+class TestSubmitWriteBudget(IntegrationTestCase):
+	"""A refining submit raises frappe's 200k writes-per-transaction cap before it builds
+	its Stock Entries: RFN-SCP-26-00022's 12,298-line transfer crossed it and was reverted
+	(TooManyWritesError). DB-free: the Stock Entry builders are stubs.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _cap_seen_by(self, **attrs):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		seen = []
+
+		def record(*args, **kwargs):
+			seen.append(frappe.db.MAX_WRITES_PER_TRANSACTION)
+
+		entry = SimpleNamespace(
+			parent_refining_entry=None,
+			on_submit_external=record,
+			create_material_transfer_se=record,
+			**attrs,
+		)
+		with patch.object(frappe.db, "MAX_WRITES_PER_TRANSACTION", 200_000):
+			RefiningEntry.on_submit(entry)
+		return seen
+
+	def test_external_submit_runs_with_the_raised_cap(self):
+		self.assertEqual(self._cap_seen_by(is_external=1), [800_000])
+
+	def test_internal_submit_runs_with_the_raised_cap(self):
+		self.assertEqual(
+			self._cap_seen_by(is_external=0, refining_type=REFINING_TYPE_WORK_ORDER),
+			[800_000],
+		)
