@@ -66,6 +66,50 @@ frappe.ui.form.on("Material Request", {
 		// stock_entry_type that exists on no site, and would now collide with the real
 		// route in exactly the state the real route puts the document in.
 		frm.trigger("destination_warehouse_query");
+		frm.trigger("transfer_from_reserve_status");
+	},
+	// "Transfer Material" only queues the "Material Transfer From Reserve" Stock Entry; a
+	// background job creates it. Say so while it is missing and offer the retry, rather than
+	// letting the operator find out from a negative-stock error on the next action — the
+	// server (doc_events/material_request.validate_transfer_se_created) refuses that action
+	// anyway, and retry_transfer_se applies the same conditions as below.
+	transfer_from_reserve_status(frm) {
+		const doc = frm.doc;
+		if (
+			doc.docstatus !== 1 ||
+			doc.workflow_state !== "Material Transferred" ||
+			!doc.custom_reserve_se ||
+			doc.custom_transfer_se
+		) {
+			return;
+		}
+
+		const failed = doc.custom_transfer_se_state === "Failed";
+		frm.dashboard.set_headline_alert(
+			failed
+				? __("Material Transfer From Reserve failed: {0}", [
+						frappe.utils.escape_html(
+							strip_html(doc.custom_transfer_se_error || "") || __("no error recorded")
+						),
+				  ])
+				: __("Material Transfer From Reserve is still being created. Reload in a minute."),
+			failed ? "red" : "orange"
+		);
+
+		frm.add_custom_button(__("Retry Transfer From Reserve"), () => {
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.retry_transfer_se",
+				args: { mr_name: doc.name },
+				freeze: true,
+				callback: () => {
+					frappe.show_alert({
+						message: __("Material Transfer From Reserve queued"),
+						indicator: "blue",
+					});
+					frm.reload_doc();
+				},
+			});
+		});
 	},
 	// Only warehouses that actually sit in the chosen department can receive the
 	// material — the server asserts the same thing before it builds the Stock Entry.
