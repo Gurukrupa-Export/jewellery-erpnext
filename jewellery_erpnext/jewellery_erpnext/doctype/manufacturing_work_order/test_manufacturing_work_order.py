@@ -1,6 +1,7 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -460,18 +461,20 @@ class TestSplitMaterialRequestDropsCopiedLinks(UnitTestCase):
 		frappe._("Material Request")
 
 	def test_new_mr_carries_none_of_the_originals_stock_entry_links(self):
-		new_mr = frappe._dict(
+		# SimpleNamespace, not frappe._dict: a dict's own ``items`` method would shadow the
+		# rows the function iterates.
+		new_mr = SimpleNamespace(
 			title="MRD-(MA0001-001)-1",
-			items=[frappe._dict(qty=2.005, pcs=3)],
-			flags=frappe._dict(),
+			items=[SimpleNamespace(qty=2.005, pcs=3)],
+			flags=SimpleNamespace(),
 			custom_reserve_se="SE-RESERVE",
 			custom_transfer_se="SE-TRANSFER",
 			custom_transfer_se_state="Done",
 			custom_transfer_se_error=None,
 			custom_department_transfer_se="SE-DEPT",
 			custom_mop_se="SE-MOP",
+			save=MagicMock(),
 		)
-		new_mr.save = MagicMock()
 
 		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
 			if doctype == "Manufacturing Work Order":
@@ -490,7 +493,7 @@ class TestSplitMaterialRequestDropsCopiedLinks(UnitTestCase):
 			mwo_mod.create_mr_for_split_work_order("MWO-B", "Test_Company", "Labh")
 
 		for link in self.LINKS:
-			self.assertIsNone(new_mr[link], link)
+			self.assertIsNone(getattr(new_mr, link), link)
 		self.assertEqual(new_mr.custom_manufacturing_work_order, "MWO-B")
 		new_mr.save.assert_called_once()
 

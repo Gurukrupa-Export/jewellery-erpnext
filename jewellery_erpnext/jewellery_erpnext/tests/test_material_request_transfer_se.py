@@ -172,6 +172,44 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 		self.assertIn("SE-RESERVE", str(raised.exception))
 		mock_copy.assert_not_called()
 
+	@patch(f"{_MR}._entry_belongs_to", return_value=True)
+	@patch(f"{_MR}.mri_warehouse_map", return_value={"MRI-1": "WH-RM"})
+	@patch(f"{_MR}.frappe.db.sql", return_value=[])
+	@patch(f"{_MR}.frappe.copy_doc")
+	@patch(f"{_MR}.frappe.get_doc")
+	def test_copy_of_a_transit_flagged_reserve_se_is_held_out_of_transit(
+		self, mock_get_doc, mock_copy, _mock_sql, _mock_map, _mock_owned
+	):
+		"""Reserve entries made before 2026-09-27 were saved with add_to_transit = 1, and
+		copy_doc keeps no_copy fields. ERPNext v16.36+ rejects Add to Transit into these
+		non-Transit targets, so the copy must not carry it."""
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = MagicMock(return_value=None)
+		mr.items = []
+		new_se = MagicMock()
+		new_se.add_to_transit = 1
+		new_se.items = [
+			SimpleNamespace(
+				material_request_item="MRI-1",
+				item_code="ITEM-1",
+				s_warehouse="WH-SOURCE",
+				t_warehouse="WH-RSV",
+				serial_and_batch_bundle="SABB-1",
+			)
+		]
+		mock_get_doc.side_effect = [mr, MagicMock()]
+		mock_copy.return_value = new_se
+
+		mr_mod._create_transfer_se("MR-001")
+
+		self.assertEqual(new_se.stock_entry_type, "Material Transfer From Reserve")
+		self.assertEqual(new_se.add_to_transit, 0)
+		self.assertEqual(new_se.items[0].s_warehouse, "WH-RSV")
+		self.assertEqual(new_se.items[0].t_warehouse, "WH-RM")
+		new_se.save.assert_called_once()
+		new_se.submit.assert_called_once()
+
 	def tearDown(self):
 		return super().tearDown()
 
