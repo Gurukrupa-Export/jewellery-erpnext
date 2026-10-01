@@ -90,7 +90,12 @@ class TestMaterializeTransferSE(IntegrationTestCase):
 		def _noop(*a, **k):
 			yield
 
+		# The lock-wait context is stubbed too: with frappe.db patched wholesale, patch()
+		# builds an AsyncMock (the LocalProxy looks awaitable), so its SELECT would return a
+		# coroutine. TestTransferJobLockWait covers it.
 		with patch.object(serialize, "conflict_lock", _noop), patch.object(
+			mr_mod, "_innodb_lock_wait", _noop
+		), patch.object(
 			bounded_retry, "run_with_retry", side_effect=ValueError("boom")
 		), patch(f"{_MR}.frappe.db") as mock_db, patch(f"{_MR}.frappe.log_error"):
 			with self.assertRaises(ValueError):
