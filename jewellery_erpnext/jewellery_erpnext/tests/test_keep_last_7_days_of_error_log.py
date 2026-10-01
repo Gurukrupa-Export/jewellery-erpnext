@@ -4,9 +4,13 @@
 """Pins the one-time Error Log clean-up patch: what it calls, and that it never blocks a deploy.
 
 * THAT it calls Frappe's ``clear_log_table`` for Error Log with seven days, once.
-* THAT a failure is logged and the same call is queued once, with a job id and deduplication,
-  instead of raising: a raise would fail ``bench migrate`` and with it the whole deploy.
-* THAT a failure to queue the retry is logged and still does not raise.
+* THAT it estimates the rows it would keep with the same cutoff, and skips the copy when they
+  are too big to copy during a deploy: on a full disk MyISAM waits instead of failing.
+* THAT a failure changes nothing, prints the manual command, and is recorded with
+  ``defer_insert``, because Error Log itself may be the locked table.
+* THAT recording the failure can never raise: a raise would fail ``bench migrate`` and with it
+  the whole deploy.
+* THAT nothing is queued for a retry on the live site.
 * THAT ``patches.txt`` registers the patch exactly once, after ``[post_model_sync]``.
 
 DB-free per the suite convention: ``setUpClass`` is neutralised and every frappe call the
@@ -16,7 +20,9 @@ Run with:
   bench --site gk run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_keep_last_7_days_of_error_log
 """
 
+import io
 import os
+from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -26,6 +32,7 @@ from jewellery_erpnext.patches import keep_last_7_days_of_error_log as cleanup
 
 CLEAR_LOG_TABLE = "frappe.core.doctype.log_settings.log_settings.clear_log_table"
 PATCH = "jewellery_erpnext.patches.keep_last_7_days_of_error_log"
+GB = 1024**3
 
 
 class TestKeepLast7DaysOfErrorLog(IntegrationTestCase):
@@ -39,45 +46,84 @@ class TestKeepLast7DaysOfErrorLog(IntegrationTestCase):
 			patcher = patch.object(cleanup.frappe, target)
 			setattr(self, target, patcher.start())
 			self.addCleanup(patcher.stop)
-		patcher = patch.object(cleanup.frappe, "db", MagicMock())
-		self.db = patcher.start()
+
+		self.db = MagicMock(db_type="mariadb")
+		self.site_rows, self.average_row = 1000, 8000
+		self.db.sql.side_effect = self._sql
+		patcher = patch.object(cleanup.frappe, "db", self.db)
+		patcher.start()
 		self.addCleanup(patcher.stop)
 
-	def test_keeps_the_last_seven_days_of_error_log(self):
-		with patch(CLEAR_LOG_TABLE) as clear_log_table:
-			cleanup.execute()
+	def _sql(self, query, values=None):
+		if "COUNT(*)" in query:
+			return [(self.site_rows,)]
+		return [(self.average_row,)]
 
-		clear_log_table.assert_called_once_with("Error Log", days=7)
+	def _execute(self, clear_log_table=None):
+		out = io.StringIO()
+		with patch(
+			CLEAR_LOG_TABLE, clear_log_table or MagicMock()
+		) as clear, redirect_stdout(out):
+			cleanup.execute()
+		return clear, out.getvalue()
+
+	def test_keeps_the_last_seven_days_of_error_log(self):
+		clear, out = self._execute()
+
+		clear.assert_called_once_with("Error Log", days=7)
+		self.assertIn("clean-up done", out)
 		self.log_error.assert_not_called()
 		self.enqueue.assert_not_called()
 
-	def test_a_failure_is_logged_and_retried_once_in_the_background(self):
-		with patch(
-			CLEAR_LOG_TABLE, side_effect=Exception("Lock wait timeout exceeded")
-		):
-			cleanup.execute()
+	def test_the_estimate_uses_the_same_cutoff_as_the_copy(self):
+		self._execute()
+
+		count_query, values = self.db.sql.call_args_list[0].args
+		self.assertIn("`creation` > NOW() - INTERVAL %s DAY", count_query)
+		self.assertEqual(values, (7,))
+
+	def test_skips_when_the_kept_rows_are_too_big_to_copy_during_a_deploy(self):
+		self.site_rows, self.average_row = 1_000_000, 8000  # about 7.5 GB
+
+		clear, out = self._execute()
+
+		clear.assert_not_called()
+		self.assertIn("skipped", out)
+		self.assertIn('clear-log-table --doctype "Error Log" --days 7', out)
+
+	def test_exactly_at_the_cap_is_still_copied(self):
+		self.site_rows, self.average_row = 1, 5 * GB
+
+		clear, _out = self._execute()
+
+		clear.assert_called_once()
+
+	def test_a_failure_changes_nothing_and_is_recorded_without_raising(self):
+		_clear, out = self._execute(
+			MagicMock(side_effect=Exception("Lock wait timeout exceeded"))
+		)
 
 		self.db.rollback.assert_called_once()
 		self.log_error.assert_called_once()
-		self.enqueue.assert_called_once_with(
-			CLEAR_LOG_TABLE,
-			queue="long",
-			timeout=3600,
-			job_id="error-log-keep-7-days",
-			deduplicate=True,
-			doctype="Error Log",
-			days=7,
-		)
+		self.assertTrue(self.log_error.call_args.kwargs["defer_insert"])
+		self.assertIn('clear-log-table --doctype "Error Log" --days 7', out)
+		self.enqueue.assert_not_called()
 
-	def test_a_failure_to_queue_the_retry_is_logged_and_not_raised(self):
-		self.enqueue.side_effect = Exception("Redis unreachable")
+	def test_recording_the_failure_can_never_raise(self):
+		self.log_error.side_effect = Exception("Lock wait timeout exceeded")
 
-		with patch(
-			CLEAR_LOG_TABLE, side_effect=Exception("Lock wait timeout exceeded")
-		):
-			cleanup.execute()
+		self._execute(MagicMock(side_effect=Exception("Lock wait timeout exceeded")))
 
-		self.assertEqual(self.log_error.call_count, 2)
+		self.log_error.assert_called_once()
+
+	def test_a_failing_estimate_is_handled_the_same_way(self):
+		self.db.sql.side_effect = Exception("Table is marked as crashed")
+
+		clear, out = self._execute()
+
+		clear.assert_not_called()
+		self.log_error.assert_called_once()
+		self.assertIn("changed nothing", out)
 
 	def test_registered_once_after_post_model_sync(self):
 		path = os.path.join(frappe.get_app_path("jewellery_erpnext"), "patches.txt")
