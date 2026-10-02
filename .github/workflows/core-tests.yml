@@ -57,6 +57,7 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_keep_last_7_days_of_error_log
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
           # Added 2026-09-29 (EMP-IR-Labh-2026-14111): the receive's Process Loss child batch,
           # and the customer-loss preview on save and note after a successful submit.
