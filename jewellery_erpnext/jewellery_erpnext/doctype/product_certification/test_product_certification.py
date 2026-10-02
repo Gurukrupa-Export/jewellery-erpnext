@@ -2779,6 +2779,342 @@ class TestFireAssyRepackQty(IntegrationTestCase):
 		self.assertIn("no main item", frappe.utils.strip_html(str(cm.exception)))
 
 
+class TestFireAssyBatchSplit(IntegrationTestCase):
+	"""The receipt must draw each batch down by what the Issue actually sent it.
+
+	CRT-2026-00098: the Issue sent 0.600 of M-G-22KT-91.75-Y from two batches, 0.081 from one
+	and 0.519 from the other. A multi-batch draw leaves Stock Entry Detail.batch_no BLANK and
+	records the split only in the row's bundle, and _get_issue_stock_entry_details kept the
+	FIRST batch and dropped the rest. All 0.600 consumed was then charged to the batch holding
+	0.081, and ERPNext threw BatchNegativeStockError at -0.379.
+	"""
+
+	# The real document, to the milligram.
+	B1 = "KG2F081-MGL229175Y0-P29A8"
+	B2 = "KG2F081-MGL229175Y0-12L9U"
+	ISSUED = [(B1, 0.081), (B2, 0.519)]
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _doc(self):
+		"""Main 0.460 back as 22KT, 0.131 converted into 0.120 of 24KT, 0.009 lost."""
+		return frappe._dict(
+			name="PC-RECEIVE-BATCH",
+			type="Receive",
+			service_type="Fire Assy Service",
+			company="Test_Company",
+			department="Dept",
+			supplier="Supp",
+			receive_against="PC-ISSUE-BATCH",
+			product_details=[
+				frappe._dict(
+					idx=1,
+					item_code="M22",
+					tree_no="TREE-A",
+					total_weight=0.600,
+					pure_item="M24",
+					loss_item="ML22",
+				)
+			],
+			exploded_product_details=[
+				frappe._dict(idx=1, item_code="M22", tree_no="TREE-A", gross_weight=0.460),
+				frappe._dict(
+					idx=2,
+					item_code="M24",
+					tree_no="TREE-A",
+					gross_weight=0.120,
+					conversion_quantity=0.131,
+				),
+				frappe._dict(idx=3, item_code="ML22", tree_no="TREE-A", gross_weight=0.009),
+			],
+		)
+
+	def _run(self, doc, batches=None):
+		"""Same stubs as TestFireAssyRepackQty, plus a real issued allocation for M22."""
+		from jewellery_erpnext.jewellery_erpnext import lock_order
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
+			utils as pc_utils,
+		)
+
+		defaults = {"M22": {"s_warehouse": "SUP-WH", "batch_no": None, "serial_no": None}}
+		if batches is not None:
+			defaults["M22"]["batches"] = list(batches)
+			defaults["M22"]["batch_no"] = batches[0][0] if batches else None
+
+		created = []
+
+		def _new_doc(doctype, *args, **kwargs):
+			self.assertEqual(doctype, "Stock Entry")
+			se = _FakeStockEntry()
+			created.append(se)
+			return se
+
+		# Warm the Stock Entry Detail meta before frappe.db.get_value is replaced with a
+		# constant: the splitter asks for the qty precision, that walks get_meta ->
+		# load_from_db, and a mocked get_value hands the Document a string.
+		frappe.get_precision("Stock Entry Detail", "transfer_qty")
+
+		with (
+			patch.object(pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"),
+			patch.object(
+				pc_utils, "_get_department_scrap_warehouse", return_value="SCRAP-WH"
+			),
+			patch.object(
+				pc_utils, "_get_supplier_certification_warehouse", return_value="SUP-WH"
+			),
+			patch.object(
+				pc_utils, "_get_issue_stock_entry_details", return_value=({}, defaults)
+			),
+			patch.object(frappe.db, "get_value", return_value="SE-ISSUE-1"),
+			patch.object(frappe, "get_cached_value", return_value=(1, 0, 0)),
+			patch.object(frappe, "new_doc", side_effect=_new_doc),
+			patch.object(lock_order, "lock_bins"),
+			patch.object(lock_order, "preallocate_series_for_docs"),
+			patch.object(lock_order, "series_stubs", return_value=()),
+		):
+			pc_utils.create_material_receipt_for_certification(doc)
+
+		return {se.stock_entry_type: se for se in created}
+
+	@staticmethod
+	def _consumes(se):
+		return [r for r in se.items if r.get("s_warehouse") and not r.get("t_warehouse")]
+
+	@staticmethod
+	def _produces(se):
+		return [r for r in se.items if r.get("t_warehouse") and not r.get("s_warehouse")]
+
+	def test_receipt_draws_each_issued_batch_in_order(self):
+		entries = self._run(self._doc(), batches=self.ISSUED)
+
+		# 0.460 cannot come from a batch holding 0.081: it takes that batch out entirely and
+		# the remaining 0.379 from the next one, in the order the Issue drew them.
+		receipt = entries["Material Receipt for Certification"]
+		self.assertEqual(
+			[(r.item_code, r.batch_no, r.qty) for r in receipt.items],
+			[("M22", self.B1, 0.081), ("M22", self.B2, 0.379)],
+		)
+
+	def test_the_two_entries_share_one_allocation(self):
+		"""The Repack consumes from the same warehouse, so it must not respend the Receipt's
+		batches -- allocating the two entries independently is the same bug one level down."""
+		entries = self._run(self._doc(), batches=self.ISSUED)
+
+		drawn = {}
+		for se in entries.values():
+			for row in se.items:
+				if row.get("s_warehouse") and row.item_code == "M22":
+					drawn[row.batch_no] = flt(drawn.get(row.batch_no, 0) + row.qty, 3)
+
+		self.assertEqual(drawn, {self.B1: 0.081, self.B2: 0.519})
+		# Everything issued is accounted for, and no batch is overdrawn.
+		self.assertAlmostEqual(sum(drawn.values()), 0.600, places=3)
+		for batch_no, issued in self.ISSUED:
+			self.assertLessEqual(drawn[batch_no], issued)
+
+	def test_gross_weight_follows_each_split_row(self):
+		entries = self._run(self._doc(), batches=self.ISSUED)
+		for se in entries.values():
+			for row in se.items:
+				self.assertEqual(row.gross_weight, row.qty)
+
+	def test_produce_rows_are_never_split(self):
+		"""Produce legs mint new batches on receipt -- there is nothing to draw down."""
+		repack = self._run(self._doc(), batches=self.ISSUED)["Repack"]
+
+		self.assertEqual(
+			[(r.item_code, r.qty) for r in self._produces(repack)],
+			[("M24", 0.120), ("ML22", 0.009)],
+		)
+		self.assertTrue(all(r.get("is_finished_item") for r in self._produces(repack)))
+		scrap = [r for r in repack.items if r.get("is_scrap_item")]
+		self.assertEqual([r.item_code for r in scrap], ["ML22"])
+
+	def test_the_repack_run_shape_survives_the_split(self):
+		"""loss_valuation.iter_loss_runs reads a run as consecutive consume rows followed by
+		consecutive produce rows, and _apply_fifo_to_repack_stock_entry pairs on the same
+		shape. Split rows scattered anywhere else silently re-group the runs.
+
+		0.500 / 0.100 makes the FIRST repack consume straddle both batches: the Receipt takes
+		0.460 of B1, leaving 0.040 there, so consuming 0.131 needs 0.040 of B1 and 0.091 of
+		B2. The two halves must land together, still immediately before their produce row.
+		"""
+		repack = self._run(self._doc(), batches=[(self.B1, 0.500), (self.B2, 0.100)])[
+			"Repack"
+		]
+
+		shape = [
+			"C" if (r.get("s_warehouse") and not r.get("t_warehouse")) else "P"
+			for r in repack.items
+		]
+		self.assertEqual(shape, ["C", "C", "P", "C", "P"])
+
+		self.assertEqual(
+			[(r.item_code, r.batch_no, r.qty) for r in self._consumes(repack)],
+			[("M22", self.B1, 0.040), ("M22", self.B2, 0.091), ("M22", self.B2, 0.009)],
+		)
+
+	def test_a_single_batch_issue_is_still_one_row(self):
+		entries = self._run(self._doc(), batches=[(self.B1, 0.600)])
+
+		receipt = entries["Material Receipt for Certification"]
+		self.assertEqual(
+			[(r.item_code, r.batch_no, r.qty) for r in receipt.items],
+			[("M22", self.B1, 0.460)],
+		)
+		self.assertEqual(
+			[(r.item_code, r.batch_no, r.qty) for r in self._consumes(entries["Repack"])],
+			[("M22", self.B1, 0.131), ("M22", self.B1, 0.009)],
+		)
+
+	def test_no_allocation_recorded_falls_back_to_the_old_shape(self):
+		"""An Issue with no bundle and no batches leaves the single-batch fallbacks
+		(sle_batch_cache / make_batch) in charge, exactly as before."""
+		entries = self._run(self._doc(), batches=None)
+
+		receipt = entries["Material Receipt for Certification"]
+		self.assertEqual([(r.item_code, r.qty) for r in receipt.items], [("M22", 0.460)])
+		self.assertEqual(
+			[(r.item_code, r.qty) for r in self._consumes(entries["Repack"])],
+			[("M22", 0.131), ("M22", 0.009)],
+		)
+
+	def test_an_empty_allocation_falls_back_too(self):
+		entries = self._run(self._doc(), batches=[])
+		self.assertEqual(
+			[(r.item_code, r.qty) for r in entries["Material Receipt for Certification"].items],
+			[("M22", 0.460)],
+		)
+
+	def test_consuming_more_than_was_issued_throws_by_name(self):
+		"""Better than ERPNext's raw BatchNegativeStockError: say which item, how much it
+		needs and how much the Issue actually sent."""
+		with self.assertRaises(ValidationError) as cm:
+			self._run(self._doc(), batches=[(self.B1, 0.081), (self.B2, 0.100)])
+
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("M22", msg)
+		self.assertIn("0.181", msg)
+
+
+class TestIssueBatchAllocationRead(IntegrationTestCase):
+	"""_get_issue_stock_entry_details must hand back the WHOLE issued allocation.
+
+	It used to `break` on the first bundle entry that carried a batch, so an issue spanning
+	two batches read back as one.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _read(self, rows, bundle_entries=(), sle_rows=()):
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
+			utils as pc_utils,
+		)
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "Stock Entry Detail":
+				return [frappe._dict(r) for r in rows]
+			if doctype == "Serial and Batch Entry":
+				return [frappe._dict(r) for r in bundle_entries]
+			if doctype == "Stock Ledger Entry":
+				return [frappe._dict(r) for r in sle_rows]
+			raise AssertionError(f"unexpected read of {doctype}")
+
+		with patch.object(frappe.db, "get_all", side_effect=_get_all):
+			return pc_utils._get_issue_stock_entry_details("SE-ISSUE-1")
+
+	def test_every_bundle_batch_survives_in_draw_order(self):
+		_wh, defaults = self._read(
+			rows=[
+				{
+					"item_code": "M22",
+					"t_warehouse": "SUP-WH",
+					"batch_no": None,
+					"serial_no": None,
+					"serial_and_batch_bundle": "BUNDLE-1",
+					"qty": 0.600,
+				}
+			],
+			bundle_entries=[
+				{"parent": "BUNDLE-1", "batch_no": "B1", "serial_no": None, "qty": -0.081},
+				{"parent": "BUNDLE-1", "batch_no": "B2", "serial_no": None, "qty": -0.519},
+			],
+		)
+
+		# Outward entries store qty negative; the allocation is a magnitude.
+		self.assertEqual(defaults["M22"]["batches"], [("B1", 0.081), ("B2", 0.519)])
+		# batch_no stays the first one, for the callers that still read a single value.
+		self.assertEqual(defaults["M22"]["batch_no"], "B1")
+
+	def test_one_row_per_batch_reads_back_as_one_allocation(self):
+		"""What the Issue side now writes: explicit batches, no bundle to decode."""
+		_wh, defaults = self._read(
+			rows=[
+				{
+					"item_code": "M22",
+					"t_warehouse": "SUP-WH",
+					"batch_no": "B1",
+					"serial_no": None,
+					"serial_and_batch_bundle": None,
+					"qty": 0.081,
+				},
+				{
+					"item_code": "M22",
+					"t_warehouse": "SUP-WH",
+					"batch_no": "B2",
+					"serial_no": None,
+					"serial_and_batch_bundle": None,
+					"qty": 0.519,
+				},
+			]
+		)
+
+		self.assertEqual(defaults["M22"]["batches"], [("B1", 0.081), ("B2", 0.519)])
+
+	def test_an_entry_with_no_batches_reports_none(self):
+		_wh, defaults = self._read(
+			rows=[
+				{
+					"item_code": "M22",
+					"t_warehouse": "SUP-WH",
+					"batch_no": None,
+					"serial_no": None,
+					"serial_and_batch_bundle": None,
+					"qty": 0.600,
+				}
+			]
+		)
+
+		self.assertEqual(defaults["M22"]["batches"], [])
+		self.assertIsNone(defaults["M22"]["batch_no"])
+
+	def test_serials_are_still_joined_across_the_bundle(self):
+		_wh, defaults = self._read(
+			rows=[
+				{
+					"item_code": "M22",
+					"t_warehouse": "SUP-WH",
+					"batch_no": None,
+					"serial_no": None,
+					"serial_and_batch_bundle": "BUNDLE-1",
+					"qty": 2,
+				}
+			],
+			bundle_entries=[
+				{"parent": "BUNDLE-1", "batch_no": None, "serial_no": "S1", "qty": -1},
+				{"parent": "BUNDLE-1", "batch_no": None, "serial_no": "S2", "qty": -1},
+			],
+		)
+
+		self.assertEqual(defaults["M22"]["serial_no"], "S1\nS2")
+
+
 _BOM_WEIGHTS = frappe._dict(
 	metal_colour="Yellow",
 	gross_weight=10.0,
