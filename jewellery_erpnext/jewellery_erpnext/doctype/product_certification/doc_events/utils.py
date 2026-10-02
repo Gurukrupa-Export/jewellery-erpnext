@@ -170,7 +170,12 @@ def create_po(self):
 	# Pieces, not rows: an Earrings row is one row and two pieces, and every certification
 	# service is billed per piece -- the same count distribute_amount splits the amount by.
 	# It used to be len(), which under-billed the supplier by one unit for every pair.
-	total_qty = billable_units(self.exploded_product_details)
+	# Fire Assy / XRF are billed per sample sent, i.e. per Product Details row: their exploded
+	# table also carries the pure / loss rows appended per sample, which are not billable.
+	if self.service_type in ("Fire Assy Service", "XRF Services"):
+		total_qty = len(self.product_details)
+	else:
+		total_qty = billable_units(self.exploded_product_details)
 	po_doc = frappe.new_doc("Purchase Order")
 
 	po_doc.product_certification = self.name
@@ -536,7 +541,9 @@ def _split_row_by_issued_batches(row, issue_item_defaults, taken, precision):
 			).format(
 				frappe.bold(row.get("item_code")),
 				need,
-				frappe.bold(row.get("s_warehouse") or frappe._("the supplier warehouse")),
+				frappe.bold(
+					row.get("s_warehouse") or frappe._("the supplier warehouse")
+				),
 				available,
 				flt(shortfall, precision),
 			),
