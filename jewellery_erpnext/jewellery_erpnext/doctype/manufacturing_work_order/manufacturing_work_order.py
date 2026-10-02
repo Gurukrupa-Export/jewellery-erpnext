@@ -1277,6 +1277,15 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 	new_mr.custom_transfer_se = None
 	new_mr.custom_transfer_se_state = None
 	new_mr.custom_transfer_se_error = None
+	# The same goes for every other per-request Stock Entry link. A carried-over reserve
+	# entry makes create_stock_entry skip this MR's own reservation, and the Transfer to
+	# MOP / Department makers then copy the original's full quantity (the 2026-09-22 splits
+	# pointed ~8 g at ~2 g requests); the department / MOP links would mark steps done that
+	# this MR never took. validate_split_eligibility guarantees the original moved nothing,
+	# so there is nothing of its own to inherit.
+	new_mr.custom_reserve_se = None
+	new_mr.custom_department_transfer_se = None
+	new_mr.custom_mop_se = None
 	new_mr_items = []
 	for i in new_mr.items:
 		i.qty = 0

@@ -1,7 +1,8 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
@@ -435,6 +436,66 @@ class TestSplitCancelsMaterialRequests(UnitTestCase):
 		self.bulk.assert_called_once_with(
 			"Manufacturing Operation", ["MOP-P1"], {"status": "Finished"}
 		)
+
+
+class TestSplitMaterialRequestDropsCopiedLinks(UnitTestCase):
+	"""The MR minted for a split work order must not inherit the original's Stock Entries.
+
+	copy_doc carries every link over. The 2026-09-22 splits kept the original's reserve,
+	transfer and department entries, so they never reserved their own share, showed the
+	transfer as Done, and their next step would have copied the original's full quantity.
+	"""
+
+	LINKS = (
+		"custom_reserve_se",
+		"custom_transfer_se",
+		"custom_transfer_se_state",
+		"custom_transfer_se_error",
+		"custom_department_transfer_se",
+		"custom_mop_se",
+	)
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe._("Material Request")
+
+	def test_new_mr_carries_none_of_the_originals_stock_entry_links(self):
+		# SimpleNamespace, not frappe._dict: a dict's own ``items`` method would shadow the
+		# rows the function iterates.
+		new_mr = SimpleNamespace(
+			title="MRD-(MA0001-001)-1",
+			items=[SimpleNamespace(qty=2.005, pcs=3)],
+			flags=SimpleNamespace(),
+			custom_reserve_se="SE-RESERVE",
+			custom_transfer_se="SE-TRANSFER",
+			custom_transfer_se_state="Done",
+			custom_transfer_se_error=None,
+			custom_department_transfer_se="SE-DEPT",
+			custom_mop_se="SE-MOP",
+			save=MagicMock(),
+		)
+
+		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Manufacturing Work Order":
+				return "PMO-1"
+			if doctype == "Material Request":
+				return "MR-ORIGINAL"
+			return None
+
+		with (
+			patch("frappe.db.get_value", side_effect=_gv),
+			patch("frappe.db.count", return_value=1),
+			patch("frappe.get_doc"),
+			patch("frappe.copy_doc", return_value=new_mr),
+			patch("frappe.msgprint"),
+		):
+			mwo_mod.create_mr_for_split_work_order("MWO-B", "Test_Company", "Labh")
+
+		for link in self.LINKS:
+			self.assertIsNone(getattr(new_mr, link), link)
+		self.assertEqual(new_mr.custom_manufacturing_work_order, "MWO-B")
+		new_mr.save.assert_called_once()
 
 
 def create_pmo(self):
