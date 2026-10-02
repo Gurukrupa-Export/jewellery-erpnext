@@ -211,7 +211,12 @@ doc_events = {
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
 	},
 	"BOM": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate",
+			# Last, after anything that sets an image: GK paths whose file is not on this
+			# site become absolute GK URLs, so core's attach hook stops logging errors.
+			"jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+		],
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.validate",
 		"on_update": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_update",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_cancel",
@@ -223,11 +228,21 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.work_order.validate",
 	},
 	"Item": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.item.before_validate",
+			"jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+		],
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item.validate",
 		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_save",
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.item.on_trash",
 		"before_insert": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_insert",
+	},
+	# gke_customization doctypes whose image is fetched from item_code.image / design_code.image.
+	"Product Return Order": {
+		"before_validate": "jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+	},
+	"Customer Design Information Sheet": {
+		"before_validate": "jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
 	},
 	"Item Attribute": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
