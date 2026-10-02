@@ -2875,3 +2875,176 @@ class TestDustReceiptDifferenceAccount(IntegrationTestCase):
 		self.assertEqual(
 			self._account_for(preset="Refining Gain - T"), "Refining Gain - T"
 		)
+
+
+class TestDustShortfallFloatResidue(IntegrationTestCase):
+	"""Float residue is never a dust shortfall.
+
+	Three-decimal FIFO allocations still add up in binary floating point, so a row met in
+	full can sum a hair short (0.022 + 0.006 = 0.027999999999999997). That ~1e-18 used to
+	be booked as a shortfall and receipted as a row that rounds to zero, failing the whole
+	submit with "Qty in Stock UOM can not be zero" (RFN-SCP-26-00023). DB-free: every
+	read is patched and the Stock Entry is a recording fake.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _stock_entry(self):
+		from types import SimpleNamespace
+		from unittest.mock import MagicMock
+
+		se = SimpleNamespace(name="MAT-STE-TEST", items=[])
+		se.append = lambda table, row: se.items.append(frappe._dict(row))
+		se.insert = MagicMock()
+		se.submit = MagicMock()
+		return se
+
+	def _entry(self, **attrs):
+		from types import SimpleNamespace
+		from unittest.mock import MagicMock
+
+		return SimpleNamespace(
+			name="RFN-SCP-TEST",
+			company="Test_Company",
+			refining_type=REFINING_TYPE_SCRAP,
+			warehouse="Pre Polish Scrap - T",
+			refining_warehouse="Refining RM - T",
+			supplier="Refinery Supplier - T",
+			manufacturer="Shubh",
+			db_set=MagicMock(),
+			**attrs,
+		)
+
+	def _transfer(self, qty, allocations):
+		"""Run create_material_transfer_se for one batched row whose FIFO allocation
+		returns ``allocations``; return (_dust_shortfalls, the transfer Stock Entry)."""
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		entry = self._entry(
+			material_items=[
+				frappe._dict(item_code="FL-TEST", qty=qty, uom="Gram", purity="91.75")
+			],
+			_serial_movement_rows=lambda: [],
+			allocate_fifo_batches=lambda *args, **kwargs: [
+				{"batch_no": f"BATCH-{i}", "qty": q} for i, q in enumerate(allocations)
+			],
+			_stamp_batch_ownership=lambda se: None,
+		)
+		real_get_value = frappe.db.get_value
+
+		def _get_value(doctype, *args, **kwargs):
+			if doctype == "Item" and args[1:2] == ("has_batch_no",):
+				return 1
+			return real_get_value(doctype, *args, **kwargs)
+
+		se = self._stock_entry()
+		with (
+			patch("frappe.new_doc", return_value=se),
+			patch.object(frappe.db, "get_value", side_effect=_get_value),
+		):
+			RefiningEntry.create_material_transfer_se(entry)
+		return entry._dust_shortfalls, se
+
+	def test_two_batch_residue_is_not_a_shortfall(self):
+		# RFN-SCP-26-00023 row 18.
+		shortfalls, se = self._transfer(0.028, [0.022, 0.006])
+		self.assertEqual(shortfalls, [])
+		self.assertEqual([row.qty for row in se.items], [0.022, 0.006])
+
+	def test_seven_batch_residue_is_not_a_shortfall(self):
+		# RFN-SCP-26-00023 row 35.
+		shortfalls, _se = self._transfer(
+			0.058, [0.006, 0.009, 0.009, 0.016, 0.005, 0.008, 0.005]
+		)
+		self.assertEqual(shortfalls, [])
+
+	def test_real_shortfall_is_kept_and_rounded(self):
+		# Unrounded, 0.030 - (0.022 + 0.006) is 0.0020000000000000018.
+		shortfalls, _se = self._transfer(0.030, [0.022, 0.006])
+		self.assertEqual([sf["qty"] for sf in shortfalls], [0.002])
+
+	def test_receipt_skips_float_residue_rows(self):
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		# The exact shortfalls RFN-SCP-26-00023's traceback carried into the receipt.
+		entry = self._entry(
+			_dust_shortfalls=[
+				{
+					"item_code": "FL-TEST-A",
+					"qty": 3.469446951953614e-18,
+					"uom": "Gram",
+					"purity": "91.75",
+				},
+				{
+					"item_code": "FL-TEST-B",
+					"qty": 6.938893903907228e-18,
+					"uom": "Gram",
+					"purity": "91.75",
+				},
+				{
+					"item_code": "REF-CF-001",
+					"qty": 29258.5,
+					"uom": "Gram",
+					"purity": None,
+				},
+			],
+			get_dust_opening_batch=lambda item_code: "DUST-BATCH",
+			set_dust_receipt_difference_account=lambda se: None,
+		)
+		se = self._stock_entry()
+		with patch("frappe.new_doc", return_value=se):
+			RefiningEntry.create_dust_opening_receipt_se(
+				entry, target_warehouse="Refinery WIP - T"
+			)
+		self.assertEqual(
+			[(row.item_code, row.qty) for row in se.items], [("REF-CF-001", 29258.5)]
+		)
+		se.insert.assert_called_once()
+
+
+class TestSubmitWriteBudget(IntegrationTestCase):
+	"""A refining submit raises frappe's 200k writes-per-transaction cap before it builds
+	its Stock Entries: RFN-SCP-26-00022's 12,298-line transfer crossed it and was reverted
+	(TooManyWritesError). DB-free: the Stock Entry builders are stubs.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _cap_seen_by(self, **attrs):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		seen = []
+
+		def record(*args, **kwargs):
+			seen.append(frappe.db.MAX_WRITES_PER_TRANSACTION)
+
+		entry = SimpleNamespace(
+			parent_refining_entry=None,
+			on_submit_external=record,
+			create_material_transfer_se=record,
+			**attrs,
+		)
+		with patch.object(frappe.db, "MAX_WRITES_PER_TRANSACTION", 200_000):
+			RefiningEntry.on_submit(entry)
+		return seen
+
+	def test_external_submit_runs_with_the_raised_cap(self):
+		self.assertEqual(self._cap_seen_by(is_external=1), [800_000])
+
+	def test_internal_submit_runs_with_the_raised_cap(self):
+		self.assertEqual(
+			self._cap_seen_by(is_external=0, refining_type=REFINING_TYPE_WORK_ORDER),
+			[800_000],
+		)
