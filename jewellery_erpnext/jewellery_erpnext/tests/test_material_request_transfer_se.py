@@ -180,10 +180,11 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 	@patch(f"{_MR}._entry_belongs_to", return_value=True)
 	@patch(f"{_MR}.mri_warehouse_map", return_value={"MRI-1": "WH-RM"})
 	@patch(f"{_MR}.frappe.db.sql", return_value=[])
+	@patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None)
 	@patch(f"{_MR}.frappe.copy_doc")
 	@patch(f"{_MR}.frappe.get_doc")
 	def test_copy_of_a_transit_flagged_reserve_se_is_held_out_of_transit(
-		self, mock_get_doc, mock_copy, _mock_sql, _mock_map, _mock_owned
+		self, mock_get_doc, mock_copy, mock_lookup, _mock_sql, _mock_map, _mock_owned
 	):
 		"""Reserve entries made before 2026-09-27 were saved with add_to_transit = 1, and
 		copy_doc keeps no_copy fields. ERPNext v16.36+ rejects Add to Transit into these
@@ -210,10 +211,12 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 
 		self.assertEqual(new_se.stock_entry_type, "Material Transfer From Reserve")
 		self.assertEqual(new_se.add_to_transit, 0)
+		self.assertIs(new_se.flags.no_transit, True)
 		self.assertEqual(new_se.items[0].s_warehouse, "WH-RSV")
 		self.assertEqual(new_se.items[0].t_warehouse, "WH-RM")
 		new_se.save.assert_called_once()
 		new_se.submit.assert_called_once()
+		mock_lookup.assert_called_once_with("MR-001")
 
 	def tearDown(self):
 		return super().tearDown()
@@ -934,12 +937,21 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 			],
 		)
 
+		self._se_doc = MagicMock()
 		with patch.object(mr_mod.frappe.db, "get_value", side_effect=_gv), patch.object(
-			mr_mod.frappe, "new_doc", return_value=MagicMock()
+			mr_mod.frappe, "new_doc", return_value=self._se_doc
 		), patch.object(mr_mod.frappe, "msgprint"):
 			mr_mod.create_stock_entry(mr, None)
 
 		return calls
+
+	def test_holds_the_reserve_entry_out_of_transit(self):
+		"""Every row lands in a Reserve warehouse. A Transfer Type mapped to a transit
+		Stock Entry Type would fetch add_to_transit back over the bare 0, and ERPNext
+		rejects Add to Transit into a non-Transit warehouse -- the flag holds it."""
+		self._run(["CAST-RM"], {"CAST-RM": "Casting"})
+		self.assertEqual(self._se_doc.add_to_transit, 0)
+		self.assertIs(self._se_doc.flags.no_transit, True)
 
 	def test_one_department_lookup_per_warehouse_one_reserve_per_department(self):
 		"""Three source warehouses in one department: 3 department reads, 1 reserve read."""
