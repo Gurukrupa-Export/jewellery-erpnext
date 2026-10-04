@@ -1,4 +1,8 @@
 frappe.ui.form.off("Stock Entry", "get_items_from_transit_entry");
+// Replaced below. erpnext's handler (v16.36.0) blanks to_warehouse and every row's
+// t_warehouse whenever it runs with Add to Transit on, and it runs on every draft load
+// through onload_post_render's frm.trigger("stock_entry_type").
+frappe.ui.form.off("Stock Entry", "add_to_transit");
 
 frappe.ui.form.on("Stock Entry", {
 	gold_rate_with_gst(frm) {
@@ -27,6 +31,8 @@ frappe.ui.form.on("Stock Entry", {
 		}
 	},
 	refresh(frm) {
+		// What the add_to_transit handler compares against: the value as loaded or saved.
+		frm.__add_to_transit_seen = cint(frm.doc.add_to_transit);
 		set_html(frm);
 		if (
 			["Material Transfer to Department", "Consumables Issue to  Department"].includes(
@@ -235,7 +241,9 @@ frappe.ui.form.on("Stock Entry", {
 					"Customer Goods Transfer",
 					"Metal Conversion Repack",
 					"Material Transfer (WORK ORDER)",
-					"Material Transfer (Department)",
+					// The Stock Entry Type's exact name; includes() is case-sensitive, and the
+					// Transfer to Department transit leg carries Customer Goods rows as they are.
+					"Material Transfer (DEPARTMENT)",
 					"Material Transfer (Employee)",
 					"Material Transfer",
 				].includes(frm.doc.stock_entry_type) &&
@@ -391,11 +399,12 @@ frappe.ui.form.on("Stock Entry", {
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-remove-rows").remove();
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-add-multiple-rows").remove();
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-add-row").remove();
-		// Drafts only. frm.trigger() fans out to every registered stock_entry_type handler,
-		// including erpnext's, which chains into add_to_transit and unconditionally runs
-		// frm.set_value("to_warehouse", "") (erpnext/.../stock_entry.js:922). On a submitted
-		// transit entry that dirties the form on load and makes Update raise
-		// UpdateAfterSubmitError, since to_warehouse has no allow_on_submit.
+		// Drafts only. frm.trigger() fans out to every registered stock_entry_type handler
+		// (erpnext's, this file's and the site's Client Scripts), and erpnext's chains into
+		// add_to_transit. The replacement add_to_transit handler below leaves the targets
+		// alone unless the flag actually changed, so a transit draft keeps its Transit
+		// targets on load. Submitted entries are still skipped: any set_value there dirties
+		// the form and makes Update raise UpdateAfterSubmitError.
 		if (frm.doc.docstatus === 0) {
 			frm.trigger("stock_entry_type");
 		}
@@ -450,6 +459,28 @@ frappe.ui.form.on("Stock Entry", {
 			},
 		});
 	},
+	add_to_transit(frm) {
+		// erpnext's add_to_transit handler, run only when the flag actually changes (the
+		// user ticks it, or a new type fetches a different value). erpnext's own copy also
+		// ran on every draft load and on every change of type, and since v16.36.0 it blanks
+		// every row's t_warehouse as well as to_warehouse -- wiping the Transit targets of a
+		// draft that was already correct (MR > Material Transfer (In Transit)).
+		const add_to_transit = cint(frm.doc.add_to_transit);
+		if (add_to_transit === frm.__add_to_transit_seen) {
+			return;
+		}
+		frm.__add_to_transit_seen = add_to_transit;
+
+		if (frm.doc.purpose == "Material Transfer" && add_to_transit) {
+			frm.set_value("to_warehouse", "");
+			(frm.doc.items || []).forEach((item) => {
+				if (item.t_warehouse) {
+					frappe.model.set_value(item.doctype, item.name, "t_warehouse", "");
+				}
+			});
+			frm.trigger("set_transit_warehouse");
+		}
+	},
 	stock_entry_type(frm) {
 		if (
 			["Customer Goods Issue", "Customer Goods Received", "Customer Goods Transfer"].includes(
@@ -460,12 +491,20 @@ frappe.ui.form.on("Stock Entry", {
 			frm.trigger("get_items_from_customer_goods");
 			return;
 		}
+		// Manual drafts only. A receipt leg is never in transit, and an amendment keeps the
+		// original's value (normalize_add_to_transit holds a one-shot move's 0 on the server).
+		// auto_created is undefined on a new browser doc, hence cint. Ticking only when it is
+		// off keeps an already-ticked draft's targets: the add_to_transit handler clears them.
 		if (
 			["Material Transfer to Department"].includes(frm.doc.stock_entry_type) &&
-			frm.doc.auto_created === 0 &&
-			frm.doc.docstatus != 1
+			!cint(frm.doc.auto_created) &&
+			frm.doc.docstatus === 0 &&
+			!frm.doc.outgoing_stock_entry &&
+			!frm.doc.amended_from
 		) {
-			frm.set_value("add_to_transit", "1");
+			if (!cint(frm.doc.add_to_transit)) {
+				frm.set_value("add_to_transit", 1);
+			}
 			frm.set_df_property("add_to_transit", "read_only", 1);
 		}
 		if (
@@ -481,8 +520,38 @@ frappe.ui.form.on("Stock Entry", {
 		}
 		// frm.set_value("inventory_type", "Regular Stock");
 
-		let company = frm.doc.company;
-		let stock_entry_type = frm.doc.stock_entry_type;
+		// The warehouse queries read frm.doc when the picker opens, not when the type was
+		// chosen, so a later change of company or Add to Transit is honoured. While Add to
+		// Transit is on (and this is not the receipt leg) ERPNext rejects any target that is
+		// not a Transit warehouse (validate_transit_warehouses, v16.36.0), so only those are
+		// offered -- the rule erpnext's own t_warehouse query applies, which these replace.
+		const transit_target_query = () => {
+			if (
+				frm.doc.purpose === "Material Transfer" &&
+				cint(frm.doc.add_to_transit) &&
+				!frm.doc.outgoing_stock_entry
+			) {
+				return {
+					filters: {
+						company: frm.doc.company,
+						is_group: 0,
+						warehouse_type: "Transit",
+					},
+				};
+			}
+		};
+		const jewellery_warehouse_query = (field) => {
+			return {
+				query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.warehouse_query_filters",
+				filters: {
+					company: frm.doc.company,
+					stock_entry_type: frm.doc.stock_entry_type,
+					field: field,
+					add_to_transit: cint(frm.doc.add_to_transit),
+					receive_leg: frm.doc.outgoing_stock_entry ? 1 : 0,
+				},
+			};
+		};
 		if (
 			[
 				"Material Transfer (DEPARTMENT)",
@@ -491,23 +560,11 @@ frappe.ui.form.on("Stock Entry", {
 				"Material Transfer (Subcontracting Work Order)",
 			].includes(frm.doc.stock_entry_type)
 		) {
-			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function (frm, cdt, cdn) {
-				return {
-					query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.warehouse_query_filters",
-					filters: {
-						company: company,
-						stock_entry_type: stock_entry_type,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function () {
+				return jewellery_warehouse_query("s_warehouse");
 			};
-			frm.fields_dict["items"].grid.get_field("t_warehouse").get_query = function (frm, cdt, cdn) {
-				return {
-					query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.warehouse_query_filters",
-					filters: {
-						company: company,
-						stock_entry_type: stock_entry_type,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("t_warehouse").get_query = function () {
+				return transit_target_query() || jewellery_warehouse_query("t_warehouse");
 			};
 			if (frm.doc.stock_entry_type != "Material Transfer (DEPARTMENT)") {
 				frm.fields_dict["items"].grid.get_field("item_code").get_query = function (frm, cdt, cdn) {
@@ -532,21 +589,23 @@ frappe.ui.form.on("Stock Entry", {
 					},
 				};
 			};
-			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function (frm, cdt, cdn) {
+			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function () {
 				return {
 					filters: {
-						company: company,
+						company: frm.doc.company,
 						is_group: 0,
 					},
 				};
 			};
-			frm.fields_dict["items"].grid.get_field("t_warehouse").get_query = function (frm, cdt, cdn) {
-				return {
-					filters: {
-						company: company,
-						is_group: 0,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("t_warehouse").get_query = function () {
+				return (
+					transit_target_query() || {
+						filters: {
+							company: frm.doc.company,
+							is_group: 0,
+						},
+					}
+				);
 			};
 		}
 	},

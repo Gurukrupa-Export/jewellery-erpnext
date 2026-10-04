@@ -212,6 +212,10 @@ class TestMakeDepartmentMopStockEntry(IntegrationTestCase):
 					"employee": None,
 					"department_ir_status": None,
 				}
+			if doctype == "Stock Entry":
+				# The department transfer has been received (End Transit), so the
+				# material is in custom_destination_warehouse.
+				return frappe._dict(add_to_transit=1, per_transferred=100)
 			return "WH-DEPT-MFG"
 
 		mock_get_value.side_effect = _gv
@@ -230,6 +234,43 @@ class TestMakeDepartmentMopStockEntry(IntegrationTestCase):
 		self.assertEqual(se.items[0].s_warehouse, "WH-DEST")
 		self.assertEqual(se.items[0].t_warehouse, "WH-DEPT-MFG")
 		mock_sql.assert_not_called()
+
+	@patch(
+		f"{_MR_CUSTOM}.validate_department_transfer_received",
+		side_effect=frappe.ValidationError("still in transit"),
+	)
+	@patch(f"{_MR_CUSTOM}.frappe.copy_doc")
+	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
+	@patch(f"{_MR_CUSTOM}.frappe.db.get_value")
+	def test_waits_for_the_department_transfer_to_be_received(
+		self, mock_get_value, mock_get_doc, mock_copy, mock_guard
+	):
+		"""A Transfer to Department reaches custom_destination_warehouse only when the
+		receiving department ends its transit; nothing is copied before that."""
+
+		def _gv(doctype, name, field=None, **kwargs):
+			if doctype == "Manufacturing Operation":
+				return {
+					"department": "Dept A",
+					"status": "Not Started",
+					"employee": None,
+					"department_ir_status": None,
+				}
+			return None
+
+		mock_get_value.side_effect = _gv
+
+		mr_obj = MagicMock()
+		mr_obj.get.side_effect = lambda k: {
+			"custom_reserve_se": "SE-RESERVE",
+			"custom_department_transfer_se": "SE-DEPT-1",
+			"custom_destination_warehouse": "WH-DEST",
+		}.get(k)
+
+		with self.assertRaises(frappe.ValidationError):
+			mr_custom.make_department_mop_stock_entry(mr_obj, mop="MOP-1")
+		mock_guard.assert_called_once_with(mr_obj)
+		mock_copy.assert_not_called()
 
 	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
 	@patch(f"{_MR_CUSTOM}.frappe.copy_doc")
