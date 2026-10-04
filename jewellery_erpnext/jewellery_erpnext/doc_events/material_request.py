@@ -439,6 +439,7 @@ def validate_department_transfer_frozen(self):
 			title=_("Department Transfer Already Made"),
 		)
 
+
 def _entry_belongs_to(stock_entry, mr_name):
 	"""Whether ``stock_entry`` is a submitted Stock Entry booked against ``mr_name``.
 
@@ -910,17 +911,14 @@ def _create_transfer_se(mr_name):
 	new_se_doc = frappe.copy_doc(se_doc)
 
 	new_se_doc.stock_entry_type = "Material Transfer From Reserve"
-	# copy_doc keeps no_copy fields, so a reserve SE saved with add_to_transit = 1 (every
-	# one created before create_stock_entry started clearing it) would carry it here, and a
-	# 1 is never fetched away. ERPNext rejects Add to Transit into the Reserve/RM targets
-	# below. Clearing it lets the type's 0 come back; the flag holds it regardless of type.
+	# copy_doc keeps no_copy fields, so a reserve entry saved with add_to_transit = 1 (every
+	# one made before create_stock_entry started clearing it, i.e. before 2026-09-27) carries
+	# it here, and a 1 is never fetched away. ERPNext v16.36+ rejects Add to Transit into the
+	# Reserve/RM targets below -- the repair run on the prod copy failed 9 of 9 on it. The
+	# type's own add_to_transit is 0 and the field is fetch_if_empty, so clearing it lets that
+	# 0 come back; the flag holds it regardless of type.
 	new_se_doc.add_to_transit = 0
 	new_se_doc.flags.no_transit = True
-	# copy_doc keeps no_copy fields, so a reserve entry saved with add_to_transit = 1 (every
-	# one made before 2026-09-27) carries it here, and ERPNext v16.36+ rejects Add to Transit
-	# into these non-Transit targets -- the repair run on the prod copy failed 9 of 9 on it.
-	# The type's own add_to_transit is 0 and the field is fetch_if_empty, so the 0 holds.
-	new_se_doc.add_to_transit = 0
 
 	mr_item_to_alternative = {}
 	for item_row in mr.items:

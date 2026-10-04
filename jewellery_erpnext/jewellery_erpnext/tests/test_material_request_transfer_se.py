@@ -157,16 +157,6 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 		)
 		mock_copy.assert_not_called()
 
-	@patch(f"{_MR}.mri_warehouse_map", return_value={"MRI-1": "WH-RM"})
-	@patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None)
-	@patch(f"{_MR}.frappe.copy_doc")
-	@patch(f"{_MR}.frappe.get_doc")
-	def test_copy_of_a_transit_flagged_reserve_se_is_held_out_of_transit(
-		self, mock_get_doc, mock_copy, mock_lookup, mock_map
-	):
-		"""Reserve SEs made before create_stock_entry cleared the flag were saved with
-		add_to_transit = 1, and copy_doc keeps no_copy fields. A 1 is never fetched away,
-		and ERPNext rejects Add to Transit into these Reserve/RM targets."""
 	@patch(f"{_MR}.frappe.copy_doc")
 	@patch(f"{_MR}.frappe.db.sql", return_value=[])
 	@patch(f"{_MR}.frappe.get_doc")
@@ -190,10 +180,11 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 	@patch(f"{_MR}._entry_belongs_to", return_value=True)
 	@patch(f"{_MR}.mri_warehouse_map", return_value={"MRI-1": "WH-RM"})
 	@patch(f"{_MR}.frappe.db.sql", return_value=[])
+	@patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None)
 	@patch(f"{_MR}.frappe.copy_doc")
 	@patch(f"{_MR}.frappe.get_doc")
 	def test_copy_of_a_transit_flagged_reserve_se_is_held_out_of_transit(
-		self, mock_get_doc, mock_copy, _mock_sql, _mock_map, _mock_owned
+		self, mock_get_doc, mock_copy, mock_lookup, _mock_sql, _mock_map, _mock_owned
 	):
 		"""Reserve entries made before 2026-09-27 were saved with add_to_transit = 1, and
 		copy_doc keeps no_copy fields. ERPNext v16.36+ rejects Add to Transit into these
