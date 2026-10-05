@@ -264,7 +264,8 @@ def get_diamond_rate(self):
 		diamond.custom_sieve_size_range = attribute_dict[diamond.diamond_sieve_size].get(
 			"sieve_size_range"
 		)
-		diamond.size_in_mm = attribute_dict[diamond.diamond_sieve_size].get("size_in_mm")
+		# diamond.size_in_mm = attribute_dict[diamond.diamond_sieve_size].get("size_in_mm")
+		diamond.size_in_mm = attribute_dict[diamond.diamond_sieve_size].get("diameter")
 
 		if not diamond.sieve_size_range:
 			continue
@@ -295,6 +296,7 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 		diamond.sieve_size_range,
 		diamond.size_in_mm,
 		diamond.diamond_size_in_mm,
+		diamond.diamond_sieve_size,
 		range_det.get("std_wt"),
 	)
 
@@ -319,8 +321,8 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 		elif self.cust_diamond_price_list_type == "Size (in mm)":
 			if diamond.get("size_in_mm"):
 				filters["size_in_mm"] = diamond.size_in_mm
-			if diamond.diamond_size_in_mm:
-				filters["diamond_size_in_mm"] = diamond.diamond_size_in_mm
+			else:
+				filters["diamond_size_in_mm"] = diamond.diamond_size_in_mm or diamond.diamond_sieve_size
 		else:
 			frappe.msgprint(_("Price List Type Not Specified"))
 		diamond_price_list_data[key] = frappe.get_list(
@@ -544,6 +546,7 @@ def get_making_charges(self):
 def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 	# Get Making Charge From Making Charge Price Master for mentioned Combinations
 	self.set_additional_rate = False
+	self.per_pc_rate_applied = False
 	making_charge_data = frappe._dict()
 	finding_subcategory_data = frappe._dict()
 	subcategory_data = frappe._dict()
@@ -589,7 +592,8 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 			)
 			subcategory_data[subcat_subcategory] = True if (subquery and subquery[0][0]) else False
 
-		key = (child_table, row.parentfield, row.metal_type, subcat_subcategory)
+		# key = (child_table, row.parentfield, row.metal_type, subcat_subcategory)
+		key = (child_table, row.parentfield, row.metal_type, row.metal_touch, subcat_subcategory)
 		if not making_charge_data.get(key) and subcategory_data.get(subcat_subcategory):
 			# Build query
 			query = (
@@ -607,6 +611,7 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 					(MCP.customer == self.customer)
 					& (MCP.setting_type == setting_type)
 					& (MCP.metal_type == row.metal_type)
+					& (MCP.metal_touch == row.metal_touch)
 				)
 			)
 			# Subquery to check for existence
@@ -639,7 +644,8 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 				)
 				finding_subcategory_data[sub_category] = True if subquery else False
 
-			key = (child_table, row.parentfield, row.metal_type, subcat_subcategory)
+			# key = (child_table, row.parentfield, row.metal_type, subcat_subcategory)
+			key = (child_table, row.parentfield, row.metal_type, row.metal_touch, subcat_subcategory)
 			query = (
 				frappe.qb.from_(MCP)
 				.left_join(MCPIS)
@@ -658,6 +664,7 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 					(MCP.customer == self.customer)
 					& (MCP.setting_type == setting_type)
 					& (MCP.metal_type == row.metal_type)
+					& (MCP.metal_touch == row.metal_touch)
 				)
 				.limit(1)
 			)
@@ -700,7 +707,11 @@ def _set_total_making_charges(self, metal, making_charge_details):
 					self.set_additional_rate = True
 			# Calculate the making charges
 			if self.metal_and_finding_weight < (making_charges.get("rate_per_gm_threshold") or 0):
-				metal_making_charges = making_charges.get("rate_per_pc")
+				if self.per_pc_rate_applied:
+					metal_making_charges = 0
+				else:
+					metal_making_charges = making_charges.get("rate_per_pc")
+					self.per_pc_rate_applied = True
 			else:
 				metal_making_charges = metal.making_rate * (metal.quantity + additional_net_weight)
 
