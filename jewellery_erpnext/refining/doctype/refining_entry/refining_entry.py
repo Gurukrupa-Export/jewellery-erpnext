@@ -807,6 +807,9 @@ class RefiningEntry(Document):
 			se.append("items", row)
 
 		self._assert_no_loss_output(se)
+		# Refining items default their expense account to the Refining Scrap warehouse's own
+		# Stock account, which ERPNext rejects as a Difference Account.
+		self.set_dust_receipt_difference_account(se)
 
 		se.insert(ignore_permissions=True)
 		se.submit()
