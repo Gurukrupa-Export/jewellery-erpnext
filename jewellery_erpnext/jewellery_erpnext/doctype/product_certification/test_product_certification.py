@@ -2820,7 +2820,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 				)
 			],
 			exploded_product_details=[
-				frappe._dict(idx=1, item_code="M22", tree_no="TREE-A", gross_weight=0.460),
+				frappe._dict(
+					idx=1, item_code="M22", tree_no="TREE-A", gross_weight=0.460
+				),
 				frappe._dict(
 					idx=2,
 					item_code="M24",
@@ -2828,7 +2830,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 					gross_weight=0.120,
 					conversion_quantity=0.131,
 				),
-				frappe._dict(idx=3, item_code="ML22", tree_no="TREE-A", gross_weight=0.009),
+				frappe._dict(
+					idx=3, item_code="ML22", tree_no="TREE-A", gross_weight=0.009
+				),
 			],
 		)
 
@@ -2839,7 +2843,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 			utils as pc_utils,
 		)
 
-		defaults = {"M22": {"s_warehouse": "SUP-WH", "batch_no": None, "serial_no": None}}
+		defaults = {
+			"M22": {"s_warehouse": "SUP-WH", "batch_no": None, "serial_no": None}
+		}
 		if batches is not None:
 			defaults["M22"]["batches"] = list(batches)
 			defaults["M22"]["batch_no"] = batches[0][0] if batches else None
@@ -2858,7 +2864,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 		frappe.get_precision("Stock Entry Detail", "transfer_qty")
 
 		with (
-			patch.object(pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"),
+			patch.object(
+				pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"
+			),
 			patch.object(
 				pc_utils, "_get_department_scrap_warehouse", return_value="SCRAP-WH"
 			),
@@ -2881,11 +2889,15 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 
 	@staticmethod
 	def _consumes(se):
-		return [r for r in se.items if r.get("s_warehouse") and not r.get("t_warehouse")]
+		return [
+			r for r in se.items if r.get("s_warehouse") and not r.get("t_warehouse")
+		]
 
 	@staticmethod
 	def _produces(se):
-		return [r for r in se.items if r.get("t_warehouse") and not r.get("s_warehouse")]
+		return [
+			r for r in se.items if r.get("t_warehouse") and not r.get("s_warehouse")
+		]
 
 	def test_receipt_draws_each_issued_batch_in_order(self):
 		entries = self._run(self._doc(), batches=self.ISSUED)
@@ -2966,7 +2978,10 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 			[("M22", self.B1, 0.460)],
 		)
 		self.assertEqual(
-			[(r.item_code, r.batch_no, r.qty) for r in self._consumes(entries["Repack"])],
+			[
+				(r.item_code, r.batch_no, r.qty)
+				for r in self._consumes(entries["Repack"])
+			],
 			[("M22", self.B1, 0.131), ("M22", self.B1, 0.009)],
 		)
 
@@ -2976,7 +2991,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 		entries = self._run(self._doc(), batches=None)
 
 		receipt = entries["Material Receipt for Certification"]
-		self.assertEqual([(r.item_code, r.qty) for r in receipt.items], [("M22", 0.460)])
+		self.assertEqual(
+			[(r.item_code, r.qty) for r in receipt.items], [("M22", 0.460)]
+		)
 		self.assertEqual(
 			[(r.item_code, r.qty) for r in self._consumes(entries["Repack"])],
 			[("M22", 0.131), ("M22", 0.009)],
@@ -2985,7 +3002,10 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 	def test_an_empty_allocation_falls_back_too(self):
 		entries = self._run(self._doc(), batches=[])
 		self.assertEqual(
-			[(r.item_code, r.qty) for r in entries["Material Receipt for Certification"].items],
+			[
+				(r.item_code, r.qty)
+				for r in entries["Material Receipt for Certification"].items
+			],
 			[("M22", 0.460)],
 		)
 
@@ -3042,8 +3062,18 @@ class TestIssueBatchAllocationRead(IntegrationTestCase):
 				}
 			],
 			bundle_entries=[
-				{"parent": "BUNDLE-1", "batch_no": "B1", "serial_no": None, "qty": -0.081},
-				{"parent": "BUNDLE-1", "batch_no": "B2", "serial_no": None, "qty": -0.519},
+				{
+					"parent": "BUNDLE-1",
+					"batch_no": "B1",
+					"serial_no": None,
+					"qty": -0.081,
+				},
+				{
+					"parent": "BUNDLE-1",
+					"batch_no": "B2",
+					"serial_no": None,
+					"qty": -0.519,
+				},
 			],
 		)
 
@@ -3508,7 +3538,7 @@ class TestCertificationPoQty(IntegrationTestCase):
 		_skip_generated_test_records()
 		super().setUpClass()
 
-	def _po_for(self, service_type, categories, weights=None):
+	def _po_for(self, service_type, categories, weights=None, product_rows=0):
 		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
 			utils as pc_utils,
 		)
@@ -3526,6 +3556,7 @@ class TestCertificationPoQty(IntegrationTestCase):
 				frappe._dict(category=category, gross_weight=weight)
 				for category, weight in zip(categories, weights)
 			],
+			product_details=[frappe._dict() for _ in range(product_rows)],
 		)
 
 		created = []
@@ -3568,9 +3599,23 @@ class TestCertificationPoQty(IntegrationTestCase):
 		self.assertEqual(po.items[0].qty, 3)
 
 	def test_a_blank_category_is_one_piece(self):
-		"""A Fire Assy pure / loss row is appended with no category of its own."""
-		po = self._po_for("Fire Assy Service", ["Earrings", None])
+		po = self._po_for("Hall Marking Service", ["Earrings", None])
 		self.assertEqual(po.items[0].qty, 3)
+
+	def test_fire_assy_qty_is_product_details_rows(self):
+		"""Two samples explode into four rows (metal + pure / loss); the PO is for two."""
+		po = self._po_for("Fire Assy Service", [None] * 4, product_rows=2)
+		self.assertEqual(po.items[0].qty, 2)
+
+	def test_xrf_qty_is_product_details_rows(self):
+		po = self._po_for("XRF Services", [None] * 3, product_rows=1)
+		self.assertEqual(po.items[0].qty, 1)
+
+	def test_fire_assy_gross_weight_still_sums_exploded_rows(self):
+		po = self._po_for(
+			"Fire Assy Service", [None, None], weights=[2.5, 1.5], product_rows=1
+		)
+		self.assertEqual(po.items[0].custom_gross_wt, 4.0)
 
 	def test_gross_weight_is_not_weighted(self):
 		po = self._po_for(
