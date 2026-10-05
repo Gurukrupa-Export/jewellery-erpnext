@@ -151,6 +151,8 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 		split_from=None,
 		split_mrs=(),
 		moved=(),
+		receipts=(),
+		cancel_order=None,
 	):
 		calls = []
 
@@ -180,6 +182,8 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 		open_operation_queries = []
 		mr_queries = []
 		stock_queries = []
+		receipt_queries = []
+		order_queries = []
 		real_get_all = frappe.get_all
 
 		def _ga(doctype, *args, **kwargs):
@@ -194,6 +198,15 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 			if doctype == "Stock Entry Detail":
 				stock_queries.append(kwargs)
 				return [frappe._dict(row) for row in moved]
+			if doctype == "Stock Entry":
+				filters = kwargs.get("filters") or {}
+				if "outgoing_stock_entry" in filters:
+					receipt_queries.append(kwargs)
+					return list(receipts)
+				order_queries.append(kwargs)
+				if cancel_order is not None:
+					return list(cancel_order)
+				return sorted(filters["name"][1], reverse=True)
 			return real_get_all(doctype, *args, **kwargs)
 
 		with (
@@ -214,6 +227,8 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 				self.open_operation_queries = open_operation_queries
 				self.mr_queries = mr_queries
 				self.stock_queries = stock_queries
+				self.receipt_queries = receipt_queries
+				self.order_queries = order_queries
 
 	def assert_allowed(self, **kwargs):
 		with self.assertRaises(_ReachedOpenOperationsCheck):
@@ -322,6 +337,52 @@ class TestSplitWorkOrderEligibility(UnitTestCase):
 				"custom_manufacturing_work_order": ["is", "not set"],
 				"docstatus": ["!=", 2],
 			},
+		)
+
+	def test_moved_stock_lists_every_entry_latest_first(self):
+		"""The live case, KGJPL-MR-MF-26-46334: the error named only its reserve entry -- the
+		one that has to be cancelled last -- so it was cancelled first and ERPNext refused."""
+		exc = self.assert_blocked(
+			"latest first",
+			split_mrs=["MR-ORIG"],
+			moved=[
+				{"material_request": "MR-ORIG", "parent": "STE-RESERVE"},
+				{"material_request": "MR-ORIG", "parent": "STE-TRANSFER"},
+				{"material_request": "MR-ORIG", "parent": "STE-DEPT"},
+			],
+			receipts=["STE-RECEIPT"],
+			cancel_order=["STE-RECEIPT", "STE-DEPT", "STE-TRANSFER", "STE-RESERVE"],
+		)
+		message = str(exc)
+		listed = [
+			message.index(f">{se}<")
+			for se in ("STE-RECEIPT", "STE-DEPT", "STE-TRANSFER", "STE-RESERVE")
+		]
+		self.assertEqual(listed, sorted(listed))
+		self.assertEqual(message.count(">MR-ORIG<"), 1)
+		# The receipt has no material_request on its rows: it is found through its transfer.
+		self.assertEqual(
+			self.receipt_queries[0]["filters"],
+			{
+				"outgoing_stock_entry": [
+					"in",
+					["STE-DEPT", "STE-RESERVE", "STE-TRANSFER"],
+				],
+				"docstatus": 1,
+			},
+		)
+		self.assertEqual(
+			self.order_queries[0]["filters"],
+			{
+				"name": [
+					"in",
+					["STE-DEPT", "STE-RECEIPT", "STE-RESERVE", "STE-TRANSFER"],
+				]
+			},
+		)
+		self.assertEqual(
+			self.order_queries[0]["order_by"],
+			"posting_date desc, posting_time desc, creation desc",
 		)
 
 	def test_mrs_without_moved_stock_are_allowed(self):

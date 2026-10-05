@@ -1126,18 +1126,47 @@ def validate_split_eligibility(docname):
 			"Stock Entry Detail",
 			filters={"material_request": ["in", material_requests], "docstatus": 1},
 			fields=["material_request", "parent"],
-			limit=1,
 		)
 		if moved:
+			# Every entry, in the order they have to go: each step moved the previous one's
+			# stock on, so naming just one sent operators to the first entry -- the one
+			# ERPNext refuses to cancel until all the later ones are gone.
 			frappe.throw(
 				_(
-					"Material Request {0} has already moved stock through Stock Entry {1}. Reverse that stock before splitting Work Order {2}."
+					"Material Request {0} has already moved stock. Cancel these Stock Entries, latest first, before splitting Work Order {1}: {2}"
 				).format(
-					get_link_to_form("Material Request", moved[0].material_request),
-					get_link_to_form("Stock Entry", moved[0].parent),
+					", ".join(
+						get_link_to_form("Material Request", mr)
+						for mr in sorted({row.material_request for row in moved})
+					),
 					docname,
+					", ".join(
+						get_link_to_form("Stock Entry", se)
+						for se in _entries_in_cancel_order(
+							{row.parent for row in moved}
+						)
+					),
 				)
 			)
+
+
+def _entries_in_cancel_order(entries):
+	"""The submitted ``entries`` plus their End Transit receipts, latest first.
+
+	A department transfer's receipt carries no material_request on its rows, yet it moved
+	the same stock on and has to be cancelled before the transfer itself.
+	"""
+	receipts = frappe.get_all(
+		"Stock Entry",
+		filters={"outgoing_stock_entry": ["in", sorted(entries)], "docstatus": 1},
+		pluck="name",
+	)
+	return frappe.get_all(
+		"Stock Entry",
+		filters={"name": ["in", sorted({*entries, *receipts})]},
+		order_by="posting_date desc, posting_time desc, creation desc",
+		pluck="name",
+	)
 
 
 def _get_split_material_requests(docname):
