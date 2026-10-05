@@ -3048,3 +3048,31 @@ class TestSubmitWriteBudget(IntegrationTestCase):
 			self._cap_seen_by(is_external=0, refining_type=REFINING_TYPE_WORK_ORDER),
 			[800_000],
 		)
+
+
+class TestSupplierReceiptDifferenceAccount(IntegrationTestCase):
+	"""Receive from Supplier picks its Difference Account the same way the dust receipt does.
+
+	Its Manufacture Stock Entry left the account blank, so ERPNext took the refining items'
+	default -- the Refining Scrap warehouse's Stock account -- and rejected the receipt.
+	The account choice itself is covered by TestDustReceiptDifferenceAccount; this pins the
+	wiring. DB-free.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def test_the_difference_account_is_set_before_the_entry_is_inserted(self):
+		import inspect
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		source = inspect.getsource(RefiningEntry.receive_from_supplier)
+		guard = source.find("self.set_dust_receipt_difference_account(se)")
+		insert = source.find("se.insert(")
+
+		self.assertNotEqual(guard, -1, "receive_from_supplier no longer sets the Difference Account")
+		self.assertLess(guard, insert, "the Difference Account must be set before se.insert()")
