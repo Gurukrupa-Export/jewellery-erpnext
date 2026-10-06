@@ -13,7 +13,9 @@ Sub-Category when the settings row names one -- is listed in
 
 * ``Customer Goods``,
 * owned by the order's customer (``custom_customer == PMO.customer``, the existing lane), and
-* received for the order's end customer (``custom_ref_customer == PMO.ref_customer``).
+* received for the order's end customer (``custom_ref_customer == PMO.ref_customer``). Compared
+  literally, blank matching blank: an order with no Ref Customer takes only batches received
+  without one, never another end customer's.
 
 The manufacturer's "allow regular goods instead of customer goods" fallback does not apply to
 such a row. Every path reads ``hybrid_requirement``:
@@ -273,9 +275,9 @@ def hybrid_requirement(doc, row):
 	"""What a Hybrid order requires of ``row``'s batch, or ``None`` when the rule does not apply.
 
 	Returns ``_dict(pmo, customer, ref_customer, problem, item_code, finding_category,
-	finding_sub_category)``. ``ref_customer`` is ``None`` -- and ``problem`` says why -- when the
-	order has no Ref Customer or the row mixes Hybrid orders of different Ref Customers; no batch
-	is then eligible and the validator says so.
+	finding_sub_category)``. ``ref_customer`` is the order's and may be blank (see
+	``batch_is_eligible``). ``problem`` is ``"conflict"`` when the row serves Hybrid orders of
+	different Ref Customers or customers; no batch is then eligible and the validator says so.
 
 	Gates run cheapest first, so a non-finding row, an out-of-scope Stock Entry Type or an empty
 	settings table costs no query.
@@ -308,13 +310,11 @@ def hybrid_requirement(doc, row):
 	problem = None
 	if len(ref_customers) > 1 or len(customers) > 1:
 		problem = "conflict"
-	elif None in ref_customers:
-		problem = "no_ref_customer"
 
 	return frappe._dict(
 		pmo=", ".join(pmo.name for pmo in pmos),
 		customer=pmos[0].customer if len(customers) == 1 else None,
-		ref_customer=None if problem else pmos[0].ref_customer,
+		ref_customer=None if problem else (pmos[0].ref_customer or None),
 		problem=problem,
 		item_code=item_code,
 		finding_category=category,
@@ -323,14 +323,20 @@ def hybrid_requirement(doc, row):
 
 
 def batch_is_eligible(batch_info, requirement):
-	"""True when the batch is the order customer's Customer Goods, received for its Ref Customer."""
+	"""True when the batch is the order customer's Customer Goods, received for its Ref Customer.
+
+	The Ref Customer is compared literally, blank matching blank: an order with no Ref Customer
+	takes only batches received without one, and never another end customer's.
+	"""
 	info = batch_info or {}
 	return bool(
 		requirement
-		and requirement.ref_customer
+		and not requirement.problem
+		and requirement.customer
 		and info.get("custom_inventory_type") == CUSTOMER_GOODS
 		and info.get("custom_customer") == requirement.customer
-		and info.get(BATCH_REF_CUSTOMER_FIELD) == requirement.ref_customer
+		and (info.get(BATCH_REF_CUSTOMER_FIELD) or None)
+		== (requirement.ref_customer or None)
 	)
 
 
@@ -346,10 +352,15 @@ def shortfall_hint(requirement):
 		return _(
 			"This row serves Hybrid orders {0} that have different Ref Customers; split it per order."
 		).format(frappe.bold(requirement.pmo))
-	if requirement.problem == "no_ref_customer":
+	if not requirement.ref_customer:
 		return _(
-			"Hybrid order {0} has no Ref Customer, so its {1} findings cannot be matched to a customer batch."
-		).format(frappe.bold(requirement.pmo), frappe.bold(_finding_label(requirement)))
+			"Hybrid order {0} has no Ref Customer: only Customer Goods batches of {1} received without "
+			"a Ref Customer can be used for {2} findings."
+		).format(
+			frappe.bold(requirement.pmo),
+			frappe.bold(requirement.customer),
+			frappe.bold(_finding_label(requirement)),
+		)
 	return _(
 		"Hybrid order {0}: only Customer Goods batches received for Ref Customer {1} can be used for "
 		"{2} findings."
@@ -602,7 +613,8 @@ def hybrid_settlement_context(pmo_name, item_codes):
 		["name", "sales_type", "customer", "ref_customer"],
 		as_dict=True,
 	)
-	if not pmo or pmo.sales_type != HYBRID_SALES_TYPE or not pmo.ref_customer:
+	# A blank Ref Customer is still an answer: such an order owns the batches received without one.
+	if not pmo or pmo.sales_type != HYBRID_SALES_TYPE:
 		return None
 
 	listed = {
@@ -620,7 +632,7 @@ def hybrid_settlement_context(pmo_name, item_codes):
 	return frappe._dict(
 		pmo=pmo.name,
 		customer=pmo.customer,
-		ref_customer=pmo.ref_customer,
+		ref_customer=pmo.ref_customer or None,
 		item_codes=listed,
 	)
 

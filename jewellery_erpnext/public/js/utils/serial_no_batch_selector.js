@@ -399,17 +399,19 @@ erpnext.SerialNoBatchSelector = class SerialNoBatchSelector {
 							};
 							if (me.frm && me.frm.doc.doctype === "Stock Entry") {
 								// hybrid_findings.get_batch_no returns ERPNext's list, narrowed to the
-								// customer's batches only for a Hybrid order's listed finding.
-								Object.assign(filters, {
+								// customer's batches only for a Hybrid order's listed finding. Only the
+								// keys that have a value, so "Filtered by" never reads "equals empty".
+								const context = {
 									stock_entry_type: me.frm.doc.stock_entry_type,
-									parent_manufacturing_order:
-										me.item.custom_parent_manufacturing_order || null,
-									manufacturing_order: me.frm.doc.manufacturing_order || null,
+									parent_manufacturing_order: me.item.custom_parent_manufacturing_order,
+									manufacturing_order: me.frm.doc.manufacturing_order,
 									manufacturing_work_order:
 										me.item.custom_manufacturing_work_order ||
-										me.frm.doc.manufacturing_work_order ||
-										null,
-								});
+										me.frm.doc.manufacturing_work_order,
+								};
+								for (const [key, value] of Object.entries(context)) {
+									if (value) filters[key] = value;
+								}
 								return {
 									filters: filters,
 									query: "jewellery_erpnext.customer_subcontracting.hybrid_findings.get_batch_no",

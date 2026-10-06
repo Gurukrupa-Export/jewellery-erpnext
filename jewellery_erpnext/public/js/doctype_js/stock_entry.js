@@ -2005,15 +2005,21 @@ function set_hybrid_finding_batch_query(frm) {
 		) {
 			return query;
 		}
+		// Only the keys that have a value: an empty one shows up as "<key> equals empty" in the
+		// link field's "Filtered by" line, and the server reads missing and empty the same.
+		const context = {
+			stock_entry_type: doc.stock_entry_type,
+			parent_manufacturing_order: row.custom_parent_manufacturing_order,
+			manufacturing_order: doc.manufacturing_order,
+			manufacturing_work_order: row.custom_manufacturing_work_order || doc.manufacturing_work_order,
+		};
+		const filters = Object.assign({}, query.filters);
+		for (const [key, value] of Object.entries(context)) {
+			if (value) filters[key] = value;
+		}
 		return {
 			query: "jewellery_erpnext.customer_subcontracting.hybrid_findings.get_batch_no",
-			filters: Object.assign({}, query.filters, {
-				stock_entry_type: doc.stock_entry_type,
-				parent_manufacturing_order: row.custom_parent_manufacturing_order || null,
-				manufacturing_order: doc.manufacturing_order || null,
-				manufacturing_work_order:
-					row.custom_manufacturing_work_order || doc.manufacturing_work_order || null,
-			}),
+			filters: filters,
 		};
 	});
 }

@@ -140,7 +140,7 @@
    "label": "Hybrid Orders"
   },
   {
-   "description": "For Sales Orders of Sales Type <b>Hybrid</b> only. A finding of a category (or sub-category) listed here may be issued to the order only from a <b>Customer Goods</b> batch whose <b>Ref Customer</b> is the order's Ref Customer. The batch gets its Ref Customer from the Customer Goods Received entry. Applies to Material Transfer (DEPARTMENT), Material transfer to Reserve and Material Transfer (WORK ORDER). Leave empty to switch the rule off.",
+   "description": "For Sales Orders of Sales Type <b>Hybrid</b> only. A finding of a category (or sub-category) listed here may be issued to the order only from a <b>Customer Goods</b> batch whose <b>Ref Customer</b> is the order's Ref Customer. The batch gets its Ref Customer from the Customer Goods Received entry; an order without a Ref Customer uses only batches received without one. Applies to Material Transfer (DEPARTMENT), Material transfer to Reserve and Material Transfer (WORK ORDER). Leave empty to switch the rule off.",
    "fieldname": "hybrid_finding_categories",
    "fieldtype": "Table",
    "label": "Customer Batch Only Finding Categories",

@@ -334,18 +334,26 @@ class TestHybridRequirement(_Case):
 			on_mwo = self._requirement(row, entry=entry)[0]
 		self.assertEqual(on_mwo.ref_customer, REF)
 
-	def test_an_order_without_ref_customer_matches_nothing(self):
+	def test_an_order_without_ref_customer_takes_only_batches_without_one(self):
+		"""KGGK-SO-26-00417 / KGJPL-SE-CGR-26-00002: both blank, and blank matches blank."""
 		requirement = self._requirement(_row(pmo=NO_REF_PMO))[0]
-		self.assertEqual(requirement.problem, "no_ref_customer")
+		self.assertIsNone(requirement.problem)
 		self.assertIsNone(requirement.ref_customer)
+		self.assertTrue(H.batch_is_eligible(BATCHES[NO_REF], requirement))
 		self.assertFalse(H.batch_is_eligible(BATCHES[OWN], requirement))
+		self.assertFalse(H.batch_is_eligible(BATCHES[OTHER], requirement))
+		self.assertFalse(H.batch_is_eligible(BATCHES[COMPANY], requirement))
 
 	def test_a_row_for_two_orders_of_different_ref_customers_matches_nothing(self):
-		requirement = self._requirement(_row(pmo=f"{HYBRID_PMO}, {OTHER_HYBRID_PMO}"))[
-			0
-		]
-		self.assertEqual(requirement.problem, "conflict")
-		self.assertFalse(H.batch_is_eligible(BATCHES[OWN], requirement))
+		for pmos in (
+			f"{HYBRID_PMO}, {OTHER_HYBRID_PMO}",
+			# Blank is a Ref Customer of its own here, not a wildcard.
+			f"{HYBRID_PMO}, {NO_REF_PMO}",
+		):
+			requirement = self._requirement(_row(pmo=pmos))[0]
+			self.assertEqual(requirement.problem, "conflict")
+			self.assertFalse(H.batch_is_eligible(BATCHES[OWN], requirement))
+			self.assertFalse(H.batch_is_eligible(BATCHES[NO_REF], requirement))
 
 
 class TestBatchEligibility(_Case):
@@ -395,6 +403,14 @@ class TestValidator(_Case):
 		with self.assertRaises(frappe.ValidationError):
 			self._validate(_entry([_row(batch_no=None)]))
 
+	def test_an_order_without_ref_customer_passes_with_a_batch_without_one(self):
+		self._validate(_entry([_row(batch_no=NO_REF, pmo=NO_REF_PMO)]))
+
+	def test_an_order_without_ref_customer_rejects_another_end_customers_batch(self):
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self._validate(_entry([_row(batch_no=OWN, pmo=NO_REF_PMO)]))
+		self.assertIn("has no Ref Customer", str(raised.exception))
+
 	def test_the_reserve_entry_is_checked_too(self):
 		with self.assertRaises(frappe.ValidationError):
 			self._validate(_entry([_row(batch_no=COMPANY)], stock_entry_type=RESERVE))
@@ -427,7 +443,7 @@ class TestValidator(_Case):
 
 
 class TestPicker(_Case):
-	ERPNEXT_LIST = [(OWN, 5.0), (OTHER, 3.0), (COMPANY, 9.0)]
+	ERPNEXT_LIST = [(OWN, 5.0), (OTHER, 3.0), (NO_REF, 4.0), (COMPANY, 9.0)]
 
 	def _pick(self, filters):
 		with ExitStack() as stack:
@@ -459,6 +475,19 @@ class TestPicker(_Case):
 		self.assertEqual(result, [(OWN, 5.0)])
 		# The context keys never reach ERPNext's query.
 		self.assertEqual(dict(passed), {"item_code": CHAIN, "warehouse": "WH"})
+
+	def test_an_order_without_ref_customer_lists_its_batches_without_one(self):
+		"""The reported form: row PMO empty (key not sent), order on the header, both blank."""
+		result, _passed = self._pick(
+			{
+				"item_code": CHAIN,
+				"warehouse": "WH",
+				"stock_entry_type": MT_WO,
+				"manufacturing_order": NO_REF_PMO,
+				"manufacturing_work_order": "MWO-1",
+			}
+		)
+		self.assertEqual(result, [(NO_REF, 4.0)])
 
 
 class TestFifo(_Case):
@@ -536,6 +565,12 @@ class TestFifo(_Case):
 	def test_other_sales_types_keep_plain_fifo(self):
 		lanes = self._allocate([(COMPANY, 5.0), (OWN, 5.0)], pmo=OUTRIGHT_PMO)
 		self.assertEqual(list(lanes), [COMPANY])
+
+	def test_an_order_without_ref_customer_takes_its_batch_without_one(self):
+		lanes = self._allocate(
+			[(COMPANY, 5.0), (OWN, 5.0), (NO_REF, 5.0)], pmo=NO_REF_PMO
+		)
+		self.assertEqual(lanes, {NO_REF: ("Customer Goods", GK_EXPORT)})
 
 	def test_a_shortfall_names_the_ref_customer(self):
 		with self.assertRaises(frappe.ValidationError) as raised:
@@ -811,6 +846,15 @@ class TestSncExemption(_Case):
 
 	def test_another_ref_customers_finding_is_still_borrowed(self):
 		self.assertTrue(self._needs_settlement([self._held(CHAIN, OTHER_REF)]))
+
+	def test_an_order_without_ref_customer_owns_its_batch_without_one(self):
+		self.assertFalse(
+			self._needs_settlement([self._held(CHAIN, None)], pmo=NO_REF_PMO)
+		)
+		# ...but another end customer's tagged finding is still borrowed.
+		self.assertTrue(
+			self._needs_settlement([self._held(CHAIN, REF)], pmo=NO_REF_PMO)
+		)
 
 	def test_an_unlisted_customer_finding_is_still_borrowed(self):
 		self.assertTrue(self._needs_settlement([self._held(POST, REF)]))
