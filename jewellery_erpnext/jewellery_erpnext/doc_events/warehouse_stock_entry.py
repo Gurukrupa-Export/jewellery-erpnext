@@ -295,9 +295,15 @@ def _guard_customer_loss(se_loss):
 
 def _refresh_tracking(warehouse):
 	"""Recompute the maintained ``custom_msl_tracking`` table after a move. A tracking-refresh
-	failure must not roll back the stock posting, so failures are logged, not raised."""
+	failure must not roll back the stock posting, so failures are logged, not raised -- except a
+	deadlock (1213, or 1020 under snapshot isolation): InnoDB has already rolled the whole
+	transaction back by then, so it is re-raised."""
 	try:
 		recalculate_msl_tracking(warehouse)
+	except frappe.QueryDeadlockError:
+		# The move is already rolled back; logging and carrying on would commit the rest of the
+		# request in a fresh transaction, reporting success for nothing.
+		raise
 	except Exception:
 		frappe.log_error(
 			title="Warehouse Issue/Receive: MSL tracking refresh failed",

@@ -8,8 +8,65 @@ Canonical order (acquire in this sequence inside every multi-doctype write):
 
     Parent control row  ->  tabSeries  ->  tabBin  ->  Batch / SBB
         ->  Stock Reservation Entry  ->  Stock Ledger Entry
-        ->  MOP Log  ->  Manufacturing Operation
-        ->  stamping counter (terminal)
+        ->  MOP Log  ->  Manufacturing Operation  ->  Manufacturing Work Order
+        ->  stamping counter / Employee IR draft re-check (terminal)
+
+Manufacturing Operation comes before Manufacturing Work Order because that is the order the
+hottest existing path already uses: a Stock Entry's MOP Log bridge locks the operation
+(``MOPLog.validate``) and ``stamp_snc_requirement`` then writes the work order.
+
+RULE D -- the work-order lifecycle block (:func:`lock_manufacturing_operations` then
+:func:`lock_work_orders`, see ``doc_events/current_operation_guard.py``) is taken by Employee IR
+and Department IR saves, submits and cancels, before the document is named or its own rows are
+locked. Every attempt starts with ``current_operation_guard.begin_attempt`` -- the first
+statement of the controller's ``check_if_latest`` (an existing document) or ``before_insert`` (a
+new one): a save or submit during the EOD sync or an open stock-reconciliation window is refused
+there by plain reads, before any lock below. A NEW document takes the block in ``before_insert``,
+i.e. before ``set_new_name`` locks the shared naming-series row, so no request ever waits on a
+busy work order while holding that row. A save or submit of an EXISTING document takes it in its
+controller's ``check_if_latest``, before Frappe loads the document's own rows FOR UPDATE. An
+Employee IR Receive SUBMIT takes its Tree / Series / Bin pre-locks there first
+(``employee_ir.take_receive_prelocks``) and the block right after them, so the Stock Entry order
+Tree -> Series -> Bin -> MOP -> MWO holds; only when they were not taken early (warn mode) does
+``on_submit_receive`` take both, in the same order. Cancels still lock their own rows
+(``check_if_latest``) and their trees before the block.
+
+RULE E -- the block is two-phase: every operation row first, then every work-order row, each
+set sorted, taken once. A Department IR save adds its row operations' PREVIOUS operations to the
+operation phase, because ``update_previous_mop_data`` writes them afterwards. An interactive
+attempt waits for the whole block (both phases, and a re-entrant second pass) within ONE budget
+(``current_operation_lock_wait``, 15 s): each statement waits for what is left of it, and once it
+is spent the remaining rows are taken NOWAIT; background jobs keep the server's
+``innodb_lock_wait_timeout`` per statement. While holding the block, never WAIT on another
+document's rows: only non-waiting locking reads (``NOWAIT`` / ``SKIP LOCKED``: the terminal
+Employee IR draft re-check and the confirmation of what the transaction's older snapshot reported)
+are allowed.
+
+Writes that follow the block must lock only the rows they change. A ``set_value`` / ``UPDATE`` with
+a filter no index serves scans the whole table and, under REPEATABLE READ, keeps a next-key lock on
+every row and gap it read until the transaction ends -- every other writer of that table waits, and
+one that already holds a row there closes a deadlock cycle with the block. The cancels write
+``tabMOP Log`` (by voucher), ``tabDepartment IR Operation`` / ``tabStock Entry Detail`` (by
+operation) and ``tabEmployee IR`` / ``tabEmployee IR Operation`` (casting-tree stamps), none of
+them indexed for those filters on production: they read the matching names with a plain read and
+write by primary key (:func:`update_by_primary_key`).
+
+Residual edges, by design (each resolves as an InnoDB 1213: one side rolls back and is retried):
+
+* an Employee IR Receive's metal-injection / loss Stock Entries lock source Bins resolved only at
+  that point (each Stock Entry's ``prelock_bins``), i.e. after the block; so does the
+  Process Loss / injection cancel of an Employee Receive cancel (``prelock_bins_on_cancel``);
+* Refining Entry and the work-order split write the work order before its operations;
+* the terminal draft re-check is the last statement of ``on_update`` / ``on_submit``, but Frappe
+  still runs ``save_version`` / ``on_change`` / the Server Scripts after it in the same
+  transaction, holding the re-check's share / gap locks for those milliseconds;
+* ``preallocate_series`` / ``lock_bins`` (the Receive pre-locks) are plain ``FOR UPDATE`` and wait
+  the server default, outside the block's budget;
+* a casting Employee Issue cancel cancels its tree's Stock Entries (``cancel_tree_stock_entries``,
+  ``prelock_bins_on_cancel``) after the block;
+* a REST ``PUT`` / ``PATCH`` of a saved Employee / Department IR loads the document
+  ``for_update`` (its own parent and child rows) before ``check_if_latest`` runs the pre-locks and
+  the block; a concurrent new document of the same work order can then deadlock with it.
 
 Two rules every custom on_submit / hook must follow:
 
@@ -145,6 +202,132 @@ def lock_bins_for_rows(rows, *warehouse_attrs):
 		for attr in warehouse_attrs:
 			pairs.append((item_code, get(attr)))
 	return lock_bins(pairs)
+
+
+MANUFACTURING_OPERATION_LOCK_FIELDS = (
+	"name",
+	"manufacturing_work_order",
+	"company",
+	"department",
+	"status",
+	"department_ir_status",
+	"operation",
+	"employee",
+	"subcontractor",
+	"for_subcontracting",
+	"department_issue_id",
+	"department_receive_id",
+	"employee_ir",
+	"previous_mop",
+	# compared with the transaction's snapshot after the wait: a row changed meanwhile means the
+	# snapshot the side effects read from is older than the decision (see the guard's
+	# _refuse_if_snapshot_older)
+	"modified",
+)
+
+WORK_ORDER_LOCK_FIELDS = (
+	"name",
+	"docstatus",
+	"company",
+	"manufacturing_operation",
+	"department",
+)
+
+
+def _lock_wait_clause(wait):
+	"""SQL suffix for a locking read: ``None`` = server default, ``0`` = NOWAIT, ``n`` = WAIT n."""
+	if wait is None:
+		return ""
+	wait = int(wait)
+	return " NOWAIT" if wait <= 0 else f" WAIT {wait}"
+
+
+def _lock_rows_by_name(table, fields, names, wait):
+	"""Lock each named row of ``table`` with a primary-key ``SELECT ... FOR UPDATE``, one
+	statement per row in sorted order, and return ``{name: row}`` from those locking reads.
+
+	Primary-key equality on an existing row takes a record lock only (no gap lock). The rows
+	returned ARE the locking reads, so they show the latest committed values even when the
+	transaction's REPEATABLE READ snapshot is older -- callers must decide from these rows,
+	never from a plain re-read. Missing names are simply absent from the result.
+
+	``wait``: ``None`` (the server default), seconds (``0`` = NOWAIT), or a callable returning one
+	of those for EACH statement -- how several statements share one deadline (the guard's lock
+	budget, RULE E).
+
+	A failed statement (lock wait timeout, NOWAIT conflict, deadlock) is re-raised with the name
+	it was waiting for in ``exc.lock_row_name``, so the caller can say WHICH row is busy.
+	"""
+	columns = ", ".join(f"`{f}`" for f in fields)
+	locked = {}
+	for name in sorted({n for n in names if n}):
+		suffix = _lock_wait_clause(wait() if callable(wait) else wait)
+		try:
+			rows = frappe.db.sql(
+				f"SELECT {columns} FROM `{table}` WHERE name = %s FOR UPDATE{suffix}",
+				(name,),
+				as_dict=True,
+			)
+		except Exception as exc:
+			try:
+				exc.lock_row_name = name
+			except Exception:
+				pass  # no instance __dict__: the caller then names every candidate instead
+			raise
+		if rows:
+			locked[name] = rows[0]
+	return locked
+
+
+def update_by_primary_key(
+	doctype, filters, fieldname, value=None, *, update_modified=True
+):
+	"""``frappe.db.set_value(doctype, filters, fieldname, value)`` that locks only the rows it
+	changes. Returns the names it updated (sorted).
+
+	``set_value`` with a filter dict is ONE ``UPDATE ... WHERE <filters>``. When no index serves
+	those filters, InnoDB scans the whole table and -- under REPEATABLE READ -- keeps a next-key
+	lock on every row and gap it read until the transaction ends (RULE E: writes after the block).
+	Here the matching names come from a plain (consistent, lock-free) read and the UPDATE goes by
+	primary key, with the filters applied again so a row that stopped matching is left alone.
+
+	A plain read does not see rows committed after this transaction's snapshot. Safe for a
+	voucher's own rows (all written by its own submit, and the cancel holds the voucher). For the
+	link clears before ``delete_doc`` (rows of cancelled or discarded documents naming the deleted
+	operation) a row that became cancelled after the snapshot is missed here, and ``delete_doc``'s
+	link check -- reading the same snapshot -- then refuses the delete with a LinkExistsError and
+	the whole cancel rolls back: nothing is deleted while still linked; the user retries.
+	"""
+	names = sorted(
+		set(
+			frappe.db.get_values(
+				doctype, filters, "name", pluck=True, order_by="name asc"
+			)
+		)
+	)
+	if names:
+		frappe.db.set_value(
+			doctype,
+			{**filters, "name": ("in", names)},
+			fieldname,
+			value,
+			update_modified=update_modified,
+		)
+	return names
+
+
+def lock_manufacturing_operations(names, *, wait=None):
+	"""Lock Manufacturing Operation rows (RULE D/E phase one) and return their fresh state."""
+	return _lock_rows_by_name(
+		"tabManufacturing Operation", MANUFACTURING_OPERATION_LOCK_FIELDS, names, wait
+	)
+
+
+def lock_work_orders(names, *, wait=None):
+	"""Lock Manufacturing Work Order rows (RULE D/E phase two) and return their fresh state."""
+	return _lock_rows_by_name(
+		"tabManufacturing Work Order", WORK_ORDER_LOCK_FIELDS, names, wait
+	)
 
 
 def lock_items(item_codes):
