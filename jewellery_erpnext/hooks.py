@@ -270,6 +270,12 @@ doc_events = {
 			# the Stock Entry itself, never on the dozen cascades that mint one from
 			# another doctype's lifecycle -- see the module docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.validate_stock_entry_type_permission",
+			# F5: a consuming row must draw the owner's material its PMO was placed on. At
+			# `validate` because before_validate's update_batches has by then allocated the
+			# batches this reads, and because the original on_submit wiring only complained
+			# after the stock had already moved. Restored here rather than by un-commenting
+			# its old call site, so the ordering against the other row rewriters is explicit.
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.validate_inventory_dimention",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [

@@ -937,6 +937,10 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 					pcs=1,
 					cost_center=None,
 					custom_sub_setting_type=None,
+					# Carried onto the reserve entry's rows so the FIFO allocator can tell
+					# whether the row draws the customer's material. See
+					# ``se_utils.row_variant_of``.
+					custom_variant_of="M",
 				)
 				for i, wh in enumerate(from_warehouses)
 			],

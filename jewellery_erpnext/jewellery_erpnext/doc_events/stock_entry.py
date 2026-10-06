@@ -453,8 +453,6 @@ def validate_mop_is_current(self):
 
 
 def validate_ir(self):
-	# 	validate_inventory_dimention(self)
-
 	if self.auto_created == 0:
 		if self.stock_entry_type in [
 			"Material Receive (WORK ORDER)",

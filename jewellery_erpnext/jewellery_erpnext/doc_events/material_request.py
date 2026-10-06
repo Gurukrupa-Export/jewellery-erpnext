@@ -1317,6 +1317,15 @@ def create_stock_entry(self, method):
 				"sub_setting_type": row.custom_sub_setting_type,
 				"use_serial_batch_fields": True,
 				"custom_parent_manufacturing_order": self.manufacturing_order,
+				# Carried explicitly, not left to the ``fetch_from: item_code.variant_of``
+				# on Stock Entry Detail. That fetch runs in ``validate``, but this entry's
+				# batches are allocated one step earlier in ``before_validate``
+				# (``update_batches`` -> ``get_fifo_batches``), which needs the letter to
+				# decide whether the row draws the CUSTOMER's stones. Without it every
+				# customer-diamond / customer-gemstone reserve silently took company stock.
+				# ``get_fifo_batches`` also falls back to the Item master, so this is the
+				# belt to that braces -- it additionally makes the stored row self-describing.
+				"custom_variant_of": row.custom_variant_of,
 			},
 		)
 
