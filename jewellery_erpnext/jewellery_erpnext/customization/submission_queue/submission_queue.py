@@ -19,9 +19,25 @@ LONG_SUBMISSION_DOCTYPES = (
 	"Refining Entry",
 )
 
+# Submissions checked against the work order's current operation before they are queued.
+CURRENT_OPERATION_PREFLIGHT_DOCTYPES = ("Employee IR", "Department IR")
+
 
 class CustomSubmissionQueue(SubmissionQueue):
 	def insert(self, to_be_queued_doc: Document, action: str):
+		if (
+			self.ref_doctype in CURRENT_OPERATION_PREFLIGHT_DOCTYPES
+			and (action or "").lower() == "submit"
+		):
+			# Lock-free work-order current-operation check in the user's own request: a stale
+			# draft is refused here with the real reason and no queue row is created. The
+			# worker re-checks authoritatively under locks before any side effect.
+			from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+				preflight,
+			)
+
+			preflight(to_be_queued_doc)
+
 		queue = frappe.db.get_value(
 			"Submission Queue",
 			{

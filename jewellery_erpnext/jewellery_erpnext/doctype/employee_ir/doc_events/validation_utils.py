@@ -59,22 +59,29 @@ def validate_duplication_and_gr_wt(self):
 		"Department Operation", self.operation, "allow_finding_mwo"
 	)
 
-	# Batch database check
-	mop_list = [row.manufacturing_operation for row in self.employee_ir_operations]
-	EIR = frappe.qb.DocType("Employee IR")
-	EOP = frappe.qb.DocType("Employee IR Operation")
-	duplicates = (
-		frappe.qb.from_(EIR)
-		.left_join(EOP)
-		.on(EOP.parent == EIR.name)
-		.select(EOP.manufacturing_operation)
-		.where(
-			(EIR.name != self.name)
-			& (EIR.type == self.type)
-			& (EOP.manufacturing_operation.isin(mop_list))
-			& (EIR.docstatus != 2)
-		)
-	).run(pluck="manufacturing_operation")
+	# Batch database check. An empty list would render `IN ()` (SQL 1064), so skip it then.
+	# Save-time UX only: the authoritative, lock-protected check is current_operation_guard.
+	mop_list = [
+		row.manufacturing_operation
+		for row in self.employee_ir_operations
+		if row.manufacturing_operation
+	]
+	duplicates = []
+	if mop_list:
+		EIR = frappe.qb.DocType("Employee IR")
+		EOP = frappe.qb.DocType("Employee IR Operation")
+		duplicates = (
+			frappe.qb.from_(EIR)
+			.left_join(EOP)
+			.on(EOP.parent == EIR.name)
+			.select(EOP.manufacturing_operation)
+			.where(
+				(EIR.name != self.name)
+				& (EIR.type == self.type)
+				& (EOP.manufacturing_operation.isin(mop_list))
+				& (EIR.docstatus != 2)
+			)
+		).run(pluck="manufacturing_operation")
 
 	if duplicates:
 		frappe.throw(

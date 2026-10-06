@@ -1209,16 +1209,34 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 	resubmit / replay do not create duplicates.
 	"""
 	if is_cancelled:
-		frappe.db.sql(
-			"""
-			UPDATE `tabMOP Log`
-			SET is_cancelled = 1
-			WHERE voucher_type = 'Stock Entry'
-			  AND voucher_no = %s
-			  AND is_cancelled = 0
-			""",
-			(self.name,),
-		)
+		# Read this voucher's rows first (plain read; they were all written by its own submit,
+		# and the cancel holds the Stock Entry) and flip them by primary key. A voucher-filtered
+		# UPDATE has no index to use on production: it scanned and locked every MOP Log row of
+		# the site until the cancel committed (lock_order RULE E) -- on every Stock Entry
+		# cancel, including those an Employee / Department IR cancel makes after its
+		# current-operation lock block.
+		names = [
+			r[0]
+			for r in frappe.db.sql(
+				"""
+				SELECT name FROM `tabMOP Log`
+				WHERE voucher_type = 'Stock Entry'
+				  AND voucher_no = %s
+				  AND is_cancelled = 0
+				""",
+				(self.name,),
+			)
+		]
+		if names:
+			frappe.db.sql(
+				"""
+				UPDATE `tabMOP Log`
+				SET is_cancelled = 1
+				WHERE name IN %(names)s
+				  AND is_cancelled = 0
+				""",
+				{"names": sorted(names)},
+			)
 		return
 
 	# Nothing to sync unless at least one row is MOP-bound; skip the snapshot query
