@@ -1941,7 +1941,9 @@ def create_stock_entry(doc):
 						"t_warehouse": supplier_wh
 						if doc.type == "Issue"
 						else s_warehouse,
-						"Inventory_type": "Regular Stock",
+						# No inventory_type: the piece's lane comes from its serial's last receipt
+						# (serial_ownership.stamp_serial_row_ownership). The "Inventory_type" key
+						# that sat here was capitalised, so it never reached the row anyway.
 						"reference_doctype": "Serial No",
 						"reference_docname": row.serial_no,
 						"serial_and_batch_bundle": None,
@@ -2399,7 +2401,6 @@ def get_stock_item_against_mwo(
 				"qty": qty,
 				"s_warehouse": item_s_warehouse,
 				"t_warehouse": t_warehouse,
-				"Inventory_type": "Regular Stock",
 				"reference_doctype": "Manufacturing Work Order"
 				if row.manufacturing_work_order
 				else "Parent Manufacturing Order",
@@ -2539,7 +2540,6 @@ def get_stock_item_against_mwo(
 				"qty": qty,
 				"s_warehouse": item.t_warehouse,  # Issue's target becomes Receive's source
 				"t_warehouse": s_warehouse,  # Department warehouse as target for receive
-				"Inventory_type": "Regular Stock",
 				# Mirror the Issue line's own reference so the next partial receipt can
 				# match its outstanding on the same key. Falls back to the exploded row
 				# for legacy Issue entries that carry no reference.
