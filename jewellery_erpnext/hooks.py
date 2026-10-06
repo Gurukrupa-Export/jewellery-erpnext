@@ -513,6 +513,11 @@ override_whitelisted_methods = {
 	# weights export as 25.3796 while the UI shows 25.38. Round Float cells to the
 	# same precision the UI uses for Serial No exports only.
 	"frappe.core.doctype.data_import.data_import.download_template": "jewellery_erpnext.jewellery_erpnext.doc_events.data_export.download_template",
+	# Single Variant "Create": reject Attribute Value "Not Allowed" combinations
+	# before the dialog closes, instead of only when the new item is saved.
+	"erpnext.controllers.item_variant.get_variant": "jewellery_erpnext.jewellery_erpnext.doc_events.item.get_variant",
+	# Multiple Variants "Create": skip Attribute Value "Not Allowed" combinations.
+	"erpnext.controllers.item_variant.enqueue_multiple_variant_creation": "jewellery_erpnext.jewellery_erpnext.doc_events.item.enqueue_multiple_variant_creation",
 }
 
 override_doctype_class = {

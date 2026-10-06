@@ -14,6 +14,7 @@ def validate(self, method):
 	system_item_restriction(self)
 	update_item_uom_conversion(self)
 	set_attribute_and_value_in_description(self)
+	validate_not_allowed_attribute_values(self)
 
 
 def before_save(self, method):
@@ -27,7 +28,9 @@ def on_trash(self, method):
 
 
 def system_item_restriction(self):
-	items = frappe.get_all("Jewellery System Item", {"parent": "Jewellery Settings"}, "item_code")
+	items = frappe.get_all(
+		"Jewellery System Item", {"parent": "Jewellery Settings"}, "item_code"
+	)
 	item_list = [row.get("item_code") for row in items]
 	if (
 		not self.is_new()
@@ -35,7 +38,11 @@ def system_item_restriction(self):
 		and self.is_system_item
 		and (self.item_code in item_list or self.variant_of in item_list)
 	):
-		frappe.throw(_("You can not edit system item. Please contact administrator to edit the item."))
+		frappe.throw(
+			_(
+				"You can not edit system item. Please contact administrator to edit the item."
+			)
+		)
 	if self.item_code in item_list and not self.is_system_item:
 		self.is_system_item = 1
 
@@ -60,9 +67,15 @@ def add_item_attributes(self):
 						"numeric_values": frappe.db.get_value(
 							"Item Attribute", row.item_attribute, "numeric_values"
 						),
-						"from_range": frappe.db.get_value("Item Attribute", row.item_attribute, "from_range"),
-						"to_range": frappe.db.get_value("Item Attribute", row.item_attribute, "to_range"),
-						"increment": frappe.db.get_value("Item Attribute", row.item_attribute, "increment"),
+						"from_range": frappe.db.get_value(
+							"Item Attribute", row.item_attribute, "from_range"
+						),
+						"to_range": frappe.db.get_value(
+							"Item Attribute", row.item_attribute, "to_range"
+						),
+						"increment": frappe.db.get_value(
+							"Item Attribute", row.item_attribute, "increment"
+						),
 					},
 				)
 
@@ -87,40 +100,316 @@ def set_diamond_attribute_weight(self, attribute_list):
 		attribute_filters = {}
 		for row in self.attributes:
 			if row.attribute == "Diamond Type":
-				attribute_filters.update({row.attribute.replace(" ", "_").lower(): row.attribute_value})
+				attribute_filters.update(
+					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
+				)
 			if row.attribute == "Stone Shape":
-				attribute_filters.update({row.attribute.replace(" ", "_").lower(): row.attribute_value})
+				attribute_filters.update(
+					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
+				)
 			if row.attribute == "Diamond Sieve Size":
-				attribute_filters.update({row.attribute.replace(" ", "_").lower(): row.attribute_value})
+				attribute_filters.update(
+					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
+				)
 		if frappe.db.exists("Diamond Weight", attribute_filters):
 			weight = frappe.db.get_value("Diamond Weight", attribute_filters, "weight")
 	return weight or 0
 
 
 def set_gemstone_attribute_weight(self, attribute_list):
-	gemstone_attribute_list = ["Gemstone Type", "Stone Shape", "Gemstone Grade", "Gemstone Size"]
+	gemstone_attribute_list = [
+		"Gemstone Type",
+		"Stone Shape",
+		"Gemstone Grade",
+		"Gemstone Size",
+	]
 	weight = 0
 	if set(gemstone_attribute_list).issubset(set(attribute_list)):
 		attribute_filters = {}
 		for row in self.attributes:
 			if row.attribute == "Gemstone Type":
-				attribute_filters.update({row.attribute.replace(" ", "_").lower(): row.attribute_value})
+				attribute_filters.update(
+					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
+				)
 			if row.attribute == "Stone Shape":
-				attribute_filters.update({row.attribute.replace(" ", "_").lower(): row.attribute_value})
+				attribute_filters.update(
+					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
+				)
 			if row.attribute == "Gemstone Grade":
-				attribute_filters.update({row.attribute.replace(" ", "_").lower(): row.attribute_value})
+				attribute_filters.update(
+					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
+				)
 			if row.attribute == "Gemstone Size":
-				attribute_filters.update({row.attribute.replace(" ", "_").lower(): row.attribute_value})
+				attribute_filters.update(
+					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
+				)
 		if frappe.db.exists("Gemstone Weight", attribute_filters):
 			weight = frappe.db.get_value("Gemstone Weight", attribute_filters, "weight")
 	return weight
+
+
+def get_not_allowed_attribute_values(selected_values):
+	"""Values blocked by the Not Allowed table of the selected Attribute Values.
+
+	Returns {item_attribute: {blocked_value: blocking_attribute_value}}, e.g.
+	["Coral"] -> {"Cut or Cab": {"Faceted": "Coral"}}. Blocks from several
+	selected values are combined.
+	"""
+	blocked = {}
+	for row in get_not_allowed_rows(selected_values):
+		blocked.setdefault(row.item_attribute, {}).setdefault(
+			row.attribute_value, row.parent
+		)
+	return blocked
+
+
+def get_not_allowed_rows(selected_values):
+	"""Not Allowed rows (parent, item_attribute, attribute_value) of the selected values."""
+	selected_values = [value for value in selected_values if value]
+	if not selected_values:
+		return []
+
+	return frappe.get_all(
+		"Attribute Value Not Allowed Detail",
+		filters={
+			"parenttype": "Attribute Value",
+			"parentfield": "not_allowed_attribute_values",
+			"parent": ("in", selected_values),
+		},
+		fields=["parent", "item_attribute", "attribute_value"],
+	)
+
+
+@frappe.whitelist()
+def get_allowed_attribute_values(item_attribute, txt="", selected=None):
+	"""Autocomplete source for an attribute field of the Create Variant dialog.
+
+	Same list as ERPNext's get_item_attribute, minus the values blocked by
+	the other attribute values already selected in the dialog.
+	"""
+	if not frappe.has_permission("Item"):
+		frappe.throw(_("No Permission"))
+
+	selected = frappe.parse_json(selected) or {}
+	values = frappe.get_all(
+		"Item Attribute Value",
+		filters={
+			"parent": item_attribute,
+			"attribute_value": ("like", f"%{txt or ''}%"),
+		},
+		pluck="attribute_value",
+		order_by="idx",
+	)
+	other_values = [
+		value for attribute, value in selected.items() if attribute != item_attribute
+	]
+	blocked = get_not_allowed_attribute_values(other_values).get(item_attribute, {})
+	return [value for value in values if value not in blocked]
+
+
+@frappe.whitelist()
+def get_blocked_attributes(selected=None):
+	"""Attributes whose selected value is blocked by another selected value."""
+	selected = frappe.parse_json(selected) or {}
+	blocked = get_not_allowed_attribute_values(list(selected.values()))
+	return [
+		attribute
+		for attribute, value in selected.items()
+		if value in blocked.get(attribute, {})
+	]
+
+
+def validate_not_allowed_attribute_values(self):
+	"""Block a variant whose attribute values break an Attribute Value's Not Allowed table.
+
+	Only checked when the variant is new or its attributes changed, so items
+	created before the master was configured still save.
+	"""
+	if not self.get("variant_of"):
+		return
+
+	attributes = {
+		row.attribute: row.attribute_value
+		for row in self.get("attributes") or []
+		if row.attribute_value
+	}
+	if not attributes:
+		return
+
+	before = self.get_doc_before_save()
+	if before:
+		old = {
+			row.attribute: row.attribute_value
+			for row in before.get("attributes") or []
+			if row.attribute_value
+		}
+		if old == attributes:
+			return
+
+	throw_if_not_allowed(attributes)
+
+
+@frappe.whitelist()
+def get_variant(
+	template, args=None, variant=None, manufacturer=None, manufacturer_part_no=None
+):
+	"""Override of ERPNext's whitelisted get_variant, called first by Create Variant.
+
+	Blocked attribute values are rejected here so the message shows on Create
+	while the dialog is still open; otherwise ERPNext's get_variant runs as is.
+	"""
+	from erpnext.controllers.item_variant import get_variant as erpnext_get_variant
+
+	attributes = {
+		attribute: value
+		for attribute, value in (frappe.parse_json(args) or {}).items()
+		if value and isinstance(value, str)
+	}
+	throw_if_not_allowed(attributes)
+	return erpnext_get_variant(
+		template, args, variant, manufacturer, manufacturer_part_no
+	)
+
+
+def throw_if_not_allowed(attributes):
+	"""Throw if any {attribute: value} is blocked by another selected value."""
+	if not attributes:
+		return
+
+	blocked = get_not_allowed_attribute_values(list(attributes.values()))
+	for attribute, value in attributes.items():
+		blocked_by = blocked.get(attribute, {}).get(value)
+		if not blocked_by:
+			continue
+		frappe.throw(not_allowed_message(attributes, attribute, value, blocked_by))
+
+
+def not_allowed_message(attributes, attribute, value, blocked_by):
+	"""e.g. "Cut or Cab Faceted is not allowed for Gemstone Type Coral"."""
+	blocked_by_attribute = next(
+		(attr for attr, attr_value in attributes.items() if attr_value == blocked_by),
+		"",
+	)
+	return _("{0} {1} is not allowed for {2} {3}").format(
+		attribute, frappe.bold(value), blocked_by_attribute, frappe.bold(blocked_by)
+	)
+
+
+def split_variant_combinations(args):
+	"""Split a Multiple Variants selection into (allowed, blocked) combinations.
+
+	args is {attribute: [values]}; combinations are built the way ERPNext's
+	create_multiple_variants builds them. blocked is a list of
+	(combination, message). One query covers every combination.
+	"""
+	from erpnext.controllers.item_variant import generate_keyed_value_combinations
+
+	combinations = generate_keyed_value_combinations(args)
+	selected_values = {value for values in args.values() for value in values}
+	blocked_by = {}
+	for row in get_not_allowed_rows(list(selected_values)):
+		blocked_by.setdefault((row.item_attribute, row.attribute_value), set()).add(
+			row.parent
+		)
+
+	allowed, blocked = [], []
+	for combination in combinations:
+		combination_values = set(combination.values())
+		message = None
+		for attribute, value in combination.items():
+			blockers = blocked_by.get((attribute, value), set()) & combination_values
+			if blockers:
+				message = not_allowed_message(
+					combination, attribute, value, sorted(blockers)[0]
+				)
+				break
+		if message:
+			blocked.append((combination, message))
+		else:
+			allowed.append(combination)
+	return allowed, blocked
+
+
+@frappe.whitelist()
+def get_blocked_combinations(args):
+	"""Multiple Variants dialog pre-check: how many combinations will be skipped and why."""
+	args = {
+		key: values for key, values in (frappe.parse_json(args) or {}).items() if values
+	}
+	allowed, blocked = split_variant_combinations(args)
+	return {
+		"total": len(allowed) + len(blocked),
+		"blocked": len(blocked),
+		"reasons": sorted({message for _combination, message in blocked}),
+	}
+
+
+@frappe.whitelist(methods=["POST"])
+def enqueue_multiple_variant_creation(item, args, use_template_image=False):
+	"""Override of ERPNext's enqueue_multiple_variant_creation that skips Not Allowed combinations.
+
+	Same limits and queueing as ERPNext's version (kept in sync by hand -- recheck
+	erpnext.controllers.item_variant after an ERPNext upgrade), but creation goes
+	through create_multiple_variants below.
+	"""
+	frappe.has_permission("Item", ptype="create", throw=True)
+	use_template_image = frappe.parse_json(use_template_image)
+	# There can be innumerable attribute combinations, enqueue
+	variants = json.loads(args) if isinstance(args, str) else args
+	variants = {key: values for key, values in variants.items() if values}
+	if not variants:
+		frappe.throw(_("Please select at least one attribute value"))
+
+	total_variants = 1
+	for key in variants:
+		total_variants *= len(variants[key])
+	if total_variants >= 600:
+		frappe.throw(_("Please do not create more than 500 items at a time"))
+		return
+	if total_variants < 10:
+		return create_multiple_variants(item, args, use_template_image)
+	else:
+		frappe.enqueue(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.item.create_multiple_variants",
+			item=item,
+			args=args,
+			use_template_image=use_template_image,
+			now=frappe.in_test,
+		)
+		return "queued"
+
+
+def create_multiple_variants(item, args, use_template_image=False):
+	"""ERPNext's create_multiple_variants, minus the Not Allowed combinations."""
+	from erpnext.controllers.item_variant import create_variant
+	from erpnext.controllers.item_variant import get_variant as erpnext_get_variant
+
+	count = 0
+	if isinstance(args, str):
+		args = json.loads(args)
+	args = {key: values for key, values in args.items() if values}
+
+	template_item = frappe.get_doc("Item", item)
+	allowed, _blocked = split_variant_combinations(args)
+
+	for attribute_values in allowed:
+		if not erpnext_get_variant(item, args=attribute_values):
+			variant = create_variant(item, attribute_values)
+			if use_template_image and template_item.image:
+				variant.image = template_item.image
+			variant.save()
+			count += 1
+
+	return count
 
 
 def set_attribute_and_value_in_description(self):
 	if self.variant_of:
 		description_value = "<b><u>" + self.variant_of + "</u></b><br/>"
 		for d in self.get("attributes"):
-			description_value += str(d.attribute) + " : " + str(d.attribute_value) + "<br/>"
+			description_value += (
+				str(d.attribute) + " : " + str(d.attribute_value) + "<br/>"
+			)
 		self.description = description_value
 
 
@@ -138,20 +427,39 @@ def calculate_item_wt_details(doc, bom=None, item=None):
 	doc["wax_to_18kt_gold_ratio"] = settings.wax_to_gold_18
 	doc["wax_to_22kt_gold_ratio"] = settings.wax_to_gold_22
 	doc["wax_to_silver_ratio"] = settings.wax_to_silver
-	doc["estimated_10kt_gold_wt"] = flt(doc["estimated_wax_wt"]) * flt(doc["wax_to_10kt_gold_ratio"])
-	doc["estimated_14kt_gold_wt"] = flt(doc["estimated_wax_wt"]) * flt(doc["wax_to_14kt_gold_ratio"])
-	doc["estimated_18kt_gold_wt"] = flt(doc["estimated_wax_wt"]) * flt(doc["wax_to_18kt_gold_ratio"])
-	doc["estimated_22kt_gold_wt"] = flt(doc["estimated_wax_wt"]) * flt(doc["wax_to_22kt_gold_ratio"])
-	doc["estimated_silver_wt"] = flt(doc["estimated_wax_wt"]) * flt(doc["wax_to_silver_ratio"])
+	doc["estimated_10kt_gold_wt"] = flt(doc["estimated_wax_wt"]) * flt(
+		doc["wax_to_10kt_gold_ratio"]
+	)
+	doc["estimated_14kt_gold_wt"] = flt(doc["estimated_wax_wt"]) * flt(
+		doc["wax_to_14kt_gold_ratio"]
+	)
+	doc["estimated_18kt_gold_wt"] = flt(doc["estimated_wax_wt"]) * flt(
+		doc["wax_to_18kt_gold_ratio"]
+	)
+	doc["estimated_22kt_gold_wt"] = flt(doc["estimated_wax_wt"]) * flt(
+		doc["wax_to_22kt_gold_ratio"]
+	)
+	doc["estimated_silver_wt"] = flt(doc["estimated_wax_wt"]) * flt(
+		doc["wax_to_silver_ratio"]
+	)
 	if bom:
-		doc["estimated_finding_gold_wt_bom"] = frappe.db.get_value("BOM", bom, "finding_weight")
+		doc["estimated_finding_gold_wt_bom"] = frappe.db.get_value(
+			"BOM", bom, "finding_weight"
+		)
 	else:
 		BOM = frappe.qb.DocType("BOM")
-		query = frappe.qb.from_(BOM).select(BOM.finding_weight).where(BOM.item == item).limit(1)
+		query = (
+			frappe.qb.from_(BOM)
+			.select(BOM.finding_weight)
+			.where(BOM.item == item)
+			.limit(1)
+		)
 		finding_weight = query.run(as_dict=True)
 
 		if finding_weight:
-			doc["estimated_finding_gold_wt_bom"] = finding_weight[0].get("finding_weight")
+			doc["estimated_finding_gold_wt_bom"] = finding_weight[0].get(
+				"finding_weight"
+			)
 	return doc
 
 
@@ -160,13 +468,22 @@ def before_insert(self, method):
 	iav = frappe.qb.DocType("Item Attribute Value")
 
 	for i in (
-		frappe.qb.from_(iav).select(iav.attribute_value).where(iav.parent == "Consumables").run()
+		frappe.qb.from_(iav)
+		.select(iav.attribute_value)
+		.where(iav.parent == "Consumables")
+		.run()
 	):
 		consumables_list.append(i[0])
 	year_code = get_year_code()
 	month_code = get_month_code()
 	week_code = get_week_code()
-	if self.item_group in ["Metal - V", "Diamond - V", "Gemstone - V", "Finding - V", "Other - V"]:
+	if self.item_group in [
+		"Metal - V",
+		"Diamond - V",
+		"Gemstone - V",
+		"Finding - V",
+		"Other - V",
+	]:
 		year_code = get_year_code()
 		month_code = get_month_code()
 		week_code = get_week_code()
@@ -201,7 +518,9 @@ def before_insert(self, method):
 				if batch_abbreviation:
 					batch_abbr_code_list.append(batch_abbreviation)
 				else:
-					frappe.throw(_("Abbrivation is missing for {0}").format(i.attribute_value))
+					frappe.throw(
+						_("Abbrivation is missing for {0}").format(i.attribute_value)
+					)
 		batch_code = batch_number + "".join(batch_abbr_code_list) + "-.##."
 		self.batch_number_series = batch_code
 		self.has_batch_no = 1
@@ -212,14 +531,18 @@ def before_insert(self, method):
 		validate_attribute_value(self)
 	elif self.item_group in consumables_list and self.variant_of:
 		for i in self.attributes:
-			if not frappe.db.get_value("Attribute Value", i.attribute_value, "custom_batch_or_serial_no"):
+			if not frappe.db.get_value(
+				"Attribute Value", i.attribute_value, "custom_batch_or_serial_no"
+			):
 				frappe.throw(
-					_("Select one options for <b>{attribute_value}</b> in Attribute Value").format(
-						attribute_value=i.attribute_value
-					)
+					_(
+						"Select one options for <b>{attribute_value}</b> in Attribute Value"
+					).format(attribute_value=i.attribute_value)
 				)
 			if (
-				frappe.db.get_value("Attribute Value", i.attribute_value, "custom_batch_or_serial_no")
+				frappe.db.get_value(
+					"Attribute Value", i.attribute_value, "custom_batch_or_serial_no"
+				)
 				== "Batch"
 			):
 				batch_number = "GE{year_code}{month_code}{week_code}-CO".format(
@@ -227,13 +550,16 @@ def before_insert(self, method):
 				)
 				# group_abbr = frappe.db.sql("""select abbr  from `tabItem Attribute Value` where attribute_value = {item_group}""".format(item_group=self.item_group),as_dict=1)
 				group_abbr = (
-					frappe.qb.from_(iav).select(iav.abbr).where(iav.attribute_value == self.item_group).run()
+					frappe.qb.from_(iav)
+					.select(iav.abbr)
+					.where(iav.attribute_value == self.item_group)
+					.run()
 				)
 				if not group_abbr:
 					frappe.throw(
-						_("Abbr is not available for <b>{item_group}</b> in Item Attribute Consumnables").format(
-							item_group=self.item_group
-						)
+						_(
+							"Abbr is not available for <b>{item_group}</b> in Item Attribute Consumnables"
+						).format(item_group=self.item_group)
 					)
 				# batch_abbr_code = frappe.db.get_value(
 				# 	"Attribute Value", i.attribute_value, "custom_batch_abbreviation"
@@ -243,7 +569,9 @@ def before_insert(self, method):
 				# batch_code = batch_number + group_abbr[0][0] + batch_abbr_code + "-.##."
 
 				total_variant = len(
-					frappe.db.get_list("Item", {"item_group": self.item_group, "has_batch_no": 1})
+					frappe.db.get_list(
+						"Item", {"item_group": self.item_group, "has_batch_no": 1}
+					)
 				)
 
 				if total_variant == 0:
@@ -261,23 +589,30 @@ def before_insert(self, method):
 				self.is_stock_item = 1
 				self.include_item_in_manufacturing = 1
 			elif (
-				frappe.db.get_value("Attribute Value", i.attribute_value, "custom_batch_or_serial_no")
+				frappe.db.get_value(
+					"Attribute Value", i.attribute_value, "custom_batch_or_serial_no"
+				)
 				== "Serial No"
 			):
 				self.has_serial_no = 1
 				self.is_stock_item = 1
 				self.include_item_in_manufacturing = 1
 				group_abbr = (
-					frappe.qb.from_(iav).select(iav.abbr).where(iav.attribute_value == self.item_group).run()
+					frappe.qb.from_(iav)
+					.select(iav.abbr)
+					.where(iav.attribute_value == self.item_group)
+					.run()
 				)
 				if not group_abbr:
 					frappe.throw(
-						_("Abbr is not available for <b>{item_group}</b> in Item Attribute Consumnables").format(
-							item_group=self.item_group
-						)
+						_(
+							"Abbr is not available for <b>{item_group}</b> in Item Attribute Consumnables"
+						).format(item_group=self.item_group)
 					)
 				total_variant = len(
-					frappe.db.get_list("Item", {"item_group": self.item_group, "has_serial_no": 1})
+					frappe.db.get_list(
+						"Item", {"item_group": self.item_group, "has_serial_no": 1}
+					)
 				)
 				if total_variant == 0:
 					sequence = 1
@@ -318,9 +653,7 @@ def get_month_code():
 
 
 def validate_attribute_value(self):
-	chain_type = 0
 	for i in self.attributes:
-
 		# if i.attribute == 'Chain Type' and i.attribute_value == 'No':
 		# 	chain_type = 1
 
@@ -337,4 +670,6 @@ def validate_attribute_value(self):
 			continue
 
 		if not i.attribute_value:
-			frappe.throw(f"Value is not available for attribute value: <b>{i.attribute}</b>")
+			frappe.throw(
+				f"Value is not available for attribute value: <b>{i.attribute}</b>"
+			)
