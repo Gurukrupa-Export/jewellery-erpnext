@@ -2397,6 +2397,47 @@ class TestEmployeeIRMSLTracking(IntegrationTestCase):
 			"Employee IR: MSL tracking refresh failed",
 		)
 
+	def test_a_deadlock_is_reraised_not_swallowed(self):
+		"""1213 (1020 under snapshot isolation) means InnoDB has already rolled the whole submit /
+		cancel back: logging and carrying on would commit the rest of the request in a fresh
+		transaction -- the Version row, a "Finished" queue row -- for a document that never
+		changed."""
+		with patch(_RESOLVE, return_value="MSL-WH"), patch(
+			_RECALC, side_effect=frappe.QueryDeadlockError("1213")
+		), patch("frappe.log_error") as log_error:
+			with self.assertRaises(frappe.QueryDeadlockError):
+				self._make_eir()._refresh_msl_tracking()
+		log_error.assert_not_called()
+
+	def test_the_sibling_refreshes_reraise_a_deadlock_and_log_the_rest(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events import warehouse_stock_entry
+
+		for label, call, target in (
+			(
+				"Employee Loss Entry",
+				lambda: ele._refresh_msl_tracking("MSL-WH"),
+				_RECALC,
+			),
+			(
+				"Warehouse Issue/Receive",
+				lambda: warehouse_stock_entry._refresh_tracking("MSL-WH"),
+				"jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_stock_entry."
+				"recalculate_msl_tracking",
+			),
+		):
+			with self.subTest(label):
+				with patch(
+					target, side_effect=frappe.QueryDeadlockError("1213")
+				), patch("frappe.log_error") as log_error:
+					with self.assertRaises(frappe.QueryDeadlockError):
+						call()
+				log_error.assert_not_called()
+				with patch(target, side_effect=RuntimeError("boom")), patch(
+					"frappe.log_error"
+				) as log_error:
+					call()  # an ordinary failure still never fails the posting
+				log_error.assert_called_once()
+
 
 def _eir_msi(**overrides):
 	base = dict(

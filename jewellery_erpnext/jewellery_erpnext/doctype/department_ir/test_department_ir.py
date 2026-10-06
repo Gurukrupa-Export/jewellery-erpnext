@@ -1,11 +1,14 @@
 # # Copyright (c) 2026, Nirali and Contributors
 # # See license.txt
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 
+from jewellery_erpnext.jewellery_erpnext.doc_events import (
+	current_operation_guard as guard,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
 	DepartmentIR,
 	add_time_log_optimize,
@@ -373,25 +376,44 @@ class TestDepartmentIR(IntegrationTestCase):
 
 
 def mo_creation():
-	mwo = frappe.get_last_doc("Manufacturing Work Order")
-	mo = frappe.new_doc("Manufacturing Operation")
-	mo.department = "Manufacturing Plan & Management - T"
-	mo.manufacturer = "Shubh"
-	mo.manufacturing_work_order = mwo.name
-	mo.manufacturing_order = mwo.manufacturing_order
-	mo.manufacturing_plan = mwo.manufacturing_plan
-	mo.type = "Manufacturing Work Order"
-	mo.operation = "Manufacturing Plan & Management"
-	mo.item_code = mwo.item_code
-	mo.design_id_bom = mwo.master_bom
-	mo.metal_type = mwo.metal_type
-	mo.metal_touch = mwo.metal_touch
-	mo.metal_colour = mwo.metal_colour
-	mo.meatal_purity = mwo.metal_purity
+	"""The current operation of a freshly submitted work order: the real lifecycle.
 
-	mo.save()
+	Submitting a Manufacturing Work Order mints its first Manufacturing Operation (Not Started,
+	in Manufacturing Setting.default_department) and points ``manufacturing_operation`` at it.
+	Every Employee IR / Department IR row must name that pointer
+	(doc_events/current_operation_guard.py), so this submits the producing work order of the
+	Parent Manufacturing Order the calling test just built with ``create_pmo`` and returns its
+	pointer.
 
-	return mo
+	It used to mint an extra operation on the newest work order instead -- normally the FG one,
+	still a draft -- which the guard rightly refuses: an operation of an unsubmitted work order
+	that is not its current operation.
+	"""
+	pmo = frappe.get_last_doc("Parent Manufacturing Order", filters={"docstatus": 1})
+	mwo_name = frappe.db.get_value(
+		"Manufacturing Work Order",
+		{
+			"manufacturing_order": pmo.name,
+			"docstatus": 0,
+			"for_fg": 0,
+			"is_finding_mwo": 0,
+		},
+		"name",
+		order_by="creation desc",
+	)
+	if not mwo_name:
+		frappe.throw(
+			f"Parent Manufacturing Order {pmo.name} has no draft producing work order left; "
+			"call create_pmo(self) before mo_creation()."
+		)
+
+	mwo = frappe.get_doc("Manufacturing Work Order", mwo_name)
+	mwo.submit()
+
+	pointer = frappe.db.get_value(
+		"Manufacturing Work Order", mwo.name, "manufacturing_operation"
+	)
+	return frappe.get_doc("Manufacturing Operation", pointer)
 
 
 _TOL_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance"
@@ -1016,3 +1038,1097 @@ class TestScopedStoneBandsAreNotEnforced(UnitTestCase):
 			},
 		)
 		self.assertEqual(failures, [])
+
+
+# =============================================================================================
+# Work-order current-operation guard: Department IR rules, draft block, cancel guard and wiring
+# (doc_events/current_operation_guard.py). DB-free like the guard classes in
+# test_employee_ir.py, so they run in CI through `run-tests --doctype "Department IR"`.
+# =============================================================================================
+
+_DIR_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir"
+_PC_TAGGING_SYNC = (
+	"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync"
+	".process_pc_tagging_stock_sync"
+)
+
+
+class _GuardStop(Exception):
+	"""Raised by a patched step to end a controller method at a known point."""
+
+
+def _warm_guard_caches():
+	"""Load what frappe._ / frappe.format / flt read lazily before a test patches frappe.db."""
+	frappe._("Work Order Current Operation")
+	frappe.get_system_settings("float_precision")
+	frappe.format(frappe.utils.now_datetime(), {"fieldtype": "Datetime"})
+	frappe.utils.flt(1.23456, 3)
+
+
+def _record(calls, label, result=None, raises=None):
+	"""Side effect that records ``label`` in ``calls``, then returns ``result`` or raises."""
+
+	def side_effect(*args, **kwargs):
+		calls.append(label)
+		if raises is not None:
+			raise raises
+		return result
+
+	return side_effect
+
+
+class _DIRGuardDoc(FrappeDict):
+	"""The slice of a Department IR the guard and the controller touch.
+
+	(The Employee IR twin lives in test_employee_ir.py, which imports this module, so it cannot
+	be imported from here.)
+	"""
+
+	def is_new(self):
+		return bool(self.get("_is_new"))
+
+	def get_doc_before_save(self):
+		return self.get("_before")
+
+
+def _guard_dir(
+	kind="Issue",
+	rows=(("MOP-1", "MWO-1"),),
+	*,
+	name="DIR-T-0001",
+	docstatus=0,
+	new=False,
+	before=None,
+	**header,
+):
+	"""Issue: Dept-A -> Dept-B. Receive: into Dept-B from Dept-A against DIR-I-0001."""
+	issue = kind == "Issue"
+	doc = _DIRGuardDoc(
+		doctype="Department IR",
+		name=name,
+		type=kind,
+		docstatus=docstatus,
+		company="Co-T",
+		current_department="Dept-A" if issue else "Dept-B",
+		next_department="Dept-B" if issue else None,
+		previous_department=None if issue else "Dept-A",
+		receive_against=None if issue else "DIR-I-0001",
+		department_ir_operation=[
+			FrappeDict(
+				idx=idx, manufacturing_operation=mop, manufacturing_work_order=mwo
+			)
+			for idx, (mop, mwo) in enumerate(rows, start=1)
+		],
+		flags=FrappeDict(),
+		_is_new=new,
+		_before=before,
+	)
+	doc.update(header)
+	return doc
+
+
+def _guard_op(name, mwo="MWO-1", **fields):
+	"""A Manufacturing Operation row as lock_manufacturing_operations returns it."""
+	row = FrappeDict(
+		name=name,
+		manufacturing_work_order=mwo,
+		company="Co-T",
+		department="Dept-A",
+		status="Not Started",
+		department_ir_status="Received",
+		operation=None,
+		employee=None,
+		subcontractor=None,
+		for_subcontracting=0,
+		department_issue_id=None,
+		department_receive_id=None,
+		employee_ir=None,
+		previous_mop=None,
+	)
+	row.update(fields)
+	return row
+
+
+def _guard_wo(name="MWO-1", pointer="MOP-1", docstatus=1):
+	"""A Manufacturing Work Order row as lock_work_orders returns it."""
+	return FrappeDict(
+		name=name,
+		docstatus=docstatus,
+		company="Co-T",
+		manufacturing_operation=pointer,
+		department="Dept-A",
+	)
+
+
+def _guard_family(*ops):
+	family = {}
+	for op in ops:
+		family.setdefault(op.manufacturing_work_order, []).append(op)
+	return family
+
+
+def _guard_problems(doc, ops, wos, family=None, phase="save"):
+	return guard._row_problems(
+		doc,
+		guard.profile(doc),
+		phase,
+		{op.name: op for op in ops},
+		{wo.name: wo for wo in wos},
+		_guard_family(*ops) if family is None else family,
+	)
+
+
+def _single_problem(test, problems, exc):
+	test.assertEqual(len(problems), 1, problems)
+	test.assertIs(problems[0][0], exc, problems)
+	return problems[0][1]
+
+
+def _check_call(check):
+	"""``(phase, locking)`` of the single ``_check`` call, however it was spelled."""
+	check.assert_called_once()
+	args, kwargs = check.call_args
+	locking = (
+		kwargs["locking"]
+		if "locking" in kwargs
+		else (args[2] if len(args) > 2 else False)
+	)
+	return args[1], locking
+
+
+class TestCurrentOperationGuardDepartmentIssueRule(IntegrationTestCase):
+	"""Department Issue: the current operation must be Not Started, with no employee or
+	subcontractor, received in the sending department -- the department_ir.js scan / Get
+	Operations filters, server-side."""
+
+	@classmethod
+	def setUpClass(cls):
+		_warm_guard_caches()
+
+	def _issue(self, doc=None, **op_fields):
+		return _guard_problems(
+			doc or _guard_dir("Issue"), [_guard_op("MOP-1", **op_fields)], [_guard_wo()]
+		)
+
+	def _refused(self, doc=None, **op_fields):
+		message = _single_problem(
+			self, self._issue(doc, **op_fields), guard.CurrentOperationError
+		)
+		self.assertIn("a Department Issue needs", message)
+		return message
+
+	def test_not_started_unassigned_operation_in_the_sending_department_passes(self):
+		self.assertEqual(self._issue(), [])
+		self.assertEqual(self._issue(department_ir_status=None), [])
+
+	def test_backward_rework_transfer_is_allowed(self):
+		"""Repairing moves send work back to an earlier department; only the source matters."""
+		self.assertEqual(
+			self._issue(_guard_dir("Issue", next_department="Model Making - T")), []
+		)
+
+	def test_same_current_and_next_department_is_refused(self):
+		problems = self._issue(_guard_dir("Issue", next_department=" dept-a "))
+		message = _single_problem(self, problems, guard.CurrentOperationError)
+		self.assertEqual(message, "Current and next department cannot be the same.")
+
+	def test_every_status_but_not_started_is_refused(self):
+		for status in (
+			"WIP",
+			"On Hold",
+			"QC Pending",
+			"QC Completed",
+			"Finished",
+			"Revert",
+			None,
+		):
+			with self.subTest(status=status):
+				self._refused(status=status)
+
+	def test_operation_in_another_department_is_refused(self):
+		self.assertIn(
+			"received in <strong>Dept-A</strong>", self._refused(department="Dept-X")
+		)
+
+	def test_operation_in_transit_or_reverted_is_refused(self):
+		for transit in ("In-Transit", "Revert"):
+			with self.subTest(transit=transit):
+				self._refused(department_ir_status=transit)
+
+	def test_operation_with_an_employee_or_subcontractor_is_refused(self):
+		"""Unlike an Employee Issue, both holders must be unset."""
+		for field, value in (("employee", "EMP-1"), ("subcontractor", "SUP-1")):
+			with self.subTest(field=field):
+				self._refused(**{field: value})
+
+	def test_same_work_order_twice_is_refused(self):
+		"""Family B of the audit: duplicate rows of one transfer minted twin operations."""
+		doc = _guard_dir("Issue", rows=(("MOP-1", "MWO-1"), ("MOP-1B", "MWO-1")))
+		problems = _guard_problems(
+			doc, [_guard_op("MOP-1"), _guard_op("MOP-1B")], [_guard_wo()]
+		)
+		message = _single_problem(self, problems, guard.CurrentOperationError)
+		self.assertIn("work order <strong>MWO-1</strong> is already on row 1", message)
+
+	def test_operation_the_work_order_has_moved_past_is_refused(self):
+		problems = _guard_problems(
+			_guard_dir("Issue"),
+			[_guard_op("MOP-1", status="Finished")],
+			[_guard_wo(pointer="MOP-2")],
+			family={},
+		)
+		self.assertIn(
+			"MOP-2", _single_problem(self, problems, guard.StaleOperationError)
+		)
+
+	def test_transfer_again_after_a_reverted_transfer_is_allowed(self):
+		"""kggk_uat: a cancelled Department Issue leaves its minted operation as Revert history
+		(previous_mop = the restored source). Re-issuing the work order must go through; a live
+		later operation still makes the work order ambiguous."""
+		source = _guard_op("MOP-1")
+		for marks in (
+			{"department_ir_status": "Revert", "status": "Not Started"},
+			{"status": "Revert"},
+		):
+			with self.subTest(marks=marks):
+				reverted = _guard_op(
+					"MOP-2", previous_mop="MOP-1", department="Dept-B", **marks
+				)
+				self.assertEqual(
+					_guard_problems(
+						_guard_dir("Issue"),
+						[source],
+						[_guard_wo()],
+						family=_guard_family(source, reverted),
+					),
+					[],
+				)
+		live = _guard_op(
+			"MOP-2",
+			previous_mop="MOP-1",
+			department="Dept-B",
+			department_ir_status="In-Transit",
+		)
+		problems = _guard_problems(
+			_guard_dir("Issue"),
+			[source],
+			[_guard_wo()],
+			family=_guard_family(source, live),
+		)
+		_single_problem(self, problems, guard.AmbiguousOperationError)
+
+
+class TestCurrentOperationGuardDepartmentReceiveRule(IntegrationTestCase):
+	"""Department Receive: only the in-flight transfer of this Issue, into this department."""
+
+	@classmethod
+	def setUpClass(cls):
+		_warm_guard_caches()
+
+	def _receive(self, **op_fields):
+		fields = {
+			"department": "Dept-B",
+			"department_ir_status": "In-Transit",
+			"department_issue_id": "DIR-I-0001",
+		}
+		fields.update(op_fields)
+		doc = _guard_dir("Receive", rows=(("MOP-2", "MWO-1"),))
+		return _guard_problems(
+			doc, [_guard_op("MOP-2", **fields)], [_guard_wo(pointer="MOP-2")]
+		)
+
+	def _refused(self, **op_fields):
+		return _single_problem(
+			self, self._receive(**op_fields), guard.CurrentOperationError
+		)
+
+	def _mismatch(self, **op_fields):
+		"""In transit, but not as this Receive needs it: the message names what differs."""
+		message = self._refused(**op_fields)
+		for token in (
+			"MOP-2",
+			"MWO-1",
+			"is in transit but does not match this Receive",
+		):
+			self.assertIn(token, message)
+		self.assertNotIn("no longer in transit", message)
+		return message
+
+	def test_in_flight_transfer_of_this_issue_passes(self):
+		self.assertEqual(self._receive(), [])
+
+	def test_transfer_already_received_is_refused(self):
+		message = self._refused(department_ir_status="Received")
+		self.assertIn("is no longer in transit", message)
+		for token in ("MOP-2", "MWO-1", "DIR-I-0001", "Dept-B", "(Received)"):
+			self.assertIn(token, message)
+
+	def test_operation_never_in_transit_says_so(self):
+		message = self._refused(department_ir_status=None)
+		self.assertIn("is no longer in transit", message)
+		self.assertIn("(not in transit)", message)
+
+	def test_operation_already_started_is_refused(self):
+		self.assertIn("(status WIP)", self._mismatch(status="WIP"))
+
+	def test_transfer_of_another_issue_is_refused(self):
+		message = self._mismatch(department_issue_id="DIR-I-OTHER")
+		self.assertIn("sent by <strong>DIR-I-OTHER</strong>", message)
+
+	def test_transfer_into_another_department_is_refused(self):
+		self.assertIn(
+			"going to <strong>Dept-C</strong>", self._mismatch(department="Dept-C")
+		)
+
+	def test_a_transfer_closed_by_hand_while_in_transit_names_its_status(self):
+		"""Production had 46 such current operations (Finished while still In-Transit, closed
+		at the desk after a receive was cancelled): the refusal used to claim they were "no
+		longer in transit ... (In-Transit)". Removing the row lets the others be received."""
+		message = self._mismatch(status="Finished")
+		self.assertIn("(status Finished)", message)
+		self.assertIn("closed while still in transit", message)
+		self.assertIn("current-operation audit", message)
+		self.assertIn("remove this row", message)
+		self.assertNotIn("(In-Transit)", message)
+
+	def test_every_mismatch_is_listed(self):
+		message = self._mismatch(
+			status="WIP", department_issue_id=None, department="Dept-C"
+		)
+		self.assertIn(
+			"(status WIP, sent by no Department Issue, going to <strong>Dept-C</strong>)",
+			message,
+		)
+
+
+class TestCurrentOperationGuardDepartmentDraftBlock(IntegrationTestCase):
+	"""An outstanding Employee Issue draft blocks Department IR saves and submits on its work
+	order: on 2026-10-05 Department IRs moved the work orders on while EMP-IR-Labh-2026-43405
+	sat as a draft, which is what made that draft stale."""
+
+	@classmethod
+	def setUpClass(cls):
+		_warm_guard_caches()
+
+	def tearDown(self):
+		frappe.clear_messages()
+		return super().tearDown()
+
+	def _check(self, doc, phase, ops, wos, drafts=(), previous=()):
+		"""``previous``: what _previous_operations reports for the row operations."""
+		self.reads = []
+		self.locked = []
+
+		def draft_read(mwos, exclude=None, locking=False):
+			self.reads.append((sorted(mwos), exclude))
+			return [FrappeDict(d) for d in drafts]
+
+		rows = ({op.name: op for op in ops}, {wo.name: wo for wo in wos})
+
+		def lock_block(mops, mwos, doc=None):
+			self.locked.append((sorted(mops), sorted(mwos)))
+			return rows
+
+		with (
+			patch.object(guard, "_lock_block", side_effect=lock_block),
+			patch.object(guard, "_after_locks"),
+			patch.object(guard, "_family", return_value=_guard_family(*ops)),
+			patch.object(guard, "_confirm_successors", side_effect=lambda f, m: f),
+			patch.object(guard, "_confirm_drafts", side_effect=lambda d, m: d),
+			patch.object(
+				guard, "_previous_operations", return_value=list(previous)
+			) as previous_read,
+			patch.object(guard, "outstanding_issue_drafts", side_effect=draft_read),
+			patch.object(guard.frappe, "msgprint"),
+			patch.object(guard, "_refuse_if_snapshot_older"),
+		):
+			self.previous_read = previous_read
+			guard._check(doc, phase, True)
+
+	@staticmethod
+	def _draft():
+		return dict(
+			draft="EMP-IR-T-0001",
+			mwo="MWO-1",
+			idx=1,
+			owner="maker@example.com",
+			creation=frappe.utils.now_datetime(),
+		)
+
+	def test_department_issue_submit_is_blocked_by_an_employee_issue_draft(self):
+		doc = _guard_dir("Issue", docstatus=1, before=_guard_dir("Issue"))
+		with self.assertRaises(guard.OutstandingDraftError) as cm:
+			self._check(
+				doc,
+				"submit",
+				[_guard_op("MOP-1")],
+				[_guard_wo()],
+				drafts=[self._draft()],
+			)
+		self.assertIn("EMP-IR-T-0001", str(cm.exception))
+		self.assertEqual(self.reads, [(["MWO-1"], "DIR-T-0001")])
+
+	def test_new_department_receive_is_blocked_too(self):
+		doc = _guard_dir("Receive", rows=(("MOP-2", "MWO-1"),), new=True)
+		op = _guard_op(
+			"MOP-2",
+			department="Dept-B",
+			department_ir_status="In-Transit",
+			department_issue_id="DIR-I-0001",
+		)
+		with self.assertRaises(guard.OutstandingDraftError):
+			self._check(
+				doc, "save", [op], [_guard_wo(pointer="MOP-2")], drafts=[self._draft()]
+			)
+		self.assertEqual(self.reads, [(["MWO-1"], None)])
+
+	def test_department_issue_without_drafts_passes_and_is_remembered(self):
+		doc = _guard_dir("Issue", docstatus=1, before=_guard_dir("Issue"))
+		self._check(doc, "submit", [_guard_op("MOP-1")], [_guard_wo()])
+		self.assertEqual(
+			doc.flags.current_operation_guarded,
+			{"phase": "submit", "docstatus": 1, "mwos": ["MWO-1"]},
+		)
+
+	def test_a_save_locks_the_previous_operations_in_the_operation_phase(self):
+		"""validate_and_update_gross_wt_from_mop -> update_previous_mop_data writes the row
+		operations' previous operations later in the save. Locking them only then -- after the
+		work-order lock -- deadlocked against Stock Entries on those operations (race suite,
+		31 deadlocks in 60 s): they join the one sorted operation set instead."""
+		for kind, rows, op in (
+			("Issue", (("MOP-5", "MWO-1"),), _guard_op("MOP-5")),
+			(
+				"Receive",
+				(("MOP-5", "MWO-1"),),
+				_guard_op(
+					"MOP-5",
+					department="Dept-B",
+					department_ir_status="In-Transit",
+					department_issue_id="DIR-I-0001",
+				),
+			),
+		):
+			with self.subTest(kind=kind):
+				doc = _guard_dir(kind, rows=rows, new=True)
+				self._check(
+					doc, "save", [op], [_guard_wo(pointer="MOP-5")], previous=["MOP-4"]
+				)
+				self.previous_read.assert_called_once_with(["MOP-5"])
+				self.assertEqual(self.locked, [(["MOP-4", "MOP-5"], ["MWO-1"])])
+
+	def test_a_submit_locks_only_the_row_operations(self):
+		"""Nothing writes a previous operation at submit."""
+		doc = _guard_dir("Issue", docstatus=1, before=_guard_dir("Issue"))
+		self._check(
+			doc, "submit", [_guard_op("MOP-1")], [_guard_wo()], previous=["MOP-0"]
+		)
+		self.previous_read.assert_not_called()
+		self.assertEqual(self.locked, [(["MOP-1"], ["MWO-1"])])
+
+	def test_previous_operations_come_from_one_plain_read(self):
+		with patch.object(
+			guard.frappe,
+			"get_all",
+			return_value=[
+				FrappeDict(previous_mop="MOP-0"),
+				FrappeDict(previous_mop=None),
+				FrappeDict(previous_mop="MOP-1"),
+			],
+		) as get_all:
+			self.assertEqual(
+				guard._previous_operations(["MOP-2", "MOP-1", "", "MOP-2"]), ["MOP-0"]
+			)
+		get_all.assert_called_once()
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"], {"name": ["in", ["MOP-1", "MOP-2"]]}
+		)
+		with patch.object(guard.frappe, "get_all") as get_all:
+			self.assertEqual(guard._previous_operations(["", None]), [])
+		get_all.assert_not_called()
+
+
+class TestCurrentOperationGuardDepartmentCancel(IntegrationTestCase):
+	"""guard_cancel: a Department IR cancel may only undo a transfer that is still current."""
+
+	@classmethod
+	def setUpClass(cls):
+		_warm_guard_caches()
+
+	def _cancel(self, doc, ops, wos, minted=None, family=None, holding=None):
+		"""Run guard_cancel; ``minted`` maps a work order to the operation the Issue minted;
+		``holding`` is the submitted Employee Issue a message names for a held operation."""
+		self.locked = []
+		self.minted_filters = []
+
+		def lock_block(mops, mwos, doc=None):
+			self.locked.append((sorted(mops), sorted(mwos)))
+			return {op.name: op for op in ops}, {wo.name: wo for wo in wos}
+
+		def get_value(doctype, filters=None, *args, **kwargs):
+			if doctype == "Manufacturing Operation" and isinstance(filters, dict):
+				self.minted_filters.append(filters)
+				return (minted or {}).get(filters.get("manufacturing_work_order"))
+			return None
+
+		with (
+			patch.object(guard, "_lock_block", side_effect=lock_block),
+			patch.object(guard, "_after_locks"),
+			patch.object(
+				guard,
+				"_family",
+				return_value=_guard_family(*ops) if family is None else family,
+			),
+			patch.object(guard, "_confirm_successors", side_effect=lambda f, m: f),
+			patch.object(guard, "_holding_issue", return_value=holding),
+			patch.object(guard.frappe.db, "get_value", side_effect=get_value),
+			patch.object(
+				guard, "other_submitted_issues", side_effect=AssertionError("EIR only")
+			),
+			patch.object(guard, "_refuse_if_snapshot_older"),
+		):
+			guard.guard_cancel(doc)
+
+	def _issue(self):
+		return _guard_dir("Issue", name="DIR-I-0001", docstatus=2)
+
+	def _transfer(self, **fields):
+		values = {
+			"department": "Dept-B",
+			"department_ir_status": "In-Transit",
+			"department_issue_id": "DIR-I-0001",
+			"previous_mop": "MOP-1",
+		}
+		values.update(fields)
+		return _guard_op("MOP-2", **values)
+
+	def test_issue_cancel_is_allowed_while_the_transfer_is_in_flight(self):
+		source = _guard_op("MOP-1", status="Finished")
+		self._cancel(
+			self._issue(),
+			[source, self._transfer()],
+			[_guard_wo(pointer="MOP-2")],
+			minted={"MWO-1": "MOP-2"},
+		)
+		self.assertEqual(
+			self.minted_filters,
+			[
+				{
+					"department_issue_id": "DIR-I-0001",
+					"manufacturing_work_order": "MWO-1",
+				}
+			],
+		)
+		self.assertEqual(self.locked, [(["MOP-1", "MOP-2"], ["MWO-1"])])
+
+	def test_issue_cancel_is_refused_once_the_transfer_was_received(self):
+		source = _guard_op("MOP-1", status="Finished")
+		received = self._transfer(
+			department_ir_status="Received", department_receive_id="DIR-R-0001"
+		)
+		with self.assertRaises(guard.HistoryRewriteError) as cm:
+			self._cancel(
+				self._issue(),
+				[source, received],
+				[_guard_wo(pointer="MOP-2")],
+				minted={"MWO-1": "MOP-2"},
+			)
+		message = str(cm.exception)
+		# The work order did not "move on": its transfer was received. The cancel would delete
+		# MOP-2 and reopen the SOURCE, MOP-1.
+		self.assertIn(
+			"its transfer <strong>MOP-2</strong> of work order <strong>MWO-1</strong> was "
+			"already received by <strong>DIR-R-0001</strong>",
+			message,
+		)
+		self.assertIn("would reopen <strong>MOP-1</strong>", message)
+		self.assertNotIn("has moved on", message)
+		self.assertNotIn("would reopen <strong>MOP-2</strong>", message)
+
+	def test_issue_cancel_ignores_a_reverted_successor_of_its_transfer(self):
+		"""kggk_uat LIFO: what happened in the receiving department was undone, its minted
+		operation kept as Revert history (previous_mop = this transfer's operation)."""
+		source = _guard_op("MOP-1", status="Finished")
+		transfer = self._transfer()
+		reverted = _guard_op(
+			"MOP-3",
+			previous_mop="MOP-2",
+			department="Dept-B",
+			department_ir_status="Revert",
+		)
+		self._cancel(
+			self._issue(),
+			[source, transfer],
+			[_guard_wo(pointer="MOP-2")],
+			minted={"MWO-1": "MOP-2"},
+			family=_guard_family(source, transfer, reverted),
+		)
+
+	def test_issue_cancel_is_refused_for_a_transfer_stamped_with_a_receipt(self):
+		"""A receipt id on the minted operation is enough, whatever its transit status says."""
+		source = _guard_op("MOP-1", status="Finished")
+		stamped = self._transfer(department_receive_id="DIR-R-0001")
+		with self.assertRaises(guard.HistoryRewriteError):
+			self._cancel(
+				self._issue(),
+				[source, stamped],
+				[_guard_wo(pointer="MOP-2")],
+				minted={"MWO-1": "MOP-2"},
+			)
+
+	def test_issue_cancel_is_refused_once_the_work_order_moved_further(self):
+		source = _guard_op("MOP-1", status="Finished")
+		transfer = self._transfer(
+			status="Finished",
+			department_ir_status="Received",
+			department_receive_id="DIR-R-0001",
+		)
+		later = _guard_op(
+			"MOP-3", previous_mop="MOP-2", department="Dept-B", status="WIP"
+		)
+		with self.assertRaises(guard.HistoryRewriteError) as cm:
+			self._cancel(
+				self._issue(),
+				[source, transfer],
+				[_guard_wo(pointer="MOP-3")],
+				minted={"MWO-1": "MOP-2"},
+				family=_guard_family(source, transfer, later),
+			)
+		self.assertIn("MOP-3", str(cm.exception))
+
+	def test_issue_cancel_is_refused_without_the_minted_operation(self):
+		with self.assertRaises(guard.HistoryRewriteError):
+			self._cancel(
+				self._issue(),
+				[_guard_op("MOP-1", status="Finished")],
+				[_guard_wo()],
+				minted={},
+			)
+
+	def _receive(self):
+		return _guard_dir(
+			"Receive", rows=(("MOP-2", "MWO-1"),), name="DIR-R-0001", docstatus=2
+		)
+
+	def _received(self, **fields):
+		values = {
+			"department": "Dept-B",
+			"department_ir_status": "Received",
+			"department_issue_id": "DIR-I-0001",
+			"department_receive_id": "DIR-R-0001",
+			"previous_mop": "MOP-1",
+		}
+		values.update(fields)
+		return _guard_op("MOP-2", **values)
+
+	def test_receive_cancel_is_allowed_while_nothing_happened_in_the_department(self):
+		self._cancel(self._receive(), [self._received()], [_guard_wo(pointer="MOP-2")])
+		self.assertEqual(self.minted_filters, [])
+		self.assertEqual(self.locked, [(["MOP-2"], ["MWO-1"])])
+
+	def test_receive_cancel_is_refused_once_the_work_order_moved_on(self):
+		"""Family A of the audit: 10-01 Receive cancels reopened work orders already moved on.
+		The message names what blocks the cancel -- the Employee IR holding the operation, not a
+		"move" to the very operation the cancel names."""
+		for label, fields, pointer, expected in (
+			(
+				"issued to an employee",
+				{"status": "WIP", "operation": "Op-T", "employee": "EMP-1"},
+				"MOP-2",
+				(
+					"<strong>MOP-2</strong> of work order <strong>MWO-1</strong> is WIP with "
+					"<strong>EMP-1</strong> for <strong>Op-T</strong> (Employee IR "
+					"<strong>EIR-I-0007</strong>)",
+					"would send <strong>MOP-2</strong> back in transit while it is WIP",
+				),
+			),
+			(
+				"received by another document",
+				{"department_receive_id": "DIR-R-OTHER"},
+				"MOP-2",
+				("was received by <strong>DIR-R-OTHER</strong>",),
+			),
+			(
+				"sent onwards",
+				{"status": "Finished"},
+				"MOP-3",
+				(
+					"work order <strong>MWO-1</strong> has moved on to <strong>MOP-3</strong>",
+					"would send <strong>MOP-2</strong> back in transit.",
+				),
+			),
+		):
+			with self.subTest(label=label):
+				with self.assertRaises(guard.HistoryRewriteError) as cm:
+					self._cancel(
+						self._receive(),
+						[self._received(**fields)],
+						[_guard_wo(pointer=pointer)],
+						holding="EIR-I-0007",
+					)
+				message = str(cm.exception)
+				for token in expected:
+					self.assertIn(token, message)
+				self.assertNotIn("would reopen", message)
+
+	def test_receive_cancel_ignores_a_reverted_successor(self):
+		self._cancel(
+			self._receive(),
+			[self._received()],
+			[_guard_wo(pointer="MOP-2")],
+			family=_guard_family(
+				self._received(),
+				_guard_op(
+					"MOP-3",
+					previous_mop="MOP-2",
+					status="Not Started",
+					department_ir_status="Revert",
+				),
+			),
+		)
+
+	def test_cancel_guard_ignores_warn_mode(self):
+		with (
+			patch.dict(frappe.local.conf, {"current_operation_guard": "warn"}),
+			patch.object(guard.frappe, "log_error") as log_error,
+		):
+			with self.assertRaises(guard.HistoryRewriteError):
+				self._cancel(
+					self._receive(),
+					[self._received(status="WIP", operation="Op-T")],
+					[_guard_wo(pointer="MOP-2")],
+				)
+		log_error.assert_not_called()
+
+	def test_reviewed_repair_bypasses_the_rule(self):
+		allowed = {guard.REVIEWED_REPAIR_FLAG: {("Department IR", "DIR-R-0001")}}
+		with patch.dict(frappe.local.flags, allowed):
+			self._cancel(
+				self._receive(),
+				[self._received(status="WIP", operation="Op-T")],
+				[_guard_wo(pointer="MOP-2")],
+			)
+		self.assertEqual(self.locked, [(["MOP-2"], ["MWO-1"])])
+
+
+class TestDepartmentIRCurrentOperationWiring(IntegrationTestCase):
+	"""Where DepartmentIR calls the guard, and the two cancel restorations that ship with it."""
+
+	@classmethod
+	def setUpClass(cls):
+		_warm_guard_caches()
+
+	def test_before_insert_takes_the_lock_block_for_every_new_document(self):
+		for kind in ("Issue", "Receive"):
+			for docstatus, phase in ((0, "save"), (1, "submit")):
+				with self.subTest(kind=kind, docstatus=docstatus):
+					with patch.object(guard, "_check") as check:
+						guard.on_before_insert(
+							_guard_dir(kind, new=True, docstatus=docstatus)
+						)
+					self.assertEqual(_check_call(check), (phase, True))
+
+	def test_every_department_ir_submit_is_checked_under_locks(self):
+		for kind in ("Issue", "Receive"):
+			with self.subTest(kind=kind):
+				with patch.object(guard, "_check") as check:
+					guard.on_before_validate(
+						_guard_dir(kind, docstatus=1, before=_guard_dir(kind))
+					)
+				self.assertEqual(_check_call(check), ("submit", True))
+
+	def test_controller_before_insert_hands_the_document_to_the_guard(self):
+		"""begin_attempt (the EOD / reconciliation-window refusal, the budget reset) first."""
+		calls = []
+		doc = _guard_dir(new=True)
+		with (
+			patch.object(
+				guard, "begin_attempt", side_effect=_record(calls, "begin attempt")
+			),
+			patch.object(
+				guard, "on_before_insert", side_effect=_record(calls, "guard")
+			),
+		):
+			DepartmentIR.before_insert(doc)
+		self.assertEqual(calls, ["begin attempt", "guard"])
+
+	def test_a_frozen_save_or_submit_is_refused_before_any_lock(self):
+		"""F2: during the EOD sync the refusal comes before the block -- for a saved draft in
+		check_if_latest, for a new document in before_insert."""
+		from frappe.model.document import Document
+
+		eod = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.is_eod_sync_locked"
+		saved = frappe.get_doc(
+			{
+				"doctype": "Department IR",
+				"name": "DIR-T-0099",
+				"type": "Issue",
+				"docstatus": 1,
+				"current_department": "Dept-A",
+			}
+		)
+		calls = []
+		with (
+			patch(eod, return_value=True),
+			patch.object(frappe.db, "get_value", return_value=0),
+			patch.object(
+				guard, "lock_before_own_rows", side_effect=_record(calls, "block")
+			),
+			patch.object(
+				guard, "on_before_insert", side_effect=_record(calls, "new block")
+			),
+			patch.object(
+				Document, "check_if_latest", side_effect=_record(calls, "own rows")
+			),
+		):
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "EOD sync is in progress"
+			):
+				saved.check_if_latest()
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "EOD sync is in progress"
+			):
+				DepartmentIR.before_insert(_guard_dir(new=True))
+		self.assertEqual(calls, [])
+
+	def test_check_if_latest_takes_the_block_before_frappe_locks_the_own_rows(self):
+		"""Frappe's check_if_latest loads the saved document's rows FOR UPDATE (with the gap
+		after them): waiting for the block only after that deadlocked with a new Department IR of
+		the same work order inserting its rows into that gap (race suite)."""
+		from frappe.model.document import Document
+
+		for label, doc, expected in (
+			(
+				"saved document",
+				frappe.get_doc(
+					{
+						"doctype": "Department IR",
+						"name": "DIR-T-0099",
+						"type": "Receive",
+						"docstatus": 1,
+					}
+				),
+				[("begin attempt", 0), "block", "own rows (Frappe)"],
+			),
+			("new document", frappe.new_doc("Department IR"), ["own rows (Frappe)"]),
+		):
+			with self.subTest(label):
+				calls = []
+				with (
+					patch.object(frappe.db, "get_value", return_value=0),
+					patch.object(
+						guard,
+						"begin_attempt",
+						side_effect=lambda d, stored=None, calls=calls: calls.append(
+							("begin attempt", stored)
+						),
+					),
+					patch.object(
+						guard,
+						"lock_before_own_rows",
+						side_effect=lambda d, calls=calls: calls.append("block"),
+					),
+					patch.object(
+						Document,
+						"check_if_latest",
+						side_effect=lambda *a, calls=calls, **k: calls.append(
+							"own rows (Frappe)"
+						),
+					),
+				):
+					doc.check_if_latest()
+				self.assertEqual(calls, expected)
+
+	def test_before_validate_guards_a_submit_although_the_checks_below_are_save_only(
+		self,
+	):
+		calls = []
+		with (
+			patch.object(
+				guard, "on_before_validate", side_effect=_record(calls, "guard")
+			),
+			patch.object(
+				frappe.db, "get_value", side_effect=_record(calls, "save-only read")
+			),
+			patch(
+				f"{_DIR_MODULE}.validate_mwo",
+				side_effect=_record(calls, "validate_mwo"),
+			),
+		):
+			DepartmentIR.before_validate(_guard_dir(docstatus=1))
+		self.assertEqual(calls, ["guard", "validate_mwo"])
+
+	def test_before_validate_guards_a_draft_save_before_its_first_read(self):
+		calls = []
+		with (
+			patch.object(
+				guard, "on_before_validate", side_effect=_record(calls, "guard")
+			),
+			patch.object(
+				frappe.db,
+				"get_value",
+				side_effect=_record(
+					calls, "department company read", raises=_GuardStop()
+				),
+			),
+		):
+			with self.assertRaises(_GuardStop):
+				DepartmentIR.before_validate(_guard_dir())
+		self.assertEqual(calls, ["guard", "department company read"])
+
+	def test_on_update_runs_the_terminal_draft_check_for_draft_saves_only(self):
+		for docstatus, expected in ((0, 1), (1, 0)):
+			with self.subTest(docstatus=docstatus):
+				with patch.object(guard, "final_draft_check") as final:
+					DepartmentIR.on_update(_guard_dir(docstatus=docstatus))
+				self.assertEqual(final.call_count, expected)
+
+	def test_submit_ends_with_the_terminal_draft_check(self):
+		for kind, expected in (
+			("Issue", ["issue", "final draft check"]),
+			("Receive", ["receive", "final draft check"]),
+		):
+			with self.subTest(kind=kind):
+				calls = []
+				doc = _guard_dir(kind, docstatus=1)
+				doc.on_submit_issue_new = _record(calls, "issue")
+				doc.on_submit_receive = _record(calls, "receive")
+				with patch.object(
+					guard,
+					"final_draft_check",
+					side_effect=_record(calls, "final draft check"),
+				):
+					DepartmentIR.on_submit(doc)
+				self.assertEqual(calls, expected)
+
+	def test_cancel_is_guarded_before_any_reversal(self):
+		for kind, reversal in (
+			("Issue", "reverse issue"),
+			("Receive", "reverse receive"),
+		):
+			with self.subTest(kind=kind):
+				calls = []
+				doc = _guard_dir(kind, docstatus=2)
+				doc.on_submit_issue_new = lambda cancel=False: calls.append(
+					("reverse issue", cancel)
+				)
+				doc.on_submit_receive = lambda cancel=False: calls.append(
+					("reverse receive", cancel)
+				)
+				with patch.object(
+					guard, "guard_cancel", side_effect=_record(calls, "guard cancel")
+				):
+					DepartmentIR.on_cancel(doc)
+				self.assertEqual(calls, ["guard cancel", (reversal, True)])
+
+	def test_refused_cancel_reverses_nothing(self):
+		calls = []
+		doc = _guard_dir("Receive", docstatus=2)
+		doc.on_submit_receive = lambda cancel=False: calls.append(
+			("reverse receive", cancel)
+		)
+		with patch.object(
+			guard, "guard_cancel", side_effect=guard.HistoryRewriteError("moved on")
+		):
+			with self.assertRaises(guard.HistoryRewriteError):
+				DepartmentIR.on_cancel(doc)
+		self.assertEqual(calls, [])
+
+	def test_discard_marks_child_rows_through_the_guard(self):
+		doc = _guard_dir()
+		with patch.object(guard, "on_discard") as hook:
+			DepartmentIR.on_discard(doc)
+		hook.assert_called_once_with(doc)
+
+	def test_issue_cancel_restores_the_source_operation_to_not_started(self):
+		"""A Department Issue only takes a Not Started operation; its cancel used to leave WIP,
+		which no picker accepts and which reads as employee custody."""
+		set_values = []
+
+		def get_value(doctype, filters=None, *args, **kwargs):
+			if doctype == "Manufacturing Operation" and isinstance(filters, dict):
+				return "MOP-NEW"
+			return None
+
+		with (
+			patch(f"{_DIR_MODULE}.get_datetime", return_value="2026-01-01 12:00:00"),
+			patch.object(frappe.db, "sql", return_value=[]),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch.object(frappe.db, "get_list", return_value=[]),
+			patch.object(
+				frappe.db, "set_value", side_effect=lambda *a, **k: set_values.append(a)
+			),
+			patch.object(
+				frappe,
+				"get_doc",
+				side_effect=lambda doctype, name=None, *a, **k: FrappeDict(name=name),
+			),
+			patch.object(frappe, "delete_doc") as delete_doc,
+			patch(_PC_TAGGING_SYNC),
+		):
+			DepartmentIR.on_submit_issue_new(
+				_guard_dir("Issue", name="DIR-I-0001", docstatus=2), cancel=True
+			)
+		self.assertIn(
+			("Manufacturing Operation", "MOP-1", "status", "Not Started"), set_values
+		)
+		self.assertNotIn(
+			("Manufacturing Operation", "MOP-1", "status", "WIP"), set_values
+		)
+		self.assertIn(
+			("Manufacturing Work Order", "MWO-1", "manufacturing_operation", "MOP-1"),
+			set_values,
+		)
+		delete_doc.assert_called_once_with(
+			"Manufacturing Operation", "MOP-NEW", ignore_permissions=1
+		)
+
+	def _receive_writes(self, doc, cancel):
+		set_values = []
+
+		def get_value(doctype, *args, **kwargs):
+			# No Parent Manufacturing Order: the PMO / tagging block stays out of the way.
+			return "WH-T" if doctype == "Warehouse" else None
+
+		with (
+			patch(f"{_DIR_MODULE}.get_datetime", return_value="2026-01-01 12:00:00"),
+			patch.object(frappe.db, "sql", return_value=[]),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch.object(frappe, "get_value", return_value="WH-T"),
+			patch.object(
+				frappe.db, "set_value", side_effect=lambda *a, **k: set_values.append(a)
+			),
+			patch.object(frappe, "get_doc", return_value=MagicMock()),
+			patch(f"{_DIR_MODULE}.add_time_log"),
+			patch(f"{_DIR_MODULE}.create_mop_log_for_department_ir"),
+			patch(_PC_TAGGING_SYNC),
+		):
+			DepartmentIR.on_submit_receive(doc, cancel=cancel)
+		return set_values
+
+	def test_receive_cancel_returns_the_work_order_to_the_sending_department(self):
+		doc = _guard_dir(
+			"Receive", rows=(("MOP-2", "MWO-1"),), name="DIR-R-0001", docstatus=2
+		)
+		writes = self._receive_writes(doc, cancel=True)
+		self.assertIn(
+			("Manufacturing Work Order", "MWO-1", "department", "Dept-A"), writes
+		)
+		self.assertNotIn(
+			("Manufacturing Work Order", "MWO-1", "department", "Dept-B"), writes
+		)
+
+	def test_receive_cancel_without_a_previous_department_keeps_the_current_one(self):
+		doc = _guard_dir(
+			"Receive", rows=(("MOP-2", "MWO-1"),), docstatus=2, previous_department=None
+		)
+		writes = self._receive_writes(doc, cancel=True)
+		self.assertIn(
+			("Manufacturing Work Order", "MWO-1", "department", "Dept-B"), writes
+		)
+
+	def test_receive_submit_moves_the_work_order_to_the_receiving_department(self):
+		doc = _guard_dir("Receive", rows=(("MOP-2", "MWO-1"),), docstatus=1)
+		writes = self._receive_writes(doc, cancel=False)
+		self.assertIn(
+			("Manufacturing Work Order", "MWO-1", "department", "Dept-B"), writes
+		)
