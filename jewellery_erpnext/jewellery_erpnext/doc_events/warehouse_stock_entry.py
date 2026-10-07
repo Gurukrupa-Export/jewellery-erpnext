@@ -40,7 +40,6 @@ from frappe.utils import flt
 # set_basic_rate_manually) stay defined in exactly one place.
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
 	batch_priority_map,
-	describe_customer_spill,
 	is_customer_rank,
 	loss_rank,
 	stamp_produce_rows_from_consumes,
@@ -232,17 +231,11 @@ def _stamp_loss_produce_rows(se):
 def _guard_customer_loss(se_loss):
 	"""Vet the loss leg's resolved batches for customer ownership.
 
-	Two rules, both mirroring the Employee IR loss engine so the MSL button cannot
-	drift from it:
-
-	* A ``Customer.custom_no_wastage`` batch is a hard stop. Those batches rank
-	  behind every ordinary customer in the loss ordering, so reaching one means
-	  nothing else in the warehouse had capacity -- the operator must return the
-	  full weight instead of scrapping the customer's metal.
-	* Any other customer-owned batch is allowed but warned about, once, naming
-	  customer / item / batch / qty. Spilling is legitimate; doing it silently is not.
+	Mirrors the Employee IR loss engine so the MSL button cannot drift from it: a
+	``Customer.custom_no_wastage`` batch is a hard stop -- the operator must return
+	the full weight instead of scrapping the customer's metal. Any other
+	customer-owned batch may absorb the loss, and nothing is announced.
 	"""
-	spill = []
 	for row in se_loss.get("items") or []:
 		if not row.get("s_warehouse") or row.get("t_warehouse"):
 			continue  # produce row of the loss pair
@@ -268,29 +261,6 @@ def _guard_customer_loss(se_loss):
 					"goes back as raw material."
 				).format(frappe.bold(batch_no), frappe.bold(cust))
 			)
-		spill.append(
-			{
-				"customer": cust,
-				"item_code": row.get("item_code"),
-				"batch_no": batch_no,
-				"qty": flt(row.get("qty")),
-			}
-		)
-
-	if not spill:
-		return
-	prec = _se_precision()
-	total = flt(sum(r["qty"] for r in spill), prec)
-	frappe.msgprint(
-		_(
-			"Company metal in this warehouse could not absorb the whole loss, so {0} g "
-			"was written off against customer-owned material:"
-		).format(frappe.bold(total))
-		+ "<br><br>"
-		+ "<br>".join(describe_customer_spill(spill, precision=prec)),
-		title=_("Customer Material Absorbed Loss"),
-		indicator="orange",
-	)
 
 
 def _refresh_tracking(warehouse):

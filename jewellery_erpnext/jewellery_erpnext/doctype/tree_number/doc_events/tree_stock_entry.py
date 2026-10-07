@@ -63,9 +63,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority 
 	allocate_in_order,
 	batch_priority_map,
 	batch_sort_key,
-	describe_customer_spill,
-	is_customer_rank,
-	loss_rank,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
@@ -701,39 +698,6 @@ def _allocate_tree_legs(se, tree, item_code, msl_wh, recv, loss):
 	return recv_alloc, loss_alloc, ranks
 
 
-def _warn_tree_customer_loss(customer_loss, prec):
-	"""ONE orange warning when a tree write-off lands on customer-owned metal.
-
-	Mirrors the Employee IR spill warning: the loss pass only reaches a customer
-	batch once the company's are exhausted, which is allowed but must be visible.
-	Never throws -- the single hard stop is the no-wastage check at the call site.
-	"""
-	if not customer_loss:
-		return
-	merged = {}
-	for row in customer_loss:
-		key = (row["customer"], row["item_code"], row["batch_no"])
-		merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), prec)
-	total = flt(sum(merged.values()), prec)
-	lines = describe_customer_spill(
-		[
-			{"customer": c, "item_code": i, "batch_no": b, "qty": q}
-			for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
-		],
-		precision=prec,
-	)
-	frappe.msgprint(
-		_(
-			"Company metal on this tree could not absorb the whole loss, so {0} g was "
-			"written off against customer-owned material:"
-		).format(frappe.bold(total))
-		+ "<br><br>"
-		+ "<br>".join(lines),
-		title=_("Customer Material Absorbed Loss"),
-		indicator="orange",
-	)
-
-
 def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 	"""Fail fast once even same-ownership-tier metal cannot cover the need.
 
@@ -978,7 +942,6 @@ def receive_material(tree, rows):
 	# batch qty twice — but each leg is ordered for its OWN rule: the customer's
 	# metal is handed back first, the company's is written off first. Every row
 	# carries its batch's ownership (inventory_type / customer) across with it.
-	customer_loss = []
 	for p in plan:
 		rem_recv = flt(p["recv"], prec)
 		rem_loss = flt(p["loss"], prec)
@@ -1027,15 +990,6 @@ def receive_material(tree, rows):
 				batch_no=batch_no,
 				item_code=p["item"],
 			)
-			if is_customer_rank(loss_rank(inv)):
-				customer_loss.append(
-					{
-						"customer": cust,
-						"item_code": p["item"],
-						"batch_no": batch_no,
-						"qty": qty,
-					}
-				)
 			_append_repack_loss_pair(
 				se_loss,
 				p["item"],
@@ -1047,8 +1001,6 @@ def receive_material(tree, rows):
 				inventory_type=inv,
 				customer=cust,
 			)
-
-	_warn_tree_customer_loss(customer_loss, prec)
 
 	# Post the transfer FIRST so both legs' consumption lands in a stable order (all Bins stay
 	# locked across both submits). The FIFO helper is a structural no-op now that every source row
