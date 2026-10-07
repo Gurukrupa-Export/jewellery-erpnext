@@ -1,5 +1,13 @@
 import frappe
-from frappe.utils import flt
+from frappe.utils import cint, flt
+
+from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+	stamp_produce_rows_from_consumes,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	DEFAULT_INVENTORY_TYPE,
+	normalize_ownership,
+)
 
 _EARRING_CATEGORY = "Earrings"
 _EARRING_UNITS = 2
@@ -560,6 +568,54 @@ def _split_row_by_issued_batches(row, issue_item_defaults, taken, precision):
 	return out
 
 
+def stamp_rows_from_batches(rows):
+	"""Book each consuming row under the owner of the batch it draws.
+
+	Every Product Certification entry is ``auto_created``, which skips
+	``CustomStockEntry.update_batches`` -- the one place that copies a batch's owner onto its
+	row. Without this a row drawing a customer's batch reached the blanket default in
+	``doc_events/stock_entry.before_validate`` and went to the ledger as "Regular Stock".
+
+	Only a row whose owner is still the framework's (blank, or "Regular Stock" with no customer)
+	is stamped; one that names an owner keeps it. One Batch read for all rows, then the shared
+	``normalize_ownership`` rules -- the same idiom as ``mop_eod_sync._stamp_eod_row_ownership``.
+	Works on plain dicts (rows before ``append``) and on child documents alike.
+	"""
+	targets = [
+		row
+		for row in rows
+		if row.get("s_warehouse") and row.get("batch_no") and _owner_unset(row)
+	]
+	if not targets:
+		return
+
+	owners = {
+		batch.name: (batch.custom_inventory_type, batch.custom_customer)
+		for batch in frappe.get_all(
+			"Batch",
+			filters={"name": ("in", sorted({row.get("batch_no") for row in targets}))},
+			fields=["name", "custom_inventory_type", "custom_customer"],
+			limit_page_length=0,
+		)
+	}
+	for row in targets:
+		batch_type, batch_customer = owners.get(row.get("batch_no")) or (None, None)
+		inventory_type, customer = normalize_ownership(
+			batch_type,
+			batch_customer,
+			batch_no=row.get("batch_no"),
+			item_code=row.get("item_code"),
+		)
+		row.update({"inventory_type": inventory_type, "customer": customer})
+
+
+def _owner_unset(row):
+	inventory_type = row.get("inventory_type")
+	return not inventory_type or (
+		inventory_type == DEFAULT_INVENTORY_TYPE and not row.get("customer")
+	)
+
+
 def create_material_receipt_for_certification(self):
 	"""Create TWO stock entries for Fire Assy / XRF Receive:
 
@@ -691,11 +747,29 @@ def create_material_receipt_for_certification(self):
 			row.item_code,
 			["has_batch_no", "has_serial_no", "create_new_batch"],
 		)
-		batch_no = item_defaults.get("batch_no")
+
+		# A Repack PRODUCE row of an item that mints its own batches gets its batch minted from
+		# the row on submit, never one chosen here. That minting is what links the batch to its
+		# row (``custom_voucher_detail_no``), and only through that link does
+		# ``update_inventory_dimentions`` stamp the batch's inventory type, customer and Batch
+		# Rate -- a customer's output is minted as a child batch by
+		# ``batch_rename.create_child_batches`` with the same three. The old ``make_batch`` below
+		# ran before this Stock Entry existed, so every batch it made sat with no owner and a
+		# rate of 0 (KGGK-SE-RP-26-00501). The issued-batch and "latest batch in the supplier
+		# warehouse" fallbacks were worse for a produce row: they added the output to somebody
+		# else's batch.
+		is_produce_row = not (is_main_item and not is_loss_row)
+		mints_own_batch = bool(
+			is_produce_row
+			and cint(has_batch_no)
+			and cint(create_new_batch)
+			and not cint(has_serial_no)
+		)
+		batch_no = None if mints_own_batch else item_defaults.get("batch_no")
 		serial_no = item_defaults.get("serial_no")
 
 		# Batch fallback via SLE
-		if has_batch_no and not batch_no:
+		if has_batch_no and not batch_no and not mints_own_batch:
 			sle_key = (row.item_code, s_wh)
 			if sle_key not in sle_batch_cache:
 				sle_batch_cache[sle_key] = frappe.db.get_value(
@@ -742,7 +816,7 @@ def create_material_receipt_for_certification(self):
 					serial_no = "\n".join(available_serials)
 
 		# Auto-create batch for non-main items if needed
-		if has_batch_no and not batch_no and not serial_no:
+		if has_batch_no and not batch_no and not serial_no and not mints_own_batch:
 			if create_new_batch:
 				from erpnext.stock.doctype.batch.batch import make_batch
 
@@ -758,7 +832,6 @@ def create_material_receipt_for_certification(self):
 			"is_scrap_item": 1 if is_loss_row else 0,
 			"use_serial_batch_fields": True,
 			"serial_and_batch_bundle": None,
-			"Inventory_type": row.get("inventory_type") or "Regular Stock",
 			"gross_weight": produce_qty,
 		}
 
@@ -806,7 +879,6 @@ def create_material_receipt_for_certification(self):
 					"is_scrap_item": 0,
 					"use_serial_batch_fields": True,
 					"serial_and_batch_bundle": None,
-					"Inventory_type": row.get("inventory_type") or "Regular Stock",
 					"gross_weight": consume_qty,
 				}
 			)
@@ -887,6 +959,8 @@ def create_material_receipt_for_certification(self):
 		se_receipt.inventory_type = "Regular Stock"
 		for rd in main_rows:
 			se_receipt.append("items", rd)
+		# The issued batches come back under their own owner -- the Issue booked them the same way.
+		stamp_rows_from_batches(se_receipt.items)
 		se_receipt.validate_warehouse = bypass_validate_warehouse
 		se_receipt.flags.ignore_permissions = True
 		se_receipt.save(ignore_permissions=True)
@@ -902,6 +976,10 @@ def create_material_receipt_for_certification(self):
 		se_repack.inventory_type = "Regular Stock"
 		for rd in repack_rows:
 			se_repack.append("items", rd)
+		# Consume rows under their batch's owner first, then each produce row under its consume
+		# run's -- the order matters, the second reads the first.
+		stamp_rows_from_batches(se_repack.items)
+		stamp_produce_rows_from_consumes(se_repack)
 		se_repack.validate_warehouse = bypass_validate_warehouse
 		se_repack.validate_finished_goods = bypass_validate_warehouse
 		se_repack.validate_repack_entry = bypass_validate_warehouse

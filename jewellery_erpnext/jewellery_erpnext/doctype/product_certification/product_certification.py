@@ -30,6 +30,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 	create_po,
 	earring_units,
 	process_fire_assy_xrf_submit,
+	stamp_rows_from_batches,
 	update_bom_details,
 	validate_po_configuration,
 )
@@ -1707,9 +1708,9 @@ def _issue_rows_by_batch(base_row, warehouse, qty, taken, posting_date=None, pos
 
 	Same batches, same quantities, same FIFO order as the picker was already choosing; they
 	are just resolved here, up front, so each one gets its own visible row. ``inventory_type``
-	is deliberately left as the caller set it: the receipt side reads its own value from the
-	exploded rows, so stamping per-batch ownership here alone would put the two sides of one
-	certification into disagreement.
+	is not set here: ``create_stock_entry`` books every row under its batch's owner once the
+	table is built (``stamp_rows_from_batches``), and the receipt side does the same for the
+	batches it draws back, so both sides of one certification agree.
 
 	``taken`` is shared across the document so two rows of the same item cannot both spend
 	the same batch. Returns ``[base_row]`` unchanged for a serialised or non-batched item, or
@@ -1971,6 +1972,9 @@ def create_stock_entry(doc):
 			frappe.throw(_("No item found for Repack"))
 		se_doc.flags.throw_batch_error = True
 		se_doc.inventory_type = "Regular Stock"
+		# This entry is auto_created, so update_batches never copies a batch's owner onto its
+		# row: a customer's batch would otherwise be issued as "Regular Stock".
+		stamp_rows_from_batches(se_doc.items)
 		se_doc.save()
 		se_doc.submit()
 		frappe.msgprint(_("Stock Entry created"))
