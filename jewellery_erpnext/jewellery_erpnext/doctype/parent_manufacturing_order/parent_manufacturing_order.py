@@ -9,6 +9,10 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
 from frappe.utils import cint, flt, get_link_to_form
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_GOODS_INVENTORY_TYPE,
+	pmo_expects_customer_goods,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
 from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
 	diamond_group_key,
@@ -708,14 +712,50 @@ class ParentManufacturingOrder(Document):
 			mr_doc.schedule_date = frappe.utils.nowdate()
 			mr_doc.manufacturing_order = self.name
 			mr_doc.custom_manufacturer = self.manufacturer
-			if (
-				self.customer_gold == "Yes"
-				and self.customer_diamond == "Yes"
-				and self.customer_stone == "Yes"
-				and self.customer_good == "Yes"
-			):
-				mr_doc._customer = self.customer
-				mr_doc.inventory_type = "Customer Goods"
+
+			# OWNERSHIP IS DECIDED PER MATERIAL TYPE, NOT ALL-OR-NOTHING.
+			#
+			# This used to require customer_gold AND customer_diamond AND customer_stone AND
+			# customer_good to all read "Yes", so an order where the customer supplied only the
+			# diamonds -- the ordinary case for a customer-diamond order -- got no ownership stamp
+			# at all and its stones were requested as company stock. Each request carries exactly
+			# one material type, so the flag for THAT type is the one that decides it:
+			# ``_ITEM_TYPE_PREFIX`` already maps the bucket to the same M/F/D/G/O letter
+			# ``VARIANT_CUSTOMER_FLAG`` is keyed on.
+			#
+			# Read off the ``is_customer_*`` checkboxes rather than the Yes/No Data strings beside
+			# them: the checkboxes are the normalised form (``is_customer_diamond_flag`` handles
+			# "yes" as well as "Yes") and they are what every other reader in the app uses --
+			# ``se_utils.get_fifo_batches`` and ``validate_customer_diamond_grade`` among them.
+			customer_owned = pmo_expects_customer_goods(self, prefix)
+
+			# A BOM row ticked ``is_customer_item`` is the customer's even when the order-level
+			# flag is clear, which is how ownership was expressed before the PMO flags existed.
+			# ``cint`` rather than ``== 1``: the BOM stores a Check, but the bucket dicts these
+			# rows are built from also carry the string "0" for other_item.
+			def _row_is_customer_owned(bom_row):
+				return customer_owned or bool(cint(bom_row.get("is_customer_item")))
+
+			# Customer Goods with no customer is worse than no stamp: ``normalize_ownership``
+			# rule 3 silently downgrades it back to Regular Stock, which is how a customer's
+			# stones end up booked as the company's. Refuse to write the half-stamp instead.
+			if not self.customer and any(_row_is_customer_owned(i) for i in val):
+				frappe.throw(
+					_(
+						"{0} requests customer-supplied {1}, but the order has no Customer. "
+						"Material booked as Customer Goods without an owner is booked as the "
+						"company's, so the request cannot be raised."
+					).format(frappe.bold(self.name), item_type.replace("_", " "))
+				)
+
+			if customer_owned:
+				# ``customer``, NOT ``_customer``. Material Request HAS a real ``customer``
+				# field; the leading underscore made this a throwaway Python attribute that
+				# ``get_valid_dict`` dropped, so the header has never once been stamped. Same
+				# bug class as the ``custom_inventory_type`` -> ``inventory_type`` fix on the
+				# rows below, which sat one line away and was found first.
+				mr_doc.customer = self.customer
+				mr_doc.inventory_type = CUSTOMER_GOODS_INVENTORY_TYPE
 			mr_doc.custom_department = frappe.db.get_value(
 				"Warehouse", val[0]["from_warehouse"], "department"
 			)
@@ -753,10 +793,20 @@ class ParentManufacturingOrder(Document):
 							# This never mattered while the key was ``custom_inventory_type``:
 							# get_valid_dict dropped it before any link check ran. Landing the
 							# stamp makes the value real, so it has to be a real one -- and
-							# "Customer Goods" is what line 718 already stamps on the parent
-							# Material Request, so the header and its rows now agree.
-							"inventory_type": "Customer Goods"
-							if i.get("is_customer_item") == 1
+							# "Customer Goods" is what the header stamp above writes on the
+							# parent Material Request, so the header and its rows agree.
+							"inventory_type": CUSTOMER_GOODS_INVENTORY_TYPE
+							if _row_is_customer_owned(i)
+							else None,
+							# The owner has to travel WITH the type. ``inventory_type`` alone is a
+							# half-stamp: the reserve Stock Entry copies both fields off this row
+							# (``doc_events/material_request.create_stock_entry``), and
+							# ``normalize_ownership`` rule 3 turns "Customer Goods, owner unknown"
+							# straight back into Regular Stock -- the customer's stones booked as
+							# the company's. The blank-customer guard above is what lets this be
+							# unconditional.
+							"customer": self.customer
+							if _row_is_customer_owned(i)
 							else None,
 							"description": i["item_code"]
 							if item_type == "gemstone_item"
@@ -830,12 +880,16 @@ def make_manufacturing_order(
 		doc.metal_colour = so_det.get("metal_colour")
 		doc.customer_sample = row.customer_sample
 		doc.customer_voucher_no = row.customer_voucher_no
-		doc.is_customer_gold = 1 if row.customer_gold == "Yes" else 0
+		# All four read the Yes/No text through the SAME case-insensitive helper. Only
+		# is_customer_diamond did, so a plan row saved as "yes" set the diamond flag and
+		# silently cleared the other three -- and a cleared is_customer_gemstone is an order
+		# whose customer's stones get requested as company stock.
+		doc.is_customer_gold = is_customer_diamond_flag(row.customer_gold)
 		# Shared with Manufacturing Plan's own reading of the same string, so the grade the plan
 		# computes for a row and the one this PMO resolves on save agree on the flag.
 		doc.is_customer_diamond = is_customer_diamond_flag(row.customer_diamond)
-		doc.is_customer_gemstone = 1 if row.customer_stone == "Yes" else 0
-		doc.is_customer_material = 1 if row.customer_good == "Yes" else 0
+		doc.is_customer_gemstone = is_customer_diamond_flag(row.customer_stone)
+		doc.is_customer_material = is_customer_diamond_flag(row.customer_good)
 		doc.customer_weight = row.customer_weight
 		doc.repair_type = row.repair_type
 		doc.product_type = row.product_type

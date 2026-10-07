@@ -8,6 +8,15 @@ frappe.ui.form.on("Attribute Value", {
 			["metal_touch", "Metal Touch"],
 		];
 		set_item_attribute_filters_on_fields_in_parent_doctype(frm, parent_fields);
+
+		// Not Allowed Value offers only the values of the row's Item Attribute.
+		frm.set_query("attribute_value", "not_allowed_attribute_values", function (doc, cdt, cdn) {
+			let row = locals[cdt][cdn];
+			return {
+				query: "jewellery_erpnext.query.item_attribute_query",
+				filters: { item_attribute: row.item_attribute },
+			};
+		});
 	},
 	refresh: function (frm) {
 		set_sieve_size_labels(frm);
@@ -19,6 +28,12 @@ frappe.ui.form.on("Attribute Value", {
 
 	is_diamond_sieve_size_range: function (frm) {
 		set_sieve_size_labels(frm);
+	},
+});
+
+frappe.ui.form.on("Attribute Value Not Allowed Detail", {
+	item_attribute: function (frm, cdt, cdn) {
+		frappe.model.set_value(cdt, cdn, "attribute_value", "");
 	},
 });
 

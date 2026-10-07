@@ -211,7 +211,12 @@ doc_events = {
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
 	},
 	"BOM": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate",
+			# Last, after anything that sets an image: GK paths whose file is not on this
+			# site become absolute GK URLs, so core's attach hook stops logging errors.
+			"jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+		],
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.validate",
 		"on_update": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_update",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_cancel",
@@ -223,11 +228,21 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.work_order.validate",
 	},
 	"Item": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.item.before_validate",
+			"jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+		],
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item.validate",
 		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_save",
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.item.on_trash",
 		"before_insert": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_insert",
+	},
+	# gke_customization doctypes whose image is fetched from item_code.image / design_code.image.
+	"Product Return Order": {
+		"before_validate": "jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+	},
+	"Customer Design Information Sheet": {
+		"before_validate": "jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
 	},
 	"Item Attribute": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
@@ -255,6 +270,16 @@ doc_events = {
 			# the Stock Entry itself, never on the dozen cascades that mint one from
 			# another doctype's lifecycle -- see the module docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.validate_stock_entry_type_permission",
+			# F5: a consuming row must draw the owner's material its PMO was placed on. At
+			# `validate` because before_validate's update_batches has by then allocated the
+			# batches this reads, and because the original on_submit wiring only complained
+			# after the stock had already moved. Restored here rather than by un-commenting
+			# its old call site, so the ordering against the other row rewriters is explicit.
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.validate_inventory_dimention",
+			# Hybrid orders: a finding listed in Subcontracting Settings must draw a Customer Goods
+			# batch of the order's Ref Customer. At `validate` so it sees the batches
+			# before_validate's update_batches filled; no-op while that table is empty.
+			"jewellery_erpnext.customer_subcontracting.hybrid_findings.validate_hybrid_finding_batches",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
@@ -498,6 +523,9 @@ override_whitelisted_methods = {
 	# weights export as 25.3796 while the UI shows 25.38. Round Float cells to the
 	# same precision the UI uses for Serial No exports only.
 	"frappe.core.doctype.data_import.data_import.download_template": "jewellery_erpnext.jewellery_erpnext.doc_events.data_export.download_template",
+	# Single Variant "Create": reject Attribute Value "Not Allowed" combinations
+	# before the dialog closes, instead of only when the new item is saved.
+	"erpnext.controllers.item_variant.get_variant": "jewellery_erpnext.jewellery_erpnext.doc_events.item.get_variant",
 }
 
 override_doctype_class = {

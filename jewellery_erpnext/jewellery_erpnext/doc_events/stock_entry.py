@@ -453,8 +453,6 @@ def validate_mop_is_current(self):
 
 
 def validate_ir(self):
-	# 	validate_inventory_dimention(self)
-
 	if self.auto_created == 0:
 		if self.stock_entry_type in [
 			"Material Receive (WORK ORDER)",
@@ -1105,6 +1103,55 @@ def _throw_warehouse_mismatch(row, label, expected, actual):
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
+	release_material_request_links(self)
+
+
+# The Material Request fields that record "this step was done by Stock Entry X". All but
+# custom_mop_se (Data) are Link fields, which is what makes the request a back-link.
+_MR_STEP_ENTRY_FIELDS = (
+	"custom_reserve_se",
+	"custom_transfer_se",
+	"custom_department_transfer_se",
+	"custom_mop_se",
+)
+
+
+def release_material_request_links(self):
+	"""Let this entry cancel without its Material Request, and take it off the request.
+
+	The request stamps its entries (_MR_STEP_ENTRY_FIELDS) while every entry's rows point
+	back through material_request, so frappe's back-link check made each wait for the other
+	to be cancelled first -- neither ever could, and the desk's "Cancel All" walked that loop
+	into the request and every sibling entry. The request is ignored here, not in
+	before_cancel: ERPNext's StockEntry.on_cancel assigns ignore_linked_doctypes outright,
+	and check_no_back_links_exist reads it only after every on_cancel hook has run.
+
+	A stamp naming this entry is cleared, since the step it records is undone. Only the
+	submitted requests on this entry's own rows are touched: a draft is no back-link, and a
+	request carrying a copied link (split work order, desk Duplicate) is not this entry's.
+	"""
+	self.ignore_linked_doctypes = (
+		*(self.get("ignore_linked_doctypes") or ()),
+		"Material Request",
+	)
+
+	requests = {row.material_request for row in self.items if row.material_request}
+	if not requests:
+		return
+
+	for mr in frappe.get_all(
+		"Material Request",
+		filters={"name": ["in", sorted(requests)], "docstatus": 1},
+		fields=["name", *_MR_STEP_ENTRY_FIELDS],
+	):
+		stamps = {f: None for f in _MR_STEP_ENTRY_FIELDS if mr.get(f) == self.name}
+		if not stamps:
+			continue
+		if "custom_transfer_se" in stamps:
+			stamps.update(custom_transfer_se_state=None, custom_transfer_se_error=None)
+		# Not a save: validate_department_transfer_frozen refuses any normal update that
+		# touches custom_department_transfer_se.
+		frappe.db.set_value("Material Request", mr.name, stamps, update_modified=False)
 
 
 def prelock_bins(self, method=None):
@@ -1209,16 +1256,34 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 	resubmit / replay do not create duplicates.
 	"""
 	if is_cancelled:
-		frappe.db.sql(
-			"""
-			UPDATE `tabMOP Log`
-			SET is_cancelled = 1
-			WHERE voucher_type = 'Stock Entry'
-			  AND voucher_no = %s
-			  AND is_cancelled = 0
-			""",
-			(self.name,),
-		)
+		# Read this voucher's rows first (plain read; they were all written by its own submit,
+		# and the cancel holds the Stock Entry) and flip them by primary key. A voucher-filtered
+		# UPDATE has no index to use on production: it scanned and locked every MOP Log row of
+		# the site until the cancel committed (lock_order RULE E) -- on every Stock Entry
+		# cancel, including those an Employee / Department IR cancel makes after its
+		# current-operation lock block.
+		names = [
+			r[0]
+			for r in frappe.db.sql(
+				"""
+				SELECT name FROM `tabMOP Log`
+				WHERE voucher_type = 'Stock Entry'
+				  AND voucher_no = %s
+				  AND is_cancelled = 0
+				""",
+				(self.name,),
+			)
+		]
+		if names:
+			frappe.db.sql(
+				"""
+				UPDATE `tabMOP Log`
+				SET is_cancelled = 1
+				WHERE name IN %(names)s
+				  AND is_cancelled = 0
+				""",
+				{"names": sorted(names)},
+			)
 		return
 
 	# Nothing to sync unless at least one row is MOP-bound; skip the snapshot query

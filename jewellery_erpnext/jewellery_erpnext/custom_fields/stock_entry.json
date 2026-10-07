@@ -87,6 +87,18 @@
    "options": "Customer"
   },
   {
+   "depends_on": "eval:doc.stock_entry_type==\"Customer Goods Received\"",
+   "description": "End customer these goods are received for. Every batch this entry creates carries it, and Hybrid orders of that Ref Customer use those batches for the finding categories set in Subcontracting Settings.",
+   "dt": "Stock Entry",
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "_customer",
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Customer"
+  },
+  {
    "dt": "Stock Entry",
    "fieldname": "column_break_prtgq",
    "fieldtype": "Column Break",

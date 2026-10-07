@@ -20,7 +20,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	set_fg_bom_weights,
 	set_gross_wt,
 	set_jwelex_tag_no,
-	# validate_inventory_dimention,
 	validate_warehouse,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.transit import (
@@ -192,8 +191,9 @@ def before_validate(self, method):
 
 
 def on_submit(self, method):
+	# Deliberately empty. This used to call validate_inventory_dimention, which now runs on
+	# ``validate`` via hooks.py -- early enough to tell the user before any stock moves.
 	pass
-	# validate_inventory_dimention(self)
 
 
 def lane_from_batch(row, batch):
@@ -286,7 +286,14 @@ class CustomStockEntry(StockEntry):
 							temp_row = copy.deepcopy(row)
 							rows_to_append += [temp_row]
 						else:
-							rows_to_append += get_fifo_batches(self, row, consumed)
+							# ``item_map`` is handed over so the allocator can read this row's
+							# ``variant_of`` from the Item master: the fetched
+							# ``custom_variant_of`` is still empty here on a server-built
+							# entry's first save, and without the letter the Customer Goods
+							# lane never applies. Already prefetched above, so this is free.
+							rows_to_append += get_fifo_batches(
+								self, row, consumed, item_map=item_map
+							)
 					elif row.t_warehouse:
 						rows_to_append += [row.__dict__]
 				else:

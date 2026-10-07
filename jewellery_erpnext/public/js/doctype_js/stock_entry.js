@@ -316,6 +316,13 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	setup: function (frm) {
+		// A Material Request stamps its entries (custom_reserve_se and friends) and every
+		// entry's rows point back at it, so the cancel dialog walked request -> all its sibling
+		// entries and offered to cancel them, the request included, in an order that cannot
+		// succeed. on_cancel releases the request server-side; ERPNext's own list is kept.
+		frm.ignore_doctypes_on_cancel_all = [
+			...new Set([...(frm.ignore_doctypes_on_cancel_all || []), "Material Request"]),
+		];
 		// The Stock Entry Type the server treats as a Customer Gold receipt, or null when the flow
 		// is off. Fetched once because Subcontracting Settings is readable by System Managers only.
 		frm._cg_receipt_type = null;
@@ -400,6 +407,7 @@ frappe.ui.form.on("Stock Entry", {
 				filters: { item_attribute: child.item_attribute },
 			};
 		};
+		set_hybrid_finding_batch_query(frm);
 	},
 	onload_post_render: function (frm) {
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-remove-rows").remove();
@@ -1975,6 +1983,53 @@ erpnext.show_serial_batch_selector = function (frm, d, callback, on_close, show_
 		);
 	});
 };
+
+// Batch picker on the items grid. erpnext's stock_entry.js registers its batch_no query in its
+// own setup, which runs before this file's, so it is wrapped rather than replaced: its filters are
+// kept, and on the Stock Entry Types listed in hybrid_findings.HYBRID_FINDING_SE_TYPES the query
+// goes through hybrid_findings.get_batch_no with the row's order. The server narrows the list to
+// the customer's batches only for a Hybrid order's listed finding and returns erpnext's list
+// unchanged for everything else.
+function set_hybrid_finding_batch_query(frm) {
+	const hybrid_finding_se_types = [
+		"Material Transfer (DEPARTMENT)",
+		"Material transfer to Reserve",
+		"Material Transfer (WORK ORDER)",
+	];
+	const erpnext_query = frm.fields_dict.items.grid.get_field("batch_no").get_query;
+	frm.set_query("batch_no", "items", function (doc, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		const query = erpnext_query
+			? erpnext_query(doc, cdt, cdn)
+			: {
+					query: "erpnext.controllers.queries.get_batch_no",
+					filters: { item_code: row.item_code, warehouse: row.s_warehouse || row.t_warehouse },
+			  };
+		if (
+			!hybrid_finding_se_types.includes(doc.stock_entry_type) ||
+			!query ||
+			query.query !== "erpnext.controllers.queries.get_batch_no"
+		) {
+			return query;
+		}
+		// Only the keys that have a value: an empty one shows up as "<key> equals empty" in the
+		// link field's "Filtered by" line, and the server reads missing and empty the same.
+		const context = {
+			stock_entry_type: doc.stock_entry_type,
+			parent_manufacturing_order: row.custom_parent_manufacturing_order,
+			manufacturing_order: doc.manufacturing_order,
+			manufacturing_work_order: row.custom_manufacturing_work_order || doc.manufacturing_work_order,
+		};
+		const filters = Object.assign({}, query.filters);
+		for (const [key, value] of Object.entries(context)) {
+			if (value) filters[key] = value;
+		}
+		return {
+			query: "jewellery_erpnext.customer_subcontracting.hybrid_findings.get_batch_no",
+			filters: filters,
+		};
+	});
+}
 
 // The item query for the configured Customer Gold receipt, or null for any other Stock Entry Type.
 // frm._cg_receipt_type is fetched in setup and is null while the Customer Gold flow is off.

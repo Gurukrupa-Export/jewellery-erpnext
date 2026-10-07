@@ -26,7 +26,6 @@ from frappe.utils import (
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
 	batch_priority_map,
 	describe_customer_loss_posted,
-	describe_customer_spill,
 	is_customer_rank,
 	loss_rank,
 	tiered_allocate,
@@ -35,6 +34,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	CUSTOMER_INVENTORY_TYPES,
 	PROCESS_LOSS_SE_TYPE,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
 	get_blocked_finding_batches,
 	is_customer_goods_finding_blocked,
@@ -141,6 +141,39 @@ class EmployeeIR(Document):
 					"employee_ir_operations", {"manufacturing_operation": row.name}
 				)
 
+	def check_if_latest(self):
+		# Lock order for a save or submit of an EXISTING document: [Receive: Tree -> Series ->
+		# Bin] -> the guard's MOP -> MWO block, and only then Frappe's check_if_latest, which
+		# loads this document's own rows FOR UPDATE (lock_order RULE D). A new document has no
+		# stored version; it takes the same locks in before_insert. Before any of them,
+		# begin_attempt refuses a save / submit during the EOD sync or a reconciliation window.
+		if not self.is_new():
+			stored = frappe.db.get_value(self.doctype, self.name, "docstatus")
+			current_operation_guard.begin_attempt(self, stored)
+			prelock_receive_submit(
+				self, submitting=stored is not None and cint(stored) == 0
+			)
+			current_operation_guard.lock_before_own_rows(self)
+		return super().check_if_latest()
+
+	def before_insert(self):
+		# Work-order current-operation guard: a new document takes its MOP/MWO lock block here,
+		# BEFORE set_new_name locks the shared naming-series row (lock_order RULE D). A REST
+		# insert-and-submit of a Receive takes its Tree / Series / Bin pre-locks first, and
+		# begin_attempt (the EOD / reconciliation-window refusal) comes before any lock.
+		current_operation_guard.begin_attempt(self)
+		prelock_receive_submit(self)
+		current_operation_guard.on_before_insert(self)
+
+	def on_update(self):
+		# Terminal NOWAIT re-check that no other Employee Issue draft holds these work orders.
+		# Submits run it as the last statement of on_submit instead.
+		if self.docstatus == 0:
+			current_operation_guard.final_draft_check(self)
+
+	def on_discard(self):
+		current_operation_guard.on_discard(self)
+
 	def before_submit(self):
 		if self.type == "Issue":
 			self.issue_submitted_on = now_datetime()
@@ -176,8 +209,17 @@ class EmployeeIR(Document):
 		else:
 			self.on_submit_receive()
 			self._announce_customer_loss_posted()
+		# Last statement: a hit here rolls the whole submit back.
+		current_operation_guard.final_draft_check(self)
 
 	def before_validate(self):
+		# First statement on every save and submit path (desk, REST, bulk, the Submission
+		# Queue worker): before_validate runs even under flags.ignore_validate, and before any
+		# QC, MOP, MOP Log, time-log or stock side effect. The legacy checks below still return
+		# early once docstatus != 0, which is why the guard has to come first. (A Receive submit
+		# already took its Tree / Series / Bin pre-locks -- in check_if_latest, or in
+		# before_insert for a REST insert-and-submit -- so the guard may take its block now.)
+		current_operation_guard.on_before_validate(self)
 		if self.docstatus != 0:
 			return
 		warehouse = frappe.db.get_value(
@@ -304,6 +346,9 @@ class EmployeeIR(Document):
 
 	def on_cancel(self):
 		if self.type == "Issue":
+			# The Issue's own tree first (parent control row), then the MOP/MWO block.
+			lock_trees_for_eir(self)
+			current_operation_guard.guard_cancel(self)
 			self.on_submit_issue_new(cancel=True)
 		else:
 			self.on_submit_receive(cancel=True)
@@ -313,38 +358,26 @@ class EmployeeIR(Document):
 		# 	mop_data = json.loads(self.mop_data)
 		# 	return create_single_se_entry(self, mop_data)
 		if cancel:
-			affected_mops_issue = [
-				r[0]
-				for r in frappe.db.sql(
-					"""
-					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
-					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
-					  AND manufacturing_operation IS NOT NULL
-					""",
-					(self.doctype, self.name),
-				)
-			]
-			frappe.db.set_value(
-				"MOP Log",
-				{
-					"voucher_type": self.doctype,
-					"voucher_no": self.name,
-					"is_cancelled": 0,
-				},
-				"is_cancelled",
-				1,
-			)
 			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				cancel_voucher_mop_logs,
 				recalculate_manufacturing_operation_weights,
 			)
 
-			for mop_name in affected_mops_issue:
+			# Flipped by primary key: a voucher-filtered UPDATE would lock every MOP Log row of the
+			# site until this cancel commits (lock_order RULE E).
+			for mop_name in cancel_voucher_mop_logs(self.doctype, self.name):
 				recalculate_manufacturing_operation_weights(mop_name)
+			# Back to the true pre-issue state: the time log this Issue opened goes (read before
+			# the bulk update below clears the subcontractor it is matched on), and so does the
+			# running timer (started_time, below).
+			_delete_issue_open_time_logs(self)
 		# Set initial values based on cancel flag
 		employee = None if cancel else self.employee
 		operation = None if cancel else self.operation
 		status = "Not Started" if cancel else "WIP"
 		values = {"operation": operation, "status": status}
+		if cancel:
+			values["started_time"] = None
 		if self.subcontracting == "Yes":
 			values["for_subcontracting"] = 1
 			values["subcontractor"] = None if cancel else self.subcontractor
@@ -386,20 +419,21 @@ class EmployeeIR(Document):
 		if not (to_warehouse and from_warehouse):
 			frappe.throw(_("To Warehouse or From Warehouse not available"))
 		for row in self.employee_ir_operations:
-			values.update(
-				{
-					"operation": operation,
-					"rpt_wt_issue": row.rpt_wt_issue,
-					"start_time": start_time,
-				}
-			)
-			mops_to_update[row.manufacturing_operation] = values
+			# A fresh dict per row: one shared dict, mutated in the loop, left every operation
+			# of a multi-row Issue holding the LAST row's rpt_wt_issue.
+			row_values = {
+				**values,
+				"operation": operation,
+				"rpt_wt_issue": row.rpt_wt_issue,
+				"start_time": start_time,
+			}
+			mops_to_update[row.manufacturing_operation] = row_values
 			if not cancel:
 				# stock_entry_data.append(
 				# 	(row.manufacturing_work_order, row.manufacturing_operation)
 				# )
 				# mop_data[row.manufacturing_work_order] = row.manufacturing_operation
-				time_log_args.append((row.manufacturing_operation, values))
+				time_log_args.append((row.manufacturing_operation, row_values))
 				creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse)
 
 		if mops_to_update:
@@ -424,17 +458,24 @@ class EmployeeIR(Document):
 
 	# for receive
 	def on_submit_receive(self, cancel=False):
-		# Canonical lock order (lock_order.py): the Tree Number is a PARENT CONTROL ROW and must
-		# be locked at position 1 — before any tabSeries / tabBin lock taken further down by the
-		# Main Slip injection and the Process Loss entries. Locking it only at
-		# update_tree_on_receive time (the tail of this method) would let this transaction hold
-		# Bins while waiting on a Tree that a concurrent Tree Number button holds while waiting on
-		# those same Bins: a textbook 1213 cycle.
-		lock_trees_for_eir(self)
-		# ...and the trees the finding repack draws from, which lock_trees_for_eir does not cover:
-		# it is scoped to casting operations, while a finding repack can run on any operation whose
-		# work order still carries a tree.
-		lock_finding_repack_trees(self)
+		# A submit attempt that took its pre-locks early (take_receive_prelocks, from
+		# check_if_latest / before_insert, followed by the guard's block) already holds every
+		# lock below; re-taking them would only repeat the statements.
+		prelocked = not cancel and bool(
+			self.flags.get(current_operation_guard.RECEIVE_PRELOCKS_FLAG)
+		)
+		if not prelocked:
+			# Canonical lock order (lock_order.py): the Tree Number is a PARENT CONTROL ROW and
+			# must be locked at position 1 — before any tabSeries / tabBin lock taken further down
+			# by the Main Slip injection and the Process Loss entries. Locking it only at
+			# update_tree_on_receive time (the tail of this method) would let this transaction
+			# hold Bins while waiting on a Tree that a concurrent Tree Number button holds while
+			# waiting on those same Bins: a textbook 1213 cycle.
+			lock_trees_for_eir(self)
+			# ...and the trees the finding repack draws from, which lock_trees_for_eir does not
+			# cover: it is scoped to casting operations, while a finding repack can run on any
+			# operation whose work order still carries a tree.
+			lock_finding_repack_trees(self)
 
 		precision = cint(
 			frappe.db.get_single_value("System Settings", "float_precision")
@@ -451,126 +492,44 @@ class EmployeeIR(Document):
 		)
 
 		# Resolve warehouses for MOP Log entries
-		department_wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"department": self.department,
-				"warehouse_type": "Manufacturing",
-			},
-		)
-		if self.subcontracting == "Yes":
-			actor_wh = frappe.db.get_value(
-				"Warehouse",
-				{
-					"disabled": 0,
-					"company": self.company,
-					"subcontractor": self.subcontractor,
-					"warehouse_type": "Manufacturing",
-				},
-			)
-		else:
-			actor_wh = frappe.db.get_value(
-				"Warehouse",
-				{
-					"disabled": 0,
-					"employee": self.employee,
-					"warehouse_type": "Manufacturing",
-				},
-			)
+		department_wh, actor_wh = _receive_warehouses(self)
 
 		curr_time = frappe.utils.now()
 
 		if cancel:
+			# Refuse a cancel whose effect is no longer the current state (the trees are already
+			# locked above, so this keeps Tree -> MOP -> MWO). Before any reversal side effect.
+			current_operation_guard.guard_cancel(self)
 			# Cancel Process Loss SEs and restore SREs before MOP Log flip.
 			cancel_loss_stock_entries(self)
 
-			# Capture which Manufacturing Operations need bucket recompute BEFORE
-			# the bulk is_cancelled flip — afterwards the rows are filtered out
-			# by the `is_cancelled = 0` clause the recompute uses.
-			affected_mops = [
-				r[0]
-				for r in frappe.db.sql(
-					"""
-					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
-					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
-					  AND manufacturing_operation IS NOT NULL
-					""",
-					(self.doctype, self.name),
-				)
-			]
-			frappe.db.set_value(
-				"MOP Log",
-				{
-					"voucher_type": self.doctype,
-					"voucher_no": self.name,
-					"is_cancelled": 0,
-				},
-				"is_cancelled",
-				1,
-			)
-			# Cancel any auto-created Main Slip Repack SEs; their on_cancel hook
-			# flips the matching MOP Log rows to is_cancelled=1 via the bridge.
-			cancel_injections_for_eir(self.name)
-			# Bulk db.set_value above bypasses MOPLog.validate, so the prefix
-			# buckets stay stale showing pre-cancel balances. Re-run the central
-			# aggregator on each affected MOP so gross_wt restores to the
-			# remaining-active-rows balance.
 			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				cancel_voucher_mop_logs,
 				recalculate_manufacturing_operation_weights,
 			)
 
+			# The operations needing a bucket recompute are captured by the flip itself (the
+			# rows drop out of the recompute's `is_cancelled = 0` filter afterwards). Flipped by
+			# primary key: a voucher-filtered UPDATE would lock every MOP Log row of the site
+			# until this cancel commits (lock_order RULE E).
+			affected_mops = cancel_voucher_mop_logs(self.doctype, self.name)
+			# Cancel any auto-created Main Slip Repack SEs; their on_cancel hook
+			# flips the matching MOP Log rows to is_cancelled=1 via the bridge.
+			cancel_injections_for_eir(self.name)
+			# The bulk flip above bypasses MOPLog.validate, so the prefix buckets stay stale
+			# showing pre-cancel balances. Re-run the central aggregator on each affected MOP so
+			# gross_wt restores to the remaining-active-rows balance.
 			for mop_name in affected_mops:
 				recalculate_manufacturing_operation_weights(mop_name)
 
 		if not cancel:
-			# Canonical lock order for the EIR receive cascade: it mints several Stock
-			# Entries (per-operation metal injections + the combined Process Loss SE), each
-			# otherwise locking its Bins independently. Pin the Stock Entry series, then
-			# pre-lock the manufacturing-warehouse Bins this receive draws on, in sorted
-			# order, so concurrent EIR/SNC/PC submits acquire shared Bins in the same
-			# sequence. Loss-SE source Bins resolved later are still locked (in sorted order)
-			# by each SE's prelock_bins hook; create_loss_stock_entries reduces SREs in
-			# stock_lock_key order (RULE A).
-			from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
-				PROCESS_LOSS_SE_TYPE,
-			)
-			from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
-				MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
-				REPACK_STOCK_ENTRY_TYPE,
-				_resolve_source_warehouse_raw_material,
-			)
-			from jewellery_erpnext.jewellery_erpnext.lock_order import (
-				lock_bins,
-				preallocate_series_for_docs,
-				series_stubs,
-			)
-
-			_eir_pairs = [
-				(getattr(r, "item_code", None), wh)
-				for r in (self.manually_book_loss_details + self.employee_loss_details)
-				for wh in (department_wh, actor_wh)
-			]
-			# The finding repack consumes tree metal out of the MSL warehouse and produces the
-			# findings back into it, then the Material Transfer carries them to the department.
-			# Those Bins are only reached at submit time, so they have to join this one sorted
-			# acquisition or they would be taken out of sequence (lock_order RULE B).
-			_eir_pairs += finding_bin_pairs(
-				self, _resolve_source_warehouse_raw_material(self), department_wh
-			)
-			# Pin each nested SE type's naming counter (the per-(company x type)
-			# Document Naming Rule counter post-reshard, or the tabSeries fallback)
-			# BEFORE the Bins -- a blank stub matches no naming rule and would pin
-			# the wrong (shared MAT-STE-) row while leaving the real counters unpinned.
-			preallocate_series_for_docs(
-				*series_stubs(
-					self.company,
-					MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
-					REPACK_STOCK_ENTRY_TYPE,
-					PROCESS_LOSS_SE_TYPE,
-				)
-			)
-			lock_bins(_eir_pairs)
+			if not prelocked:
+				_lock_receive_series_and_bins(self, department_wh, actor_wh)
+			# Authoritative work-order current-operation check, after the Tree / Series / Bin
+			# pre-locks and before the row loop moves anything: keeps the Stock Entry order
+			# Tree -> Series -> Bin -> MOP -> MWO (lock_order RULE D/E). A no-op when this
+			# attempt already decided under the block right after its early pre-locks.
+			current_operation_guard.check_after_receive_prelocks(self)
 
 		for row in self.employee_ir_operations:
 			if is_mould_operation and not cancel:
@@ -788,7 +747,9 @@ class EmployeeIR(Document):
 		Raw Material (MSL) warehouse but never refreshed this cache, so the
 		on-form Receive/Pending qty drifted from the ledger. Mirror the Employee
 		Loss Entry / warehouse-button pattern. A refresh failure must never roll
-		back the stock posting, so failures are logged, not raised.
+		back the stock posting, so failures are logged, not raised -- except a
+		deadlock (1213, or 1020 under snapshot isolation): InnoDB has already rolled
+		the whole submit / cancel back by then, so it is re-raised.
 		"""
 		from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
 			recalculate_msl_tracking,
@@ -979,9 +940,6 @@ class EmployeeIR(Document):
 					"customer": row.get("customer"),
 				},
 			)
-
-		# ONE warning for the whole document, after every operation row is booked.
-		self._warn_customer_loss_spill()
 
 		# Pre-deduction MOP baseline: total loss available from the operations
 		# before any manual deduction. Drives downstream caps and serves as the
@@ -1213,7 +1171,7 @@ class EmployeeIR(Document):
 					# Loss exceeded every batch's capacity on this operation. The
 					# excess is anchored on the FIRST funded tier (company metal) by
 					# tiered_allocate — never on the customer — so nothing here has
-					# to redistribute it, but it is worth surfacing.
+					# to redistribute it.
 					doc._collect_loss_overflow(mwo, opt, alloc_info.overflow)
 			elif total_qty != 0 and ms_consum:
 				# Gain: nothing is lost, the operation drew extra from the Main Slip.
@@ -1235,13 +1193,13 @@ class EmployeeIR(Document):
 		return data
 
 	def _collect_customer_loss_spill(self, entry, qty):
-		"""Record that customer-owned metal absorbed loss, for ONE warning later.
+		"""Record that customer-owned metal absorbed loss.
 
-		Deliberately data, not a ``msgprint``. ``book_metal_loss`` is reached from
-		``validate`` on every draft save and runs once per operation row, so warning
-		in place would fire repeatedly per save and again from every whitelisted
-		caller. ``validate_process_loss`` emits a single deduplicated message after
-		the loop instead.
+		Nothing shows this to the operator: a draft save stays silent, and after a
+		successful submit ``_announce_customer_loss_posted`` notes the posted rows on
+		the timeline. The call in ``book_metal_loss`` is kept, like
+		``_collect_loss_overflow``'s, because the loss-waterfall tests observe the
+		allocation by overriding these two hooks.
 		"""
 		spill = self.flags.setdefault("customer_loss_spill", [])
 		spill.append(
@@ -1259,113 +1217,14 @@ class EmployeeIR(Document):
 			{"mwo": mwo, "operation": opt, "qty": flt(qty, 3)}
 		)
 
-	def _warn_customer_loss_spill(self):
-		"""Preview, on a draft save, the customer-owned metal the loss is booked on.
-
-		ONE orange message for the whole document whenever a customer tier is funded --
-		not only when the waterfall overflowed. The ordinary case is "company metal ran
-		out, or there was none, and the rest lands on the customer's gold", which is
-		exactly what the operator needs to see. Customer-owned batches in the manually
-		booked table are listed too, so this preview and the note posted after a
-		successful submit (``_announce_customer_loss_posted``) name the same metal.
-
-		Future tense on purpose: this runs from ``validate`` on a draft save only
-		(``validate_process_loss`` returns once docstatus is 1), so nothing is posted
-		yet -- the Process Loss entry is made on submit, which is queued and can still
-		fail. The old "was booked" wording read as a completed posting
-		(EMP-IR-Labh-2026-14111).
-
-		Never throws: spilling is allowed. The one hard stop remains
-		``batch_owner_no_wastage`` below, and that batch is ranked last precisely so
-		the waterfall reaches it only when nothing else can absorb the loss.
-		"""
-		spill = self.flags.get("customer_loss_spill") or []
-		manual = _manual_customer_loss_rows(self)
-		if not spill and not manual:
-			return
-
-		merged = {}
-		for rows, booked_manually in ((spill, False), (manual, True)):
-			for row in rows:
-				key = (
-					row["customer"],
-					row["item_code"],
-					row["batch_no"],
-					booked_manually,
-				)
-				merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), 3)
-
-		lines = describe_customer_spill(
-			[
-				{
-					"customer": customer,
-					"item_code": item_code,
-					"batch_no": batch_no,
-					"qty": qty,
-					"note": _("booked manually") if booked_manually else None,
-				}
-				for (customer, item_code, batch_no, booked_manually), qty in sorted(
-					merged.items(), key=lambda kv: str(kv[0])
-				)
-			]
-		)
-		customer_total = flt(sum(merged.values()), 3)
-		booked_total = flt(
-			sum(
-				flt(_row_get(row, "proportionally_loss"), 3)
-				for row in (getattr(self, "employee_loss_details", None) or [])
-			)
-			+ sum(
-				get_loss_qty_in_grams(
-					_row_get(row, "item_code"), _row_get(row, "proportionally_loss")
-				)
-				for row in (getattr(self, "manually_book_loss_details", None) or [])
-			),
-			3,
-		)
-		company_total = flt(booked_total - customer_total, 3)
-
-		if company_total > 0:
-			message = _(
-				"Of the {0} g process loss, {1} g is booked on company-owned metal and {2} g "
-				"on customer-owned material:"
-			).format(
-				frappe.bold(booked_total),
-				frappe.bold(company_total),
-				frappe.bold(customer_total),
-			)
-		else:
-			message = _(
-				"All {0} g of the process loss is booked on customer-owned material; this "
-				"receive has no company-owned metal that can absorb it:"
-			).format(frappe.bold(customer_total))
-		message += "<br><br>" + "<br>".join(lines)
-
-		overflow = flt(
-			sum(flt(row.get("qty")) for row in (self.flags.get("loss_overflow") or [])),
-			3,
-		)
-		if overflow > 0 and company_total > 0:
-			message += "<br><br>" + _(
-				"The company-owned figure includes {0} g beyond the operation's recorded balance."
-			).format(frappe.bold(overflow))
-
-		message += "<br><br>" + _(
-			"Nothing has been posted yet. On submit, the customer's share moves from their "
-			"batch to customer-owned scrap."
-		)
-		frappe.msgprint(
-			message, title=_("Customer Material Will Absorb Loss"), indicator="orange"
-		)
-
 	def _announce_customer_loss_posted(self):
 		"""After a successful Receive submit, record which customer metal the loss was posted on.
 
-		The draft-save preview is long gone by then, and a queued submit's ``msgprint``
-		never reaches the browser. So the note goes on the timeline as an Info comment
-		and to the submitting user as a realtime message -- both only once the submit
-		commits (``after_commit``; a rollback discards them). It is built from the posted
-		Process Loss rows, not from the draft, so it names the scrap batch actually made.
+		The note goes on the timeline as an Info comment and nowhere else -- no dialog,
+		on save or on submit. It is written in the submit's own transaction, so a
+		rollback discards it, and unlike a ``msgprint`` it also survives a queued submit.
+		It is built from the posted Process Loss rows, not from the draft, so it names
+		the scrap batch actually made.
 
 		Advisory: it must never be able to fail the submit that posted the loss.
 		"""
@@ -1386,16 +1245,6 @@ class EmployeeIR(Document):
 				+ "<br>".join(describe_customer_loss_posted(rows))
 			)
 			self.add_comment("Info", message)
-			frappe.publish_realtime(
-				"msgprint",
-				{
-					"message": message,
-					"title": _("Customer Material Absorbed Loss"),
-					"indicator": "orange",
-				},
-				user=frappe.session.user,
-				after_commit=True,
-			)
 		except frappe.QueryDeadlockError:
 			# InnoDB has already rolled back the whole submit; swallowing this would let
 			# on_submit carry on in a fresh transaction and commit half a submit.
@@ -1410,46 +1259,6 @@ class EmployeeIR(Document):
 	@frappe.whitelist()
 	def get_summary_data(self):
 		return get_summary_data(self)
-
-
-def _row_get(row, fieldname):
-	"""Read a field off a child row that may be a Document, a ``frappe._dict`` or a stub."""
-	return row.get(fieldname) if hasattr(row, "get") else getattr(row, fieldname, None)
-
-
-def _manual_customer_loss_rows(doc):
-	"""Manually booked loss rows on customer-owned batches, with ``qty`` in grams.
-
-	Module-level rather than a method: tests drive ``_warn_customer_loss_spill`` through
-	a stub document. Ownership is the batch's, as it is when the loss is posted
-	(``row_ownership.resolve_batch_ownership`` lets the batch win over the row).
-	"""
-	rows = [
-		row
-		for row in (getattr(doc, "manually_book_loss_details", None) or [])
-		if _row_get(row, "batch_no")
-		and flt(_row_get(row, "proportionally_loss"), 3) > 0
-	]
-	if not rows:
-		return []
-
-	ownership = batch_priority_map([_row_get(row, "batch_no") for row in rows])
-	customer_rows = []
-	for row in rows:
-		meta = ownership.get(_row_get(row, "batch_no"))
-		if not meta or not is_customer_rank(loss_rank(meta.inventory_type)):
-			continue
-		customer_rows.append(
-			{
-				"customer": meta.customer,
-				"item_code": _row_get(row, "item_code"),
-				"batch_no": _row_get(row, "batch_no"),
-				"qty": get_loss_qty_in_grams(
-					_row_get(row, "item_code"), _row_get(row, "proportionally_loss")
-				),
-			}
-		)
-	return customer_rows
 
 
 def _posted_customer_loss_rows(employee_ir):
@@ -1505,6 +1314,208 @@ def _posted_customer_loss_rows(employee_ir):
 		},
 		as_dict=True,
 	)
+
+
+def prelock_receive_submit(eir, submitting=True):
+	"""An Employee Receive SUBMIT takes its Tree / Series / Bin pre-locks before the guard's
+	MOP/MWO block (lock_order RULE D), i.e. before Frappe names the document (a REST
+	insert-and-submit: ``before_insert``) or locks its rows (a saved draft's submit:
+	``check_if_latest``). Decided afresh on every attempt (the flag is per attempt); warn mode
+	keeps the pre-guard placement inside ``on_submit_receive``. ``submitting``: False when the
+	stored document is not a draft (a cancel or an update after submit takes no pre-locks)."""
+	eir.flags[current_operation_guard.RECEIVE_PRELOCKS_FLAG] = False
+	if (
+		submitting
+		and eir.type == "Receive"
+		and cint(eir.docstatus) == 1
+		and current_operation_guard.enforcing()
+	):
+		take_receive_prelocks(eir)
+
+
+def take_receive_prelocks(eir):
+	"""Tree -> Series -> Bin pre-locks of an Employee Receive submit, in canonical order.
+
+	The acquisitions ``on_submit_receive`` otherwise makes itself (lock_order RULE B / D): the
+	casting and finding-repack trees, the naming counters of the Stock Entries the receive mints,
+	then the Bins it draws on; every lock is re-entrant within the transaction. The rows' trees
+	are resolved first because validate re-resolves them on the submit save as well: locking the
+	trees the rows will carry keeps any tree from being taken after the work-order block.
+	"""
+	resolve_receive_tree_numbers(eir)
+	lock_trees_for_eir(eir)
+	lock_finding_repack_trees(eir)
+	department_wh, actor_wh = _receive_warehouses(eir)
+	_lock_receive_series_and_bins(eir, department_wh, actor_wh)
+	eir.flags[current_operation_guard.RECEIVE_PRELOCKS_FLAG] = True
+
+
+def _receive_warehouses(eir):
+	"""``(department_wh, actor_wh)`` of an Employee Receive: the department's Manufacturing
+	warehouse and the employee's (or the subcontractor's)."""
+	department_wh = frappe.db.get_value(
+		"Warehouse",
+		{
+			"disabled": 0,
+			"department": eir.department,
+			"warehouse_type": "Manufacturing",
+		},
+	)
+	if eir.subcontracting == "Yes":
+		actor_wh = frappe.db.get_value(
+			"Warehouse",
+			{
+				"disabled": 0,
+				"company": eir.company,
+				"subcontractor": eir.subcontractor,
+				"warehouse_type": "Manufacturing",
+			},
+		)
+	else:
+		actor_wh = frappe.db.get_value(
+			"Warehouse",
+			{
+				"disabled": 0,
+				"employee": eir.employee,
+				"warehouse_type": "Manufacturing",
+			},
+		)
+	return department_wh, actor_wh
+
+
+def _lock_receive_series_and_bins(eir, department_wh, actor_wh):
+	"""Series then Bin pre-locks of an Employee Receive submit (lock_order RULE B).
+
+	Canonical lock order for the EIR receive cascade: it mints several Stock Entries
+	(per-operation metal injections + the combined Process Loss SE), each otherwise locking its
+	Bins independently. Pin the Stock Entry series, then pre-lock the manufacturing-warehouse Bins
+	this receive draws on, in sorted order, so concurrent EIR/SNC/PC submits acquire shared Bins
+	in the same sequence. Loss-SE source Bins resolved later are still locked (in sorted order)
+	by each SE's prelock_bins hook; create_loss_stock_entries reduces SREs in stock_lock_key
+	order (RULE A).
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
+		PROCESS_LOSS_SE_TYPE,
+	)
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
+		MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
+		REPACK_STOCK_ENTRY_TYPE,
+		_resolve_source_warehouse_raw_material,
+	)
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_bins,
+		preallocate_series_for_docs,
+		series_stubs,
+	)
+
+	pairs = [
+		(getattr(r, "item_code", None), wh)
+		for r in (eir.manually_book_loss_details + eir.employee_loss_details)
+		for wh in (department_wh, actor_wh)
+	]
+	# The finding repack consumes tree metal out of the MSL warehouse and produces the findings
+	# back into it, then the Material Transfer carries them to the department. Those Bins are
+	# only reached at submit time, so they have to join this one sorted acquisition or they would
+	# be taken out of sequence (lock_order RULE B).
+	pairs += finding_bin_pairs(
+		eir, _resolve_source_warehouse_raw_material(eir), department_wh
+	)
+	# Pin each nested SE type's naming counter (the per-(company x type) Document Naming Rule
+	# counter post-reshard, or the tabSeries fallback) BEFORE the Bins -- a blank stub matches no
+	# naming rule and would pin the wrong (shared MAT-STE-) row while leaving the real counters
+	# unpinned.
+	preallocate_series_for_docs(
+		*series_stubs(
+			eir.company,
+			MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
+			REPACK_STOCK_ENTRY_TYPE,
+			PROCESS_LOSS_SE_TYPE,
+		)
+	)
+	lock_bins(pairs)
+
+
+def _delete_issue_open_time_logs(eir):
+	"""Employee Issue cancel: delete the OPEN time log(s) this Issue's submit opened on its row
+	operations, and return their names.
+
+	The submit opened one per operation (``batch_add_time_logs``): ``from_time`` = moments after
+	``issue_submitted_on``, no ``to_time``, ``employee`` = the Issue's employee -- empty for a
+	subcontracting Issue, whose holder is recorded on the operation instead (``for_subcontracting``
+	+ ``subcontractor``). Leaving it would put the operation back to Not Started with a running
+	timer.
+
+	Only open rows of THIS Issue's holder are candidates: closed rows are earlier custody, and an
+	open row of another holder is not this Issue's. Which candidates are this Issue's own is
+	``current_operation_guard.issue_own_open_time_logs``'s decision: on a legacy operation another
+	submitted Issue also lists (only the reviewed repair cancels those), the other Issue's running
+	timer stays. The row operations are already locked by ``guard_cancel``, and its snapshot check
+	refused the cancel if any of them was saved while it waited (every writer of an operation's
+	time logs saves the operation), so a plain read of the time logs is current. The delete goes
+	by primary key: record locks only, no gap locks on the time-log parent index that would make
+	other operations' time-log inserts wait for this cancel.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_manufacturing_operations,
+	)
+
+	mops = sorted(
+		{
+			row.manufacturing_operation
+			for row in eir.employee_ir_operations
+			if row.manufacturing_operation
+		}
+	)
+	if not mops:
+		return []
+	if eir.subcontracting == "Yes":
+		employee = ""
+		mops = sorted(
+			name
+			for name, op in lock_manufacturing_operations(mops).items()
+			if cint(op.for_subcontracting)
+			and (op.subcontractor or "") == (eir.subcontractor or "")
+		)
+		if not mops:
+			return []
+	else:
+		employee = eir.employee or ""
+	open_rows = {}
+	for r in frappe.db.sql(
+		"""
+		SELECT name, parent, from_time FROM `tabManufacturing Operation Time Log`
+		WHERE parent IN %(mops)s
+			AND parenttype = 'Manufacturing Operation'
+			AND parentfield = 'time_logs'
+			AND to_time IS NULL
+			AND IFNULL(employee, '') = %(employee)s
+		ORDER BY name
+		""",
+		{"mops": mops, "employee": employee},
+		as_dict=True,
+	):
+		open_rows.setdefault(r.parent, []).append(r)
+	if not open_rows:
+		return []
+	others = current_operation_guard.other_submitted_issues(
+		sorted(open_rows), exclude=eir.name
+	)
+	names = sorted(
+		name
+		for mop, rows in open_rows.items()
+		for name in current_operation_guard.issue_own_open_time_logs(
+			eir, rows, others.get(mop)
+		)
+	)
+	if names:
+		frappe.db.sql(
+			"DELETE FROM `tabManufacturing Operation Time Log` "
+			"WHERE name IN %(names)s AND to_time IS NULL",
+			{"names": names},
+		)
+		for mop in mops:
+			frappe.clear_document_cache("Manufacturing Operation", mop)
+	return names
 
 
 def _bulk_variant_of(item_codes):
