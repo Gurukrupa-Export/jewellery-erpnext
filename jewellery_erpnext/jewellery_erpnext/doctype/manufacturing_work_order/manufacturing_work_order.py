@@ -1280,22 +1280,12 @@ def cancel_split_blocking_stock_entries(docname):
 	request: they run in a background job, latest first.
 	"""
 	frappe.has_permission("Manufacturing Work Order", "read", docname, throw=True)
-	_validate_split_basics(docname)
-	blocking = _split_blocking_stock(docname)
+	blocking = _check_split_cancel(docname)
 	if not blocking.entries:
 		frappe.msgprint(
 			_("Nothing to cancel. Work Order {0} can be split now.").format(docname)
 		)
 		return
-
-	# Refuse here rather than half-way through the job. Frappe's cancel needs both rights.
-	for se in blocking.entries:
-		for ptype in ("write", "cancel"):
-			frappe.has_permission("Stock Entry", ptype, se, throw=True)
-	for mr in _stopped_requests(blocking.material_requests):
-		frappe.has_permission("Material Request", "write", mr, throw=True)
-	# The doc-event hook ignores its document; it throws the standard EOD message.
-	validate_not_eod_sync_locked(None)
 
 	job_id = _split_cancel_job_id(docname)
 	if is_job_enqueued(job_id):
@@ -1313,34 +1303,84 @@ def cancel_split_blocking_stock_entries(docname):
 		enqueue_after_commit=True,
 		docname=docname,
 		requested_by=frappe.session.user,
+		# What this click agreed to re-open. A request stopped after it is refused by the
+		# job, not re-opened.
+		reopen=blocking.stopped,
 	)
-	frappe.msgprint(
-		_(
-			"Cancelling {0} Stock Entries in the background, latest first: {1}. You will be notified when it is done; then split Work Order {2} again."
-		).format(len(blocking.entries), ", ".join(blocking.entries), docname),
-		title=_("Cancellation Queued"),
-		indicator="blue",
-	)
+	message = _(
+		"Cancelling {0} Stock Entries in the background, latest first: {1}."
+	).format(len(blocking.entries), ", ".join(blocking.entries))
+	if blocking.stopped:
+		message += " " + _("Material Request {0} will be re-opened first.").format(
+			", ".join(blocking.stopped)
+		)
+	message += " " + _(
+		"You will be notified when it is done; then split Work Order {0} again."
+	).format(docname)
+	frappe.msgprint(message, title=_("Cancellation Queued"), indicator="blue")
+
+
+def _check_split_cancel(docname, confirmed_reopen=None):
+	"""Everything a split cancellation must pass before it changes anything.
+
+	Run on the click and again when the job starts, which can be long after it: by then
+	the work order may have left planning, its stock or its requests' status may have
+	moved, or the requester's rights may have changed. ``confirmed_reopen`` is what the
+	click agreed to re-open (the job passes it); a request stopped since is refused, never
+	re-opened silently.
+	"""
+	_validate_split_basics(docname)
+	blocking = _split_blocking_stock(docname)
+	if not blocking.entries:
+		# Nothing to cancel, so nothing to re-open either.
+		blocking.stopped = []
+		return blocking
+	blocking.stopped = _stopped_requests(blocking.material_requests)
+
+	if confirmed_reopen is not None:
+		unconfirmed = sorted(set(blocking.stopped) - set(confirmed_reopen))
+		if unconfirmed:
+			frappe.throw(
+				_(
+					"Material Request {0} was stopped after the cancellation was confirmed."
+				).format(", ".join(unconfirmed))
+			)
+
+	# All of it before the first change, so a missing right cannot surface half-way through
+	# the chain. Frappe's cancel needs both write and cancel.
+	for se in blocking.entries:
+		for ptype in ("write", "cancel"):
+			frappe.has_permission("Stock Entry", ptype, se, throw=True)
+	for mr in blocking.stopped:
+		frappe.has_permission("Material Request", "write", mr, throw=True)
+	# The doc-event hook ignores its document; it throws the standard EOD message.
+	validate_not_eod_sync_locked(None)
+	return blocking
 
 
 def _split_cancel_job_id(docname):
 	return f"split_cancel_se::{docname}"
 
 
-def _cancel_split_blocking_stock_entries(docname, requested_by):
+def _cancel_split_blocking_stock_entries(docname, requested_by, reopen=None):
 	"""The queued half of cancel_split_blocking_stock_entries."""
 	# Frappe re-runs a job that hit 1205/1213 without its user -- as Administrator, which
 	# would skip the permission checks every cancel makes.
 	frappe.set_user(requested_by)
-	blocking = _split_blocking_stock(docname)
-	cancelled, current = [], docname
+	reopened, cancelled, current = [], [], docname
 	try:
+		blocking = _check_split_cancel(docname, confirmed_reopen=reopen or [])
 		# ERPNext refuses to cancel an entry against a Stopped request, and the split copies
 		# the request's status into the new work orders' requests: re-open it either way.
-		for mr in _stopped_requests(blocking.material_requests):
+		for mr in blocking.stopped:
 			current = mr
-			frappe.get_doc("Material Request", mr).update_status("Submitted")
+			request = frappe.get_doc("Material Request", mr)
+			# update_status is ERPNext's controller method -- the write check lives in its
+			# whitelisted wrapper -- so it is made here, at the moment of the change.
+			request.check_permission("write")
+			request.update_status("Submitted")
 			frappe.db.commit()
+			reopened.append(mr)
 		for se in blocking.entries:
 			current = se
 			entry = frappe.get_doc("Stock Entry", se)
@@ -1360,10 +1400,19 @@ def _cancel_split_blocking_stock_entries(docname, requested_by):
 		)
 		# ERPNext's stock messages carry markup and hard line breaks; one line reads better
 		# on the timeline and in the bell.
-		reason = " ".join(strip_html(str(e)).split())
-		message = _("Stopped at {0}: {1}").format(current, reason)
-		if cancelled:
-			message += " " + _("Already cancelled: {0}.").format(", ".join(cancelled))
+		reason = " ".join(strip_html(str(e)).split()).rstrip(".")
+		if not (reopened or cancelled):
+			message = _("Nothing was changed: {0}.").format(reason)
+		else:
+			message = _("Stopped at {0}: {1}.").format(current, reason)
+			if reopened:
+				message += " " + _("Already re-opened: {0}.").format(
+					", ".join(reopened)
+				)
+			if cancelled:
+				message += " " + _("Already cancelled: {0}.").format(
+					", ".join(cancelled)
+				)
 		message += " " + _(
 			"Clear that, then click Cancel Stock Entries again to carry on."
 		)

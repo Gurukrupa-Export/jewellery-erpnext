@@ -714,17 +714,40 @@ class TestCancelSplitBlockingStockEntries(UnitTestCase):
 				"enqueue_after_commit": True,
 				"docname": "MWO-1",
 				"requested_by": frappe.session.user,
+				"reopen": [],
 			},
 		)
 
+	def test_queued_job_carries_the_requests_it_may_reopen(self):
+		self._queue(stopped=["MR-1"])
+		self.assertEqual(self.enqueue.call_args.kwargs["reopen"], ["MR-1"])
+		self.assertIn("MR-1 will be re-opened first", self.msgprint.call_args[0][0])
+
 	# --- the job ------------------------------------------------------------------------
 
-	def _run_job(self, *, stopped=(), already_cancelled=(), fail_on=None):
+	def _run_job(
+		self,
+		*,
+		stopped=(),
+		reopen=None,
+		already_cancelled=(),
+		fail_on=None,
+		permission=None,
+		request_write_denied=False,
+		basics=None,
+	):
 		calls = []
 
 		def _get_doc(doctype, name=None, *args, **kwargs):
 			if doctype == "Material Request":
 				mr = MagicMock()
+
+				def _check(ptype):
+					calls.append(("check", name, ptype))
+					if request_write_denied:
+						raise frappe.PermissionError
+
+				mr.check_permission.side_effect = _check
 				mr.update_status.side_effect = lambda status: calls.append(
 					("reopen", name, status)
 				)
@@ -750,8 +773,11 @@ class TestCancelSplitBlockingStockEntries(UnitTestCase):
 				"set_user",
 				side_effect=lambda u: calls.append(("user", u)),
 			),
+			patch.object(mwo_mod, "_validate_split_basics", side_effect=basics),
 			patch.object(mwo_mod, "_split_blocking_stock", return_value=_blocking()),
 			patch.object(mwo_mod, "_stopped_requests", return_value=list(stopped)),
+			patch.object(mwo_mod.frappe, "has_permission", side_effect=permission),
+			patch.object(mwo_mod, "validate_not_eod_sync_locked"),
 			patch.object(mwo_mod.frappe, "get_doc", side_effect=_get_doc),
 			patch("frappe.db.commit", side_effect=lambda: calls.append(("commit",))),
 			patch(
@@ -760,16 +786,73 @@ class TestCancelSplitBlockingStockEntries(UnitTestCase):
 			patch.object(mwo_mod.frappe, "log_error") as log_error,
 			patch.object(mwo_mod, "_report_split_cancel") as report,
 		):
-			mwo_mod._cancel_split_blocking_stock_entries("MWO-1", "planner@example.com")
+			mwo_mod._cancel_split_blocking_stock_entries(
+				"MWO-1", "planner@example.com", reopen=reopen
+			)
 		return calls, report, log_error
 
 	def test_job_runs_as_the_requester_and_reopens_before_cancelling(self):
-		calls, _, _ = self._run_job(stopped=["MR-1"])
+		calls, _, _ = self._run_job(stopped=["MR-1"], reopen=["MR-1"])
 		self.assertEqual(calls[0], ("user", "planner@example.com"))
 		self.assertLess(
 			calls.index(("reopen", "MR-1", "Submitted")),
 			calls.index(("cancel", "STE-LATE")),
 		)
+
+	def test_write_is_checked_on_the_request_right_before_reopening(self):
+		"""update_status is ERPNext's controller method, which checks no permission."""
+		calls, _, _ = self._run_job(stopped=["MR-1"], reopen=["MR-1"])
+		reopened_at = calls.index(("reopen", "MR-1", "Submitted"))
+		self.assertEqual(calls[reopened_at - 1], ("check", "MR-1", "write"))
+
+	def test_a_request_stopped_after_the_click_is_not_reopened(self):
+		"""GK-SPLIT-CANCEL-AUTH-001: the click saw no Stopped request, so it checked no MR
+		write right; one stopped while the job waited must not be re-opened unchecked."""
+		calls, report, _ = self._run_job(stopped=["MR-1"], reopen=[])
+		self.assertEqual(calls[1:], [("rollback",)])
+		message = report.call_args[0][2]
+		self.assertFalse(report.call_args.kwargs["ok"])
+		self.assertIn("Nothing was changed", message)
+		self.assertIn("MR-1 was stopped after the cancellation was confirmed", message)
+
+	def test_request_write_missing_at_run_time_changes_nothing(self):
+		def _permission(doctype, ptype="read", doc=None, **kwargs):
+			if doctype == "Material Request":
+				raise frappe.PermissionError
+			return True
+
+		calls, report, _ = self._run_job(
+			stopped=["MR-1"], reopen=["MR-1"], permission=_permission
+		)
+		self.assertEqual(calls[1:], [("rollback",)])
+		self.assertIn("Nothing was changed", report.call_args[0][2])
+
+	def test_rights_lost_after_the_precheck_stop_before_the_reopen(self):
+		calls, report, _ = self._run_job(
+			stopped=["MR-1"], reopen=["MR-1"], request_write_denied=True
+		)
+		self.assertNotIn(("reopen", "MR-1", "Submitted"), calls)
+		self.assertEqual([c for c in calls if c[0] in ("commit", "cancel")], [])
+		self.assertIn("Nothing was changed", report.call_args[0][2])
+
+	def test_a_work_order_that_left_planning_is_left_alone(self):
+		calls, report, _ = self._run_job(
+			basics=frappe.ValidationError("can be split only in Manufacturing Plan")
+		)
+		self.assertEqual(calls[1:], [("rollback",)])
+		self.assertIn(
+			"Nothing was changed: can be split only in", report.call_args[0][2]
+		)
+
+	def test_missing_cancel_right_on_the_last_entry_changes_nothing(self):
+		def _permission(doctype, ptype="read", doc=None, **kwargs):
+			if doctype == "Stock Entry" and ptype == "cancel" and doc == "STE-EARLY":
+				raise frappe.PermissionError
+			return True
+
+		calls, report, _ = self._run_job(permission=_permission)
+		self.assertEqual(calls[1:], [("rollback",)])
+		self.assertIn("Nothing was changed", report.call_args[0][2])
 
 	def test_cancels_latest_first_committing_each(self):
 		calls, report, log_error = self._run_job()
