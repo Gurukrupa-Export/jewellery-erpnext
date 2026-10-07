@@ -3112,3 +3112,82 @@ class TestSerialPurityFromOwnBom(IntegrationTestCase):
 			),
 			"91.75",
 		)
+
+
+class TestSerialDesignCodeListedOnce(IntegrationTestCase):
+	"""A serial BOM that lists its own design item must not add it again as a BOM Component.
+
+	Internal refining showed the design code twice (the serial's piece row plus the BOM's
+	self row), and that self row -- a piece count with no purity -- was the only BOM
+	Component on such BOMs, zeroing the Recovery Summary. The serial and BOM reads are patched.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _material_rows(self, is_external):
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SERIAL
+		re.is_external = is_external
+		re.warehouse = "Tagging FG - T"
+		re.append(
+			"serial_no_details",
+			{
+				"serial_number": "SN-1",
+				"item_code": "FG-DESIGN",
+				"metal_purity": "91.75",
+				"pcs": 1,
+			},
+		)
+		bom_items = [
+			frappe._dict(
+				item_code="FG-DESIGN", qty=1, stock_qty=1, uom="Nos", stock_uom="Nos"
+			),
+			frappe._dict(
+				item_code="ML-G-22KT",
+				qty=23.848,
+				stock_qty=23.848,
+				uom="Gram",
+				stock_uom="Gram",
+			),
+		]
+
+		real_get_value = frappe.db.get_value
+		real_get_all = frappe.db.get_all
+
+		def _get_value(doctype, *args, **kwargs):
+			if doctype == "Serial No":
+				return "BOM-SN"
+			if doctype == "Item":
+				return "Test Group"
+			return real_get_value(doctype, *args, **kwargs)
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "BOM Item":
+				return bom_items
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch.object(frappe.db, "get_value", side_effect=_get_value),
+			patch.object(frappe.db, "get_all", side_effect=_get_all),
+			patch.object(RefiningEntry, "get_item_purity", return_value="91.75"),
+			patch.object(RefiningEntry, "_drop_restricted_material_rows"),
+		):
+			re.build_material_table()
+		return [(row.item_code, row.source_type) for row in re.material_items]
+
+	def test_internal_lists_the_design_code_once(self):
+		self.assertEqual(
+			self._material_rows(is_external=0),
+			[("FG-DESIGN", "Serial Number"), ("ML-G-22KT", "BOM Component")],
+		)
+
+	def test_external_leaves_the_design_code_out(self):
+		self.assertEqual(
+			self._material_rows(is_external=1), [("ML-G-22KT", "BOM Component")]
+		)
