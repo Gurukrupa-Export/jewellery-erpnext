@@ -34,7 +34,13 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.diamond_conversion_
 	get_diamond_conversion_target_batches,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+	STRICT_CUSTOMER_GOODS_VARIANTS,
 	normalize_ownership,
+	pmo_expects_customer_goods,
+	pmo_requires_company_stock,
+	pmo_requires_customer_goods,
+	resolve_batch_ownership,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
 	SAMPLE_ALLOWED_SE_TYPES,
@@ -45,16 +51,115 @@ from jewellery_erpnext.utils import bulk_map
 # from jewellery_erpnext.utils import get_item_from_attribute
 
 
-def validate_inventory_dimention(self):
-	pmo_customer_data = frappe._dict()
-	manufacturer_data = frappe._dict()
-	for row in self.items:
-		pmo_list = row.custom_parent_manufacturing_order or self.manufacturing_order
-		if not pmo_list:
-			continue
-		for pmo in pmo_list.split(","):
-			if not pmo_customer_data.get(pmo):
-				pmo_customer_data[pmo] = frappe.db.get_value(
+#: While True an ownership mismatch is only logged instead of thrown.
+#:
+#: STAGED ROLLOUT, NOT A PREFERENCE. ``validate_inventory_dimention`` was commented out by
+#: 0040324c ("fix: sync v15 updates with v16", 8 May 2026) -- a 17-file bulk sync that gave no
+#: reason -- and stayed dead for months, so production holds submitted Stock Entries that this
+#: guard would now refuse, including legitimately finished work. Run the
+#: ``audit_pmo_row_ownership`` report first; flip this to False once it comes back clean.
+WARN_ONLY_PMO_ROW_OWNERSHIP = True
+
+
+def _report_ownership_error(message, soft=False, hard=False):
+	"""Throw, or -- while the guard is staged or the manufacturer opted out -- only log it.
+
+	``hard`` throws regardless of both: a diamond or gemstone row draws exactly the owner its
+	order names, never a substitute in either direction.
+
+	A case that is let through is NOT shown to the user. The allocator already picks the right
+	owner's batch, and a pop-up that changes nothing -- twice, once on save and again on submit --
+	only taught people to click it away. It goes to the ``inventory_ownership`` log instead, which
+	``audit_pmo_row_ownership`` complements for history.
+	"""
+	if hard or not (soft or WARN_ONLY_PMO_ROW_OWNERSHIP):
+		frappe.throw(message, title=_("Inventory Ownership"))
+	_log_ownership_warning(message)
+
+
+def _log_ownership_warning(message):
+	frappe.logger("inventory_ownership").warning(frappe.utils.strip_html(message))
+
+
+def validate_inventory_dimention(self, method=None):
+	"""A row must draw the owner's material its order was placed on (F5 enforcement).
+
+	WHAT THIS REFUSES
+	-----------------
+	1. Material owned by somebody other than this order's customer.
+	2. Company stock on a row the order says the customer supplied.
+	3. Customer-owned stock on a row the order says the company supplies.
+
+	WHY IT READS THE BATCH AND NOT THE ROW
+	--------------------------------------
+	The original compared ``row.customer`` against the order's. That is the row's own claim about
+	itself, and the claim is exactly what goes wrong: KLHGX62F1119's company diamond travelled as
+	"Customer Goods" with a NULL customer through MAT-STE-18637/38/39 while the batch it drew was
+	plain Regular Stock. ``resolve_batch_ownership`` applies the rule the rest of the app already
+	shares -- the batch is the physical truth and wins over the row -- so a stale or hand-typed
+	value cannot pass a check the stock itself would fail.
+
+	SCOPE
+	-----
+	Only rows that CONSUME (``s_warehouse``) against a Parent Manufacturing Order. A pure inward row
+	has nothing to have drawn wrongly, and Customer Gold receipts have no batch at all until
+	``batch_rename.create_parent_batches`` mints one at ``before_submit`` -- judging them here would
+	refuse every receipt.
+
+	Runs on ``validate``, not the ``on_submit`` it was originally wired to: by ``validate`` the
+	batches are allocated (``update_batches`` runs in ``before_validate``) and the user is told on
+	save, before anything moves.
+
+	DIAMONDS AND GEMSTONES ARE BLOCKED OUTRIGHT
+	-------------------------------------------
+	A diamond or gemstone row draws exactly the owner its order names: the customer's own goods
+	when customer diamond / gemstone is ticked, company Regular Stock when it is not. All three
+	refusals throw for them whatever the staged rollout or the manufacturer's allowance says --
+	but only on an entry somebody built by hand (``auto_created`` unset), which is where batches
+	are chosen. An auto-created follow-on
+	move (Material Transfer From Reserve, the IR cascades) only carries what an earlier entry
+	already drew, and refusing it would strand work reserved before this rule existed.
+	"""
+	pmo_cache = {}
+	manufacturer_cache = {}
+	chosen_here = not self.get("auto_created")
+
+	# Narrowed BEFORE any query: most Stock Entries name no order at all, and this runs on
+	# every single save. A row that consumes nothing, or answers to no order, costs nothing.
+	header_pmo = self.get("manufacturing_order")
+	rows = [
+		row
+		for row in self.items
+		if row.get("s_warehouse")
+		and (row.get("custom_parent_manufacturing_order") or header_pmo)
+	]
+	if not rows:
+		return
+
+	# One query for the variant letters, so the per-row resolution below costs nothing. The
+	# fetched ``custom_variant_of`` cannot be relied on -- see ``row_variant_of``.
+	item_map = bulk_map("Item", [row.get("item_code") for row in rows], ["variant_of"])
+	# Likewise the batches: one round-trip for the document, not one get_value per row.
+	batch_map = bulk_map(
+		"Batch",
+		[row.get("batch_no") for row in rows],
+		["custom_inventory_type", "custom_customer"],
+	)
+
+	for row in rows:
+		pmo_list = row.get("custom_parent_manufacturing_order") or header_pmo
+		inventory_type, customer = resolve_batch_ownership(
+			row, batch=batch_map.get(row.get("batch_no")) or {}
+		)
+		is_customer_owned = inventory_type in CUSTOMER_INVENTORY_TYPES
+
+		for pmo in str(pmo_list).split(","):
+			pmo = pmo.strip()
+			if not pmo:
+				continue
+
+			if pmo not in pmo_cache:
+				pmo_cache[pmo] = frappe.db.get_value(
 					"Parent Manufacturing Order",
 					pmo,
 					[
@@ -67,71 +172,115 @@ def validate_inventory_dimention(self):
 					],
 					as_dict=1,
 				)
-			pmo_data = pmo_customer_data.get(pmo)
-			if not manufacturer_data.get(pmo_data["manufacturer"]):
-				manufacturer_data[pmo_data["manufacturer"]] = frappe.db.get_value(
+
+			pmo_data = pmo_cache[pmo]
+			# A deleted or mistyped order is not this guard's business to report, and the
+			# original raised TypeError here by subscripting the None straight away.
+			if not pmo_data:
+				continue
+
+			manufacturer = pmo_data.get("manufacturer")
+			if manufacturer not in manufacturer_cache:
+				manufacturer_cache[manufacturer] = frappe.db.get_value(
 					"Manufacturer",
-					pmo_data.get("manufacturer"),
+					manufacturer,
 					"custom_allow_regular_goods_instead_of_customer_goods",
 				)
+			# The manufacturer's standing permission to put company stock in the customer's
+			# place. It downgrades the two "wrong lane" refusals to a warning; it is NOT
+			# permission to consume a DIFFERENT customer's goods, so (1) ignores it.
+			allow_substitution = bool(manufacturer_cache[manufacturer])
 
-			allow_customer_goods = manufacturer_data.get(pmo_data.get("manufacturer"))
+			variant_of = row_variant_of(row, item_map)
+			expects_customer_goods = pmo_expects_customer_goods(pmo_data, variant_of)
+			strict = chosen_here and variant_of in STRICT_CUSTOMER_GOODS_VARIANTS
 
-			if (
-				row.inventory_type in ["Customer Goods", "Customer Stock"]
-				and pmo_data.get("customer") != row.customer
-			):
-				frappe.throw(
-					_("Only {0} allowed in Stock Entry").format(
-						pmo_data.get("customer")
-					)
+			if is_customer_owned and customer != pmo_data.get("customer"):
+				_report_ownership_error(
+					_(
+						"Row #{0} ({1}): batch {2} belongs to {3}, but {4} was placed for {5}. "
+						"A customer's material may only be consumed on that customer's order."
+					).format(
+						row.get("idx"),
+						row.get("item_code"),
+						frappe.bold(row.get("batch_no") or _("(no batch)")),
+						frappe.bold(customer or _("nobody")),
+						frappe.bold(pmo),
+						frappe.bold(pmo_data.get("customer") or _("no customer")),
+					),
+					hard=strict,
 				)
-			else:
-				variant_mapping = {
-					"M": "is_customer_gold",
-					"F": "is_customer_gold",
-					"D": "is_customer_diamond",
-					"G": "is_customer_gemstone",
-					"O": "is_customer_material",
-				}
+				continue
 
-				if row.custom_variant_of in variant_mapping:
-					customer_key = variant_mapping[row.custom_variant_of]
-					if pmo_data.get(customer_key) and row.inventory_type not in [
-						"Customer Goods",
-						"Customer Stock",
-					]:
-						if allow_customer_goods:
-							frappe.msgprint(
-								_(
-									"Can not use regular stock inventory for Customer provided Item"
-								)
-							)
-						else:
-							frappe.throw(
-								_(
-									"Can not use regular stock inventory for Customer provided Item"
-								)
-							)
-					elif not pmo_data.get(customer_key) and row.inventory_type in [
-						"Customer Goods",
-						"Customer Stock",
-					]:
-						if allow_customer_goods:
-							frappe.msgprint(
-								_(
-									"Can not use Customer Goods inventory for non provided customer Item"
-								)
-							)
-						else:
-							frappe.throw(
-								_(
-									"Can not use Customer Goods inventory for non provided customer Item"
-								)
-							)
+			if expects_customer_goods and not is_customer_owned:
+				_report_ownership_error(
+					_(
+						"Row #{0} ({1}): {2} is a customer-supplied order, but batch {3} is {4}. "
+						"Can not use regular stock inventory for Customer provided Item."
+					).format(
+						row.get("idx"),
+						row.get("item_code"),
+						frappe.bold(pmo),
+						frappe.bold(row.get("batch_no") or _("(no batch)")),
+						frappe.bold(inventory_type),
+					),
+					soft=allow_substitution,
+					hard=strict,
+				)
+				continue
+
+			if is_customer_owned and not expects_customer_goods:
+				_report_ownership_error(
+					_(
+						"Row #{0} ({1}): batch {2} is {3} owned by {4}, but {5} does not say the "
+						"customer supplied this material. Can not use Customer Goods inventory "
+						"for non provided customer Item."
+					).format(
+						row.get("idx"),
+						row.get("item_code"),
+						frappe.bold(row.get("batch_no") or _("(no batch)")),
+						frappe.bold(inventory_type),
+						frappe.bold(customer or _("nobody")),
+						frappe.bold(pmo),
+					),
+					soft=allow_substitution,
+					hard=strict,
+				)
 
 
-def get_fifo_batches(self, row, consumed=None):
+def row_variant_of(row, item_map=None):
+	"""``Item.variant_of`` for a row, WITHOUT trusting the fetched field to have landed yet.
+
+	WHY NOT JUST READ ``row.custom_variant_of``
+	-------------------------------------------
+	That field is ``fetch_from: item_code.variant_of``, which Frappe resolves inside ``_validate()``
+	-- i.e. during ``validate``, AFTER ``before_validate``. ``update_batches`` (and so this module's
+	allocator) runs in ``before_validate``, so on the FIRST save of a server-built Stock Entry whose
+	rows were appended as plain dicts the letter is still empty.
+
+	The Material Request reserve entry (``doc_events/material_request.create_stock_entry``) is built
+	exactly that way. Its rows carried ``custom_parent_manufacturing_order`` but no variant letter, so
+	the Customer Goods lane below never applied and FIFO happily took the oldest batch in the
+	warehouse -- a company one -- on every customer-diamond and customer-gemstone order. Reading the
+	Item master removes the ordering dependency for every caller instead of patching one builder.
+
+	``item_map`` is the ``bulk_map("Item", ..., ["variant_of", "has_batch_no"])`` the caller may
+	already hold (``CustomStockEntry.update_batches`` does), so the common path costs no extra query.
+	"""
+	item_code = row.get("item_code")
+	if not item_code:
+		return None
+
+	if row.get("custom_variant_of"):
+		return row.get("custom_variant_of")
+
+	if item_map is not None:
+		return (item_map.get(item_code) or {}).get("variant_of")
+
+	return frappe.db.get_value("Item", item_code, "variant_of")
+
+
+def get_fifo_batches(self, row, consumed=None, item_map=None):
 	rows_to_append = []
 	# `consumed` tracks how much has already been allocated per (warehouse, batch)
 	# across all rows of the same document. Callers that process multiple rows for
@@ -142,6 +291,7 @@ def get_fifo_batches(self, row, consumed=None):
 		consumed = {}
 	row.batch_no = None
 	total_qty = row.qty
+	row_qty = row.qty
 	existing_updated = False
 
 	msl = self.get("main_slip") or self.get("to_main_slip")
@@ -172,10 +322,26 @@ def get_fifo_batches(self, row, consumed=None):
 
 	customer_item_data = frappe._dict({})
 	manufacturer_data = frappe._dict({})
-	if row.get("custom_parent_manufacturing_order"):
+	# The row's own order, else the entry's. A Material Transfer (WORK ORDER) built by hand names
+	# the order only in the header -- MAT-STE-57381 did -- and reading the row alone left this
+	# allocator blind to a customer-diamond order, so FIFO took the company's stones. Conversion
+	# documents have no ``manufacturing_order``; ``self.get`` answers None for them. A row naming
+	# several orders is judged by the first; the guard checks every one of them at validate.
+	pmo = (
+		str(
+			row.get("custom_parent_manufacturing_order")
+			or self.get("manufacturing_order")
+			or ""
+		)
+		.split(",")[0]
+		.strip()
+	)
+	if pmo:
+		# ``or frappe._dict()``: a row pointing at a deleted order returns None here, and every
+		# ``.get`` below would then raise AttributeError instead of simply finding no flags.
 		customer_item_data = frappe.db.get_value(
 			"Parent Manufacturing Order",
-			row.custom_parent_manufacturing_order,
+			pmo,
 			[
 				"is_customer_gold",
 				"is_customer_diamond",
@@ -185,7 +351,7 @@ def get_fifo_batches(self, row, consumed=None):
 				"manufacturer",
 			],
 			as_dict=1,
-		)
+		) or frappe._dict()
 	if not manufacturer_data.get(customer_item_data.get("manufacturer")):
 		manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
 			"Manufacturer",
@@ -194,21 +360,27 @@ def get_fifo_batches(self, row, consumed=None):
 		)
 
 	allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
-	variant_to_customer_key = {
-		"M": "is_customer_gold",
-		"F": "is_customer_gold",
-		"D": "is_customer_diamond",
-		"G": "is_customer_gemstone",
-		"O": "is_customer_material",
-	}
 
-	if (
-		row.get("custom_variant_of")
-		and row.custom_variant_of in variant_to_customer_key
-		and customer_item_data.get(variant_to_customer_key[row.custom_variant_of])
-	):
+	variant_of = row_variant_of(row, item_map)
+	# Diamonds and gemstones on an order placed on the customer's own stones take ONLY that
+	# customer's batches: the manufacturer's allowance never lets company stock stand in for
+	# them, and running short is refused below rather than quietly topped up.
+	strict = pmo_requires_customer_goods(customer_item_data, variant_of)
+	if strict:
+		allow_customer_goods = 0
+	# ...and the same two on an order that does NOT say the customer supplied them take ONLY
+	# company stock. KGJPL-MR-MF-26-34479's reserve drew GJCU0009's diamonds for
+	# PMO-KGJPL-EA10929-001-0006, whose order says "No", because FIFO took the first batch it saw.
+	company_only = pmo_requires_company_stock(customer_item_data, variant_of)
+
+	if pmo_expects_customer_goods(customer_item_data, variant_of):
 		row.inventory_type = "Customer Goods"
 		row.customer = customer_item_data.customer
+	elif company_only:
+		# A lane the row arrived with (a Material Request row stamped Customer Goods) is not the
+		# order's answer; the order's is.
+		row.inventory_type = "Regular Stock"
+		row.customer = None
 
 	# Hybrid orders: a finding listed in Subcontracting Settings may come only from the order's
 	# own customer batch -- Customer Goods received for the PMO's Ref Customer (hybrid_findings).
@@ -235,6 +407,7 @@ def get_fifo_batches(self, row, consumed=None):
 	elif (
 		row.inventory_type in ["Customer Goods", "Customer Stock"]
 		or self.flags.only_regular_stock_allowed
+		or company_only
 	):
 		batch_info = bulk_map(
 			"Batch",
@@ -374,7 +547,7 @@ def get_fifo_batches(self, row, consumed=None):
 					total_qty -= batch.qty
 
 		elif expected_type not in ["Customer Goods", "Customer Stock"]:
-			if self.flags.only_regular_stock_allowed and (
+			if (self.flags.only_regular_stock_allowed or company_only) and (
 				batch_info.get(batch.batch_no) or {}
 			).get("custom_inventory_type") in ["Customer Goods", "Customer Stock"]:
 				continue
@@ -405,6 +578,42 @@ def get_fifo_batches(self, row, consumed=None):
 						total_qty, batch.qty
 					)
 					total_qty -= batch.qty
+
+	if strict and round(total_qty, 3) > 0:
+		frappe.throw(
+			_(
+				"Row #{0} ({1}): {2} is a customer-supplied order, so only {3}'s Customer Goods "
+				"may be used. Only {4} of {5} is available in {6}. Receive the customer's "
+				"material first."
+			).format(
+				row.get("idx"),
+				row.item_code,
+				frappe.bold(pmo),
+				frappe.bold(expected_customer or _("the customer")),
+				flt(flt(row_qty) - total_qty, 3),
+				flt(row_qty, 3),
+				frappe.bold(warehouse),
+			),
+			title=_("Customer Goods Not Available"),
+		)
+
+	if company_only and round(total_qty, 3) > 0:
+		frappe.throw(
+			_(
+				"Row #{0} ({1}): {2} does not say the customer supplied this material, so only "
+				"company Regular Stock may be used -- not a customer's goods. Only {3} of {4} is "
+				"available in {5}. If the customer did supply it, tick it on the order; otherwise "
+				"receive company stock first."
+			).format(
+				row.get("idx"),
+				row.item_code,
+				frappe.bold(pmo),
+				flt(flt(row_qty) - total_qty, 3),
+				flt(row_qty, 3),
+				frappe.bold(warehouse),
+			),
+			title=_("Company Stock Not Available"),
+		)
 
 	if round(total_qty, 3) > 0:
 		message = _("For <b>{0}</b> {1} is missing in <b>{2}</b>").format(

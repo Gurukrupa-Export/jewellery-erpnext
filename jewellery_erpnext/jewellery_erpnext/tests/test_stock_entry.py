@@ -1299,8 +1299,12 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 				return {n: frappe._dict(dept_map.get(n, {})) for n in names}
 			return {n: frappe._dict(batch_map.get(n, {})) for n in names}
 
-		def _fifo(se, row, consumed):
-			fifo_calls.append((row, dict(consumed)))
+		def _fifo(se, row, consumed, item_map=None):
+			# ``item_map`` is the prefetched Item map update_batches hands over so the
+			# allocator can resolve ``variant_of`` without the fetched custom_variant_of,
+			# which is still empty in before_validate. Recorded so the assertion below can
+			# pin that it is actually passed.
+			fifo_calls.append((row, dict(consumed), item_map))
 			return list(fifo_result or [])
 
 		def _get_all(doctype, *args, **kwargs):
@@ -1360,8 +1364,16 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 			[row1, row2], item_map, batch_map=batch_map
 		)
 		self.assertEqual(len(fifo_calls), 1)
-		fifo_row, consumed_at_call = fifo_calls[0]
+		fifo_row, consumed_at_call, item_map_at_call = fifo_calls[0]
 		self.assertEqual(fifo_row.item_code, item)
+		# The allocator needs the Item map to resolve this row's ``variant_of``: the fetched
+		# ``custom_variant_of`` is still empty in before_validate, and without the letter the
+		# Customer Goods lane never applies.
+		self.assertEqual(
+			(item_map_at_call.get(item) or {}).get("variant_of"),
+			"M",
+			msg="update_batches must hand the prefetched Item map to get_fifo_batches",
+		)
 		# row1's consumption is visible to row2's FIFO allocation -> B-1 cannot double-book
 		self.assertEqual(consumed_at_call, {("WH-1", "B-1"): 5.0})
 		self.assertEqual(len(appended), 1)
