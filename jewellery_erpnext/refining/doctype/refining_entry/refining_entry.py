@@ -1862,9 +1862,10 @@ class RefiningEntry(Document):
 						# ERPNext allows a BOM to list its own parent item once, and this app never strips
 						# it. That row is the DESIGN CODE again — a piece count, not meltable grams — and
 						# the consolidation key below includes serial_no (set on the FG row, blank here) so
-						# the two never merge. Dropped on the external path only, leaving internal weights
-						# and the internal recovery distribution untouched.
-						if drop_design_code and b_item.item_code == sn_row.item_code:
+						# the two never merge. Dropped on both paths: internally it showed the design code
+						# twice, and as a BOM Component it fed the recovery inputs a 1-piece "1 g" row (or,
+						# being the only component, zeroed them instead of using the serial's pure weight).
+						if b_item.item_code == sn_row.item_code:
 							continue
 						self.append(
 							"material_items",
