@@ -127,6 +127,15 @@ class ManufacturingOperation(Document):
 		if self.is_new():
 			return
 
+		# A desk / API save must not reopen an operation the work order has moved past: that
+		# recreates two "current" operations. Internal writers set flags.ignore_validation
+		# (returned above) or write with set_value, so they never reach this check.
+		from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+			validate_manual_reopen,
+		)
+
+		validate_manual_reopen(self)
+
 		self.set_start_finish_time()
 		# self.sync_weights_from_mop_log()
 		# self.validate_loss()

@@ -67,6 +67,8 @@ jobs:
           # unguarded.
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_loss_gate
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_finding_loss_gate
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_current_operation_guard
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_current_operation_audit_repair
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_warehouse_stock_entry
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_ownership_priority
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_bom_field_configuration

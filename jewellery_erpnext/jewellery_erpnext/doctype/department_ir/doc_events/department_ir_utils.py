@@ -46,24 +46,27 @@ def valid_reparing_or_next_operation(self, mwo_list):
 			mwo_list = [
 				row.manufacturing_work_order for row in self.department_ir_operation
 			]
+		mwo_list = [mwo for mwo in mwo_list if mwo]
 
-		DepartmentIR = DocType("Department IR")
-		DepartmentIROperation = DocType("Department IR Operation")
+		# A DIR saved with no rows yet would render `IN ()` (SQL 1064); nothing to label then.
+		if mwo_list:
+			DepartmentIR = DocType("Department IR")
+			DepartmentIROperation = DocType("Department IR Operation")
 
-		query = (
-			frappe.qb.from_(DepartmentIR)
-			.join(DepartmentIROperation)
-			.on(DepartmentIROperation.parent == DepartmentIR.name)
-			.select(DepartmentIR.name)
-			.where(
-				(DepartmentIR.name != self.name)
-				& (DepartmentIROperation.manufacturing_work_order.isin(mwo_list))
-				& (DepartmentIR.next_department == self.next_department)
+			query = (
+				frappe.qb.from_(DepartmentIR)
+				.join(DepartmentIROperation)
+				.on(DepartmentIROperation.parent == DepartmentIR.name)
+				.select(DepartmentIR.name)
+				.where(
+					(DepartmentIR.name != self.name)
+					& (DepartmentIROperation.manufacturing_work_order.isin(mwo_list))
+					& (DepartmentIR.next_department == self.next_department)
+				)
 			)
-		)
 
-		if query.run(as_dict=True):
-			self.transfer_type = "Repairing"
+			if query.run(as_dict=True):
+				self.transfer_type = "Repairing"
 
 	if (
 		self.current_department or self.next_department
@@ -225,7 +228,13 @@ def validate_allowed_operation(manufacturing_work_order, next_department):
 
 
 def validate_duplicate(self):
-	mop_list = [row.manufacturing_operation for row in self.department_ir_operation]
+	mop_list = [
+		row.manufacturing_operation
+		for row in self.department_ir_operation
+		if row.manufacturing_operation
+	]
+	if not mop_list:
+		return
 	DIP = frappe.qb.DocType("Department IR Operation")
 	DI = frappe.qb.DocType("Department IR")
 

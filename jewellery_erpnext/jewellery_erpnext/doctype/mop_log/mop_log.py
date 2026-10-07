@@ -288,6 +288,35 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None, prefixes
 	update_wt_detail(mop_name)
 
 
+def cancel_voucher_mop_logs(voucher_type, voucher_no):
+	"""Mark every active MOP Log row of one voucher cancelled; return the operations they were on
+	(sorted, so the callers' recomputes write them in one order).
+
+	Bulk flip, deliberately bypassing ``MOPLog.validate``: the callers re-run
+	:func:`recalculate_manufacturing_operation_weights` on each returned operation.
+
+	The rows are read with a plain read and flipped by primary key. A ``set_value`` with the voucher
+	as a filter dict is ONE ``UPDATE ... WHERE voucher_type = .. AND voucher_no = ..`` that no index
+	serves on production: under REPEATABLE READ it scans and next-key-locks every row of ``tabMOP
+	Log`` until the cancel commits, so every MOP Log writer on the site waits for it (lock_order RULE
+	E). The plain read cannot miss a row: a voucher's MOP Log rows are written by its own submit,
+	and the cancel holds the voucher.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT name, manufacturing_operation FROM `tabMOP Log`
+		WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
+		""",
+		(voucher_type, voucher_no),
+	)
+	names = sorted({r[0] for r in rows})
+	if names:
+		frappe.db.set_value(
+			"MOP Log", {"name": ("in", names), "is_cancelled": 0}, "is_cancelled", 1
+		)
+	return sorted({r[1] for r in rows if r[1]})
+
+
 def get_mop_opening_balances(manufacturing_operation, item_code, batch_no, mwo=None):
 	"""Opening balance of ONE operation, for the three tiers MOP Log tracks.
 
@@ -932,6 +961,9 @@ def resolve_employee_ir_issue_voucher_for_receive(doc, row):
 		):
 			return emp_ir_id
 
+	# Exactly one submitted Issue may claim an operation. Two means legacy duplicate issues (the
+	# 2026-10 stale-draft incident): picking "the latest modified" would return the stale one,
+	# so report the ambiguity instead of guessing.
 	rows = frappe.db.sql(
 		"""
 		SELECT eir.name
@@ -940,11 +972,29 @@ def resolve_employee_ir_issue_voucher_for_receive(doc, row):
 		WHERE eir.docstatus = 1
 		  AND eir.type = 'Issue'
 		  AND op.manufacturing_operation = %s
-		ORDER BY eir.modified DESC, eir.name DESC
-		LIMIT 1
+		GROUP BY eir.name
+		ORDER BY MAX(eir.modified) DESC, eir.name DESC
+		LIMIT 2
 		""",
 		row.manufacturing_operation,
 	)
+	if len(rows) > 1:
+		from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+			AmbiguousOperationError,
+		)
+
+		frappe.throw(
+			frappe._(
+				"Operation {0} was issued by more than one submitted Employee Issue ({1}, {2}); ask a "
+				"System Manager to run the current-operation audit."
+			).format(
+				frappe.bold(row.manufacturing_operation),
+				frappe.bold(rows[0][0]),
+				frappe.bold(rows[1][0]),
+			),
+			exc=AmbiguousOperationError,
+			title=frappe._("Ambiguous Employee Issue"),
+		)
 	return rows[0][0] if rows else None
 
 
