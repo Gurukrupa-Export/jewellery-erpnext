@@ -4978,6 +4978,10 @@ class RefiningEntry(Document):
 		# fallback reads the design's NEWEST active BOM, which can be a different piece's BOM
 		# with a blank purity. Read it from the serial's OWN as-built BOM instead — the same
 		# BOM its weights come from — and use the item lookup only when that BOM has none.
+		# Within the BOM the metal detail row wins over the header: the header is filled from
+		# the first metal row only while blank (update_specifications), so it can keep an order
+		# spec (e.g. 91.9) while the metal actually used, and its manufacturing order, say
+		# 91.75. First row by idx, the same row update_specifications copies.
 		if not bom_no:
 			bom_no = frappe.db.get_value("Serial No", serial_no, "custom_bom_no")
 		if not bom_no:
@@ -4985,18 +4989,16 @@ class RefiningEntry(Document):
 				"BOM", {"item": item_code, "is_active": 1}, "name"
 			)
 		if bom_no:
-			purity = frappe.db.get_value("BOM", bom_no, "metal_purity")
-			if not purity:
-				purity = frappe.db.get_value(
-					"BOM Metal Detail",
-					{
-						"parent": bom_no,
-						"parenttype": "BOM",
-						"metal_purity": ["is", "set"],
-					},
-					"metal_purity",
-					order_by="idx asc",
-				)
+			purity = frappe.db.get_value(
+				"BOM Metal Detail",
+				{
+					"parent": bom_no,
+					"parenttype": "BOM",
+					"metal_purity": ["is", "set"],
+				},
+				"metal_purity",
+				order_by="idx asc",
+			) or frappe.db.get_value("BOM", bom_no, "metal_purity")
 			if purity:
 				return purity
 		return self.get_item_purity(item_code)
