@@ -3264,6 +3264,15 @@ def create_test_data():
 
 			_ensure_so_item_ownership_amount_fields()
 
+			# Stock Entry.ref_customer / Batch.custom_ref_customer (customer-batch-only
+			# Hybrid findings). Patch-only like the fields above, so provision them here
+			# for test_site too, else batch_rename / hybrid_findings read a missing column.
+			from jewellery_erpnext.patches.add_ref_customer_fields import (
+				execute as _ensure_ref_customer_fields,
+			)
+
+			_ensure_ref_customer_fields()
+
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:
 			# it must be provisioned here for test_site, else get_or_create_zero_tax_template

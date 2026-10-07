@@ -58,6 +58,13 @@ VALUATION_NOMINAL = "Nominal"
 class SubcontractingSettings(Document):
 	def validate(self):
 		validate_customer_gold_settings(self)
+		# Not gated on the Customer Gold flow: the Hybrid rule applies with the flow off too.
+		# Imported here because hybrid_findings imports this module.
+		from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+			validate_hybrid_finding_categories,
+		)
+
+		validate_hybrid_finding_categories(self)
 
 
 def validate_customer_gold_settings(doc):

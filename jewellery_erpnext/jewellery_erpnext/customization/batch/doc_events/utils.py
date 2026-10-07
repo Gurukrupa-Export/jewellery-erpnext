@@ -160,6 +160,33 @@ def update_inventory_dimentions(self):
 			_purchase_receipt_voucher_type(self) or self.custom_customer_voucher_type
 		)
 
+	_stamp_ref_customer(self, is_customer_inventory)
+
+
+def _stamp_ref_customer(batch, is_customer_inventory):
+	"""Copy the minting entry's ``ref_customer`` onto a customer batch, once.
+
+	The batch path ``batch_rename`` does not cover: on a site with the Customer Gold flow off, a
+	Customer Goods Received finding is minted here by ERPNext. Set only while empty, because this
+	runs on every save of the batch -- ``reference_name`` is cleared on cancel, and Manufacture /
+	Repack re-save batches whose own entry carries no Ref Customer. ``hybrid_findings`` reads it.
+	"""
+	if (
+		not is_customer_inventory
+		or batch.reference_doctype != "Stock Entry"
+		or not batch.reference_name
+		or getattr(batch, "custom_ref_customer", None)
+		or not frappe.db.has_column("Stock Entry", "ref_customer")
+		or not frappe.db.has_column("Batch", "custom_ref_customer")
+	):
+		return
+
+	ref_customer = frappe.db.get_value(
+		"Stock Entry", batch.reference_name, "ref_customer"
+	)
+	if ref_customer:
+		batch.custom_ref_customer = ref_customer
+
 
 def _row_value(child_doctype, row_name, fieldname):
 	"""Read one field off the voucher row, tolerating a column that is not there.
