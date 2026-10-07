@@ -2673,19 +2673,15 @@ def _process_single_row(self, row, ctx):
 
 		doc.save(ignore_permissions=True)
 
-	elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+	elif not row.bom and _tracking_bom_exists(row.custom_tracking_bom, ctx):
 		# row.bom = row.custom_tracking_bom
-		frappe.db.set_value(
-			"Tracking Bom",
-			row.custom_tracking_bom,
-			{
-				"bom_type": "Sales Order",
-				"reference_doctype": "Sales Order",
-				"reference_docname": self.name,
-				"gold_rate_with_gst": self.gold_rate_with_gst,
-			},
+		# Linked to this Sales Order in one bulk write by create_new_bom1 after the loop;
+		# nothing in the loop reads these fields back.
+		ctx.tracking_boms_to_link.append(row.custom_tracking_bom)
+		# Only the amounts are read below, and the link write above does not touch them.
+		doc = ctx.tracking_bom_data.get(row.custom_tracking_bom) or frappe.get_doc(
+			"Tracking Bom", row.custom_tracking_bom
 		)
-		doc = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
 		row.gold_bom_rate = doc.gold_bom_amount
 		row.diamond_bom_rate = doc.diamond_bom_amount
 		row.gemstone_bom_rate = doc.gemstone_bom_amount
@@ -2693,6 +2689,75 @@ def _process_single_row(self, row, ctx):
 		row.making_charge = doc.making_charge
 		row.bom_rate = doc.total_bom_amount
 		row.rate = doc.total_bom_amount
+
+
+_TRACKING_BOM_AMOUNT_FIELDS = (
+	"gold_bom_amount",
+	"diamond_bom_amount",
+	"gemstone_bom_amount",
+	"other_bom_amount",
+	"making_charge",
+	"total_bom_amount",
+)
+
+
+def _get_tracking_bom_amounts(self):
+	"""Amounts of every Tracking BOM linked on the items, keyed by name, in one query."""
+	names = list(
+		{
+			row.custom_tracking_bom
+			for row in self.items
+			if row.get("custom_tracking_bom")
+		}
+	)
+	if not names:
+		return {}
+	return {
+		d.name: d
+		for d in frappe.get_all(
+			"Tracking Bom",
+			filters={"name": ["in", names]},
+			fields=["name", *_TRACKING_BOM_AMOUNT_FIELDS],
+		)
+	}
+
+
+def _tracking_bom_exists(name, ctx):
+	"""``frappe.db.exists("Tracking Bom", name)`` answered from the prefetched map.
+
+	A name the bulk query did not return (missing, or matched only by the database's
+	case-insensitive collation) is checked exactly as before.
+	"""
+	if name and name in ctx.tracking_bom_data:
+		return True
+	return frappe.db.exists("Tracking Bom", name)
+
+
+def _link_tracking_boms_to_sales_order(self, tracking_bom_names):
+	"""Point the rows' Tracking BOMs at this Sales Order in one UPDATE.
+
+	Same values the per-row ``frappe.db.set_value`` wrote. A failure is logged like the per-row
+	failures in create_new_bom1 rather than stopping the save.
+	"""
+	names = list(dict.fromkeys(tracking_bom_names))
+	if not names:
+		return
+	try:
+		frappe.db.set_value(
+			"Tracking Bom",
+			{"name": ["in", names]},
+			{
+				"bom_type": "Sales Order",
+				"reference_doctype": "Sales Order",
+				"reference_docname": self.name,
+				"gold_rate_with_gst": self.gold_rate_with_gst,
+			},
+		)
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			f"BOM failed — {self.name} linking Tracking BOMs",
+		)
 
 
 def _bulk_update_child_rows(self):
@@ -2774,6 +2839,10 @@ def create_new_bom1(self):
 
 	self.total = 0
 	ctx = _get_bom_context(self)
+	# Tracking BOM rows: amounts read in one query (was an exists + get_doc per row) and the
+	# Sales Order link written in one UPDATE (was a set_value per row).
+	ctx.tracking_bom_data = _get_tracking_bom_amounts(self)
+	ctx.tracking_boms_to_link = []
 
 	for i, row in enumerate(self.items):
 		try:
@@ -2784,6 +2853,7 @@ def create_new_bom1(self):
 				f"BOM failed — {self.name} row {i} serial_no {row.serial_no}",
 			)
 
+	_link_tracking_boms_to_sales_order(self, ctx.tracking_boms_to_link)
 	_bulk_update_child_rows(self)
 	# frappe.db.set_value(self.doctype, self.name, "total", self.total)
 	# frappe.db.commit()

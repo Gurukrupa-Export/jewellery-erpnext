@@ -7,22 +7,47 @@ def set_tracking_bom_rate_in_quotation(self):
 	Fetch Tracking BOM Rates and replace the quotation item rate with Tracking BOM rate.
 	Works like set_bom_rate_in_quotation but reads from Tracking Bom instead of BOM.
 	"""
+	field_list = [
+		"gold_rate_with_gst",
+		"gold_bom_amount",
+		"making_charge",
+		"finding_bom_amount",
+		"diamond_bom_amount",
+		"gemstone_bom_amount",
+		"other_bom_amount",
+		"total_bom_amount",
+		"hallmarking_amount",
+	]
+	# One query for every row's Tracking BOM instead of a get_value per row.
+	tracking_bom_names = list(
+		{
+			row.get("custom_tracking_bom")
+			for row in self.items
+			if row.get("custom_tracking_bom")
+		}
+	)
+	tb_data_map = (
+		{
+			d.name: d
+			for d in frappe.get_all(
+				"Tracking Bom",
+				filters={"name": ["in", tracking_bom_names]},
+				fields=["name", *field_list],
+			)
+		}
+		if tracking_bom_names
+		else {}
+	)
+
 	for row in self.items:
 		if row.get("custom_tracking_bom"):
-			field_list = [
-				"gold_rate_with_gst",
-				"gold_bom_amount",
-				"making_charge",
-				"finding_bom_amount",
-				"diamond_bom_amount",
-				"gemstone_bom_amount",
-				"other_bom_amount",
-				"total_bom_amount",
-				"hallmarking_amount",
-			]
-			tb_data = frappe.db.get_value(
-				"Tracking Bom", row.custom_tracking_bom, field_list, as_dict=1
-			)
+			tb_data = tb_data_map.get(row.custom_tracking_bom)
+			if tb_data is None:
+				# Not returned by the bulk query (missing, or matched only by the database's
+				# case-insensitive collation): look it up exactly as before.
+				tb_data = frappe.db.get_value(
+					"Tracking Bom", row.custom_tracking_bom, field_list, as_dict=1
+				)
 			if not tb_data:
 				continue
 

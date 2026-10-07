@@ -106,6 +106,8 @@ def _decide_claims(doctype, docname, rows):
 	"""
 	rank = _STAGE_RANK[doctype]
 	to_claim = []
+	# Many serials usually point at the same incumbent document: probe each one once.
+	incumbent_live = {}
 
 	for row in rows:
 		ref_dt = row.get("custom_reference_doctype")
@@ -120,8 +122,11 @@ def _decide_claims(doctype, docname, rows):
 			to_claim.append(row.get("name"))  # unclaimed
 		elif rank >= _STAGE_RANK.get(ref_dt, 0):
 			to_claim.append(row.get("name"))  # forward, or same stage -> latest wins
-		elif not _incumbent_is_live(ref_dt, ref_dn):
-			to_claim.append(row.get("name"))  # backward, but incumbent is dead
+		else:
+			if (ref_dt, ref_dn) not in incumbent_live:
+				incumbent_live[(ref_dt, ref_dn)] = _incumbent_is_live(ref_dt, ref_dn)
+			if not incumbent_live[(ref_dt, ref_dn)]:
+				to_claim.append(row.get("name"))  # backward, but incumbent is dead
 
 	return to_claim
 
