@@ -10,6 +10,9 @@ from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	get_customer_gold_receipt_type,
 )
+from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+	get_batch_ref_customer_map,
+)
 from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
 	execute as get_report_data,
 )
@@ -143,6 +146,9 @@ def create_parent_batches(doc, method=None):
 			batch.custom_customer = getattr(doc, "_customer", None) or customer
 			batch.custom_inventory_type = "Customer Goods"
 			batch.custom_customer_voucher_type = "Customer Subcontracting"
+			# The end customer the goods were received for (hybrid_findings). Header only, and
+			# getattr for the same reason as ``_customer``: Purchase Receipt has no such field.
+			batch.custom_ref_customer = getattr(doc, "ref_customer", None)
 			batch.custom_metal_rate = _source_row_rate(doc, row)
 			batch.insert(ignore_permissions=True)
 		finally:
@@ -366,14 +372,13 @@ def _row_group_key(row):
 	return getattr(row, "custom_conversion_lane", None) or _row_lane_key(row)
 
 
-def _lane_parent_batches(doc):
-	"""``{group key: first source batch of that group}``, in row order.
+def _lane_source_rows(doc):
+	"""``(group key, source row)`` for every source row that can parent a child, in row order.
 
 	In a tagged group only a customer-owned source row can be the parent: the lane's
 	alloy is consumed under the same tag as Regular Stock, and a company alloy batch
 	must never lend its serial to the customer's converted batch.
 	"""
-	parents = {}
 	for row in doc.items:
 		if not (row.s_warehouse and row.batch_no):
 			continue
@@ -382,8 +387,33 @@ def _lane_parent_batches(doc):
 			and _row_lane_key(row)[0] not in CUSTOMER_INVENTORY_TYPES
 		):
 			continue
-		parents.setdefault(_row_group_key(row), row.batch_no)
+		yield _row_group_key(row), row
+
+
+def _lane_parent_batches(doc):
+	"""``{group key: first source batch of that group}``, in row order."""
+	parents = {}
+	for key, row in _lane_source_rows(doc):
+		parents.setdefault(key, row.batch_no)
 	return parents
+
+
+def _lane_source_batches(doc):
+	"""``{group key: every source batch of that group}`` -- what a child's Ref Customer is read from."""
+	sources = {}
+	for key, row in _lane_source_rows(doc):
+		sources.setdefault(key, set()).add(row.batch_no)
+	return sources
+
+
+def _common_ref_customer(lineage, ref_customers):
+	"""The Ref Customer all of ``lineage`` agrees on, else ``None``.
+
+	A conversion that mixes two end customers' material -- or tagged with untagged -- must not
+	pose as one customer's: ``hybrid_findings`` would then issue it to that customer's order.
+	"""
+	values = {ref_customers.get(batch) for batch in lineage or ()}
+	return values.pop() if len(values) == 1 else None
 
 
 def _run_sources(doc):
@@ -418,7 +448,9 @@ def _run_sources(doc):
 	return sources
 
 
-def _mint_child_batch(doc, row, row_number, parent_batch, customer, base_name):
+def _mint_child_batch(
+	doc, row, row_number, parent_batch, customer, base_name, ref_customer=None
+):
 	"""Insert the next free child of ``base_name`` for ``row`` and return its name.
 
 	The pool is read with a plain snapshot read, so under REPEATABLE READ it can miss a
@@ -460,7 +492,7 @@ def _mint_child_batch(doc, row, row_number, parent_batch, customer, base_name):
 		message_count = len(frappe.local.message_log)
 		frappe.db.savepoint(savepoint)
 		try:
-			_insert_child_batch(doc, row, customer, batch_name)
+			_insert_child_batch(doc, row, customer, batch_name, ref_customer)
 		except (frappe.DuplicateEntryError, frappe.UniqueValidationError):
 			frappe.db.rollback(save_point=savepoint)
 			# db_insert announced "Batch ... already exists" before raising; that clash is
@@ -482,7 +514,7 @@ def _mint_child_batch(doc, row, row_number, parent_batch, customer, base_name):
 	)
 
 
-def _insert_child_batch(doc, row, customer, batch_name):
+def _insert_child_batch(doc, row, customer, batch_name, ref_customer=None):
 	previous_autoname_flag = frappe.flags.is_batch_autoname
 	frappe.flags.is_batch_autoname = True
 
@@ -499,6 +531,7 @@ def _insert_child_batch(doc, row, customer, batch_name):
 		batch.custom_customer = customer
 		batch.custom_inventory_type = "Customer Goods"
 		batch.custom_customer_voucher_type = "Customer Subcontracting"
+		batch.custom_ref_customer = ref_customer
 		batch.custom_metal_rate = _source_row_rate(doc, row)
 		batch.insert(ignore_permissions=True)
 	finally:
@@ -538,6 +571,7 @@ def create_child_batches(doc, method=None):
 		return
 
 	parents = _lane_parent_batches(doc)
+	lane_sources = _lane_source_batches(doc)
 
 	# An untagged voucher whose rows are all one ownership is handled exactly as before:
 	# one parent batch for the whole entry, every batch-less produce row minted from it.
@@ -575,6 +609,7 @@ def create_child_batches(doc, method=None):
 
 		if single_lane:
 			parent_batch = next(iter(parents.values()))
+			lineage = next(iter(lane_sources.values()))
 			customer = getattr(row, "customer", None) or header_customer
 		else:
 			# Mixed ownership: only customer-owned produce rows get a customer child
@@ -587,6 +622,7 @@ def create_child_batches(doc, method=None):
 			parent_batch = parents.get(_row_group_key(row))
 			if not parent_batch:
 				continue
+			lineage = lane_sources.get(_row_group_key(row))
 
 			customer = lane_key[1] or header_customer
 
@@ -594,6 +630,7 @@ def create_child_batches(doc, method=None):
 		if source is not None:
 			parent_batch = source.batch_no
 			parent_item = source.item_code
+			lineage = {source.batch_no}
 		else:
 			parent_item = source_items.get(parent_batch)
 
@@ -612,15 +649,27 @@ def create_child_batches(doc, method=None):
 				parent_batch,
 				customer or header_customer,
 				base_name,
+				lineage,
 			)
 		)
 
 	if not plan:
 		return
 
-	for row, row_number, parent_batch, customer, base_name in plan:
+	# A child keeps the Ref Customer of the batches it was made from (hybrid_findings), read in
+	# one query for the whole voucher.
+	ref_customers = get_batch_ref_customer_map(
+		[batch for *_head, lineage in plan for batch in lineage or ()]
+	)
+	for row, row_number, parent_batch, customer, base_name, lineage in plan:
 		row.batch_no = _mint_child_batch(
-			doc, row, row_number, parent_batch, customer, base_name
+			doc,
+			row,
+			row_number,
+			parent_batch,
+			customer,
+			base_name,
+			ref_customer=_common_ref_customer(lineage, ref_customers),
 		)
 
 

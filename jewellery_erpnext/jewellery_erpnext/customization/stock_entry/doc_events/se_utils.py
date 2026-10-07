@@ -18,6 +18,12 @@ from frappe import _
 # from frappe.query_builder.functions import CombineDatetime, Locate, Sum
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+	batch_is_eligible,
+	get_batch_ownership_map,
+	hybrid_requirement,
+	shortfall_hint,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.subcontracting_utils import (
 	create_subcontracting_doc,
 )
@@ -376,6 +382,15 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 		row.inventory_type = "Regular Stock"
 		row.customer = None
 
+	# Hybrid orders: a finding listed in Subcontracting Settings may come only from the order's
+	# own customer batch -- Customer Goods received for the PMO's Ref Customer (hybrid_findings).
+	# Set before the expected lane is captured below, so neither the "regular instead of
+	# customer goods" fallback nor the Regular Stock branch can ever take such a row.
+	hybrid = hybrid_requirement(self, row)
+	if hybrid:
+		row.inventory_type = "Customer Goods"
+		row.customer = hybrid.customer
+
 	if not row.inventory_type:
 		row.inventory_type = "Regular Stock"
 	# Prefetch the Batch fields read per batch in the loop below (custom_inventory_type
@@ -386,7 +401,10 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 	# so the ordinary Regular Stock path keeps issuing zero Batch queries; every reader
 	# is behind an ``and`` that short-circuits before touching an empty map.
 	batch_info = {}
-	if (
+	if hybrid:
+		# The same map plus the Ref Customer that batch_is_eligible reads.
+		batch_info = get_batch_ownership_map([batch.batch_no for batch in batch_data])
+	elif (
 		row.inventory_type in ["Customer Goods", "Customer Stock"]
 		or self.flags.only_regular_stock_allowed
 		or company_only
@@ -445,6 +463,9 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 			continue
 		# Diamond Conversion output is not eligible input for another Diamond Conversion.
 		if batch.batch_no in barred_batches:
+			continue
+		# A listed Hybrid finding draws only its customer's batch (see ``hybrid`` above).
+		if hybrid and not batch_is_eligible(batch_info.get(batch.batch_no), hybrid):
 			continue
 		if (
 			expected_type in ["Customer Goods", "Customer Stock"]
@@ -600,6 +621,8 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 		)
 		if row.get("manufacturing_operation"):
 			message += _("<br><b>Ref : {0}</b>").format(row.manufacturing_operation)
+		if hybrid:
+			message += "<br>" + shortfall_hint(hybrid)
 		if self.flags.throw_batch_error:
 			frappe.throw(message)
 			self.flags.throw_batch_error = False

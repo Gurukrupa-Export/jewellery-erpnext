@@ -35,5 +35,13 @@ frappe.ui.form.on("Subcontracting Settings", {
 			"company_accounts",
 			customer_gold_account_query(["!=", "Liability"])
 		);
+		// Offer only values finding items actually carry (the Finding Category / Finding
+		// Sub-Category Item Attributes); the server rejects anything else on save.
+		frm.set_query("finding_category", "hybrid_finding_categories", () => ({
+			query: "jewellery_erpnext.jewellery_erpnext.doctype.department_operation.department_operation.get_finding_categories",
+		}));
+		frm.set_query("finding_sub_category", "hybrid_finding_categories", () => ({
+			query: "jewellery_erpnext.customer_subcontracting.hybrid_findings.get_finding_sub_categories",
+		}));
 	},
 });

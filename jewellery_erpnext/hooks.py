@@ -276,6 +276,10 @@ doc_events = {
 			# after the stock had already moved. Restored here rather than by un-commenting
 			# its old call site, so the ordering against the other row rewriters is explicit.
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.validate_inventory_dimention",
+			# Hybrid orders: a finding listed in Subcontracting Settings must draw a Customer Goods
+			# batch of the order's Ref Customer. At `validate` so it sees the batches
+			# before_validate's update_batches filled; no-op while that table is empty.
+			"jewellery_erpnext.customer_subcontracting.hybrid_findings.validate_hybrid_finding_batches",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
