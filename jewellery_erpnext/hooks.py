@@ -516,8 +516,6 @@ override_whitelisted_methods = {
 	# Single Variant "Create": reject Attribute Value "Not Allowed" combinations
 	# before the dialog closes, instead of only when the new item is saved.
 	"erpnext.controllers.item_variant.get_variant": "jewellery_erpnext.jewellery_erpnext.doc_events.item.get_variant",
-	# Multiple Variants "Create": skip Attribute Value "Not Allowed" combinations.
-	"erpnext.controllers.item_variant.enqueue_multiple_variant_creation": "jewellery_erpnext.jewellery_erpnext.doc_events.item.enqueue_multiple_variant_creation",
 }
 
 override_doctype_class = {
