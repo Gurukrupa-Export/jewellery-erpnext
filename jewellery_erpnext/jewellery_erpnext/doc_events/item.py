@@ -148,36 +148,37 @@ def set_gemstone_attribute_weight(self, attribute_list):
 	return weight
 
 
-def get_not_allowed_attribute_values(selected_values):
-	"""Values blocked by the Not Allowed table of the selected Attribute Values.
+# Not Allowed rules live on Gemstone Type Attribute Values, so only the value
+# selected under this attribute can block others. The same text may exist under
+# other Item Attributes (e.g. a Collection named "Coral") and must not trigger
+# the Gemstone Type's rules.
+NOT_ALLOWED_SOURCE_ATTRIBUTE = "Gemstone Type"
 
-	Returns {item_attribute: {blocked_value: blocking_attribute_value}}, e.g.
-	["Coral"] -> {"Cut or Cab": {"Faceted": "Coral"}}. Blocks from several
-	selected values are combined.
+
+def get_not_allowed_attribute_values(selected):
+	"""Values blocked by the Not Allowed table of the selected Gemstone Type.
+
+	selected is {item_attribute: attribute_value}. Returns
+	{item_attribute: {blocked_value: gemstone_type}}, e.g.
+	{"Gemstone Type": "Coral"} -> {"Cut or Cab": {"Faceted": "Coral"}}.
 	"""
-	blocked = {}
-	for row in get_not_allowed_rows(selected_values):
-		blocked.setdefault(row.item_attribute, {}).setdefault(
-			row.attribute_value, row.parent
-		)
-	return blocked
+	gemstone_type = selected.get(NOT_ALLOWED_SOURCE_ATTRIBUTE)
+	if not gemstone_type:
+		return {}
 
-
-def get_not_allowed_rows(selected_values):
-	"""Not Allowed rows (parent, item_attribute, attribute_value) of the selected values."""
-	selected_values = [value for value in selected_values if value]
-	if not selected_values:
-		return []
-
-	return frappe.get_all(
+	rows = frappe.get_all(
 		"Attribute Value Not Allowed Detail",
 		filters={
 			"parenttype": "Attribute Value",
 			"parentfield": "not_allowed_attribute_values",
-			"parent": ("in", selected_values),
+			"parent": gemstone_type,
 		},
 		fields=["parent", "item_attribute", "attribute_value"],
 	)
+	blocked = {}
+	for row in rows:
+		blocked.setdefault(row.item_attribute, {})[row.attribute_value] = row.parent
+	return blocked
 
 
 @frappe.whitelist()
@@ -185,7 +186,7 @@ def get_allowed_attribute_values(item_attribute, txt="", selected=None):
 	"""Autocomplete source for an attribute field of the Create Variant dialog.
 
 	Same list as ERPNext's get_item_attribute, minus the values blocked by
-	the other attribute values already selected in the dialog.
+	the Gemstone Type already selected in the dialog.
 	"""
 	if not frappe.has_permission("Item"):
 		frappe.throw(_("No Permission"))
@@ -200,18 +201,20 @@ def get_allowed_attribute_values(item_attribute, txt="", selected=None):
 		pluck="attribute_value",
 		order_by="idx",
 	)
-	other_values = [
-		value for attribute, value in selected.items() if attribute != item_attribute
-	]
-	blocked = get_not_allowed_attribute_values(other_values).get(item_attribute, {})
+	other_selected = {
+		attribute: value
+		for attribute, value in selected.items()
+		if attribute != item_attribute
+	}
+	blocked = get_not_allowed_attribute_values(other_selected).get(item_attribute, {})
 	return [value for value in values if value not in blocked]
 
 
 @frappe.whitelist()
 def get_blocked_attributes(selected=None):
-	"""Attributes whose selected value is blocked by another selected value."""
+	"""Attributes whose selected value is blocked by the selected Gemstone Type."""
 	selected = frappe.parse_json(selected) or {}
-	blocked = get_not_allowed_attribute_values(list(selected.values()))
+	blocked = get_not_allowed_attribute_values(selected)
 	return [
 		attribute
 		for attribute, value in selected.items()
@@ -220,7 +223,7 @@ def get_blocked_attributes(selected=None):
 
 
 def validate_not_allowed_attribute_values(self):
-	"""Block a variant whose attribute values break an Attribute Value's Not Allowed table.
+	"""Block a variant whose attribute values break its Gemstone Type's Not Allowed table.
 
 	Only checked when the variant is new or its attributes changed, so items
 	created before the master was configured still save.
@@ -255,10 +258,18 @@ def get_variant(
 ):
 	"""Override of ERPNext's whitelisted get_variant, called first by Create Variant.
 
-	Blocked attribute values are rejected here so the message shows on Create
-	while the dialog is still open; otherwise ERPNext's get_variant runs as is.
+	An existing variant is always returned, even one created before its
+	combination was marked Not Allowed. Only when no variant exists -- i.e.
+	Create would make a new one -- are blocked values rejected, so the message
+	shows while the dialog is still open.
 	"""
 	from erpnext.controllers.item_variant import get_variant as erpnext_get_variant
+
+	existing = erpnext_get_variant(
+		template, args, variant, manufacturer, manufacturer_part_no
+	)
+	if existing:
+		return existing
 
 	attributes = {
 		attribute: value
@@ -266,32 +277,29 @@ def get_variant(
 		if value and isinstance(value, str)
 	}
 	throw_if_not_allowed(attributes)
-	return erpnext_get_variant(
-		template, args, variant, manufacturer, manufacturer_part_no
-	)
+	return existing
 
 
 def throw_if_not_allowed(attributes):
-	"""Throw if any {attribute: value} is blocked by another selected value."""
+	"""Throw if any {attribute: value} is blocked by the selected Gemstone Type."""
 	if not attributes:
 		return
 
-	blocked = get_not_allowed_attribute_values(list(attributes.values()))
+	blocked = get_not_allowed_attribute_values(attributes)
 	for attribute, value in attributes.items():
 		blocked_by = blocked.get(attribute, {}).get(value)
 		if not blocked_by:
 			continue
-		frappe.throw(not_allowed_message(attributes, attribute, value, blocked_by))
+		frappe.throw(not_allowed_message(attribute, value, blocked_by))
 
 
-def not_allowed_message(attributes, attribute, value, blocked_by):
+def not_allowed_message(attribute, value, blocked_by):
 	"""e.g. "Cut or Cab Faceted is not allowed for Gemstone Type Coral"."""
-	blocked_by_attribute = next(
-		(attr for attr, attr_value in attributes.items() if attr_value == blocked_by),
-		"",
-	)
 	return _("{0} {1} is not allowed for {2} {3}").format(
-		attribute, frappe.bold(value), blocked_by_attribute, frappe.bold(blocked_by)
+		attribute,
+		frappe.bold(value),
+		NOT_ALLOWED_SOURCE_ATTRIBUTE,
+		frappe.bold(blocked_by),
 	)
 
 

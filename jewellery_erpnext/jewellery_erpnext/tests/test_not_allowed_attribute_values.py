@@ -4,13 +4,17 @@
 """Unit tests for the Attribute Value "Not Allowed Attribute Values" table.
 
 An Attribute Value (e.g. Gemstone Type Coral) lists values of other Item
-Attributes that must not be used with it (e.g. Cut or Cab Faceted):
+Attributes that must not be used with it (e.g. Cut or Cab Faceted). Rules are
+read only from the value selected under Gemstone Type, never from the same text
+selected under another Item Attribute:
 
 * Attribute Value.validate -> rows are unique and belong to their Item Attribute.
 * Item.validate -> validate_not_allowed_attribute_values blocks a new or
   changed variant that uses a blocked value; unchanged items are not rechecked.
 * get_allowed_attribute_values / get_blocked_attributes -> Create Variant
   dialog helpers that hide and clear blocked values.
+* get_variant override -> an existing variant is always returned; a blocked
+  combination is rejected only when Create would make a new variant.
 
 DB-free per the suite convention: setUpClass is neutralised and every frappe
 lookup is mocked.
@@ -31,6 +35,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.attribute_value import (
 )
 
 BLOCK_CORAL_FACETED = {"Cut or Cab": {"Faceted": "Coral"}}
+
+
+def _rules_for(selected):
+	"""Stand-in for get_not_allowed_attribute_values: only Gemstone Type Coral has rules."""
+	return BLOCK_CORAL_FACETED if selected.get("Gemstone Type") == "Coral" else {}
 
 
 class _Doc(SimpleNamespace):
@@ -55,7 +64,7 @@ def _variant(gemstone_type="Coral", cut_or_cab="Faceted", before=None, variant_o
 
 
 class TestGetNotAllowedAttributeValues(IntegrationTestCase):
-	"""get_not_allowed_attribute_values(): reads the Not Allowed rows of the selected values."""
+	"""get_not_allowed_attribute_values(): reads the selected Gemstone Type's Not Allowed rows."""
 
 	@classmethod
 	def setUpClass(cls):
@@ -71,19 +80,37 @@ class TestGetNotAllowedAttributeValues(IntegrationTestCase):
 			),
 		]
 		with patch.object(item_events.frappe, "get_all", return_value=rows) as get_all:
-			result = item_events.get_not_allowed_attribute_values(["Coral", "Round"])
+			result = item_events.get_not_allowed_attribute_values(
+				{"Gemstone Type": "Coral", "Stone Shape": "Round"}
+			)
 		self.assertEqual(
 			result,
 			{"Cut or Cab": {"Faceted": "Coral"}, "Stone Shape": {"Oval": "Coral"}},
 		)
 		filters = get_all.call_args.kwargs["filters"]
-		self.assertEqual(filters["parent"], ("in", ["Coral", "Round"]))
+		self.assertEqual(filters["parent"], "Coral")
 		self.assertEqual(filters["parentfield"], "not_allowed_attribute_values")
 
-	def test_no_selected_values_skips_the_query(self):
+	def test_same_text_under_another_attribute_is_not_a_rule_owner(self):
+		# Gemstone Type Ruby + Collection "Coral": only Ruby's rules are read.
+		with patch.object(item_events.frappe, "get_all", return_value=[]) as get_all:
+			result = item_events.get_not_allowed_attribute_values(
+				{
+					"Gemstone Type": "Ruby",
+					"Collection": "Coral",
+					"Cut or Cab": "Faceted",
+				}
+			)
+		self.assertEqual(result, {})
+		self.assertEqual(get_all.call_args.kwargs["filters"]["parent"], "Ruby")
+
+	def test_no_gemstone_type_skips_the_query(self):
 		with patch.object(item_events.frappe, "get_all") as get_all:
 			self.assertEqual(
-				item_events.get_not_allowed_attribute_values([None, ""]), {}
+				item_events.get_not_allowed_attribute_values(
+					{"Collection": "Coral", "Gemstone Type": ""}
+				),
+				{},
 			)
 		get_all.assert_not_called()
 
@@ -139,6 +166,34 @@ class TestValidateNotAllowedAttributeValues(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			item_events.validate_not_allowed_attribute_values(_variant(before=before))
 
+	def test_coral_under_another_attribute_does_not_block(self):
+		# Real rule lookup: Gemstone Type Ruby has no rules, so the Coral
+		# Collection value must not pull in Gemstone Type Coral's rules.
+		rows = {
+			"Coral": [
+				frappe._dict(
+					parent="Coral",
+					item_attribute="Cut or Cab",
+					attribute_value="Faceted",
+				)
+			]
+		}
+		doc = _Doc(
+			variant_of="G",
+			attributes=[
+				_attr("Gemstone Type", "Ruby"),
+				_attr("Collection", "Coral"),
+				_attr("Cut or Cab", "Faceted"),
+			],
+		)
+		doc.get_doc_before_save = lambda: None
+		with patch.object(
+			item_events.frappe,
+			"get_all",
+			side_effect=lambda *a, **kw: rows.get(kw["filters"]["parent"], []),
+		):
+			item_events.validate_not_allowed_attribute_values(doc)
+
 	def test_template_is_skipped(self):
 		mock = self._blocked(BLOCK_CORAL_FACETED)
 		item_events.validate_not_allowed_attribute_values(_variant(variant_of=None))
@@ -163,7 +218,7 @@ class TestCreateVariantDialogHelpers(IntegrationTestCase):
 		p = patch.object(
 			item_events,
 			"get_not_allowed_attribute_values",
-			side_effect=lambda values: BLOCK_CORAL_FACETED if "Coral" in values else {},
+			side_effect=_rules_for,
 		)
 		p.start()
 		self.addCleanup(p.stop)
@@ -227,7 +282,7 @@ class TestAttributeValueNotAllowedRows(IntegrationTestCase):
 
 
 class TestGetVariantOverride(IntegrationTestCase):
-	"""get_variant override: Create in the Single Variant dialog rejects blocked values."""
+	"""get_variant override: existing variants are returned; new blocked ones rejected."""
 
 	@classmethod
 	def setUpClass(cls):
@@ -237,28 +292,36 @@ class TestGetVariantOverride(IntegrationTestCase):
 		p = patch.object(
 			item_events,
 			"get_not_allowed_attribute_values",
-			side_effect=lambda values: BLOCK_CORAL_FACETED if "Coral" in values else {},
+			side_effect=_rules_for,
 		)
 		p.start()
 		self.addCleanup(p.stop)
-		p = patch(
-			"erpnext.controllers.item_variant.get_variant", return_value="G-EXISTING"
-		)
-		self.erpnext_get_variant = p.start()
-		self.addCleanup(p.stop)
 
-	def test_blocked_combination_is_rejected_before_lookup(self):
+	def _erpnext_lookup(self, result):
+		p = patch("erpnext.controllers.item_variant.get_variant", return_value=result)
+		mock = p.start()
+		self.addCleanup(p.stop)
+		return mock
+
+	def test_existing_blocked_legacy_variant_is_returned(self):
+		lookup = self._erpnext_lookup("G-CORAL-FACETED")
+		args = '{"Gemstone Type": "Coral", "Cut or Cab": "Faceted"}'
+		self.assertEqual(item_events.get_variant("G", args), "G-CORAL-FACETED")
+		lookup.assert_called_once_with("G", args, None, None, None)
+
+	def test_new_blocked_combination_is_rejected(self):
+		self._erpnext_lookup(None)
 		with self.assertRaises(frappe.ValidationError):
 			item_events.get_variant(
 				"G",
 				'{"Gemstone Type": "Coral", "Cut or Cab": "Faceted", "use_template_image": 0}',
 			)
-		self.erpnext_get_variant.assert_not_called()
 
-	def test_allowed_combination_falls_through_to_erpnext(self):
+	def test_new_allowed_combination_returns_no_variant(self):
+		self._erpnext_lookup(None)
 		args = '{"Gemstone Type": "Coral", "Cut or Cab": "Cabochon"}'
-		self.assertEqual(item_events.get_variant("G", args), "G-EXISTING")
-		self.erpnext_get_variant.assert_called_once_with("G", args, None, None, None)
+		self.assertIsNone(item_events.get_variant("G", args))
 
 	def test_no_args_falls_through_to_erpnext(self):
+		self._erpnext_lookup("G-EXISTING")
 		self.assertEqual(item_events.get_variant("G"), "G-EXISTING")
