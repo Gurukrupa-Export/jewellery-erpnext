@@ -3066,3 +3066,202 @@ class TestSubmitWriteBudget(IntegrationTestCase):
 			self._cap_seen_by(is_external=0, refining_type=REFINING_TYPE_WORK_ORDER),
 			[800_000],
 		)
+
+
+class TestSupplierReceiptDifferenceAccount(IntegrationTestCase):
+	"""Receive from Supplier picks its Difference Account the same way the dust receipt does.
+
+	Its Manufacture Stock Entry left the account blank, so ERPNext took the refining items'
+	default -- the Refining Scrap warehouse's Stock account -- and rejected the receipt.
+	The account choice itself is covered by TestDustReceiptDifferenceAccount; this pins the
+	wiring. DB-free.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def test_the_difference_account_is_set_before_the_entry_is_inserted(self):
+		import inspect
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		source = inspect.getsource(RefiningEntry.receive_from_supplier)
+		guard = source.find("self.set_dust_receipt_difference_account(se)")
+		insert = source.find("se.insert(")
+
+		self.assertNotEqual(guard, -1, "receive_from_supplier no longer sets the Difference Account")
+		self.assertLess(guard, insert, "the Difference Account must be set before se.insert()")
+
+
+class TestSerialPurityFromOwnBom(IntegrationTestCase):
+	"""A scanned serial's purity comes from its OWN as-built BOM (custom_bom_no).
+
+	FG design items carry no Metal Purity attribute, and the item-level fallback reads the
+	design's newest active BOM -- on prod a different piece's BOM with a blank purity -- so
+	scanning such a serial threw "Metal Purity is mandatory". DB-free: every read is patched.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _purity(
+		self, serial_bom="BOM-SN", header=None, detail=None, item=None, bom_no=None
+	):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		header = header or {}
+		detail = detail or {}
+
+		def _get_value(doctype, filters=None, fieldname=None, **kwargs):
+			if doctype == "Serial No":
+				return serial_bom
+			if doctype == "BOM" and isinstance(filters, dict):
+				# the design item's newest active BOM
+				return "BOM-NEWEST"
+			if doctype == "BOM":
+				return header.get(filters)
+			if doctype == "BOM Metal Detail":
+				return detail.get(filters["parent"])
+
+		entry = SimpleNamespace(get_item_purity=lambda item_code: item)
+		with patch.object(frappe.db, "get_value", side_effect=_get_value):
+			return RefiningEntry.get_serial_purity(entry, "SN-1", "FG-ITEM", bom_no)
+
+	def test_serial_bom_wins_over_the_newest_active_bom(self):
+		self.assertEqual(
+			self._purity(header={"BOM-SN": "91.75", "BOM-NEWEST": None}), "91.75"
+		)
+
+	def test_blank_bom_header_reads_the_metal_detail(self):
+		self.assertEqual(self._purity(detail={"BOM-SN": "92.0"}), "92.0")
+
+	def test_metal_detail_wins_over_a_stale_header(self):
+		"""The header keeps the order's 91.9 while the metal used (and its manufacturing
+		order) is 91.75 -- 21 active serial BOMs on a prod copy."""
+		self.assertEqual(
+			self._purity(header={"BOM-SN": "91.9"}, detail={"BOM-SN": "91.75"}), "91.75"
+		)
+
+	def test_bom_without_purity_falls_back_to_the_item(self):
+		self.assertEqual(self._purity(item="91.9"), "91.9")
+
+	def test_serial_without_its_own_bom_uses_the_active_bom(self):
+		self.assertEqual(
+			self._purity(serial_bom=None, header={"BOM-NEWEST": "75.4"}), "75.4"
+		)
+
+	def test_passed_bom_is_used_as_is(self):
+		self.assertEqual(
+			self._purity(
+				bom_no="BOM-PASSED", header={"BOM-PASSED": "91.75", "BOM-SN": "58.5"}
+			),
+			"91.75",
+		)
+
+
+class TestSerialMaterialRows(IntegrationTestCase):
+	"""Material Items built for a scanned serial. The serial and BOM reads are patched.
+
+	* A serial BOM that lists its own design item must not add it again as a BOM Component:
+	  internal refining showed the design code twice, and that self row -- a piece count
+	  with no purity -- was the only BOM Component on such BOMs, zeroing the Recovery Summary.
+	* The serial row is a scan-time snapshot of its BOM (weights, purity and pure weight
+	  together), so a rebuild keeps a saved purity and reads the BOM only for a blank one.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _build(self, is_external=0, metal_purity="91.75"):
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SERIAL
+		re.is_external = is_external
+		re.warehouse = "Tagging FG - T"
+		re.append(
+			"serial_no_details",
+			{
+				"serial_number": "SN-1",
+				"item_code": "FG-DESIGN",
+				"metal_purity": metal_purity,
+				"pcs": 1,
+			},
+		)
+		bom_items = [
+			frappe._dict(
+				item_code="FG-DESIGN", qty=1, stock_qty=1, uom="Nos", stock_uom="Nos"
+			),
+			frappe._dict(
+				item_code="ML-G-22KT",
+				qty=23.848,
+				stock_qty=23.848,
+				uom="Gram",
+				stock_uom="Gram",
+			),
+		]
+
+		real_get_value = frappe.db.get_value
+		real_get_all = frappe.db.get_all
+
+		def _get_value(doctype, *args, **kwargs):
+			if doctype == "Serial No":
+				return "BOM-SN"
+			if doctype == "Item":
+				return "Test Group"
+			return real_get_value(doctype, *args, **kwargs)
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "BOM Item":
+				return bom_items
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch.object(frappe.db, "get_value", side_effect=_get_value),
+			patch.object(frappe.db, "get_all", side_effect=_get_all),
+			patch.object(RefiningEntry, "get_item_purity", return_value="91.75"),
+			patch.object(
+				RefiningEntry, "get_serial_purity", return_value="91.75"
+			) as serial_purity,
+			patch.object(RefiningEntry, "_drop_restricted_material_rows"),
+		):
+			re.build_material_table()
+		return re, serial_purity
+
+	def _material_rows(self, is_external):
+		re, _ = self._build(is_external=is_external)
+		return [(row.item_code, row.source_type) for row in re.material_items]
+
+	def test_internal_lists_the_design_code_once(self):
+		self.assertEqual(
+			self._material_rows(is_external=0),
+			[("FG-DESIGN", "Serial Number"), ("ML-G-22KT", "BOM Component")],
+		)
+
+	def test_external_leaves_the_design_code_out(self):
+		self.assertEqual(
+			self._material_rows(is_external=1), [("ML-G-22KT", "BOM Component")]
+		)
+
+	def test_saved_purity_is_kept_on_rebuild(self):
+		"""A draft scanned at 75.4 stays 75.4 even if its BOM now says 91.75: the row's
+		pure weight was computed from that purity. Re-scan the serial to refresh it."""
+		re, serial_purity = self._build(metal_purity="75.4")
+		self.assertEqual(re.material_items[0].purity, "75.4")
+		serial_purity.assert_not_called()
+
+	def test_blank_purity_is_read_from_the_serial_bom(self):
+		re, serial_purity = self._build(metal_purity=None)
+		self.assertEqual(re.material_items[0].purity, "91.75")
+		serial_purity.assert_called_once_with("SN-1", "FG-DESIGN", "BOM-SN")
