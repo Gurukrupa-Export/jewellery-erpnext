@@ -3632,12 +3632,13 @@ _BATCH_OWNERS = {
 }
 
 
-def _batch_get_all(doctype, filters=None, **kwargs):
-	"""``frappe.get_all("Batch", ...)`` answered from ``_BATCH_OWNERS``."""
-	if doctype != "Batch":
-		return []
-	names = (filters or {}).get("name", ("in", []))[1]
-	return [_BATCH_OWNERS[n] for n in names if n in _BATCH_OWNERS]
+def _batch_owners(batch_nos):
+	"""``doc_events.utils._batch_owners`` answered from ``_BATCH_OWNERS``."""
+	return {
+		n: (_BATCH_OWNERS[n].custom_inventory_type, _BATCH_OWNERS[n].custom_customer)
+		for n in batch_nos
+		if n in _BATCH_OWNERS
+	}
 
 
 class TestStampRowsFromBatches(IntegrationTestCase):
@@ -3654,7 +3655,7 @@ class TestStampRowsFromBatches(IntegrationTestCase):
 			utils as pc_utils,
 		)
 
-		with patch.object(pc_utils.frappe, "get_all", side_effect=_batch_get_all):
+		with patch.object(pc_utils, "_batch_owners", side_effect=_batch_owners):
 			pc_utils.stamp_rows_from_batches(rows)
 		return [(r.get("inventory_type"), r.get("customer")) for r in rows]
 
@@ -3681,6 +3682,13 @@ class TestStampRowsFromBatches(IntegrationTestCase):
 		self.assertEqual(
 			self._stamp([frappe._dict(s_warehouse="WH", batch_no="B-HALF")]), [("Regular Stock", None)]
 		)
+
+	def test_the_owner_lookup_runs_against_the_real_batch_table(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
+			utils as pc_utils,
+		)
+
+		self.assertEqual(pc_utils._batch_owners({"NO-SUCH-BATCH-FOR-THIS-TEST"}), {})
 
 	def test_inward_and_batchless_rows_are_left_alone(self):
 		self.assertEqual(
@@ -3746,7 +3754,7 @@ class TestReceivedBatchesCarryOwnerAndRate(IntegrationTestCase):
 			# Also the "latest batch of this item in the supplier warehouse" fallback's answer.
 			patch.object(frappe.db, "get_value", return_value="B-LATEST-IN-SUPPLIER-WH"),
 			patch.object(frappe, "get_cached_value", side_effect=lambda dt, name, *a, **k: flags.get(name, (0, 0, 0))),
-			patch.object(frappe, "get_all", side_effect=_batch_get_all),
+			patch.object(pc_utils, "_batch_owners", side_effect=_batch_owners),
 			patch.object(frappe, "new_doc", side_effect=_new_doc),
 			patch.object(batch_module, "make_batch", self.make_batch),
 			patch.object(lock_order, "lock_bins"),

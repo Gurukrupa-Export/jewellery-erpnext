@@ -589,15 +589,7 @@ def stamp_rows_from_batches(rows):
 	if not targets:
 		return
 
-	owners = {
-		batch.name: (batch.custom_inventory_type, batch.custom_customer)
-		for batch in frappe.get_all(
-			"Batch",
-			filters={"name": ("in", sorted({row.get("batch_no") for row in targets}))},
-			fields=["name", "custom_inventory_type", "custom_customer"],
-			limit_page_length=0,
-		)
-	}
+	owners = _batch_owners({row.get("batch_no") for row in targets})
 	for row in targets:
 		batch_type, batch_customer = owners.get(row.get("batch_no")) or (None, None)
 		inventory_type, customer = normalize_ownership(
@@ -607,6 +599,21 @@ def stamp_rows_from_batches(rows):
 			item_code=row.get("item_code"),
 		)
 		row.update({"inventory_type": inventory_type, "customer": customer})
+
+
+def _batch_owners(batch_nos):
+	"""``{batch_no: (custom_inventory_type, custom_customer)}`` in one query.
+
+	A plain query-builder read: an internal lookup inside the stock-entry builders needs neither
+	the Batch meta nor the permission layer that ``frappe.get_all`` brings with it.
+	"""
+	batch = frappe.qb.DocType("Batch")
+	rows = (
+		frappe.qb.from_(batch)
+		.select(batch.name, batch.custom_inventory_type, batch.custom_customer)
+		.where(batch.name.isin(sorted(batch_nos)))
+	).run(as_dict=True)
+	return {row.name: (row.custom_inventory_type, row.custom_customer) for row in rows}
 
 
 def _owner_unset(row):
