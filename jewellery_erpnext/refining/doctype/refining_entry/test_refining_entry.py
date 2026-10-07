@@ -3048,3 +3048,67 @@ class TestSubmitWriteBudget(IntegrationTestCase):
 			self._cap_seen_by(is_external=0, refining_type=REFINING_TYPE_WORK_ORDER),
 			[800_000],
 		)
+
+
+class TestSerialPurityFromOwnBom(IntegrationTestCase):
+	"""A scanned serial's purity comes from its OWN as-built BOM (custom_bom_no).
+
+	FG design items carry no Metal Purity attribute, and the item-level fallback reads the
+	design's newest active BOM -- on prod a different piece's BOM with a blank purity -- so
+	scanning such a serial threw "Metal Purity is mandatory". DB-free: every read is patched.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _purity(
+		self, serial_bom="BOM-SN", header=None, detail=None, item=None, bom_no=None
+	):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		header = header or {}
+		detail = detail or {}
+
+		def _get_value(doctype, filters=None, fieldname=None, **kwargs):
+			if doctype == "Serial No":
+				return serial_bom
+			if doctype == "BOM" and isinstance(filters, dict):
+				# the design item's newest active BOM
+				return "BOM-NEWEST"
+			if doctype == "BOM":
+				return header.get(filters)
+			if doctype == "BOM Metal Detail":
+				return detail.get(filters["parent"])
+
+		entry = SimpleNamespace(get_item_purity=lambda item_code: item)
+		with patch.object(frappe.db, "get_value", side_effect=_get_value):
+			return RefiningEntry.get_serial_purity(entry, "SN-1", "FG-ITEM", bom_no)
+
+	def test_serial_bom_wins_over_the_newest_active_bom(self):
+		self.assertEqual(
+			self._purity(header={"BOM-SN": "91.75", "BOM-NEWEST": None}), "91.75"
+		)
+
+	def test_blank_bom_header_reads_the_metal_detail(self):
+		self.assertEqual(self._purity(detail={"BOM-SN": "92.0"}), "92.0")
+
+	def test_bom_without_purity_falls_back_to_the_item(self):
+		self.assertEqual(self._purity(item="91.9"), "91.9")
+
+	def test_serial_without_its_own_bom_uses_the_active_bom(self):
+		self.assertEqual(
+			self._purity(serial_bom=None, header={"BOM-NEWEST": "75.4"}), "75.4"
+		)
+
+	def test_passed_bom_is_used_as_is(self):
+		self.assertEqual(
+			self._purity(
+				bom_no="BOM-PASSED", header={"BOM-PASSED": "91.75", "BOM-SN": "58.5"}
+			),
+			"91.75",
+		)
