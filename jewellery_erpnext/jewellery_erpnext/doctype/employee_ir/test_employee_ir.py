@@ -351,10 +351,36 @@ class TestManufacturingOperationBalance(IntegrationTestCase):
 		self.assertAlmostEqual(out["gross_wt"], 0.432, places=3)
 
 
+# create_test_data's subcontracted operation. Employee IR.department is fetch_from
+# operation.department, so an Issue on this operation runs in the operation's own department
+# whatever the test sets -- in the seed that is "Sub Contracting - T", not Waxing. Production keeps
+# its subcontracted operations in the department the work order is in, and the current-operation
+# guard issues only a work order whose current operation was received in the Issue's department,
+# so these tests move the work order into that department first.
+SUBCONTRACTED_OPERATION = (
+	"Wax Setting/Filling/Diamond Setting/Final Polish without Rhodium/Plating SC"
+)
+
+
 class TestEmployeeIR(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+
+	def _received_for_subcontracting(self):
+		"""A fresh work order's current operation, received by a Department IR into the
+		subcontracted operation's department, and that department (see SUBCONTRACTED_OPERATION)."""
+		department = frappe.db.get_value(
+			"Department Operation", SUBCONTRACTED_OPERATION, "department"
+		)
+		create_pmo(self)
+		mo = mo_creation()
+		dir_issue = dir_for_issue("Manufacturing Plan & Management - T", department, mo)
+		mo.reload()
+		mo_sc = frappe.get_last_doc("Manufacturing Operation")
+		dir_for_receive(dir_issue)
+		mo_sc.reload()
+		return mo_sc, department
 
 	def test_employee_ir_scan(self):
 		frappe.db.set_value(
@@ -568,64 +594,48 @@ class TestEmployeeIR(IntegrationTestCase):
 	def test_subcontracting_issue_sets_for_subcontracting_on_mop(self):
 		# Its own work order: reusing the previous test's one would issue an operation that has
 		# already moved on, which the current-operation guard refuses.
-		create_pmo(self)
-		mo = mo_creation()
-		dir_issue = dir_for_issue(
-			"Manufacturing Plan & Management - T", "Waxing - T", mo
-		)
-		mo.reload()
-		mo_wax = frappe.get_last_doc("Manufacturing Operation")
-		dir_for_receive(dir_issue)
-		mo_wax.reload()
+		mo_sc, department = self._received_for_subcontracting()
 
 		eir = frappe.new_doc("Employee IR")
 		eir.company = "Test_Company"
 		eir.type = "Issue"
-		eir.department = "Waxing - T"
-		eir.operation = "Wax Setting/Filling/Diamond Setting/Final Polish without Rhodium/Plating SC"
+		eir.department = department
+		eir.operation = SUBCONTRACTED_OPERATION
 		eir.employee = "HR-EMP-00002"
 		eir.subcontracting = "Yes"
 		eir.subcontractor = "Test_Supplier"
-		eir.scan_mwo = mo_wax.manufacturing_work_order
+		eir.scan_mwo = mo_sc.manufacturing_work_order
 		scan_mwo_eir(eir)
 		if not eir.employee_ir_operations[0].rpt_wt_issue:
 			eir.employee_ir_operations[0].rpt_wt_issue = 0
 		eir.save()
 		eir.submit()
-		mo_wax.reload()
+		mo_sc.reload()
 
 		self.assertEqual(
-			mo_wax.for_subcontracting,
+			mo_sc.for_subcontracting,
 			1,
 			"MOP must have for_subcontracting=1 after Issue with subcontracting=Yes.",
 		)
 		self.assertEqual(
-			mo_wax.subcontractor,
+			mo_sc.subcontractor,
 			"Test_Supplier",
 			"MOP must carry the subcontractor name after Issue.",
 		)
 
 	def test_on_submit_issue_new_sets_subcontracting_values(self):
-		create_pmo(self)
-		mo = mo_creation()
-		dir_issue = dir_for_issue(
-			"Manufacturing Plan & Management - T", "Waxing - T", mo
-		)
-		mo.reload()
-		mo_wax = frappe.get_last_doc("Manufacturing Operation")
-		dir_for_receive(dir_issue)
-		mo_wax.reload()
+		mo_sc, department = self._received_for_subcontracting()
 
 		eir = frappe.new_doc("Employee IR")
 		eir.type = "Issue"
-		eir.department = "Waxing - T"
+		eir.department = department
 		eir.company = "Test_Company"
-		eir.operation = "Wax Setting/Filling/Diamond Setting/Final Polish without Rhodium/Plating SC"
+		eir.operation = SUBCONTRACTED_OPERATION
 		eir.employee = "HR-EMP-00002"
 		eir.subcontracting = "Yes"
 		eir.subcontractor = "Test_Supplier"
 		eir.manufacturer = "Shubh"
-		eir = get_manufacturing_operations(mo_wax.name, eir)
+		eir = get_manufacturing_operations(mo_sc.name, eir)
 
 		if not eir.employee_ir_operations[0].rpt_wt_issue:
 			eir.employee_ir_operations[0].rpt_wt_issue = 0
@@ -633,14 +643,14 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir.save()
 		eir.submit()
 
-		mo_wax.reload()
+		mo_sc.reload()
 		self.assertEqual(
-			mo_wax.for_subcontracting,
+			mo_sc.for_subcontracting,
 			1,
 			"MOP should have for_subcontracting=1 after subcontracting issue",
 		)
 		self.assertEqual(
-			mo_wax.subcontractor,
+			mo_sc.subcontractor,
 			"Test_Supplier",
 			"MOP should have subcontractor assigned",
 		)
