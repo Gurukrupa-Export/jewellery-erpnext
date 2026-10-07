@@ -82,7 +82,7 @@ class _Case(unittest.TestCase):
 	variant_of = "D"
 
 	def _validate(self, rows, warn_only=False, auto_created=0, header_pmo=None):
-		"""Run the guard, returning every message it reported through ``msgprint``."""
+		"""Run the guard, returning every mismatch it let through (logged, never shown)."""
 		se = _Doc(items=rows, manufacturing_order=header_pmo, auto_created=auto_created)
 
 		def get_value(doctype, name, *args, **kwargs):
@@ -106,14 +106,21 @@ class _Case(unittest.TestCase):
 				se_utils, "WARN_ONLY_PMO_ROW_OWNERSHIP", warn_only
 			),
 			patch.object(
+				se_utils, "_log_ownership_warning", side_effect=warnings.append
+			),
+			# Anything that reaches the screen without blocking. Must stay empty.
+			patch.object(
 				se_utils.frappe,
 				"msgprint",
-				side_effect=lambda msg, **kw: warnings.append(msg),
+				side_effect=lambda msg, **kw: self.shown.append(msg),
 			),
 			patch("frappe.db.get_value", side_effect=get_value),
 		):
 			se_utils.validate_inventory_dimention(se)
 		return warnings
+
+	def setUp(self):
+		self.shown = []
 
 
 class TestTheOrdersOwnerIsEnforced(_Case):
@@ -224,6 +231,12 @@ class TestTheStagedRollout(_Case):
 	order = GOLD_ORDER
 	variant_of = "F"
 
+	def test_a_let_through_mismatch_is_logged_not_shown(self):
+		"""No pop-up for a case that is allowed anyway -- it used to appear twice per entry."""
+		logged = self._validate([_row(OTHER_BATCH)], warn_only=True)
+		self.assertEqual(len(logged), 1)
+		self.assertEqual(self.shown, [])
+
 	def test_warn_only_reports_without_throwing(self):
 		"""While WARN_ONLY_PMO_ROW_OWNERSHIP is set, months of unguarded entries keep working."""
 		warnings = self._validate([_row(OTHER_BATCH)], warn_only=True)
@@ -283,6 +296,28 @@ class TestDiamondsAndGemstonesAreBlockedOutright(_Case):
 		self.order = GOLD_ORDER
 		self.variant_of = "F"
 		warnings = self._validate([_row(COMPANY_BATCH)], warn_only=True)
+		self.assertEqual(len(warnings), 1)
+
+	def test_the_customers_diamond_on_a_company_order_is_refused(self):
+		"""MAT-STE-22944: GJCU0009's own stones on GJCU0009's order that says "No" to diamonds."""
+		self.order = frappe._dict(_Case.order, is_customer_diamond=0)
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self._validate([_row(CUSTOMER_BATCH)], warn_only=True)
+		self.assertIn("does not say the customer supplied", str(raised.exception))
+
+	def test_the_customers_diamond_on_a_company_order_only_warns_when_auto_created(self):
+		self.order = frappe._dict(_Case.order, is_customer_diamond=0)
+		warnings = self._validate([_row(CUSTOMER_BATCH)], warn_only=True, auto_created=1)
+		self.assertEqual(len(warnings), 1)
+
+	def test_company_stock_on_a_company_order_passes(self):
+		self.order = frappe._dict(_Case.order, is_customer_diamond=0)
+		self.assertEqual(self._validate([_row(COMPANY_BATCH)], warn_only=True), [])
+
+	def test_a_finding_of_the_customers_on_a_company_order_still_only_warns(self):
+		self.order = frappe._dict(GOLD_ORDER, is_customer_gold=0)
+		self.variant_of = "F"
+		warnings = self._validate([_row(CUSTOMER_BATCH)], warn_only=True)
 		self.assertEqual(len(warnings), 1)
 
 

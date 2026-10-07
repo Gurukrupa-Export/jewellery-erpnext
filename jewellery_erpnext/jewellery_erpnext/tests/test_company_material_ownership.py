@@ -67,6 +67,8 @@ class _FifoCase(unittest.TestCase):
 		row_pmo=PMO,
 		header_pmo=None,
 		order=None,
+		row_inventory_type=None,
+		row_customer=None,
 	):
 		se = _Doc(
 			stock_entry_type="Material Transfer (WORK ORDER)",
@@ -84,8 +86,8 @@ class _FifoCase(unittest.TestCase):
 			qty=qty,
 			item_code="D-NT-RO-6B",
 			s_warehouse="WH-DIA",
-			inventory_type=None,
-			customer=None,
+			inventory_type=row_inventory_type,
+			customer=row_customer,
 			custom_parent_manufacturing_order=row_pmo,
 			custom_variant_of=row_variant,
 			manufacturing_operation=None,
@@ -452,3 +454,81 @@ class TestTheLaneDoesNotNeedTheFetchedVariantLetter(unittest.TestCase):
 			item_variant="D",
 		)
 		self.assertEqual(lanes, {COMPANY_DIAMOND: ("Regular Stock", None)})
+
+
+class TestCompanyOrdersTakeOnlyCompanyStock(_FifoCase):
+	"""Customer diamond / gemstone NOT ticked on the order -> only company Regular Stock.
+
+	KGJPL-MR-MF-26-34479: PMO-KGJPL-EA10929-001-0006's plan row says "No" to every customer
+	material, yet its reserve entry MAT-STE-22944 drew GJCU0009's Customer Goods diamond -- the
+	only batch in Diamond Bagging RM -- because FIFO took the first batch it saw.
+	"""
+
+	def _company_order(self, **flags):
+		return frappe._dict(
+			dict(
+				is_customer_gold=0,
+				is_customer_diamond=0,
+				is_customer_gemstone=0,
+				is_customer_material=0,
+				customer=CUSTOMER,
+				manufacturer="MFR",
+			),
+			**flags,
+		)
+
+	def _diamond(self, batches, **kwargs):
+		kwargs.setdefault("row_variant", "D")
+		kwargs.setdefault("item_variant", "D")
+		kwargs.setdefault("order", self._company_order())
+		return self._allocate(batches, qty=0.3, **kwargs)
+
+	def test_the_customers_batch_is_passed_over_for_the_companys(self):
+		lanes = self._diamond([(CUSTOMER_DIAMOND, 12.15), (COMPANY_DIAMOND, 1.0)])
+		self.assertEqual(lanes, {COMPANY_DIAMOND: ("Regular Stock", None)})
+
+	def test_only_the_customers_stones_in_stock_is_refused(self):
+		"""The KGJPL-MR-MF-26-34479 shape: nothing but GJCU0009's batch in the warehouse."""
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self._diamond([(CUSTOMER_DIAMOND, 12.15)])
+		self.assertIn("Regular Stock", str(raised.exception))
+
+	def test_a_row_stamped_customer_goods_follows_the_order_not_the_stamp(self):
+		lanes = self._diamond(
+			[(CUSTOMER_DIAMOND, 12.15), (COMPANY_DIAMOND, 1.0)],
+			row_inventory_type="Customer Goods",
+			row_customer=CUSTOMER,
+		)
+		self.assertEqual(lanes, {COMPANY_DIAMOND: ("Regular Stock", None)})
+
+	def test_gemstones_follow_the_same_rule(self):
+		with patch.dict(BATCHES, GEM_BATCHES):
+			lanes = self._allocate(
+				[(CUSTOMER_GEM, 1.0), (COMPANY_GEM, 1.0)],
+				qty=0.5,
+				row_variant="G",
+				item_variant="G",
+				order=self._company_order(),
+			)
+		self.assertEqual(lanes, {COMPANY_GEM: ("Regular Stock", None)})
+
+	def test_a_gemstone_on_a_diamond_only_order_is_company_stock(self):
+		"""Per material type: the diamond tick says nothing about the gemstones."""
+		with patch.dict(BATCHES, GEM_BATCHES), self.assertRaises(frappe.ValidationError):
+			self._allocate(
+				[(CUSTOMER_GEM, 1.0)],
+				qty=0.5,
+				row_variant="G",
+				item_variant="G",
+				order=self._company_order(is_customer_diamond=1),
+			)
+
+	def test_a_finding_on_a_company_order_is_unchanged(self):
+		lanes = self._allocate([(CUSTOMER_DIAMOND, 1.0)], qty=0.3, order=self._company_order())
+		self.assertIn(CUSTOMER_DIAMOND, lanes)
+
+	def test_a_row_with_no_order_is_not_judged(self):
+		"""An ordinary transfer of a customer's stones must still find them."""
+		lanes = self._diamond([(CUSTOMER_DIAMOND, 12.15)], row_pmo=None)
+		self.assertEqual(self.pmo_reads, [])
+		self.assertIn(CUSTOMER_DIAMOND, lanes)
