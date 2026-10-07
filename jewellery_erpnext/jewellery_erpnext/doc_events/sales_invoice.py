@@ -973,11 +973,24 @@ def update_si_data(self):
 				self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed
 			)
 			if bom_doc.hallmarking_amount:
-				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item",
-					{"is_for_hallmarking": 1},
-					["name", "hsn_code", "uom"],
-				)
+				# Pick the hallmarking item allowed by the customer's Payment
+				# Terms, else update_einvoice_items drops it (allowed_item_types).
+				custom_item = hsn_code = uom = None
+				if allowed_item_types:
+					custom_item, hsn_code, uom = frappe.db.get_value(
+						"E Invoice Item",
+						{
+							"is_for_hallmarking": 1,
+							"name": ["in", list(allowed_item_types)],
+						},
+						["name", "hsn_code", "uom"],
+					) or (None, None, None)
+				if not custom_item:
+					custom_item, hsn_code, uom = frappe.db.get_value(
+						"E Invoice Item",
+						{"is_for_hallmarking": 1},
+						["name", "hsn_code", "uom"],
+					) or (None, None, None)
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
 					invoice_data[custom_item]["amount"] += bom_doc.hallmarking_amount
@@ -1311,7 +1324,10 @@ def update_bom_details(
 				uom=uom,
 			)
 
-		if making_item and not is_branch_customer and self.sales_type != "Hybrid":
+		# Only a Branch Sales invoice drops making; a customer that also has
+		# Outright must still be billed making, as on the Sales Order.
+		skip_making = is_branch_customer and self.sales_type == "Branch Sales"
+		if making_item and not skip_making and self.sales_type != "Hybrid":
 			is_metal_per_pc = (  # noqa: F841 - consumed by the metal_making_qty line commented out below
 				flt(i.making_rate) > 0
 				and abs(flt(i.making_amount) - flt(i.making_rate)) < 0.01
@@ -1952,9 +1968,11 @@ def update_income_account(self):
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_completed_product_return_orders(doctype, txt, searchfield, start, page_len, filters):
-
-    return frappe.db.sql("""
+def get_completed_product_return_orders(
+	doctype, txt, searchfield, start, page_len, filters
+):
+	return frappe.db.sql(
+		"""
         SELECT pro.name
         FROM `tabProduct Return Order Form` pro
         WHERE pro.docstatus = 1
@@ -1972,9 +1990,10 @@ def get_completed_product_return_orders(doctype, txt, searchfield, start, page_l
           )
         ORDER BY pro.modified DESC
         LIMIT %(start)s, %(page_len)s
-    """, {
-        "txt": f"%{txt}%",
-        "start": start,
-        "page_len": page_len,
-    })
-
+    """,
+		{
+			"txt": f"%{txt}%",
+			"start": start,
+			"page_len": page_len,
+		},
+	)

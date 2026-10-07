@@ -157,6 +157,13 @@ class RefiningEntry(Document):
 					)
 
 	def on_submit(self):
+		# The transfer moves one Stock Entry line per batch, and each line writes its own
+		# bundles, ledger entries and bins (~16-28 writes): RFN-SCP-26-00022's 12,298 lines
+		# crossed frappe's 200k writes-per-transaction cap and were reverted
+		# (TooManyWritesError). Same approach as Main Slip's loss entries; x4 keeps the cap
+		# in step with the 4500 s long-queue budget the submission runs under.
+		frappe.db.MAX_WRITES_PER_TRANSACTION *= 4
+
 		if cint(self.is_external):
 			self.on_submit_external()
 			return
@@ -2721,14 +2728,19 @@ class RefiningEntry(Document):
 						},
 					)
 
-					allocated_qty = sum(flt(a["qty"], precision) for a in allocations)
-					if self.refining_type == "Scrap Refining" and allocated_qty < flt(
-						item.qty, precision
-					):
+					# Round the sum before comparing: 3-decimal allocations still add up in
+					# binary floating point (0.022 + 0.006 = 0.027999999999999997), and the
+					# ~1e-18 left over became a zero-qty dust receipt row that ERPNext
+					# rejects ("Qty in Stock UOM can not be zero") — RFN-SCP-26-00023.
+					allocated_qty = flt(
+						sum(flt(a["qty"], precision) for a in allocations), precision
+					)
+					shortfall = flt(flt(item.qty, precision) - allocated_qty, precision)
+					if self.refining_type == "Scrap Refining" and shortfall >= min_qty:
 						self._dust_shortfalls.append(
 							{
 								"item_code": item.item_code,
-								"qty": flt(item.qty, precision) - allocated_qty,
+								"qty": shortfall,
 								"uom": item.uom,
 								"purity": item.purity,
 							}
@@ -2763,11 +2775,12 @@ class RefiningEntry(Document):
 						precision,
 					)
 					transfer_qty = min(transfer_qty, max(0.0, bin_qty))
-					if transfer_qty < flt(item.qty, precision):
+					shortfall = flt(flt(item.qty, precision) - transfer_qty, precision)
+					if shortfall >= min_qty:
 						self._dust_shortfalls.append(
 							{
 								"item_code": item.item_code,
-								"qty": flt(item.qty, precision) - transfer_qty,
+								"qty": shortfall,
 								"uom": item.uom,
 								"purity": item.purity,
 							}
@@ -3158,7 +3171,9 @@ class RefiningEntry(Document):
 
 		added = False
 		for sf in shortfalls:
-			if sf["qty"] <= 0:
+			# Below a milligram is float residue, not metal: a row that rounds to zero
+			# fails the whole submit.
+			if flt(sf["qty"], 3) < 0.001:
 				continue
 			dust_batch = self.get_dust_opening_batch(sf["item_code"])
 			se.append(

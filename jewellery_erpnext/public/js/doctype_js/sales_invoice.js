@@ -110,7 +110,7 @@ frm.add_custom_button(__("Get Product Return Order Form"), function () {
                                 d.income_account = "Sales - KGJPL";
                                 d.sales_order = "";
                                 d.uom = row.uom;
-
+                                d.conversion_factor =1;
 
                                 if (matched_pro && matched_pro.new_bom) {
 
