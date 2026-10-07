@@ -14,9 +14,9 @@ the business actually allows -- in which case tick ``custom_allow_regular_goods_
 _goods`` on that Manufacturer, which downgrades the two "wrong lane" refusals to a warning -- or it
 has been mislabelling a customer's material as the company's, which is the reason the guard exists.
 
-Diamonds and gemstones are the exception: on a hand-built entry against an order placed on the
-customer's own stones the guard throws whatever the switch or the allowance says, so those rows
-are always counted as errors.
+Diamonds and gemstones are the exception: on a hand-built entry the guard throws whatever the
+switch or the allowance says -- the customer's goods when the order ticks them, company stock
+when it does not -- so those rows are always counted as errors.
 
 Idempotent, and safe to run ad hoc as often as you like::
 
@@ -34,7 +34,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	CUSTOMER_INVENTORY_TYPES,
 	normalize_ownership,
 	pmo_expects_customer_goods,
-	pmo_requires_customer_goods,
+	STRICT_CUSTOMER_GOODS_VARIANTS,
 )
 
 #: How far back to look. The guard died on 2026-05-08, so a year covers it with room to spare.
@@ -78,9 +78,9 @@ def execute(days=DEFAULT_DAYS):
 
 			reason = classify_row(inventory_type, customer, pmo, row.variant_of)
 			if reason:
-				# The guard blocks a diamond or gemstone row on a customer's order outright, on
-				# any entry built by hand -- the allowance does not reach it.
-				strict = not row.auto_created and pmo_requires_customer_goods(pmo, row.variant_of)
+				# The guard blocks a diamond or gemstone row drawing the wrong owner outright, on any
+				# entry built by hand -- the allowance does not reach it.
+				strict = not row.auto_created and row.variant_of in STRICT_CUSTOMER_GOODS_VARIANTS
 				findings.append((pmo.manufacturer, bool(pmo.allow_substitution), reason, strict))
 
 	_print(rows, findings, days)
@@ -112,7 +112,7 @@ def _is_error(allowed, reason, strict):
 
 	WRONG_OWNER ignores the allowance: permission to use company stock in the customer's place says
 	nothing about consuming a THIRD party's goods. A strict finding -- a diamond or gemstone on a
-	hand-built entry against a customer's order -- ignores it as well.
+	hand-built entry -- ignores it as well.
 	"""
 	return reason == WRONG_OWNER or strict or not allowed
 

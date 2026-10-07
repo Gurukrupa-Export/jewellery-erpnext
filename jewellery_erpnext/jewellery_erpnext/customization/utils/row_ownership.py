@@ -70,10 +70,11 @@ VARIANT_CUSTOMER_FLAG = {
 	"O": "is_customer_material",
 }
 
-#: Variant letters that are NEVER substituted. On an order placed on the customer's diamonds or
-#: gemstones only that customer's own Customer Goods batch may be drawn -- the manufacturer's
-#: "Allow Regular Goods Instead Of Customer Goods" and the staged warn-only rollout both stop at
-#: these two. Metal, findings and other material keep the manufacturer's allowance.
+#: Variant letters whose owner is never substituted, in either direction. The order's own
+#: checkbox decides: customer diamond / gemstone ticked -> only that customer's Customer Goods,
+#: not ticked -> only company Regular Stock. The manufacturer's "Allow Regular Goods Instead Of
+#: Customer Goods" and the staged warn-only rollout both stop at these two. Metal, findings and
+#: other material keep the manufacturer's allowance.
 STRICT_CUSTOMER_GOODS_VARIANTS = ("D", "G")
 
 
@@ -85,6 +86,20 @@ def pmo_requires_customer_goods(pmo_data, variant_of):
 	"""
 	return variant_of in STRICT_CUSTOMER_GOODS_VARIANTS and pmo_expects_customer_goods(
 		pmo_data, variant_of
+	)
+
+
+def pmo_requires_company_stock(pmo_data, variant_of):
+	"""True when a row of this variant letter may draw ONLY company (Regular Stock) batches.
+
+	The other half of :func:`pmo_requires_customer_goods`: a diamond or gemstone row on an order
+	that does NOT say the customer supplied it. ``pmo_data`` must be a real order -- a row that
+	names none is not judged, so an ordinary transfer of a customer's stones still finds them.
+	"""
+	return (
+		bool(pmo_data)
+		and variant_of in STRICT_CUSTOMER_GOODS_VARIANTS
+		and not pmo_expects_customer_goods(pmo_data, variant_of)
 	)
 
 

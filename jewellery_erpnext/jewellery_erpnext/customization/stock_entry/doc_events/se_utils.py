@@ -29,8 +29,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.diamond_conversion_
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	CUSTOMER_INVENTORY_TYPES,
+	STRICT_CUSTOMER_GOODS_VARIANTS,
 	normalize_ownership,
 	pmo_expects_customer_goods,
+	pmo_requires_company_stock,
 	pmo_requires_customer_goods,
 	resolve_batch_ownership,
 )
@@ -43,7 +45,7 @@ from jewellery_erpnext.utils import bulk_map
 # from jewellery_erpnext.utils import get_item_from_attribute
 
 
-#: While True an ownership mismatch is reported with ``msgprint`` instead of ``frappe.throw``.
+#: While True an ownership mismatch is only logged instead of thrown.
 #:
 #: STAGED ROLLOUT, NOT A PREFERENCE. ``validate_inventory_dimention`` was commented out by
 #: 0040324c ("fix: sync v15 updates with v16", 8 May 2026) -- a 17-file bulk sync that gave no
@@ -54,17 +56,23 @@ WARN_ONLY_PMO_ROW_OWNERSHIP = True
 
 
 def _report_ownership_error(message, soft=False, hard=False):
-	"""Throw, or merely warn while the guard is staged or the manufacturer opted out.
+	"""Throw, or -- while the guard is staged or the manufacturer opted out -- only log it.
 
-	``hard`` throws regardless of both: a diamond or gemstone row on an order placed on the
-	customer's own stones (``pmo_requires_customer_goods``) is never substituted.
+	``hard`` throws regardless of both: a diamond or gemstone row draws exactly the owner its
+	order names, never a substitute in either direction.
+
+	A case that is let through is NOT shown to the user. The allocator already picks the right
+	owner's batch, and a pop-up that changes nothing -- twice, once on save and again on submit --
+	only taught people to click it away. It goes to the ``inventory_ownership`` log instead, which
+	``audit_pmo_row_ownership`` complements for history.
 	"""
-	if hard:
+	if hard or not (soft or WARN_ONLY_PMO_ROW_OWNERSHIP):
 		frappe.throw(message, title=_("Inventory Ownership"))
-	if soft or WARN_ONLY_PMO_ROW_OWNERSHIP:
-		frappe.msgprint(message, title=_("Inventory Ownership"), indicator="orange")
-	else:
-		frappe.throw(message, title=_("Inventory Ownership"))
+	_log_ownership_warning(message)
+
+
+def _log_ownership_warning(message):
+	frappe.logger("inventory_ownership").warning(frappe.utils.strip_html(message))
 
 
 def validate_inventory_dimention(self, method=None):
@@ -98,9 +106,11 @@ def validate_inventory_dimention(self, method=None):
 
 	DIAMONDS AND GEMSTONES ARE BLOCKED OUTRIGHT
 	-------------------------------------------
-	On an order placed on the customer's diamonds or gemstones, (1) and (2) throw whatever the
-	staged rollout or the manufacturer's allowance says -- but only on an entry somebody built by
-	hand (``auto_created`` unset), which is where batches are chosen. An auto-created follow-on
+	A diamond or gemstone row draws exactly the owner its order names: the customer's own goods
+	when customer diamond / gemstone is ticked, company Regular Stock when it is not. All three
+	refusals throw for them whatever the staged rollout or the manufacturer's allowance says --
+	but only on an entry somebody built by hand (``auto_created`` unset), which is where batches
+	are chosen. An auto-created follow-on
 	move (Material Transfer From Reserve, the IR cascades) only carries what an earlier entry
 	already drew, and refusing it would strand work reserved before this rule existed.
 	"""
@@ -177,7 +187,7 @@ def validate_inventory_dimention(self, method=None):
 
 			variant_of = row_variant_of(row, item_map)
 			expects_customer_goods = pmo_expects_customer_goods(pmo_data, variant_of)
-			strict = chosen_here and pmo_requires_customer_goods(pmo_data, variant_of)
+			strict = chosen_here and variant_of in STRICT_CUSTOMER_GOODS_VARIANTS
 
 			if is_customer_owned and customer != pmo_data.get("customer"):
 				_report_ownership_error(
@@ -228,6 +238,7 @@ def validate_inventory_dimention(self, method=None):
 						frappe.bold(pmo),
 					),
 					soft=allow_substitution,
+					hard=strict,
 				)
 
 
@@ -351,10 +362,19 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 	strict = pmo_requires_customer_goods(customer_item_data, variant_of)
 	if strict:
 		allow_customer_goods = 0
+	# ...and the same two on an order that does NOT say the customer supplied them take ONLY
+	# company stock. KGJPL-MR-MF-26-34479's reserve drew GJCU0009's diamonds for
+	# PMO-KGJPL-EA10929-001-0006, whose order says "No", because FIFO took the first batch it saw.
+	company_only = pmo_requires_company_stock(customer_item_data, variant_of)
 
 	if pmo_expects_customer_goods(customer_item_data, variant_of):
 		row.inventory_type = "Customer Goods"
 		row.customer = customer_item_data.customer
+	elif company_only:
+		# A lane the row arrived with (a Material Request row stamped Customer Goods) is not the
+		# order's answer; the order's is.
+		row.inventory_type = "Regular Stock"
+		row.customer = None
 
 	if not row.inventory_type:
 		row.inventory_type = "Regular Stock"
@@ -369,6 +389,7 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 	if (
 		row.inventory_type in ["Customer Goods", "Customer Stock"]
 		or self.flags.only_regular_stock_allowed
+		or company_only
 	):
 		batch_info = bulk_map(
 			"Batch",
@@ -505,7 +526,7 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 					total_qty -= batch.qty
 
 		elif expected_type not in ["Customer Goods", "Customer Stock"]:
-			if self.flags.only_regular_stock_allowed and (
+			if (self.flags.only_regular_stock_allowed or company_only) and (
 				batch_info.get(batch.batch_no) or {}
 			).get("custom_inventory_type") in ["Customer Goods", "Customer Stock"]:
 				continue
@@ -553,6 +574,24 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 				frappe.bold(warehouse),
 			),
 			title=_("Customer Goods Not Available"),
+		)
+
+	if company_only and round(total_qty, 3) > 0:
+		frappe.throw(
+			_(
+				"Row #{0} ({1}): {2} does not say the customer supplied this material, so only "
+				"company Regular Stock may be used -- not a customer's goods. Only {3} of {4} is "
+				"available in {5}. If the customer did supply it, tick it on the order; otherwise "
+				"receive company stock first."
+			).format(
+				row.get("idx"),
+				row.item_code,
+				frappe.bold(pmo),
+				flt(flt(row_qty) - total_qty, 3),
+				flt(row_qty, 3),
+				frappe.bold(warehouse),
+			),
+			title=_("Company Stock Not Available"),
 		)
 
 	if round(total_qty, 3) > 0:
