@@ -401,6 +401,9 @@ override_whitelisted_methods = {
 	# Link input until a page reload (Manufacturing Operation with no `operation`).
 	"frappe.desk.search.get_link_title": "jewellery_erpnext.jewellery_erpnext.doc_events.search.get_link_title",
 	"frappe.core.doctype.data_import.data_import.download_template": "jewellery_erpnext.jewellery_erpnext.doc_events.data_export.download_template",
+	# Single Variant "Create": reject Attribute Value "Not Allowed" combinations
+	# before the dialog closes, instead of only when the new item is saved.
+	"erpnext.controllers.item_variant.get_variant": "jewellery_erpnext.jewellery_erpnext.doc_events.item.get_variant",
 }
 
 override_doctype_class = {

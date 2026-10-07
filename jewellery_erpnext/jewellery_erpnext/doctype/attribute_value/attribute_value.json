@@ -64,7 +64,9 @@
   "finding_size_and_weights",
   "subcategory",
   "section_break_15",
-  "diamond_sieve_size"
+  "diamond_sieve_size",
+  "not_allowed_details_section",
+  "not_allowed_attribute_values"
  ],
  "fields": [
   {
@@ -365,6 +367,18 @@
    "options": "Attribute Value Diamond Sieve Size"
   },
   {
+   "depends_on": "eval:doc.is_gemstone_type==1",
+   "fieldname": "not_allowed_details_section",
+   "fieldtype": "Section Break",
+   "label": "Not Allowed Combinations"
+  },
+  {
+   "fieldname": "not_allowed_attribute_values",
+   "fieldtype": "Table",
+   "label": "Not Allowed Attribute Values",
+   "options": "Attribute Value Not Allowed Detail"
+  },
+  {
    "default": "0",
    "fieldname": "is_customer_diamond_quality",
    "fieldtype": "Check",
@@ -405,7 +419,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-01-08 13:26:08.532292",
+ "modified": "2026-10-05 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Attribute Value",
