@@ -88,8 +88,15 @@ def last_inward_lanes(item_serials, as_of):
 
 	The same rows ``get_last_inward_dimensions`` reads (positive, uncancelled SLEs of that item
 	up to the posting time, newest first), for every serial of the document in one query.
+
+	Only the lane columns this site actually has are read. They exist because Inventory Type and
+	Customer are set up as Inventory Dimensions, and a site without them -- a fresh CI site has no
+	``customer`` column -- has nothing for ERPNext's check to compare, so nothing to stamp.
 	"""
 	if not item_serials:
+		return {}
+	columns = _lane_columns()
+	if "inventory_type" not in columns:
 		return {}
 
 	sle = frappe.qb.DocType("Stock Ledger Entry")
@@ -98,7 +105,7 @@ def last_inward_lanes(item_serials, as_of):
 		frappe.qb.from_(sle)
 		.join(entry)
 		.on(entry.parent == sle.serial_and_batch_bundle)
-		.select(entry.serial_no, sle.item_code, sle.inventory_type, sle.customer)
+		.select(entry.serial_no, sle.item_code, *(sle[column] for column in columns))
 		.where(
 			entry.serial_no.isin(sorted({serial for _item, serial in item_serials}))
 			& sle.item_code.isin(sorted({item for item, _serial in item_serials}))
@@ -114,8 +121,17 @@ def last_inward_lanes(item_serials, as_of):
 	for row in rows:
 		key = (row.item_code, row.serial_no)
 		if key in item_serials and key not in lanes:
-			lanes[key] = (row.inventory_type, row.customer)
+			lanes[key] = (row.inventory_type, row.get("customer"))
 	return lanes
+
+
+def _lane_columns():
+	"""The ownership columns present on the Stock Ledger Entry table, in lane order."""
+	return [
+		column
+		for column in ("inventory_type", "customer")
+		if frappe.db.has_column("Stock Ledger Entry", column)
+	]
 
 
 def _lane_is_unset(row):

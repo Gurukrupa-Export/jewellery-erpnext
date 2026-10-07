@@ -151,6 +151,23 @@ class TestTheLedgerQueryRuns(unittest.TestCase):
 		)
 		self.assertEqual(lanes, {})
 
+	def test_a_site_without_the_customer_dimension_still_reads_the_type(self):
+		"""A fresh CI site has ``inventory_type`` on the ledger but no ``customer`` column."""
+		with patch.object(serial_ownership, "_lane_columns", return_value=["inventory_type"]):
+			lanes = serial_ownership.last_inward_lanes(
+				{(ITEM, "NO-SUCH-SERIAL-FOR-THIS-TEST")}, datetime(2026, 10, 6)
+			)
+		self.assertEqual(lanes, {})
+
+	def test_a_site_without_the_type_dimension_has_nothing_to_stamp(self):
+		with (
+			patch.object(serial_ownership, "_lane_columns", return_value=[]),
+			patch.object(serial_ownership.frappe, "qb") as qb,
+		):
+			lanes = serial_ownership.last_inward_lanes({(ITEM, "S-1")}, datetime(2026, 10, 6))
+		self.assertEqual(lanes, {})
+		qb.DocType.assert_not_called()
+
 	def test_nothing_asked_costs_no_query(self):
 		with patch.object(serial_ownership.frappe, "qb") as qb:
 			self.assertEqual(serial_ownership.last_inward_lanes(set(), datetime(2026, 10, 6)), {})
