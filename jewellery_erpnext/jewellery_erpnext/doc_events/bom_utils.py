@@ -120,6 +120,12 @@ def get_gold_rate(self):
 
 		metal_purity = metal_purity_data[(self.customer, item.metal_touch)]
 		item.customer_metal_purity = metal_purity
+		if item.metal_type=='Silver':
+			item.rate = 0
+			item.amount = 0
+			item.difference = 0
+			
+			continue
 		# company_metal_purity = item.purity_percentage or 0
 		# ///////////////////////////////////////////////////////////////////////////
 		filters = {
@@ -402,15 +408,15 @@ def get_gemstone_rate(self):
 					"to_weight": [">=", gemstone_weight_per_pcs],
 				}
 			)
-		elif stone.price_list_type == "Multiplier" and stone.gemstone_size:
-			filters.update(
-				{
-					"to_size_weight": [">=", stone.size_weight],
-					"to_size_height": [">=", stone.size_height],
-					"from_size_weight": ["<=", stone.size_weight],
-					"from_size_height": ["<=", stone.size_height],
-				}
-			)
+		# elif stone.price_list_type == "Multiplier" and stone.gemstone_size:
+		# 	filters.update(
+		# 		{
+		# 			"to_size_weight": [">=", stone.size_weight],
+		# 			"to_size_height": [">=", stone.size_height],
+		# 			"from_size_weight": ["<=", stone.size_weight],
+		# 			"from_size_height": ["<=", stone.size_height],
+		# 		}
+		# 	)
 			# filters.update(
 			# 	{
 			# 		"to_stone_size": [">=", stone.gemstone_size],
@@ -563,6 +569,14 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 	# 	)
 
 	for row in self.metal_detail + self.finding_detail:
+		if row.metal_type == 'Silver':
+			row.making_rate = 0
+			row.making_amount = 0
+			row.wastage_rate = 0
+			row.wastage_amount = 0
+			row.fg_purchase_rate = 0
+			row.fg_purchase_amount = 0
+			continue
 		MCP = frappe.qb.DocType("Making Charge Price")
 		MCPIS = frappe.qb.DocType("Making Charge Price Item Subcategory")
 		MCPFS = frappe.qb.DocType("Making Charge Price Finding Subcategory")
