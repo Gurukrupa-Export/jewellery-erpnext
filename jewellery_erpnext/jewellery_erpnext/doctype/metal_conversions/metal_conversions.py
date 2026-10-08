@@ -132,6 +132,7 @@ class MetalConversions(Document):
 		# Melting-loss guards + conversion-field clearing MUST run first so the
 		# downstream alloy / batch helpers see the cleared state.
 		validate_melting_loss(self)
+		validate_source_target_differ(self)
 		update_alloy_betch(self)
 		update_source_betch(self)
 		validate_customer_metal_target(self)
@@ -1027,24 +1028,20 @@ def _has_customer_owned_source(rows, lane_map):
 def validate_customer_metal_target(doc):
 	"""Customer Metal converts only into Metal: refuse a Finding target over customer stock.
 
-	Ownership is read from the source batches -- single mode's FIFO draw
-	(``source_batch_details``), multiple mode's source rows -- as ``_has_customer_owned_source``
-	does. Single mode's draw already skips customer batches for a Finding target
-	(``update_source_betch``); this is the guard that holds whatever filled the rows.
+	Single Metal Converter only -- the multiple converter is not used. Ownership is read from
+	the source batches of the FIFO draw (``source_batch_details``), as
+	``_has_customer_owned_source`` does. The draw already skips customer batches for a Finding
+	target (``update_source_betch``); this is the guard that holds whatever filled the rows.
 	Melting loss books scrap, not a target item, so it is out of scope.
 	"""
-	if doc.get("is_melting_loss"):
+	if doc.get("is_melting_loss") or cint(doc.multiple_metal_converter):
 		return
 
-	if cint(doc.multiple_metal_converter):
-		target_item = doc.m_target_item
-		rows = doc.get("mc_source_table") or []
-	else:
-		target_item = doc.target_item
-		rows = doc.get("source_batch_details") or []
-
+	target_item = doc.target_item
 	if not is_finding_item(target_item):
 		return
+
+	rows = doc.get("source_batch_details") or []
 
 	lane_map = get_batch_lane_map([row.batch for row in rows if row.get("batch")])
 	if _has_customer_owned_source(rows, lane_map):
@@ -1053,6 +1050,25 @@ def validate_customer_metal_target(doc):
 				"Customer Metal cannot be converted into a Finding item ({0}). "
 				"Select a Metal target item, or use only Regular Stock as the source."
 			).format(frappe.bold(target_item)),
+			title=_("Conversion Not Allowed"),
+		)
+
+
+def validate_source_target_differ(doc):
+	"""Refuse a conversion of an item into itself.
+
+	Same item means same purity and attributes, so nothing is converted -- the entry only
+	moves the source batches into a new batch (MCON00379). Single Metal Converter only;
+	melting loss books scrap, not a target item.
+	"""
+	if doc.get("is_melting_loss") or cint(doc.multiple_metal_converter):
+		return
+	if doc.source_item and doc.source_item == doc.target_item:
+		frappe.throw(
+			_(
+				"Source Item and Target Item are the same ({0}). Select a different Target Item "
+				"to convert into."
+			).format(frappe.bold(doc.source_item)),
 			title=_("Conversion Not Allowed"),
 		)
 

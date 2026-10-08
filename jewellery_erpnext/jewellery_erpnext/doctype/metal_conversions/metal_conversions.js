@@ -31,11 +31,9 @@ frappe.ui.form.on("Metal Conversions", {
 			set_alloy_filter(frm, "target_alloy");
 		} else {
 			set_source_metal_table_filter(frm, "item_code", "mc_source_table");
+			set_Metal_filter(frm, "m_target_item");
 			set_alloy_filter(frm, "alloy");
 		}
-		// Outside the mode branch: a new doc opens in single mode, and switching to multiple
-		// must not leave the target unfiltered.
-		set_m_target_filter(frm);
 	},
 	onload(frm) {
 		// The desk's Amend copies no-copy fields, so an amendment arrives naming the Stock
@@ -51,6 +49,7 @@ frappe.ui.form.on("Metal Conversions", {
 	source_warehouse(frm) {
 		frm.set_value("target_warehouse", frm.doc.source_warehouse);
 		frm.refresh_field("target_warehouse");
+		clear_source_batches(frm);
 	},
 	percentage(frm) {
 		set_remark_options(frm);
@@ -84,6 +83,9 @@ frappe.ui.form.on("Metal Conversions", {
 		} else {
 			frm.set_value("loss_qty", null);
 		}
+	},
+	loss_qty(frm) {
+		clear_source_batches(frm);
 	},
 	batch(frm) {
 		// customer and inventory_type are deliberately NOT written here any more: both
@@ -202,22 +204,6 @@ function set_Metal_filter(frm, field_name) {
 		return {
 			filters: {
 				variant_of: ["in", ["M", "F"]],
-			},
-		};
-	});
-}
-// Customer Metal converts only into Metal, so once a customer batch is in the source table
-// the target picker stops offering Findings. The server enforces the same rule on save
-// (validate_customer_metal_target), which also covers a batch added after the target.
-function set_m_target_filter(frm) {
-	const customer_inventory_types = ["Customer Goods", "Customer Stock"];
-	frm.set_query("m_target_item", function () {
-		const has_customer_metal = (frm.doc.mc_source_table || []).some((row) =>
-			customer_inventory_types.includes(row.inventory_type)
-		);
-		return {
-			filters: {
-				variant_of: ["in", has_customer_metal ? ["M"] : ["M", "F"]],
 			},
 		};
 	});
@@ -391,7 +377,18 @@ function clear_metal_field(frm) {
 	frm.set_value("source_alloy_check", "0");
 	frm.set_value("target_alloy_check", "0");
 	frm.set_value("batch", null);
+	clear_source_batches(frm);
 	// frm.save();
+}
+
+// Batches entered in Source Batch Details are kept on save while they add up to the
+// required qty (update_source_betch), so drop them whenever the source they were picked
+// for changes -- the next save then allocates afresh.
+function clear_source_batches(frm) {
+	if ((frm.doc.source_batch_details || []).length) {
+		frm.clear_table("source_batch_details");
+		frm.refresh_field("source_batch_details");
+	}
 }
 
 // To Set Batch Bailance and Respective Details into child table
