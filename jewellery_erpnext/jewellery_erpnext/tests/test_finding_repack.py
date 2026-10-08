@@ -571,3 +571,84 @@ class TestFindingBatchRateSources(IntegrationTestCase):
 		)
 		self.assertEqual(len(sources), 2)
 		self.assertEqual(sorted(s[1] for s in sources), [[("B1", 1.0)], [("B2", 2.0)]])
+
+
+class _FakeBatch(frappe._dict):
+	"""A Batch that records what was set on it and inserts nowhere."""
+
+	def insert(self, *args, **kwargs):
+		self.inserted = True
+		self.name = "NEW-BATCH"
+		return self
+
+
+class TestHandBuiltBatchNamesItsSource(IntegrationTestCase):
+	"""A batch minted before its Stock Entry exists still names the document it was made for.
+
+	GK's "GK Batch" server script runs ``get_doc(reference_doctype, reference_name)`` on every new
+	Batch. The finding batch left both blank, so every Employee IR receive that poured a finding
+	died with "First non keyword argument must be a string or dict" (GEPL-TR-26-00005).
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _make(self, create, *args, **kwargs):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation import (
+			manufacturing_operation as mop,
+		)
+
+		batch = _FakeBatch()
+		with (
+			patch.object(frappe, "new_doc", return_value=batch),
+			patch.object(frappe.db, "get_value", side_effect=lambda dt, n, f=None, *a, **k: 1 if f == "has_batch_no" else None),
+			patch.object(fr, "carry_rates_from_source_batches"),
+			patch.object(mop, "carry_rates_from_source_batches"),
+		):
+			create(*args, **kwargs)
+		self.assertTrue(batch.get("inserted"))
+		return batch
+
+	def test_a_finding_batch_names_its_employee_ir(self):
+		se = frappe._dict(company="GEPL", employee="GEPL - 01299", employee_ir="EIR-1")
+		batch = self._make(fr._create_finding_batch, se, "F-G-18KT", "Regular Stock", None)
+		self.assertEqual((batch.reference_doctype, batch.reference_name), ("Employee IR", "EIR-1"))
+		self.assertEqual(batch.custom_company, "GEPL")
+
+	def test_a_finding_batch_with_no_employee_ir_leaves_the_reference_alone(self):
+		batch = self._make(fr._create_finding_batch, frappe._dict(company="GEPL"), "F-G-18KT", None, None)
+		self.assertIsNone(batch.get("reference_doctype"))
+
+	def test_a_scrap_batch_names_the_reference_it_is_given(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation import (
+			manufacturing_operation as mop,
+		)
+
+		batch = self._make(
+			mop._create_scrap_batch, "ML-G-18KT", company="GEPL", reference=("Employee IR", "EIR-1")
+		)
+		self.assertEqual((batch.reference_doctype, batch.reference_name), ("Employee IR", "EIR-1"))
+
+	def test_a_scrap_batch_without_a_reference_is_unchanged(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation import (
+			manufacturing_operation as mop,
+		)
+
+		batch = self._make(mop._create_scrap_batch, "ML-G-18KT", company="GEPL")
+		self.assertIsNone(batch.get("reference_doctype"))
+
+	def test_the_scrap_reference_prefers_the_employee_ir_then_the_operation(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation import (
+			manufacturing_operation as mop,
+		)
+
+		self.assertEqual(
+			mop._scrap_batch_reference(frappe._dict(employee_ir="EIR-1", manufacturing_operation="MOP-1")),
+			("Employee IR", "EIR-1"),
+		)
+		self.assertEqual(
+			mop._scrap_batch_reference(frappe._dict(manufacturing_operation="MOP-1")),
+			("Manufacturing Operation", "MOP-1"),
+		)
+		self.assertIsNone(mop._scrap_batch_reference(frappe._dict()))

@@ -576,6 +576,13 @@ def _create_finding_batch(se, item_code, inventory_type, customer, sources=None)
 		batch.custom_company = se.company
 	if se.get("employee"):
 		batch.custom_employee = se.employee
+	# The batch exists before its Stock Entry does, so it names the Employee IR that ordered it as
+	# its source. Whatever reads Batch.reference_* on insert then has a real document to open:
+	# GK's "GK Batch" server script runs get_doc(reference_doctype, reference_name) on every new
+	# Batch, and the blank pair failed every Employee IR receive that poured a finding.
+	if se.get("employee_ir"):
+		batch.reference_doctype = "Employee IR"
+		batch.reference_name = se.employee_ir
 	if inventory_type:
 		batch.custom_inventory_type = inventory_type
 		batch.custom_customer = customer

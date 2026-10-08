@@ -5605,6 +5605,7 @@ def _create_scrap_batch(
 	inventory_type=None,
 	customer=None,
 	sources=None,
+	reference=None,
 ):
 	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Unused/Loose Material'.
 
@@ -5619,6 +5620,10 @@ def _create_scrap_batch(
 	links it), so the usual SE->batch employee copy never runs; stamp it explicitly here
 	from the operation's employee. ``company`` and the ownership pair are stamped for the
 	same reason — nothing else will fill them in for an auto-created repack.
+
+	``reference`` is ``(doctype, name)`` of the document this batch is made for. The batch exists
+	before its Stock Entry, so without it the batch's reference is blank, and site scripts that
+	open the reference on insert (GK's "GK Batch") fail -- see ``_scrap_batch_reference``.
 
 	Returns None for non-batch items (they cannot carry the Scrap marker)."""
 	if not frappe.db.get_value("Item", item_code, "has_batch_no"):
@@ -5641,6 +5646,8 @@ def _create_scrap_batch(
 		# would default the rows to "Regular Stock" — carry it explicitly.
 		batch.custom_inventory_type = inventory_type
 		batch.custom_customer = customer
+	if reference and reference[1]:
+		batch.reference_doctype, batch.reference_name = reference
 	# Set batch_type before insert so it persists whether the item auto-names the
 	# batch (batch_number_series) or we generate an id below.
 	if not frappe.db.get_value("Item", item_code, "batch_number_series"):
@@ -5691,6 +5698,21 @@ def _unused_row_ownership(row, target_item):
 		)
 		return source, ("Regular Stock", None)
 	return source, source
+
+
+def _scrap_batch_reference(receive_se):
+	"""``(doctype, name)`` an Unused/Loose Material batch made from ``receive_se`` names as its source.
+
+	The Employee IR or Manufacturing Operation behind the receipt -- deliberately not the receive
+	Stock Entry: a "Stock Entry" reference sends ``Batch.validate`` down its Stock-Entry branches
+	(customer voucher type, rate from the minting row), which expect a row of that entry to have
+	minted the batch. ``None`` when the receipt names neither.
+	"""
+	if receive_se.get("employee_ir"):
+		return ("Employee IR", receive_se.employee_ir)
+	if receive_se.get("manufacturing_operation"):
+		return ("Manufacturing Operation", receive_se.manufacturing_operation)
+	return None
 
 
 def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
@@ -5775,6 +5797,7 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 			inventory_type=out_type,
 			customer=out_customer,
 			sources=[(item.batch_no, item.qty)],
+			reference=_scrap_batch_reference(se),
 		)
 		if not new_batch:
 			if target_item != item.item_code:
