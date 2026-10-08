@@ -35,6 +35,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.me
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.utils import (
 	get_batch_lane_map,
+	is_finding_item,
 	update_alloy_betch,
 	update_batch_details,
 	update_source_betch,
@@ -131,8 +132,12 @@ class MetalConversions(Document):
 		# Melting-loss guards + conversion-field clearing MUST run first so the
 		# downstream alloy / batch helpers see the cleared state.
 		validate_melting_loss(self)
+		validate_source_target_differ(self)
+		validate_finding_to_finding(self)
 		update_alloy_betch(self)
 		update_source_betch(self)
+		validate_customer_metal_target(self)
+		validate_customer_finding_source(self)
 		self.set_remarks()
 
 	def set_remarks(self):
@@ -1022,6 +1027,182 @@ def _has_customer_owned_source(rows, lane_map):
 	return False
 
 
+def validate_customer_metal_target(doc):
+	"""Customer stock converts only into Metal: refuse a Finding target over customer stock.
+
+	Both a customer Metal and a customer Finding source are refused -- a Finding target is made
+	from Regular Stock only.
+
+	Applies to Metal Conversions documents only. SNC settlement's auto-created
+	Repack-Metal Conversion entries (``customer_subcontracting/sub_utils/snc.py``) convert a
+	customer's metal into the Finding used in that customer's own piece, mirrored by the
+	borrowed Finding converted back to metal -- an ownership swap the business approved as an
+	exception, so it is deliberately not checked here.
+
+	Single Metal Converter only -- the multiple converter is not used. Ownership is read from
+	the source batches of the FIFO draw (``source_batch_details``), as
+	``_has_customer_owned_source`` does. The draw already skips customer batches for a Finding
+	target (``update_source_betch``); this is the guard that holds whatever filled the rows.
+	Melting loss books scrap, not a target item, so it is out of scope.
+	"""
+	if doc.get("is_melting_loss") or cint(doc.multiple_metal_converter):
+		return
+
+	target_item = doc.target_item
+	if not is_finding_item(target_item):
+		return
+
+	rows = doc.get("source_batch_details") or []
+
+	lane_map = get_batch_lane_map([row.batch for row in rows if row.get("batch")])
+	if _has_customer_owned_source(rows, lane_map):
+		frappe.throw(
+			_(
+				"Customer stock (Metal or Finding) cannot be converted into a Finding item ({0}). "
+				"Select a Metal target item, or use only Regular Stock as the source."
+			).format(frappe.bold(target_item)),
+			title=_("Conversion Not Allowed"),
+		)
+
+
+def validate_customer_finding_source(doc):
+	"""A customer Finding batch may not be a source, whatever the target (point 4).
+
+	The final guard on the Source Batch Details rows, as ``validate_customer_metal_target`` is
+	for point 1: ``update_source_betch`` already skips such batches in its FIFO pick and
+	refuses them when entered by hand. Single Metal Converter only; melting loss draws
+	Regular Stock alone. SNC settlement's auto-created entries are not Metal Conversions
+	documents and stay out of scope (approved exception, as for point 1).
+	"""
+	if doc.get("is_melting_loss") or cint(doc.multiple_metal_converter):
+		return
+	if not is_finding_item(doc.source_item):
+		return
+
+	rows = doc.get("source_batch_details") or []
+	lane_map = get_batch_lane_map([row.batch for row in rows if row.get("batch")])
+	if _has_customer_owned_source(rows, lane_map):
+		frappe.throw(
+			"Customer Finding batches cannot be used as a source in Metal Conversion.",
+			title=_("Conversion Not Allowed"),
+		)
+
+
+def validate_source_target_differ(doc):
+	"""Refuse a conversion of an item into itself.
+
+	Same item means same purity and attributes, so nothing is converted -- the entry only
+	moves the source batches into a new batch (MCON00379). Single Metal Converter only;
+	melting loss books scrap, not a target item.
+	"""
+	if doc.get("is_melting_loss") or cint(doc.multiple_metal_converter):
+		return
+	if doc.source_item and doc.source_item == doc.target_item:
+		frappe.throw(
+			_(
+				"Source Item and Target Item are the same ({0}). Select a different Target Item "
+				"to convert into."
+			).format(frappe.bold(doc.source_item)),
+			title=_("Conversion Not Allowed"),
+		)
+
+
+FINDING_CATEGORY = "Finding Category"
+FINDING_SIZE = "Finding Size"
+
+
+def validate_finding_to_finding(doc):
+	"""Finding -> Finding is a resize only: same Finding Category, a different Finding Size,
+	and every other variant attribute (metal type/touch/purity/colour, sub-category) equal.
+
+	Single Metal Converter only -- the multiple converter is not used. A blank Finding Size on
+	either side is refused, since a size change cannot be shown. Melting loss books scrap, not
+	a target item, so it is out of scope.
+	"""
+	if doc.get("is_melting_loss") or cint(doc.multiple_metal_converter):
+		return
+	source_item, target_item = doc.source_item, doc.target_item
+	if not (is_finding_item(source_item) and is_finding_item(target_item)):
+		return
+
+	attributes = _variant_attributes([source_item, target_item])
+	reasons = _finding_resize_errors(
+		attributes.get(source_item, {}), attributes.get(target_item, {})
+	)
+	if reasons:
+		frappe.throw(
+			_(
+				"A Finding can only be converted into a Finding of the same Finding Category "
+				"with a different Finding Size and all other attributes the same."
+			)
+			+ "<br><br>"
+			+ _("{0} cannot be converted into {1}:").format(
+				frappe.bold(source_item), frappe.bold(target_item)
+			)
+			+ "<ul>"
+			+ "".join(f"<li>{reason}</li>" for reason in reasons)
+			+ "</ul>",
+			title=_("Conversion Not Allowed"),
+		)
+
+
+def _variant_attributes(item_codes):
+	"""``{item_code: {attribute: attribute_value}}`` in one read."""
+	attributes = {}
+	for row in frappe.get_all(
+		"Item Variant Attribute",
+		filters={"parent": ["in", list(set(item_codes))]},
+		fields=["parent", "attribute", "attribute_value"],
+	):
+		attributes.setdefault(row.parent, {})[row.attribute] = row.attribute_value
+	return attributes
+
+
+def _finding_resize_errors(source, target):
+	"""Why ``source`` may not be resized into ``target`` -- empty when it may."""
+	reasons = []
+	if source.get(FINDING_CATEGORY) != target.get(FINDING_CATEGORY):
+		reasons.append(
+			_("{0} differs: {1} → {2}").format(
+				FINDING_CATEGORY,
+				source.get(FINDING_CATEGORY) or "-",
+				target.get(FINDING_CATEGORY) or "-",
+			)
+		)
+
+	source_size, target_size = source.get(FINDING_SIZE), target.get(FINDING_SIZE)
+	if not source_size or not target_size:
+		missing_on = [
+			side
+			for side, size in ((_("source"), source_size), (_("target"), target_size))
+			if not size
+		]
+		reasons.append(
+			_("{0} is missing on the {1} item").format(
+				FINDING_SIZE, " and ".join(missing_on)
+			)
+		)
+	elif source_size == target_size:
+		reasons.append(
+			_("{0} is the same ({1}); only a size change is allowed").format(
+				FINDING_SIZE, source_size
+			)
+		)
+
+	for attribute in sorted(
+		(set(source) | set(target)) - {FINDING_CATEGORY, FINDING_SIZE}
+	):
+		if source.get(attribute) != target.get(attribute):
+			reasons.append(
+				_("{0} differs: {1} → {2}").format(
+					attribute,
+					source.get(attribute) or "-",
+					target.get(attribute) or "-",
+				)
+			)
+	return reasons
+
+
 def _stamp_source_ownership(doc):
 	"""Show each MC Source Table row the ownership of the batch it names.
 
@@ -1229,6 +1410,33 @@ def _alloy_pool(self, qty):
 def get_filtered_batches(doctype, txt, searchfield, start, page_len, filters):
 	data = get_batch_no(doctype, txt, searchfield, start, page_len, filters)
 	return data
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_source_batches(doctype, txt, searchfield, start, page_len, filters):
+	"""Batch picker for Source Batch Details: the Source Item's batches in the warehouse.
+
+	Customer batches are left out wherever the save would refuse them -- a Finding source
+	(point 4), a Finding target (point 1) or a melting loss -- so they are not selectable.
+	"""
+	if not filters.get("item_code"):
+		return []
+	batches = get_batch_no(doctype, txt, searchfield, start, page_len, filters)
+	regular_only = (
+		cint(filters.get("is_melting_loss"))
+		or is_finding_item(filters.get("item_code"))
+		or is_finding_item(filters.get("target_item"))
+	)
+	if not regular_only:
+		return batches
+	lane_map = get_batch_lane_map([row[0] for row in batches])
+	return [
+		row
+		for row in batches
+		if lane_map.get(row[0], (REGULAR_STOCK, None))[0]
+		not in CUSTOMER_INVENTORY_TYPES
+	]
 
 
 def get_batch_details(batch):

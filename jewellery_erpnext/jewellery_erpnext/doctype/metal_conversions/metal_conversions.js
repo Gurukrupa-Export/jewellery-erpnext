@@ -24,6 +24,7 @@ frappe.ui.form.on("Metal Conversions", {
 		// Set Metal Tab Filter
 		set_wh_filter(frm, "source_warehouse");
 		set_department_filter(frm, "department");
+		set_source_batch_filter(frm);
 		if (frm.doc.multiple_metal_converter == 0) {
 			set_Metal_filter(frm, "source_item");
 			set_Metal_filter(frm, "target_item");
@@ -49,6 +50,7 @@ frappe.ui.form.on("Metal Conversions", {
 	source_warehouse(frm) {
 		frm.set_value("target_warehouse", frm.doc.source_warehouse);
 		frm.refresh_field("target_warehouse");
+		clear_source_batches(frm);
 	},
 	percentage(frm) {
 		set_remark_options(frm);
@@ -82,6 +84,9 @@ frappe.ui.form.on("Metal Conversions", {
 		} else {
 			frm.set_value("loss_qty", null);
 		}
+	},
+	loss_qty(frm) {
+		clear_source_batches(frm);
 	},
 	batch(frm) {
 		// customer and inventory_type are deliberately NOT written here any more: both
@@ -224,6 +229,21 @@ function set_batch_filter(frm, field_name) {
 			},
 		};
 	};
+}
+// Source Batch Details lists only the Source Item's batches in the Source Warehouse, and
+// leaves out customer batches wherever the save would refuse them (get_source_batches).
+function set_source_batch_filter(frm) {
+	frm.set_query("batch", "source_batch_details", () => {
+		return {
+			query: "jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions.get_source_batches",
+			filters: {
+				item_code: frm.doc.source_item,
+				warehouse: frm.doc.source_warehouse,
+				target_item: frm.doc.target_item,
+				is_melting_loss: frm.doc.is_melting_loss,
+			},
+		};
+	});
 }
 function set_child_table_batch_filter(frm, child_table_name) {
 	frm.fields_dict[child_table_name].grid.get_field("batch").get_query = function (doc, cdt, cdn) {
@@ -373,7 +393,18 @@ function clear_metal_field(frm) {
 	frm.set_value("source_alloy_check", "0");
 	frm.set_value("target_alloy_check", "0");
 	frm.set_value("batch", null);
+	clear_source_batches(frm);
 	// frm.save();
+}
+
+// Batches entered in Source Batch Details are kept on save while they add up to the
+// required qty (update_source_betch), so drop them whenever the source they were picked
+// for changes -- the next save then allocates afresh.
+function clear_source_batches(frm) {
+	if ((frm.doc.source_batch_details || []).length) {
+		frm.clear_table("source_batch_details");
+		frm.refresh_field("source_batch_details");
+	}
 }
 
 // To Set Batch Bailance and Respective Details into child table
