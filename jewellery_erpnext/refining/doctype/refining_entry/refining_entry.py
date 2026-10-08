@@ -24,7 +24,11 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 	refining_line_terms,
 	resolve_from_index,
 )
-from jewellery_erpnext.utils import get_variant_of_item, resolve_manufacturing_setting
+from jewellery_erpnext.utils import (
+	get_item_from_attribute,
+	get_variant_of_item,
+	resolve_manufacturing_setting,
+)
 
 #: The pure (24KT-equivalent) Metal Loss variant every refining type books its loss
 #: against. get_dust_item() falls back to a resolution chain only when it is absent.
@@ -251,6 +255,20 @@ class RefiningEntry(Document):
 			3,
 		)
 		if self.qty_to_refine <= 0:
+			if self.refining_type == "Serial Number Refining":
+				frappe.throw(
+					_(
+						"No gold weight to send for external refining. The BOMs of serial(s) {0} "
+						"list no gold lines, and no metal item matches their BOM's Metal Type, "
+						"Touch, Purity and Colour, or their metal weight is 0."
+					).format(
+						", ".join(
+							frappe.bold(sn.serial_number)
+							for sn in self.serial_no_details
+							if sn.serial_number
+						)
+					)
+				)
 			frappe.throw(_("No gold weight to send for external refining."))
 
 	def on_submit_external(self):
@@ -1852,6 +1870,7 @@ class RefiningEntry(Document):
 					)
 
 				# Also add the BOM components for visibility (they will be skipped during transfer/repack)
+				gold_lines = 0
 				if bom_no:
 					bom_items = frappe.db.get_all(
 						"BOM Item",
@@ -1878,6 +1897,13 @@ class RefiningEntry(Document):
 								"purity": self.get_item_purity(b_item.item_code),
 							},
 						)
+						if self.is_gold_item(
+							b_item.item_code
+						) and not self._is_returned_intact(b_item.item_code):
+							gold_lines += 1
+
+				if drop_design_code and not gold_lines:
+					self._append_serial_metal_row(sn_row, bom_no)
 
 		if self.refining_type == "Scrap Refining":
 			# Fetch ALL loss items from the department's Scrap warehouse
@@ -2993,6 +3019,54 @@ class RefiningEntry(Document):
 				seen.add(sre.name)
 				rows.append((mwo, sre))
 		return rows
+
+	def _append_serial_metal_row(self, sn_row, bom_no):
+		"""External only: stand in for the gold of a serial whose BOM lists no gold line.
+
+		Some FG BOMs carry only the design code itself -- BOM-BA01328-001-101 is one line,
+		BA01328-001 x 1 Nos -- with the piece's metal recorded only in the BOM header. External
+		refining reads the gold it sends, bills and expects back from gold Material Items rows,
+		so such a serial added nothing and the submit stopped at "No gold weight to send for
+		external refining". Internal refining already falls back to the serial's own weights
+		for this case (``_compute_input_pure_weight``).
+
+		The row is the serial's metal item at the metal weight its scan read from the BOM
+		header. It is a BOM Component like the lines it stands in for, so the stock builders
+		skip it (the piece itself moves through ``_serial_movement_rows``) while qty_to_refine,
+		the Purchase Order and the pure input all count it. Added only when the BOM gave no gold
+		line, so no weight is counted twice; serials of the same metal merge into one line in
+		the consolidation of ``build_material_table``.
+		"""
+		metal_weight = flt(sn_row.metal_weight, 3)
+		if metal_weight <= 0 or not bom_no:
+			return
+		header = frappe.db.get_value(
+			"BOM",
+			bom_no,
+			["metal_type", "metal_touch", "metal_purity", "metal_colour"],
+			as_dict=True,
+		)
+		if not header or not header.metal_type:
+			return
+		metal_item = get_item_from_attribute(
+			header.metal_type,
+			header.metal_touch,
+			header.metal_purity or sn_row.metal_purity,
+			header.metal_colour,
+		)
+		if not metal_item:
+			return
+		self.append(
+			"material_items",
+			{
+				"item_code": metal_item,
+				"warehouse": self.warehouse,
+				"qty": metal_weight,
+				"uom": "Gram",
+				"source_type": "BOM Component",
+				"purity": self.get_item_purity(metal_item),
+			},
+		)
 
 	def _serial_movement_rows(self):
 		"""Material-Items-shaped rows for the serialised pieces of an EXTERNAL serial

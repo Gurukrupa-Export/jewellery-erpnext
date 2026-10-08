@@ -3181,7 +3181,21 @@ class TestSerialMaterialRows(IntegrationTestCase):
 	def setUpClass(cls):
 		return
 
-	def _build(self, is_external=0, metal_purity="91.75"):
+	DESIGN_ONLY_BOM = [
+		frappe._dict(item_code="FG-DESIGN", qty=1, stock_qty=1, uom="Nos", stock_uom="Nos")
+	]
+
+	def _build(
+		self,
+		is_external=0,
+		metal_purity="91.75",
+		bom_items=None,
+		serials=("SN-1",),
+		metal_item="M-G-22KT-91.75-Y",
+	):
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
 		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
 			RefiningEntry,
 		)
@@ -3190,27 +3204,33 @@ class TestSerialMaterialRows(IntegrationTestCase):
 		re.refining_type = REFINING_TYPE_SERIAL
 		re.is_external = is_external
 		re.warehouse = "Tagging FG - T"
-		re.append(
-			"serial_no_details",
-			{
-				"serial_number": "SN-1",
-				"item_code": "FG-DESIGN",
-				"metal_purity": metal_purity,
-				"pcs": 1,
-			},
+		for serial in serials:
+			re.append(
+				"serial_no_details",
+				{
+					"serial_number": serial,
+					"item_code": "FG-DESIGN",
+					"metal_purity": metal_purity,
+					"metal_weight": 23.848,
+					"pcs": 1,
+				},
+			)
+		if bom_items is None:
+			bom_items = [
+				frappe._dict(
+					item_code="FG-DESIGN", qty=1, stock_qty=1, uom="Nos", stock_uom="Nos"
+				),
+				frappe._dict(
+					item_code="ML-G-22KT",
+					qty=23.848,
+					stock_qty=23.848,
+					uom="Gram",
+					stock_uom="Gram",
+				),
+			]
+		bom_header = frappe._dict(
+			metal_type="Gold", metal_touch="22KT", metal_purity="91.75", metal_colour="Yellow"
 		)
-		bom_items = [
-			frappe._dict(
-				item_code="FG-DESIGN", qty=1, stock_qty=1, uom="Nos", stock_uom="Nos"
-			),
-			frappe._dict(
-				item_code="ML-G-22KT",
-				qty=23.848,
-				stock_qty=23.848,
-				uom="Gram",
-				stock_uom="Gram",
-			),
-		]
 
 		real_get_value = frappe.db.get_value
 		real_get_all = frappe.db.get_all
@@ -3220,6 +3240,8 @@ class TestSerialMaterialRows(IntegrationTestCase):
 				return "BOM-SN"
 			if doctype == "Item":
 				return "Test Group"
+			if doctype == "BOM":
+				return bom_header
 			return real_get_value(doctype, *args, **kwargs)
 
 		def _get_all(doctype, *args, **kwargs):
@@ -3235,6 +3257,13 @@ class TestSerialMaterialRows(IntegrationTestCase):
 				RefiningEntry, "get_serial_purity", return_value="91.75"
 			) as serial_purity,
 			patch.object(RefiningEntry, "_drop_restricted_material_rows"),
+			patch.object(
+				RefiningEntry,
+				"is_gold_item",
+				side_effect=lambda code: code.startswith(("M-", "ML-")),
+			),
+			patch.object(RefiningEntry, "_is_returned_intact", return_value=False),
+			patch.object(re_module, "get_item_from_attribute", return_value=metal_item),
 		):
 			re.build_material_table()
 		return re, serial_purity
@@ -3265,3 +3294,40 @@ class TestSerialMaterialRows(IntegrationTestCase):
 		re, serial_purity = self._build(metal_purity=None)
 		self.assertEqual(re.material_items[0].purity, "91.75")
 		serial_purity.assert_called_once_with("SN-1", "FG-DESIGN", "BOM-SN")
+
+	def test_external_design_only_bom_sends_the_serials_metal(self):
+		"""RFN-SRN-26-00002: BOM-BA01328-001-101 is one line, the design code. Externally that
+		left no gold row, so submit stopped at "No gold weight to send for external refining"."""
+		re, _ = self._build(is_external=1, bom_items=self.DESIGN_ONLY_BOM)
+		self.assertEqual(
+			[(row.item_code, row.qty, row.source_type) for row in re.material_items],
+			[("M-G-22KT-91.75-Y", 23.848, "BOM Component")],
+		)
+
+	def test_external_bom_with_its_gold_line_gets_no_second_row(self):
+		"""The stand-in is only for a BOM with no gold line, so no weight is counted twice."""
+		re, _ = self._build(is_external=1)
+		self.assertEqual(
+			[(row.item_code, row.qty) for row in re.material_items], [("ML-G-22KT", 23.848)]
+		)
+
+	def test_internal_design_only_bom_is_unchanged(self):
+		"""Internal already falls back to the serial's own weights for recovery."""
+		re, _ = self._build(is_external=0, bom_items=self.DESIGN_ONLY_BOM)
+		self.assertEqual(
+			[(row.item_code, row.source_type) for row in re.material_items],
+			[("FG-DESIGN", "Serial Number")],
+		)
+
+	def test_two_serials_of_one_metal_make_one_line(self):
+		re, _ = self._build(
+			is_external=1, bom_items=self.DESIGN_ONLY_BOM, serials=("SN-1", "SN-2")
+		)
+		self.assertEqual(
+			[(row.item_code, flt(row.qty, 3)) for row in re.material_items],
+			[("M-G-22KT-91.75-Y", 47.696)],
+		)
+
+	def test_no_metal_item_for_the_header_adds_nothing(self):
+		re, _ = self._build(is_external=1, bom_items=self.DESIGN_ONLY_BOM, metal_item=None)
+		self.assertEqual(list(re.material_items), [])
