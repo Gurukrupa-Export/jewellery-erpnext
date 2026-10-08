@@ -1,4 +1,8 @@
 frappe.ui.form.off("Stock Entry", "get_items_from_transit_entry");
+// Replaced below. erpnext's handler (v16.36.0) blanks to_warehouse and every row's
+// t_warehouse whenever it runs with Add to Transit on, and it runs on every draft load
+// through onload_post_render's frm.trigger("stock_entry_type").
+frappe.ui.form.off("Stock Entry", "add_to_transit");
 
 frappe.ui.form.on("Stock Entry", {
 	gold_rate_with_gst(frm) {
@@ -27,6 +31,8 @@ frappe.ui.form.on("Stock Entry", {
 		}
 	},
 	refresh(frm) {
+		// What the add_to_transit handler compares against: the value as loaded or saved.
+		frm.__add_to_transit_seen = cint(frm.doc.add_to_transit);
 		set_html(frm);
 		if (
 			["Material Transfer to Department", "Consumables Issue to  Department"].includes(
@@ -47,10 +53,7 @@ frappe.ui.form.on("Stock Entry", {
 			frm.add_custom_button(
 				__("Issue"),
 				function () {
-					frappe.model.open_mapped_doc({
-						method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
-						frm: frm,
-					});
+					show_customer_gold_return_preview(frm);
 				},
 				__("Create")
 			);
@@ -235,7 +238,9 @@ frappe.ui.form.on("Stock Entry", {
 					"Customer Goods Transfer",
 					"Metal Conversion Repack",
 					"Material Transfer (WORK ORDER)",
-					"Material Transfer (Department)",
+					// The Stock Entry Type's exact name; includes() is case-sensitive, and the
+					// Transfer to Department transit leg carries Customer Goods rows as they are.
+					"Material Transfer (DEPARTMENT)",
 					"Material Transfer (Employee)",
 					"Material Transfer",
 				].includes(frm.doc.stock_entry_type) &&
@@ -311,6 +316,22 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	setup: function (frm) {
+		// A Material Request stamps its entries (custom_reserve_se and friends) and every
+		// entry's rows point back at it, so the cancel dialog walked request -> all its sibling
+		// entries and offered to cancel them, the request included, in an order that cannot
+		// succeed. on_cancel releases the request server-side; ERPNext's own list is kept.
+		frm.ignore_doctypes_on_cancel_all = [
+			...new Set([...(frm.ignore_doctypes_on_cancel_all || []), "Material Request"]),
+		];
+		// The Stock Entry Type the server treats as a Customer Gold receipt, or null when the flow
+		// is off. Fetched once because Subcontracting Settings is readable by System Managers only.
+		frm._cg_receipt_type = null;
+		frappe.call({
+			method: "jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings.get_customer_gold_receipt_type",
+			callback: (r) => {
+				frm._cg_receipt_type = r.message || null;
+			},
+		});
 		frm.set_query("item_template", function (doc) {
 			return { filters: { has_variants: 1 } };
 		});
@@ -386,16 +407,18 @@ frappe.ui.form.on("Stock Entry", {
 				filters: { item_attribute: child.item_attribute },
 			};
 		};
+		set_hybrid_finding_batch_query(frm);
 	},
 	onload_post_render: function (frm) {
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-remove-rows").remove();
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-add-multiple-rows").remove();
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-add-row").remove();
-		// Drafts only. frm.trigger() fans out to every registered stock_entry_type handler,
-		// including erpnext's, which chains into add_to_transit and unconditionally runs
-		// frm.set_value("to_warehouse", "") (erpnext/.../stock_entry.js:922). On a submitted
-		// transit entry that dirties the form on load and makes Update raise
-		// UpdateAfterSubmitError, since to_warehouse has no allow_on_submit.
+		// Drafts only. frm.trigger() fans out to every registered stock_entry_type handler
+		// (erpnext's, this file's and the site's Client Scripts), and erpnext's chains into
+		// add_to_transit. The replacement add_to_transit handler below leaves the targets
+		// alone unless the flag actually changed, so a transit draft keeps its Transit
+		// targets on load. Submitted entries are still skipped: any set_value there dirties
+		// the form and makes Update raise UpdateAfterSubmitError.
 		if (frm.doc.docstatus === 0) {
 			frm.trigger("stock_entry_type");
 		}
@@ -450,7 +473,38 @@ frappe.ui.form.on("Stock Entry", {
 			},
 		});
 	},
+	add_to_transit(frm) {
+		// erpnext's add_to_transit handler, run only when the flag actually changes (the
+		// user ticks it, or a new type fetches a different value). erpnext's own copy also
+		// ran on every draft load and on every change of type, and since v16.36.0 it blanks
+		// every row's t_warehouse as well as to_warehouse -- wiping the Transit targets of a
+		// draft that was already correct (MR > Material Transfer (In Transit)).
+		const add_to_transit = cint(frm.doc.add_to_transit);
+		if (add_to_transit === frm.__add_to_transit_seen) {
+			return;
+		}
+		frm.__add_to_transit_seen = add_to_transit;
+
+		if (frm.doc.purpose == "Material Transfer" && add_to_transit) {
+			frm.set_value("to_warehouse", "");
+			(frm.doc.items || []).forEach((item) => {
+				if (item.t_warehouse) {
+					frappe.model.set_value(item.doctype, item.name, "t_warehouse", "");
+				}
+			});
+			frm.trigger("set_transit_warehouse");
+		}
+	},
 	stock_entry_type(frm) {
+		// On the Customer Gold receipt, offer only items whose master allows Customer Goods --
+		// the same rule the server enforces for every path (scanner, API, import). Evaluated
+		// when the picker opens, so it follows every type change, including the early-return
+		// branches below that install no query of their own; any other type gets ERPNext's
+		// default. The transfer branches further down replace it for their own types, and the
+		// final branch keeps the receipt filter (see customer_goods_item_query).
+		frm.fields_dict["items"].grid.get_field("item_code").get_query = function () {
+			return customer_goods_item_query(frm) || erpnext.queries.item({ is_stock_item: 1 });
+		};
 		if (
 			["Customer Goods Issue", "Customer Goods Received", "Customer Goods Transfer"].includes(
 				frm.doc.stock_entry_type
@@ -460,12 +514,20 @@ frappe.ui.form.on("Stock Entry", {
 			frm.trigger("get_items_from_customer_goods");
 			return;
 		}
+		// Manual drafts only. A receipt leg is never in transit, and an amendment keeps the
+		// original's value (normalize_add_to_transit holds a one-shot move's 0 on the server).
+		// auto_created is undefined on a new browser doc, hence cint. Ticking only when it is
+		// off keeps an already-ticked draft's targets: the add_to_transit handler clears them.
 		if (
 			["Material Transfer to Department"].includes(frm.doc.stock_entry_type) &&
-			frm.doc.auto_created === 0 &&
-			frm.doc.docstatus != 1
+			!cint(frm.doc.auto_created) &&
+			frm.doc.docstatus === 0 &&
+			!frm.doc.outgoing_stock_entry &&
+			!frm.doc.amended_from
 		) {
-			frm.set_value("add_to_transit", "1");
+			if (!cint(frm.doc.add_to_transit)) {
+				frm.set_value("add_to_transit", 1);
+			}
 			frm.set_df_property("add_to_transit", "read_only", 1);
 		}
 		if (
@@ -481,8 +543,38 @@ frappe.ui.form.on("Stock Entry", {
 		}
 		// frm.set_value("inventory_type", "Regular Stock");
 
-		let company = frm.doc.company;
-		let stock_entry_type = frm.doc.stock_entry_type;
+		// The warehouse queries read frm.doc when the picker opens, not when the type was
+		// chosen, so a later change of company or Add to Transit is honoured. While Add to
+		// Transit is on (and this is not the receipt leg) ERPNext rejects any target that is
+		// not a Transit warehouse (validate_transit_warehouses, v16.36.0), so only those are
+		// offered -- the rule erpnext's own t_warehouse query applies, which these replace.
+		const transit_target_query = () => {
+			if (
+				frm.doc.purpose === "Material Transfer" &&
+				cint(frm.doc.add_to_transit) &&
+				!frm.doc.outgoing_stock_entry
+			) {
+				return {
+					filters: {
+						company: frm.doc.company,
+						is_group: 0,
+						warehouse_type: "Transit",
+					},
+				};
+			}
+		};
+		const jewellery_warehouse_query = (field) => {
+			return {
+				query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.warehouse_query_filters",
+				filters: {
+					company: frm.doc.company,
+					stock_entry_type: frm.doc.stock_entry_type,
+					field: field,
+					add_to_transit: cint(frm.doc.add_to_transit),
+					receive_leg: frm.doc.outgoing_stock_entry ? 1 : 0,
+				},
+			};
+		};
 		if (
 			[
 				"Material Transfer (DEPARTMENT)",
@@ -491,23 +583,11 @@ frappe.ui.form.on("Stock Entry", {
 				"Material Transfer (Subcontracting Work Order)",
 			].includes(frm.doc.stock_entry_type)
 		) {
-			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function (frm, cdt, cdn) {
-				return {
-					query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.warehouse_query_filters",
-					filters: {
-						company: company,
-						stock_entry_type: stock_entry_type,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function () {
+				return jewellery_warehouse_query("s_warehouse");
 			};
-			frm.fields_dict["items"].grid.get_field("t_warehouse").get_query = function (frm, cdt, cdn) {
-				return {
-					query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.warehouse_query_filters",
-					filters: {
-						company: company,
-						stock_entry_type: stock_entry_type,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("t_warehouse").get_query = function () {
+				return transit_target_query() || jewellery_warehouse_query("t_warehouse");
 			};
 			if (frm.doc.stock_entry_type != "Material Transfer (DEPARTMENT)") {
 				frm.fields_dict["items"].grid.get_field("item_code").get_query = function (frm, cdt, cdn) {
@@ -525,28 +605,27 @@ frappe.ui.form.on("Stock Entry", {
 				};
 			}
 		} else {
-			frm.fields_dict["items"].grid.get_field("item_code").get_query = function (frm, cdt, cdn) {
-				return {
-					filters: {
-						is_stock_item: 1,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("item_code").get_query = function () {
+				// A configured receipt type outside the literal Customer Goods list lands here.
+				return customer_goods_item_query(frm) || { filters: { is_stock_item: 1 } };
 			};
-			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function (frm, cdt, cdn) {
+			frm.fields_dict["items"].grid.get_field("s_warehouse").get_query = function () {
 				return {
 					filters: {
-						company: company,
+						company: frm.doc.company,
 						is_group: 0,
 					},
 				};
 			};
-			frm.fields_dict["items"].grid.get_field("t_warehouse").get_query = function (frm, cdt, cdn) {
-				return {
-					filters: {
-						company: company,
-						is_group: 0,
-					},
-				};
+			frm.fields_dict["items"].grid.get_field("t_warehouse").get_query = function () {
+				return (
+					transit_target_query() || {
+						filters: {
+							company: frm.doc.company,
+							is_group: 0,
+						},
+					}
+				);
 			};
 		}
 	},
@@ -1905,6 +1984,66 @@ erpnext.show_serial_batch_selector = function (frm, d, callback, on_close, show_
 	});
 };
 
+// Batch picker on the items grid. erpnext's stock_entry.js registers its batch_no query in its
+// own setup, which runs before this file's, so it is wrapped rather than replaced: its filters are
+// kept, and on the Stock Entry Types listed in hybrid_findings.HYBRID_FINDING_SE_TYPES the query
+// goes through hybrid_findings.get_batch_no with the row's order. The server narrows the list to
+// the customer's batches only for a Hybrid order's listed finding and returns erpnext's list
+// unchanged for everything else.
+function set_hybrid_finding_batch_query(frm) {
+	const hybrid_finding_se_types = [
+		"Material Transfer (DEPARTMENT)",
+		"Material transfer to Reserve",
+		"Material Transfer (WORK ORDER)",
+	];
+	const erpnext_query = frm.fields_dict.items.grid.get_field("batch_no").get_query;
+	frm.set_query("batch_no", "items", function (doc, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		const query = erpnext_query
+			? erpnext_query(doc, cdt, cdn)
+			: {
+					query: "erpnext.controllers.queries.get_batch_no",
+					filters: { item_code: row.item_code, warehouse: row.s_warehouse || row.t_warehouse },
+			  };
+		if (
+			!hybrid_finding_se_types.includes(doc.stock_entry_type) ||
+			!query ||
+			query.query !== "erpnext.controllers.queries.get_batch_no"
+		) {
+			return query;
+		}
+		// Only the keys that have a value: an empty one shows up as "<key> equals empty" in the
+		// link field's "Filtered by" line, and the server reads missing and empty the same.
+		const context = {
+			stock_entry_type: doc.stock_entry_type,
+			parent_manufacturing_order: row.custom_parent_manufacturing_order,
+			manufacturing_order: doc.manufacturing_order,
+			manufacturing_work_order: row.custom_manufacturing_work_order || doc.manufacturing_work_order,
+		};
+		const filters = Object.assign({}, query.filters);
+		for (const [key, value] of Object.entries(context)) {
+			if (value) filters[key] = value;
+		}
+		return {
+			query: "jewellery_erpnext.customer_subcontracting.hybrid_findings.get_batch_no",
+			filters: filters,
+		};
+	});
+}
+
+// The item query for the configured Customer Gold receipt, or null for any other Stock Entry Type.
+// frm._cg_receipt_type is fetched in setup and is null while the Customer Gold flow is off.
+function customer_goods_item_query(frm) {
+	if (!frm.doc.stock_entry_type || frm.doc.stock_entry_type !== frm._cg_receipt_type) {
+		return null;
+	}
+	return erpnext.queries.item({
+		is_stock_item: 1,
+		has_batch_no: 1,
+		custom_inventory_type_can_be_customer_goods: 1,
+	});
+}
+
 function return_receipt_button_click(frm) {
 	frappe.call({
 		method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_material_receipt_for_sales_person",
@@ -1954,5 +2093,158 @@ function set_html(frm) {
 				);
 			}
 		},
+	});
+}
+
+// Customer Gold return preview. Reads only: what this receipt can still give back, where its
+// metal is now (including converted descendants), and which route applies -- Direct Issue,
+// a Material Request to bring it back to custody, or Settle to convert it first.
+function show_customer_gold_return_preview(frm, receipt_row, qty) {
+	frappe.call({
+		method: "jewellery_erpnext.customer_subcontracting.customer_gold_return.get_customer_gold_return_preview",
+		args: { receipt: frm.doc.name, receipt_row: receipt_row || null, qty: qty || null },
+		freeze: true,
+		callback: function (r) {
+			const rows = (r.message && r.message.rows) || [];
+			if (!rows.length) {
+				// The flow is off, or the receipt predates the custody ledger: nothing to preview
+				// and nothing to enforce, so the Issue opens exactly as it always did.
+				open_customer_goods_issue(frm);
+				return;
+			}
+			const row =
+				rows.find((x) => x.receipt_row === receipt_row) ||
+				rows.find((x) => x.remaining > 0) ||
+				rows[0];
+			const dialog = new frappe.ui.Dialog({
+				title: __("Return Customer Gold"),
+				size: "extra-large",
+				fields: [
+					{
+						fieldname: "receipt_row",
+						label: __("Receipt Row"),
+						fieldtype: "Select",
+						options: rows.map((x) => x.receipt_row),
+						default: row.receipt_row,
+						onchange: function () {
+							const chosen = dialog.get_value("receipt_row");
+							if (chosen && chosen !== row.receipt_row) {
+								dialog.hide();
+								show_customer_gold_return_preview(frm, chosen);
+							}
+						},
+					},
+					{
+						fieldname: "qty",
+						label: __("Quantity to Return ({0})", [row.item_code]),
+						fieldtype: "Float",
+						default: row.requested,
+					},
+					{ fieldname: "preview", fieldtype: "HTML" },
+				],
+				primary_action_label: __("Create Issue"),
+				primary_action: function (values) {
+					// What is free in the receipt's custody warehouse can go out now, whatever the
+					// route for the rest; anything beyond it comes back first (Material Request / Settle).
+					if (!(flt(values.qty) > 0) || flt(values.qty) > flt(row.direct_available) + 0.0005) {
+						frappe.msgprint(
+							__("Only {0} can be issued directly from {1}. Route for the rest: {2}. {3}", [
+								format_number(row.direct_available, null, 3),
+								row.custody_warehouse,
+								row.route,
+								row.limiting_factor || "",
+							])
+						);
+						return;
+					}
+					dialog.hide();
+					open_customer_goods_issue(frm, { qty: values.qty, receipt_row: values.receipt_row });
+				},
+				secondary_action_label: __("Create Material Request"),
+				secondary_action: function () {
+					dialog.hide();
+					make_customer_gold_return_mr(frm, row, dialog.get_value("qty"));
+				},
+			});
+			dialog.fields_dict.preview.$wrapper.html(render_customer_gold_preview(row));
+			dialog.show();
+		},
+	});
+}
+
+function render_customer_gold_preview(row) {
+	const esc = frappe.utils.escape_html;
+	const lines = row.holdings
+		.map(
+			(h) => `<tr>
+				<td>${esc(h.batch_no)}</td><td>${esc(h.item_code || "")}</td>
+				<td>${esc(h.warehouse)}</td><td>${esc(h.stage)}</td>
+				<td class="text-right">${format_number(h.qty, null, 3)}</td>
+				<td class="text-right">${format_number(h.free_qty, null, 3)}</td>
+				<td class="text-right">${format_number(h.receipt_equivalent, null, 3)}</td>
+				<td class="text-right">${format_number(h.free_receipt_qty, null, 3)}</td>
+			</tr>`
+		)
+		.join("");
+	return `<p>${__("Received")}: <b>${format_number(row.received, null, 3)}</b> &middot;
+			${__("Still to return")}: <b>${format_number(row.remaining, null, 3)}</b> &middot;
+			${__("Can issue now")}: <b>${format_number(row.direct_available, null, 3)}</b> &middot;
+			${__("Route")}: <b>${esc(row.route)}</b></p>
+		${row.limiting_factor ? `<p class="text-muted">${esc(row.limiting_factor)}</p>` : ""}
+		<table class="table table-bordered table-condensed">
+			<thead><tr>
+				<th>${__("Batch")}</th><th>${__("Item")}</th><th>${__("Warehouse")}</th>
+				<th>${__("Stage")}</th><th>${__("Holding")}</th><th>${__("Free")}</th>
+				<th>${__("Receipt-item equivalent")}</th><th>${__("Free for this receipt")}</th>
+			</tr></thead>
+			<tbody>${lines || `<tr><td colspan="8">${__("No traced holdings")}</td></tr>`}</tbody>
+		</table>`;
+}
+
+function open_customer_goods_issue(frm, args) {
+	frappe.model.open_mapped_doc({
+		method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
+		frm: frm,
+		args: args || {},
+	});
+}
+
+function make_customer_gold_return_mr(frm, row, qty) {
+	// Bring the metal back to the receipt's custody warehouse. Only unused raw metal is asked for
+	// (RM, transit, department WIP -- never finished pieces or scrap), and only THIS receipt's
+	// free share of it. Same-item holdings are requested as they are; another purity is requested
+	// as the receipt's item into the receipt's own batch, for the request's Settle action to convert.
+	const returnable = ["RM", "Transit", "WIP"];
+	frappe.model.with_doctype("Material Request", function () {
+		const mr = frappe.model.get_new_doc("Material Request");
+		mr.company = frm.doc.company;
+		mr.material_request_type = "Material Transfer";
+		mr.inventory_type = "Customer Goods";
+		mr._customer = frm.doc._customer;
+		const receipt_row = (frm.doc.items || []).find((d) => d.name === row.receipt_row) || {};
+		let needed = Math.max(flt(qty) || flt(row.remaining), 0) - flt(row.direct_available);
+		const away = row.holdings.filter(
+			(h) =>
+				returnable.includes(h.stage) &&
+				h.free_receipt_qty > 0 &&
+				!(h.batch_no === row.batch_no && h.warehouse === row.custody_warehouse)
+		);
+		away.sort((a, b) => (b.same_item ? 1 : 0) - (a.same_item ? 1 : 0));
+		away.forEach((h) => {
+			if (needed <= 0) return;
+			const take = Math.min(needed, h.free_receipt_qty);
+			const item = frappe.model.add_child(mr, "items");
+			item.item_code = row.item_code;
+			item.qty = take;
+			item.uom = receipt_row.stock_uom || receipt_row.uom;
+			item.stock_uom = receipt_row.stock_uom || receipt_row.uom;
+			item.conversion_factor = 1;
+			item.from_warehouse = h.warehouse;
+			item.warehouse = row.custody_warehouse;
+			item.batch_no = h.same_item ? h.batch_no : row.batch_no;
+			item.schedule_date = frappe.datetime.nowdate();
+			needed -= take;
+		});
+		frappe.set_route("Form", "Material Request", mr.name);
 	});
 }

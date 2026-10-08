@@ -85,6 +85,10 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 				);
 			});
 		}
+		// Hiding the item is cosmetic; the server methods call frappe.only_for("System Manager").
+		if (frm.doc.docstatus == 1 && frappe.user.has_role("System Manager")) {
+			frm.page.add_menu_item(__("Hybrid Cancel"), () => confirm_cancel_all_linked(frm));
+		}
 	},
 
 	customer(frm) {
@@ -184,6 +188,88 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		}
 	},
 });
+
+const CANCEL_ALL_METHOD =
+	"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.cancel_all";
+
+// Frappe's own "Cancel All" cancels top-down and fails on the first child PMO that still has
+// submitted documents; the server method cancels deepest-first in a background job instead.
+function confirm_cancel_all_linked(frm) {
+	frappe.call({
+		method: `${CANCEL_ALL_METHOD}.get_cancel_preview`,
+		args: { pmo_name: frm.doc.name },
+		freeze: true,
+		callback: (r) => {
+			const docs = (r.message && r.message.docs) || [];
+			const link = (dt, dn) => frappe.utils.get_form_link(dt, dn, true);
+
+			const by_doctype = {};
+			docs.forEach((d) => (by_doctype[d.doctype] = by_doctype[d.doctype] || []).push(d.name));
+			const rows = Object.keys(by_doctype)
+				.map(
+					(dt) =>
+						`<li><strong>${__(dt)}</strong> (${by_doctype[dt].length}): ${by_doctype[dt]
+							.map((dn) => link(dt, dn))
+							.join(", ")}</li>`
+				)
+				.join("");
+
+			const kept = (r.message && r.message.kept) || [];
+			const kept_rows = kept
+				.map(
+					(k) =>
+						`<li>${__(k.doctype)} ${link(k.doctype, k.name)}: ${__(
+							"still used by"
+						)} ${k.used_by.join(", ")}</li>`
+				)
+				.join("");
+
+			frappe.confirm(
+				__("These {0} documents will be cancelled, linked records first, {1} last:", [
+					docs.length,
+					frm.doc.name.bold(),
+				]) +
+					`<ul>${rows}</ul>` +
+					(kept.length
+						? __("These stay submitted because other records still use them:") +
+						  `<ul>${kept_rows}</ul>`
+						: "") +
+					__("This cannot be undone. Continue?"),
+				() => start_cancel_all_linked(frm)
+			);
+		},
+	});
+}
+
+function start_cancel_all_linked(frm) {
+	frappe.realtime.off("pmo_cancel_all_done");
+	frappe.realtime.on("pmo_cancel_all_done", (data) => {
+		if (data.pmo !== frm.doc.name) return;
+		frappe.realtime.off("pmo_cancel_all_done");
+		frappe.hide_progress();
+		if (data.status === "done") {
+			frappe.show_alert({ message: __("Cancelled {0} documents", [data.count]), indicator: "green" });
+			frm.reload_doc();
+		} else {
+			frappe.msgprint({
+				title: __("Cancel All failed — nothing was cancelled"),
+				message: data.error,
+				indicator: "red",
+			});
+		}
+	});
+
+	frappe.call({
+		method: `${CANCEL_ALL_METHOD}.enqueue_cancel_all`,
+		args: { pmo_name: frm.doc.name },
+		freeze: true,
+		callback: (r) => {
+			if (!r.exc) {
+				frappe.show_alert({ message: __("Cancelling in background…"), indicator: "blue" });
+			}
+		},
+	});
+}
 
 // The section break plus every field in it: hiding the break alone leaves the fields reachable if
 // anything later re-renders them, and the list is short enough to be exact.

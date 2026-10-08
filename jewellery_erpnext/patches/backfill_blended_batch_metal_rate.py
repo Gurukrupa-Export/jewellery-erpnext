@@ -1,5 +1,14 @@
 """Restore the Batch Rate that the Repack-Metal Conversion blend wrote to zero.
 
+SUPERSEDED BY F26 (2026-09-24)
+------------------------------
+The blend this patch describes is retired: ``batch.on_update`` no longer writes a rate, and a
+batch keeps the rate it was minted with, which is its ledger incoming rate. This patch already
+ran and stays registered for sites that have not, but its recovery source 1 below re-applies the
+retired blend rule. Batches restored that way, and every conversion target the blend restated
+with a non-zero rate, are re-stamped from the ledger by ``patches/restamp_batch_rate_from_ledger``
+(manual, dry run by default). ``test_backfill_blended_batch_metal_rate`` pins this patch as it ran.
+
 THE DEFECT
 ----------
 ``batch.on_update`` blends the source batches' rates onto a conversion target, and it took its

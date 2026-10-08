@@ -18,6 +18,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils im
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils import metal_utils
 from jewellery_erpnext.jewellery_erpnext.doc_events import material_request as mr_mod
+from jewellery_erpnext.jewellery_erpnext.doc_events import stock_entry as se_events
 from jewellery_erpnext.jewellery_erpnext.serialize import LockTimeoutError
 
 _MR = "jewellery_erpnext.jewellery_erpnext.doc_events.material_request"
@@ -90,7 +91,12 @@ class TestMaterializeTransferSE(IntegrationTestCase):
 		def _noop(*a, **k):
 			yield
 
+		# The lock-wait context is stubbed too: with frappe.db patched wholesale, patch()
+		# builds an AsyncMock (the LocalProxy looks awaitable), so its SELECT would return a
+		# coroutine. TestTransferJobLockWait covers it.
 		with patch.object(serialize, "conflict_lock", _noop), patch.object(
+			mr_mod, "_innodb_lock_wait", _noop
+		), patch.object(
 			bounded_retry, "run_with_retry", side_effect=ValueError("boom")
 		), patch(f"{_MR}.frappe.db") as mock_db, patch(f"{_MR}.frappe.log_error"):
 			with self.assertRaises(ValueError):
@@ -151,6 +157,444 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 			"custom_transfer_se_state", "Done", update_modified=False
 		)
 		mock_copy.assert_not_called()
+
+	# The reserve entry is this request's own; the copied-reserve refusal is covered below.
+	@patch(f"{_MR}._entry_belongs_to", return_value=True)
+	@patch(f"{_MR}.mri_warehouse_map", return_value={"MRI-1": "WH-RM"})
+	@patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None)
+	@patch(f"{_MR}.frappe.copy_doc")
+	@patch(f"{_MR}.frappe.get_doc")
+	def test_copy_of_a_transit_flagged_reserve_se_is_held_out_of_transit(
+		self, mock_get_doc, mock_copy, mock_lookup, mock_map, _mock_owned
+	):
+		"""Reserve SEs made before create_stock_entry cleared the flag were saved with
+		add_to_transit = 1, and copy_doc keeps no_copy fields. A 1 is never fetched away,
+		and ERPNext rejects Add to Transit into these Reserve/RM targets."""
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = MagicMock(return_value=None)
+		mr.items = []
+		new_se = MagicMock()
+		new_se.add_to_transit = 1
+		new_se.items = [
+			SimpleNamespace(
+				material_request_item="MRI-1",
+				item_code="ITEM-1",
+				s_warehouse="WH-SOURCE",
+				t_warehouse="WH-RSV",
+				serial_and_batch_bundle="SABB-1",
+			)
+		]
+		mock_get_doc.side_effect = [mr, MagicMock()]
+		mock_copy.return_value = new_se
+
+		mr_mod._create_transfer_se("MR-001")
+
+		self.assertEqual(new_se.stock_entry_type, "Material Transfer From Reserve")
+		self.assertEqual(new_se.add_to_transit, 0)
+		self.assertIs(new_se.flags.no_transit, True)
+		self.assertEqual(new_se.items[0].s_warehouse, "WH-RSV")
+		self.assertEqual(new_se.items[0].t_warehouse, "WH-RM")
+		new_se.save.assert_called_once()
+		new_se.submit.assert_called_once()
+		mock_lookup.assert_called_once_with("MR-001")
+
+	@patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None)
+	@patch(f"{_MR}.frappe.copy_doc")
+	@patch(f"{_MR}.frappe.get_doc")
+	def test_refuses_a_reserve_entry_copied_from_another_request(
+		self, mock_get_doc, mock_copy, _mock_lookup
+	):
+		"""KGJPL-MR-MT-26-03295: a duplicate carried MF-26-26027's reserve entry, and the job
+		tried to move that request's material a second time."""
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = MagicMock(return_value=None)
+		mock_get_doc.return_value = mr
+
+		with patch.object(mr_mod, "_entry_belongs_to", return_value=False):
+			with self.assertRaises(frappe.ValidationError) as raised:
+				mr_mod._create_transfer_se("MR-001")
+
+		self.assertIn("SE-RESERVE", str(raised.exception))
+		mock_copy.assert_not_called()
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestEntryBelongsTo(IntegrationTestCase):
+	"""Ownership is read from the entry's rows, never from the request's link alone."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_blank_inputs_skip_the_query(self):
+		with patch(f"{_MR}.frappe.db.sql") as sql:
+			self.assertFalse(mr_mod._entry_belongs_to(None, "MR-1"))
+			self.assertFalse(mr_mod._entry_belongs_to("SE-1", None))
+		sql.assert_not_called()
+
+	def test_a_submitted_row_for_the_request_is_ownership(self):
+		with patch(f"{_MR}.frappe.db.sql", return_value=[(1,)]) as sql:
+			self.assertTrue(mr_mod._entry_belongs_to("SE-1", "MR-1"))
+		self.assertEqual(sql.call_args[0][1], ("SE-1", "MR-1"))
+
+	def test_no_matching_row_is_not_ownership(self):
+		with patch(f"{_MR}.frappe.db.sql", return_value=[]):
+			self.assertFalse(mr_mod._entry_belongs_to("SE-1", "MR-1"))
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+def _transfer_doc(**kwargs):
+	"""A submitted Manufacture request as validate_transfer_se_created reads it."""
+	values = {
+		"name": "MR-1",
+		"custom_reserve_se": "SE-RESERVE",
+		"custom_transfer_se": None,
+		"custom_transfer_se_state": "Failed",
+		"custom_transfer_se_error": "(1205, 'Lock wait timeout exceeded; try restarting transaction')",
+		"custom_department_transfer_se": None,
+	}
+	values.update(kwargs)
+	return SimpleNamespace(**values)
+
+
+@contextmanager
+def _owned(*entries, row_owner=None):
+	"""Stub ownership: only ``entries`` belong to the request. ``row_owner`` is the request
+	a non-owned entry's rows name, for the message that points at it."""
+	real_get_value = frappe.db.get_value
+
+	def _get_value(doctype, filters=None, fieldname="name", *args, **kwargs):
+		if doctype == "Stock Entry Detail":
+			return row_owner
+		return real_get_value(doctype, filters, fieldname, *args, **kwargs)
+
+	def _from_reserve(mr_name, stock_entry=None):
+		return stock_entry if stock_entry in entries else None
+
+	with patch.object(
+		mr_mod, "_entry_belongs_to", side_effect=lambda se, mr: se in entries
+	), patch.object(
+		mr_mod, "get_submitted_from_reserve_se", side_effect=_from_reserve
+	), patch(f"{_MR}.frappe.db.get_value", side_effect=_get_value):
+		yield
+
+
+class TestValidateTransferSECreated(IntegrationTestCase):
+	"""The block on Transfer to Department / Transfer to MOP while the deferred
+	"Material Transfer From Reserve" entry is missing -- KGJPL-MR-MF-26-39090."""
+
+	@classmethod
+	def setUpClass(cls):
+		# Build the translation cache before anything is patched.
+		frappe._("Material Request")
+
+	def _message(self, doc, *entries, row_owner=None):
+		with _owned(*entries, row_owner=row_owner):
+			with self.assertRaises(frappe.ValidationError) as raised:
+				mr_mod.validate_transfer_se_created(doc)
+		return str(raised.exception)
+
+	def test_no_reserve_entry_has_nothing_to_wait_for(self):
+		with patch.object(mr_mod, "_entry_belongs_to") as owned:
+			mr_mod.validate_transfer_se_created(_transfer_doc(custom_reserve_se=None))
+		owned.assert_not_called()
+
+	def test_own_transfer_entry_passes(self):
+		with _owned("SE-TRANSFER"):
+			mr_mod.validate_transfer_se_created(
+				_transfer_doc(
+					custom_transfer_se="SE-TRANSFER", custom_transfer_se_state="Done"
+				)
+			)
+
+	def test_own_department_transfer_passes(self):
+		"""The next step reads the destination warehouse, which the transfer never fed."""
+		with _owned("SE-DEPT"):
+			mr_mod.validate_transfer_se_created(
+				_transfer_doc(custom_department_transfer_se="SE-DEPT")
+			)
+
+	def test_failed_transfer_throws_with_the_recorded_error(self):
+		message = self._message(_transfer_doc())
+		self.assertIn("failed", message)
+		self.assertIn("Lock wait timeout exceeded", message)
+		self.assertIn("Retry Transfer From Reserve", message)
+
+	def test_recorded_error_is_shown_without_its_markup(self):
+		message = self._message(
+			_transfer_doc(
+				custom_transfer_se_error="Batch Nos <strong>B-1</strong> does not belong to Item"
+			)
+		)
+		self.assertIn("Batch Nos B-1 does not belong to Item", message)
+		self.assertNotIn("<strong>", message)
+
+	def test_pending_transfer_throws_not_created_yet(self):
+		message = self._message(_transfer_doc(custom_transfer_se_state="Pending"))
+		self.assertIn("has not been created yet", message)
+
+	def test_blank_state_throws_not_created_yet(self):
+		message = self._message(_transfer_doc(custom_transfer_se_state=None))
+		self.assertIn("has not been created yet", message)
+
+	def test_copied_transfer_link_names_the_request_it_belongs_to(self):
+		"""The 2026-09-22 split requests showed Done against their original's entry."""
+		message = self._message(
+			_transfer_doc(
+				custom_transfer_se="SE-ORIG", custom_transfer_se_state="Done"
+			),
+			row_owner="MR-ORIG",
+		)
+		self.assertIn("SE-ORIG", message)
+		self.assertIn("MR-ORIG", message)
+
+	def test_copied_department_link_does_not_pass(self):
+		message = self._message(
+			_transfer_doc(custom_department_transfer_se="SE-ORIG-DEPT"),
+			row_owner="MR-ORIG",
+		)
+		self.assertIn("failed", message)
+
+	def test_own_transfer_entry_that_is_not_submitted_throws(self):
+		message = self._message(
+			_transfer_doc(
+				custom_transfer_se="SE-TRANSFER", custom_transfer_se_state="Done"
+			),
+			row_owner="MR-1",
+		)
+		self.assertIn("is not submitted", message)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestTransferGateInDispatch(IntegrationTestCase):
+	"""Where before_update_after_submit applies the block, and where it does not."""
+
+	@classmethod
+	def setUpClass(cls):
+		frappe._("Material Request")
+
+	@staticmethod
+	def _doc(workflow_state, previously, **kwargs):
+		values = {
+			"name": "MR-1",
+			"workflow_state": workflow_state,
+			"material_request_type": "Manufacture",
+			"custom_operation_type": "Transfer to Department",
+			"custom_manufacturing_operation": None,
+			"custom_department": None,
+			"custom_reserve_se": "SE-RESERVE",
+			"custom_transfer_se": None,
+			"custom_transfer_se_state": "Failed",
+			"custom_transfer_se_error": "(1205, 'Lock wait timeout exceeded')",
+			"custom_department_transfer_se": None,
+			"items": [SimpleNamespace(warehouse="WH-Setting")],
+			"get_doc_before_save": lambda: frappe._dict(workflow_state=previously),
+		}
+		values.update(kwargs)
+		return SimpleNamespace(**values)
+
+	def _dispatch(self, doc, *owned):
+		with _owned(*owned), patch.object(
+			mr_mod, "make_department_transfer_stock_entry"
+		) as dept, patch.object(mr_mod, "make_mop_stock_entry") as mop, patch.object(
+			mr_mod, "make_department_mop_stock_entry"
+		) as dept_mop, patch.object(mr_mod, "validate_mop_department") as dept_gate:
+			try:
+				mr_mod.before_update_after_submit(doc, None)
+			finally:
+				self.makers = (dept, mop, dept_mop)
+				self.dept_gate = dept_gate
+
+	def _assert_nothing_made(self):
+		for maker in self.makers:
+			maker.assert_not_called()
+
+	def test_transfer_to_department_is_blocked_and_makes_no_entry(self):
+		doc = self._doc("Material Transferred to Department", "Material Transferred")
+		with self.assertRaises(frappe.ValidationError):
+			self._dispatch(doc)
+		self._assert_nothing_made()
+
+	def test_transfer_to_mop_is_blocked_ahead_of_the_department_gate(self):
+		doc = self._doc(
+			"Material Transferred to MOP",
+			"Material Transferred",
+			custom_operation_type="Transfer to MOP",
+			custom_manufacturing_operation="MOP-1",
+			custom_transfer_se_state="Pending",
+		)
+		with self.assertRaises(frappe.ValidationError):
+			self._dispatch(doc)
+		self._assert_nothing_made()
+		self.dept_gate.assert_not_called()
+
+	def test_plain_update_is_not_blocked(self):
+		"""How the destination and operation get filled in before the action."""
+		doc = self._doc("Material Transferred", "Material Transferred")
+		self._dispatch(doc)
+		self._assert_nothing_made()
+
+	def test_created_transfer_dispatches_as_before(self):
+		doc = self._doc(
+			"Material Transferred to Department",
+			"Material Transferred",
+			custom_transfer_se="SE-TRANSFER",
+			custom_transfer_se_state="Done",
+		)
+		self._dispatch(doc, "SE-TRANSFER")
+		self.makers[0].assert_called_once_with(doc)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestRetryTransferSE(IntegrationTestCase):
+	"""retry_transfer_se: the way out of the block, and only where it is safe."""
+
+	@classmethod
+	def setUpClass(cls):
+		frappe._("Material Request")
+
+	@staticmethod
+	def _mr(**kwargs):
+		mr = MagicMock()
+		mr.name = "MR-1"
+		mr.docstatus = 1
+		mr.workflow_state = "Material Transferred"
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.custom_transfer_se = None
+		for key, value in kwargs.items():
+			setattr(mr, key, value)
+		return mr
+
+	def _retry(self, mr, owned=True, queued=False):
+		with patch(f"{_MR}.frappe.get_doc", return_value=mr), patch.object(
+			mr_mod, "_entry_belongs_to", return_value=owned
+		), patch.object(
+			mr_mod, "is_job_enqueued", return_value=queued
+		) as is_queued, patch.object(mr_mod, "_enqueue_transfer_se") as enqueue:
+			try:
+				mr_mod.retry_transfer_se("MR-1")
+			finally:
+				self.enqueue = enqueue
+				self.is_queued = is_queued
+
+	def _assert_refused(self, mr, **kwargs):
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self._retry(mr, **kwargs)
+		self.enqueue.assert_not_called()
+		mr.db_set.assert_not_called()
+		return str(raised.exception)
+
+	def test_requeues_a_failed_transfer(self):
+		mr = self._mr()
+		self._retry(mr)
+
+		mr.check_permission.assert_called_once_with("write")
+		mr.db_set.assert_called_once_with(
+			{"custom_transfer_se_state": "Pending", "custom_transfer_se_error": None},
+			update_modified=False,
+		)
+		self.enqueue.assert_called_once_with("MR-1")
+		self.is_queued.assert_called_once_with("mr_transfer_se::MR-1")
+
+	def test_refuses_an_unsubmitted_request(self):
+		self._assert_refused(self._mr(docstatus=0))
+
+	def test_refuses_a_request_without_a_reserve_entry(self):
+		self._assert_refused(self._mr(custom_reserve_se=None))
+
+	def test_refuses_when_a_transfer_is_already_linked(self):
+		message = self._assert_refused(self._mr(custom_transfer_se="SE-TRANSFER"))
+		self.assertIn("SE-TRANSFER", message)
+
+	def test_refuses_past_material_transferred(self):
+		"""The next step already ran; a late transfer would double the material."""
+		self._assert_refused(
+			self._mr(workflow_state="Material Transferred to Department")
+		)
+
+	def test_refuses_a_reserve_entry_copied_from_another_request(self):
+		message = self._assert_refused(self._mr(), owned=False)
+		self.assertIn("copied", message)
+
+	def test_refuses_while_the_job_is_still_queued(self):
+		self._assert_refused(self._mr(), queued=True)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestTransferJobLockWait(IntegrationTestCase):
+	"""materialize_transfer_se waits longer for the MAT-STE- naming row, then restores the
+	connection's own lock wait -- on success and on failure alike."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, work):
+		statements = []
+
+		def _sql(query, values=None, *args, **kwargs):
+			statements.append((query.strip(), values))
+			if "@@SESSION.innodb_lock_wait_timeout" in query:
+				return [(50,)]
+			return []
+
+		@contextmanager
+		def _noop(*a, **k):
+			yield
+
+		def _work(fn, *args, **kwargs):
+			statements.append(("WORK", None))
+			return work()
+
+		with patch.object(serialize, "conflict_lock", _noop), patch.object(
+			bounded_retry, "run_with_retry", side_effect=_work
+		), patch(f"{_MR}.frappe.db.sql", side_effect=_sql), patch(
+			f"{_MR}.frappe.db.rollback"
+		), patch(f"{_MR}.frappe.db.set_value"), patch(f"{_MR}.frappe.db.commit"), patch(
+			f"{_MR}.frappe.log_error"
+		):
+			try:
+				mr_mod.materialize_transfer_se("MR-001")
+			finally:
+				self.statements = statements
+
+	def _sets(self):
+		return [
+			values[0]
+			for query, values in self.statements
+			if query.startswith("SET SESSION innodb_lock_wait_timeout")
+		]
+
+	def test_wait_is_raised_for_the_work_and_restored_after(self):
+		self._run(lambda: None)
+		work_at = self.statements.index(("WORK", None))
+		self.assertEqual(self._sets(), [mr_mod.TRANSFER_SE_LOCK_WAIT_SECONDS, 50])
+		raised_at = next(
+			i
+			for i, (query, _values) in enumerate(self.statements)
+			if query.startswith("SET SESSION")
+		)
+		self.assertLess(raised_at, work_at)
+
+	def test_wait_is_restored_when_the_work_fails(self):
+		def _fail():
+			raise ValueError("boom")
+
+		with self.assertRaises(ValueError):
+			self._run(_fail)
+		self.assertEqual(self._sets(), [mr_mod.TRANSFER_SE_LOCK_WAIT_SECONDS, 50])
 
 	def tearDown(self):
 		return super().tearDown()
@@ -494,17 +938,30 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 					pcs=1,
 					cost_center=None,
 					custom_sub_setting_type=None,
+					# Carried onto the reserve entry's rows so the FIFO allocator can tell
+					# whether the row draws the customer's material. See
+					# ``se_utils.row_variant_of``.
+					custom_variant_of="M",
 				)
 				for i, wh in enumerate(from_warehouses)
 			],
 		)
 
+		self._se_doc = MagicMock()
 		with patch.object(mr_mod.frappe.db, "get_value", side_effect=_gv), patch.object(
-			mr_mod.frappe, "new_doc", return_value=MagicMock()
+			mr_mod.frappe, "new_doc", return_value=self._se_doc
 		), patch.object(mr_mod.frappe, "msgprint"):
 			mr_mod.create_stock_entry(mr, None)
 
 		return calls
+
+	def test_holds_the_reserve_entry_out_of_transit(self):
+		"""Every row lands in a Reserve warehouse. A Transfer Type mapped to a transit
+		Stock Entry Type would fetch add_to_transit back over the bare 0, and ERPNext
+		rejects Add to Transit into a non-Transit warehouse -- the flag holds it."""
+		self._run(["CAST-RM"], {"CAST-RM": "Casting"})
+		self.assertEqual(self._se_doc.add_to_transit, 0)
+		self.assertIs(self._se_doc.flags.no_transit, True)
 
 	def test_one_department_lookup_per_warehouse_one_reserve_per_department(self):
 		"""Three source warehouses in one department: 3 department reads, 1 reserve read."""
@@ -702,4 +1159,139 @@ class TestPrefetchPurityPercentages(IntegrationTestCase):
 			frappe.local.request_cache = defaultdict(dict)
 		else:
 			frappe.local.request_cache = self._saved_cache
+		return super().tearDown()
+
+
+_SE = "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry"
+
+# What ERPNext's StockEntry.on_cancel assigns before the app's on_cancel hook runs.
+_ERPNEXT_IGNORED = (
+	"GL Entry",
+	"Stock Ledger Entry",
+	"Repost Item Valuation",
+	"Serial and Batch Bundle",
+)
+
+
+class _CancellingEntry(SimpleNamespace):
+	"""The slice of a cancelling Stock Entry that release_material_request_links reads."""
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+
+def _entry(name, *requests):
+	return _CancellingEntry(
+		name=name,
+		ignore_linked_doctypes=_ERPNEXT_IGNORED,
+		items=[SimpleNamespace(material_request=mr) for mr in requests],
+	)
+
+
+def _stamps(**kwargs):
+	"""MR-1 as the hook reads it: stamped with every step of its own chain."""
+	values = {
+		"name": "MR-1",
+		"custom_reserve_se": "SE-RESERVE",
+		"custom_transfer_se": "SE-TRANSFER",
+		"custom_department_transfer_se": "SE-DEPT",
+		"custom_mop_se": None,
+	}
+	values.update(kwargs)
+	return values
+
+
+class TestReleaseMaterialRequestLinks(IntegrationTestCase):
+	"""A request stamps its entries and their rows point back at it, so neither could be
+	cancelled first -- KGJPL-MR-MF-26-46334's entries could not be reversed for a split."""
+
+	@classmethod
+	def setUpClass(cls):
+		# Build the translation cache before frappe.get_all is stubbed.
+		frappe._("Material Request")
+
+	def _release(self, entry, *requests):
+		"""Run the hook with the request read stubbed to ``requests``.
+
+		Returns the get_all and set_value mocks.
+		"""
+		real_get_all = frappe.get_all
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "Material Request":
+				return [frappe._dict(r) for r in requests]
+			return real_get_all(doctype, *args, **kwargs)
+
+		with patch.object(
+			se_events.frappe, "get_all", side_effect=_get_all
+		) as get_all, patch(f"{_SE}.frappe.db.set_value") as set_value:
+			se_events.release_material_request_links(entry)
+		return get_all, set_value
+
+	def test_on_cancel_releases_the_request(self):
+		entry = _entry("SE-DEPT", "MR-1")
+		with patch.object(se_events, "update_manufacturing_operation"), patch.object(
+			se_events, "sync_mop_log_for_stock_entry"
+		), patch.object(se_events, "release_material_request_links") as release:
+			se_events.on_cancel(entry)
+		release.assert_called_once_with(entry)
+
+	def test_erpnexts_ignore_list_is_kept_and_the_request_added(self):
+		entry = _entry("SE-DEPT", "MR-1")
+		self._release(entry, _stamps())
+		self.assertEqual(
+			entry.ignore_linked_doctypes, (*_ERPNEXT_IGNORED, "Material Request")
+		)
+
+	def test_a_transit_receipt_without_request_rows_reads_nothing(self):
+		"""MAT-STE-57555: the End Transit receipt's rows carry no material_request."""
+		entry = _entry("SE-RECEIPT", None)
+		get_all, set_value = self._release(entry)
+		get_all.assert_not_called()
+		set_value.assert_not_called()
+		self.assertIn("Material Request", entry.ignore_linked_doctypes)
+
+	def test_only_submitted_requests_on_its_own_rows_are_read(self):
+		get_all, _ = self._release(_entry("SE-DEPT", "MR-2", "MR-1", "MR-2"))
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"],
+			{"name": ["in", ["MR-1", "MR-2"]], "docstatus": 1},
+		)
+
+	def test_only_the_stamp_naming_this_entry_is_cleared(self):
+		_, set_value = self._release(_entry("SE-DEPT", "MR-1"), _stamps())
+		set_value.assert_called_once_with(
+			"Material Request",
+			"MR-1",
+			{"custom_department_transfer_se": None},
+			update_modified=False,
+		)
+
+	def test_clearing_the_transfer_stamp_clears_its_state_and_error(self):
+		_, set_value = self._release(_entry("SE-TRANSFER", "MR-1"), _stamps())
+		set_value.assert_called_once_with(
+			"Material Request",
+			"MR-1",
+			{
+				"custom_transfer_se": None,
+				"custom_transfer_se_state": None,
+				"custom_transfer_se_error": None,
+			},
+			update_modified=False,
+		)
+
+	def test_the_mop_stamp_is_matched_by_value(self):
+		"""custom_mop_se is Data, not a Link, but records the same step."""
+		_, set_value = self._release(
+			_entry("SE-MOP", "MR-1"), _stamps(custom_mop_se="SE-MOP")
+		)
+		set_value.assert_called_once_with(
+			"Material Request", "MR-1", {"custom_mop_se": None}, update_modified=False
+		)
+
+	def test_a_request_stamped_with_other_entries_is_untouched(self):
+		_, set_value = self._release(_entry("SE-OTHER", "MR-1"), _stamps())
+		set_value.assert_not_called()
+
+	def tearDown(self):
 		return super().tearDown()

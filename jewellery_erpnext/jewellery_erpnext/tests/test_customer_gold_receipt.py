@@ -7,11 +7,15 @@ Pure-logic per the suite convention: ``setUpClass`` is neutralized, Stock Entrie
 ``frappe._dict`` fakes and every DB read is patched. No document is created.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from jewellery_erpnext.customer_subcontracting import (
+	customer_gold_fulfilment,
+	customer_goods_eligibility,
+)
 from jewellery_erpnext.customer_subcontracting import (
 	customer_gold_receipt as cg_receipt,
 )
@@ -25,6 +29,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 )
 
 MOD = "jewellery_erpnext.customer_subcontracting.customer_gold_receipt"
+ELIGIBILITY_MOD = "jewellery_erpnext.customer_subcontracting.customer_goods_eligibility"
 #: ``_pure_qty_excluded_types`` imports the two settings helpers INSIDE the function,
 #: so they must be patched where they are defined, not on the stock_entry module.
 SE_MOD = (
@@ -82,6 +87,8 @@ def _entry(**overrides):
 		doctype="Stock Entry",
 		stock_entry_type=SE_TYPE,
 		posting_date="2026-08-15",
+		# An explicitly chosen date: without it the receipt posts "now", as ERPNext would.
+		set_posting_time=1,
 		company=COMPANY,
 		_customer=CUSTOMER,
 		items=[_item_row()],
@@ -144,11 +151,105 @@ def _db_get_value(doctype, name, fieldname=None, as_dict=False):
 	return None
 
 
+# -- Item masters: the flag, and the booking gates ---------------------------------------------
+#: A gold purity that is NOT the rate reference. Flagged on kg-gk, and the one row the retired
+#: Settings list held there.
+GOLD_22KT = "M-G-22KT-91.75-Y"
+#: Stones are received in their own UOM (Carat) at a typed rate. ``variant_of`` decides that,
+#: not the code.
+DIAMOND = "D-NT-RO-MH12A-+9-9.5"
+GEMSTONE = "G-RU-OVAL"
+#: Gold stocked in Carat: flagged, but the per-gram gold rate cannot price it.
+GOLD_IN_CARAT = "M-G-18KT-75.0-Y"
+STONE_WITHOUT_BATCH = "D-NT-RO-LOOSE"
+#: Findings (template ``F``) are gold too: priced from the per-gram gold rate, so held to Gram.
+FINDING = "F-G-18KT-75.4-Y"
+FINDING_PURITY = 75.4
+#: A finding stocked in Carat: flagged and batch controlled, but the per-gram rate cannot price it.
+FINDING_IN_CARAT = "F-G-22KT-91.75-Y-SW"
+#: Unflagged. The second one's code says 24KT, which earns it nothing on a receipt.
+UNFLAGGED_22KT = "M-G-22KT-91.9-Y"
+UNFLAGGED_24KT = "M-G-24KT-99.9-W"
+
+NOT_ENABLED = "is not enabled for Customer Goods"
+#: The Item field's real label, spelled out rather than imported so a renamed constant fails here.
+FLAG_LABEL = "Inventory Type Can be Customer Goods"
+
+
+def _master(name, variant_of, stock_uom="Gram", **overrides):
+	"""An Item as ``_receipt_item_details`` returns it. Healthy unless overridden."""
+	item = frappe._dict(
+		name=name,
+		variant_of=variant_of,
+		disabled=0,
+		is_stock_item=1,
+		has_batch_no=1,
+		stock_uom=stock_uom,
+	)
+	item.update(overrides)
+	return item
+
+
+ITEMS = {
+	ITEM: _master(ITEM, "M"),
+	GOLD_22KT: _master(GOLD_22KT, "M"),
+	DIAMOND: _master(DIAMOND, "D", "Carat"),
+	GEMSTONE: _master(GEMSTONE, "G", "Carat"),
+	GOLD_IN_CARAT: _master(GOLD_IN_CARAT, "M", "Carat"),
+	STONE_WITHOUT_BATCH: _master(STONE_WITHOUT_BATCH, "D", "Carat", has_batch_no=0),
+	FINDING: _master(FINDING, "F"),
+	FINDING_IN_CARAT: _master(FINDING_IN_CARAT, "F", "Carat"),
+	UNFLAGGED_22KT: _master(UNFLAGGED_22KT, "M"),
+	UNFLAGGED_24KT: _master(UNFLAGGED_24KT, "M"),
+}
+
+#: ``Inventory Type Can be Customer Goods`` per item -- the only eligibility rule. Tests flip it
+#: through ``patch.dict(ITEM_FLAGS, ...)`` so a change cannot leak into the next test.
+ITEM_FLAGS = {
+	ITEM: 1,
+	GOLD_22KT: 1,
+	DIAMOND: 1,
+	GEMSTONE: 1,
+	GOLD_IN_CARAT: 1,
+	STONE_WITHOUT_BATCH: 1,
+	FINDING: 1,
+	FINDING_IN_CARAT: 1,
+	UNFLAGGED_22KT: 0,
+	UNFLAGGED_24KT: 0,
+}
+
+
+def _eligible(item_codes):
+	"""Stand-in for ``get_customer_goods_eligible_items``. Reads ``ITEM_FLAGS`` at call time."""
+	return {code for code in item_codes or () if code and ITEM_FLAGS.get(code)}
+
+
+def _details(item_codes):
+	"""Stand-in for ``_receipt_item_details``. Copies, so no test can edit the shared masters."""
+	return {
+		code: frappe._dict(ITEMS[code]) for code in item_codes or () if code in ITEMS
+	}
+
+
+def with_item_masters(cls):
+	"""Answer the receipt's two Item-master reads from ``ITEMS`` and ``ITEM_FLAGS``.
+
+	Needed by every class that reaches ``_validate_rows`` with the flow on. Unpatched, both reads
+	are real ``frappe.get_all`` calls: they break under this suite's ``frappe.db.get_value`` fake,
+	and on a real site their answer would depend on that site's Items. ``new=`` rather than a
+	MagicMock, so the ``*_mocks`` every test receives are unchanged.
+	"""
+	cls = patch(f"{MOD}._receipt_item_details", new=_details)(cls)
+	return patch(f"{MOD}.get_customer_goods_eligible_items", new=_eligible)(cls)
+
+
+@with_item_masters
 @patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
 class TestCustomerGoldReceiptRules(IntegrationTestCase):
 	"""Receipt eligibility, with the feature enabled."""
 
@@ -160,13 +261,15 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 		validate_customer_gold_receipt(_entry())
 
 	def test_missing_customer_blocks(self, *_mocks):
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(frappe.ValidationError) as raised:
 			validate_customer_gold_receipt(_entry(_customer=None))
+		self.assertIn("Customer is mandatory", str(raised.exception))
 
 	def test_row_customer_conflict_blocks(self, *_mocks):
 		doc = _entry(items=[_item_row(customer=OTHER_CUSTOMER)])
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(frappe.ValidationError) as raised:
 			validate_customer_gold_receipt(doc)
+		self.assertIn("does not match the receipt Customer", str(raised.exception))
 
 	def test_blank_row_customer_is_backfilled(self, *_mocks):
 		doc = _entry(items=[_item_row(customer=None)])
@@ -206,15 +309,17 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 			self.assertEqual(row.allow_zero_valuation_rate, 1)
 
 	def test_wrong_item_blocks(self, *_mocks):
-		doc = _entry(items=[_item_row(item_code="M-G-22KT-91.9-Y")])
-		with self.assertRaises(frappe.ValidationError):
+		doc = _entry(items=[_item_row(item_code=UNFLAGGED_22KT)])
+		with self.assertRaises(frappe.ValidationError) as raised:
 			validate_customer_gold_receipt(doc)
+		self.assertIn(NOT_ENABLED, str(raised.exception))
 
 	def test_other_24kt_item_still_blocks(self, *_mocks):
-		"""The configured item wins, even for another item whose code says 24KT."""
-		doc = _entry(items=[_item_row(item_code="M-G-24KT-99.9-W")])
-		with self.assertRaises(frappe.ValidationError):
+		"""A ``24KT`` code earns nothing on a receipt: eligibility is the Item's flag."""
+		doc = _entry(items=[_item_row(item_code=UNFLAGGED_24KT)])
+		with self.assertRaises(frappe.ValidationError) as raised:
 			validate_customer_gold_receipt(doc)
+		self.assertIn(NOT_ENABLED, str(raised.exception))
 
 	def test_wrong_inventory_type_blocks(self, *_mocks):
 		"""A DELIBERATE other ownership class still hard-fails.
@@ -224,8 +329,9 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 		choice and always wrong on a Customer Gold receipt.
 		"""
 		doc = _entry(items=[_item_row(inventory_type="Customer Stock")])
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(frappe.ValidationError) as raised:
 			validate_customer_gold_receipt(doc)
+		self.assertIn("requires Inventory Type", str(raised.exception))
 
 	def test_framework_default_regular_stock_is_overridden_not_blocked(self, *_mocks):
 		"""Regression: "Regular Stock" is the framework's own default, not a caller choice.
@@ -249,19 +355,25 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 		self.assertEqual(doc.get("items")[0].inventory_type, "Customer Goods")
 
 	def test_zero_qty_blocks(self, *_mocks):
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(frappe.ValidationError) as raised:
 			validate_customer_gold_receipt(_entry(items=[_item_row(qty=0)]))
+		self.assertIn("Quantity must be greater than zero", str(raised.exception))
 
 	def test_negative_qty_blocks(self, *_mocks):
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(frappe.ValidationError) as raised:
 			validate_customer_gold_receipt(_entry(items=[_item_row(qty=-1)]))
+		self.assertIn("Quantity must be greater than zero", str(raised.exception))
 
 	def test_batch_rules_pass_for_own_batch(self, *_mocks):
 		validate_customer_gold_batches(_entry())
 
 	def test_missing_batch_blocks_at_submit(self, *_mocks):
-		with self.assertRaises(frappe.ValidationError):
+		with self.assertRaises(frappe.ValidationError) as raised:
 			validate_customer_gold_batches(_entry(items=[_item_row(batch_no=None)]))
+		message = str(raised.exception)
+		# "goods", not "gold": the rule covers every row of the receipt, stones included.
+		self.assertIn("Customer goods must be batch tracked", message)
+		self.assertIn(ITEM, message)
 
 	def test_foreign_customer_batch_blocks(self, *_mocks):
 		doc = _entry(items=[_item_row(batch_no="FOREIGN-BATCH")])
@@ -343,6 +455,17 @@ class TestCustomerGoldReceiptDisabled(IntegrationTestCase):
 		validate_customer_gold_receipt(doc)
 		self.assertEqual(doc.get("items")[0].inventory_type, "Regular Stock")
 
+	def test_the_item_flag_is_not_read_when_disabled(self, *_mocks):
+		"""Flow off (gk, alfarsi): the configured type is ordinary stock, so no Item is looked up."""
+		eligible = MagicMock(side_effect=_eligible)
+		doc = _entry(
+			items=[_item_row(item_code=UNFLAGGED_22KT, inventory_type="Regular Stock")]
+		)
+		with patch(f"{MOD}.get_customer_goods_eligible_items", new=eligible):
+			validate_customer_gold_receipt(doc)
+		eligible.assert_not_called()
+		self.assertEqual(doc.get("items")[0].inventory_type, "Regular Stock")
+
 
 NEW_RATE = frappe._dict(
 	gold_rate_reference="R-2026-08-21",
@@ -361,6 +484,7 @@ NEW_RATE = frappe._dict(
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
 class TestCustomerGoldBatchIntegrity(IntegrationTestCase):
 	"""C06 -- item, company and expiry/disabled, beyond the two ownership checks."""
 
@@ -440,10 +564,12 @@ class TestCustomerGoldBatchIntegrity(IntegrationTestCase):
 			self.assertIn("custom_company", cg_receipt._batch_fields())
 
 
+@with_item_masters
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
 class TestCustomerGoldRateSnapshot(IntegrationTestCase):
 	"""The receipt freezes the resolved rate as audit evidence."""
 
@@ -623,10 +749,12 @@ class TestPureQtyExclusion(IntegrationTestCase):
 			)
 
 
+@with_item_masters
 @patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
 class TestCustomerGoldValuationPolicy(IntegrationTestCase):
 	"""C01 -- which valuation fields a receipt stamps, per configured policy.
 
@@ -853,3 +981,497 @@ class TestPurityScaledRate(IntegrationTestCase):
 					return_value=[frappe._dict(attribute_value=value)],
 				):
 					self.assertIsNone(cg_receipt._metal_purity(ITEM))
+
+
+@with_item_masters
+@patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.get_customer_gold_valuation_policy", return_value="Zero Value")
+@patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+@patch(f"{MOD}.reference_rate", return_value=None)
+class TestCustomerGoodsItemFlag(IntegrationTestCase):
+	"""The Item's ``Inventory Type Can be Customer Goods`` flag is the only eligibility rule.
+
+	Subcontracting Settings used to keep a second list (``customer_gold_items``) and the two
+	disagreed on kg-gk: the rate-reference 24KT item was unflagged while flagged items were missing
+	from the list. The list is gone; ``customer_24kt_item`` is only the rate reference now, and is
+	not admitted implicitly either.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _validate(self, *rows):
+		doc = _entry(items=list(rows))
+		validate_customer_gold_receipt(doc)
+		return doc
+
+	def _refused(self, *rows):
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self._validate(*rows)
+		return str(raised.exception)
+
+	def test_a_flagged_item_passes(self, *_mocks):
+		"""T01."""
+		doc = self._validate(_item_row(inventory_type="Regular Stock"))
+		self.assertEqual(doc.get("items")[0].inventory_type, "Customer Goods")
+
+	def test_an_unflagged_item_is_refused_and_told_which_field_to_tick(self, *_mocks):
+		"""T02. The message names the Item field, so the user knows exactly what to change."""
+		message = self._refused(_item_row(item_code=UNFLAGGED_22KT))
+		self.assertIn(NOT_ENABLED, message)
+		self.assertIn(UNFLAGGED_22KT, message)
+		self.assertIn(FLAG_LABEL, message)
+
+	def test_a_flagged_item_that_is_not_the_rate_reference_passes(self, *_mocks):
+		"""T03. Nothing lists it: SETTINGS names only the reference item, and this is not it."""
+		self.assertNotIn("customer_gold_items", SETTINGS)
+		self.assertNotEqual(GOLD_22KT, SETTINGS.customer_24kt_item)
+		doc = self._validate(
+			_item_row(item_code=GOLD_22KT, inventory_type="Regular Stock")
+		)
+		self.assertEqual(doc.get("items")[0].inventory_type, "Customer Goods")
+
+	def test_a_leftover_settings_list_is_ignored(self, *_mocks):
+		"""T04. An unmigrated site still carries the retired list on its Settings.
+
+		It must neither admit an unflagged item it names nor be needed by a flagged one.
+		"""
+		legacy = frappe._dict(
+			SETTINGS, customer_gold_items=[frappe._dict(item=UNFLAGGED_22KT)]
+		)
+		with patch(f"{MOD}.get_customer_gold_settings", return_value=legacy):
+			message = self._refused(_item_row(item_code=UNFLAGGED_22KT))
+			self._validate(_item_row(item_code=GOLD_22KT))
+		self.assertIn(NOT_ENABLED, message)
+
+	def test_ticking_the_flag_admits_the_item_on_the_next_validate(self, *_mocks):
+		"""T05. No cache between the Item and the receipt -- the kg-gk fix is ticking one box."""
+		doc = _entry(items=[_item_row(inventory_type="Regular Stock")])
+		with patch.dict(ITEM_FLAGS, {ITEM: 0}):
+			with self.assertRaises(frappe.ValidationError) as raised:
+				validate_customer_gold_receipt(doc)
+		self.assertIn(NOT_ENABLED, str(raised.exception))
+
+		with patch.dict(ITEM_FLAGS, {ITEM: 1}):
+			validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].inventory_type, "Customer Goods")
+
+	def test_clearing_the_flag_refuses_the_item_on_the_next_validate(self, *_mocks):
+		"""T06. The same draft, re-validated after the flag was cleared, is refused."""
+		doc = _entry()
+		with patch.dict(ITEM_FLAGS, {ITEM: 1}):
+			validate_customer_gold_receipt(doc)
+
+		with patch.dict(ITEM_FLAGS, {ITEM: 0}):
+			with self.assertRaises(frappe.ValidationError) as raised:
+				validate_customer_gold_receipt(doc)
+		self.assertIn(NOT_ENABLED, str(raised.exception))
+
+	def test_a_refused_row_leaves_every_row_as_it_arrived(self, *_mocks):
+		"""T07. All rows are checked before any is changed, so row 3 failing touches nothing.
+
+		No row is stamped Customer Goods or with a valuation flag, and no gold rate is resolved
+		or frozen -- a refused receipt must not look half-processed.
+		"""
+		doc = _entry(
+			items=[
+				_item_row(1, inventory_type="Regular Stock"),
+				_item_row(2, item_code=GOLD_22KT, inventory_type="Regular Stock"),
+				_item_row(3, item_code=UNFLAGGED_22KT, inventory_type="Regular Stock"),
+			]
+		)
+		with patch(
+			f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE
+		) as resolve:
+			with self.assertRaises(frappe.ValidationError) as raised:
+				validate_customer_gold_receipt(doc)
+
+		self.assertIn("Row #3", str(raised.exception))
+		self.assertIn(NOT_ENABLED, str(raised.exception))
+		resolve.assert_not_called()
+		self.assertIsNone(doc.get("custom_gold_rate_per_gram"))
+		for row in doc.get("items"):
+			with self.subTest(row=row.idx):
+				self.assertEqual(row.inventory_type, "Regular Stock")
+				self.assertIsNone(row.get("allow_zero_valuation_rate"))
+				self.assertIsNone(row.get("set_basic_rate_manually"))
+
+	def test_the_item_master_is_read_once_per_receipt(self, *_mocks):
+		"""Two queries for the whole receipt, never one per row."""
+		eligible = MagicMock(side_effect=_eligible)
+		details = MagicMock(side_effect=_details)
+		codes = [ITEM, GOLD_22KT, DIAMOND]
+		with (
+			patch(f"{MOD}.get_customer_goods_eligible_items", new=eligible),
+			patch(f"{MOD}._receipt_item_details", new=details),
+		):
+			self._validate(
+				*(_item_row(idx, item_code=code) for idx, code in enumerate(codes, 1))
+			)
+		eligible.assert_called_once_with(codes)
+		details.assert_called_once_with(codes)
+
+	def test_other_stock_entry_types_never_read_the_flag(self, *_mocks):
+		"""T11/T12. With the flow ON, only the configured type is a Customer Gold receipt.
+
+		A plain Material Receipt of an unflagged item is ordinary stock: not refused, not
+		re-tagged, and its Item is not even looked up.
+		"""
+		for stock_entry_type in ("Material Receipt", "Material Transfer (WORK ORDER)"):
+			with self.subTest(stock_entry_type=stock_entry_type):
+				eligible = MagicMock(side_effect=_eligible)
+				doc = _entry(
+					stock_entry_type=stock_entry_type,
+					_customer=None,
+					items=[
+						_item_row(
+							item_code=UNFLAGGED_22KT, inventory_type="Regular Stock"
+						)
+					],
+				)
+				with patch(f"{MOD}.get_customer_goods_eligible_items", new=eligible):
+					validate_customer_gold_receipt(doc)
+				eligible.assert_not_called()
+				row = doc.get("items")[0]
+				self.assertEqual(row.inventory_type, "Regular Stock")
+				self.assertIsNone(row.get("allow_zero_valuation_rate"))
+
+
+def _stone_row(idx=1, item_code=DIAMOND, basic_rate=0, **overrides):
+	"""A stone row: counted in Carat, rate typed by the user."""
+	return _item_row(
+		idx, item_code=item_code, qty=2.5, basic_rate=basic_rate, **overrides
+	)
+
+
+#: Evidence a draft froze while it still had a gold row.
+STALE_RATE_EVIDENCE = frappe._dict(
+	custom_gold_rate_reference="R-2026-08-15",
+	custom_gold_rate_date="2026-08-15",
+	custom_gold_rate_source="Jain Jewels",
+	custom_gold_rate_field="live_rate",
+	custom_gold_rate_raw=72000.0,
+	custom_gold_rate_unit="Per 10 Gram",
+	custom_gold_rate_per_gram=7200.0,
+	custom_gold_rate_factor=10.0,
+	custom_gold_rate_currency="INR",
+	custom_gold_rate_check_reference=7000.0,
+	custom_gold_rate_check_source="Purchase Receipt PR-1",
+	custom_gold_rate_check_ratio=1.03,
+	custom_gold_rate_override_by="Administrator",
+)
+
+
+@with_item_masters
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+class TestCustomerGoodsStones(IntegrationTestCase):
+	"""Diamonds and gemstones on a Customer Gold receipt.
+
+	Gold and findings (templates ``M`` / ``F``) are priced from the per-gram gold rate, so they
+	must be stocked in grams. A stone is received in its own UOM at the rate the user types, and
+	zero is a valid rate: the gold rate is never fetched for it. Every other gate -- flag, exists,
+	enabled, stock item, batch controlled -- is the same for both.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	ACCOUNTS = TestCustomerGoldValuationPolicy.ACCOUNTS
+
+	def _validate(self, doc, policy="Zero Value"):
+		"""Validate ``doc`` under ``policy``. Returns the rate resolver and the check's reference."""
+		with (
+			patch(f"{MOD}.get_customer_gold_valuation_policy", return_value=policy),
+			patch(
+				f"{MOD}.get_customer_gold_company_settings", return_value=self.ACCOUNTS
+			),
+			patch(
+				f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE
+			) as resolve,
+			patch(f"{MOD}.reference_rate", return_value=None) as reference,
+		):
+			validate_customer_gold_receipt(doc)
+		return resolve, reference
+
+	def _refused(self, *rows):
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self._validate(_entry(items=list(rows)))
+		return str(raised.exception)
+
+	# -- gates --------------------------------------------------------------------
+	def test_a_flagged_carat_stone_passes(self, *_mocks):
+		"""Stones are not held to Gram -- the reason the user could not receive them before."""
+		for code in (DIAMOND, GEMSTONE):
+			with self.subTest(item=code):
+				doc = _entry(
+					items=[_stone_row(item_code=code, inventory_type="Regular Stock")]
+				)
+				self._validate(doc)
+				self.assertEqual(doc.get("items")[0].inventory_type, "Customer Goods")
+
+	def test_gold_stocked_in_carat_is_still_refused(self, *_mocks):
+		"""The per-gram gold rate cannot price a Carat of gold, so the Gram gate stays for gold."""
+		message = self._refused(_item_row(item_code=GOLD_IN_CARAT))
+		self.assertIn("Row #1: Item", message)
+		self.assertIn("has Stock UOM", message)
+		self.assertIn("Carat", message)
+
+	def test_a_flagged_finding_in_gram_passes_and_resolves_the_gold_rate(self, *_mocks):
+		"""A finding is gold, not a stone: a findings-only receipt still freezes the gold rate."""
+		doc = _entry(
+			items=[_item_row(item_code=FINDING, inventory_type="Regular Stock")]
+		)
+		resolve, _reference = self._validate(doc)
+		resolve.assert_called_once()
+		self.assertEqual(doc.get("items")[0].inventory_type, "Customer Goods")
+		self.assertEqual(doc.custom_gold_rate_per_gram, RATE.per_gram_rate)
+
+	def test_a_finding_in_carat_is_refused_like_gold(self, *_mocks):
+		"""Template ``F`` is held to Gram exactly as ``M`` is. Were it classed as a stone, this
+		Carat finding would pass at a typed rate."""
+		message = self._refused(_item_row(item_code=FINDING_IN_CARAT))
+		self.assertIn("Row #1: Item", message)
+		self.assertIn(FINDING_IN_CARAT, message)
+		self.assertIn("has Stock UOM", message)
+		self.assertIn("Carat", message)
+
+	def test_a_stone_without_batches_is_refused(self, *_mocks):
+		message = self._refused(_stone_row(item_code=STONE_WITHOUT_BATCH))
+		self.assertIn("must be batch controlled", message)
+
+	def test_a_negative_stone_rate_is_refused(self, *_mocks):
+		message = self._refused(_stone_row(basic_rate=-1))
+		self.assertIn("cannot be negative", message)
+		self.assertIn(DIAMOND, message)
+
+	# -- the gold rate is for gold only -------------------------------------------
+	def test_a_stones_only_receipt_resolves_no_gold_rate(self, *_mocks):
+		"""No fetch, no check, no evidence -- so a missing feed cannot block a stone receipt."""
+		doc = _entry(items=[_stone_row(1), _stone_row(2, item_code=GEMSTONE)])
+		resolve, reference = self._validate(doc)
+		resolve.assert_not_called()
+		reference.assert_not_called()
+		for fieldname in STALE_RATE_EVIDENCE:
+			self.assertIsNone(doc.get(fieldname), fieldname)
+
+	def test_a_draft_that_lost_its_gold_row_drops_the_old_rate(self, *_mocks):
+		"""Saved with gold, edited to stones only: the frozen rate no longer describes it."""
+		doc = _entry(items=[_stone_row()], **STALE_RATE_EVIDENCE)
+		self._validate(doc)
+		for fieldname in STALE_RATE_EVIDENCE:
+			self.assertIsNone(doc.get(fieldname), fieldname)
+
+	# -- valuation ----------------------------------------------------------------
+	def test_nominal_keeps_a_typed_stone_rate(self, *_mocks):
+		"""Above zero it is booked like a gold row: manual rate, liability contra."""
+		doc = _entry(items=[_stone_row(basic_rate=1500)])
+		self._validate(doc, "Nominal")
+		row = doc.get("items")[0]
+		self.assertEqual(row.basic_rate, 1500)
+		self.assertEqual(row.set_basic_rate_manually, 1)
+		self.assertEqual(row.allow_zero_valuation_rate, 0)
+		self.assertEqual(row.expense_account, self.ACCOUNTS.liability_account)
+
+	def test_nominal_zero_values_a_stone_typed_at_zero(self, *_mocks):
+		"""Nothing to book, so the allow-zero flag and no contra account."""
+		doc = _entry(items=[_stone_row(basic_rate=0)])
+		self._validate(doc, "Nominal")
+		row = doc.get("items")[0]
+		self.assertEqual(row.allow_zero_valuation_rate, 1)
+		self.assertEqual(row.set_basic_rate_manually, 0)
+		self.assertFalse(row.get("expense_account"))
+
+	def test_nominal_prices_gold_from_the_rate_and_stones_from_the_row(self, *_mocks):
+		"""A mixed receipt: the rate is resolved once, and reaches the gold row only."""
+		doc = _entry(items=[_item_row(1), _stone_row(2, basic_rate=1500)])
+		resolve, _reference = self._validate(doc, "Nominal")
+		gold, stone = doc.get("items")
+		resolve.assert_called_once()
+		self.assertEqual(doc.custom_gold_rate_per_gram, RATE.per_gram_rate)
+		# ITEM is the rate reference, so its purity scale is 1.
+		self.assertEqual(gold.basic_rate, RATE.per_gram_rate)
+		self.assertEqual(stone.basic_rate, 1500)
+		for row in (gold, stone):
+			self.assertEqual(row.set_basic_rate_manually, 1)
+			self.assertEqual(row.expense_account, self.ACCOUNTS.liability_account)
+
+	def test_nominal_prices_a_finding_in_gram_from_the_gold_rate(self, *_mocks):
+		"""The finding's rate is the gold rate restated by its purity, not a typed one.
+
+		On the stone path this untyped row would be zero-valued with the allow-zero flag instead.
+		"""
+		doc = _entry(items=[_item_row(item_code=FINDING)])
+		purities = {ITEM: PRIMARY_PURITY, FINDING: FINDING_PURITY}
+		with (
+			patch.object(cg_receipt, "_metal_purity", side_effect=purities.__getitem__),
+			patch.object(
+				cg_receipt, "_rate_for_item", wraps=cg_receipt._rate_for_item
+			) as rate_for_item,
+		):
+			resolve, _reference = self._validate(doc, "Nominal")
+		row = doc.get("items")[0]
+		resolve.assert_called_once()
+		rate_for_item.assert_called_once_with(RATE.per_gram_rate, FINDING, ITEM)
+		# 7,200.00 x 75.4 / 99.9. Hand-computed, not derived from the code under test.
+		self.assertAlmostEqual(row.basic_rate, 5434.2342, places=4)
+		self.assertEqual(row.set_basic_rate_manually, 1)
+		self.assertEqual(row.allow_zero_valuation_rate, 0)
+		self.assertEqual(row.expense_account, self.ACCOUNTS.liability_account)
+
+	def test_zero_value_zero_values_a_typed_stone_rate(self, *_mocks):
+		"""Under Zero Value every row is zero-valued, stones included, whatever was typed."""
+		doc = _entry(items=[_stone_row(basic_rate=1500)])
+		self._validate(doc, "Zero Value")
+		row = doc.get("items")[0]
+		self.assertEqual(row.allow_zero_valuation_rate, 1)
+		self.assertEqual(row.set_basic_rate_manually, 0)
+		self.assertFalse(row.get("expense_account"))
+
+
+class TestCustomerGoodsEligibility(IntegrationTestCase):
+	"""``customer_goods_eligibility`` -- the one rule, read from the Item master.
+
+	Its query shape is the contract: one read per document, the flag in the filter, nothing
+	fetched for nothing. ``_receipt_item_details`` is the receipt's second read, pinned the same way.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_one_query_with_the_flag_in_the_filter(self):
+		with patch(
+			f"{ELIGIBILITY_MOD}.frappe.get_all", return_value=["A-ITEM"]
+		) as get_all:
+			eligible = customer_goods_eligibility.get_customer_goods_eligible_items(
+				["B-ITEM", "A-ITEM", "", None, "B-ITEM"]
+			)
+		get_all.assert_called_once_with(
+			"Item",
+			filters={
+				"name": ["in", ["A-ITEM", "B-ITEM"]],
+				"custom_inventory_type_can_be_customer_goods": 1,
+			},
+			pluck="name",
+		)
+		self.assertEqual(eligible, {"A-ITEM"})
+		self.assertIsInstance(eligible, set)
+
+	def test_batch_controlled_also_requires_batches(self):
+		"""For a caller about to mint a batch: a flagged item without batches is not eligible."""
+		with patch(
+			f"{ELIGIBILITY_MOD}.frappe.get_all", return_value=["A-ITEM"]
+		) as get_all:
+			eligible = customer_goods_eligibility.get_customer_goods_eligible_items(
+				["B-ITEM", "A-ITEM"], batch_controlled=True
+			)
+		get_all.assert_called_once_with(
+			"Item",
+			filters={
+				"name": ["in", ["A-ITEM", "B-ITEM"]],
+				"custom_inventory_type_can_be_customer_goods": 1,
+				"has_batch_no": 1,
+			},
+			pluck="name",
+		)
+		self.assertEqual(eligible, {"A-ITEM"})
+
+	def test_the_default_call_does_not_require_batches(self):
+		"""The receipt reads the flag alone, then refuses a batchless item with its own message."""
+		for kwargs in ({}, {"batch_controlled": False}):
+			with self.subTest(kwargs=kwargs):
+				with patch(
+					f"{ELIGIBILITY_MOD}.frappe.get_all", return_value=[]
+				) as get_all:
+					customer_goods_eligibility.get_customer_goods_eligible_items(
+						["A-ITEM"], **kwargs
+					)
+				filters = get_all.call_args.kwargs["filters"]
+				self.assertNotIn("has_batch_no", filters)
+				self.assertEqual(
+					filters["custom_inventory_type_can_be_customer_goods"], 1
+				)
+
+	def test_every_call_is_a_fresh_query(self):
+		"""No cache: a flag cleared between two documents is seen by the second."""
+		with patch(
+			f"{ELIGIBILITY_MOD}.frappe.get_all", side_effect=[["A-ITEM"], []]
+		) as get_all:
+			first = customer_goods_eligibility.get_customer_goods_eligible_items(
+				["A-ITEM"]
+			)
+			second = customer_goods_eligibility.get_customer_goods_eligible_items(
+				["A-ITEM"]
+			)
+		self.assertEqual(get_all.call_count, 2)
+		self.assertEqual(first, {"A-ITEM"})
+		self.assertEqual(second, set())
+
+	def test_nothing_to_look_up_costs_no_query(self):
+		for codes in ([], [None, ""], None):
+			with self.subTest(codes=codes):
+				with patch(f"{ELIGIBILITY_MOD}.frappe.get_all") as get_all:
+					self.assertEqual(
+						customer_goods_eligibility.get_customer_goods_eligible_items(
+							codes
+						),
+						set(),
+					)
+				get_all.assert_not_called()
+
+	def test_the_single_item_form_reads_the_flag(self):
+		for stored, expected in ((1, True), (0, False), (None, False)):
+			with self.subTest(stored=stored):
+				with patch(
+					f"{ELIGIBILITY_MOD}.frappe.db.get_value", return_value=stored
+				) as get_value:
+					self.assertIs(
+						customer_goods_eligibility.can_be_customer_goods(ITEM), expected
+					)
+				get_value.assert_called_once_with(
+					"Item", ITEM, "custom_inventory_type_can_be_customer_goods"
+				)
+
+	def test_the_single_item_form_is_false_for_no_item(self):
+		with patch(f"{ELIGIBILITY_MOD}.frappe.db.get_value") as get_value:
+			self.assertFalse(customer_goods_eligibility.can_be_customer_goods(None))
+			self.assertFalse(customer_goods_eligibility.can_be_customer_goods(""))
+		get_value.assert_not_called()
+
+	def test_the_gold_templates_are_one_constant(self):
+		"""Settlement and the receipt must agree on what is gold; fulfilment re-exports it."""
+		self.assertEqual(customer_goods_eligibility.CUSTOMER_GOLD_TEMPLATES, ("M", "F"))
+		self.assertIs(
+			customer_gold_fulfilment.CUSTOMER_GOLD_TEMPLATES,
+			customer_goods_eligibility.CUSTOMER_GOLD_TEMPLATES,
+		)
+
+	def test_the_receipt_reads_its_item_details_in_one_query(self):
+		masters = [_master(DIAMOND, "D", "Carat"), _master(ITEM, "M")]
+		with patch(f"{MOD}.frappe.get_all", return_value=masters) as get_all:
+			details = cg_receipt._receipt_item_details([ITEM, "", DIAMOND, ITEM])
+		get_all.assert_called_once_with(
+			"Item",
+			filters={"name": ["in", [DIAMOND, ITEM]]},
+			fields=[
+				"name",
+				"variant_of",
+				"disabled",
+				"is_stock_item",
+				"has_batch_no",
+				"stock_uom",
+			],
+		)
+		self.assertEqual(set(details), {DIAMOND, ITEM})
+		self.assertEqual(details[DIAMOND].stock_uom, "Carat")
+
+	def test_the_receipt_reads_no_item_details_for_no_rows(self):
+		with patch(f"{MOD}.frappe.get_all") as get_all:
+			self.assertEqual(cg_receipt._receipt_item_details([None, ""]), {})
+		get_all.assert_not_called()

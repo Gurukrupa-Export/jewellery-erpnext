@@ -58,8 +58,12 @@ from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
 	resolve_customer_gold_rate_for_date,
 )
 from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+	_receipt_names,
 	get_booked_rate,
 	get_returnable_qty,
+)
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOLD_TEMPLATES,
 )
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	VALUATION_NOMINAL,
@@ -67,7 +71,6 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 	get_customer_gold_valuation_policy,
 	is_customer_gold_enabled,
 )
-
 
 # Bound on how many times one batch/rate/date may be revalued and cancelled before the
 # retry is treated as a loop rather than a correction. See ``_resolve_revaluation_event_key``.
@@ -129,6 +132,14 @@ def revalue_customer_gold(
 			title=frappe._("Customer Gold Entitlement"),
 		)
 
+	# Converted metal is named for what it is, straight after the owner check -- ahead of the
+	# partial check, which would send it to split a batch that is not revaluable whole either.
+	# This only ADDS a refusal: a batch with a booked rate, or with no recorded lineage, meets
+	# the checks below in the order it always did.
+	booked_rate = get_booked_rate(company, customer, batch_no)
+	if booked_rate is None:
+		_refuse_converted_metal(company, customer, batch_no)
+
 	free = get_returnable_qty(company, customer, batch_no, warehouse, item_code)
 	if free <= 0:
 		frappe.throw(
@@ -141,8 +152,8 @@ def revalue_customer_gold(
 
 	_reject_partial(batch_no, warehouse, item_code, free)
 	_reject_zero_value_item(item_code)
+	_reject_non_gold_item(item_code)
 
-	booked_rate = get_booked_rate(company, customer, batch_no)
 	if booked_rate is None:
 		frappe.throw(
 			frappe._(
@@ -177,7 +188,9 @@ def revalue_customer_gold(
 	#
 	# The rate is formatted at fixed precision so that 7500 and 7500.0 produce one key rather
 	# than two.
-	event_key = _resolve_revaluation_event_key(company, batch_no, posting_date, new_rate)
+	event_key = _resolve_revaluation_event_key(
+		company, batch_no, posting_date, new_rate
+	)
 
 	entry = _build_revaluation_entry(
 		company,
@@ -216,7 +229,6 @@ def revalue_customer_gold(
 	)
 
 	return entry, delta
-
 
 
 def _resolve_revaluation_event_key(company, batch_no, posting_date, new_rate):
@@ -321,7 +333,9 @@ def _revaluation_event_is_live(row):
 	A row with no usable reference is treated as LIVE. That is the safe direction: it refuses a
 	second posting rather than risking a double one.
 	"""
-	if row.get("reference_doctype") != "Stock Reconciliation" or not row.get("reference_docname"):
+	if row.get("reference_doctype") != "Stock Reconciliation" or not row.get(
+		"reference_docname"
+	):
 		return True
 
 	docstatus = frappe.db.get_value(
@@ -332,6 +346,39 @@ def _revaluation_event_is_live(row):
 		return False
 
 	return cint(docstatus) != 2
+
+
+def _refuse_converted_metal(company, customer, batch_no):
+	"""Refuse to revalue CONVERTED customer metal, naming the receipts it was made from.
+
+	Its carrying value is the customer's booked value plus company alloy, it has no Receipt event
+	of its own to take a baseline from, and today's quote is for the receipt's purity, not its
+	own. Whether it may be revalued at all, and at what rate, is Finance decision D05/D08; the
+	SOP's answer for metal kept for the next order is to revalue it before converting it
+	(Example E: revalue, then repack). Until Finance decides, the refusal names the receipts and
+	sends the user to Accounts; it prescribes no route.
+
+	Returns quietly when the batch has no recorded lineage (``lineage_receipts``), leaving the
+	refusal it always had. Only the verified owner's receipts are ever read or named.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		lineage_receipts,
+	)
+
+	receipts = lineage_receipts(company, customer, batch_no)
+	if not receipts:
+		return
+
+	frappe.throw(
+		frappe._(
+			"Batch {0} was converted from customer gold received on {1} and carries no booked "
+			"value of its own. Under the SOP you revalue before converting (Example E: revalue, "
+			"then repack); whether converted metal may be revalued at all, and at what rate "
+			"with the company's alloy inside it, awaits Finance decisions D05/D08. Ask "
+			"Accounts how to proceed."
+		).format(frappe.bold(batch_no), _receipt_names(receipts)),
+		title=frappe._("Customer Gold Revaluation: Converted Metal"),
+	)
 
 
 def _reject_partial(batch_no, warehouse, item_code, free):
@@ -376,6 +423,26 @@ def _reject_zero_value_item(item_code):
 				"reconciliation value to zero. Clear that flag before revaluing customer gold."
 			).format(frappe.bold(item_code)),
 			title=frappe._("Item Would Be Zero-Valued"),
+		)
+
+
+def _reject_non_gold_item(item_code):
+	"""Only customer GOLD moves with the gold rate; a stone is never restated against it.
+
+	Stones (diamonds, gemstones) are received on a Customer Gold receipt at the rate the user
+	types, in their own UOM. Restating one here would book the gold per-gram rate against carats
+	and post the difference to the Customer Gold Liability.
+	"""
+	if (
+		frappe.db.get_value("Item", item_code, "variant_of")
+		not in CUSTOMER_GOLD_TEMPLATES
+	):
+		frappe.throw(
+			frappe._(
+				"Item {0} is not customer gold (metal or finding), so it is not revalued at the "
+				"Customer Gold rate. It keeps the rate it was received at."
+			).format(frappe.bold(item_code)),
+			title=frappe._("Not Customer Gold"),
 		)
 
 

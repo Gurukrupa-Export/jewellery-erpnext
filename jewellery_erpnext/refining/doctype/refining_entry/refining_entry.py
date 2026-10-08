@@ -3,6 +3,9 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	can_be_customer_goods,
+)
 from jewellery_erpnext.refining.constants import (
 	BATCH_TYPE_UNUSED,
 	REFINING_TYPE_SCRAP,
@@ -157,6 +160,13 @@ class RefiningEntry(Document):
 					)
 
 	def on_submit(self):
+		# The transfer moves one Stock Entry line per batch, and each line writes its own
+		# bundles, ledger entries and bins (~16-28 writes): RFN-SCP-26-00022's 12,298 lines
+		# crossed frappe's 200k writes-per-transaction cap and were reverted
+		# (TooManyWritesError). Same approach as Main Slip's loss entries; x4 keeps the cap
+		# in step with the 4500 s long-queue budget the submission runs under.
+		frappe.db.MAX_WRITES_PER_TRANSACTION *= 4
+
 		if cint(self.is_external):
 			self.on_submit_external()
 			return
@@ -797,6 +807,9 @@ class RefiningEntry(Document):
 			se.append("items", row)
 
 		self._assert_no_loss_output(se)
+		# Refining items default their expense account to the Refining Scrap warehouse's own
+		# Stock account, which ERPNext rejects as a Difference Account.
+		self.set_dust_receipt_difference_account(se)
 
 		se.insert(ignore_permissions=True)
 		se.submit()
@@ -1577,7 +1590,7 @@ class RefiningEntry(Document):
 			if bom_details
 			else 0.0
 		)
-		purity = self.get_item_purity(serial_no.item_code)
+		purity = self.get_serial_purity(serial_no.name, serial_no.item_code, bom_no)
 		# Pure gold is computed from the METAL weight (gold alloy only), NOT the
 		# metal-and-finding (net) weight: findings are not gold, and applying the gold
 		# purity to them over-counts the recoverable metal.
@@ -1697,15 +1710,11 @@ class RefiningEntry(Document):
 				#
 				# Queried per the LAST NOT-STARTED Manufacturing Operation on the MWO — where the
 				# material physically sits — falling back to the MWO's manufacturing_operation.
+				from jewellery_erpnext.utils import latest_operation
+
 				last_mop = (
-					frappe.db.get_value(
-						"Manufacturing Operation",
-						{
-							"manufacturing_work_order": mwo_row.manufacturing_work_order,
-							"status": "Not Started",
-						},
-						"name",
-						order_by="creation desc",
+					latest_operation(
+						mwo_row.manufacturing_work_order, status="Not Started"
 					)
 					or mwo_row.manufacturing_operation
 				)
@@ -1805,12 +1814,26 @@ class RefiningEntry(Document):
 			# serial_no_details (see _serial_movement_rows).
 			drop_design_code = bool(cint(self.is_external))
 			for sn_row in self.serial_no_details:
-				purity = self.get_item_purity(sn_row.item_code)
+				bom_no = frappe.db.get_value(
+					"Serial No", sn_row.serial_number, "custom_bom_no"
+				)
+				if not bom_no:
+					bom_no = frappe.db.get_value(
+						"BOM", {"item": sn_row.item_code, "is_active": 1}, "name"
+					)
+				# The scan already stored the purity read from the serial's own BOM.
+				purity = sn_row.metal_purity or self.get_serial_purity(
+					sn_row.serial_number, sn_row.item_code, bom_no
+				)
 				if not purity:
 					frappe.throw(
 						_(
-							"Metal Purity is mandatory for Item {0}. Please check Item Variant Attribute details."
-						).format(frappe.bold(sn_row.item_code))
+							"Metal Purity not found for Serial No {0}. Please set Metal Purity on its BOM {1} or on Item {2}."
+						).format(
+							frappe.bold(sn_row.serial_number),
+							frappe.bold(bom_no or "-"),
+							frappe.bold(sn_row.item_code),
+						)
 					)
 				if not drop_design_code:
 					# Internal: the FG item row is what the Material Transfer SE moves
@@ -1829,14 +1852,6 @@ class RefiningEntry(Document):
 					)
 
 				# Also add the BOM components for visibility (they will be skipped during transfer/repack)
-				bom_no = frappe.db.get_value(
-					"Serial No", sn_row.serial_number, "custom_bom_no"
-				)
-				if not bom_no:
-					bom_no = frappe.db.get_value(
-						"BOM", {"item": sn_row.item_code, "is_active": 1}, "name"
-					)
-
 				if bom_no:
 					bom_items = frappe.db.get_all(
 						"BOM Item",
@@ -1847,9 +1862,10 @@ class RefiningEntry(Document):
 						# ERPNext allows a BOM to list its own parent item once, and this app never strips
 						# it. That row is the DESIGN CODE again — a piece count, not meltable grams — and
 						# the consolidation key below includes serial_no (set on the FG row, blank here) so
-						# the two never merge. Dropped on the external path only, leaving internal weights
-						# and the internal recovery distribution untouched.
-						if drop_design_code and b_item.item_code == sn_row.item_code:
+						# the two never merge. Dropped on both paths: internally it showed the design code
+						# twice, and as a BOM Component it fed the recovery inputs a 1-piece "1 g" row (or,
+						# being the only component, zeroed them instead of using the serial's pure weight).
+						if b_item.item_code == sn_row.item_code:
 							continue
 						self.append(
 							"material_items",
@@ -1999,7 +2015,9 @@ class RefiningEntry(Document):
 							input_item_map[pct_flt] = item.item_code
 			else:
 				for sn in self.serial_no_details:
-					purity = self.get_item_purity(sn.item_code)
+					purity = sn.metal_purity or self.get_serial_purity(
+						sn.serial_number, sn.item_code
+					)
 					if purity:
 						pct = frappe.db.get_value(
 							"Attribute Value", purity, "purity_percentage"
@@ -2721,14 +2739,19 @@ class RefiningEntry(Document):
 						},
 					)
 
-					allocated_qty = sum(flt(a["qty"], precision) for a in allocations)
-					if self.refining_type == "Scrap Refining" and allocated_qty < flt(
-						item.qty, precision
-					):
+					# Round the sum before comparing: 3-decimal allocations still add up in
+					# binary floating point (0.022 + 0.006 = 0.027999999999999997), and the
+					# ~1e-18 left over became a zero-qty dust receipt row that ERPNext
+					# rejects ("Qty in Stock UOM can not be zero") — RFN-SCP-26-00023.
+					allocated_qty = flt(
+						sum(flt(a["qty"], precision) for a in allocations), precision
+					)
+					shortfall = flt(flt(item.qty, precision) - allocated_qty, precision)
+					if self.refining_type == "Scrap Refining" and shortfall >= min_qty:
 						self._dust_shortfalls.append(
 							{
 								"item_code": item.item_code,
-								"qty": flt(item.qty, precision) - allocated_qty,
+								"qty": shortfall,
 								"uom": item.uom,
 								"purity": item.purity,
 							}
@@ -2763,11 +2786,12 @@ class RefiningEntry(Document):
 						precision,
 					)
 					transfer_qty = min(transfer_qty, max(0.0, bin_qty))
-					if transfer_qty < flt(item.qty, precision):
+					shortfall = flt(flt(item.qty, precision) - transfer_qty, precision)
+					if shortfall >= min_qty:
 						self._dust_shortfalls.append(
 							{
 								"item_code": item.item_code,
-								"qty": flt(item.qty, precision) - transfer_qty,
+								"qty": shortfall,
 								"uom": item.uom,
 								"purity": item.purity,
 							}
@@ -3128,7 +3152,12 @@ class RefiningEntry(Document):
 			# pending operation plus any further (downstream) operations in the route.
 			pending_mops = frappe.db.get_all(
 				"Manufacturing Operation",
-				filters={"manufacturing_work_order": mwo, "status": "Not Started"},
+				# Revert = left behind by a cancelled IR, not part of the route any more.
+				filters={
+					"manufacturing_work_order": mwo,
+					"status": "Not Started",
+					"department_ir_status": ["!=", "Revert"],
+				},
 				pluck="name",
 			)
 			for mop in pending_mops:
@@ -3158,7 +3187,9 @@ class RefiningEntry(Document):
 
 		added = False
 		for sf in shortfalls:
-			if sf["qty"] <= 0:
+			# Below a milligram is float residue, not metal: a row that rounds to zero
+			# fails the whole submit.
+			if flt(sf["qty"], 3) < 0.001:
 				continue
 			dust_batch = self.get_dust_opening_batch(sf["item_code"])
 			se.append(
@@ -3178,11 +3209,46 @@ class RefiningEntry(Document):
 		if not added:
 			return
 
+		self.set_dust_receipt_difference_account(se)
+
 		se.insert(ignore_permissions=True)
 		se.submit()
 
 		self.db_set("receiving_se", se.name)
 		self.db_set("dust_received", 1)
+
+	def set_dust_receipt_difference_account(self, se):
+		# Left blank, ERPNext takes the Difference Account from the item's (then item
+		# group's) default expense account. On a Refining Scrap item that default can be the
+		# scrap warehouse's own Stock account, which ERPNext rejects outright -- and the
+		# submission dies inside on_submit. The shortfall is a stock gain, so keep a
+		# configured account only when it is usable and otherwise book the gain to the
+		# company's Stock Adjustment Account.
+		from erpnext.setup.doctype.item_group.item_group import get_item_group_defaults
+		from erpnext.stock.doctype.item.item import get_item_defaults
+
+		stock_adjustment_account = frappe.get_cached_value(
+			"Company", self.company, "stock_adjustment_account"
+		)
+
+		for row in se.items:
+			if row.expense_account:
+				continue
+
+			configured = get_item_defaults(row.item_code, self.company).get(
+				"expense_account"
+			) or get_item_group_defaults(row.item_code, self.company).get(
+				"expense_account"
+			)
+
+			if (
+				configured
+				and frappe.get_cached_value("Account", configured, "account_type")
+				!= "Stock"
+			):
+				row.expense_account = configured
+			else:
+				row.expense_account = stock_adjustment_account
 
 	def create_repack_se(self):
 		# Savepoint taken at entry so a failed attempt (see the submit except below) can be
@@ -4113,11 +4179,7 @@ class RefiningEntry(Document):
 		"""True when the Item permits a Customer Goods inventory type. Minting a Customer
 		Goods batch for an item without this flag hard-fails in
 		Batch.update_inventory_dimentions, so recovered-output tagging is gated on it."""
-		return bool(
-			frappe.db.get_value(
-				"Item", item_code, "custom_inventory_type_can_be_customer_goods"
-			)
-		)
+		return can_be_customer_goods(item_code)
 
 	def _stamp_batch_ownership(self, se):
 		"""Stamp inventory_type + customer on every batched row of ``se`` from its batch's
@@ -4910,6 +4972,36 @@ class RefiningEntry(Document):
 		if item_code and item_code.startswith("DL-"):
 			return "D-" + item_code[3:]
 		return item_code
+
+	def get_serial_purity(self, serial_no, item_code, bom_no=None):
+		# A finished-goods design item carries no Metal Purity attribute, and the item-level
+		# fallback reads the design's NEWEST active BOM, which can be a different piece's BOM
+		# with a blank purity. Read it from the serial's OWN as-built BOM instead — the same
+		# BOM its weights come from — and use the item lookup only when that BOM has none.
+		# Within the BOM the metal detail row wins over the header: the header is filled from
+		# the first metal row only while blank (update_specifications), so it can keep an order
+		# spec (e.g. 91.9) while the metal actually used, and its manufacturing order, say
+		# 91.75. First row by idx, the same row update_specifications copies.
+		if not bom_no:
+			bom_no = frappe.db.get_value("Serial No", serial_no, "custom_bom_no")
+		if not bom_no:
+			bom_no = frappe.db.get_value(
+				"BOM", {"item": item_code, "is_active": 1}, "name"
+			)
+		if bom_no:
+			purity = frappe.db.get_value(
+				"BOM Metal Detail",
+				{
+					"parent": bom_no,
+					"parenttype": "BOM",
+					"metal_purity": ["is", "set"],
+				},
+				"metal_purity",
+				order_by="idx asc",
+			) or frappe.db.get_value("BOM", bom_no, "metal_purity")
+			if purity:
+				return purity
+		return self.get_item_purity(item_code)
 
 	def get_item_purity(self, item_code):
 		# Memoize within the request: this is called per material row and does up to

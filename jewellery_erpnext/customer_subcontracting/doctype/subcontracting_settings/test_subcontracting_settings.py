@@ -4,31 +4,50 @@
 """Tests for the Customer Gold block on Subcontracting Settings.
 
 Pure-logic per the suite convention: ``setUpClass`` is neutralized, docs are
-``frappe._dict`` fakes and every DB read is patched. Nothing is written.
+``frappe._dict`` fakes and every DB read is patched. Nothing is written. That includes the
+read-only ``audit_customer_gold_items_removal`` patch, whose ``frappe.db`` is a fake.
 """
 
+import json
+import os
 from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOODS_FLAG,
+)
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	ENABLE_FLAG,
+	RECEIPT_ITEM_FIELDS,
 	SETTINGS_DOCTYPE,
-	get_allowed_customer_gold_items,
+	_validate_receipt_item,
+	get_customer_gold_receipt_type,
 	is_customer_gold_enabled,
 	validate_customer_gold_settings,
 )
+from jewellery_erpnext.patches.audit_customer_gold_items_removal import (
+	MATCH,
+	MISMATCH,
+	MISSING,
+	collect,
+	format_report,
+)
 
 MOD = "jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings"
+AUDIT = "jewellery_erpnext.patches.audit_customer_gold_items_removal"
 
 ITEM = "M-G-24KT-99.9-Y"
 SE_TYPE = "Customer Goods Received"
 RETURN_SE_TYPE = "Customer Goods Issue"
-#: A second purity a customer may hand over, alongside the 99.9 primary.
-SECOND_ITEM = "M-G-24KT-99.5-Y"
-#: Same, but not batch controlled -- the negative case for the shared item gates.
+#: Not batch controlled -- a row the retired Additional Customer Gold Items table held and the
+#: old validator refused. Kept to prove that table no longer gates a Settings save.
 SECOND_ITEM_NO_BATCH = "M-G-24KT-99.5-N"
+#: A second purity on the old list; flagged on kg-gk, so the audit's expected MATCH.
+LEGACY_ITEM = "M-G-22KT-91.75-Y"
+#: A stone. Never read from the Item master here -- the receipt-item gates get a prefetched dict.
+STONE_ITEM = "D-TEST-CARAT"
 #: A real type on this bench with the WRONG purpose for a return -- not an invented name, so the
 #: test fails the way a misconfiguration actually would.
 TRANSFER_SE_TYPE = "Material Transfer"
@@ -97,6 +116,12 @@ _ACCOUNTS = {
 	"Payable - A": _account(account_type="Payable"),
 	"Receivable - A": _account(account_type="Receivable"),
 	"Stock Type - A": _account(account_type="Stock"),
+	#: The KGJPL shape behind KGJPL-JE-JE-26-00018: a Liability chosen as the adjustment account.
+	"Advances from Customers - A": _account(),
+	"Group Expense - A": _account(root_type="Expense", is_group=1),
+	"Disabled Expense - A": _account(root_type="Expense", disabled=1),
+	"Expense - B": _account(root_type="Expense", company=COMPANY_B),
+	"Income - A": _account(root_type="Income"),
 }
 
 
@@ -105,7 +130,6 @@ def _db_get_value(doctype, name, fieldname=None, as_dict=False):
 	if doctype == "Item":
 		return {
 			ITEM: _item(),
-			SECOND_ITEM: _item(),
 			SECOND_ITEM_NO_BATCH: _item(has_batch_no=0),
 		}.get(name)
 	if doctype == "Stock Entry Type":
@@ -349,11 +373,100 @@ class TestCustomerGoldSettings(IntegrationTestCase):
 		"""Guard the guards -- the normal configuration must remain valid."""
 		validate_customer_gold_settings(_settings())
 
-	def test_cogs_account_root_type_is_not_enforced(self, _mock):
-		"""Classification is pending Finance approval, so any non-group company account passes."""
+	def test_an_expense_adjustment_account_passes(self, _mock):
 		validate_customer_gold_settings(
 			_settings(company_accounts=[_row(1, cogs=COGS_A)])
 		)
+
+	def test_an_income_adjustment_account_is_left_to_finance(self, _mock):
+		"""Only Liability is certainly wrong. Expense vs Income is Finance's call, not pinned here."""
+		validate_customer_gold_settings(
+			_settings(company_accounts=[_row(1, cogs="Income - A")])
+		)
+
+	# ------------------------------------------------ F4: the adjustment account's own rules
+	def test_a_liability_adjustment_account_blocks(self, _mock):
+		"""F4. KGJPL-JE-JE-26-00018 posted Dr Customer Goods Receive / Cr Advances from
+		Customers -- two liabilities. The obligation moved to a party-less advance and nothing
+		was discharged. Every earlier check passed it: the adjustment account had no root-type rule.
+		"""
+		with self._blocks("would move the obligation"):
+			validate_customer_gold_settings(
+				_settings(
+					company_accounts=[
+						_row(1, liability=LIAB_A, cogs="Advances from Customers - A")
+					]
+				)
+			)
+
+	def test_a_group_adjustment_account_blocks(self, _mock):
+		with self._blocks("is a group account"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, cogs="Group Expense - A")])
+			)
+
+	def test_a_disabled_adjustment_account_blocks(self, _mock):
+		with self._blocks("is disabled"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, cogs="Disabled Expense - A")])
+			)
+
+	def test_another_companys_adjustment_account_blocks(self, _mock):
+		with self._blocks("belongs to Company"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, cogs="Expense - B")])
+			)
+
+	def test_a_nonexistent_adjustment_account_blocks(self, _mock):
+		with self._blocks("does not exist"):
+			validate_customer_gold_settings(
+				_settings(company_accounts=[_row(1, cogs="No Such Account - A")])
+			)
+
+	def test_posting_time_messages_name_the_document_not_a_row(self, _mock):
+		"""The same rules run at posting, where there is no settings row to point at."""
+		from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+			validate_settlement_accounts,
+		)
+
+		with self._blocks("Delivery Note DN-1:"):
+			validate_settlement_accounts(
+				COMPANY_A,
+				LIAB_A,
+				"Advances from Customers - A",
+				where="Delivery Note DN-1",
+			)
+
+	def test_posting_time_messages_say_where_to_correct_the_row(self, _mock):
+		"""At posting the operator is on another document, so the message points at the row."""
+		from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+			settings_fix_hint,
+			validate_settlement_accounts,
+		)
+
+		with self._blocks("Company Accounts, on the row for Company") as raised:
+			validate_settlement_accounts(
+				COMPANY_A,
+				LIAB_A,
+				"Advances from Customers - A",
+				where="Delivery Note DN-1",
+				fix_hint=settings_fix_hint(COMPANY_A),
+			)
+		self.assertIn("would move the obligation", str(raised.exception))
+		# Bolded, because "Company A" is also the start of the fixed text "Company Accounts".
+		self.assertIn(frappe.bold(COMPANY_A), str(raised.exception))
+
+	def test_save_time_messages_do_not_point_elsewhere(self, _mock):
+		"""On the settings form the operator is already looking at the row."""
+		with self._blocks("would move the obligation") as raised:
+			validate_customer_gold_settings(
+				_settings(
+					company_accounts=[
+						_row(1, liability=LIAB_A, cogs="Advances from Customers - A")
+					]
+				)
+			)
+		self.assertNotIn("Correct it in", str(raised.exception))
 
 	# ------------------------------------------------------- the two legs must differ
 	def test_identical_liability_and_cogs_accounts_block(self, _mock):
@@ -415,71 +528,99 @@ class TestCustomerGoldSettings(IntegrationTestCase):
 			_settings(customer_gold_return_stock_entry_type=RETURN_SE_TYPE)
 		)
 
-	# ------------------------------------------------- more than one customer purity
-	def test_additional_items_are_held_to_the_same_standard(self, _mock):
-		"""An extra purity that is not batch controlled breaks custody the same way.
+	# ----------------------------- the retired Additional Customer Gold Items table
+	def test_a_legacy_customer_gold_items_key_is_ignored(self, get_value):
+		"""The retired table no longer gates a Settings save, and none of its rows is read.
 
-		The point of extracting ``_validate_receipt_item`` was that the secondary list must not
-		become the lenient one. This is what pins that.
+		Both rows would have failed the old validator: the first is not batch controlled, the
+		second repeats the Customer 24KT Item. A doc from a site that has not migrated yet can
+		still carry the key. Eligibility is the Item's own flag now, so the only Item read is
+		the anchor's.
 		"""
-		with self._blocks("must be batch controlled"):
-			validate_customer_gold_settings(
-				_settings(
-					customer_gold_items=[
-						frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH)
-					]
-				)
-			)
-
-	def test_an_additional_item_names_its_own_row_in_the_error(self, _mock):
-		"""With several items configured, "Customer 24KT Item is disabled" points at the wrong one."""
-		with self._blocks("Row #1"):
-			validate_customer_gold_settings(
-				_settings(
-					customer_gold_items=[
-						frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH)
-					]
-				)
-			)
-
-	def test_a_second_purity_passes(self, _mock):
 		validate_customer_gold_settings(
-			_settings(customer_gold_items=[frappe._dict(idx=1, item=SECOND_ITEM)])
+			_settings(
+				customer_gold_items=[
+					frappe._dict(idx=1, item=SECOND_ITEM_NO_BATCH),
+					frappe._dict(idx=2, item=ITEM),
+				]
+			)
+		)
+		item_reads = [
+			c.args[1] for c in get_value.call_args_list if c.args[0] == "Item"
+		]
+		self.assertEqual(item_reads, [ITEM])
+
+	def test_the_anchor_needs_no_customer_goods_flag(self, get_value):
+		"""Saving Settings never asks for the anchor's own flag. That flag is audit-only, by decision.
+
+		The Customer 24KT Item is the rate reference now, not an eligibility list. A site whose
+		anchor is unflagged (prod's 24KT item on the day of the deploy) must still be able to
+		save its Settings. Receipts of that item are refused at the receipt until the flag is
+		ticked. ``_item()`` carries no flag key at all; an explicit 0 must pass as well.
+		"""
+		validate_customer_gold_settings(_settings())
+		for call in get_value.call_args_list:
+			self.assertNotIn(CUSTOMER_GOODS_FLAG, str(call))
+
+		def _unflagged(doctype, name, fieldname=None, as_dict=False):
+			if doctype == "Item":
+				return _item(**{CUSTOMER_GOODS_FLAG: 0})
+			return _db_get_value(doctype, name, fieldname, as_dict)
+
+		with patch(f"{MOD}.frappe.db.get_value", side_effect=_unflagged):
+			validate_customer_gold_settings(_settings())
+
+	# ------------------------------------------------ the shared receipt-item gates
+	def test_the_gates_read_the_item_when_none_is_prefetched(self, get_value):
+		"""The Settings-save path: one read of exactly the fields the gates check."""
+		_validate_receipt_item(ITEM, "Customer 24KT Item")
+		get_value.assert_called_once_with(
+			"Item", ITEM, list(RECEIPT_ITEM_FIELDS), as_dict=True
 		)
 
-	def test_repeating_the_primary_item_blocks(self, _mock):
-		"""Listing the 24KT item again is a configuration mistake, not a no-op."""
-		with self._blocks("already accepted"):
-			validate_customer_gold_settings(
-				_settings(customer_gold_items=[frappe._dict(idx=1, item=ITEM)])
-			)
+	def test_a_carat_stone_passes_without_the_gram_gate(self, get_value):
+		"""A stone is received in its own UOM at a typed rate, so the per-gram rule does not apply.
 
-	def test_a_duplicated_additional_item_blocks(self, _mock):
-		with self._blocks("already accepted"):
-			validate_customer_gold_settings(
-				_settings(
-					customer_gold_items=[
-						frappe._dict(idx=1, item=SECOND_ITEM),
-						frappe._dict(idx=2, item=SECOND_ITEM),
-					]
-				)
-			)
-
-	def test_no_additional_items_is_still_valid(self, _mock):
-		"""Every existing site. The list is empty and only the 24KT item is accepted."""
-		validate_customer_gold_settings(_settings(customer_gold_items=[]))
-
-	def test_the_allowed_list_puts_the_primary_item_first(self, _mock):
-		"""Order is load-bearing: the primary item is what the Gold Rate is quoted against."""
-		self.assertEqual(
-			get_allowed_customer_gold_items(
-				_settings(customer_gold_items=[frappe._dict(idx=1, item=SECOND_ITEM)])
-			),
-			[ITEM, SECOND_ITEM],
+		The receipt hands every row its prefetched Item dict, so nothing is read here.
+		"""
+		_validate_receipt_item(
+			STONE_ITEM,
+			"Row #1: Item",
+			item=_item(stock_uom="Carat"),
+			require_gram=False,
 		)
+		get_value.assert_not_called()
 
-	def test_the_allowed_list_is_just_the_primary_when_unconfigured(self, _mock):
-		self.assertEqual(get_allowed_customer_gold_items(_settings()), [ITEM])
+	def test_a_carat_item_priced_from_the_gold_rate_blocks(self, get_value):
+		"""Gold and findings are priced per gram, so the same Carat item is refused on that path."""
+		with self._blocks("Stock UOM"):
+			_validate_receipt_item(
+				ITEM, "Row #1: Item", item=_item(stock_uom="Carat"), require_gram=True
+			)
+		get_value.assert_not_called()
+
+	def test_a_stone_is_still_held_to_the_batch_gate(self, get_value):
+		"""``require_gram=False`` lifts only the UOM rule. Custody is per batch for stones too."""
+		with self._blocks(
+			"must be batch controlled, because customer goods are tracked per batch"
+		):
+			_validate_receipt_item(
+				STONE_ITEM,
+				"Row #1: Item",
+				item=_item(stock_uom="Carat", has_batch_no=0),
+				require_gram=False,
+			)
+		get_value.assert_not_called()
+
+	def test_an_empty_prefetched_item_does_not_exist(self, get_value):
+		"""The receipt passes ``frappe._dict()`` for a code its one query did not find.
+
+		That must read as "does not exist". It must not fall back to a per-row fetch: only
+		``None`` means "not prefetched".
+		"""
+		with self._blocks("does not exist"):
+			_validate_receipt_item("NO-SUCH-ITEM", "Row #1: Item", item=frappe._dict())
+		get_value.assert_not_called()
 
 	def test_a_blank_return_type_is_allowed(self, _mock):
 		"""A site that never returns customer gold does not have to configure returns.
@@ -592,3 +733,340 @@ class TestCustomerGoldFlagFailsClosed(IntegrationTestCase):
 		for value in (0, None, ""):
 			with patch.object(frappe.db, "get_single_value", return_value=value):
 				self.assertFalse(is_customer_gold_enabled())
+
+
+class TestCustomerGoldItemsFieldIsRetired(IntegrationTestCase):
+	"""The Settings DocType no longer carries the Additional Customer Gold Items table.
+
+	Read from the JSON on disk rather than the site's meta, so it holds before a migrate as well.
+	The ``Customer Gold Item`` child DocType itself is kept for this release on purpose.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _schema(self):
+		path = os.path.join(
+			os.path.dirname(os.path.abspath(__file__)), "subcontracting_settings.json"
+		)
+		with open(path) as f:
+			return json.load(f)
+
+	def test_the_doctype_has_no_customer_gold_items_field(self):
+		schema = self._schema()
+		fieldnames = [field.get("fieldname") for field in schema["fields"]]
+
+		self.assertNotIn("customer_gold_items", fieldnames)
+		self.assertNotIn("customer_gold_items", schema["field_order"])
+		self.assertEqual(
+			[
+				f["fieldname"]
+				for f in schema["fields"]
+				if f.get("options") == "Customer Gold Item"
+			],
+			[],
+		)
+		# Guard the guard: the rate reference stays, and the two lists still agree.
+		self.assertIn("customer_24kt_item", fieldnames)
+		self.assertEqual(set(schema["field_order"]), set(fieldnames))
+
+
+class TestCustomerGoldReceiptType(IntegrationTestCase):
+	"""``get_customer_gold_receipt_type`` -- the one answer the Stock Entry form and batch minting share.
+
+	``None`` means "the flow is off". The form then keeps its ordinary item picker, and batch
+	minting falls back to the 24KT token alone. That is exactly how gk and alfarsi behave today.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _call(self, enabled, settings):
+		with (
+			patch(f"{MOD}.is_customer_gold_enabled", return_value=enabled),
+			patch(
+				f"{MOD}.get_customer_gold_settings", return_value=settings
+			) as get_settings,
+		):
+			return get_customer_gold_receipt_type(), get_settings
+
+	def test_an_enabled_flow_returns_the_configured_type(self):
+		receipt_type, _get_settings = self._call(True, _settings())
+		self.assertEqual(receipt_type, SE_TYPE)
+
+	def test_a_disabled_flow_returns_none_even_with_a_type_configured(self):
+		"""A switched-off site keeps its old type in Settings; it must not revive the filter."""
+		receipt_type, get_settings = self._call(False, _settings())
+		self.assertIsNone(receipt_type)
+		get_settings.assert_not_called()
+
+	def test_a_blank_type_returns_none_not_an_empty_string(self):
+		receipt_type, _get_settings = self._call(
+			True, _settings(customer_goods_stock_entry_type="")
+		)
+		self.assertIsNone(receipt_type)
+
+	def test_it_is_whitelisted_for_the_form_but_not_for_guests(self):
+		"""The Stock Entry form calls it; the Single is readable by System Managers alone."""
+		self.assertIn(get_customer_gold_receipt_type, frappe.whitelisted)
+		self.assertNotIn(get_customer_gold_receipt_type, frappe.guest_methods)
+
+
+def _audit_db(
+	anchor=ITEM,
+	legacy=(),
+	flags=None,
+	table_exists=True,
+	flag_exists=True,
+	new_eligible=(),
+):
+	"""A fake ``frappe.db`` for the audit, answering each of its SELECTs by the query text.
+
+	``flags`` maps item code -> flag value; a code absent from it is absent from ``tabItem``.
+	Legacy rows are served even when ``table_exists`` is False, so a guard that stopped
+	checking would show up as an extra row rather than pass on an empty answer. An unknown
+	query raises, so a new statement cannot slip past the read-only assertion unseen.
+	"""
+	flags = {} if flags is None else flags
+	db = MagicMock()
+	db.table_exists.return_value = table_exists
+	db.has_column.return_value = flag_exists
+	db.escape.side_effect = lambda value: f"'{value}'"
+
+	def _sql(query, values=None, as_dict=False):
+		if "`tabSingles`" in query:
+			return [(anchor,)] if anchor else []
+		if "`tabCustomer Gold Item`" in query:
+			return [(item,) for item in legacy]
+		if "GROUP BY" in query:
+			return [frappe._dict(row) for row in new_eligible]
+		if "FROM `tabItem` WHERE `name` IN" in query:
+			return [(code, flags[code]) for code in values[0] if code in flags]
+		raise AssertionError(f"unexpected audit query: {query}")
+
+	db.sql.side_effect = _sql
+	return db
+
+
+class TestCustomerGoldItemsAudit(IntegrationTestCase):
+	"""``patches.audit_customer_gold_items_removal.collect`` -- report the difference, change nothing.
+
+	The old code accepted the Customer 24KT Item whatever its flag said, plus every listed
+	purity. The audit compares that with the Item flag, so each MISMATCH is known before
+	someone meets it at a receipt. On prod the anchor is expected to be the MISMATCH.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _collect(self, **db_kwargs):
+		db = _audit_db(**db_kwargs)
+		with patch(f"{AUDIT}.frappe.db", new=db):
+			report = collect()
+		return report, db
+
+	def _row(self, report, item):
+		return next(row for row in report.rows if row.item == item)
+
+	def _notices(self, lines, prefix):
+		"""The report lines that open with ``prefix`` -- "ACTION:" or "NOTE:"."""
+		return [line for line in lines if line.lstrip().startswith(prefix)]
+
+	def _group_by(self, db):
+		"""The new-eligible statement, whitespace-collapsed, with the values it was sent."""
+		(call,) = [c for c in db.sql.call_args_list if "GROUP BY" in c.args[0]]
+		return " ".join(call.args[0].split()), call.args[1]
+
+	def test_without_the_legacy_table_only_the_anchor_is_compared(self):
+		report, db = self._collect(
+			legacy=(LEGACY_ITEM,), flags={ITEM: 1, LEGACY_ITEM: 1}, table_exists=False
+		)
+
+		self.assertFalse(report.table_exists)
+		self.assertEqual([row.item for row in report.rows], [ITEM])
+		queries = [call.args[0] for call in db.sql.call_args_list]
+		self.assertFalse([q for q in queries if "Customer Gold Item" in q])
+
+	def test_a_flagged_legacy_row_matches(self):
+		report, _db = self._collect(
+			legacy=(LEGACY_ITEM,), flags={ITEM: 1, LEGACY_ITEM: 1}
+		)
+
+		row = self._row(report, LEGACY_ITEM)
+		self.assertEqual(
+			(row.role, row.flag, row.result),
+			("Additional Customer Gold Item", 1, MATCH),
+		)
+
+	def test_an_unflagged_anchor_is_a_mismatch(self):
+		"""The expected prod finding: the old code accepted the anchor unconditionally."""
+		report, _db = self._collect(flags={ITEM: 0})
+
+		row = self._row(report, ITEM)
+		self.assertEqual(
+			(row.role, row.flag, row.result), ("Customer 24KT Item", 0, MISMATCH)
+		)
+
+	def test_a_legacy_item_missing_from_the_item_master(self):
+		report, _db = self._collect(legacy=("NO-SUCH-ITEM",), flags={ITEM: 1})
+
+		row = self._row(report, "NO-SUCH-ITEM")
+		self.assertEqual((row.flag, row.result), (None, "ITEM MISSING"))
+
+	def test_a_legacy_row_repeating_the_anchor_is_listed_once(self):
+		report, _db = self._collect(
+			legacy=(ITEM, LEGACY_ITEM), flags={ITEM: 1, LEGACY_ITEM: 1}
+		)
+
+		self.assertEqual(
+			[(row.item, row.role) for row in report.rows],
+			[
+				(ITEM, "Customer 24KT Item"),
+				(LEGACY_ITEM, "Additional Customer Gold Item"),
+			],
+		)
+
+	def test_without_the_flag_column_rows_are_reported_without_flags(self):
+		"""No Item field means nothing is eligible, and the column must not be queried at all."""
+		report, db = self._collect(legacy=(LEGACY_ITEM,), flag_exists=False)
+
+		self.assertFalse(report.flag_exists)
+		self.assertEqual([row.item for row in report.rows], [ITEM, LEGACY_ITEM])
+		self.assertEqual({row.flag for row in report.rows}, {None})
+		self.assertEqual({row.result for row in report.rows}, {MISMATCH})
+		self.assertEqual(report.new_eligible, [])
+		queries = [call.args[0] for call in db.sql.call_args_list]
+		self.assertFalse([q for q in queries if CUSTOMER_GOODS_FLAG in q])
+		self.assertIn("WARNING", "\n".join(format_report(report)))
+
+	def test_new_eligible_items_exclude_the_old_list(self):
+		"""The group-by counts only flagged items the old list never named."""
+		eligible = [
+			{"item_group": "Diamond", "is_gold": 0, "passes_gates": 1, "items": 5}
+		]
+		report, db = self._collect(
+			legacy=(LEGACY_ITEM,),
+			flags={ITEM: 1, LEGACY_ITEM: 1},
+			new_eligible=eligible,
+		)
+
+		self.assertEqual(report.new_eligible, eligible)
+		query, values = self._group_by(db)
+		self.assertEqual(values, ("Gram", [ITEM, LEGACY_ITEM]))
+		# The fake answers any GROUP BY, so the filter itself is pinned on the statement text.
+		self.assertIn(f"WHERE `{CUSTOMER_GOODS_FLAG}` = 1", query)
+		self.assertIn("AND `name` NOT IN %s", query)
+		self.assertEqual(query.count("%s"), len(values))
+
+	def test_new_eligible_without_an_old_list_excludes_nothing(self):
+		"""No anchor and no legacy rows: no ``name`` exclusion, and no empty ``IN ()`` sent.
+
+		The statement always carries ``NOT IN ('M', 'F')`` for the gold gate, so the
+		exclusion is looked for as ``name NOT IN %s``, not as a bare NOT IN.
+		"""
+		report, db = self._collect(anchor=None, new_eligible=[])
+
+		self.assertEqual(report.rows, [])
+		query, values = self._group_by(db)
+		self.assertEqual(values, ("Gram",))
+		self.assertIn(f"WHERE `{CUSTOMER_GOODS_FLAG}` = 1", query)
+		self.assertNotIn("`name` NOT IN", query)
+		self.assertNotIn("NOT IN %s", query)
+		self.assertEqual(query.count("%s"), len(values))
+
+	def test_the_audit_only_reads(self):
+		"""Every statement is a SELECT and no write API is touched, on the fullest path."""
+		report, db = self._collect(
+			legacy=(LEGACY_ITEM, "NO-SUCH-ITEM"),
+			flags={ITEM: 0, LEGACY_ITEM: 1},
+			new_eligible=[
+				{"item_group": "Diamond", "is_gold": 0, "passes_gates": 1, "items": 5}
+			],
+		)
+
+		# Four statements: anchor, legacy rows, flags, new-eligible. Not vacuously "all SELECT".
+		self.assertEqual(db.sql.call_count, 4)
+		for call in db.sql.call_args_list:
+			self.assertTrue(
+				call.args[0].strip().upper().startswith("SELECT"), call.args[0]
+			)
+		for write in (
+			"set_value",
+			"set_single_value",
+			"delete",
+			"insert",
+			"sql_ddl",
+			"commit",
+		):
+			getattr(db, write).assert_not_called()
+		self.assertLessEqual(
+			{name for name, _args, _kwargs in db.method_calls},
+			{"table_exists", "has_column", "sql", "escape"},
+		)
+		self.assertEqual(len(report.rows), 3)
+
+	def test_the_report_names_the_mismatch_and_asks_for_action(self):
+		report, _db = self._collect(
+			legacy=(LEGACY_ITEM,),
+			flags={ITEM: 0, LEGACY_ITEM: 1},
+			new_eligible=[
+				{"item_group": "Diamond", "is_gold": 0, "passes_gates": 1, "items": 5},
+				{"item_group": "Metal", "is_gold": 1, "passes_gates": 0, "items": 2},
+			],
+		)
+		lines = format_report(report)
+		text = "\n".join(lines)
+
+		self.assertIn("OLD SETTING", text)
+		(anchor_line,) = [line for line in lines if ITEM in line]
+		self.assertIn("MISMATCH", anchor_line)
+		self.assertIn("[Customer 24KT Item]", anchor_line)
+		# One ACTION, naming the Item checkbox by the label a person sees on the form.
+		(action,) = self._notices(lines, "ACTION:")
+		self.assertIn("MISMATCH items", action)
+		self.assertIn(
+			"'Inventory Type Can be Customer Goods' is ticked on the Item", action
+		)
+		self.assertEqual(self._notices(lines, "NOTE:"), [])
+		self.assertIn(
+			"5 pass every receipt gate, 2 are flagged but blocked by a gate", text
+		)
+
+	def test_an_item_missing_only_report_notes_it_and_asks_for_nothing(self):
+		"""A dead old entry has no Item to tick, so it gets the NOTE and not the ACTION."""
+		report, _db = self._collect(anchor=None, legacy=("NO-SUCH-ITEM",), flags={})
+		self.assertEqual([row.result for row in report.rows], [MISSING])
+		lines = format_report(report)
+
+		(note,) = self._notices(lines, "NOTE:")
+		self.assertIn("ITEM MISSING rows name an item that no longer exists", note)
+		self.assertEqual(self._notices(lines, "ACTION:"), [])
+		self.assertNotIn("is ticked on the Item", "\n".join(lines))
+
+	def test_a_mismatch_and_a_missing_item_get_both_lines(self):
+		"""The two notices are independent: one kind of row must not suppress the other's."""
+		report, _db = self._collect(legacy=("NO-SUCH-ITEM",), flags={ITEM: 0})
+		self.assertEqual([row.result for row in report.rows], [MISMATCH, MISSING])
+		lines = format_report(report)
+
+		self.assertEqual(len(self._notices(lines, "ACTION:")), 1)
+		self.assertEqual(len(self._notices(lines, "NOTE:")), 1)
+
+	def test_a_clean_audit_asks_for_nothing(self):
+		"""Guard the guard: with every old item flagged there is neither ACTION nor NOTE."""
+		report, _db = self._collect(
+			legacy=(LEGACY_ITEM,), flags={ITEM: 1, LEGACY_ITEM: 1}
+		)
+		self.assertEqual({row.result for row in report.rows}, {MATCH})
+		lines = format_report(report)
+		text = "\n".join(lines)
+
+		self.assertIn("MATCH", text)
+		self.assertNotIn("MISMATCH", text)
+		self.assertEqual(self._notices(lines, "ACTION:"), [])
+		self.assertEqual(self._notices(lines, "NOTE:"), [])
+		self.assertNotIn("ACTION", text)
+		self.assertNotIn("NOTE", text)

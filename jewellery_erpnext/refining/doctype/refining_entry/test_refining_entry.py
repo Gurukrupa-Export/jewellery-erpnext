@@ -325,7 +325,25 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.refining_department = "Refinery - T"
 		re.manufacturer = "Shubh"
 		re.scan_serial_no_action(sn.name)
-		re.material_items.pop()
+		# The as-built BOM lists only what the piece consumed. It used to carry the finished item
+		# itself (the design code, 1 Nos), which this test dropped by popping the last line; that
+		# row no longer exists, so every line here is real material. Pinned by content, not
+		# position: refining fetches BOM Items without an order, so line order is not a contract.
+		bom_lines = {
+			row.item_code: row
+			for row in re.material_items
+			if row.source_type == "BOM Component"
+		}
+		self.assertEqual(set(bom_lines), {"M-G-22KT-91.6-Y", "D-NT-RO-6B-+9-9.5"})
+		self.assertEqual(flt(bom_lines["M-G-22KT-91.6-Y"].qty), 1.3)
+		self.assertEqual(
+			[
+				row.source_type
+				for row in re.material_items
+				if row.item_code == sn.item_code
+			],
+			["Serial Number"],
+		)
 		re.save()
 
 		apply_workflow(re, "Send for Verification")
@@ -2808,3 +2826,442 @@ class TestExternalPoBillableItem(IntegrationTestCase):
 			)
 			self.assertIn("Nos", uoms, f"{item_code} cannot bill a flat charge")
 			self.assertIn("Gram", uoms, f"{item_code} cannot bill a per-gram charge")
+
+
+class TestDustReceiptDifferenceAccount(IntegrationTestCase):
+	"""The dust opening receipt never carries a Stock account as its Difference Account.
+
+	ERPNext fills a blank one from the item / item group default expense account, and on
+	prod the Refining Scrap default was the scrap warehouse's Stock account -- so every
+	Refining Entry with a dust shortfall died in on_submit. DB-free: every read is patched.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _account_for(self, item_default=None, group_default=None, preset=None):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		account_types = {
+			"Refining Scrap - T": "Stock",
+			"Refining Gain - T": "Income Account",
+		}
+
+		def _cached(doctype, name, field):
+			if doctype == "Company":
+				return "Stock Adjustment - T"
+			return account_types.get(name)
+
+		row = SimpleNamespace(item_code="REF-CF-001", expense_account=preset)
+		entry = SimpleNamespace(company="Test_Company")
+		with (
+			patch("frappe.get_cached_value", side_effect=_cached),
+			patch(
+				"erpnext.stock.doctype.item.item.get_item_defaults",
+				return_value={"expense_account": item_default},
+			),
+			patch(
+				"erpnext.setup.doctype.item_group.item_group.get_item_group_defaults",
+				return_value={"expense_account": group_default},
+			),
+		):
+			RefiningEntry.set_dust_receipt_difference_account(
+				entry, SimpleNamespace(items=[row])
+			)
+		return row.expense_account
+
+	def test_stock_type_default_falls_back_to_stock_adjustment(self):
+		self.assertEqual(
+			self._account_for(group_default="Refining Scrap - T"),
+			"Stock Adjustment - T",
+		)
+
+	def test_usable_configured_account_is_kept(self):
+		self.assertEqual(
+			self._account_for(item_default="Refining Gain - T"), "Refining Gain - T"
+		)
+
+	def test_no_default_uses_stock_adjustment(self):
+		self.assertEqual(self._account_for(), "Stock Adjustment - T")
+
+	def test_explicit_account_is_left_alone(self):
+		self.assertEqual(
+			self._account_for(preset="Refining Gain - T"), "Refining Gain - T"
+		)
+
+
+class TestDustShortfallFloatResidue(IntegrationTestCase):
+	"""Float residue is never a dust shortfall.
+
+	Three-decimal FIFO allocations still add up in binary floating point, so a row met in
+	full can sum a hair short (0.022 + 0.006 = 0.027999999999999997). That ~1e-18 used to
+	be booked as a shortfall and receipted as a row that rounds to zero, failing the whole
+	submit with "Qty in Stock UOM can not be zero" (RFN-SCP-26-00023). DB-free: every
+	read is patched and the Stock Entry is a recording fake.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _stock_entry(self):
+		from types import SimpleNamespace
+		from unittest.mock import MagicMock
+
+		se = SimpleNamespace(name="MAT-STE-TEST", items=[])
+		se.append = lambda table, row: se.items.append(frappe._dict(row))
+		se.insert = MagicMock()
+		se.submit = MagicMock()
+		return se
+
+	def _entry(self, **attrs):
+		from types import SimpleNamespace
+		from unittest.mock import MagicMock
+
+		return SimpleNamespace(
+			name="RFN-SCP-TEST",
+			company="Test_Company",
+			refining_type=REFINING_TYPE_SCRAP,
+			warehouse="Pre Polish Scrap - T",
+			refining_warehouse="Refining RM - T",
+			supplier="Refinery Supplier - T",
+			manufacturer="Shubh",
+			db_set=MagicMock(),
+			**attrs,
+		)
+
+	def _transfer(self, qty, allocations):
+		"""Run create_material_transfer_se for one batched row whose FIFO allocation
+		returns ``allocations``; return (_dust_shortfalls, the transfer Stock Entry)."""
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		entry = self._entry(
+			material_items=[
+				frappe._dict(item_code="FL-TEST", qty=qty, uom="Gram", purity="91.75")
+			],
+			_serial_movement_rows=lambda: [],
+			allocate_fifo_batches=lambda *args, **kwargs: [
+				{"batch_no": f"BATCH-{i}", "qty": q} for i, q in enumerate(allocations)
+			],
+			_stamp_batch_ownership=lambda se: None,
+		)
+		real_get_value = frappe.db.get_value
+
+		def _get_value(doctype, *args, **kwargs):
+			if doctype == "Item" and args[1:2] == ("has_batch_no",):
+				return 1
+			return real_get_value(doctype, *args, **kwargs)
+
+		se = self._stock_entry()
+		with (
+			patch("frappe.new_doc", return_value=se),
+			patch.object(frappe.db, "get_value", side_effect=_get_value),
+		):
+			RefiningEntry.create_material_transfer_se(entry)
+		return entry._dust_shortfalls, se
+
+	def test_two_batch_residue_is_not_a_shortfall(self):
+		# RFN-SCP-26-00023 row 18.
+		shortfalls, se = self._transfer(0.028, [0.022, 0.006])
+		self.assertEqual(shortfalls, [])
+		self.assertEqual([row.qty for row in se.items], [0.022, 0.006])
+
+	def test_seven_batch_residue_is_not_a_shortfall(self):
+		# RFN-SCP-26-00023 row 35.
+		shortfalls, _se = self._transfer(
+			0.058, [0.006, 0.009, 0.009, 0.016, 0.005, 0.008, 0.005]
+		)
+		self.assertEqual(shortfalls, [])
+
+	def test_real_shortfall_is_kept_and_rounded(self):
+		# Unrounded, 0.030 - (0.022 + 0.006) is 0.0020000000000000018.
+		shortfalls, _se = self._transfer(0.030, [0.022, 0.006])
+		self.assertEqual([sf["qty"] for sf in shortfalls], [0.002])
+
+	def test_receipt_skips_float_residue_rows(self):
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		# The exact shortfalls RFN-SCP-26-00023's traceback carried into the receipt.
+		entry = self._entry(
+			_dust_shortfalls=[
+				{
+					"item_code": "FL-TEST-A",
+					"qty": 3.469446951953614e-18,
+					"uom": "Gram",
+					"purity": "91.75",
+				},
+				{
+					"item_code": "FL-TEST-B",
+					"qty": 6.938893903907228e-18,
+					"uom": "Gram",
+					"purity": "91.75",
+				},
+				{
+					"item_code": "REF-CF-001",
+					"qty": 29258.5,
+					"uom": "Gram",
+					"purity": None,
+				},
+			],
+			get_dust_opening_batch=lambda item_code: "DUST-BATCH",
+			set_dust_receipt_difference_account=lambda se: None,
+		)
+		se = self._stock_entry()
+		with patch("frappe.new_doc", return_value=se):
+			RefiningEntry.create_dust_opening_receipt_se(
+				entry, target_warehouse="Refinery WIP - T"
+			)
+		self.assertEqual(
+			[(row.item_code, row.qty) for row in se.items], [("REF-CF-001", 29258.5)]
+		)
+		se.insert.assert_called_once()
+
+
+class TestSubmitWriteBudget(IntegrationTestCase):
+	"""A refining submit raises frappe's 200k writes-per-transaction cap before it builds
+	its Stock Entries: RFN-SCP-26-00022's 12,298-line transfer crossed it and was reverted
+	(TooManyWritesError). DB-free: the Stock Entry builders are stubs.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _cap_seen_by(self, **attrs):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		seen = []
+
+		def record(*args, **kwargs):
+			seen.append(frappe.db.MAX_WRITES_PER_TRANSACTION)
+
+		entry = SimpleNamespace(
+			parent_refining_entry=None,
+			on_submit_external=record,
+			create_material_transfer_se=record,
+			**attrs,
+		)
+		with patch.object(frappe.db, "MAX_WRITES_PER_TRANSACTION", 200_000):
+			RefiningEntry.on_submit(entry)
+		return seen
+
+	def test_external_submit_runs_with_the_raised_cap(self):
+		self.assertEqual(self._cap_seen_by(is_external=1), [800_000])
+
+	def test_internal_submit_runs_with_the_raised_cap(self):
+		self.assertEqual(
+			self._cap_seen_by(is_external=0, refining_type=REFINING_TYPE_WORK_ORDER),
+			[800_000],
+		)
+
+
+class TestSupplierReceiptDifferenceAccount(IntegrationTestCase):
+	"""Receive from Supplier picks its Difference Account the same way the dust receipt does.
+
+	Its Manufacture Stock Entry left the account blank, so ERPNext took the refining items'
+	default -- the Refining Scrap warehouse's Stock account -- and rejected the receipt.
+	The account choice itself is covered by TestDustReceiptDifferenceAccount; this pins the
+	wiring. DB-free.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def test_the_difference_account_is_set_before_the_entry_is_inserted(self):
+		import inspect
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		source = inspect.getsource(RefiningEntry.receive_from_supplier)
+		guard = source.find("self.set_dust_receipt_difference_account(se)")
+		insert = source.find("se.insert(")
+
+		self.assertNotEqual(guard, -1, "receive_from_supplier no longer sets the Difference Account")
+		self.assertLess(guard, insert, "the Difference Account must be set before se.insert()")
+
+
+class TestSerialPurityFromOwnBom(IntegrationTestCase):
+	"""A scanned serial's purity comes from its OWN as-built BOM (custom_bom_no).
+
+	FG design items carry no Metal Purity attribute, and the item-level fallback reads the
+	design's newest active BOM -- on prod a different piece's BOM with a blank purity -- so
+	scanning such a serial threw "Metal Purity is mandatory". DB-free: every read is patched.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _purity(
+		self, serial_bom="BOM-SN", header=None, detail=None, item=None, bom_no=None
+	):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		header = header or {}
+		detail = detail or {}
+
+		def _get_value(doctype, filters=None, fieldname=None, **kwargs):
+			if doctype == "Serial No":
+				return serial_bom
+			if doctype == "BOM" and isinstance(filters, dict):
+				# the design item's newest active BOM
+				return "BOM-NEWEST"
+			if doctype == "BOM":
+				return header.get(filters)
+			if doctype == "BOM Metal Detail":
+				return detail.get(filters["parent"])
+
+		entry = SimpleNamespace(get_item_purity=lambda item_code: item)
+		with patch.object(frappe.db, "get_value", side_effect=_get_value):
+			return RefiningEntry.get_serial_purity(entry, "SN-1", "FG-ITEM", bom_no)
+
+	def test_serial_bom_wins_over_the_newest_active_bom(self):
+		self.assertEqual(
+			self._purity(header={"BOM-SN": "91.75", "BOM-NEWEST": None}), "91.75"
+		)
+
+	def test_blank_bom_header_reads_the_metal_detail(self):
+		self.assertEqual(self._purity(detail={"BOM-SN": "92.0"}), "92.0")
+
+	def test_metal_detail_wins_over_a_stale_header(self):
+		"""The header keeps the order's 91.9 while the metal used (and its manufacturing
+		order) is 91.75 -- 21 active serial BOMs on a prod copy."""
+		self.assertEqual(
+			self._purity(header={"BOM-SN": "91.9"}, detail={"BOM-SN": "91.75"}), "91.75"
+		)
+
+	def test_bom_without_purity_falls_back_to_the_item(self):
+		self.assertEqual(self._purity(item="91.9"), "91.9")
+
+	def test_serial_without_its_own_bom_uses_the_active_bom(self):
+		self.assertEqual(
+			self._purity(serial_bom=None, header={"BOM-NEWEST": "75.4"}), "75.4"
+		)
+
+	def test_passed_bom_is_used_as_is(self):
+		self.assertEqual(
+			self._purity(
+				bom_no="BOM-PASSED", header={"BOM-PASSED": "91.75", "BOM-SN": "58.5"}
+			),
+			"91.75",
+		)
+
+
+class TestSerialMaterialRows(IntegrationTestCase):
+	"""Material Items built for a scanned serial. The serial and BOM reads are patched.
+
+	* A serial BOM that lists its own design item must not add it again as a BOM Component:
+	  internal refining showed the design code twice, and that self row -- a piece count
+	  with no purity -- was the only BOM Component on such BOMs, zeroing the Recovery Summary.
+	* The serial row is a scan-time snapshot of its BOM (weights, purity and pure weight
+	  together), so a rebuild keeps a saved purity and reads the BOM only for a blank one.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _build(self, is_external=0, metal_purity="91.75"):
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SERIAL
+		re.is_external = is_external
+		re.warehouse = "Tagging FG - T"
+		re.append(
+			"serial_no_details",
+			{
+				"serial_number": "SN-1",
+				"item_code": "FG-DESIGN",
+				"metal_purity": metal_purity,
+				"pcs": 1,
+			},
+		)
+		bom_items = [
+			frappe._dict(
+				item_code="FG-DESIGN", qty=1, stock_qty=1, uom="Nos", stock_uom="Nos"
+			),
+			frappe._dict(
+				item_code="ML-G-22KT",
+				qty=23.848,
+				stock_qty=23.848,
+				uom="Gram",
+				stock_uom="Gram",
+			),
+		]
+
+		real_get_value = frappe.db.get_value
+		real_get_all = frappe.db.get_all
+
+		def _get_value(doctype, *args, **kwargs):
+			if doctype == "Serial No":
+				return "BOM-SN"
+			if doctype == "Item":
+				return "Test Group"
+			return real_get_value(doctype, *args, **kwargs)
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "BOM Item":
+				return bom_items
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch.object(frappe.db, "get_value", side_effect=_get_value),
+			patch.object(frappe.db, "get_all", side_effect=_get_all),
+			patch.object(RefiningEntry, "get_item_purity", return_value="91.75"),
+			patch.object(
+				RefiningEntry, "get_serial_purity", return_value="91.75"
+			) as serial_purity,
+			patch.object(RefiningEntry, "_drop_restricted_material_rows"),
+		):
+			re.build_material_table()
+		return re, serial_purity
+
+	def _material_rows(self, is_external):
+		re, _ = self._build(is_external=is_external)
+		return [(row.item_code, row.source_type) for row in re.material_items]
+
+	def test_internal_lists_the_design_code_once(self):
+		self.assertEqual(
+			self._material_rows(is_external=0),
+			[("FG-DESIGN", "Serial Number"), ("ML-G-22KT", "BOM Component")],
+		)
+
+	def test_external_leaves_the_design_code_out(self):
+		self.assertEqual(
+			self._material_rows(is_external=1), [("ML-G-22KT", "BOM Component")]
+		)
+
+	def test_saved_purity_is_kept_on_rebuild(self):
+		"""A draft scanned at 75.4 stays 75.4 even if its BOM now says 91.75: the row's
+		pure weight was computed from that purity. Re-scan the serial to refresh it."""
+		re, serial_purity = self._build(metal_purity="75.4")
+		self.assertEqual(re.material_items[0].purity, "75.4")
+		serial_purity.assert_not_called()
+
+	def test_blank_purity_is_read_from_the_serial_bom(self):
+		re, serial_purity = self._build(metal_purity=None)
+		self.assertEqual(re.material_items[0].purity, "91.75")
+		serial_purity.assert_called_once_with("SN-1", "FG-DESIGN", "BOM-SN")

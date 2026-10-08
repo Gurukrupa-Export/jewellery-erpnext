@@ -1,7 +1,13 @@
+from contextlib import contextmanager
+
 import frappe
 from frappe import _
 from frappe.utils import cstr, flt
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOODS_FLAG_LABEL,
+	can_be_customer_goods,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
@@ -86,15 +92,14 @@ def update_inventory_dimentions(self):
 				self.custom_employee = emp
 			# Batch Rate is stamped from the row that created the batch: Purchase
 			# Receipt Item.rate, or the Stock Entry Detail's own maintained rate
-			# falling back to basic_rate. Stamped only while the field is still
-			# empty (see _can_stamp_rate) so a later re-save cannot clobber the
-			# qty-weighted rate batch.on_update blends for Repack-Metal Conversion.
+			# falling back to valuation_rate, then basic_rate. Stamped only while
+			# the field is still empty (see _can_stamp_rate): this minting stamp is
+			# the Batch Rate for the life of the batch (F26).
 			#
 			# Every item gets a rate, not just metal. The split is only alloy vs
-			# everything else: an alloy batch's value belongs on custom_alloy_rate
-			# because batch.on_update blends the two pools separately for a
-			# Repack-Metal Conversion. Diamond, gemstone, finding and consumable
-			# batches were previously left at 0 -- see _rate_field_for_item.
+			# everything else: an alloy batch's value belongs on custom_alloy_rate.
+			# Diamond, gemstone, finding and consumable batches were previously
+			# left at 0 -- see _rate_field_for_item.
 			rate_field = _rate_field_for_item(self.item, alloy_item_list)
 			if _can_stamp_rate(self, rate_field):
 				setattr(
@@ -102,9 +107,7 @@ def update_inventory_dimentions(self):
 				)
 			break
 
-	item_allows_customer_goods = frappe.db.get_value(
-		"Item", self.item, "custom_inventory_type_can_be_customer_goods"
-	)
+	item_allows_customer_goods = can_be_customer_goods(self.item)
 	is_customer_inventory = self.custom_inventory_type in [
 		"Customer Goods",
 		"Customer Stock",
@@ -114,19 +117,20 @@ def update_inventory_dimentions(self):
 		not item_allows_customer_goods
 		and is_customer_inventory
 		and not is_subcontracting_gold_repack(self)
+		and not is_snc_settlement_conversion(self)
 		and not is_process_loss_repack(self)
 		and not is_repair_unpack(self)
 	):
 		frappe.throw(
 			_(
 				"Item {0} is not allowed as {1} (customer: {2}, batch: {3}). Tick "
-				"'Inventory Type Can be Customer Goods' on the Item, or book it as "
-				"Regular Stock."
+				"'{4}' on the Item, or book it as Regular Stock."
 			).format(
 				frappe.bold(self.item),
 				self.custom_inventory_type,
 				self.custom_customer or "-",
 				frappe.bold(self.name or self.get("batch_id") or _("new")),
+				_(CUSTOMER_GOODS_FLAG_LABEL),
 			)
 		)
 
@@ -155,6 +159,33 @@ def update_inventory_dimentions(self):
 		self.custom_customer_voucher_type = (
 			_purchase_receipt_voucher_type(self) or self.custom_customer_voucher_type
 		)
+
+	_stamp_ref_customer(self, is_customer_inventory)
+
+
+def _stamp_ref_customer(batch, is_customer_inventory):
+	"""Copy the minting entry's ``ref_customer`` onto a customer batch, once.
+
+	The batch path ``batch_rename`` does not cover: on a site with the Customer Gold flow off, a
+	Customer Goods Received finding is minted here by ERPNext. Set only while empty, because this
+	runs on every save of the batch -- ``reference_name`` is cleared on cancel, and Manufacture /
+	Repack re-save batches whose own entry carries no Ref Customer. ``hybrid_findings`` reads it.
+	"""
+	if (
+		not is_customer_inventory
+		or batch.reference_doctype != "Stock Entry"
+		or not batch.reference_name
+		or getattr(batch, "custom_ref_customer", None)
+		or not frappe.db.has_column("Stock Entry", "ref_customer")
+		or not frappe.db.has_column("Batch", "custom_ref_customer")
+	):
+		return
+
+	ref_customer = frappe.db.get_value(
+		"Stock Entry", batch.reference_name, "ref_customer"
+	)
+	if ref_customer:
+		batch.custom_ref_customer = ref_customer
 
 
 def _row_value(child_doctype, row_name, fieldname):
@@ -186,9 +217,7 @@ def carry_rates_from_source_batches(batch, sources):
 	"""Copy the Batch Rate / Alloy Rate pools onto a HAND-BUILT batch from its source batches.
 
 	``sources`` is ``[(batch_no, qty)]`` -- the batches consumed to make this one, with the
-	quantity taken from each. Both pools are carried, qty-weighted across the sources, which
-	is the same two-pool weighted shape ``batch.on_update`` blends from
-	``custom_origin_entries`` for a Repack-Metal Conversion.
+	quantity taken from each. Both pools are carried, qty-weighted across the sources.
 
 	**Why this exists at all.** ``update_inventory_dimentions`` stamps a new batch's rate from
 	the voucher row that minted it, but it can only do so inside
@@ -246,10 +275,10 @@ def _can_stamp_rate(batch, fieldname):
 	"""Whether the Batch Rate / Alloy Rate may still be written.
 
 	The requirement is that *newly created* batches carry the rate of the voucher
-	row that made them. Re-stamping on every save would also undo the qty-weighted
-	rate ``batch.on_update`` blends from ``custom_origin_entries`` for a
-	Repack-Metal Conversion, since ``validate`` runs before ``on_update`` only on
-	the save that does the blending -- any later save would overwrite it.
+	row that made them, and keep it: that minting stamp is the Batch Rate (F26).
+	``serial_and_batch_bundle.update_parent_batch_id`` re-saves a produced batch on
+	every Manufacture / Repack submit to record provenance, so re-stamping on every
+	save would restate the rate from whatever the row holds by then.
 
 	An empty field is always fillable (a batch that never got a rate should still
 	get one); a rate that is already set is only rewritten while the batch is new.
@@ -269,25 +298,49 @@ def _source_row_rate(batch, child_doctype, se_fieldname):
 	A Purchase Receipt Item (and any other non-Stock-Entry voucher row) carries a
 	single ``rate``. A Stock Entry Detail carries its own maintained Batch/Alloy
 	Rate -- fetched from the *consumed* batch, so it is empty on the produce row
-	that mints a new batch -- and falls back to ``basic_rate``, the valuation the
-	entry itself booked.
+	that mints a new batch unless a rate typed on a zero-valued customer row was
+	parked there (``entered_metal_rate``) -- and falls back to ``valuation_rate``,
+	then ``basic_rate``.
+
+	``valuation_rate`` first because it is what the ledger books: the Stock Entry's
+	SLE ``incoming_rate`` for a target row is ``valuation_rate``, which is
+	``basic_rate`` plus the row's share of additional costs. With batch-wise
+	valuation that is the rate every later issue of the batch is charged, so the
+	Batch Rate matches it (F26). ``basic_rate`` stays as the fallback for a row
+	whose valuation_rate is not set.
 	"""
 	if batch.reference_doctype != "Stock Entry":
 		return _row_value(child_doctype, batch.custom_voucher_detail_no, "rate")
 
-	rate = _row_value(child_doctype, batch.custom_voucher_detail_no, se_fieldname)
-	if not rate:
-		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, "basic_rate")
+	# F8, applied here too: a Manufacture's finished PIECE gets no Batch Rate. Its row rate is
+	# the whole piece -- metal, diamond, making -- and ``batch_rename._source_row_rate`` already
+	# withholds it at mint. This stamper runs again on the provenance re-save
+	# (``update_parent_batch_id``), sees the 0 as "empty" and used to stamp the piece value back:
+	# kg-gk's MAT-STE-19067 piece read a "Batch Rate" of Rs.73,478.13.
+	#
+	# A piece only: a Manufacture whose finished output is itself metal or a finding -- refined
+	# 24KT from a Refining Entry -- keeps its rate, which IS a metal rate.
+	if (
+		_row_value(child_doctype, batch.custom_voucher_detail_no, "is_finished_item")
+		and frappe.db.get_value("Item", batch.item, "variant_of") not in ("M", "F")
+		and frappe.db.get_value("Stock Entry", batch.reference_name, "purpose")
+		== "Manufacture"
+	):
+		return 0.0
+
+	for fieldname in (se_fieldname, "valuation_rate", "basic_rate"):
+		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, fieldname)
+		if flt(rate):
+			return rate
 	return rate
 
 
 def _rate_field_for_item(item_code, alloy_item_list):
 	"""Which Batch field the minting row's rate belongs on.
 
-	Alloy is the only special case: ``batch.on_update`` blends alloy and metal
-	into two separate qty-weighted pools for a Repack-Metal Conversion
-	(``custom_alloy_rate`` vs ``custom_metal_rate``), so an alloy batch's value
-	has to land in the alloy pool or the conversion's blend double-counts it.
+	Alloy is the only special case: an alloy batch's value lands on
+	``custom_alloy_rate``, the pool ``carry_rates_from_source_batches`` carries
+	separately, not on ``custom_metal_rate``.
 
 	Everything else -- metal, diamond, gemstone, finding, consumables -- takes
 	``custom_metal_rate``. This used to be narrowed to items carrying a
@@ -395,6 +448,53 @@ def is_subcontracting_gold_repack(batch):
 			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
 		)
 		== "Subcontracting Repack"
+	)
+
+
+@contextmanager
+def snc_settlement_conversion(stock_entry_name):
+	"""Mark ``stock_entry_name`` as one of Create SNC's own settlement conversions while
+	the caller submits it -- the only proof ``is_snc_settlement_conversion`` accepts.
+
+	Request-scoped on purpose: every Stock Entry field a conversion could be recognised by
+	(``stock_entry_type``, ``auto_created``, ``manufacturing_work_order``) is permlevel 0,
+	so any client can post it, whereas ``frappe.flags`` is rebuilt per request and cannot be
+	set by one. Keyed by Stock Entry name rather than a boolean, so no other batch validated
+	in the same request is exempted; restored in ``finally`` like ``is_batch_autoname``.
+	"""
+	previous = frappe.flags.snc_settlement_conversions or set()
+	frappe.flags.snc_settlement_conversions = previous | {stock_entry_name}
+	try:
+		yield
+	finally:
+		frappe.flags.snc_settlement_conversions = previous
+
+
+def is_snc_settlement_conversion(batch):
+	"""Exempt the batch a Create SNC settlement conversion mints for a customer.
+
+	Create SNC (customer_subcontracting/sub_utils/snc.py) settles a customer-gold work
+	order that used company gold or a company finding by converting the customer's own
+	metal into that item -- so the produced batch is the customer's by construction, not
+	by the Item's ``custom_inventory_type_can_be_customer_goods`` flag. Most finding
+	variants do not carry that flag, and the batch is re-saved (re-validated) on submit by
+	``update_parent_batch_id``, so without this exemption the settlement throws "Item ...
+	is not allowed as Customer Goods" and the FG work order stays blocked.
+
+	Only a conversion Create SNC is submitting in THIS request qualifies (see
+	``snc_settlement_conversion``); a Stock Entry that merely looks like one -- posted with
+	the same type, ``auto_created`` and work order -- stays guarded. Every guard evaluation
+	of an SNC batch happens inside that submit; a later direct re-save of the Batch itself
+	is guarded like any other Customer Goods batch of an unflagged item.
+	"""
+	if getattr(batch, "reference_doctype", None) != "Stock Entry":
+		return False
+
+	if not getattr(batch, "custom_customer", None):
+		return False
+
+	return getattr(batch, "reference_name", None) in (
+		frappe.flags.snc_settlement_conversions or ()
 	)
 
 

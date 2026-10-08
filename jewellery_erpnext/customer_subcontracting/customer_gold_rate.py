@@ -29,7 +29,7 @@ from math import isfinite
 
 import frappe
 from frappe import _
-from frappe.utils import flt, getdate
+from frappe.utils import add_days, flt, getdate, to_timedelta
 
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	GOLD_RATE_FIELDS,
@@ -44,6 +44,18 @@ PER_GRAM = "Per Gram"
 PER_10_GRAM = "Per 10 Gram"
 GRAMS_PER_10_GRAM = 10.0
 
+#: How many grams one quoted unit covers -- the normalisation factor frozen on the receipt.
+GRAMS_PER_UNIT = {PER_GRAM: 1.0, PER_10_GRAM: GRAMS_PER_10_GRAM}
+
+#: A frozen per-gram rate outside this multiple of its reference is refused unless approved.
+#: Wide on purpose: gold does not move 50% inside the reference window, while the failure this
+#: exists for is a factor of ten (Rs.1,57,655 booked against Rs.15,504.85 paid).
+OUTLIER_BAND = (0.5, 2.0)
+#: How far back a purchase of the same item still counts as a reference.
+PURCHASE_REFERENCE_DAYS = 90
+#: How far back the feed's own earlier rate still counts, when there is no purchase.
+FEED_REFERENCE_DAYS = 7
+
 
 def convert_gold_rate_to_per_gram(raw_rate, unit):
 	"""Convert a raw Gold Rates value to a per-gram rate.
@@ -51,10 +63,8 @@ def convert_gold_rate_to_per_gram(raw_rate, unit):
 	The only place a unit divisor appears. Deliberately does not round -- the caller
 	stores the result in a field with its own precision.
 	"""
-	if unit == PER_GRAM:
-		return flt(raw_rate)
-	if unit == PER_10_GRAM:
-		return flt(raw_rate) / GRAMS_PER_10_GRAM
+	if unit in GRAMS_PER_UNIT:
+		return flt(raw_rate) / GRAMS_PER_UNIT[unit]
 
 	frappe.throw(
 		_("Gold Rate Unit {0} is not supported. Allowed: {1}.").format(
@@ -98,8 +108,146 @@ def resolve_customer_gold_rate_for_date(posting_date, settings=None):
 		rate_field=rate_field,
 		raw_rate=flt(raw_rate),
 		rate_unit=unit,
+		rate_factor=GRAMS_PER_UNIT[unit],
 		per_gram_rate=convert_gold_rate_to_per_gram(raw_rate, unit),
 	)
+
+
+def reference_rate(item_code, company, posting_date, settings):
+	"""An independent per-gram rate to check a frozen rate against, or ``None``.
+
+	F1: the feed quotes per 10 g on some days and per gram on others, so the configured unit
+	is right on some days and ten times wrong on others. A check against the feed's own unit
+	cannot see that; it needs a number the feed did not produce.
+
+	1. **The company's latest purchase of the same item** within ``PURCHASE_REFERENCE_DAYS``.
+	   It is what the company actually paid, in the item's own stock unit, and the feed plays
+	   no part in it. On kg-gk it is Rs.15,504.85/g (``PR-26-00171``) -- the number that shows
+	   ``KGJPL-SE-CGR-26-00011``'s Rs.1,57,655/g is ten times too high.
+	2. **The same feed's own rate on an earlier day** within ``FEED_REFERENCE_DAYS``, normalised
+	   with the same unit. It catches the feed changing scale overnight, though not a feed that
+	   has always been wrong -- which is why a purchase is preferred.
+
+	Earlier customer-gold receipts are NOT a reference: every one booked since the rate engine
+	landed carries the ten-times rate, and checking against them would pass the error and flag
+	the correction.
+
+	Returns ``frappe._dict(rate=..., source=...)``.
+	"""
+	return _purchase_reference(item_code, company, posting_date) or _feed_reference(
+		posting_date, settings
+	)
+
+
+def _purchase_reference(item_code, company, posting_date):
+	if not item_code or not company or not posting_date:
+		return None
+
+	since = add_days(getdate(posting_date), -PURCHASE_REFERENCE_DAYS)
+	candidates = []
+	for parent_doctype, child_doctype, stock_filter in (
+		("Purchase Receipt", "Purchase Receipt Item", None),
+		("Purchase Invoice", "Purchase Invoice Item", "update_stock"),
+	):
+		parent = frappe.qb.DocType(parent_doctype)
+		child = frappe.qb.DocType(child_doctype)
+		query = (
+			frappe.qb.from_(child)
+			.join(parent)
+			.on(child.parent == parent.name)
+			.select(
+				parent.name,
+				parent.posting_date,
+				parent.posting_time,
+				child.base_net_rate,
+				child.conversion_factor,
+			)
+			.where(
+				(parent.docstatus == 1)
+				& (parent.company == company)
+				& (parent.is_return == 0)
+				& (child.item_code == item_code)
+				& (child.base_net_rate > 0)
+				& (parent.posting_date >= since)
+				& (parent.posting_date <= getdate(posting_date))
+			)
+			.orderby(parent.posting_date, order=frappe.qb.desc)
+			.orderby(parent.posting_time, order=frappe.qb.desc)
+			.limit(1)
+		)
+		if stock_filter:
+			query = query.where(getattr(parent, stock_filter) == 1)
+		for name, date, time, rate, factor in query.run():
+			candidates.append(
+				(
+					getdate(date),
+					to_timedelta(time or "0:00:00"),
+					parent_doctype,
+					name,
+					flt(rate) / (flt(factor) or 1.0),
+				)
+			)
+
+	if not candidates:
+		return None
+
+	date, _time, doctype, name, rate = max(candidates)
+	return frappe._dict(rate=rate, source=f"{doctype} {name} ({date})")
+
+
+def _feed_reference(posting_date, settings):
+	source = settings.get("gold_rate_source")
+	rate_field = settings.get("gold_rate_field")
+	unit = settings.get("gold_rate_unit")
+	if not (
+		source
+		and rate_field in GOLD_RATE_FIELDS
+		and unit in GRAMS_PER_UNIT
+		and posting_date
+	):
+		return None
+
+	day = getdate(posting_date)
+	earlier = frappe.get_all(
+		GOLD_RATES_DOCTYPE,
+		filters=[
+			["date", "<", day],
+			["date", ">=", add_days(day, -FEED_REFERENCE_DAYS)],
+		],
+		fields=["name", "date"],
+		order_by="date desc",
+	)
+	for record in earlier:
+		rows = frappe.get_all(
+			GOLD_RATES_ROW_DOCTYPE,
+			filters={
+				"parent": record.name,
+				"parenttype": GOLD_RATES_DOCTYPE,
+				"particulars": source,
+			},
+			fields=["*"],
+		)
+		if len(rows) != 1:
+			continue
+		raw = flt(rows[0].get(rate_field))
+		if isfinite(raw) and raw > 0:
+			return frappe._dict(
+				rate=convert_gold_rate_to_per_gram(raw, unit),
+				source=f"Gold Rates {record.name} ({source}, {rate_field}, {record.date})",
+			)
+
+	return None
+
+
+def rate_ratio(per_gram_rate, reference):
+	"""``per_gram_rate`` as a multiple of the reference, or ``None`` when there is none."""
+	if not reference or flt(reference.rate) <= 0:
+		return None
+	return flt(per_gram_rate) / flt(reference.rate)
+
+
+def is_outlier(ratio):
+	return ratio is not None and not (OUTLIER_BAND[0] <= ratio <= OUTLIER_BAND[1])
 
 
 def _validate_rate_configuration(source, rate_field, unit):

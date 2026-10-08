@@ -23,6 +23,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	validate_loss_ownership_carried,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
+	should_allow_zero_valuation,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
@@ -169,6 +172,7 @@ def set_target_inventory_dimensions(self, method=None):
 
 def before_validate(self, method):
 	validate_ir(self)
+	validate_mop_is_current(self)
 	if self.docstatus == 0:
 		# FIFO batch allocation now runs automatically for every draft (incl.
 		# brand-new / unsaved docs) — this replaces the old "Get FIFO Batches"
@@ -375,9 +379,80 @@ def before_validate(self, method):
 		allow_zero_valuation(self)
 
 
-def validate_ir(self):
-	# 	validate_inventory_dimention(self)
+def validate_mop_is_current(self):
+	"""Reject rows booked against a Manufacturing Operation the piece has already left.
 
+	When an Employee / Department IR receives a MOP it marks it Finished, creates the
+	next MOP and repoints ``Manufacturing Work Order.manufacturing_operation`` at it,
+	carrying forward only the stock the old MOP held at that moment. Stock booked on the
+	old MOP afterwards is stranded there: the next MOP never sees it, but the FG MWO's
+	SNC initialisation sums qty_change across every MOP of the MWO and picks it up, so
+	the serial-number source table disagrees with the piece's net weight
+	(MAT-STE-48359: +0.02 g issued to MOP-2609-215WTE six seconds after its receive).
+
+	Runs from before_validate, which also fires on submit, so a draft saved before the
+	receive and submitted after it is caught. Scoped to user-created entries like the
+	In-Transit guard in before_validate: EOD sync, SNC and the other cascades set
+	auto_created.
+	"""
+	if self.auto_created:
+		return
+
+	mops = [
+		row.manufacturing_operation
+		for row in self.items
+		if row.get("manufacturing_operation")
+	]
+	if not mops:
+		return
+
+	mop_map = bulk_map(
+		"Manufacturing Operation", mops, ["status", "manufacturing_work_order"]
+	)
+	mwo_map = bulk_map(
+		"Manufacturing Work Order",
+		[mop.manufacturing_work_order for mop in mop_map.values()],
+		["manufacturing_operation"],
+	)
+
+	for row in self.items:
+		mop = mop_map.get(row.get("manufacturing_operation"))
+		if not mop:
+			continue
+
+		current = (mwo_map.get(mop.manufacturing_work_order) or {}).get(
+			"manufacturing_operation"
+		)
+		superseded = current and current != row.manufacturing_operation
+		if mop.status != "Finished" and not superseded:
+			continue
+
+		if superseded:
+			frappe.throw(
+				_(
+					"Row #{0}: Manufacturing Operation {1} is no longer active; Manufacturing Work Order {2} has moved on to {3}. Stock booked on {1} will not carry forward, so create this Stock Entry against {3} instead."
+				).format(
+					row.idx,
+					frappe.bold(row.manufacturing_operation),
+					frappe.bold(mop.manufacturing_work_order),
+					frappe.bold(current),
+				),
+				title=_("Manufacturing Operation Not Current"),
+			)
+
+		frappe.throw(
+			_(
+				"Row #{0}: Manufacturing Operation {1} is already Finished, so stock booked on it will not carry forward. Book it against the active operation of Manufacturing Work Order {2} instead."
+			).format(
+				row.idx,
+				frappe.bold(row.manufacturing_operation),
+				frappe.bold(mop.manufacturing_work_order),
+			),
+			title=_("Manufacturing Operation Not Current"),
+		)
+
+
+def validate_ir(self):
 	if self.auto_created == 0:
 		if self.stock_entry_type in [
 			"Material Receive (WORK ORDER)",
@@ -613,8 +688,8 @@ def validate_metal_properties(doc):
 		)
 
 	for row in doc.items:
-		# allow_zero_valuation Start
-		if row.inventory_type == "Customer Goods":
+		# allow_zero_valuation Start -- same rule as allow_zero_valuation(); see utils/zero_valuation
+		if should_allow_zero_valuation(row, doc):
 			row.allow_zero_valuation_rate = 1
 		# allow_zero_valuation End
 
@@ -1028,6 +1103,55 @@ def _throw_warehouse_mismatch(row, label, expected, actual):
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
+	release_material_request_links(self)
+
+
+# The Material Request fields that record "this step was done by Stock Entry X". All but
+# custom_mop_se (Data) are Link fields, which is what makes the request a back-link.
+_MR_STEP_ENTRY_FIELDS = (
+	"custom_reserve_se",
+	"custom_transfer_se",
+	"custom_department_transfer_se",
+	"custom_mop_se",
+)
+
+
+def release_material_request_links(self):
+	"""Let this entry cancel without its Material Request, and take it off the request.
+
+	The request stamps its entries (_MR_STEP_ENTRY_FIELDS) while every entry's rows point
+	back through material_request, so frappe's back-link check made each wait for the other
+	to be cancelled first -- neither ever could, and the desk's "Cancel All" walked that loop
+	into the request and every sibling entry. The request is ignored here, not in
+	before_cancel: ERPNext's StockEntry.on_cancel assigns ignore_linked_doctypes outright,
+	and check_no_back_links_exist reads it only after every on_cancel hook has run.
+
+	A stamp naming this entry is cleared, since the step it records is undone. Only the
+	submitted requests on this entry's own rows are touched: a draft is no back-link, and a
+	request carrying a copied link (split work order, desk Duplicate) is not this entry's.
+	"""
+	self.ignore_linked_doctypes = (
+		*(self.get("ignore_linked_doctypes") or ()),
+		"Material Request",
+	)
+
+	requests = {row.material_request for row in self.items if row.material_request}
+	if not requests:
+		return
+
+	for mr in frappe.get_all(
+		"Material Request",
+		filters={"name": ["in", sorted(requests)], "docstatus": 1},
+		fields=["name", *_MR_STEP_ENTRY_FIELDS],
+	):
+		stamps = {f: None for f in _MR_STEP_ENTRY_FIELDS if mr.get(f) == self.name}
+		if not stamps:
+			continue
+		if "custom_transfer_se" in stamps:
+			stamps.update(custom_transfer_se_state=None, custom_transfer_se_error=None)
+		# Not a save: validate_department_transfer_frozen refuses any normal update that
+		# touches custom_department_transfer_se.
+		frappe.db.set_value("Material Request", mr.name, stamps, update_modified=False)
 
 
 def prelock_bins(self, method=None):
@@ -1132,16 +1256,34 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 	resubmit / replay do not create duplicates.
 	"""
 	if is_cancelled:
-		frappe.db.sql(
-			"""
-			UPDATE `tabMOP Log`
-			SET is_cancelled = 1
-			WHERE voucher_type = 'Stock Entry'
-			  AND voucher_no = %s
-			  AND is_cancelled = 0
-			""",
-			(self.name,),
-		)
+		# Read this voucher's rows first (plain read; they were all written by its own submit,
+		# and the cancel holds the Stock Entry) and flip them by primary key. A voucher-filtered
+		# UPDATE has no index to use on production: it scanned and locked every MOP Log row of
+		# the site until the cancel committed (lock_order RULE E) -- on every Stock Entry
+		# cancel, including those an Employee / Department IR cancel makes after its
+		# current-operation lock block.
+		names = [
+			r[0]
+			for r in frappe.db.sql(
+				"""
+				SELECT name FROM `tabMOP Log`
+				WHERE voucher_type = 'Stock Entry'
+				  AND voucher_no = %s
+				  AND is_cancelled = 0
+				""",
+				(self.name,),
+			)
+		]
+		if names:
+			frappe.db.sql(
+				"""
+				UPDATE `tabMOP Log`
+				SET is_cancelled = 1
+				WHERE name IN %(names)s
+				  AND is_cancelled = 0
+				""",
+				{"names": sorted(names)},
+			)
 		return
 
 	# Nothing to sync unless at least one row is MOP-bound; skip the snapshot query
@@ -1339,8 +1481,11 @@ def validate_items(self):
 
 
 def allow_zero_valuation(self):
+	# Customer-owned INPUT rows only: never a finished good or secondary row that ERPNext derives,
+	# which would be zeroed on the next validate pass (F3). The authoritative enforcement is in
+	# CustomStockEntry.set_basic_rate, because a repost never reaches this hook.
 	for row in self.items:
-		if row.inventory_type == "Customer Goods":
+		if should_allow_zero_valuation(row, self):
 			row.allow_zero_valuation_rate = 1
 
 
@@ -1628,11 +1773,153 @@ def get_warehouse_details(
 	return d_warehouse, e_warehouse
 
 
+def _customer_gold_issue_plan(source_name):
+	"""For a Customer Gold receipt: the return type to create and what each receipt row still
+	has to give back. ``(None, None)`` for any other Stock Entry.
+
+	The Issue used to be mapped with the full receipt quantity every time, so a receipt already
+	half returned offered its whole quantity again -- and nothing downstream checked it. The
+	return hook now enforces the limit; mapping only what is left keeps the form honest too.
+	A quantity chosen in the return preview arrives as ``frappe.flags.args.qty``.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		effective_receipt_events,
+		is_allocation_schema_ready,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_receipt import (
+		_receipt_settings,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+		receipt_remaining,
+	)
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_customer_gold_settings,
+		is_customer_gold_enabled,
+	)
+
+	source = frappe.db.get_value(
+		"Stock Entry",
+		source_name,
+		["name", "company", "stock_entry_type", "purpose", "docstatus"],
+		as_dict=True,
+	)
+	if not source:
+		return None, None
+	source.doctype = "Stock Entry"
+	if source.stock_entry_type != "Customer Goods Received" and not (
+		is_customer_gold_enabled() and _receipt_settings(source)
+	):
+		return None, None
+
+	return_type = (
+		get_customer_gold_settings().get("customer_gold_return_stock_entry_type")
+		or "Customer Goods Issue"
+	)
+	if not (is_customer_gold_enabled() and is_allocation_schema_ready()):
+		return return_type, None
+
+	events = effective_receipt_events({"reference_docname": source.name})
+	if not events:
+		return return_type, None
+	remaining = receipt_remaining(source.company, events[0].customer, events)
+	requested = flt((frappe.flags.args or {}).get("qty")) if frappe.flags.args else 0.0
+	requested_row = (
+		(frappe.flags.args or {}).get("receipt_row") if frappe.flags.args else None
+	)
+
+	left = {}
+	for event in events:
+		qty = max(flt(remaining.get(event.name)), 0.0)
+		if requested_row and requested_row != event.cg_source_row:
+			qty = 0.0
+		elif requested:
+			qty = min(qty, requested)
+		left[event.cg_source_row] = flt(qty, 3)
+	return return_type, left
+
+
+def _department_transfer_destination(source):
+	"""Where a Transfer to Department transit leg is received into, if ``source`` is one.
+
+	``make_department_transfer_stock_entry`` sends the material to the destination's
+	transit warehouse and stamps the entry on its request as
+	``custom_department_transfer_se``; the request's ``custom_destination_warehouse`` is
+	where it lands. The entry carries no ``custom_material_request_reference`` and its rows'
+	Material Request Item warehouse is the request's old ``set_warehouse``, so neither End
+	Transit mapper's own routing fits it.
+	"""
+	if source.get("stock_entry_type") != "Material Transfer (DEPARTMENT)":
+		return None
+
+	return frappe.db.get_value(
+		"Material Request",
+		{"custom_department_transfer_se": source.get("name"), "docstatus": 1},
+		"custom_destination_warehouse",
+	)
+
+
+def _department_destination_lookup():
+	"""``_department_transfer_destination`` memoised per mapping: one query, not one per row."""
+	destinations = {}
+
+	def lookup(source):
+		key = source.get("name")
+		if key not in destinations:
+			destinations[key] = _department_transfer_destination(source)
+		return destinations[key]
+
+	return lookup
+
+
+def _remaining_transit_qty(row, precision):
+	"""Stock-UOM quantity of a transit row not received yet.
+
+	ERPNext's own ``make_stock_in_entry`` rule. ``transferred_qty`` is kept in stock UOM
+	(``StockEntry.update_transferred_qty`` sums the receipts' ``transfer_qty``), so it is
+	taken off ``transfer_qty``, never off the row's transaction-UOM ``qty``. A row with
+	nothing left is not mapped again, and a later End Transit carries only the remainder.
+	"""
+	return flt(
+		flt(row.get("transfer_qty")) - flt(row.get("transferred_qty")), precision
+	)
+
+
+def _remaining_transit_row_qty(row, precision):
+	"""``_remaining_transit_qty`` in the row's own UOM, for the receipt's ``qty``."""
+	return _remaining_transit_qty(row, precision) / (
+		flt(row.get("conversion_factor")) or 1
+	)
+
+
+def _issue_row_qty(row, issue_left, precision):
+	"""Quantity a Create > Issue / End Transit maps for ``row``.
+
+	A Customer Gold receipt maps only what that receipt row still has to give back
+	(``_customer_gold_issue_plan``: the preview's row and quantity, capped at what remains).
+	Any other entry maps the part of a transit row not received yet.
+	"""
+	if issue_left is not None:
+		return flt(issue_left.get(row.get("name")), precision)
+	return _remaining_transit_row_qty(row, precision)
+
+
+def _issue_row_mapped(row, issue_left, precision):
+	"""Whether ``row`` is offered at all: a receipt row with nothing left to give back, or a
+	transit row already received in full, is not mapped again."""
+	if issue_left is not None:
+		return flt(issue_left.get(row.get("name"))) > 0
+	return _remaining_transit_qty(row, precision) > 0
+
+
 @frappe.whitelist()
 def make_stock_in_entry(source_name, target_doc=None):
+	issue_type, issue_left = _customer_gold_issue_plan(source_name)
+	department_destination = _department_destination_lookup()
+	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
+
 	def set_missing_values(source, target):
-		if target.stock_entry_type == "Customer Goods Received":
-			target.stock_entry_type = "Customer Goods Issue"
+		if issue_type or target.stock_entry_type == "Customer Goods Received":
+			target.stock_entry_type = issue_type or "Customer Goods Issue"
 			target.purpose = "Material Issue"
 			target.custom_cg_issue_against = source.name
 		elif target.stock_entry_type == "Customer Goods Issue":
@@ -1656,8 +1943,17 @@ def make_stock_in_entry(source_name, target_doc=None):
 					target_wh = wh.warehouse
 			target_doc.t_warehouse = target_wh
 
+		destination = department_destination(source_parent)
+		if destination:
+			target_doc.t_warehouse = destination
+
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = source_doc.qty
+		target_doc.qty = _issue_row_qty(source_doc, issue_left, qty_precision)
+		if issue_type:
+			# Issue exactly the receipt's batch: the outward bundle must be built from the mapped
+			# batch_no, never re-picked by FIFO from a shared custody warehouse.
+			target_doc.use_serial_batch_fields = 1
+			target_doc.serial_and_batch_bundle = None
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -1677,7 +1973,11 @@ def make_stock_in_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				# "condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				# A receipt row with nothing left to give back, or a transit row already
+				# received in full, is not offered again.
+				"condition": lambda doc: _issue_row_mapped(
+					doc, issue_left, qty_precision
+				),
 			},
 		},
 		target_doc,
@@ -1856,6 +2156,11 @@ def create_material_receipt_for_sales_person(source_name):
 
 	target_doc.stock_entry_type = "Material Receipt - Sales Person"
 	target_doc.docstatus = 0
+	# The clone above copies the issue's transit fields too. A return receipt is neither
+	# in transit nor the receipt leg of a transit entry, and ERPNext rejects Add to Transit
+	# into a non-Transit warehouse.
+	target_doc.add_to_transit = 0
+	target_doc.outgoing_stock_entry = None
 	target_doc.posting_date = frappe.utils.nowdate()
 	target_doc.posting_time = frappe.utils.nowtime()
 
@@ -1948,6 +2253,9 @@ def create_material_receipt_for_customer_approval(source_name, cust_name):
 
 	target_doc.update(frappe.get_doc("Stock Entry", source_name).as_dict())
 	target_doc.docstatus = 0
+	# Same as create_material_receipt_for_sales_person: never a transit entry or leg.
+	target_doc.add_to_transit = 0
+	target_doc.outgoing_stock_entry = None
 
 	target_doc.items = []
 	for item in frappe.get_all(
@@ -1980,6 +2288,9 @@ validates serial items entered are equal to quantity or not if not appropriate e
 
 @frappe.whitelist()
 def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
+	department_destination = _department_destination_lookup()
+	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
+
 	def set_missing_values(source, target):
 		target.stock_entry_type = source.stock_entry_type
 		target.set_missing_values()
@@ -1999,8 +2310,12 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 				)
 				target_doc.t_warehouse = warehouse
 
+		destination = department_destination(source_parent)
+		if destination:
+			target_doc.t_warehouse = destination
+
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = source_doc.qty - source_doc.transferred_qty
+		target_doc.qty = _remaining_transit_row_qty(source_doc, qty_precision)
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -2020,7 +2335,7 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				"condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				"condition": lambda doc: _remaining_transit_qty(doc, qty_precision) > 0,
 			},
 		},
 		target_doc,
@@ -2158,6 +2473,18 @@ def consume_stock_reservation_entry(sre_doc, update_bin=True):
 
 	# Explicitly set status to "Delivered"
 	sre_doc.update_status(status="Delivered")
+
+	# F30: the order's reserved quantity is summed from its live reservations, so it has to be
+	# recomputed now -- ERPNext does this on submit and cancel, and consumption skipped it (946
+	# Sales Order rows on kg-gk still show stock reserved that was consumed long ago).
+	sre_doc.update_reserved_qty_in_voucher(update_modified=False)
+
+	# F29: give the customer's gold back to the free quantity, as a cancel would.
+	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+		release_consumed_allocation,
+	)
+
+	release_consumed_allocation(sre_doc)
 
 	# Refresh bin reserved stock so the physical stock becomes available
 	if update_bin:

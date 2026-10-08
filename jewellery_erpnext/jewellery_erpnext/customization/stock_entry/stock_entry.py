@@ -20,8 +20,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	set_fg_bom_weights,
 	set_gross_wt,
 	set_jwelex_tag_no,
-	# validate_inventory_dimention,
 	validate_warehouse,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.transit import (
+	has_non_transit_target,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.entered_metal_rate import (
 	capture_entered_metal_rates,
@@ -29,6 +31,13 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.entered_metal_rate 
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.loss_valuation import (
 	set_process_loss_produce_rates,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	normalize_ownership,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
+	release_derived_outputs,
+	settle_derived_outputs,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
@@ -76,9 +85,99 @@ def set_manufacturing_refs(self):
 	self.manufacturing_operation = mop or mwo.manufacturing_operation
 
 
+def normalize_add_to_transit(self):
+	"""Hold ``add_to_transit`` at 0 on entries that are not themselves in transit.
+
+	ERPNext v16.36.0 (``StockEntry.validate_transit_warehouses``, frappe/erpnext#59192)
+	rejects an entry with Add to Transit on whose target is not a Transit warehouse. The
+	flag cannot be cleared where such an entry is built: ``Stock Entry.add_to_transit`` is
+	``fetch_from`` the Stock Entry Type with ``fetch_if_empty``, and frappe's
+	``_validate_links`` -- which runs before any hook -- treats 0 as empty and fetches the
+	type's 1 back in for "Material Transfer (DEPARTMENT)" and "Customer Goods Transfer".
+	This hook runs after that fetch and before ``StockEntry.validate``, so it is the first
+	place a 0 sticks; on submit frappe no longer refetches, so the 0 reaches the database.
+
+	Three kinds of entry are never in transit:
+
+	* a receipt leg (``outgoing_stock_entry`` set): it is what ends the transit. ERPNext
+	  hides the field on one and its own End Transit maps to a type with 0, but this app's
+	  End Transit override keeps the source's transit type;
+	* an entry whose maker set ``flags.no_transit`` because it moves the stock in one shot;
+	* an amendment of an entry stored with 0: amending keeps the 0, and the fetch would
+	  turn it back into 1.
+	"""
+	if self.get("outgoing_stock_entry"):
+		# The Customer Goods Received > Issue mapper (doc_events.stock_entry
+		# make_stock_in_entry) links its Material Issue / Receipt the same way without
+		# either being a transit receipt; only a Material Transfer can end a transit.
+		if self.get("purpose") == "Material Transfer":
+			validate_transit_receipt_source(self)
+		self.add_to_transit = 0
+		return
+
+	flags = getattr(self, "flags", None) or {}
+	if flags.get("no_transit"):
+		self.add_to_transit = 0
+		return
+
+	amended_from = self.get("amended_from")
+	if not amended_from or not self.get("add_to_transit"):
+		return
+
+	original = frappe.db.get_value(
+		"Stock Entry",
+		amended_from,
+		["add_to_transit", "stock_entry_type"],
+		as_dict=True,
+	)
+	# Only the same kind of entry: an amendment that changes the type is a new decision.
+	if (
+		original
+		and not original.add_to_transit
+		and original.stock_entry_type == self.get("stock_entry_type")
+	):
+		self.add_to_transit = 0
+
+
+def validate_transit_receipt_source(self):
+	"""A receipt leg must receive a real transit entry: one that sent stock into Transit.
+
+	Once ``normalize_add_to_transit`` clears the flag on receipt legs, the new ERPNext
+	check no longer stops End Transit being run against a receipt leg (or picking one
+	under Get Items From > Transit Entry). Every such "second hop" in the data was a no-op
+	move back into the warehouse the stock already sat in. The flag alone is not proof
+	either: thousands of older reserve entries carry add_to_transit = 1 but moved stock
+	into Reserve/RM warehouses, and still show End Transit.
+	"""
+	source_name = self.get("outgoing_stock_entry")
+	source = frappe.db.get_value(
+		"Stock Entry",
+		source_name,
+		["add_to_transit", "outgoing_stock_entry"],
+		as_dict=True,
+	)
+	if (
+		source
+		and source.add_to_transit
+		and not source.outgoing_stock_entry
+		and not has_non_transit_target(source_name)
+	):
+		return
+
+	frappe.throw(
+		_(
+			"Stock Entry {0} is not an in-transit entry, so it cannot be received. "
+			"Only a transfer that was sent to a Transit warehouse can be ended."
+		).format(frappe.bold(self.get("outgoing_stock_entry")))
+	)
+
+
 def before_validate(self, method):
 	if not in_configured_timeslot(self):
 		frappe.throw(_("Not Allowed to do entries, its freeze time"))
+	# Must precede StockEntry.validate, which rejects Add to Transit into a non-Transit
+	# warehouse; doc_event before_validate handlers all run before it.
+	normalize_add_to_transit(self)
 	# Must precede set_employee: it reads self.manufacturing_operation to resolve
 	# to_employee on Material Transfer (WORK ORDER).
 	set_manufacturing_refs(self)
@@ -92,8 +191,30 @@ def before_validate(self, method):
 
 
 def on_submit(self, method):
+	# Deliberately empty. This used to call validate_inventory_dimention, which now runs on
+	# ``validate`` via hooks.py -- early enough to tell the user before any stock moves.
 	pass
-	# validate_inventory_dimention(self)
+
+
+def lane_from_batch(row, batch):
+	"""``(inventory_type, customer)`` for a row that draws ``batch`` (F5).
+
+	The batch is the physical truth, so its lane wins over whatever the row was built with.
+	The rebuild used to keep the row's lane and take only the batch's customer, which is how
+	KLHGX62F1119's company diamond -- a Regular Stock batch, no customer -- travelled as
+	"Customer Goods, no customer" through MAT-STE-18637/38/39.
+
+	A batch that records no lane of its own keeps the old behaviour: the row's lane, the
+	batch's customer.
+	"""
+	if batch.get("custom_inventory_type"):
+		return normalize_ownership(
+			batch.get("custom_inventory_type"),
+			batch.get("custom_customer"),
+			batch_no=row.get("batch_no"),
+			item_code=row.get("item_code"),
+		)
+	return row.get("inventory_type"), batch.get("custom_customer")
 
 
 class CustomStockEntry(StockEntry):
@@ -172,6 +293,13 @@ class CustomStockEntry(StockEntry):
 						else:
 							rows_to_append += get_fifo_batches(
 								self, row, consumed, batch_cache
+							# ``item_map`` is handed over so the allocator can read this row's
+							# ``variant_of`` from the Item master: the fetched
+							# ``custom_variant_of`` is still empty here on a server-built
+							# entry's first save, and without the letter the Customer Goods
+							# lane never applies. Already prefetched above, so this is free.
+							rows_to_append += get_fifo_batches(
+								self, row, consumed, item_map=item_map
 							)
 					elif row.t_warehouse:
 						rows_to_append += [row.__dict__]
@@ -222,10 +350,9 @@ class CustomStockEntry(StockEntry):
 					if isinstance(item, dict):
 						item = frappe._dict(item)
 					if item.batch_no:
-						binfo = batch_map.get(item.batch_no) or {}
-						if not item.inventory_type:
-							item.inventory_type = binfo.get("custom_inventory_type")
-						item.customer = binfo.get("custom_customer")
+						item.inventory_type, item.customer = lane_from_batch(
+							item, batch_map.get(item.batch_no) or {}
+						)
 					if (item_map.get(item.item_code) or {}).get("variant_of") == "D":
 						attribute = grade_map.get(item.item_code)
 						diamond_sieve_size = sieve_map.get(item.item_code)
@@ -335,11 +462,20 @@ class CustomStockEntry(StockEntry):
 		``basic_rate`` on every allow-zero-valuation row, which is why those batches
 		were created rate-less. See ``utils/entered_metal_rate``; the ledger's
 		valuation is deliberately left at 0.
+
+		``release_derived_outputs`` runs first: a customer-owned finished good or secondary row that
+		ERPNext derives must not carry the allow-zero flag into super(), or ERPNext zeroes the value
+		it computed on the previous pass (F3 -- ``utils/zero_valuation``). It runs ahead of the
+		capture so a derived rate is never parked as if the user had typed it (F8). This is the
+		override, not ``before_validate``, because a repost re-runs this method and nothing else.
 		"""
+		released = release_derived_outputs(self)
 		entered_rates = capture_entered_metal_rates(self)
 		super().set_basic_rate(reset_outgoing_rate, raise_error_if_no_rate)
 		restore_entered_metal_rates(entered_rates)
 		set_process_loss_produce_rates(self)
+		# After the lane pricer, so the flag follows the rate the row will actually carry.
+		settle_derived_outputs(released)
 
 
 @frappe.whitelist()

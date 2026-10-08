@@ -9,7 +9,6 @@
   "enable_customer_gold_flow",
   "receipt_section",
   "customer_24kt_item",
-  "customer_gold_items",
   "column_break_receipt",
   "customer_goods_stock_entry_type",
   "customer_gold_return_stock_entry_type",
@@ -22,7 +21,9 @@
   "customer_gold_valuation_policy",
   "company_accounts",
   "repack_section",
-  "category"
+  "category",
+  "hybrid_orders_section",
+  "hybrid_finding_categories"
  ],
  "fields": [
   {
@@ -44,18 +45,11 @@
    "label": "Receipt"
   },
   {
-   "description": "The only item accepted on a Customer Gold receipt. Must be an enabled, batch-controlled stock item.",
+   "description": "Rate reference: the Gold Rate is quoted for this item, and gold and finding purities are priced relative to its Metal Purity. Which items a receipt accepts is set on each Item by 'Inventory Type Can be Customer Goods'.",
    "fieldname": "customer_24kt_item",
    "fieldtype": "Link",
    "label": "Customer 24KT Item",
    "options": "Item"
-  },
-  {
-   "description": "Additional purities a customer may hand over, for example 99.5 alongside 99.9. Leave empty to accept only the Customer 24KT Item. Each item is booked at the Customer 24KT Item's rate scaled by its Metal Purity.",
-   "fieldname": "customer_gold_items",
-   "fieldtype": "Table",
-   "label": "Additional Customer Gold Items",
-   "options": "Customer Gold Item"
   },
   {
    "fieldname": "column_break_receipt",
@@ -139,13 +133,25 @@
    "fieldtype": "Table",
    "label": "Category",
    "options": "Customer Gold Repack Days"
+  },
+  {
+   "fieldname": "hybrid_orders_section",
+   "fieldtype": "Section Break",
+   "label": "Hybrid Orders"
+  },
+  {
+   "description": "For Sales Orders of Sales Type <b>Hybrid</b> only. A finding of a category (or sub-category) listed here may be issued to the order only from a <b>Customer Goods</b> batch whose <b>Ref Customer</b> is the order's Ref Customer. The batch gets its Ref Customer from the Customer Goods Received entry; an order without a Ref Customer uses only batches received without one. Applies to Material Transfer (DEPARTMENT), Material transfer to Reserve and Material Transfer (WORK ORDER). Leave empty to switch the rule off.",
+   "fieldname": "hybrid_finding_categories",
+   "fieldtype": "Table",
+   "label": "Customer Batch Only Finding Categories",
+   "options": "Hybrid Finding Category"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-09-17 12:00:00.000000",
+ "modified": "2026-10-06 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Subcontracting Settings",

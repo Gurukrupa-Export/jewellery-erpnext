@@ -28,14 +28,24 @@ valuation and the liability posting are separate, later work.
 
 import frappe
 from frappe import _
-from frappe.utils import flt, getdate
+from frappe.utils import flt, getdate, now_datetime, nowdate
 
 from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
+	OUTLIER_BAND,
+	is_outlier,
+	rate_ratio,
+	reference_rate,
 	resolve_customer_gold_rate_for_date,
 )
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOLD_TEMPLATES,
+	CUSTOMER_GOODS_FLAG_LABEL,
+	get_customer_goods_eligible_items,
+)
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+	RECEIPT_ITEM_FIELDS,
 	VALUATION_NOMINAL,
-	get_allowed_customer_gold_items,
+	_validate_receipt_item,
 	get_customer_gold_company_settings,
 	get_customer_gold_settings,
 	get_customer_gold_valuation_policy,
@@ -51,6 +61,10 @@ CUSTOMER_GOODS = "Customer Goods"
 #: ``sub_utils/repack.py:377`` hardcode it -- there is no shared constant to import, and the
 #: test fixtures' copy is test code.
 METAL_PURITY_ATTRIBUTE = "Metal Purity"
+
+#: May submit a receipt whose rate is outside ``OUTLIER_BAND`` of its reference, with a reason.
+#: Created by ``patches.add_customer_gold_rate_check_fields``.
+RATE_APPROVER_ROLE = "Customer Gold Rate Approver"
 
 #: Snapshot fields written by ``set_customer_gold_rate_snapshot``. Provisioned by
 #: ``patches.add_customer_gold_rate_snapshot_fields``.
@@ -91,9 +105,141 @@ def validate_customer_gold_receipt(doc, method=None):
 
 	_validate_receipt_purpose(settings)
 	customer = _validate_customer(doc)
-	_validate_rows(doc, settings, customer)
-	rate = set_customer_gold_rate_snapshot(doc, settings)
-	apply_valuation_policy(doc, rate)
+	gold_items = _validate_rows(doc, settings, customer)
+	_apply_default_posting_time(doc)
+	_refuse_backdated_submit(doc)
+
+	# The gold rate prices gold and findings only. A receipt of nothing but stones has no use for
+	# it, so none is resolved, frozen or checked -- and a missing feed cannot block it.
+	if gold_items:
+		rate = set_customer_gold_rate_snapshot(doc, settings)
+		check_customer_gold_rate(doc, settings, rate)
+	else:
+		rate = None
+		_clear_rate_evidence(doc)
+	apply_valuation_policy(doc, rate, gold_items)
+
+
+def _apply_default_posting_time(doc):
+	"""Post "now" when the user has not chosen a date -- as ERPNext would, but before the rate is read.
+
+	With ``set_posting_time`` off, ERPNext's ``validate_posting_time`` moves the posting date to now
+	during ``validate``. This hook runs in ``before_validate``, earlier, so without this a draft
+	saved yesterday would freeze yesterday's rate and be refused at submit as backdated, although
+	ERPNext was about to post it today. Mirrors ``transaction_base.validate_posting_time``.
+	"""
+	flags = doc.get("flags") or {}
+	if (
+		doc.get("set_posting_time")
+		or frappe.flags.in_import
+		or flags.get("from_restore")
+	):
+		return
+	now = now_datetime()
+	doc.posting_date = now.strftime("%Y-%m-%d")
+	doc.posting_time = now.strftime("%H:%M:%S.%f")
+
+
+def _refuse_backdated_submit(doc):
+	"""A customer-gold receipt is submitted for the day it is submitted on (F1/F10).
+
+	Every receipt since the rate engine landed was backdated a day: the day's Gold Rates row
+	appeared only at ~23:02, the resolver needs an exact-date row, so users posted for
+	yesterday. That valued the gold at the previous close, posted the GL a day early (a 1 Oct
+	receipt would land in the 30 Sept close) and forced a repost each time. The decision
+	(2026-09-24) is no backdating and no separate rate date: once the rate job runs at 09:00,
+	15:00 and 23:00 today's rate exists, and before it does the receipt waits.
+
+	Enforced at SUBMIT only, so a draft for an earlier date can still be saved and corrected.
+	"""
+	if doc.get("_action") != "submit":
+		return
+
+	posting_date = getdate(doc.get("posting_date"))
+	today = getdate(nowdate())
+	if posting_date < today:
+		frappe.throw(
+			_(
+				"A Customer Gold receipt cannot be backdated. Posting Date {0} is before today "
+				"({1}). Set the Posting Date to today; if today's gold rate is not available "
+				"yet, submit once it is."
+			).format(
+				frappe.bold(frappe.format(posting_date, {"fieldtype": "Date"})),
+				frappe.format(today, {"fieldtype": "Date"}),
+			),
+			title=_("Backdated Customer Gold Receipt"),
+		)
+
+
+def check_customer_gold_rate(doc, settings, rate):
+	"""Compare the frozen per-gram rate with an independent reference; refuse an outlier (F1).
+
+	``KGJPL-SE-CGR-26-00011`` booked Rs.1,57,655 per gram. The company was paying Rs.15,504.85
+	per gram for the same item. The feed had quoted per 10 g while the setting said per gram,
+	and nothing compared the two -- so a liability ten times too large was booked without a
+	question. The feed switches scale (per 10 g, then per gram on 22-23 Sept, then back), so
+	no unit setting fixes it on its own, and dividing by ten would be wrong on the per-gram days.
+
+	The evidence -- reference rate, where it came from, the ratio -- is recorded on every
+	validate of a receipt with a gold or finding row, so a draft already shows it (a receipt of
+	stones only resolves no gold rate, and its evidence is cleared). At submit, a ratio outside
+	``OUTLIER_BAND`` is refused unless a user with ``RATE_APPROVER_ROLE`` records a reason; that
+	user is then stamped on the receipt. Nothing is ever auto-corrected.
+
+	With no reference at all (no purchase of the item, no earlier feed rate) the receipt is
+	accepted and the check records that it could not be made.
+	"""
+	reference = reference_rate(
+		settings.get("customer_24kt_item"),
+		doc.get("company"),
+		doc.get("posting_date"),
+		settings,
+	)
+	ratio = rate_ratio(rate.per_gram_rate, reference)
+
+	doc.custom_gold_rate_check_reference = reference.rate if reference else None
+	doc.custom_gold_rate_check_source = (
+		reference.source if reference else _("No reference rate available")
+	)
+	doc.custom_gold_rate_check_ratio = ratio
+	doc.custom_gold_rate_override_by = None
+
+	if not is_outlier(ratio):
+		return
+
+	message = _(
+		"The Customer Gold rate {0} per gram is {1}x the reference {2} per gram ({3}). "
+		"Rates outside {4}x-{5}x of the reference are refused: a rate quoted per 10 grams but "
+		"read as per gram is exactly ten times too high."
+	).format(
+		frappe.bold(flt(rate.per_gram_rate, 2)),
+		frappe.bold(flt(ratio, 2)),
+		frappe.bold(flt(reference.rate, 2)),
+		reference.source,
+		OUTLIER_BAND[0],
+		OUTLIER_BAND[1],
+	)
+
+	if doc.get("_action") != "submit":
+		frappe.msgprint(
+			message, title=_("Customer Gold Rate Outlier"), indicator="orange"
+		)
+		return
+
+	reason = (doc.get("custom_gold_rate_override_reason") or "").strip()
+	if not reason or RATE_APPROVER_ROLE not in frappe.get_roles():
+		# Not "correct the Gold Rates record": GoldRates.validate re-fetches every feed on save, so
+		# a hand correction there does not stick.
+		frappe.throw(
+			message
+			+ " "
+			+ _("A {0} may submit it after entering a Rate Override Reason.").format(
+				frappe.bold(RATE_APPROVER_ROLE)
+			),
+			title=_("Customer Gold Rate Outlier"),
+		)
+
+	doc.custom_gold_rate_override_by = frappe.session.user
 
 
 def _validate_receipt_purpose(settings):
@@ -159,9 +305,31 @@ def _validate_customer(doc):
 
 
 def _validate_rows(doc, settings, customer):
-	allowed_items = get_allowed_customer_gold_items(settings)
+	"""Check every row, then tag them. Returns the item codes priced from the gold rate.
 
-	for row in doc.get("items") or []:
+	ELIGIBILITY IS THE ITEM'S OWN FLAG, AND NOTHING ELSE. An item may be received as customer
+	goods only when ``Inventory Type Can be Customer Goods`` is ticked on it. Subcontracting
+	Settings no longer keeps a list of accepted items, and the Customer 24KT Item -- the rate
+	reference -- is not accepted implicitly either. The flag grants a capability; the receipt
+	itself is what makes this quantity the customer's.
+
+	Then the booking gates, which differ by what the item is:
+
+	* gold and findings (``CUSTOMER_GOLD_TEMPLATES``) are priced from the gold rate, which is per
+	  gram, so they must be stocked in grams;
+	* anything else -- diamonds, gemstones -- is received in its own UOM at the rate the user
+	  types on the row. Zero is a valid rate; a negative one is not.
+
+	Every row is checked before any row is tagged or priced, so a receipt refused on row 3 has not
+	stamped rows 1 and 2. The Item master is read in two queries for the whole receipt.
+	"""
+	rows = doc.get("items") or []
+	codes = [row.item_code for row in rows]
+	eligible = get_customer_goods_eligible_items(codes)
+	details = _receipt_item_details(codes)
+
+	gold_items = set()
+	for row in rows:
 		# ``Regular Stock`` here is NOT a caller's choice -- it is the framework's own
 		# blanket default. ``doc_events.stock_entry.before_validate`` runs FIRST in the
 		# before_validate chain (hooks.py) and ends with an unconditional
@@ -184,25 +352,36 @@ def _validate_rows(doc, settings, customer):
 				),
 				title=_("Invalid Inventory Type"),
 			)
-		# Set server-side so an API-created receipt cannot bypass ownership tagging;
-		# today only the client sets this.
-		row.inventory_type = CUSTOMER_GOODS
 
-		if row.item_code not in allowed_items:
-			# Customers do not all hand over the same purity -- 99.5 arrives alongside 99.9 --
-			# so this is a membership test over the configured list, not equality with one
-			# item. A site that configures no additional purities gets a single-element list
-			# and therefore the exact behaviour this check had before.
+		if row.item_code not in eligible:
 			frappe.throw(
 				_(
-					"Row #{0}: Item {1} is not configured for Customer Gold receipts. "
-					"Accepted items: {2}."
+					"Row #{0}: Item {1} is not enabled for Customer Goods. Enable {2} on the "
+					"Item before using it in a Customer Gold receipt."
 				).format(
 					row.idx,
 					frappe.bold(row.item_code),
-					frappe.bold(", ".join(allowed_items) or _("none")),
+					frappe.bold(_(CUSTOMER_GOODS_FLAG_LABEL)),
 				),
-				title=_("Invalid Item"),
+				title=_("Item Not Enabled for Customer Goods"),
+			)
+
+		item = details.get(row.item_code) or frappe._dict()
+		is_gold = item.get("variant_of") in CUSTOMER_GOLD_TEMPLATES
+		_validate_receipt_item(
+			row.item_code,
+			_("Row #{0}: Item").format(row.idx),
+			item=item,
+			require_gram=is_gold,
+		)
+		if is_gold:
+			gold_items.add(row.item_code)
+		elif flt(row.get("basic_rate")) < 0:
+			frappe.throw(
+				_("Row #{0}: Rate for {1} cannot be negative.").format(
+					row.idx, frappe.bold(row.item_code)
+				),
+				title=_("Invalid Rate"),
 			)
 
 		if flt(row.qty) <= 0:
@@ -212,6 +391,50 @@ def _validate_rows(doc, settings, customer):
 				).format(row.idx),
 				title=_("Invalid Quantity"),
 			)
+
+	# Set server-side so an API-created receipt cannot bypass ownership tagging;
+	# today only the client sets this.
+	for row in rows:
+		row.inventory_type = CUSTOMER_GOODS
+
+	return gold_items
+
+
+def _receipt_item_details(item_codes):
+	"""``{item_code: Item fields}`` for every row, in one query.
+
+	A module-level function so the receipt suites can answer it without a database.
+	"""
+	codes = sorted({code for code in item_codes if code})
+	if not codes:
+		return {}
+
+	return {
+		item.name: item
+		for item in frappe.get_all(
+			"Item",
+			filters={"name": ["in", codes]},
+			fields=["name", "variant_of", *RECEIPT_ITEM_FIELDS],
+		)
+	}
+
+
+def _clear_rate_evidence(doc):
+	"""Blank the gold-rate snapshot and check on a receipt that no longer has a gold row.
+
+	A draft saved with gold and then changed to stones only would otherwise keep a rate it no
+	longer uses, and that frozen evidence is what later readers take as the receipt's rate.
+	"""
+	for fieldname in (
+		*RATE_SNAPSHOT_FIELDS,
+		"custom_gold_rate_factor",
+		"custom_gold_rate_currency",
+		"custom_gold_rate_check_reference",
+		"custom_gold_rate_check_source",
+		"custom_gold_rate_check_ratio",
+		"custom_gold_rate_override_by",
+	):
+		setattr(doc, fieldname, None)
 
 
 #: Batch fields read by ``validate_customer_gold_batches``. ``custom_company`` is optional
@@ -319,7 +542,7 @@ def _rate_for_item(per_gram, item_code, reference_item):
 	return per_gram * row_purity / reference_purity
 
 
-def apply_valuation_policy(doc, rate):
+def apply_valuation_policy(doc, rate, gold_items=None):
 	"""Stamp the row valuation fields required by the configured policy.
 
 	Runs AFTER ``set_customer_gold_rate_snapshot`` because the nominal branch needs the
@@ -342,6 +565,12 @@ def apply_valuation_policy(doc, rate):
 	``stock_entry.py:1615-1619`` takes ``continue`` for such a row, computing ``basic_amount``
 	and skipping everything after -- including the allow-zero wipe at ``:1629``, the ``:1661``
 	valuation fallback, and ``get_args_for_incoming_rate``.
+
+	**Stones under Nominal.** Only the rows in ``gold_items`` (gold and findings, as
+	``_validate_rows`` classified them) are priced from the gold rate. Any other row -- a diamond
+	or gemstone received in its own UOM -- keeps the rate the user typed: above zero it is booked
+	exactly like a gold row (manual rate, liability contra); at zero it is zero-valued with the
+	allow-zero flag, as under Zero Value. ``gold_items=None`` means every row is gold.
 
 	So the two flags are not in fact in conflict (``set_basic_rate_manually`` short-circuits
 	before the flag is ever read), but stamping both would be stamping one that can never be
@@ -368,7 +597,13 @@ def apply_valuation_policy(doc, rate):
 	reference_item = settings.get("customer_24kt_item")
 
 	for row in doc.get("items") or []:
-		row.basic_rate = _rate_for_item(per_gram, row.item_code, reference_item)
+		if gold_items is None or row.item_code in gold_items:
+			row.basic_rate = _rate_for_item(per_gram, row.item_code, reference_item)
+		elif flt(row.get("basic_rate")) <= 0:
+			# A stone typed at zero: nothing to book, so no manual rate and no contra.
+			row.allow_zero_valuation_rate = 1
+			row.set_basic_rate_manually = 0
+			continue
 		row.set_basic_rate_manually = 1
 		row.allow_zero_valuation_rate = 0
 
@@ -403,7 +638,7 @@ def validate_customer_gold_batches(doc, method=None):
 		if not row.get("batch_no"):
 			frappe.throw(
 				_(
-					"Row #{0}: Customer gold must be batch tracked, but no batch could be determined for item {1}."
+					"Row #{0}: Customer goods must be batch tracked, but no batch could be determined for item {1}."
 				).format(row.idx, frappe.bold(row.item_code)),
 				title=_("Batch Missing"),
 			)
@@ -597,5 +832,12 @@ def set_customer_gold_rate_snapshot(doc, settings):
 	doc.custom_gold_rate_raw = rate.raw_rate
 	doc.custom_gold_rate_unit = rate.rate_unit
 	doc.custom_gold_rate_per_gram = rate.per_gram_rate
+	# The normalisation, so the per-gram figure can be re-derived from the raw one later.
+	doc.custom_gold_rate_factor = rate.rate_factor
+	doc.custom_gold_rate_currency = (
+		frappe.db.get_value("Company", doc.get("company"), "default_currency")
+		if doc.get("company")
+		else None
+	)
 
 	return rate

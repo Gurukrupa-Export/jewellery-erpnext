@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
 	manufacturing_work_order as mwo_mod,
@@ -163,6 +164,11 @@ class TestCreateMrForSplitWorkOrder(UnitTestCase):
 		self.assertIsNone(new_mr.custom_reserve_se)
 		self.assertIsNone(new_mr.custom_mop_se)
 		self.assertIsNone(new_mr.custom_department_transfer_se)
+		# Carried over as "Done", these made MR.on_submit skip the new MR's own
+		# "Material Transfer From Reserve", leaving its stock in the reserve warehouse.
+		self.assertIsNone(new_mr.custom_transfer_se)
+		self.assertIsNone(new_mr.custom_transfer_se_state)
+		self.assertIsNone(new_mr.custom_transfer_se_error)
 
 	def test_manufacturing_operation_left_blank_for_manual_selection(self):
 		"""custom_manufacturing_operation is a manual field the user picks from the dropdown
@@ -192,6 +198,761 @@ class TestCreateMrForSplitWorkOrder(UnitTestCase):
 		self.assertTrue(new_mr.flags.ignore_mandatory)
 		self.assertTrue(new_mr.flags.ignore_validate)
 		new_mr.save.assert_called_once()
+
+
+class _ReachedOpenOperationsCheck(Exception):
+	"""Raised by the stubbed frappe.get_all: reaching it means the eligibility gate and the
+	split-count check both passed and create_split_work_order moved on to its open-operations
+	query, before anything was written."""
+
+
+MPM_LINK = "Manufacturing Plan & Management  - KGJPL"
+
+
+class TestSplitWorkOrderEligibility(UnitTestCase):
+	"""``create_split_work_order`` may only split a submitted, not-yet-split MWO that sits in
+	Manufacturing Plan & Management with zero gross weight on both its header and its
+	current Manufacturing Operation.
+
+	Mock-only for the same reason as TestCreateMrForSplitWorkOrder. frappe.db.get_value is
+	stubbed with a keyed side_effect (never a blanket return, which would also answer
+	DocType meta reads), and flt's rounding method is pinned: without a bound site
+	flt(x, 3) returns 0.0, which would make every "weight blocks" case pass vacuously.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# The first _() in a process builds the merged translation cache, and that build
+		# reads the Translation table through frappe.get_all under suppress(Exception).
+		# Left to happen inside _run, it would hit the stubbed get_all and cache an
+		# incomplete map for the rest of the test run -- so build it here, unpatched.
+		frappe._("Work Order")
+
+	def _run(
+		self,
+		*,
+		docstatus=1,
+		has_split_mwo=0,
+		department=MPM_LINK,
+		department_name="Manufacturing Plan & Management",
+		gross_wt=0,
+		mop="MOP-1",
+		mop_gross_wt=0,
+		count=1,
+		limit=0,
+		split_from=None,
+		split_mrs=(),
+		moved=(),
+		receipts=(),
+		cancel_order=None,
+	):
+		calls = []
+
+		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
+			calls.append((doctype, filters, fieldname))
+			if doctype == "Manufacturing Work Order" and fieldname == [
+				"manufacturing_order",
+				"split_from",
+			]:
+				return ("PMO-1", split_from)
+			if doctype == "Manufacturing Work Order" and isinstance(fieldname, list):
+				return frappe._dict(
+					docstatus=docstatus,
+					has_split_mwo=has_split_mwo,
+					department=department,
+					gross_wt=gross_wt,
+					manufacturing_operation=mop,
+				)
+			if doctype == "Department" and fieldname == "department_name":
+				return department_name
+			if doctype == "Manufacturing Operation" and fieldname == "gross_wt":
+				return mop_gross_wt
+			if doctype == "Manufacturing Setting" and fieldname == "wo_split_limit":
+				return limit
+			return None
+
+		open_operation_queries = []
+		mr_queries = []
+		stock_queries = []
+		receipt_queries = []
+		order_queries = []
+		real_get_all = frappe.get_all
+
+		def _ga(doctype, *args, **kwargs):
+			# Only the open-operations query is the sentinel; anything the framework itself
+			# reads (e.g. Translation) goes to the real get_all.
+			if doctype == "Manufacturing Operation":
+				open_operation_queries.append(kwargs)
+				raise _ReachedOpenOperationsCheck
+			if doctype == "Material Request":
+				mr_queries.append(kwargs)
+				return list(split_mrs)
+			if doctype == "Stock Entry Detail":
+				stock_queries.append(kwargs)
+				return [frappe._dict(row) for row in moved]
+			if doctype == "Stock Entry":
+				filters = kwargs.get("filters") or {}
+				if "outgoing_stock_entry" in filters:
+					receipt_queries.append(kwargs)
+					return list(receipts)
+				order_queries.append(kwargs)
+				if cancel_order is not None:
+					return list(cancel_order)
+				return sorted(filters["name"][1], reverse=True)
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch("frappe.db.get_value", side_effect=_gv),
+			patch.object(
+				frappe, "get_system_settings", return_value="Banker's Rounding"
+			),
+			patch("frappe.get_all", side_effect=_ga),
+			patch("frappe.db.set_value") as set_value,
+			patch.object(mwo_mod, "get_mapped_doc") as mapped,
+		):
+			try:
+				mwo_mod.create_split_work_order("MWO-1", "Test_Company", "Labh", count)
+			finally:
+				set_value.assert_not_called()
+				mapped.assert_not_called()
+				self.calls = calls
+				self.open_operation_queries = open_operation_queries
+				self.mr_queries = mr_queries
+				self.stock_queries = stock_queries
+				self.receipt_queries = receipt_queries
+				self.order_queries = order_queries
+
+	def assert_allowed(self, **kwargs):
+		with self.assertRaises(_ReachedOpenOperationsCheck):
+			self._run(**kwargs)
+
+	def assert_blocked(self, pattern, **kwargs):
+		with self.assertRaisesRegex(frappe.ValidationError, pattern) as ctx:
+			self._run(**kwargs)
+		self.assertFalse(self.open_operation_queries)
+		return ctx.exception
+
+	def test_00_flt_actually_rounds_under_the_pin(self):
+		with patch.object(
+			frappe, "get_system_settings", return_value="Banker's Rounding"
+		):
+			self.assertAlmostEqual(flt(0.034, 3), 0.034, places=3)
+			self.assertAlmostEqual(flt(0.1234, 3), 0.123, places=3)
+
+	def test_mpm_with_zero_weight_is_allowed(self):
+		self.assert_allowed()
+		self.assertIn(("Department", MPM_LINK, "department_name"), self.calls)
+		self.assertIn(("Manufacturing Operation", "MOP-1", "gross_wt"), self.calls)
+
+	def test_existing_split_count_check_still_runs(self):
+		self.assert_blocked("Invalid split count", count=0)
+
+	def test_other_department_is_blocked_before_split_count_check(self):
+		self.assert_blocked(
+			"can be split only in",
+			department="Waxing - KGJPL",
+			department_name="Waxing",
+			count=0,
+		)
+		self.assertFalse([c for c in self.calls if c[0] == "Manufacturing Setting"])
+
+	def test_department_matched_on_department_name_not_link(self):
+		self.assert_blocked(
+			"can be split only in",
+			department="Manufacturing Plan & Management - KGJPL",
+			department_name="Casting",
+		)
+
+	def test_missing_department_is_blocked(self):
+		self.assert_blocked("no department", department=None, department_name=None)
+		self.assertFalse([c for c in self.calls if c[0] == "Department"])
+
+	def test_header_gross_wt_blocks(self):
+		self.assert_blocked("Gross Wt is 0", gross_wt=0.034)
+
+	def test_mop_gross_wt_blocks(self):
+		"""The live case: 0.171 ct of diamond issued onto an MPM operation while the MWO
+		header still reads 0."""
+		self.assert_blocked(
+			"MOP-2609-ER55V4", mop="MOP-2609-ER55V4", mop_gross_wt=0.034
+		)
+
+	def test_smallest_rounded_weight_blocks(self):
+		self.assert_blocked("Gross Wt is 0", mop_gross_wt=0.001)
+
+	def test_negative_weight_blocks(self):
+		self.assert_blocked("Gross Wt is 0", mop_gross_wt=-0.01)
+
+	def test_sub_precision_weight_is_treated_as_zero(self):
+		self.assert_allowed(gross_wt=1e-7, mop_gross_wt=0.0004)
+
+	def test_missing_operation_is_treated_as_zero(self):
+		self.assert_allowed(mop=None)
+		self.assertFalse([c for c in self.calls if c[0] == "Manufacturing Operation"])
+
+	def test_already_split_is_blocked(self):
+		self.assert_blocked("already been split", has_split_mwo=1)
+
+	def test_draft_is_blocked(self):
+		self.assert_blocked("must be submitted", docstatus=0)
+
+	def test_split_child_with_stock_on_its_own_mr_is_blocked(self):
+		"""The live case: a split child whose own MR already moved stock. Cancelling that MR
+		by writing docstatus would strand the stock, so the split is refused -- before the
+		split-count check and before anything is written."""
+		exc = self.assert_blocked(
+			"already moved stock",
+			split_from="MWO-0",
+			split_mrs=["MR-B"],
+			moved=[{"material_request": "MR-B", "parent": "STE-1"}],
+			count=0,
+		)
+		self.assertIn("MR-B", str(exc))
+		self.assertIn("STE-1", str(exc))
+		self.assertEqual(
+			self.mr_queries[0]["filters"],
+			{"custom_manufacturing_work_order": "MWO-1", "docstatus": ["!=", 2]},
+		)
+		self.assertFalse([c for c in self.calls if c[0] == "Manufacturing Setting"])
+
+	def test_original_with_stock_on_the_pmo_mrd_is_blocked(self):
+		self.assert_blocked(
+			"already moved stock",
+			split_mrs=["MR-ORIG"],
+			moved=[{"material_request": "MR-ORIG", "parent": "STE-9"}],
+		)
+		self.assertEqual(
+			self.mr_queries[0]["filters"],
+			{
+				"manufacturing_order": "PMO-1",
+				"title": ["like", "MRD%"],
+				"custom_manufacturing_work_order": ["is", "not set"],
+				"docstatus": ["!=", 2],
+			},
+		)
+
+	def test_moved_stock_lists_every_entry_latest_first(self):
+		"""The live case, KGJPL-MR-MF-26-46334: the error named only its reserve entry -- the
+		one that has to be cancelled last -- so it was cancelled first and ERPNext refused."""
+		exc = self.assert_blocked(
+			"latest first",
+			split_mrs=["MR-ORIG"],
+			moved=[
+				{"material_request": "MR-ORIG", "parent": "STE-RESERVE"},
+				{"material_request": "MR-ORIG", "parent": "STE-TRANSFER"},
+				{"material_request": "MR-ORIG", "parent": "STE-DEPT"},
+			],
+			receipts=["STE-RECEIPT"],
+			cancel_order=["STE-RECEIPT", "STE-DEPT", "STE-TRANSFER", "STE-RESERVE"],
+		)
+		message = str(exc)
+		listed = [
+			message.index(f">{se}<")
+			for se in ("STE-RECEIPT", "STE-DEPT", "STE-TRANSFER", "STE-RESERVE")
+		]
+		self.assertEqual(listed, sorted(listed))
+		self.assertEqual(message.count(">MR-ORIG<"), 1)
+		# The receipt has no material_request on its rows: it is found through its transfer.
+		self.assertEqual(
+			self.receipt_queries[0]["filters"],
+			{
+				"outgoing_stock_entry": [
+					"in",
+					["STE-DEPT", "STE-RESERVE", "STE-TRANSFER"],
+				],
+				"docstatus": 1,
+			},
+		)
+		self.assertEqual(
+			self.order_queries[0]["filters"],
+			{
+				"name": [
+					"in",
+					["STE-DEPT", "STE-RECEIPT", "STE-RESERVE", "STE-TRANSFER"],
+				]
+			},
+		)
+		self.assertEqual(
+			self.order_queries[0]["order_by"],
+			"posting_date desc, posting_time desc, creation desc",
+		)
+
+	def test_moved_stock_offers_to_cancel_the_entries(self):
+		"""The refusal carries the Split confirmation's own button. It names only the work
+		order: the endpoint works the entries out again rather than trust the client."""
+		frappe.clear_messages()
+		self.assert_blocked(
+			"already moved stock",
+			split_mrs=["MR-ORIG"],
+			moved=[{"material_request": "MR-ORIG", "parent": "STE-1"}],
+		)
+		action = frappe.message_log[-1].primary_action
+		self.assertEqual(action["args"], {"docname": "MWO-1"})
+		self.assertTrue(action["hide_on_success"])
+		self.assertIs(
+			frappe.get_attr(action["server_action"]),
+			mwo_mod.cancel_split_blocking_stock_entries,
+		)
+
+	def test_mrs_without_moved_stock_are_allowed(self):
+		self.assert_allowed(split_from="MWO-0", split_mrs=["MR-B"])
+		self.assertEqual(
+			self.stock_queries[0]["filters"],
+			{"material_request": ["in", ["MR-B"]], "docstatus": 1},
+		)
+
+	def test_no_mrs_skips_the_stock_query(self):
+		self.assert_allowed()
+		self.assertFalse(self.stock_queries)
+
+
+class TestSplitCancelsMaterialRequests(UnitTestCase):
+	"""Which Material Requests ``create_split_work_order`` cancels once the split goes ahead.
+
+	The bug this closed: the cancel only matched MRDs with no custom_manufacturing_work_order,
+	so splitting a split child left the MR minted for it (stamped with its own name) open.
+	The eligibility gate is patched out -- TestSplitWorkOrderEligibility covers it.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# See TestSplitWorkOrderEligibility.setUpClass: build the translation cache unpatched.
+		frappe._("Work Order")
+
+	def _run(self, *, split_from=None, split_mrs=("MR-1", "MR-2")):
+		mr_queries = []
+		real_get_all = frappe.get_all
+
+		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Manufacturing Setting" and fieldname == "wo_split_limit":
+				return 0
+			if doctype == "Manufacturing Work Order" and fieldname == [
+				"manufacturing_order",
+				"split_from",
+			]:
+				return ("PMO-1", split_from)
+			return None
+
+		def _ga(doctype, *args, **kwargs):
+			if doctype == "Manufacturing Operation":
+				# The open-operations query (or_filters) finds nothing blocking; the pending
+				# query returns one operation for the split to mark Finished.
+				return [] if "or_filters" in kwargs else ["MOP-P1"]
+			if doctype == "Material Request":
+				mr_queries.append(kwargs)
+				return list(split_mrs)
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch.object(mwo_mod, "validate_split_eligibility"),
+			patch("frappe.db.get_value", side_effect=_gv),
+			patch("frappe.get_all", side_effect=_ga),
+			patch.object(mwo_mod, "get_mapped_doc") as mapped,
+			patch.object(mwo_mod, "set_values_in_bulk") as bulk,
+			patch("frappe.db.set_value") as set_value,
+		):
+			mwo_mod.create_split_work_order("MWO-B", "Test_Company", "Labh", 2)
+
+		self.mr_queries = mr_queries
+		self.mapped = mapped
+		self.bulk = bulk
+		return [c.args for c in set_value.call_args_list]
+
+	def test_split_child_cancels_the_mr_stamped_with_it(self):
+		writes = self._run(split_from="MWO-A")
+		self.assertEqual(
+			self.mr_queries[0],
+			{
+				"filters": {
+					"custom_manufacturing_work_order": "MWO-B",
+					"docstatus": ["!=", 2],
+				},
+				"pluck": "name",
+			},
+		)
+		cancelled = {"docstatus": 2, "workflow_state": "Cancelled"}
+		self.assertIn(("Material Request", "MR-1", cancelled), writes)
+		self.assertIn(("Material Request", "MR-2", cancelled), writes)
+
+	def test_original_cancels_the_unclaimed_pmo_mrds(self):
+		self._run()
+		self.assertEqual(
+			self.mr_queries[0]["filters"],
+			{
+				"manufacturing_order": "PMO-1",
+				"title": ["like", "MRD%"],
+				"custom_manufacturing_work_order": ["is", "not set"],
+				"docstatus": ["!=", 2],
+			},
+		)
+
+	def test_nothing_to_cancel_only_closes_the_work_order(self):
+		writes = self._run(split_from="MWO-A", split_mrs=())
+		self.assertEqual(
+			writes,
+			[
+				(
+					"Manufacturing Work Order",
+					"MWO-B",
+					{"has_split_mwo": 1, "status": "Closed"},
+				)
+			],
+		)
+
+	def test_children_created_and_pending_operations_finished(self):
+		self._run()
+		self.assertEqual(self.mapped.call_count, 2)
+		self.bulk.assert_called_once_with(
+			"Manufacturing Operation", ["MOP-P1"], {"status": "Finished"}
+		)
+
+
+def _blocking(entries=("STE-LATE", "STE-EARLY"), requests=("MR-1",)):
+	"""What _split_blocking_stock returns: the entries already in cancel order."""
+	return frappe._dict(material_requests=list(requests), entries=list(entries))
+
+
+class TestCancelSplitBlockingStockEntries(UnitTestCase):
+	"""The Split button's "Cancel Stock Entries": list, confirm, cancel latest first.
+
+	MWO-KGJPL-EA12952-001-1-91.75-Y-01: the split listed MAT-STE-57562 and MAT-STE-57561
+	and the planner had to cancel each by hand, in that order. Mock-only -- the rules for
+	what blocks a split have their own class above.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# Build the translation cache before frappe.get_all is stubbed.
+		frappe._("Stock Entry")
+
+	# --- get_split_blocking_stock_entries --------------------------------------------
+
+	def test_other_refusals_are_raised_before_any_stock_is_read(self):
+		with (
+			patch.object(mwo_mod.frappe, "has_permission"),
+			patch.object(
+				mwo_mod,
+				"_validate_split_basics",
+				side_effect=frappe.ValidationError("can be split only in"),
+			),
+			patch.object(mwo_mod, "_split_blocking_stock") as blocking,
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, "can be split only in"):
+				mwo_mod.get_split_blocking_stock_entries("MWO-1")
+		blocking.assert_not_called()
+
+	def test_entries_come_back_in_cancel_order_with_stopped_requests(self):
+		real_get_all = frappe.get_all
+
+		def _ga(doctype, *args, **kwargs):
+			if doctype == "Stock Entry":
+				# The database's order, not the cancel order: the cancel order has to win.
+				return [
+					frappe._dict(
+						name=n, stock_entry_type="T", posting_date="2026-10-07"
+					)
+					for n in ("STE-EARLY", "STE-LATE")
+				]
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch.object(mwo_mod.frappe, "has_permission"),
+			patch.object(mwo_mod, "_validate_split_basics"),
+			patch.object(mwo_mod, "_split_blocking_stock", return_value=_blocking()),
+			patch.object(mwo_mod, "_stopped_requests", return_value=["MR-1"]),
+			patch.object(mwo_mod.frappe, "get_all", side_effect=_ga),
+		):
+			out = mwo_mod.get_split_blocking_stock_entries("MWO-1")
+		self.assertEqual([e.name for e in out["entries"]], ["STE-LATE", "STE-EARLY"])
+		self.assertEqual(out["material_requests"], ["MR-1"])
+		self.assertEqual(out["stopped"], ["MR-1"])
+
+	# --- cancel_split_blocking_stock_entries ------------------------------------------
+
+	def _queue(
+		self, *, blocking=None, stopped=(), enqueued=False, permission=None, eod=None
+	):
+		with (
+			patch.object(
+				mwo_mod.frappe, "has_permission", side_effect=permission
+			) as has_permission,
+			patch.object(mwo_mod, "_validate_split_basics"),
+			patch.object(
+				mwo_mod, "_split_blocking_stock", return_value=blocking or _blocking()
+			),
+			patch.object(mwo_mod, "_stopped_requests", return_value=list(stopped)),
+			patch.object(mwo_mod, "validate_not_eod_sync_locked", side_effect=eod),
+			patch.object(mwo_mod, "is_job_enqueued", return_value=enqueued),
+			patch.object(mwo_mod.frappe, "enqueue") as enqueue,
+			patch.object(mwo_mod.frappe, "msgprint") as msgprint,
+		):
+			try:
+				mwo_mod.cancel_split_blocking_stock_entries("MWO-1")
+			finally:
+				self.enqueue = enqueue
+				self.has_permission = has_permission
+				self.msgprint = msgprint
+
+	def test_nothing_blocking_queues_nothing(self):
+		self._queue(blocking=_blocking(entries=(), requests=()))
+		self.enqueue.assert_not_called()
+		self.assertIn("Nothing to cancel", self.msgprint.call_args[0][0])
+
+	def test_missing_cancel_right_on_any_entry_queues_nothing(self):
+		def _permission(doctype, ptype="read", doc=None, **kwargs):
+			if doctype == "Stock Entry" and ptype == "cancel" and doc == "STE-EARLY":
+				raise frappe.PermissionError
+			return True
+
+		with self.assertRaises(frappe.PermissionError):
+			self._queue(permission=_permission)
+		self.enqueue.assert_not_called()
+
+	def test_a_stopped_request_needs_write_on_it(self):
+		self._queue(stopped=["MR-1"])
+		self.has_permission.assert_any_call(
+			"Material Request", "write", "MR-1", throw=True
+		)
+
+	def test_eod_lock_refuses_up_front(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._queue(eod=frappe.ValidationError("EOD sync is in progress"))
+		self.enqueue.assert_not_called()
+
+	def test_a_second_click_while_queued_is_refused(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "already being cancelled"):
+			self._queue(enqueued=True)
+		self.enqueue.assert_not_called()
+
+	def test_queues_one_long_job_per_work_order(self):
+		self._queue()
+		for se in ("STE-LATE", "STE-EARLY"):
+			for ptype in ("write", "cancel"):
+				self.has_permission.assert_any_call(
+					"Stock Entry", ptype, se, throw=True
+				)
+		self.enqueue.assert_called_once()
+		args, kwargs = self.enqueue.call_args
+		self.assertIs(args[0], mwo_mod._cancel_split_blocking_stock_entries)
+		self.assertEqual(
+			kwargs,
+			{
+				"queue": "long",
+				"timeout": 4500,
+				"job_id": "split_cancel_se::MWO-1",
+				"deduplicate": True,
+				"enqueue_after_commit": True,
+				"docname": "MWO-1",
+				"requested_by": frappe.session.user,
+				"reopen": [],
+			},
+		)
+
+	def test_queued_job_carries_the_requests_it_may_reopen(self):
+		self._queue(stopped=["MR-1"])
+		self.assertEqual(self.enqueue.call_args.kwargs["reopen"], ["MR-1"])
+		self.assertIn("MR-1 will be re-opened first", self.msgprint.call_args[0][0])
+
+	# --- the job ------------------------------------------------------------------------
+
+	def _run_job(
+		self,
+		*,
+		stopped=(),
+		reopen=None,
+		already_cancelled=(),
+		fail_on=None,
+		permission=None,
+		request_write_denied=False,
+		basics=None,
+	):
+		calls = []
+
+		def _get_doc(doctype, name=None, *args, **kwargs):
+			if doctype == "Material Request":
+				mr = MagicMock()
+
+				def _check(ptype):
+					calls.append(("check", name, ptype))
+					if request_write_denied:
+						raise frappe.PermissionError
+
+				mr.check_permission.side_effect = _check
+				mr.update_status.side_effect = lambda status: calls.append(
+					("reopen", name, status)
+				)
+				return mr
+			if doctype == "Stock Entry":
+				entry = MagicMock()
+				entry.docstatus = 2 if name in already_cancelled else 1
+
+				def _cancel():
+					if name == fail_on:
+						raise frappe.ValidationError(
+							"Batch <strong>B1</strong>\n\t\t\t\thas negative stock"
+						)
+					calls.append(("cancel", name))
+
+				entry.cancel.side_effect = _cancel
+				return entry
+			raise AssertionError(f"unexpected get_doc on {doctype}")
+
+		with (
+			patch.object(
+				mwo_mod.frappe,
+				"set_user",
+				side_effect=lambda u: calls.append(("user", u)),
+			),
+			patch.object(mwo_mod, "_validate_split_basics", side_effect=basics),
+			patch.object(mwo_mod, "_split_blocking_stock", return_value=_blocking()),
+			patch.object(mwo_mod, "_stopped_requests", return_value=list(stopped)),
+			patch.object(mwo_mod.frappe, "has_permission", side_effect=permission),
+			patch.object(mwo_mod, "validate_not_eod_sync_locked"),
+			patch.object(mwo_mod.frappe, "get_doc", side_effect=_get_doc),
+			patch("frappe.db.commit", side_effect=lambda: calls.append(("commit",))),
+			patch(
+				"frappe.db.rollback", side_effect=lambda: calls.append(("rollback",))
+			),
+			patch.object(mwo_mod.frappe, "log_error") as log_error,
+			patch.object(mwo_mod, "_report_split_cancel") as report,
+		):
+			mwo_mod._cancel_split_blocking_stock_entries(
+				"MWO-1", "planner@example.com", reopen=reopen
+			)
+		return calls, report, log_error
+
+	def test_job_runs_as_the_requester_and_reopens_before_cancelling(self):
+		calls, _, _ = self._run_job(stopped=["MR-1"], reopen=["MR-1"])
+		self.assertEqual(calls[0], ("user", "planner@example.com"))
+		self.assertLess(
+			calls.index(("reopen", "MR-1", "Submitted")),
+			calls.index(("cancel", "STE-LATE")),
+		)
+
+	def test_write_is_checked_on_the_request_right_before_reopening(self):
+		"""update_status is ERPNext's controller method, which checks no permission."""
+		calls, _, _ = self._run_job(stopped=["MR-1"], reopen=["MR-1"])
+		reopened_at = calls.index(("reopen", "MR-1", "Submitted"))
+		self.assertEqual(calls[reopened_at - 1], ("check", "MR-1", "write"))
+
+	def test_a_request_stopped_after_the_click_is_not_reopened(self):
+		"""GK-SPLIT-CANCEL-AUTH-001: the click saw no Stopped request, so it checked no MR
+		write right; one stopped while the job waited must not be re-opened unchecked."""
+		calls, report, _ = self._run_job(stopped=["MR-1"], reopen=[])
+		self.assertEqual(calls[1:], [("rollback",)])
+		message = report.call_args[0][2]
+		self.assertFalse(report.call_args.kwargs["ok"])
+		self.assertIn("Nothing was changed", message)
+		self.assertIn("MR-1 was stopped after the cancellation was confirmed", message)
+
+	def test_request_write_missing_at_run_time_changes_nothing(self):
+		def _permission(doctype, ptype="read", doc=None, **kwargs):
+			if doctype == "Material Request":
+				raise frappe.PermissionError
+			return True
+
+		calls, report, _ = self._run_job(
+			stopped=["MR-1"], reopen=["MR-1"], permission=_permission
+		)
+		self.assertEqual(calls[1:], [("rollback",)])
+		self.assertIn("Nothing was changed", report.call_args[0][2])
+
+	def test_rights_lost_after_the_precheck_stop_before_the_reopen(self):
+		calls, report, _ = self._run_job(
+			stopped=["MR-1"], reopen=["MR-1"], request_write_denied=True
+		)
+		self.assertNotIn(("reopen", "MR-1", "Submitted"), calls)
+		self.assertEqual([c for c in calls if c[0] in ("commit", "cancel")], [])
+		self.assertIn("Nothing was changed", report.call_args[0][2])
+
+	def test_a_work_order_that_left_planning_is_left_alone(self):
+		calls, report, _ = self._run_job(
+			basics=frappe.ValidationError("can be split only in Manufacturing Plan")
+		)
+		self.assertEqual(calls[1:], [("rollback",)])
+		self.assertIn(
+			"Nothing was changed: can be split only in", report.call_args[0][2]
+		)
+
+	def test_missing_cancel_right_on_the_last_entry_changes_nothing(self):
+		def _permission(doctype, ptype="read", doc=None, **kwargs):
+			if doctype == "Stock Entry" and ptype == "cancel" and doc == "STE-EARLY":
+				raise frappe.PermissionError
+			return True
+
+		calls, report, _ = self._run_job(permission=_permission)
+		self.assertEqual(calls[1:], [("rollback",)])
+		self.assertIn("Nothing was changed", report.call_args[0][2])
+
+	def test_cancels_latest_first_committing_each(self):
+		calls, report, log_error = self._run_job()
+		self.assertEqual(
+			calls[1:],
+			[("cancel", "STE-LATE"), ("commit",), ("cancel", "STE-EARLY"), ("commit",)],
+		)
+		log_error.assert_not_called()
+		_, _, message = report.call_args[0]
+		self.assertIn("STE-LATE, STE-EARLY", message)
+		self.assertTrue(report.call_args.kwargs["ok"])
+
+	def test_an_entry_cancelled_meanwhile_is_skipped(self):
+		calls, _, _ = self._run_job(already_cancelled=("STE-LATE",))
+		self.assertEqual(
+			[c for c in calls if c[0] == "cancel"], [("cancel", "STE-EARLY")]
+		)
+
+	def test_stops_at_the_first_failure_and_keeps_what_is_done(self):
+		calls, report, log_error = self._run_job(fail_on="STE-EARLY")
+		self.assertEqual(
+			calls[1:], [("cancel", "STE-LATE"), ("commit",), ("rollback",)]
+		)
+		log_error.assert_called_once()
+		_, _, message = report.call_args[0]
+		self.assertFalse(report.call_args.kwargs["ok"])
+		self.assertIn("Stopped at STE-EARLY", message)
+		self.assertIn("Batch B1 has negative stock", message)
+		self.assertIn("Already cancelled: STE-LATE", message)
+
+	# --- reporting ------------------------------------------------------------------------
+
+	def test_report_reaches_timeline_bell_and_popup(self):
+		mwo = MagicMock()
+		real_get_value = frappe.db.get_value
+
+		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "User":
+				return "planner@example.com"
+			return real_get_value(doctype, filters, fieldname, *args, **kwargs)
+
+		with (
+			patch.object(mwo_mod.frappe, "get_doc", return_value=mwo),
+			patch("frappe.db.get_value", side_effect=_gv),
+			patch.object(mwo_mod, "enqueue_create_notification") as notify,
+			patch.object(mwo_mod.frappe, "publish_realtime") as popup,
+		):
+			mwo_mod._report_split_cancel(
+				"MWO-1", "planner", "Stopped at STE-1", ok=False
+			)
+
+		mwo.add_comment.assert_called_once_with("Comment", "Stopped at STE-1")
+		notify.assert_called_once_with(
+			"planner@example.com",
+			{
+				"type": "Alert",
+				"document_type": "Manufacturing Work Order",
+				"document_name": "MWO-1",
+				"subject": "Stopped at STE-1",
+			},
+		)
+		event, payload = popup.call_args[0]
+		self.assertEqual(event, "msgprint")
+		self.assertEqual(payload["indicator"], "red")
+		self.assertEqual(
+			popup.call_args.kwargs, {"user": "planner", "after_commit": True}
+		)
 
 
 def create_pmo(self):

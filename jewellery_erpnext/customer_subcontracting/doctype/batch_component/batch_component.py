@@ -7,8 +7,9 @@ WHY THIS EXISTS WHEN ``Batch.custom_origin_entries`` ALREADY DOES SOMETHING SIMI
 ----------------------------------------------------------------------------------
 ``custom_origin_entries`` (the ``Batch MultiSelect`` child table, written by
 ``customization/serial_and_batch_bundle/doc_events/utils.py:101-136``) is real, populated
-provenance -- 4,198,721 rows on ``gk`` -- and it already distinguishes alloy from metal
-downstream in ``customization/batch/batch.py:277-328``. It is deliberately NOT extended here,
+provenance -- 4,198,721 rows on ``gk`` -- and it used to distinguish alloy from metal
+downstream in the Batch Rate blend (``customization/batch/batch.py``, retired by F26). It is
+deliberately NOT extended here,
 and not derived from either. Six measured reasons:
 
 1. **No owner column.** Ownership is recoverable only by joining the source ``Batch``'s

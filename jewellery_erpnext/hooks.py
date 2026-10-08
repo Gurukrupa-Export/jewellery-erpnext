@@ -108,6 +108,11 @@ before_request = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_com
 before_job = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 
 doc_events = {
+	# While a PMO's Cancel All Linked Documents runs, refuse any submit that points at that PMO
+	# (directly or through its Work Orders / Operations). One Redis read per submit when idle.
+	"*": {
+		"before_submit": "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.cancel_all.block_submit_while_pmo_cancels",
+	},
 	# Block stock/manufacturing transactions while EOD sync is running.
 	# The validator bypasses itself when frappe.flags.in_eod_mop_sync is True
 	# so the sync process can create Stock Entries and update MOP Logs unhindered.
@@ -206,7 +211,12 @@ doc_events = {
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
 	},
 	"BOM": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate",
+			# Last, after anything that sets an image: GK paths whose file is not on this
+			# site become absolute GK URLs, so core's attach hook stops logging errors.
+			"jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+		],
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.validate",
 		"on_update": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_update",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_cancel",
@@ -218,11 +228,21 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.work_order.validate",
 	},
 	"Item": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.item.before_validate",
+			"jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+		],
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item.validate",
 		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_save",
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.item.on_trash",
 		"before_insert": "jewellery_erpnext.jewellery_erpnext.doc_events.item.before_insert",
+	},
+	# gke_customization doctypes whose image is fetched from item_code.image / design_code.image.
+	"Product Return Order": {
+		"before_validate": "jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
+	},
+	"Customer Design Information Sheet": {
+		"before_validate": "jewellery_erpnext.foreign_attachments.normalize_foreign_attachments",
 	},
 	"Item Attribute": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
@@ -250,14 +270,31 @@ doc_events = {
 			# the Stock Entry itself, never on the dozen cascades that mint one from
 			# another doctype's lifecycle -- see the module docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.validate_stock_entry_type_permission",
+			# F5: a consuming row must draw the owner's material its PMO was placed on. At
+			# `validate` because before_validate's update_batches has by then allocated the
+			# batches this reads, and because the original on_submit wiring only complained
+			# after the stock had already moved. Restored here rather than by un-commenting
+			# its old call site, so the ordering against the other row rewriters is explicit.
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.validate_inventory_dimention",
+			# Hybrid orders: a finding listed in Subcontracting Settings must draw a Customer Goods
+			# batch of the order's Ref Customer. At `validate` so it sees the batches
+			# before_validate's update_batches filled; no-op while that table is empty.
+			"jewellery_erpnext.customer_subcontracting.hybrid_findings.validate_hybrid_finding_batches",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
+			# FIRST, before update_batches FIFO-fills an empty batch: a receipt-linked Customer
+			# Gold return row gets its receipt's batch back (an amended return loses batch_no).
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.fill_return_batch",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
 			# Runs last so it sees rows after update_batches has rebuilt self.items.
 			# No-op unless Customer Gold Flow is enabled on Subcontracting Settings.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_receipt",
+			# The configured Customer Gold return type only: links each row to the receipt row it
+			# gives back, sets the liability contra account and checks what the receipt still owes.
+			# Covers the desk "Create > Issue" path as well as make_customer_gold_return.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.prepare_return_entry",
 		],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
@@ -269,6 +306,9 @@ doc_events = {
 			# MUST stay after the two batch creators: a Customer Gold receipt carries no
 			# batch_no until create_parent_batches mints it.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_batches",
+			# Last, after prelock_bins: the receipt-level recheck of a Customer Gold return, under a
+			# lock on the receipt rows so two concurrent returns cannot both pass.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.lock_return_entitlement",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
@@ -284,6 +324,8 @@ doc_events = {
 			# subsystem: PC-to-Tagging, Employee IR injection and the settlement helpers each
 			# build their own Stock Entry, but every one of them arrives here.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.record_stock_movement",
+			# The Return event and its receipt allocation, for the configured return type.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.record_return",
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,
@@ -291,6 +333,8 @@ doc_events = {
 			# F-002/F-012: pre-order this SE's Bins on cancel too, matching every other
 			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
+			# A Customer Gold receipt with live returns or deliveries against it cannot be cancelled.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_return.block_receipt_cancel_with_dispositions",
 		],
 		"on_cancel": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
@@ -409,6 +453,8 @@ doc_events = {
 		],
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_update_after_submit",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.create_stock_entry",
+		# F11: a customer-diamond order gets the grade it ordered, or an approved substitute.
+		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.validate_customer_diamond_grade",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.on_submit",
 	},
 	"Serial and Batch Bundle": {
@@ -426,7 +472,6 @@ doc_events = {
 	"Batch": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.validate",
 		"autoname": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.autoname",
-		"on_update": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.on_update",
 	},
 	"Stock Reconciliation": {
 		"validate": [
@@ -478,6 +523,9 @@ override_whitelisted_methods = {
 	# weights export as 25.3796 while the UI shows 25.38. Round Float cells to the
 	# same precision the UI uses for Serial No exports only.
 	"frappe.core.doctype.data_import.data_import.download_template": "jewellery_erpnext.jewellery_erpnext.doc_events.data_export.download_template",
+	# Single Variant "Create": reject Attribute Value "Not Allowed" combinations
+	# before the dialog closes, instead of only when the new item is saved.
+	"erpnext.controllers.item_variant.get_variant": "jewellery_erpnext.jewellery_erpnext.doc_events.item.get_variant",
 }
 
 override_doctype_class = {

@@ -895,3 +895,205 @@ def get_repair_order_design_bom(order_form_type, order_form_id):
 	if order_form_type != "Repair Order" or not order_form_id:
 		return None
 	return frappe.db.get_value("Repair Order", order_form_id, "bom")
+
+
+def ensure_operation_not_in_use(operation, cancelling_doctype, cancelling_name):
+	"""Stop an IR cancel while any other submitted document still uses the operation it created.
+
+	IR cancels used to delete that operation, and the delete failed on exactly this case; they now
+	keep it (marked Revert), so the check is made here: the same submitted-document link check
+	Frappe runs on cancel, plus Employee IR rows, since Manufacturing Operation.employee_ir is a
+	Data field that check cannot see. Logs and other non-submitted history never block.
+	"""
+	users = get_submitted_linked_docs(
+		frappe.get_doc("Manufacturing Operation", operation)
+	)
+	for child_doctype, parent_doctype in (
+		("Department IR Operation", "Department IR"),
+		("Employee IR Operation", "Employee IR"),
+	):
+		users += [
+			(parent_doctype, parent)
+			for parent in frappe.get_all(
+				child_doctype,
+				{
+					"manufacturing_operation": operation,
+					"parenttype": parent_doctype,
+					"docstatus": 1,
+				},
+				pluck="parent",
+				distinct=True,
+			)
+		]
+
+	for user in users:
+		if user != (cancelling_doctype, cancelling_name):
+			frappe.throw(
+				_(
+					"Cancel {0} {1} first: it still uses Manufacturing Operation {2}"
+				).format(user[0], user[1], operation),
+				frappe.LinkExistsError,
+			)
+
+
+def latest_operation(manufacturing_work_order, **filters):
+	"""Newest Manufacturing Operation of the Work Order, skipping ones a cancelled IR left behind.
+
+	Those are kept as history and marked department_ir_status = "Revert"; they are never where the
+	Work Order's material or weights are. Filtered here rather than in the query because a plain
+	!= on frappe.db.get_value also drops the many operations whose status is empty.
+	"""
+	for operation in frappe.get_all(
+		"Manufacturing Operation",
+		{"manufacturing_work_order": manufacturing_work_order, **filters},
+		["name", "department_ir_status"],
+		order_by="creation desc",
+	):
+		if operation.department_ir_status != "Revert":
+			return operation.name
+	return None
+
+
+def cancel_tracking_bom_if_unused(tracking_bom_name):
+	"""Cancel a submitted Tracking BOM once no submitted document uses it any more.
+
+	It is per item, so other orders' Sales Orders, Quotations, Plans and PMOs can share it. Both the
+	Sales Order and the Quotation call this on cancel: ERPNext cancels the Sales Order first, while
+	the Quotation still uses it, so it is usually the Quotation's cancel that finally lets it go.
+	"""
+	if not tracking_bom_name:
+		return
+	tracking_bom = frappe.get_doc("Tracking Bom", tracking_bom_name)
+	if tracking_bom.docstatus != 1 or get_submitted_linked_docs(tracking_bom):
+		return
+	tracking_bom.cancel()
+
+
+def validate_no_reverted_operations(doc, table_field):
+	"""Refuse IR rows on operations a cancelled IR left behind (department_ir_status = "Revert").
+
+	IR cancels used to delete those operations, so a draft still pointing at one failed on save;
+	they are now kept as history, and the pickers hide them, but a draft saved earlier (or a row
+	filled in any other way) would otherwise go on working an operation the Work Order has left.
+	"""
+	operations = [
+		row.manufacturing_operation
+		for row in doc.get(table_field) or []
+		if row.manufacturing_operation
+	]
+	if not operations:
+		return
+	reverted = set(
+		frappe.get_all(
+			"Manufacturing Operation",
+			{"name": ["in", operations], "department_ir_status": "Revert"},
+			pluck="name",
+		)
+	)
+	messages = [
+		_(
+			"Row {0}: Manufacturing Operation {1} was reverted by a cancelled IR. Remove this row and "
+			"use the Work Order's current operation."
+		).format(row.idx, row.manufacturing_operation)
+		for row in doc.get(table_field)
+		if row.manufacturing_operation in reverted
+	]
+	if messages:
+		frappe.throw(
+			"<br>".join(messages), title=_("Reverted Manufacturing Operations")
+		)
+
+
+# Not submittable, but ERPNext writes their rows with docstatus 1 (checked on this site: the only
+# such doctypes), so Frappe's cancel check reports them as submitted links.
+SUBMITTED_LEDGERS = {
+	"GL Entry",
+	"Stock Ledger Entry",
+	"Payment Ledger Entry",
+	"Advance Payment Ledger Entry",
+}
+
+
+def get_submitted_linked_docs(doc):
+	"""(doctype, name) of every submitted document that links to `doc` -- the documents Frappe's
+	cancel check ("is linked with ...") would report, found faster (see get_submitted_links)."""
+	return get_submitted_links(
+		doc.doctype, [doc.name], doc.get("ignore_linked_doctypes")
+	)[doc.name]
+
+
+def get_submitted_links(doctype, names, ignored_doctypes=None) -> dict:
+	"""{name: [(doctype, name), ...]} of the submitted documents linking to each of `names`.
+
+	frappe.model.delete_doc.get_linked_docs(doc, "Cancel") queries every doctype with a link field
+	pointing at the doctype, one document at a time, and only then drops rows that are not
+	submitted, so it also reads big non-submittable tables (MOP Log, Version, ...) that never hold a
+	submitted row. Here those doctypes are skipped, docstatus = 1 is filtered in the query, and all
+	`names` go in one query per link field. Child tables carry their parent's docstatus, so they are
+	kept and reported as their parent. ERPNext's ledgers are the one exception -- not submittable,
+	yet written with docstatus 1 -- so they are always checked.
+	"""
+	from frappe.model.dynamic_links import get_dynamic_link_map
+	from frappe.model.rename_doc import get_link_fields
+
+	def can_hold_submitted(link_doctype):
+		try:
+			meta = frappe.get_meta(link_doctype)
+		except frappe.DoesNotExistError:
+			frappe.clear_last_message()
+			return None
+		if meta.issingle or not (
+			meta.istable or meta.is_submittable or link_doctype in SUBMITTED_LEDGERS
+		):
+			return None
+		return meta
+
+	names = list(dict.fromkeys(names))
+	ignored = set(ignored_doctypes or [])
+	found = {name: [] for name in names}
+
+	def collect(meta, fieldname, filters):
+		fields = (
+			["name", fieldname, "parent", "parenttype"]
+			if meta.istable
+			else ["name", fieldname]
+		)
+		for row in frappe.db.get_values(
+			meta.name, filters, fields, as_dict=True, order_by=None
+		):
+			target = row.get(fieldname)
+			ref = (
+				(row.parenttype, row.parent) if meta.istable else (meta.name, row.name)
+			)
+			if (
+				target in found
+				and ref != (doctype, target)
+				and ref[0] not in ignored
+				and ref not in found[target]
+			):
+				found[target].append(ref)
+
+	if not names:
+		return found
+
+	for link in get_link_fields(doctype):
+		if link["fieldname"] == "amended_from" or link["issingle"]:
+			continue
+		meta = can_hold_submitted(link["parent"])
+		if meta:
+			collect(
+				meta,
+				link["fieldname"],
+				{link["fieldname"]: ["in", names], "docstatus": 1},
+			)
+
+	for df in get_dynamic_link_map().get(doctype, []):
+		meta = can_hold_submitted(df.parent)
+		if meta:
+			collect(
+				meta,
+				df.fieldname,
+				{df.options: doctype, df.fieldname: ["in", names], "docstatus": 1},
+			)
+
+	return found

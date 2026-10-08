@@ -57,7 +57,19 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_keep_last_7_days_of_error_log
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
+          # Added 2026-09-29 (EMP-IR-Labh-2026-14111): the receive's Process Loss child batch,
+          # and the customer-loss timeline note after a successful submit (no dialog on save or submit).
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_customer_loss_child_batch
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_loss_spill_message
+          # The three Employee IR loss gates. The blanket per-material gate had no CI
+          # entry at all until now, so the gate the customer-finding gate mirrors was
+          # unguarded.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_loss_gate
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_finding_loss_gate
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_current_operation_guard
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_current_operation_audit_repair
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_warehouse_stock_entry
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_ownership_priority
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_bom_field_configuration
@@ -71,4 +83,7 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_not_allowed_attribute_values
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_data_export
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_foreign_attachments
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_log_table_maintenance

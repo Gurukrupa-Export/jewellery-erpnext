@@ -4,15 +4,22 @@
 
 import frappe
 from frappe import _
+from frappe.desk.doctype.notification_log.notification_log import (
+	enqueue_create_notification,
+)
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.model.naming import make_autoname
-from frappe.utils import cint, flt, get_datetime, get_link_to_form, now
+from frappe.utils import cint, flt, get_datetime, get_link_to_form, now, strip_html
+from frappe.utils.background_jobs import is_job_enqueued
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.utils import (
 	add_time_log,
 	create_se_entry,
 	create_stock_transfer_entry,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
+	validate_not_eod_sync_locked,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
@@ -107,7 +114,11 @@ class ManufacturingWorkOrder(Document):
 			# Pull the last MOP name per sibling MWO
 			mop_names = frappe.db.get_all(
 				"Manufacturing Operation",
-				{"manufacturing_work_order": ["in", sibling_mwos]},
+				# Revert = left behind by a cancelled IR, never a Work Order's current operation.
+				{
+					"manufacturing_work_order": ["in", sibling_mwos],
+					"department_ir_status": ["!=", "Revert"],
+				},
 				["name", "manufacturing_work_order"],
 				order_by="creation desc",
 			)
@@ -146,7 +157,6 @@ class ManufacturingWorkOrder(Document):
 						SUM(other_wt) AS other_wt,
 						SUM(received_gross_wt) AS received_gross_wt,
 						SUM(received_net_wt) AS received_net_wt,
-						SUM(loss_wt) AS loss_wt,
 						SUM(diamond_pcs) AS diamond_pcs,
 						SUM(gemstone_pcs) AS gemstone_pcs
 					FROM `tabManufacturing Operation`
@@ -168,9 +178,11 @@ class ManufacturingWorkOrder(Document):
 					self.other_wt = flt(agg.get("other_wt"))
 					self.received_gross_wt = flt(agg.get("received_gross_wt"))
 					self.received_net_wt = flt(agg.get("received_net_wt"))
-					self.loss_wt = flt(agg.get("loss_wt"))
 					self.diamond_pcs = flt(agg.get("diamond_pcs"))
 					self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
+					# Loss is the one weight that does NOT live on the latest operation (F14):
+					# see cumulative_loss_wt. Summed over the latest operations it was always 0.
+					self.loss_wt = cumulative_loss_wt(sibling_mwos)
 
 		# The carat->gram twins are DERIVED, never summed: SUM(diamond_wt_in_gram) over
 		# siblings adds values that were each already rounded to 3, so it drifts from
@@ -209,12 +221,9 @@ class ManufacturingWorkOrder(Document):
 		# (MOP) so that the SNC submission picks up correct weights.
 		fg_mop = getattr(self, "manufacturing_operation", None)
 		if not fg_mop:
-			fg_mop = frappe.db.get_value(
-				"Manufacturing Operation",
-				{"manufacturing_work_order": self.name},
-				"name",
-				order_by="creation desc",
-			)
+			from jewellery_erpnext.utils import latest_operation
+
+			fg_mop = latest_operation(self.name)
 
 		if fg_mop:
 			frappe.db.set_value(
@@ -885,6 +894,62 @@ class ManufacturingWorkOrder(Document):
 		create_se_entry(self)
 
 
+def cumulative_loss_wt(sibling_mwos):
+	"""The FG work order's process loss: every LOSS recorded on an operation of its siblings.
+
+	Every other header weight is a balance, so the latest operation carries it forward and
+	sync_mwo_weights reads it there. loss_wt is not a balance -- it is the change measured
+	on the one operation that was received (Employee IR writes received_gross_wt - gross_wt
+	on it), and the operation Employee IR creates next starts at 0. Summed over the latest
+	operations it was therefore always 0 (F14).
+
+	Only an operation with a SUBMITTED Employee IR receive counts. That is the only real
+	writer of loss_wt; every other value on an operation is a leftover: a cancelled receive
+	leaves its figure behind, Department IR's copy_doc carries no_copy fields forward (it zeroes
+	them only for a refined work order), and create_manufacturing_operation seeds a split
+	child's first operation from the header the split copied from its parent.
+
+	Only the negative values are losses. The field is "Loss / Increase Wt", and an increase
+	is material coming IN, not a process gain: the casting operation is issued at gross 0 and
+	received at the whole cast weight, and assembly receives the findings it attaches. On
+	kg-gk 2,153 of 2,183 positive Casting rows equal the entire cast weight. Netting them
+	against the losses gave PMO-KGJPL-NE05090-002-0001 a "loss" of +34.25 g for a piece that
+	lost 5.63 g. The per-operation reports read loss the same way (only negative loss_wt).
+
+	The result keeps the field's sign: negative, or 0 when nothing was lost. Reports that list
+	operations must not also list the FG work order, or the loss shows twice -- they filter
+	for_fg = 0.
+	"""
+	if not sibling_mwos:
+		return 0.0
+	operations = frappe.db.sql(
+		"""
+		SELECT name, loss_wt
+		FROM `tabManufacturing Operation`
+		WHERE manufacturing_work_order IN %s
+		""",
+		(tuple(sibling_mwos),),
+	)
+	if not operations:
+		return 0.0
+	received = {
+		row[0]
+		for row in frappe.db.sql(
+			"""
+			SELECT DISTINCT eiro.manufacturing_operation
+			FROM `tabEmployee IR Operation` eiro
+			INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+			WHERE eir.type = 'Receive' AND eir.docstatus = 1
+				AND eiro.manufacturing_operation IN %s
+			""",
+			(tuple(name for name, _loss in operations),),
+		)
+	}
+	return flt(
+		sum(min(flt(loss), 0.0) for name, loss in operations if name in received), 3
+	)
+
+
 @frappe.whitelist()
 def get_unpack_eligibility(mwo):
 	"""Whether this work order should offer Unpack Serial No, and why not if it shouldn't.
@@ -1126,8 +1191,423 @@ def create_manufacturing_operation(doc):
 		create_snc_from_mwo_submit(doc.name)
 
 
+# Compared against Department.department_name, not the link: the Department's name
+# carries the company suffix (and on live data a double space before it), e.g.
+# "Manufacturing Plan & Management  - KGJPL".
+SPLIT_ALLOWED_DEPARTMENT = "Manufacturing Plan & Management"
+
+_CANCEL_SPLIT_BLOCKERS_METHOD = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.cancel_split_blocking_stock_entries"
+
+
+def validate_split_eligibility(docname):
+	"""A work order may be split only while it is still in planning with no material on it."""
+	_validate_split_basics(docname)
+
+	blocking = _split_blocking_stock(docname)
+	if blocking.entries:
+		# Every entry, in the order they have to go: each step moved the previous one's
+		# stock on, so naming just one sent operators to the first entry -- the one
+		# ERPNext refuses to cancel until all the later ones are gone.
+		frappe.throw(
+			_(
+				"Material Request {0} has already moved stock. Cancel these Stock Entries, latest first, before splitting Work Order {1}: {2}"
+			).format(
+				", ".join(
+					get_link_to_form("Material Request", mr)
+					for mr in blocking.material_requests
+				),
+				docname,
+				", ".join(
+					get_link_to_form("Stock Entry", se) for se in blocking.entries
+				),
+			),
+			# The Split button asks first (get_split_blocking_stock_entries); this reaches a
+			# direct call or a browser still on the old form script, and does the same.
+			primary_action={
+				"label": _("Cancel Stock Entries"),
+				"server_action": _CANCEL_SPLIT_BLOCKERS_METHOD,
+				"args": {"docname": docname},
+				"hide_on_success": True,
+			},
+		)
+
+
+def _validate_split_basics(docname):
+	"""Every reason a split is refused other than stock its Material Requests moved.
+
+	The weight is checked on the current Manufacturing Operation as well as on the MWO
+	header: the header gross_wt is only ever written for FG work orders (sync_mwo_weights),
+	so on every other MWO it reads 0 regardless of what has been issued. Material sitting
+	on the parent's MOP is not carried to the split children -- they start from the
+	parent's header weights -- so splitting it would strand that weight on a closed MWO.
+	"""
+	mwo = frappe.db.get_value(
+		"Manufacturing Work Order",
+		docname,
+		[
+			"docstatus",
+			"has_split_mwo",
+			"department",
+			"gross_wt",
+			"manufacturing_operation",
+		],
+		as_dict=True,
+	)
+	if not mwo or cint(mwo.docstatus) != 1:
+		frappe.throw(
+			_("Work Order {0} must be submitted before it can be split.").format(
+				docname
+			)
+		)
+
+	# A split parent keeps its department and zero weight, and its pending operations are
+	# marked Finished, so without this it would pass every check below a second time.
+	if cint(mwo.has_split_mwo):
+		frappe.throw(_("Work Order {0} has already been split.").format(docname))
+
+	department_name = (
+		frappe.db.get_value("Department", mwo.department, "department_name")
+		if mwo.department
+		else None
+	)
+	if department_name != SPLIT_ALLOWED_DEPARTMENT:
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only in {1} department. It is currently in {2}."
+			).format(
+				docname,
+				frappe.bold(SPLIT_ALLOWED_DEPARTMENT),
+				frappe.bold(mwo.department or _("no department")),
+			)
+		)
+
+	if flt(mwo.gross_wt, 3):
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only when Gross Wt is 0. Current Gross Wt: {1}"
+			).format(docname, flt(mwo.gross_wt, 3))
+		)
+
+	mop_gross_wt = (
+		frappe.db.get_value(
+			"Manufacturing Operation", mwo.manufacturing_operation, "gross_wt"
+		)
+		if mwo.manufacturing_operation
+		else 0
+	)
+	if flt(mop_gross_wt, 3):
+		frappe.throw(
+			_(
+				"Work Order {0} can be split only when Gross Wt is 0. Current Gross Wt: {1} on Manufacturing Operation {2}"
+			).format(
+				docname,
+				flt(mop_gross_wt, 3),
+				get_link_to_form(
+					"Manufacturing Operation", mwo.manufacturing_operation
+				),
+			)
+		)
+
+
+def _split_blocking_stock(docname):
+	"""The Material Requests that moved stock, and every entry to cancel, latest first.
+
+	The split cancels these Material Requests by writing docstatus directly, which does
+	not reverse their Stock Entries -- any stock they already moved would be left in the
+	reserve/department warehouse against a cancelled MR and a closed work order.
+	Ownership is read from the Stock Entry rows, not the MR's custom_*_se links: those
+	links are copied between MRs (copy_doc, desk Duplicate) and can point at another
+	MR's entry.
+	"""
+	material_requests = _get_split_material_requests(docname)
+	moved = (
+		frappe.get_all(
+			"Stock Entry Detail",
+			filters={"material_request": ["in", material_requests], "docstatus": 1},
+			fields=["material_request", "parent"],
+		)
+		if material_requests
+		else []
+	)
+	return frappe._dict(
+		material_requests=sorted({row.material_request for row in moved}),
+		entries=_entries_in_cancel_order({row.parent for row in moved})
+		if moved
+		else [],
+	)
+
+
+def _entries_in_cancel_order(entries):
+	"""The submitted ``entries`` plus their End Transit receipts, latest first.
+
+	A department transfer's receipt carries no material_request on its rows, yet it moved
+	the same stock on and has to be cancelled before the transfer itself.
+	"""
+	receipts = frappe.get_all(
+		"Stock Entry",
+		filters={"outgoing_stock_entry": ["in", sorted(entries)], "docstatus": 1},
+		pluck="name",
+	)
+	return frappe.get_all(
+		"Stock Entry",
+		filters={"name": ["in", sorted({*entries, *receipts})]},
+		order_by="posting_date desc, posting_time desc, creation desc",
+		pluck="name",
+	)
+
+
+def _get_split_material_requests(docname):
+	"""The open Material Requests that splitting this work order cancels.
+
+	An original work order's MRs are the PMO-level MRDs no split has claimed yet
+	(custom_manufacturing_work_order not set). A split child's MR is the one minted for
+	it on submit (create_mr_for_split_work_order), stamped with its own name: its PMO's
+	originals were cancelled when its parent was split, and an unstamped MRD still open
+	in that PMO is an amendment issuing stock to a sibling, not this work order's MR.
+	"""
+	pmo, split_from = frappe.db.get_value(
+		"Manufacturing Work Order", docname, ["manufacturing_order", "split_from"]
+	)
+	if split_from:
+		filters = {"custom_manufacturing_work_order": docname}
+	else:
+		filters = {
+			"manufacturing_order": pmo,
+			"title": ["like", "MRD%"],
+			"custom_manufacturing_work_order": ["is", "not set"],
+		}
+	filters["docstatus"] = ["!=", 2]
+	# get_all, not get_list: this is the split's own clean-up, and a permission-scoped
+	# list would silently leave an MR open (or let it slip past the stock check above).
+	return frappe.get_all("Material Request", filters=filters, pluck="name")
+
+
+def _stopped_requests(material_requests):
+	"""ERPNext refuses to cancel an entry whose Material Request is Stopped."""
+	if not material_requests:
+		return []
+	return frappe.get_all(
+		"Material Request",
+		filters={"name": ["in", material_requests], "status": "Stopped"},
+		pluck="name",
+	)
+
+
+@frappe.whitelist()
+def get_split_blocking_stock_entries(docname):
+	"""What the Split button has to clear first, for its confirmation dialog.
+
+	Every other reason a split is refused is raised here exactly as on the split itself,
+	so the operator is never offered to cancel stock for a work order that cannot be split.
+	"""
+	frappe.has_permission("Manufacturing Work Order", "read", docname, throw=True)
+	_validate_split_basics(docname)
+	blocking = _split_blocking_stock(docname)
+	details = (
+		{
+			row.name: row
+			for row in frappe.get_all(
+				"Stock Entry",
+				filters={"name": ["in", blocking.entries]},
+				fields=["name", "stock_entry_type", "posting_date"],
+			)
+		}
+		if blocking.entries
+		else {}
+	)
+	return {
+		"material_requests": blocking.material_requests,
+		"stopped": _stopped_requests(blocking.material_requests),
+		"entries": [details[se] for se in blocking.entries if se in details],
+	}
+
+
+@frappe.whitelist()
+def cancel_split_blocking_stock_entries(docname):
+	"""Queue the cancellation of every Stock Entry that blocks splitting ``docname``.
+
+	Only the work order comes from the caller; its entries are worked out again here, so
+	the request cannot name stock that is not this work order's. A cancel takes the better
+	part of a minute on a busy diamond item, so a chain of them would outlast the web
+	request: they run in a background job, latest first.
+	"""
+	frappe.has_permission("Manufacturing Work Order", "read", docname, throw=True)
+	blocking = _check_split_cancel(docname)
+	if not blocking.entries:
+		frappe.msgprint(
+			_("Nothing to cancel. Work Order {0} can be split now.").format(docname)
+		)
+		return
+
+	job_id = _split_cancel_job_id(docname)
+	if is_job_enqueued(job_id):
+		frappe.throw(
+			_(
+				"The Stock Entries blocking Work Order {0} are already being cancelled. Reload in a minute."
+			).format(docname)
+		)
+	frappe.enqueue(
+		_cancel_split_blocking_stock_entries,
+		queue="long",
+		timeout=4500,
+		job_id=job_id,
+		deduplicate=True,
+		enqueue_after_commit=True,
+		docname=docname,
+		requested_by=frappe.session.user,
+		# What this click agreed to re-open. A request stopped after it is refused by the
+		# job, not re-opened.
+		reopen=blocking.stopped,
+	)
+	message = _(
+		"Cancelling {0} Stock Entries in the background, latest first: {1}."
+	).format(len(blocking.entries), ", ".join(blocking.entries))
+	if blocking.stopped:
+		message += " " + _("Material Request {0} will be re-opened first.").format(
+			", ".join(blocking.stopped)
+		)
+	message += " " + _(
+		"You will be notified when it is done; then split Work Order {0} again."
+	).format(docname)
+	frappe.msgprint(message, title=_("Cancellation Queued"), indicator="blue")
+
+
+def _check_split_cancel(docname, confirmed_reopen=None):
+	"""Everything a split cancellation must pass before it changes anything.
+
+	Run on the click and again when the job starts, which can be long after it: by then
+	the work order may have left planning, its stock or its requests' status may have
+	moved, or the requester's rights may have changed. ``confirmed_reopen`` is what the
+	click agreed to re-open (the job passes it); a request stopped since is refused, never
+	re-opened silently.
+	"""
+	_validate_split_basics(docname)
+	blocking = _split_blocking_stock(docname)
+	if not blocking.entries:
+		# Nothing to cancel, so nothing to re-open either.
+		blocking.stopped = []
+		return blocking
+	blocking.stopped = _stopped_requests(blocking.material_requests)
+
+	if confirmed_reopen is not None:
+		unconfirmed = sorted(set(blocking.stopped) - set(confirmed_reopen))
+		if unconfirmed:
+			frappe.throw(
+				_(
+					"Material Request {0} was stopped after the cancellation was confirmed."
+				).format(", ".join(unconfirmed))
+			)
+
+	# All of it before the first change, so a missing right cannot surface half-way through
+	# the chain. Frappe's cancel needs both write and cancel.
+	for se in blocking.entries:
+		for ptype in ("write", "cancel"):
+			frappe.has_permission("Stock Entry", ptype, se, throw=True)
+	for mr in blocking.stopped:
+		frappe.has_permission("Material Request", "write", mr, throw=True)
+	# The doc-event hook ignores its document; it throws the standard EOD message.
+	validate_not_eod_sync_locked(None)
+	return blocking
+
+
+def _split_cancel_job_id(docname):
+	return f"split_cancel_se::{docname}"
+
+
+def _cancel_split_blocking_stock_entries(docname, requested_by, reopen=None):
+	"""The queued half of cancel_split_blocking_stock_entries."""
+	# Frappe re-runs a job that hit 1205/1213 without its user -- as Administrator, which
+	# would skip the permission checks every cancel makes.
+	frappe.set_user(requested_by)
+	reopened, cancelled, current = [], [], docname
+	try:
+		blocking = _check_split_cancel(docname, confirmed_reopen=reopen or [])
+		# ERPNext refuses to cancel an entry against a Stopped request, and the split copies
+		# the request's status into the new work orders' requests: re-open it either way.
+		for mr in blocking.stopped:
+			current = mr
+			request = frappe.get_doc("Material Request", mr)
+			# update_status is ERPNext's controller method -- the write check lives in its
+			# whitelisted wrapper -- so it is made here, at the moment of the change.
+			request.check_permission("write")
+			request.update_status("Submitted")
+			frappe.db.commit()
+			reopened.append(mr)
+		for se in blocking.entries:
+			current = se
+			entry = frappe.get_doc("Stock Entry", se)
+			if entry.docstatus != 1:
+				continue
+			entry.cancel()
+			# One entry per transaction: each cancel leaves a valid ledger on its own, no Bin
+			# lock is held across the chain, and a failure keeps what is already done.
+			frappe.db.commit()
+			cancelled.append(se)
+	except Exception as e:
+		frappe.db.rollback()
+		frappe.log_error(
+			title=_("Cancelling Stock Entries for split of {0} failed").format(docname),
+			reference_doctype="Manufacturing Work Order",
+			reference_name=docname,
+		)
+		# ERPNext's stock messages carry markup and hard line breaks; one line reads better
+		# on the timeline and in the bell.
+		reason = " ".join(strip_html(str(e)).split()).rstrip(".")
+		if not (reopened or cancelled):
+			message = _("Nothing was changed: {0}.").format(reason)
+		else:
+			message = _("Stopped at {0}: {1}.").format(current, reason)
+			if reopened:
+				message += " " + _("Already re-opened: {0}.").format(
+					", ".join(reopened)
+				)
+			if cancelled:
+				message += " " + _("Already cancelled: {0}.").format(
+					", ".join(cancelled)
+				)
+		message += " " + _(
+			"Clear that, then click Cancel Stock Entries again to carry on."
+		)
+		_report_split_cancel(docname, requested_by, message, ok=False)
+		return
+
+	_report_split_cancel(
+		docname,
+		requested_by,
+		_("Cancelled {0}. Work Order {1} can be split now.").format(
+			", ".join(cancelled) or _("nothing, it was already done"), docname
+		),
+		ok=True,
+	)
+
+
+def _report_split_cancel(docname, user, message, ok):
+	"""How the job ended: on the work order's timeline, in the bell and, if live, a popup."""
+	frappe.get_doc("Manufacturing Work Order", docname).add_comment("Comment", message)
+	enqueue_create_notification(
+		frappe.db.get_value("User", user, "email") or user,
+		{
+			"type": "Alert",
+			"document_type": "Manufacturing Work Order",
+			"document_name": docname,
+			"subject": message,
+		},
+	)
+	frappe.publish_realtime(
+		"msgprint",
+		{
+			"message": message,
+			"title": _("Split Work Order"),
+			"indicator": "green" if ok else "red",
+		},
+		user=user,
+		after_commit=True,
+	)
+
+
 @frappe.whitelist()
 def create_split_work_order(docname, company, manufacturer, count=1):
+	validate_split_eligibility(docname)
 	# limit = cint(frappe.db.get_value("Manufacturing Setting", {"company", company}, "wo_split_limit"))
 	limit = cint(
 		frappe.db.get_value(
@@ -1163,7 +1643,13 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 		mop.save()
 	pending_operations = frappe.get_all(
 		"Manufacturing Operation",
-		{"manufacturing_work_order": docname, "status": "Not Started"},
+		# Revert leftovers of cancelled IRs stay as they are: marked Finished they would show up
+		# in the Department IR Issue picker.
+		{
+			"manufacturing_work_order": docname,
+			"status": "Not Started",
+			"department_ir_status": ["!=", "Revert"],
+		},
 		pluck="name",
 	)
 	if pending_operations:  # to prevent this workorder from showing in any IR doc
@@ -1174,24 +1660,10 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 		"Manufacturing Work Order", docname, {"has_split_mwo": 1, "status": "Closed"}
 	)
 	# frappe.db.set_value("Manufacturing Work Order", docname, "status", "Closed")
-	pmo = frappe.db.get_value(
-		"Manufacturing Work Order", docname, "manufacturing_order"
-	)
-	mr_list = frappe.db.get_list(
-		"Material Request",
-		filters={
-			"manufacturing_order": pmo,
-			"title": ["like", "MRD%"],
-			"custom_manufacturing_work_order": ["is", "not set"],
-		},
-		fields=["name"],
-	)
-	if mr_list:
-		for mr in mr_list:
-			frappe.db.set_value("Material Request", mr.name, "docstatus", "2")
-			frappe.db.set_value(
-				"Material Request", mr.name, "workflow_state", "Cancelled"
-			)
+	for mr in _get_split_material_requests(docname):
+		frappe.db.set_value(
+			"Material Request", mr, {"docstatus": 2, "workflow_state": "Cancelled"}
+		)
 
 
 @frappe.whitelist()
@@ -1248,9 +1720,15 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 	# split MR thinks it already has a Reserve/MOP/Department Transfer Stock Entry -- the
 	# old_mr's -- and later re-copies that stale entry instead of making its own, which
 	# fails once old_mr is cancelled (its rows still link to old_mr, now a cancelled doc).
+	# The same goes for the "Material Transfer From Reserve" stamp: carried over as "Done",
+	# MR.on_submit takes it as this MR's own transfer and never creates one, so the stock
+	# the new MR reserves stays in the reserve warehouse.
 	new_mr.custom_reserve_se = None
 	new_mr.custom_mop_se = None
 	new_mr.custom_department_transfer_se = None
+	new_mr.custom_transfer_se = None
+	new_mr.custom_transfer_se_state = None
+	new_mr.custom_transfer_se_error = None
 	# custom_manufacturing_operation is a manual field the user picks from the dropdown
 	# themselves -- clear the value copy_doc carried over from old_mr so it actually starts
 	# blank on the new split MR instead of silently inheriting the previous MWO's operation.

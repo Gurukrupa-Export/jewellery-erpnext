@@ -34,7 +34,8 @@ RECEIPT_PURPOSE = "Material Receipt"
 #: which surfaces as a framework traceback at return time instead of a readable message here.
 RETURN_PURPOSE = "Material Issue"
 
-#: The Customer Gold rate basis is per gram, so the receipt item must be stocked in grams.
+#: The Customer Gold rate basis is per gram, so an item priced from it -- gold and findings --
+#: must be stocked in grams. Stones are received in their own UOM at a typed rate.
 RECEIPT_STOCK_UOM = "Gram"
 
 #: Account types that require a Party on every GL Entry (``gl_entry.py:139-152``).
@@ -57,6 +58,13 @@ VALUATION_NOMINAL = "Nominal"
 class SubcontractingSettings(Document):
 	def validate(self):
 		validate_customer_gold_settings(self)
+		# Not gated on the Customer Gold flow: the Hybrid rule applies with the flow off too.
+		# Imported here because hybrid_findings imports this module.
+		from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+			validate_hybrid_finding_categories,
+		)
+
+		validate_hybrid_finding_categories(self)
 
 
 def validate_customer_gold_settings(doc):
@@ -117,32 +125,14 @@ def validate_customer_gold_receipt_config(doc):
 			title=_("Customer Gold Configuration Incomplete"),
 		)
 
+	# The Customer 24KT Item is the RATE REFERENCE -- the configured Gold Rate is quoted for it
+	# and every other gold purity is priced relative to it -- so it must still be a batch
+	# controlled item stocked in grams. It is no longer an eligibility list: which items a
+	# receipt accepts is the Item's own ``custom_inventory_type_can_be_customer_goods`` flag
+	# (``customer_goods_eligibility``). Its flag is deliberately NOT required here, so a site
+	# whose reference item is unflagged can still save its Settings; receipts of that item are
+	# refused until the flag is ticked, like any other item.
 	_validate_receipt_item(doc.customer_24kt_item, _("Customer 24KT Item"))
-
-	# Additional purities the customer may hand over -- 99.5 alongside 99.9, say. Held to
-	# EXACTLY the same standard as the primary item: an extra item that is not batch controlled
-	# or not stocked in grams breaks custody tracking and rate arithmetic the same way, and
-	# there is no reason for the secondary list to be the lenient one.
-	seen_items = {doc.customer_24kt_item}
-	for row in doc.get("customer_gold_items") or []:
-		if not row.item:
-			frappe.throw(
-				_("Row #{0}: Item is mandatory in Additional Customer Gold Items.").format(
-					row.idx
-				)
-			)
-		if row.item in seen_items:
-			frappe.throw(
-				_(
-					"Row #{0}: Item {1} is already accepted -- it is either the Customer 24KT "
-					"Item or a duplicate row."
-				).format(row.idx, frappe.bold(row.item)),
-				title=_("Duplicate Customer Gold Item"),
-			)
-		seen_items.add(row.item)
-		_validate_receipt_item(
-			row.item, _("Additional Customer Gold Item (Row #{0})").format(row.idx)
-		)
 
 	if not doc.get("customer_goods_stock_entry_type"):
 		frappe.throw(
@@ -173,19 +163,30 @@ def validate_customer_gold_receipt_config(doc):
 		)
 
 
-def _validate_receipt_item(item_code, label):
-	"""Every item a customer may hand over must clear the same four gates.
+#: Item fields ``_validate_receipt_item`` reads. A receipt fetches them for all its rows in one
+#: query (``customer_gold_receipt._receipt_item_details``) and passes each row's dict in.
+RECEIPT_ITEM_FIELDS = ("disabled", "is_stock_item", "has_batch_no", "stock_uom")
 
-	Extracted so the additional-purity rows cannot drift into a weaker standard than the
-	primary item. ``label`` names which field is at fault, because with several items
-	configured "Customer 24KT Item is disabled" would point at the wrong row.
+
+def _validate_receipt_item(item_code, label, item=None, require_gram=True):
+	"""The technical gates an item must clear to be received as customer goods.
+
+	Applies to the Customer 24KT Item when Settings are saved, and to every receipt row. These
+	gates are about whether the receipt can be BOOKED, not about whether the item is ALLOWED --
+	that is the Item's own Customer Goods flag, checked before this.
+
+	``item`` is the row's prefetched Item dict; it is read here only when not supplied, so a
+	receipt of many rows costs one query in total rather than one per row. ``label`` names the
+	field or row at fault.
+
+	``require_gram`` is for items priced from the gold rate (gold and findings): the rate is per
+	gram, so any other stock UOM would book a wrong value. Stones are received in their own UOM
+	(Carat) at a rate the user types, so they skip it.
 	"""
-	item = frappe.db.get_value(
-		"Item",
-		item_code,
-		["disabled", "is_stock_item", "has_batch_no", "stock_uom"],
-		as_dict=True,
-	)
+	if item is None:
+		item = frappe.db.get_value(
+			"Item", item_code, list(RECEIPT_ITEM_FIELDS), as_dict=True
+		)
 	if not item:
 		frappe.throw(_("{0} {1} does not exist.").format(label, frappe.bold(item_code)))
 	if item.disabled:
@@ -197,11 +198,11 @@ def _validate_receipt_item(item_code, label):
 	if not item.has_batch_no:
 		frappe.throw(
 			_(
-				"{0} {1} must be batch controlled, because customer gold is tracked per batch."
+				"{0} {1} must be batch controlled, because customer goods are tracked per batch."
 			).format(label, frappe.bold(item_code))
 		)
 
-	if item.stock_uom != RECEIPT_STOCK_UOM:
+	if require_gram and item.stock_uom != RECEIPT_STOCK_UOM:
 		# Load-bearing, not cosmetic. ``customer_gold_rate.convert_gold_rate_to_per_gram``
 		# turns a "Per 10 Gram" quote into a per-gram rate by dividing by 10, and
 		# ``apply_valuation_policy`` then books that figure as ``basic_rate`` -- which
@@ -220,27 +221,6 @@ def _validate_receipt_item(item_code, label):
 			),
 			title=_("Unsupported Stock UOM"),
 		)
-
-
-def get_allowed_customer_gold_items(settings=None):
-	"""Every item a customer may hand over, primary first.
-
-	The primary ``customer_24kt_item`` is always included, so a site that configures no
-	additional purities behaves exactly as it did when the receipt tested one item for equality.
-	Returns a list rather than a set: the primary item's position is meaningful -- it is the item
-	the configured Gold Rate is quoted against, and every other purity is priced relative to it.
-	"""
-	settings = settings or get_customer_gold_settings()
-
-	allowed = []
-	primary = settings.get("customer_24kt_item")
-	if primary:
-		allowed.append(primary)
-	for row in settings.get("customer_gold_items") or []:
-		item = row.get("item") if isinstance(row, dict) else row.item
-		if item and item not in allowed:
-			allowed.append(item)
-	return allowed
 
 
 def validate_customer_gold_rate_config(doc):
@@ -306,27 +286,80 @@ def validate_customer_gold_accounts(doc):
 			)
 		seen[row.company] = row.idx
 
-		_validate_account(
+		validate_settlement_accounts(
+			row.company,
 			row.customer_gold_liability_account,
-			row.company,
-			row.idx,
-			_("Customer Gold Liability Account"),
-			expected_root_type="Liability",
-		)
-		# Root type is deliberately not enforced for the COGS Adjustment account --
-		# its classification is pending Finance approval. Company / non-group / existence
-		# are still enforced so it cannot point at another company's ledger.
-		_validate_account(
 			row.customer_gold_cogs_adjustment_account,
-			row.company,
-			row.idx,
-			_("Customer Gold COGS Adjustment Account"),
+			where=_("Row #{0}").format(row.idx),
 		)
 
-		_reject_identical_accounts(row)
+
+def validate_settlement_accounts(
+	company, liability_account, cogs_adjustment_account, where, fix_hint=None
+):
+	"""The rules for the two settlement legs, run at settings save AND again at posting (F4).
+
+	The settlement Journal Entry debits the liability account and credits the COGS Adjustment
+	account. Both must be enabled ledger accounts of ``company``; the liability must be root type
+	Liability; the adjustment must NOT be, and must not be the same account.
+
+	WHY TWICE
+	---------
+	A saved row is only as good as the rules in force when it was saved. The KGJPL row that
+	posted ``KGJPL-JE-JE-26-00018`` was saved with the flag on, before the adjustment account had
+	a root-type rule, and nothing re-checks a row that is never saved again. Save-time validation
+	also skips every row while the flag is off. So ``_build_settlement_entry`` calls this again
+	before it inserts anything. ``where`` says which: "Row #1" on the settings form, the document
+	being posted otherwise. At posting, ``fix_hint`` (see ``settings_fix_hint``) is appended to
+	every message, because the operator on a Delivery Note cannot see the row that is wrong.
+
+	WHY THE ADJUSTMENT ACCOUNT MAY NOT BE A LIABILITY
+	-------------------------------------------------
+	``KGJPL-JE-JE-26-00018`` posted Dr Customer Goods Receive / Cr Advances from Customers:
+	liability to liability. It passed every earlier check because the adjustment account had no
+	root-type rule. The customer's obligation did not fall; it moved to a party-less advance.
+	Which root type the adjustment SHOULD be (Expense, as a COGS adjustment, or Income) is
+	Finance's decision and is not pinned here. Liability is the one that is certainly wrong.
+	"""
+	_validate_account(
+		liability_account,
+		company,
+		where,
+		_("Customer Gold Liability Account"),
+		expected_root_type="Liability",
+		fix_hint=fix_hint,
+	)
+	_reject_identical_accounts(
+		liability_account, cogs_adjustment_account, where, fix_hint=fix_hint
+	)
+	_validate_account(
+		cogs_adjustment_account,
+		company,
+		where,
+		_("Customer Gold COGS Adjustment Account"),
+		forbidden_root_type="Liability",
+		fix_hint=fix_hint,
+	)
 
 
-def _reject_identical_accounts(row):
+def settings_fix_hint(company):
+	"""Where a posting-time account failure is corrected, for the end of the message.
+
+	On the settings form the operator is already looking at the row. At posting they are on a
+	Delivery Note or Sales Invoice, and the account the message names is configured on another
+	screen: DN-26-00025 stopped with a message that named the account but not where to change it.
+	"""
+	return _(
+		"Correct it in {0} > Company Accounts, on the row for Company {1}."
+	).format(frappe.bold(_(SETTINGS_DOCTYPE)), frappe.bold(company))
+
+
+def _throw(message, fix_hint=None, title=None):
+	"""``frappe.throw`` for the settlement-account rules, with the optional ``fix_hint`` appended."""
+	frappe.throw(f"{message} {fix_hint}" if fix_hint else message, title=title)
+
+
+def _reject_identical_accounts(liability, cogs, where, fix_hint=None):
 	"""The two settlement legs must land on different ledgers.
 
 	``_build_settlement_entry`` debits the liability account and credits the COGS adjustment
@@ -348,29 +381,37 @@ def _reject_identical_accounts(row):
 	It passed every existing check, because the liability gate wants root type ``Liability`` --
 	which that account is -- and the COGS gate has no root-type rule to fail.
 	"""
-	liability = row.customer_gold_liability_account
-	cogs = row.customer_gold_cogs_adjustment_account
 	if not liability or not cogs or liability != cogs:
 		return
 
-	frappe.throw(
+	_throw(
 		_(
-			"Row #{0}: Customer Gold Liability Account and Customer Gold COGS Adjustment "
+			"{0}: Customer Gold Liability Account and Customer Gold COGS Adjustment "
 			"Account are both set to {1}. The settlement Journal Entry debits the first and "
 			"credits the second, so a single account would post {2} against itself and the "
 			"liability would never reduce. Configure a separate account -- typically an "
 			"Expense account -- for the COGS Adjustment."
-		).format(row.idx, frappe.bold(liability), frappe.bold(liability)),
+		).format(where, frappe.bold(liability), frappe.bold(liability)),
+		fix_hint,
 		title=_("Customer Gold Accounts Must Differ"),
 	)
 
 
-def _validate_account(account, company, idx, label, expected_root_type=None):
+def _validate_account(
+	account,
+	company,
+	where,
+	label,
+	expected_root_type=None,
+	forbidden_root_type=None,
+	fix_hint=None,
+):
 	if not account:
-		frappe.throw(
-			_("Row #{0}: {1} is mandatory when Customer Gold Flow is enabled.").format(
-				idx, frappe.bold(label)
+		_throw(
+			_("{0}: {1} is mandatory when Customer Gold Flow is enabled.").format(
+				where, frappe.bold(label)
 			),
+			fix_hint,
 			title=_("Customer Gold Configuration Incomplete"),
 		)
 
@@ -381,25 +422,26 @@ def _validate_account(account, company, idx, label, expected_root_type=None):
 		as_dict=True,
 	)
 	if not details:
-		frappe.throw(
-			_("Row #{0}: Account {1} does not exist.").format(idx, frappe.bold(account))
+		_throw(
+			_("{0}: Account {1} does not exist.").format(where, frappe.bold(account)),
+			fix_hint,
 		)
 
 	if details.is_group:
-		frappe.throw(
-			_("Row #{0}: {1} {2} is a group account. Select a ledger account.").format(
-				idx, label, frappe.bold(account)
-			)
+		_throw(
+			_("{0}: {1} {2} is a group account. Select a ledger account.").format(
+				where, label, frappe.bold(account)
+			),
+			fix_hint,
 		)
 
 	if details.disabled:
 		# erpnext itself never checks ``disabled`` in ``gl_entry.validate_account_details``,
 		# so without this a disabled ledger is accepted here and only surfaces as a failed
 		# posting later. Deliberately going beyond core.
-		frappe.throw(
-			_("Row #{0}: {1} {2} is disabled.").format(
-				idx, label, frappe.bold(account)
-			),
+		_throw(
+			_("{0}: {1} {2} is disabled.").format(where, label, frappe.bold(account)),
+			fix_hint,
 			title=_("Account Disabled"),
 		)
 
@@ -410,50 +452,68 @@ def _validate_account(account, company, idx, label, expected_root_type=None):
 	if details.account_type in PARTY_ACCOUNT_TYPES:
 		# ``gl_entry.py:139-152`` requires a party against a Receivable/Payable account, and
 		# a Stock Entry supplies none -- "Supplier is required against Payable account".
-		frappe.throw(
+		_throw(
 			_(
-				"Row #{0}: {1} {2} is a {3} account, which requires a Party on every entry. "
+				"{0}: {1} {2} is a {3} account, which requires a Party on every entry. "
 				"Customer Gold postings do not carry one."
 			).format(
-				idx, label, frappe.bold(account), frappe.bold(details.account_type)
+				where, label, frappe.bold(account), frappe.bold(details.account_type)
 			),
+			fix_hint,
 			title=_("Unsupported Account Type"),
 		)
 
 	if details.account_type == STOCK_ACCOUNT_TYPE:
 		# ``StockEntry.validate_difference_account`` (``stock_entry.py:925-932``) hard-throws
 		# when the difference account is of type Stock.
-		frappe.throw(
+		_throw(
 			_(
-				"Row #{0}: {1} {2} is a Stock account and cannot be used as the Customer Gold contra account."
-			).format(idx, label, frappe.bold(account)),
+				"{0}: {1} {2} is a Stock account and cannot be used as the Customer Gold contra account."
+			).format(where, label, frappe.bold(account)),
+			fix_hint,
 			title=_("Unsupported Account Type"),
 		)
 
 	if details.company != company:
-		frappe.throw(
+		_throw(
 			_(
-				"Row #{0}: {1} {2} belongs to Company {3}, but the Customer Gold configuration is for Company {4}."
+				"{0}: {1} {2} belongs to Company {3}, but the Customer Gold configuration is for Company {4}."
 			).format(
-				idx,
+				where,
 				label,
 				frappe.bold(account),
 				frappe.bold(details.company),
 				frappe.bold(company),
-			)
+			),
+			fix_hint,
 		)
 
 	if expected_root_type and details.root_type != expected_root_type:
-		frappe.throw(
-			_(
-				"Row #{0}: {1} {2} is a {3} account, but it must be of root type {4}."
-			).format(
-				idx,
+		_throw(
+			_("{0}: {1} {2} is a {3} account, but it must be of root type {4}.").format(
+				where,
 				label,
 				frappe.bold(account),
 				frappe.bold(details.root_type),
 				frappe.bold(expected_root_type),
-			)
+			),
+			fix_hint,
+		)
+
+	if forbidden_root_type and details.root_type == forbidden_root_type:
+		_throw(
+			_(
+				"{0}: {1} {2} is a {3} account. The settlement credits it to release the "
+				"customer's gold liability, so a {3} account would move the obligation instead "
+				"of discharging it. Select an Expense (COGS adjustment) account."
+			).format(
+				where,
+				label,
+				frappe.bold(account),
+				frappe.bold(details.root_type),
+			),
+			fix_hint,
+			title=_("Invalid Customer Gold Adjustment Account"),
 		)
 
 
@@ -547,6 +607,21 @@ def is_nominal_valuation():
 def get_customer_gold_settings():
 	"""Return the Customer Gold configuration once per request."""
 	return frappe.get_cached_doc(SETTINGS_DOCTYPE)
+
+
+@frappe.whitelist()
+def get_customer_gold_receipt_type():
+	"""The Stock Entry Type configured for Customer Gold receipts, or ``None`` when the flow is off.
+
+	Whitelisted for the Stock Entry form, which filters the item picker to Customer Goods items
+	only on this type: the Single itself is readable by System Managers alone, and the type name
+	is all the form needs. Enabling the flow requires this type
+	(``validate_customer_gold_receipt_config``), so a non-``None`` answer means the flow is on.
+	"""
+	if not is_customer_gold_enabled():
+		return None
+
+	return get_customer_gold_settings().get("customer_goods_stock_entry_type") or None
 
 
 def get_customer_gold_company_settings(company):

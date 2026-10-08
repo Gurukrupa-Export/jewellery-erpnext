@@ -209,9 +209,9 @@ def on_cancel(self, method):
 	for row in self.items:
 		# Cancel tracking BOM if present
 		if row.custom_tracking_bom:
-			tb = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
-			if tb.docstatus == 1:
-				tb.cancel()
+			from jewellery_erpnext.utils import cancel_tracking_bom_if_unused
+
+			cancel_tracking_bom_if_unused(row.custom_tracking_bom)
 		# Also handle legacy BOM references
 		if row.bom:
 			bom = frappe.get_doc("BOM", row.bom)
