@@ -325,7 +325,26 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.refining_department = "Refinery - T"
 		re.manufacturer = "Shubh"
 		re.scan_serial_no_action(sn.name)
-		re.material_items.pop()
+		# The FG BOM lists the finished item itself (the design code, 1 Nos), and this test used to
+		# drop that row by popping the last line. Scanning no longer adds it -- the design code is
+		# the Serial Number row alone -- so every BOM Component line is real material and popping
+		# would discard the gold. Checked by content, not position: refining reads BOM Items
+		# without an order, so line order is not a contract.
+		self.assertEqual(
+			[
+				row.source_type
+				for row in re.material_items
+				if row.item_code == sn.item_code
+			],
+			["Serial Number"],
+		)
+		self.assertTrue(
+			any(
+				row.source_type == "BOM Component" and row.item_code.startswith("M-")
+				for row in re.material_items
+			),
+			"the serial's metal must reach the refining input",
+		)
 		re.save()
 
 		apply_workflow(re, "Send for Verification")
