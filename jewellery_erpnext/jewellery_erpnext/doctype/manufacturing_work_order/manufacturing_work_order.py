@@ -397,6 +397,7 @@ class ManufacturingWorkOrder(Document):
 
 			batch_doc = frappe.new_doc("Batch")
 			batch_doc.item = row["item_code"]
+			self._name_as_batch_source(batch_doc)
 
 			if batch_number_series:
 				batch_doc.batch_id = make_autoname(batch_number_series, doc=batch_doc)
@@ -431,6 +432,13 @@ class ManufacturingWorkOrder(Document):
 
 		se.save()
 		se.submit()
+
+	def _name_as_batch_source(self, batch_doc):
+		# The unpack mints each batch before its Stock Entry exists, so name this work order as
+		# the source: GK's "GK Batch" server script runs get_doc(reference_doctype,
+		# reference_name) on every new Batch and fails on a blank pair.
+		batch_doc.reference_doctype = self.doctype
+		batch_doc.reference_name = self.name
 
 	def _resolve_repair_order_bom(self):
 		"""Return (design BOM, PMO name) for this repair unpack.
@@ -734,6 +742,7 @@ class ManufacturingWorkOrder(Document):
 			if has_batch:
 				batch_doc = frappe.new_doc("Batch")
 				batch_doc.item = item_code
+				self._name_as_batch_source(batch_doc)
 				if batch_number_series:
 					batch_doc.batch_id = make_autoname(
 						batch_number_series, doc=batch_doc

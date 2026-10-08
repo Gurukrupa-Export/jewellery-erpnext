@@ -602,7 +602,13 @@ class TestHandBuiltBatchNamesItsSource(IntegrationTestCase):
 		batch = _FakeBatch()
 		with (
 			patch.object(frappe, "new_doc", return_value=batch),
-			patch.object(frappe.db, "get_value", side_effect=lambda dt, n, f=None, *a, **k: 1 if f == "has_batch_no" else None),
+			patch.object(
+				frappe.db,
+				"get_value",
+				side_effect=lambda dt, n, f=None, *a, **k: 1
+				if f == "has_batch_no"
+				else None,
+			),
 			patch.object(fr, "carry_rates_from_source_batches"),
 			patch.object(mop, "carry_rates_from_source_batches"),
 		):
@@ -612,12 +618,22 @@ class TestHandBuiltBatchNamesItsSource(IntegrationTestCase):
 
 	def test_a_finding_batch_names_its_employee_ir(self):
 		se = frappe._dict(company="GEPL", employee="GEPL - 01299", employee_ir="EIR-1")
-		batch = self._make(fr._create_finding_batch, se, "F-G-18KT", "Regular Stock", None)
-		self.assertEqual((batch.reference_doctype, batch.reference_name), ("Employee IR", "EIR-1"))
+		batch = self._make(
+			fr._create_finding_batch, se, "F-G-18KT", "Regular Stock", None
+		)
+		self.assertEqual(
+			(batch.reference_doctype, batch.reference_name), ("Employee IR", "EIR-1")
+		)
 		self.assertEqual(batch.custom_company, "GEPL")
 
 	def test_a_finding_batch_with_no_employee_ir_leaves_the_reference_alone(self):
-		batch = self._make(fr._create_finding_batch, frappe._dict(company="GEPL"), "F-G-18KT", None, None)
+		batch = self._make(
+			fr._create_finding_batch,
+			frappe._dict(company="GEPL"),
+			"F-G-18KT",
+			None,
+			None,
+		)
 		self.assertIsNone(batch.get("reference_doctype"))
 
 	def test_a_scrap_batch_names_the_reference_it_is_given(self):
@@ -626,9 +642,14 @@ class TestHandBuiltBatchNamesItsSource(IntegrationTestCase):
 		)
 
 		batch = self._make(
-			mop._create_scrap_batch, "ML-G-18KT", company="GEPL", reference=("Employee IR", "EIR-1")
+			mop._create_scrap_batch,
+			"ML-G-18KT",
+			company="GEPL",
+			reference=("Employee IR", "EIR-1"),
 		)
-		self.assertEqual((batch.reference_doctype, batch.reference_name), ("Employee IR", "EIR-1"))
+		self.assertEqual(
+			(batch.reference_doctype, batch.reference_name), ("Employee IR", "EIR-1")
+		)
 
 	def test_a_scrap_batch_without_a_reference_is_unchanged(self):
 		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation import (
@@ -644,7 +665,9 @@ class TestHandBuiltBatchNamesItsSource(IntegrationTestCase):
 		)
 
 		self.assertEqual(
-			mop._scrap_batch_reference(frappe._dict(employee_ir="EIR-1", manufacturing_operation="MOP-1")),
+			mop._scrap_batch_reference(
+				frappe._dict(employee_ir="EIR-1", manufacturing_operation="MOP-1")
+			),
 			("Employee IR", "EIR-1"),
 		)
 		self.assertEqual(
@@ -652,3 +675,40 @@ class TestHandBuiltBatchNamesItsSource(IntegrationTestCase):
 			("Manufacturing Operation", "MOP-1"),
 		)
 		self.assertIsNone(mop._scrap_batch_reference(frappe._dict()))
+
+	def test_a_refining_entry_batch_names_its_entry(self):
+		entry = frappe.get_doc(
+			{
+				"doctype": "Refining Entry",
+				"name": "RFN-1",
+				"company": "GEPL",
+				"auto_create_batch": 1,
+			}
+		)
+		item = frappe._dict(has_batch_no=1, batch_number_series="RFN-.#####")
+		batch = _FakeBatch()
+		with (
+			patch.object(frappe, "get_doc", return_value=item),
+			patch.object(frappe, "new_doc", return_value=batch),
+		):
+			entry._auto_create_batch("M-G-24KT")
+		self.assertTrue(batch.get("inserted"))
+		self.assertEqual(
+			(batch.reference_doctype, batch.reference_name), ("Refining Entry", "RFN-1")
+		)
+
+	def test_an_unsaved_refining_entry_leaves_the_reference_alone(self):
+		entry = frappe.get_doc({"doctype": "Refining Entry", "name": "RFN-1"})
+		entry.set("__islocal", 1)
+		batch = _FakeBatch()
+		entry._name_as_batch_source(batch)
+		self.assertIsNone(batch.get("reference_doctype"))
+
+	def test_a_repair_unpack_batch_names_its_work_order(self):
+		mwo = frappe.get_doc({"doctype": "Manufacturing Work Order", "name": "MWO-1"})
+		batch = _FakeBatch()
+		mwo._name_as_batch_source(batch)
+		self.assertEqual(
+			(batch.reference_doctype, batch.reference_name),
+			("Manufacturing Work Order", "MWO-1"),
+		)

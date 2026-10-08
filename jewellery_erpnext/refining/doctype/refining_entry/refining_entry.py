@@ -3799,6 +3799,7 @@ class RefiningEntry(Document):
 		# which resolves out of __dict__, and saving only persists meta fields.
 		if self.company:
 			batch.custom_company = self.company
+		self._name_as_batch_source(batch)
 
 		# If item has a batch naming series, ERPNext autoname handles it.
 		# Otherwise, generate a batch_id from item code + timestamp.
@@ -3812,6 +3813,14 @@ class RefiningEntry(Document):
 
 		batch.insert()
 		return batch.name
+
+	def _name_as_batch_source(self, batch):
+		# A batch minted here exists before its Stock Entry, so name this entry as its source:
+		# GK's "GK Batch" server script runs get_doc(reference_doctype, reference_name) on
+		# every new Batch and fails on a blank pair. Only a saved entry can be opened.
+		if not self.is_new():
+			batch.reference_doctype = self.doctype
+			batch.reference_name = self.name
 
 	def _get_available_batch(self, item_code, warehouse):
 		"""Get an available batch for an item in a warehouse (SBB-aware, FIFO).
@@ -4948,6 +4957,7 @@ class RefiningEntry(Document):
 		if not batch_no:
 			batch = frappe.new_doc("Batch")
 			batch.item = dust_item
+			self._name_as_batch_source(batch)
 			batch.insert()
 			batch_no = batch.name
 		for row in self.material_items:

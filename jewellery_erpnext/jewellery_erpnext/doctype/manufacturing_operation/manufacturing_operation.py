@@ -5784,6 +5784,7 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	repack.remarks = _("Unused/Loose Material batch conversion for {0}").format(
 		receive_se_name
 	)
+	batch_reference = _scrap_batch_reference(se)
 
 	for item in rows:
 		target_item = _resolve_unused_loose_item(item.item_code) or item.item_code
@@ -5797,7 +5798,7 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 			inventory_type=out_type,
 			customer=out_customer,
 			sources=[(item.batch_no, item.qty)],
-			reference=_scrap_batch_reference(se),
+			reference=batch_reference,
 		)
 		if not new_batch:
 			if target_item != item.item_code:

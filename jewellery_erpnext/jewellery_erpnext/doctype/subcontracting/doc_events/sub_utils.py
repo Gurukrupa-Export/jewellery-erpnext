@@ -69,6 +69,10 @@ def create_repack_entry(self):
 
 		batch_doc = frappe.new_doc("Batch")
 		batch_doc.item = self.finish_item
+		# Name this Subcontracting as the source: the batch exists before its Stock Entry, and
+		# GK's "GK Batch" server script opens the reference of every new Batch.
+		batch_doc.reference_doctype = self.doctype
+		batch_doc.reference_name = self.name
 
 		if batch_number_series:
 			batch_doc.batch_id = make_autoname(batch_number_series, doc=batch_doc)

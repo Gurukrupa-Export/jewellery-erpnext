@@ -383,8 +383,9 @@ def is_repair_unpack(batch):
 	Unlike its two sibling helpers, this one CANNOT key on ``reference_doctype`` alone: the
 	unpack mints each component's Batch *standalone, before the Stock Entry exists*
 	(``batch_doc.save()`` runs before the SE is built), so at the only moment the guard fires
-	``reference_doctype`` is still None. It is instead recognised by the ``Customer Repair``
-	voucher type stamped on the batch just before that save -- a marker no other flow writes.
+	``reference_doctype`` names the work order, not a Stock Entry. It is instead recognised by
+	the ``Customer Repair`` voucher type stamped on the batch just before that save -- a marker
+	no other flow writes.
 	The reference-based leg (mirroring the two siblings) is kept as well, so the exemption also
 	holds if the batch is re-validated after the SE links it. Both legs require a customer:
 	a Customer Goods batch with no customer is malformed and must not be silently exempted (see
