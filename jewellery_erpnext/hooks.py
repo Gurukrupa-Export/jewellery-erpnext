@@ -61,7 +61,6 @@ doctype_js = {
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Supplier Quotation": "public/js/doctype_js/supplier_quotation.js",
-	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
 	"Payment Entry": "public/js/doctype_js/payment_entry.js",
 	"Warehouse": "public/js/doctype_js/warehouse.js",
 }
