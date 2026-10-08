@@ -26,6 +26,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
 	_finding_resize_errors,
 	_variant_attributes,
+	get_source_batches,
+	validate_customer_finding_source,
 	validate_customer_metal_target,
 	validate_finding_to_finding,
 	validate_source_target_differ,
@@ -87,6 +89,10 @@ VARIANT_OF = {
 	F_NAMED_METAL: "M",
 	**{item: "F" for item in ATTRIBUTES},
 }
+
+POINT_4_MESSAGE = (
+	"Customer Finding batches cannot be used as a source in Metal Conversion."
+)
 
 LANE_MAP = {
 	"B-CUST": ("Customer Goods", "CUST-1"),
@@ -568,9 +574,165 @@ class TestCustomerFindingToFinding(IntegrationTestCase):
 	def test_entered_customer_finding_batch_refused(
 		self, _mc_map, capped, _map, _samples, msgprint, _variant
 	):
+		# Point 4's message wins: the customer Finding source itself is refused.
 		capped.return_value = [frappe._dict(batch_no="B-CUST", qty=5)]
 		with self.assertRaises(frappe.ValidationError) as ctx:
 			update_source_betch(self._doc(FND_10, FND_12, [("B-CUST", 3)]))
-		self.assertIn(
-			"Customer Goods cannot be converted into a Finding item", str(ctx.exception)
+		self.assertIn(POINT_4_MESSAGE, str(ctx.exception))
+
+
+@_ITEM_VARIANT
+@patch(f"{UTILS_MODULE}.frappe.msgprint")
+@patch(f"{UTILS_MODULE}.get_sample_batches", return_value=set())
+@patch(f"{UTILS_MODULE}.get_batch_lane_map", side_effect=_lane_map)
+@patch(f"{UTILS_MODULE}.capped_auto_batch_nos")
+@patch(f"{MC_MODULE}.get_batch_lane_map", side_effect=_lane_map)
+class TestCustomerFindingSource(IntegrationTestCase):
+	"""Point 4: a customer Finding batch is never a source, whatever the target."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		# B-CUST is oldest: a FIFO pick would always start there.
+		self.stock = [
+			frappe._dict(batch_no="B-CUST", qty=5),
+			frappe._dict(batch_no="B-REG", qty=5),
+		]
+
+	def _doc(self, source_item, target_item, rows=(), **extra):
+		return _Doc(
+			multiple_metal_converter=extra.pop("multiple_metal_converter", 0),
+			source_item=source_item,
+			target_item=target_item,
+			source_qty=3,
+			source_warehouse="RM - GE",
+			source_batch_details=[
+				frappe._dict(idx=idx, batch=batch, qty=qty)
+				for idx, (batch, qty) in enumerate(rows, 1)
+			],
+			**extra,
 		)
+
+	# -- FIFO pick ----------------------------------------------------------------
+	def test_fifo_skips_customer_finding_for_metal_target(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		capped.return_value = self.stock
+		doc = self._doc(FND_10, METAL)
+		update_source_betch(doc)
+		self.assertEqual([r.batch for r in doc.source_batch_details], ["B-REG"])
+
+	def test_fifo_shortfall_names_point_4(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		capped.return_value = [
+			frappe._dict(batch_no="B-CUST", qty=5),
+			frappe._dict(batch_no="B-REG", qty=1),
+		]
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			update_source_betch(self._doc(FND_10, METAL))
+		self.assertIn(POINT_4_MESSAGE, str(ctx.exception))
+		self.assertIn("Only Regular Stock", str(ctx.exception))
+
+	def test_customer_metal_to_metal_still_draws_customer(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		capped.return_value = self.stock
+		doc = self._doc(METAL, "GOLD-OTHER")
+		update_source_betch(doc)
+		self.assertEqual([r.batch for r in doc.source_batch_details], ["B-CUST"])
+
+	# -- batches entered by hand ----------------------------------------------------
+	def test_entered_customer_finding_for_metal_target_refused(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		capped.return_value = self.stock
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			update_source_betch(self._doc(FND_10, METAL, [("B-CUST", 3)]))
+		self.assertIn("Row 1", str(ctx.exception))
+		self.assertIn(POINT_4_MESSAGE, str(ctx.exception))
+
+	def test_entered_regular_finding_for_metal_target_kept(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		capped.return_value = self.stock
+		doc = self._doc(FND_10, METAL, [("B-REG", 3)])
+		update_source_betch(doc)
+		self.assertEqual(
+			[(r.batch, r.qty) for r in doc.source_batch_details], [("B-REG", 3)]
+		)
+
+	# -- the safety net on save -----------------------------------------------------
+	def test_guard_refuses_customer_finding_source(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			validate_customer_finding_source(self._doc(FND_10, METAL, [("B-CUST", 3)]))
+		self.assertIn(POINT_4_MESSAGE, str(ctx.exception))
+
+	def test_guard_allows_regular_finding_source(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		validate_customer_finding_source(self._doc(FND_10, METAL, [("B-REG", 3)]))
+
+	def test_guard_ignores_customer_metal_source(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		validate_customer_finding_source(
+			self._doc(METAL, "GOLD-OTHER", [("B-CUST", 3)])
+		)
+		_mc_map.assert_not_called()
+
+	def test_guard_skips_melting_loss_and_multiple(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		validate_customer_finding_source(
+			self._doc(FND_10, METAL, [("B-CUST", 3)], is_melting_loss=1)
+		)
+		validate_customer_finding_source(
+			self._doc(FND_10, METAL, [("B-CUST", 3)], multiple_metal_converter=1)
+		)
+		_mc_map.assert_not_called()
+
+
+_PICKER_ROWS = [("B-CUST", 5.0), ("B-REG", 5.0)]
+
+
+@_ITEM_VARIANT
+@patch(f"{MC_MODULE}.get_batch_lane_map", side_effect=_lane_map)
+@patch(f"{MC_MODULE}.get_batch_no", return_value=_PICKER_ROWS)
+class TestSourceBatchPicker(IntegrationTestCase):
+	"""Customer batches are not offered wherever the save would refuse them."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _pick(self, **filters):
+		return [
+			row[0]
+			for row in get_source_batches(
+				"Batch", "", "name", 0, 20, frappe._dict(filters)
+			)
+		]
+
+	def test_finding_source_hides_customer_batches(self, _batches, _map, _variant):
+		self.assertEqual(self._pick(item_code=FND_10, target_item=METAL), ["B-REG"])
+
+	def test_finding_target_hides_customer_batches(self, _batches, _map, _variant):
+		self.assertEqual(self._pick(item_code=METAL, target_item=FND_12), ["B-REG"])
+
+	def test_melting_loss_hides_customer_batches(self, _batches, _map, _variant):
+		self.assertEqual(self._pick(item_code=METAL, is_melting_loss=1), ["B-REG"])
+
+	def test_metal_to_metal_offers_every_batch(self, _batches, _map, _variant):
+		self.assertEqual(
+			self._pick(item_code=METAL, target_item="GOLD-OTHER"), ["B-CUST", "B-REG"]
+		)
+		_map.assert_not_called()
+
+	def test_no_source_item_offers_nothing(self, _batches, _map, _variant):
+		self.assertEqual(self._pick(), [])
+		_batches.assert_not_called()

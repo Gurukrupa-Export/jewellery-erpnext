@@ -24,6 +24,7 @@ frappe.ui.form.on("Metal Conversions", {
 		// Set Metal Tab Filter
 		set_wh_filter(frm, "source_warehouse");
 		set_department_filter(frm, "department");
+		set_source_batch_filter(frm);
 		if (frm.doc.multiple_metal_converter == 0) {
 			set_Metal_filter(frm, "source_item");
 			set_Metal_filter(frm, "target_item");
@@ -228,6 +229,21 @@ function set_batch_filter(frm, field_name) {
 			},
 		};
 	};
+}
+// Source Batch Details lists only the Source Item's batches in the Source Warehouse, and
+// leaves out customer batches wherever the save would refuse them (get_source_batches).
+function set_source_batch_filter(frm) {
+	frm.set_query("batch", "source_batch_details", () => {
+		return {
+			query: "jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions.get_source_batches",
+			filters: {
+				item_code: frm.doc.source_item,
+				warehouse: frm.doc.source_warehouse,
+				target_item: frm.doc.target_item,
+				is_melting_loss: frm.doc.is_melting_loss,
+			},
+		};
+	});
 }
 function set_child_table_batch_filter(frm, child_table_name) {
 	frm.fields_dict[child_table_name].grid.get_field("batch").get_query = function (doc, cdt, cdn) {

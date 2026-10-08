@@ -180,9 +180,11 @@ def update_source_betch(self):
 	required_qty = flt(self.loss_qty) if is_melting_loss else flt(self.source_qty)
 	# Customer stock -- Metal or Finding -- may never become a Finding, so a Finding target
 	# draws company stock alone; skipping customer batches keeps Regular -> Finding possible
-	# when older customer batches sit in the same warehouse.
+	# when older customer batches sit in the same warehouse. A customer Finding batch may not
+	# be a source at all, so a Finding source draws company stock alone too.
+	is_finding_source = not is_melting_loss and is_finding_item(self.get("source_item"))
 	is_finding_target = not is_melting_loss and is_finding_item(self.get("target_item"))
-	regular_only = is_melting_loss or is_finding_target
+	regular_only = is_melting_loss or is_finding_source or is_finding_target
 
 	lane_map = get_batch_lane_map([i.batch_no for i in batch_data])
 
@@ -221,6 +223,7 @@ def update_source_betch(self):
 				lane_map,
 				sample_batches,
 				regular_only,
+				is_finding_source,
 				is_finding_target,
 			)
 			for idx, row in enumerate(entered_rows, 1):
@@ -265,6 +268,15 @@ def update_source_betch(self):
 			break  # Stop if we have filled the required quantity
 
 	if abs(total_qty - required_qty) > _QTY_TOLERANCE:
+		if is_finding_source:
+			frappe.throw(
+				"Customer Finding batches cannot be used as a source in Metal Conversion."
+				+ " "
+				+ _(
+					"Only Regular Stock of {0} can be used. The Regular Stock available in {1} "
+					"is {2}."
+				).format(self.source_item, self.source_warehouse, total_qty)
+			)
 		if is_finding_target:
 			frappe.throw(
 				_(
@@ -282,7 +294,14 @@ def update_source_betch(self):
 
 
 def _validate_entered_source_batches(
-	self, rows, batch_data, lane_map, sample_batches, regular_only, is_finding_target
+	self,
+	rows,
+	batch_data,
+	lane_map,
+	sample_batches,
+	regular_only,
+	is_finding_source,
+	is_finding_target,
 ):
 	"""Hold hand-entered source batches to the same rules as the FIFO pick.
 
@@ -328,13 +347,15 @@ def _validate_entered_source_batches(
 			)
 		inventory_type = lane_map.get(batch, ("Regular Stock", None))[0]
 		if regular_only and inventory_type != "Regular Stock":
-			errors.append(
-				_("{0}: {1} cannot be converted into a Finding item.").format(
-					label, inventory_type
+			if is_finding_source:
+				reason = "Customer Finding batches cannot be used as a source in Metal Conversion."
+			elif is_finding_target:
+				reason = _("{0} cannot be converted into a Finding item.").format(
+					inventory_type
 				)
-				if is_finding_target
-				else _("{0}: a melting loss can only use Regular Stock.").format(label)
-			)
+			else:
+				reason = _("a melting loss can only use Regular Stock.")
+			errors.append(f"{label}: {reason}")
 
 	if errors:
 		frappe.throw("<br>".join(errors), title=_("Invalid Source Batch Details"))

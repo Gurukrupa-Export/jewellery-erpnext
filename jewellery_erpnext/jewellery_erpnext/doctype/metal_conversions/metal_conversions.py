@@ -137,6 +137,7 @@ class MetalConversions(Document):
 		update_alloy_betch(self)
 		update_source_betch(self)
 		validate_customer_metal_target(self)
+		validate_customer_finding_source(self)
 		self.set_remarks()
 
 	def set_remarks(self):
@@ -1032,6 +1033,12 @@ def validate_customer_metal_target(doc):
 	Both a customer Metal and a customer Finding source are refused -- a Finding target is made
 	from Regular Stock only.
 
+	Applies to Metal Conversions documents only. SNC settlement's auto-created
+	Repack-Metal Conversion entries (``customer_subcontracting/sub_utils/snc.py``) convert a
+	customer's metal into the Finding used in that customer's own piece, mirrored by the
+	borrowed Finding converted back to metal -- an ownership swap the business approved as an
+	exception, so it is deliberately not checked here.
+
 	Single Metal Converter only -- the multiple converter is not used. Ownership is read from
 	the source batches of the FIFO draw (``source_batch_details``), as
 	``_has_customer_owned_source`` does. The draw already skips customer batches for a Finding
@@ -1054,6 +1061,29 @@ def validate_customer_metal_target(doc):
 				"Customer stock (Metal or Finding) cannot be converted into a Finding item ({0}). "
 				"Select a Metal target item, or use only Regular Stock as the source."
 			).format(frappe.bold(target_item)),
+			title=_("Conversion Not Allowed"),
+		)
+
+
+def validate_customer_finding_source(doc):
+	"""A customer Finding batch may not be a source, whatever the target (point 4).
+
+	The final guard on the Source Batch Details rows, as ``validate_customer_metal_target`` is
+	for point 1: ``update_source_betch`` already skips such batches in its FIFO pick and
+	refuses them when entered by hand. Single Metal Converter only; melting loss draws
+	Regular Stock alone. SNC settlement's auto-created entries are not Metal Conversions
+	documents and stay out of scope (approved exception, as for point 1).
+	"""
+	if doc.get("is_melting_loss") or cint(doc.multiple_metal_converter):
+		return
+	if not is_finding_item(doc.source_item):
+		return
+
+	rows = doc.get("source_batch_details") or []
+	lane_map = get_batch_lane_map([row.batch for row in rows if row.get("batch")])
+	if _has_customer_owned_source(rows, lane_map):
+		frappe.throw(
+			"Customer Finding batches cannot be used as a source in Metal Conversion.",
 			title=_("Conversion Not Allowed"),
 		)
 
@@ -1380,6 +1410,33 @@ def _alloy_pool(self, qty):
 def get_filtered_batches(doctype, txt, searchfield, start, page_len, filters):
 	data = get_batch_no(doctype, txt, searchfield, start, page_len, filters)
 	return data
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_source_batches(doctype, txt, searchfield, start, page_len, filters):
+	"""Batch picker for Source Batch Details: the Source Item's batches in the warehouse.
+
+	Customer batches are left out wherever the save would refuse them -- a Finding source
+	(point 4), a Finding target (point 1) or a melting loss -- so they are not selectable.
+	"""
+	if not filters.get("item_code"):
+		return []
+	batches = get_batch_no(doctype, txt, searchfield, start, page_len, filters)
+	regular_only = (
+		cint(filters.get("is_melting_loss"))
+		or is_finding_item(filters.get("item_code"))
+		or is_finding_item(filters.get("target_item"))
+	)
+	if not regular_only:
+		return batches
+	lane_map = get_batch_lane_map([row[0] for row in batches])
+	return [
+		row
+		for row in batches
+		if lane_map.get(row[0], (REGULAR_STOCK, None))[0]
+		not in CUSTOMER_INVENTORY_TYPES
+	]
 
 
 def get_batch_details(batch):
