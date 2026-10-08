@@ -496,13 +496,20 @@ def _receipt_precision():
 
 
 def _issued_batch_pool(issue_item_defaults, item_code):
-	"""What the Issue drew for ``item_code``, batch by batch, in the order it drew it."""
+	"""What the Issue drew for ``item_code``, batch by batch, in the order it drew it.
+
+	ONE entry per batch. An Issue that draws the same batch on two rows lists it twice, while
+	``allocate_in_order`` keeps what it has taken per batch: each listing then had the batch's
+	whole usage subtracted from it. MAT-STE-24378 issued 2.569 + 3.258 of one batch, and once
+	the first receipt row took 2.355 the next row saw 0.214 + 0.689 free instead of 3.472, so
+	CRT-2026-00115 threw "short by 2.247" on a receipt that matched the Issue exactly.
+	"""
 	entry = issue_item_defaults.get(item_code) or {}
-	return [
-		(batch_no, flt(qty))
-		for batch_no, qty in (entry.get("batches") or [])
-		if batch_no and flt(qty) > 0
-	]
+	pool = {}
+	for batch_no, qty in entry.get("batches") or []:
+		if batch_no and flt(qty) > 0:
+			pool[batch_no] = flt(pool.get(batch_no)) + flt(qty)
+	return list(pool.items())
 
 
 def _split_row_by_issued_batches(row, issue_item_defaults, taken, precision):
@@ -532,19 +539,23 @@ def _split_row_by_issued_batches(row, issue_item_defaults, taken, precision):
 
 	allocation, shortfall = allocate_in_order(pool, need, precision, taken=taken)
 	if shortfall > 0:
-		available = flt(sum(qty for _b, qty in pool), precision)
+		# A shortfall means every free gram was taken, so what was left is need - shortfall.
+		# Quote that, not the Issue's total: "needs 3.15 but the Issue only sent 5.827" read
+		# as a contradiction once earlier rows of the receipt had drawn on the same batches.
+		sent = flt(sum(qty for _b, qty in pool), precision)
 		frappe.throw(
 			frappe._(
-				"{0} needs {1} from {2}, but the Issue only sent {3} across its batches "
-				"(short by {4}). Check the Issue Stock Entry's batches against the weights "
-				"on this receipt."
+				"{0} needs {1} from {2}, but only {3} of the {4} the Issue sent across its "
+				"batches is left after the earlier rows of this receipt (short by {5}). Check "
+				"the Issue Stock Entry's batches against the weights on this receipt."
 			).format(
 				frappe.bold(row.get("item_code")),
 				need,
 				frappe.bold(
 					row.get("s_warehouse") or frappe._("the supplier warehouse")
 				),
-				available,
+				flt(need - shortfall, precision),
+				sent,
 				flt(shortfall, precision),
 			),
 			title=frappe._("Issued Batches Cannot Cover This Receipt"),

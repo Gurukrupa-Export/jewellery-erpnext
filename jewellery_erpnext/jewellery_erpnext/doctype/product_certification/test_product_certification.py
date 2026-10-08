@@ -3019,6 +3019,52 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 		self.assertIn("M22", msg)
 		self.assertIn("0.181", msg)
 
+	def test_a_batch_issued_on_two_rows_is_drawn_as_one(self):
+		"""MAT-STE-24378 issued one batch on two rows, 2.569 + 3.258. Each row's share was
+		pooled on its own against one per-batch ledger, so the first receipt row's draw was
+		charged to both shares and CRT-2026-00115 threw "short by 2.247" on a receipt that
+		matched the Issue gram for gram."""
+		entries = self._run(self._doc(), batches=[(self.B1, 0.300), (self.B1, 0.300)])
+
+		receipt = entries["Material Receipt for Certification"]
+		self.assertEqual(
+			[(r.item_code, r.batch_no, r.qty) for r in receipt.items],
+			[("M22", self.B1, 0.460)],
+		)
+		drawn = [
+			r.qty
+			for se in entries.values()
+			for r in se.items
+			if r.get("s_warehouse") and r.item_code == "M22"
+		]
+		self.assertAlmostEqual(sum(drawn), 0.600, places=3)
+
+	def test_a_repeated_batch_keeps_the_place_it_was_first_drawn(self):
+		entries = self._run(
+			self._doc(), batches=[(self.B1, 0.250), (self.B2, 0.100), (self.B1, 0.250)]
+		)
+
+		drawn = {}
+		for se in entries.values():
+			for row in se.items:
+				if row.get("s_warehouse") and row.item_code == "M22":
+					drawn[row.batch_no] = flt(drawn.get(row.batch_no, 0) + row.qty, 3)
+		self.assertEqual(drawn, {self.B1: 0.500, self.B2: 0.100})
+		receipt = entries["Material Receipt for Certification"]
+		self.assertEqual(
+			[(r.batch_no, r.qty) for r in receipt.items], [(self.B1, 0.460)]
+		)
+
+	def test_the_shortfall_message_quotes_what_was_left(self):
+		"""The Receipt's 0.460 leaves 0.040 of the 0.500 issued, so the Repack's 0.131 is short
+		by 0.091: say 0.04 was left, not that the Issue "only sent 0.5"."""
+		with self.assertRaises(ValidationError) as cm:
+			self._run(self._doc(), batches=[(self.B1, 0.500)])
+
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("only 0.04 of the 0.5", msg)
+		self.assertIn("short by 0.091", msg)
+
 
 class TestIssueBatchAllocationRead(IntegrationTestCase):
 	"""_get_issue_stock_entry_details must hand back the WHOLE issued allocation.
