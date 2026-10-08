@@ -12,7 +12,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 # Companies allowed to use Sales Type "Hybrid" (3% on company-owned material +
 # 5% on customer-supplied material within the same BOM). Extend this tuple to
 # roll Hybrid out to more companies later.
-HYBRID_ENABLED_COMPANIES = ("KG GK Jewellers Private Limited",)
+HYBRID_ENABLED_COMPANIES = ("KG GK Jewellers Private Limited","Gurukrupa Export Private Limited")
 
 # Placeholder item that carries the aggregated customer-supplied (5%) amount
 # for Hybrid Sales Orders — see add_hybrid_outwork_row().
