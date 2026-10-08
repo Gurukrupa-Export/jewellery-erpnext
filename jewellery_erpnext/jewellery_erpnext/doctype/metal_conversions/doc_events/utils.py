@@ -178,8 +178,8 @@ def update_source_betch(self):
 	# remainder is untouched. Conversion mode allocates source_qty.
 	is_melting_loss = bool(self.get("is_melting_loss"))
 	required_qty = flt(self.loss_qty) if is_melting_loss else flt(self.source_qty)
-	# Customer metal may only become Metal, never a Finding, so a Finding target draws
-	# company stock alone -- skipping customer batches keeps Regular -> Finding possible
+	# Customer stock -- Metal or Finding -- may never become a Finding, so a Finding target
+	# draws company stock alone; skipping customer batches keeps Regular -> Finding possible
 	# when older customer batches sit in the same warehouse.
 	is_finding_target = not is_melting_loss and is_finding_item(self.get("target_item"))
 	regular_only = is_melting_loss or is_finding_target
@@ -268,7 +268,7 @@ def update_source_betch(self):
 		if is_finding_target:
 			frappe.throw(
 				_(
-					"Customer Metal cannot be converted into a Finding item, so only Regular Stock "
+					"Customer stock cannot be converted into a Finding item, so only Regular Stock "
 					"of {0} can be used. The Regular Stock available in {1} is {2}."
 				).format(self.source_item, self.source_warehouse, total_qty)
 			)

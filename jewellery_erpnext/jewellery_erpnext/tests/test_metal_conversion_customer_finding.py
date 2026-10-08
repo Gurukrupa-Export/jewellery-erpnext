@@ -6,6 +6,9 @@
 Customer Metal converts only into Metal, never into a Finding; Regular Metal may become either.
 Single mode draws its source FIFO, so a Finding target must skip customer batches in the draw
 (``update_source_betch``); both modes are then guarded by ``validate_customer_metal_target``.
+
+Finding -> Finding is a resize only (``validate_finding_to_finding``): same Finding Category, a
+different Finding Size, every other variant attribute equal.
 """
 
 from unittest.mock import patch
@@ -21,7 +24,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 	update_source_betch,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
+	_finding_resize_errors,
+	_variant_attributes,
 	validate_customer_metal_target,
+	validate_finding_to_finding,
 	validate_source_target_differ,
 )
 
@@ -36,7 +42,51 @@ FINDING = "CHAIN-22KT-91.9-Y"
 F_NAMED_METAL = "F-NAMED-METAL"
 
 
-VARIANT_OF = {METAL: "M", FINDING: "F", F_NAMED_METAL: "M"}
+# Finding -> Finding fixtures: one base Finding and one variation per rule.
+FND_10 = "CHAIN-KODI-10"
+FND_12 = "CHAIN-KODI-12"  # same everything, size 12: the one allowed resize
+FND_10_TWIN = "CHAIN-KODI-10-TWIN"  # same everything, same size
+FND_LOCK_12 = "LOCK-12"  # other category
+FND_12_PINK = "CHAIN-KODI-12-PINK"  # other metal colour
+FND_12_BLACK_BEAD = "CHAIN-BLACK-BEAD-12"  # other sub-category
+FND_NO_SIZE = "CHAIN-KODI-NO-SIZE"
+FND_NO_SIZE_TWIN = "CHAIN-KODI-NO-SIZE-TWIN"
+
+_BASE = {
+	"Metal Type": "Gold",
+	"Metal Touch": "22KT",
+	"Metal Purity": "91.75",
+	"Metal Colour": "Yellow",
+	"Finding Category": "Chains",
+	"Finding Sub-Category": "Kodi Chain",
+	"Finding Size": "10.00 MM",
+}
+ATTRIBUTES = {
+	FND_10: _BASE,
+	FND_12: {**_BASE, "Finding Size": "12.00 MM"},
+	FND_10_TWIN: dict(_BASE),
+	FND_LOCK_12: {
+		**_BASE,
+		"Finding Category": "Locks",
+		"Finding Sub-Category": "J Hook Clasp",
+		"Finding Size": "12.00 MM",
+	},
+	FND_12_PINK: {**_BASE, "Metal Colour": "Pink", "Finding Size": "12.00 MM"},
+	FND_12_BLACK_BEAD: {
+		**_BASE,
+		"Finding Sub-Category": "Black Bead Chain",
+		"Finding Size": "12.00 MM",
+	},
+	FND_NO_SIZE: {**_BASE, "Finding Size": None},
+	FND_NO_SIZE_TWIN: {**_BASE, "Finding Size": None},
+}
+
+VARIANT_OF = {
+	METAL: "M",
+	FINDING: "F",
+	F_NAMED_METAL: "M",
+	**{item: "F" for item in ATTRIBUTES},
+}
 
 LANE_MAP = {
 	"B-CUST": ("Customer Goods", "CUST-1"),
@@ -81,6 +131,13 @@ def _cached_value(doctype, name, fieldname):
 
 #: is_finding_item reads the Item record through frappe.get_cached_value.
 _ITEM_VARIANT = patch("frappe.get_cached_value", side_effect=_cached_value)
+
+
+def _attributes(item_codes):
+	return {item: ATTRIBUTES[item] for item in item_codes if item in ATTRIBUTES}
+
+
+_ITEM_ATTRIBUTES = patch(f"{MC_MODULE}._variant_attributes", side_effect=_attributes)
 
 
 def _items_single(source_item, target_item, **extra):
@@ -339,3 +396,181 @@ class TestSingleModeEnteredBatches(IntegrationTestCase):
 	):
 		capped.return_value = self.stock
 		self._refused(self._doc(METAL, 3, [(None, 3)]), "Batch is required")
+
+
+@_ITEM_ATTRIBUTES
+@_ITEM_VARIANT
+class TestValidateFindingToFinding(IntegrationTestCase):
+	"""The document's example table first, then the edge cases."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _refused(self, doc, *expected):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			validate_finding_to_finding(doc)
+		for text in expected:
+			self.assertIn(text, str(ctx.exception))
+
+	# -- the document's example table -----------------------------------------
+	def test_same_category_other_size_same_attributes_allowed(self, _variant, _attrs):
+		validate_finding_to_finding(_items_single(FND_10, FND_12))
+
+	def test_same_size_refused(self, _variant, _attrs):
+		self._refused(_items_single(FND_10, FND_10_TWIN), "Finding Size is the same")
+
+	def test_other_category_refused(self, _variant, _attrs):
+		self._refused(
+			_items_single(FND_10, FND_LOCK_12),
+			"Finding Category differs: Chains → Locks",
+		)
+
+	def test_other_attribute_refused(self, _variant, _attrs):
+		self._refused(
+			_items_single(FND_10, FND_12_PINK), "Metal Colour differs: Yellow → Pink"
+		)
+
+	# -- decisions taken with the business --------------------------------------
+	def test_other_sub_category_refused(self, _variant, _attrs):
+		self._refused(
+			_items_single(FND_10, FND_12_BLACK_BEAD),
+			"Finding Sub-Category differs: Kodi Chain → Black Bead Chain",
+		)
+
+	def test_blank_source_size_refused(self, _variant, _attrs):
+		self._refused(
+			_items_single(FND_NO_SIZE, FND_12),
+			"Finding Size is missing on the source item",
+		)
+
+	def test_blank_target_size_refused(self, _variant, _attrs):
+		self._refused(
+			_items_single(FND_10, FND_NO_SIZE),
+			"Finding Size is missing on the target item",
+		)
+
+	def test_blank_size_on_both_sides_names_both(self, _variant, _attrs):
+		self.assertIn(
+			"Finding Size is missing on the source and target item",
+			_finding_resize_errors(
+				ATTRIBUTES[FND_NO_SIZE], ATTRIBUTES[FND_NO_SIZE_TWIN]
+			),
+		)
+
+	# -- scope --------------------------------------------------------------------
+	def test_metal_to_finding_not_checked(self, _variant, _attrs):
+		validate_finding_to_finding(_items_single(METAL, FND_10_TWIN))
+		_attrs.assert_not_called()
+
+	def test_finding_to_metal_not_checked(self, _variant, _attrs):
+		validate_finding_to_finding(_items_single(FND_10, METAL))
+		_attrs.assert_not_called()
+
+	def test_melting_loss_out_of_scope(self, _variant, _attrs):
+		validate_finding_to_finding(
+			_items_single(FND_10, FND_LOCK_12, is_melting_loss=1)
+		)
+		_attrs.assert_not_called()
+
+	def test_multiple_converter_not_checked(self, _variant, _attrs):
+		validate_finding_to_finding(
+			_Doc(
+				multiple_metal_converter=1, source_item=FND_10, target_item=FND_LOCK_12
+			)
+		)
+		_attrs.assert_not_called()
+
+
+class TestVariantAttributes(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{MC_MODULE}.frappe.get_all")
+	def test_groups_rows_by_item_in_one_read(self, get_all):
+		get_all.return_value = [
+			frappe._dict(
+				parent=FND_10, attribute="Finding Size", attribute_value="10.00 MM"
+			),
+			frappe._dict(
+				parent=FND_10, attribute="Finding Category", attribute_value="Chains"
+			),
+			frappe._dict(
+				parent=FND_12, attribute="Finding Size", attribute_value="12.00 MM"
+			),
+		]
+		self.assertEqual(
+			_variant_attributes([FND_10, FND_12, FND_10]),
+			{
+				FND_10: {"Finding Size": "10.00 MM", "Finding Category": "Chains"},
+				FND_12: {"Finding Size": "12.00 MM"},
+			},
+		)
+		get_all.assert_called_once()
+
+
+@_ITEM_VARIANT
+@patch(f"{UTILS_MODULE}.frappe.msgprint")
+@patch(f"{UTILS_MODULE}.get_sample_batches", return_value=set())
+@patch(f"{UTILS_MODULE}.get_batch_lane_map", side_effect=_lane_map)
+@patch(f"{UTILS_MODULE}.capped_auto_batch_nos")
+@patch(f"{MC_MODULE}.get_batch_lane_map", side_effect=_lane_map)
+class TestCustomerFindingToFinding(IntegrationTestCase):
+	"""Customer stock never becomes a Finding: a customer Finding is refused like customer Metal."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _doc(self, source_item, target_item, rows=()):
+		return _Doc(
+			multiple_metal_converter=0,
+			source_item=source_item,
+			target_item=target_item,
+			source_qty=3,
+			source_warehouse="RM - GE",
+			source_batch_details=[
+				frappe._dict(idx=idx, batch=batch, qty=qty)
+				for idx, (batch, qty) in enumerate(rows, 1)
+			],
+		)
+
+	def test_guard_refuses_customer_finding_to_finding(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			validate_customer_metal_target(self._doc(FND_10, FND_12, [("B-CUST", 3)]))
+		self.assertIn("Customer stock (Metal or Finding)", str(ctx.exception))
+
+	def test_guard_refuses_customer_metal_to_finding(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		with self.assertRaises(frappe.ValidationError):
+			validate_customer_metal_target(self._doc(METAL, FND_12, [("B-CUST", 3)]))
+
+	def test_guard_allows_regular_finding_to_finding(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		validate_customer_metal_target(self._doc(FND_10, FND_12, [("B-REG", 3)]))
+
+	def test_fifo_skips_customer_finding_for_finding_target(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		capped.return_value = [
+			frappe._dict(batch_no="B-CUST", qty=5),
+			frappe._dict(batch_no="B-REG", qty=5),
+		]
+		doc = self._doc(FND_10, FND_12)
+		update_source_betch(doc)
+		self.assertEqual([r.batch for r in doc.source_batch_details], ["B-REG"])
+
+	def test_entered_customer_finding_batch_refused(
+		self, _mc_map, capped, _map, _samples, msgprint, _variant
+	):
+		capped.return_value = [frappe._dict(batch_no="B-CUST", qty=5)]
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			update_source_betch(self._doc(FND_10, FND_12, [("B-CUST", 3)]))
+		self.assertIn(
+			"Customer Goods cannot be converted into a Finding item", str(ctx.exception)
+		)
