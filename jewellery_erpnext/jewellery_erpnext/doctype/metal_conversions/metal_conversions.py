@@ -35,6 +35,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.me
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.utils import (
 	get_batch_lane_map,
+	is_finding_item,
 	update_alloy_betch,
 	update_batch_details,
 	update_source_betch,
@@ -133,6 +134,7 @@ class MetalConversions(Document):
 		validate_melting_loss(self)
 		update_alloy_betch(self)
 		update_source_betch(self)
+		validate_customer_metal_target(self)
 		self.set_remarks()
 
 	def set_remarks(self):
@@ -1020,6 +1022,39 @@ def _has_customer_owned_source(rows, lane_map):
 		if inventory_type in CUSTOMER_INVENTORY_TYPES:
 			return True
 	return False
+
+
+def validate_customer_metal_target(doc):
+	"""Customer Metal converts only into Metal: refuse a Finding target over customer stock.
+
+	Ownership is read from the source batches -- single mode's FIFO draw
+	(``source_batch_details``), multiple mode's source rows -- as ``_has_customer_owned_source``
+	does. Single mode's draw already skips customer batches for a Finding target
+	(``update_source_betch``); this is the guard that holds whatever filled the rows.
+	Melting loss books scrap, not a target item, so it is out of scope.
+	"""
+	if doc.get("is_melting_loss"):
+		return
+
+	if cint(doc.multiple_metal_converter):
+		target_item = doc.m_target_item
+		rows = doc.get("mc_source_table") or []
+	else:
+		target_item = doc.target_item
+		rows = doc.get("source_batch_details") or []
+
+	if not is_finding_item(target_item):
+		return
+
+	lane_map = get_batch_lane_map([row.batch for row in rows if row.get("batch")])
+	if _has_customer_owned_source(rows, lane_map):
+		frappe.throw(
+			_(
+				"Customer Metal cannot be converted into a Finding item ({0}). "
+				"Select a Metal target item, or use only Regular Stock as the source."
+			).format(frappe.bold(target_item)),
+			title=_("Conversion Not Allowed"),
+		)
 
 
 def _stamp_source_ownership(doc):

@@ -31,9 +31,11 @@ frappe.ui.form.on("Metal Conversions", {
 			set_alloy_filter(frm, "target_alloy");
 		} else {
 			set_source_metal_table_filter(frm, "item_code", "mc_source_table");
-			set_Metal_filter(frm, "m_target_item");
 			set_alloy_filter(frm, "alloy");
 		}
+		// Outside the mode branch: a new doc opens in single mode, and switching to multiple
+		// must not leave the target unfiltered.
+		set_m_target_filter(frm);
 	},
 	onload(frm) {
 		// The desk's Amend copies no-copy fields, so an amendment arrives naming the Stock
@@ -200,6 +202,22 @@ function set_Metal_filter(frm, field_name) {
 		return {
 			filters: {
 				variant_of: ["in", ["M", "F"]],
+			},
+		};
+	});
+}
+// Customer Metal converts only into Metal, so once a customer batch is in the source table
+// the target picker stops offering Findings. The server enforces the same rule on save
+// (validate_customer_metal_target), which also covers a batch added after the target.
+function set_m_target_filter(frm) {
+	const customer_inventory_types = ["Customer Goods", "Customer Stock"];
+	frm.set_query("m_target_item", function () {
+		const has_customer_metal = (frm.doc.mc_source_table || []).some((row) =>
+			customer_inventory_types.includes(row.inventory_type)
+		);
+		return {
+			filters: {
+				variant_of: ["in", has_customer_metal ? ["M"] : ["M", "F"]],
 			},
 		};
 	});

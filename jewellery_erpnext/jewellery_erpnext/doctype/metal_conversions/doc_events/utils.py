@@ -179,6 +179,11 @@ def update_source_betch(self):
 	# remainder is untouched. Conversion mode allocates source_qty.
 	is_melting_loss = bool(self.get("is_melting_loss"))
 	required_qty = flt(self.loss_qty) if is_melting_loss else flt(self.source_qty)
+	# Customer metal may only become Metal, never a Finding, so a Finding target draws
+	# company stock alone -- skipping customer batches keeps Regular -> Finding possible
+	# when older customer batches sit in the same warehouse.
+	is_finding_target = not is_melting_loss and is_finding_item(self.target_item)
+	regular_only = is_melting_loss or is_finding_target
 
 	lane_map = get_batch_lane_map([i.batch_no for i in batch_data])
 
@@ -207,7 +212,7 @@ def update_source_betch(self):
 			continue
 
 		inventory_type, _customer = lane_map.get(i.batch_no, ("Regular Stock", None))
-		if is_melting_loss and inventory_type != "Regular Stock":
+		if regular_only and inventory_type != "Regular Stock":
 			continue
 
 		if abs(total_qty - required_qty) > _QTY_TOLERANCE:
@@ -227,6 +232,13 @@ def update_source_betch(self):
 			break  # Stop if we have filled the required quantity
 
 	if abs(total_qty - required_qty) > _QTY_TOLERANCE:
+		if is_finding_target:
+			frappe.throw(
+				_(
+					"Customer Metal cannot be converted into a Finding item, so only Regular Stock "
+					"of {0} can be used. The Regular Stock available in {1} is {2}."
+				).format(self.source_item, self.source_warehouse, total_qty)
+			)
 		frappe.throw(
 			_(
 				"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
@@ -234,3 +246,10 @@ def update_source_betch(self):
 				)
 			)
 		)
+
+
+def is_finding_item(item_code):
+	"""True when the Item is a variant of the ``F`` (Finding) template, per its Item record."""
+	if not item_code:
+		return False
+	return frappe.get_cached_value("Item", item_code, "variant_of") == "F"
