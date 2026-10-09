@@ -3172,7 +3172,7 @@ class TestCertificationPoQty(IntegrationTestCase):
 		_skip_generated_test_records()
 		super().setUpClass()
 
-	def _po_for(self, service_type, categories, weights=None):
+	def _po_for(self, service_type, categories, weights=None, product_rows=0):
 		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
 			utils as pc_utils,
 		)
@@ -3190,6 +3190,7 @@ class TestCertificationPoQty(IntegrationTestCase):
 				frappe._dict(category=category, gross_weight=weight)
 				for category, weight in zip(categories, weights)
 			],
+			product_details=[frappe._dict() for _ in range(product_rows)],
 		)
 
 		created = []
@@ -3232,9 +3233,23 @@ class TestCertificationPoQty(IntegrationTestCase):
 		self.assertEqual(po.items[0].qty, 3)
 
 	def test_a_blank_category_is_one_piece(self):
-		"""A Fire Assy pure / loss row is appended with no category of its own."""
-		po = self._po_for("Fire Assy Service", ["Earrings", None])
+		po = self._po_for("Hall Marking Service", ["Earrings", None])
 		self.assertEqual(po.items[0].qty, 3)
+
+	def test_fire_assy_qty_is_product_details_rows(self):
+		"""Two samples explode into four rows (metal + pure / loss); the PO is for two."""
+		po = self._po_for("Fire Assy Service", [None] * 4, product_rows=2)
+		self.assertEqual(po.items[0].qty, 2)
+
+	def test_xrf_qty_is_product_details_rows(self):
+		po = self._po_for("XRF Services", [None] * 3, product_rows=1)
+		self.assertEqual(po.items[0].qty, 1)
+
+	def test_fire_assy_gross_weight_still_sums_exploded_rows(self):
+		po = self._po_for(
+			"Fire Assy Service", [None, None], weights=[2.5, 1.5], product_rows=1
+		)
+		self.assertEqual(po.items[0].custom_gross_wt, 4.0)
 
 	def test_gross_weight_is_not_weighted(self):
 		po = self._po_for(
