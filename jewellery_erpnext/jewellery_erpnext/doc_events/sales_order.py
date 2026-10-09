@@ -2602,9 +2602,11 @@ def _process_single_row(self, row, ctx):
 		if not row.bom:
 			return
 		# ── Step 2: always process the BOM (new or existing) ─────────
-		doc = frappe.get_doc("BOM", row.bom)
-		if doc.docstatus == 1:
+		# Reset a submitted BOM to draft BEFORE loading it: set_value bumps `modified`, so a
+		# copy loaded earlier would fail doc.save() below with a timestamp mismatch.
+		if frappe.db.get_value("BOM", row.bom, "docstatus") == 1:
 			frappe.db.set_value("BOM", row.bom, "docstatus", "0")
+		doc = frappe.get_doc("BOM", row.bom)
 		# frappe.throw(f"{doc.as_dict()}")
 		# ── Reset quantities from original Serial No BOM ─────────────
 		# On every save, restore design quantities from the source BOM
