@@ -24,6 +24,7 @@ class DummyPO:
 		self.ref_customer = kwargs.get("ref_customer", "Customer X")
 		self._is_new = kwargs.get("is_new", False)
 		self.calculate_taxes_and_totals = MagicMock()
+		self.set_total_in_words = MagicMock()
 
 		for k, v in kwargs.items():
 			if k != "is_new":
@@ -88,6 +89,32 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			mock_ur.assert_called_once_with(po)
 			mock_sgd.assert_called_once_with(po)
 			po.calculate_taxes_and_totals.assert_called_once()
+
+	def test_validate_refreshes_in_words_after_totals(self):
+		"""The amount in words is refreshed after the totals this hook recomputes.
+
+		ERPNext fills in_words in its own validate, before doc_events run. update_rate and
+		set_gst_details change the totals afterwards, so in_words must be recomputed after
+		calculate_taxes_and_totals -- once, and never before it.
+		"""
+		po = DummyPO(purchase_type="FG Purchase")
+		manager = MagicMock()
+		manager.attach_mock(po.calculate_taxes_and_totals, "calculate_taxes_and_totals")
+		manager.attach_mock(po.set_total_in_words, "set_total_in_words")
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.update_rate"
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.set_gst_details"
+		):
+			po_events.validate(po, "validate")
+
+		self.assertEqual(
+			[name for name, _args, _kwargs in manager.mock_calls],
+			["calculate_taxes_and_totals", "set_total_in_words"],
+		)
+		po.calculate_taxes_and_totals.assert_called_once_with()
+		po.set_total_in_words.assert_called_once_with()
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_value"

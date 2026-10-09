@@ -19,6 +19,8 @@ def validate(self, method):
 	update_rate(self)
 	set_gst_details(self)
 	self.calculate_taxes_and_totals()
+	# ERPNext set in_words before this hook ran, so refresh it for the totals recomputed here.
+	self.set_total_in_words()
 
 
 def set_gst_details(self):
