@@ -17,17 +17,24 @@ def create_branch_so(self):
 	if self.branch and not central_branch:
 		frappe.throw(_("Central branch is not mentioned in Company"))
 
-	branch_customer = frappe.db.get_value("Branch", self.branch, "custom_customer")
+	source_branch = frappe.db.get_value(
+		"Branch", self.branch, ["custom_customer", "branch_address"], as_dict=True
+	)
 
-	if not branch_customer:
+	if not source_branch.custom_customer:
 		frappe.throw(_("Branch does not have any customer attached"))
 
-	so = create_so(self, branch_customer, central_branch)
+	so = create_so(
+		self,
+		source_branch.custom_customer,
+		central_branch,
+		source_branch.branch_address,
+	)
 
 	frappe.msgprint(_("{0} has been generated as Branch SO").format(so))
 
 
-def create_so(self, branch_customer, central_branch):
+def create_so(self, branch_customer, central_branch, source_branch_address):
 	# The mirror SO bills from the central branch to the originating branch (now
 	# the customer), so the address pair must flip too - otherwise both ends keep
 	# pointing at the originating branch's own address and India Compliance sees
@@ -35,7 +42,6 @@ def create_so(self, branch_customer, central_branch):
 	central_branch_address = frappe.db.get_value(
 		"Branch", central_branch, "branch_address"
 	)
-	source_branch_address = frappe.db.get_value("Branch", self.branch, "branch_address")
 
 	if not central_branch_address or not source_branch_address:
 		frappe.throw(_("Branch Address- Billing is not set for one of the branches"))
