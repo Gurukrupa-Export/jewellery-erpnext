@@ -325,7 +325,26 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.refining_department = "Refinery - T"
 		re.manufacturer = "Shubh"
 		re.scan_serial_no_action(sn.name)
-		re.material_items.pop()
+		# The FG BOM lists the finished item itself (the design code, 1 Nos), and this test used to
+		# drop that row by popping the last line. Scanning no longer adds it -- the design code is
+		# the Serial Number row alone -- so every BOM Component line is real material and popping
+		# would discard the gold. Checked by content, not position: refining reads BOM Items
+		# without an order, so line order is not a contract.
+		self.assertEqual(
+			[
+				row.source_type
+				for row in re.material_items
+				if row.item_code == sn.item_code
+			],
+			["Serial Number"],
+		)
+		self.assertTrue(
+			any(
+				row.source_type == "BOM Component" and row.item_code.startswith("M-")
+				for row in re.material_items
+			),
+			"the serial's metal must reach the refining input",
+		)
 		re.save()
 
 		apply_workflow(re, "Send for Verification")
@@ -3135,149 +3154,6 @@ class TestSerialMaterialRows(IntegrationTestCase):
 	def setUpClass(cls):
 		return
 
-	def test_missing_bom_component_variant_is_resolved_from_detail_attributes(self):
-		from jewellery_erpnext.refining.doctype.refining_entry import (
-			refining_entry as re_module,
-		)
-
-		diamond_code = "D-NT-RO-6B-+11.5-12"
-		detail = frappe._dict(
-			item="D",
-			item_variant=None,
-			quantity=1.08,
-			diamond_type="Natural",
-			stone_shape="Round",
-			diamond_grade="6B",
-			diamond_sieve_size="+11.5-12",
-			sieve_size_range="+11-14",
-			stock_uom="Nos",
-		)
-		template_attributes = [
-			frappe._dict(attribute=attribute)
-			for attribute in (
-				"Diamond Type",
-				"Stone Shape",
-				"Diamond Grade",
-				"Diamond Sieve Size",
-				"Diamond Sieve Size Range",
-			)
-		]
-		variant_attributes = [
-			frappe._dict(parent=diamond_code, attribute=attribute, attribute_value=value)
-			for attribute, value in (
-				("Diamond Type", "Natural"),
-				("Stone Shape", "Round"),
-				("Diamond Grade", "6B"),
-				("Diamond Sieve Size", "+11.5-12"),
-			)
-		]
-
-		def get_all(doctype, filters=None, **kwargs):
-			if doctype == "BOM Diamond Detail":
-				return [detail]
-			if doctype == "Item Variant Attribute":
-				if filters.get("parent") == "D":
-					return template_attributes
-				return variant_attributes
-			return []
-
-		re = frappe.new_doc("Refining Entry")
-		with (
-			patch.object(re_module.frappe, "get_all", side_effect=get_all),
-			patch.object(
-				re_module,
-				"get_item_codes_by_attributes",
-				return_value=[diamond_code],
-			) as get_item_codes,
-			patch.object(re_module.frappe.db, "get_value", return_value="Carat"),
-		):
-			rows = re._get_missing_bom_component_items("BOM-1", [])
-
-		self.assertEqual(len(rows), 1)
-		self.assertEqual(rows[0].item_code, diamond_code)
-		self.assertEqual(rows[0].qty, 1.08)
-		self.assertEqual(rows[0].stock_qty, 1.08)
-		self.assertEqual(rows[0].uom, "Carat")
-		get_item_codes.assert_called_once_with(
-			{
-				"Diamond Type": "Natural",
-				"Stone Shape": "Round",
-				"Diamond Grade": "6B",
-				"Diamond Sieve Size": "+11.5-12",
-			},
-			"D",
-		)
-
-	def test_bom_component_details_cover_all_standard_material_tables(self):
-		from jewellery_erpnext.refining.doctype.refining_entry import (
-			refining_entry as re_module,
-		)
-
-		components = {
-			"BOM Metal Detail": [
-				frappe._dict(
-					item_variant="M-G-22KT-91.75-Y",
-					quantity=8.5,
-					stock_uom="Gram",
-				)
-			],
-			"BOM Diamond Detail": [
-				frappe._dict(
-					item_variant="D-NT-RO-6B-+11.5-12",
-					quantity=1.08,
-					stock_uom="Carat",
-				)
-			],
-			"BOM Gemstone Detail": [
-				frappe._dict(
-					item_variant="G-RUBY-OVAL",
-					quantity=0.6,
-					stock_uom="Carat",
-				)
-			],
-			"BOM Finding Detail": [
-				frappe._dict(
-					item_variant="F-G-22KT-91.75-Y",
-					quantity=0.35,
-					stock_uom="Gram",
-				)
-			],
-			"BOM Other Detail": [
-				frappe._dict(item_code="OTHER-COMP", quantity=0.2)
-			],
-		}
-
-		def stock_uom(doctype, item_code, fieldname):
-			return {
-				"M-G-22KT-91.75-Y": "Gram",
-				"D-NT-RO-6B-+11.5-12": "Carat",
-				"G-RUBY-OVAL": "Carat",
-				"F-G-22KT-91.75-Y": "Gram",
-				"OTHER-COMP": "Nos",
-			}.get(item_code)
-
-		re = frappe.new_doc("Refining Entry")
-		with (
-			patch.object(
-				re_module.frappe,
-				"get_all",
-				side_effect=lambda doctype, **kwargs: components.get(doctype, []),
-			),
-			patch.object(re_module.frappe.db, "get_value", side_effect=stock_uom),
-		):
-			rows = re._get_missing_bom_component_items("BOM-1", [])
-
-		self.assertEqual(
-			{row.item_code: (row.qty, row.uom) for row in rows},
-			{
-				"M-G-22KT-91.75-Y": (8.5, "Gram"),
-				"D-NT-RO-6B-+11.5-12": (1.08, "Carat"),
-				"G-RUBY-OVAL": (0.6, "Carat"),
-				"F-G-22KT-91.75-Y": (0.35, "Gram"),
-				"OTHER-COMP": (0.2, "Nos"),
-			},
-		)
-
 	def _build(self, is_external=0, metal_purity="91.75"):
 		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
 			RefiningEntry,
@@ -3287,27 +3163,33 @@ class TestSerialMaterialRows(IntegrationTestCase):
 		re.refining_type = REFINING_TYPE_SERIAL
 		re.is_external = is_external
 		re.warehouse = "Tagging FG - T"
-		re.append(
-			"serial_no_details",
-			{
-				"serial_number": "SN-1",
-				"item_code": "FG-DESIGN",
-				"metal_purity": metal_purity,
-				"pcs": 1,
-			},
+		for serial in serials:
+			re.append(
+				"serial_no_details",
+				{
+					"serial_number": serial,
+					"item_code": "FG-DESIGN",
+					"metal_purity": metal_purity,
+					"metal_weight": 23.848,
+					"pcs": 1,
+				},
+			)
+		if bom_items is None:
+			bom_items = [
+				frappe._dict(
+					item_code="FG-DESIGN", qty=1, stock_qty=1, uom="Nos", stock_uom="Nos"
+				),
+				frappe._dict(
+					item_code="ML-G-22KT",
+					qty=23.848,
+					stock_qty=23.848,
+					uom="Gram",
+					stock_uom="Gram",
+				),
+			]
+		bom_header = frappe._dict(
+			metal_type="Gold", metal_touch="22KT", metal_purity="91.75", metal_colour="Yellow"
 		)
-		bom_items = [
-			frappe._dict(
-				item_code="FG-DESIGN", qty=1, stock_qty=1, uom="Nos", stock_uom="Nos"
-			),
-			frappe._dict(
-				item_code="ML-G-22KT",
-				qty=23.848,
-				stock_qty=23.848,
-				uom="Gram",
-				stock_uom="Gram",
-			),
-		]
 
 		real_get_value = frappe.db.get_value
 		real_get_all = frappe.db.get_all
@@ -3317,6 +3199,8 @@ class TestSerialMaterialRows(IntegrationTestCase):
 				return "BOM-SN"
 			if doctype == "Item":
 				return "Test Group"
+			if doctype == "BOM":
+				return bom_header
 			return real_get_value(doctype, *args, **kwargs)
 
 		def _get_all(doctype, *args, **kwargs):
@@ -3332,6 +3216,13 @@ class TestSerialMaterialRows(IntegrationTestCase):
 				RefiningEntry, "get_serial_purity", return_value="91.75"
 			) as serial_purity,
 			patch.object(RefiningEntry, "_drop_restricted_material_rows"),
+			patch.object(
+				RefiningEntry,
+				"is_gold_item",
+				side_effect=lambda code: code.startswith(("M-", "ML-")),
+			),
+			patch.object(RefiningEntry, "_is_returned_intact", return_value=False),
+			patch.object(re_module, "get_item_from_attribute", return_value=metal_item),
 		):
 			re.build_material_table()
 		return re, serial_purity
@@ -3362,3 +3253,40 @@ class TestSerialMaterialRows(IntegrationTestCase):
 		re, serial_purity = self._build(metal_purity=None)
 		self.assertEqual(re.material_items[0].purity, "91.75")
 		serial_purity.assert_called_once_with("SN-1", "FG-DESIGN", "BOM-SN")
+
+	def test_external_design_only_bom_sends_the_serials_metal(self):
+		"""RFN-SRN-26-00002: BOM-BA01328-001-101 is one line, the design code. Externally that
+		left no gold row, so submit stopped at "No gold weight to send for external refining"."""
+		re, _ = self._build(is_external=1, bom_items=self.DESIGN_ONLY_BOM)
+		self.assertEqual(
+			[(row.item_code, row.qty, row.source_type) for row in re.material_items],
+			[("M-G-22KT-91.75-Y", 23.848, "BOM Component")],
+		)
+
+	def test_external_bom_with_its_gold_line_gets_no_second_row(self):
+		"""The stand-in is only for a BOM with no gold line, so no weight is counted twice."""
+		re, _ = self._build(is_external=1)
+		self.assertEqual(
+			[(row.item_code, row.qty) for row in re.material_items], [("ML-G-22KT", 23.848)]
+		)
+
+	def test_internal_design_only_bom_is_unchanged(self):
+		"""Internal already falls back to the serial's own weights for recovery."""
+		re, _ = self._build(is_external=0, bom_items=self.DESIGN_ONLY_BOM)
+		self.assertEqual(
+			[(row.item_code, row.source_type) for row in re.material_items],
+			[("FG-DESIGN", "Serial Number")],
+		)
+
+	def test_two_serials_of_one_metal_make_one_line(self):
+		re, _ = self._build(
+			is_external=1, bom_items=self.DESIGN_ONLY_BOM, serials=("SN-1", "SN-2")
+		)
+		self.assertEqual(
+			[(row.item_code, flt(row.qty, 3)) for row in re.material_items],
+			[("M-G-22KT-91.75-Y", 47.696)],
+		)
+
+	def test_no_metal_item_for_the_header_adds_nothing(self):
+		re, _ = self._build(is_external=1, bom_items=self.DESIGN_ONLY_BOM, metal_item=None)
+		self.assertEqual(list(re.material_items), [])
