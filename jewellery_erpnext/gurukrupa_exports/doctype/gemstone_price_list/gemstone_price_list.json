@@ -96,6 +96,7 @@
    "options": "Attribute Value"
   },
   {
+   "depends_on": "eval: doc.price_list_type != \"Diamond Range\";",
    "fieldname": "gemstone_quality",
    "fieldtype": "Link",
    "label": "Stone Quality",
@@ -156,7 +157,6 @@
    "precision": "3"
   },
   {
-   "depends_on": "eval: doc.price_list_type != \"Diamond Range\";",
    "fieldname": "gemstone_grade",
    "fieldtype": "Link",
    "label": "Gemstone Grade",
@@ -315,7 +315,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-01 15:25:21.299038",
+ "modified": "2026-10-09 16:00:28.045355",
  "modified_by": "shubham_k@gkexport.com",
  "module": "Gurukrupa Exports",
  "name": "Gemstone Price List",
