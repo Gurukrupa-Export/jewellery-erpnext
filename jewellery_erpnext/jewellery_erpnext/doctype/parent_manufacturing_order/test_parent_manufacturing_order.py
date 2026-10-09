@@ -2456,15 +2456,24 @@ class TestCancelAllLinked(UnitTestCase):
 			frappe._dict(custom_tracking_bom=None),
 		]
 		docstatus = {"TB-CANCELLED": 2, "TB-SHARED-ACTIVE": 1}
+		# The docstatuses are read in one bulk get_all, not a get_value per row.
 		with patch.object(
-			quotation.frappe.db,
-			"get_value",
-			side_effect=lambda dt, dn, f: docstatus[dn],
-		):
+			quotation.frappe,
+			"get_all",
+			return_value=[
+				frappe._dict(name=name, docstatus=status)
+				for name, status in docstatus.items()
+			],
+		) as get_all:
 			quotation.clear_cancelled_tracking_boms(SimpleNamespace(items=rows))
 
 		self.assertEqual(
 			[r.custom_tracking_bom for r in rows], [None, "TB-SHARED-ACTIVE", None]
+		)
+		self.assertEqual(get_all.call_count, 1)
+		self.assertEqual(
+			sorted(get_all.call_args.kwargs["filters"]["name"][1]),
+			["TB-CANCELLED", "TB-SHARED-ACTIVE"],
 		)
 
 	def test_ir_rows_on_reverted_operations_are_refused(self):
