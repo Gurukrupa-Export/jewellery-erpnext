@@ -2,6 +2,7 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
+from erpnext.utilities.product import get_item_codes_by_attributes
 
 from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
 	can_be_customer_goods,
@@ -1876,6 +1877,9 @@ class RefiningEntry(Document):
 						"BOM Item",
 						filters={"parent": bom_no},
 						fields=["item_code", "qty", "stock_qty", "uom", "stock_uom"],
+					)
+					bom_items.extend(
+						self._get_missing_bom_component_items(bom_no, bom_items)
 					)
 					for b_item in bom_items:
 						# ERPNext allows a BOM to list its own parent item once, and this app never strips
@@ -4633,6 +4637,104 @@ class RefiningEntry(Document):
 		"""
 		return self.is_diamond_item(item_code) or self.is_gemstone_item(item_code)
 
+	def _resolve_bom_component_variant(self, detail):
+		if detail.get("item_variant"):
+			return detail.item_variant
+
+		template = detail.get("item")
+		if not template:
+			return None
+
+		attributes = frappe.get_all(
+			"Item Variant Attribute",
+			filters={"parent": template},
+			fields=["attribute"],
+			order_by="idx asc",
+		)
+		attribute_values = {}
+		for attribute in attributes:
+			fieldname = (
+				"finding_type"
+				if attribute.attribute == "Finding Sub-Category"
+				else frappe.scrub(attribute.attribute)
+			)
+			if value := detail.get(fieldname):
+				attribute_values[attribute.attribute] = value
+		if not attribute_values:
+			return None
+
+		candidates = get_item_codes_by_attributes(attribute_values, template)
+		if not candidates:
+			return None
+
+		candidate_attributes = frappe.get_all(
+			"Item Variant Attribute",
+			filters={"parent": ["in", candidates]},
+			fields=["parent", "attribute", "attribute_value"],
+		)
+		attributes_by_item = {}
+		for attribute in candidate_attributes:
+			attributes_by_item.setdefault(attribute.parent, []).append(attribute)
+
+		matches = [
+			item_code
+			for item_code, item_attributes in attributes_by_item.items()
+			if len(item_attributes) == len(attribute_values)
+			and all(
+				attribute_values.get(attribute.attribute) == attribute.attribute_value
+				for attribute in item_attributes
+			)
+		]
+		return matches[0] if len(matches) == 1 else None
+
+	def _get_missing_bom_component_items(self, bom_no, bom_items):
+		existing_items = {item.item_code for item in bom_items}
+		missing_items = {}
+		component_tables = (
+			"BOM Metal Detail",
+			"BOM Diamond Detail",
+			"BOM Gemstone Detail",
+			"BOM Finding Detail",
+		)
+		for detail_table in component_tables:
+			for detail in frappe.get_all(
+				detail_table,
+				filters={"parent": bom_no},
+				fields=["*"],
+			):
+				item_code = self._resolve_bom_component_variant(detail)
+				if not item_code or item_code in existing_items:
+					continue
+				missing_items[item_code] = missing_items.get(item_code, 0) + flt(
+					detail.quantity
+				)
+
+		for detail in frappe.get_all(
+			"BOM Other Detail",
+			filters={"parent": bom_no},
+			fields=["item_code", "quantity"],
+		):
+			item_code = detail.item_code
+			if not item_code or item_code in existing_items:
+				continue
+			missing_items[item_code] = missing_items.get(item_code, 0) + flt(
+				detail.quantity
+			)
+
+		rows = []
+		for item_code, quantity in missing_items.items():
+			uom = frappe.db.get_value("Item", item_code, "stock_uom")
+			rows.append(
+				frappe._dict(
+					item_code=item_code,
+					qty=quantity,
+					stock_qty=quantity,
+					uom=uom,
+					stock_uom=uom,
+				)
+			)
+		return rows
+
 	def auto_classify_recoverable_non_metal(self):
 		diamond_items = {row.item for row in self.recovered_diamond}
 		gemstone_items = {row.item for row in self.recovered_gemstone}
@@ -4653,6 +4755,9 @@ class RefiningEntry(Document):
 						"BOM Item",
 						filters={"parent": bom_name},
 						fields=["item_code", "qty"],
+					)
+					bom_items.extend(
+						self._get_missing_bom_component_items(bom_name, bom_items)
 					)
 
 					# Aggregate quantities by item_code to prevent dropping rows
