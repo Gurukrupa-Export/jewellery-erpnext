@@ -3135,6 +3135,149 @@ class TestSerialMaterialRows(IntegrationTestCase):
 	def setUpClass(cls):
 		return
 
+	def test_missing_bom_component_variant_is_resolved_from_detail_attributes(self):
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		diamond_code = "D-NT-RO-6B-+11.5-12"
+		detail = frappe._dict(
+			item="D",
+			item_variant=None,
+			quantity=1.08,
+			diamond_type="Natural",
+			stone_shape="Round",
+			diamond_grade="6B",
+			diamond_sieve_size="+11.5-12",
+			sieve_size_range="+11-14",
+			stock_uom="Nos",
+		)
+		template_attributes = [
+			frappe._dict(attribute=attribute)
+			for attribute in (
+				"Diamond Type",
+				"Stone Shape",
+				"Diamond Grade",
+				"Diamond Sieve Size",
+				"Diamond Sieve Size Range",
+			)
+		]
+		variant_attributes = [
+			frappe._dict(parent=diamond_code, attribute=attribute, attribute_value=value)
+			for attribute, value in (
+				("Diamond Type", "Natural"),
+				("Stone Shape", "Round"),
+				("Diamond Grade", "6B"),
+				("Diamond Sieve Size", "+11.5-12"),
+			)
+		]
+
+		def get_all(doctype, filters=None, **kwargs):
+			if doctype == "BOM Diamond Detail":
+				return [detail]
+			if doctype == "Item Variant Attribute":
+				if filters.get("parent") == "D":
+					return template_attributes
+				return variant_attributes
+			return []
+
+		re = frappe.new_doc("Refining Entry")
+		with (
+			patch.object(re_module.frappe, "get_all", side_effect=get_all),
+			patch.object(
+				re_module,
+				"get_item_codes_by_attributes",
+				return_value=[diamond_code],
+			) as get_item_codes,
+			patch.object(re_module.frappe.db, "get_value", return_value="Carat"),
+		):
+			rows = re._get_missing_bom_component_items("BOM-1", [])
+
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].item_code, diamond_code)
+		self.assertEqual(rows[0].qty, 1.08)
+		self.assertEqual(rows[0].stock_qty, 1.08)
+		self.assertEqual(rows[0].uom, "Carat")
+		get_item_codes.assert_called_once_with(
+			{
+				"Diamond Type": "Natural",
+				"Stone Shape": "Round",
+				"Diamond Grade": "6B",
+				"Diamond Sieve Size": "+11.5-12",
+			},
+			"D",
+		)
+
+	def test_bom_component_details_cover_all_standard_material_tables(self):
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		components = {
+			"BOM Metal Detail": [
+				frappe._dict(
+					item_variant="M-G-22KT-91.75-Y",
+					quantity=8.5,
+					stock_uom="Gram",
+				)
+			],
+			"BOM Diamond Detail": [
+				frappe._dict(
+					item_variant="D-NT-RO-6B-+11.5-12",
+					quantity=1.08,
+					stock_uom="Carat",
+				)
+			],
+			"BOM Gemstone Detail": [
+				frappe._dict(
+					item_variant="G-RUBY-OVAL",
+					quantity=0.6,
+					stock_uom="Carat",
+				)
+			],
+			"BOM Finding Detail": [
+				frappe._dict(
+					item_variant="F-G-22KT-91.75-Y",
+					quantity=0.35,
+					stock_uom="Gram",
+				)
+			],
+			"BOM Other Detail": [
+				frappe._dict(item_code="OTHER-COMP", quantity=0.2)
+			],
+		}
+
+		def stock_uom(doctype, item_code, fieldname):
+			return {
+				"M-G-22KT-91.75-Y": "Gram",
+				"D-NT-RO-6B-+11.5-12": "Carat",
+				"G-RUBY-OVAL": "Carat",
+				"F-G-22KT-91.75-Y": "Gram",
+				"OTHER-COMP": "Nos",
+			}.get(item_code)
+
+		re = frappe.new_doc("Refining Entry")
+		with (
+			patch.object(
+				re_module.frappe,
+				"get_all",
+				side_effect=lambda doctype, **kwargs: components.get(doctype, []),
+			),
+			patch.object(re_module.frappe.db, "get_value", side_effect=stock_uom),
+		):
+			rows = re._get_missing_bom_component_items("BOM-1", [])
+
+		self.assertEqual(
+			{row.item_code: (row.qty, row.uom) for row in rows},
+			{
+				"M-G-22KT-91.75-Y": (8.5, "Gram"),
+				"D-NT-RO-6B-+11.5-12": (1.08, "Carat"),
+				"G-RUBY-OVAL": (0.6, "Carat"),
+				"F-G-22KT-91.75-Y": (0.35, "Gram"),
+				"OTHER-COMP": (0.2, "Nos"),
+			},
+		)
+
 	def _build(self, is_external=0, metal_purity="91.75"):
 		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
 			RefiningEntry,
