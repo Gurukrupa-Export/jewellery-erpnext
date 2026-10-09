@@ -508,3 +508,108 @@ class TestMakingChargeLookupAgainstDatabase(IntegrationTestCase):
 		self.assertEqual(args[7], "14KT")
 		self.assertEqual(args[8], SUBCATEGORY)
 		self.assertIsNone(args[9])
+
+
+class TestPerPieceMakingOnce(_MakingChargeEngineCase):
+	"""Below the per-gram threshold, per-piece making is charged once per BOM.
+
+	The first metal or finding row below the threshold (metal_detail before
+	finding_detail; Silver and customer-item rows skipped) takes rate_per_pc and
+	every later row takes 0. Above the threshold every row keeps per-gram making.
+	"""
+
+	PER_PIECE = _making_row(rate_per_gm=10, rate_per_pc=500, rate_per_gm_threshold=5)
+
+	def _direct(self, rows, metal_and_finding_weight, **bom_fields):
+		bom = _bom(metal_and_finding_weight=metal_and_finding_weight)
+		bom.update(bom_fields)
+		bom.set_additional_rate = False
+		bom.per_pc_rate_applied = False
+		for row in rows:
+			bom_utils._set_total_making_charges(
+				bom, row, [frappe._dict(self.PER_PIECE)]
+			)
+		return bom
+
+	def test_below_threshold_only_the_first_row_takes_rate_per_pc(self):
+		rows = [_metal(idx=1), _metal(idx=2), _finding(idx=1)]
+
+		self._direct(rows, metal_and_finding_weight=2)
+
+		self.assertEqual([row.making_amount for row in rows], [500, 0, 0])
+
+	def test_above_threshold_every_row_keeps_per_gram_making(self):
+		rows = [
+			_metal(idx=1, quantity=6),
+			_metal(idx=2, quantity=4),
+			_finding(quantity=1),
+		]
+
+		self._direct(
+			rows,
+			metal_and_finding_weight=11,
+			compute_making_charges_on="Diamond Inclusive",
+			total_diamond_weight_per_gram=0.5,
+		)
+
+		# making_rate x (quantity + additional_net_weight); only the first metal
+		# row carries the diamond weight.
+		self.assertEqual([row.making_amount for row in rows], [65, 40, 10])
+
+	def test_silver_and_customer_rows_do_not_use_up_the_charge(self):
+		silver = _metal(idx=1, metal_type="Silver", metal_touch="92.5")
+		customer_row = _metal(idx=2, is_customer_item=1, making_amount=40)
+		metal = _metal(idx=3)
+		finding = _finding(idx=1)
+		catalog = {(ITEM, "22KT"): self.PER_PIECE, (FINDING, "22KT"): self.PER_PIECE}
+		bom = _bom([silver, customer_row, metal], [finding], metal_and_finding_weight=2)
+
+		_fake, amount = self._price(bom, catalog)
+
+		self.assertEqual(silver.making_amount, 0)
+		self.assertEqual(customer_row.making_amount, 40)
+		self.assertEqual(metal.making_amount, 500)
+		self.assertEqual(finding.making_amount, 0)
+		self.assertEqual(amount, 540)
+
+	def test_first_row_with_no_per_piece_rate_still_uses_up_the_charge(self):
+		# Source behaviour, kept on purpose: the flag is set by the first row
+		# below the threshold whatever its rate_per_pc, so a later row with a
+		# positive rate_per_pc gets 0 and the BOM charges no per-piece making.
+		for rate_per_pc in (0, None):
+			with self.subTest(rate_per_pc=rate_per_pc):
+				first = _metal(idx=1, metal_touch="18KT")
+				second = _metal(idx=2, metal_touch="22KT")
+				catalog = {
+					(ITEM, "18KT"): dict(self.PER_PIECE, rate_per_pc=rate_per_pc),
+					(ITEM, "22KT"): self.PER_PIECE,
+				}
+
+				_fake, amount = self._price(
+					_bom([first, second], metal_and_finding_weight=2), catalog
+				)
+
+				self.assertEqual(first.making_amount, rate_per_pc)
+				self.assertEqual(second.making_amount, 0)
+				self.assertEqual(amount, 0)
+
+	def test_a_row_that_misses_does_not_use_up_the_charge(self):
+		first = _metal(idx=1, metal_touch="18KT", making_amount=70)
+		second = _metal(idx=2, metal_touch="22KT")
+		catalog = {(ITEM, "22KT"): self.PER_PIECE}
+
+		self._price(_bom([first, second], metal_and_finding_weight=2), catalog)
+
+		self.assertEqual(first.making_amount, 70)
+		self.assertEqual(second.making_amount, 500)
+
+	def test_each_call_charges_per_piece_once(self):
+		first, second = _metal(idx=1), _metal(idx=2)
+		bom = _bom([first, second], metal_and_finding_weight=2)
+		catalog = {(ITEM, "22KT"): self.PER_PIECE}
+
+		for _attempt in range(2):
+			_fake, amount = self._price(bom, catalog)
+
+			self.assertEqual((first.making_amount, second.making_amount), (500, 0))
+			self.assertEqual(amount, 500)

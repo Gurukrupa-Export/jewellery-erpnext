@@ -592,6 +592,7 @@ def _log_making_charge_miss(
 def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 	# Get Making Charge From Making Charge Price Master for mentioned Combinations
 	self.set_additional_rate = False
+	self.per_pc_rate_applied = False
 	making_charge_data = frappe._dict()
 	finding_subcategory_data = frappe._dict()
 	subcategory_data = frappe._dict()
@@ -793,7 +794,14 @@ def _set_total_making_charges(self, metal, making_charge_details):
 			if self.metal_and_finding_weight < (
 				making_charges.get("rate_per_gm_threshold") or 0
 			):
-				metal_making_charges = making_charges.get("rate_per_pc")
+				# Per-piece making is charged once per BOM: the first row below
+				# the threshold takes rate_per_pc, even when it is 0, and every
+				# later row takes 0.
+				if self.per_pc_rate_applied:
+					metal_making_charges = 0
+				else:
+					metal_making_charges = making_charges.get("rate_per_pc")
+					self.per_pc_rate_applied = True
 			else:
 				metal_making_charges = metal.making_rate * (
 					metal.quantity + additional_net_weight
