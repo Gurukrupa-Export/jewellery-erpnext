@@ -3668,3 +3668,184 @@ class TestCertificationPoQty(IntegrationTestCase):
 			"Hall Marking Service", ["Earrings", "Ring"], weights=[2.5, 1.5]
 		)
 		self.assertEqual(po.items[0].custom_gross_wt, 4.0)
+
+
+_CUSTOMER = "GJCU0009"
+_BATCH_OWNERS = {
+	"B-CUST": frappe._dict(name="B-CUST", custom_inventory_type="Customer Goods", custom_customer=_CUSTOMER),
+	"B-CO": frappe._dict(name="B-CO", custom_inventory_type="Regular Stock", custom_customer=None),
+	"B-HALF": frappe._dict(name="B-HALF", custom_inventory_type="Customer Goods", custom_customer=None),
+}
+
+
+def _batch_owners(batch_nos):
+	"""``doc_events.utils._batch_owners`` answered from ``_BATCH_OWNERS``."""
+	return {
+		n: (_BATCH_OWNERS[n].custom_inventory_type, _BATCH_OWNERS[n].custom_customer)
+		for n in batch_nos
+		if n in _BATCH_OWNERS
+	}
+
+
+class TestStampRowsFromBatches(IntegrationTestCase):
+	"""Every Product Certification entry is auto_created, so nothing else copies a batch's
+	owner onto its row -- a customer's batch was issued as "Regular Stock"."""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _stamp(self, rows):
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
+			utils as pc_utils,
+		)
+
+		with patch.object(pc_utils, "_batch_owners", side_effect=_batch_owners):
+			pc_utils.stamp_rows_from_batches(rows)
+		return [(r.get("inventory_type"), r.get("customer")) for r in rows]
+
+	def test_a_customer_batch_is_issued_as_the_customers(self):
+		self.assertEqual(
+			self._stamp([frappe._dict(s_warehouse="WH", batch_no="B-CUST", inventory_type="Regular Stock")]),
+			[("Customer Goods", _CUSTOMER)],
+		)
+
+	def test_a_company_batch_stays_regular_stock(self):
+		self.assertEqual(
+			self._stamp([{"s_warehouse": "WH", "batch_no": "B-CO"}]), [("Regular Stock", None)]
+		)
+
+	def test_an_owner_the_row_already_names_is_kept(self):
+		self.assertEqual(
+			self._stamp(
+				[frappe._dict(s_warehouse="WH", batch_no="B-CUST", inventory_type="Customer Goods", customer="GJCU0010")]
+			),
+			[("Customer Goods", "GJCU0010")],
+		)
+
+	def test_customer_goods_without_a_customer_is_booked_regular(self):
+		self.assertEqual(
+			self._stamp([frappe._dict(s_warehouse="WH", batch_no="B-HALF")]), [("Regular Stock", None)]
+		)
+
+	def test_the_owner_lookup_runs_against_the_real_batch_table(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
+			utils as pc_utils,
+		)
+
+		self.assertEqual(pc_utils._batch_owners({"NO-SUCH-BATCH-FOR-THIS-TEST"}), {})
+
+	def test_inward_and_batchless_rows_are_left_alone(self):
+		self.assertEqual(
+			self._stamp(
+				[frappe._dict(t_warehouse="WH", batch_no="B-CUST"), frappe._dict(s_warehouse="WH")]
+			),
+			[(None, None), (None, None)],
+		)
+
+
+class TestReceivedBatchesCarryOwnerAndRate(IntegrationTestCase):
+	"""The Fire Assy / XRF receipt Repack and the batches it produces.
+
+	KGGK-SE-RP-26-00501 (CRT-2026-00105) produced four batches through ``make_batch`` a second
+	before the Repack existed: no ``custom_voucher_detail_no``, so no inventory type, no customer
+	and a Batch Rate of 0. A produce row of a ``create_new_batch`` item now carries no batch and
+	is minted from the row on submit, under the owner of the batches its run consumed.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+		# ``_receipt_precision`` reads this meta, and ``_run`` stubs ``frappe.db.get_value``:
+		# load it now so the tests do not depend on an earlier test having cached it.
+		frappe.get_meta("Stock Entry Detail")
+
+	ITEM_FLAGS = {"M22": (1, 0, 1), "M24": (1, 0, 1), "ML22": (1, 0, 1)}
+
+	def _run(self, issued_batch, item_flags=None):
+		from erpnext.stock.doctype.batch import batch as batch_module
+
+		from jewellery_erpnext.jewellery_erpnext import lock_order
+		from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events import (
+			utils as pc_utils,
+		)
+
+		flags = item_flags or self.ITEM_FLAGS
+		doc = TestFireAssyRepackQty._doc(
+			self,
+			[
+				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 60.0},
+				{"item_code": "M24", "tree_no": "TREE-A", "gross_weight": 30.0, "conversion_quantity": 32.612},
+				{"item_code": "ML22", "tree_no": "TREE-A", "gross_weight": 7.388},
+			],
+		)
+		issued = {
+			"M22": {"batch_no": issued_batch, "s_warehouse": "SUP-WH", "batches": [(issued_batch, 100.0)]}
+		}
+		created = []
+
+		def _new_doc(doctype, *args, **kwargs):
+			se = _FakeStockEntry()
+			created.append(se)
+			return se
+
+		self.make_batch = MagicMock(return_value="B-PREMADE")
+		with (
+			patch.object(pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"),
+			patch.object(pc_utils, "_get_department_scrap_warehouse", return_value="SCRAP-WH"),
+			patch.object(pc_utils, "_get_supplier_certification_warehouse", return_value="SUP-WH"),
+			patch.object(pc_utils, "_get_issue_stock_entry_details", return_value=({"M22": "SUP-WH"}, issued)),
+			# Also the "latest batch of this item in the supplier warehouse" fallback's answer.
+			patch.object(frappe.db, "get_value", return_value="B-LATEST-IN-SUPPLIER-WH"),
+			patch.object(frappe, "get_cached_value", side_effect=lambda dt, name, *a, **k: flags.get(name, (0, 0, 0))),
+			patch.object(pc_utils, "_batch_owners", side_effect=_batch_owners),
+			patch.object(frappe, "new_doc", side_effect=_new_doc),
+			patch.object(batch_module, "make_batch", self.make_batch),
+			patch.object(lock_order, "lock_bins"),
+			patch.object(lock_order, "preallocate_series_for_docs"),
+			patch.object(lock_order, "series_stubs", return_value=()),
+		):
+			pc_utils.create_material_receipt_for_certification(doc)
+		return {se.stock_entry_type: se for se in created}
+
+	def _produced(self, entries):
+		return [r for r in entries["Repack"].items if r.get("is_finished_item")]
+
+	def test_a_produced_batch_is_minted_from_its_row_not_made_beforehand(self):
+		"""The CRT-2026-00105 shape."""
+		entries = self._run("B-CO")
+		self.assertEqual([r.batch_no for r in self._produced(entries)], [None, None])
+		self.make_batch.assert_not_called()
+
+	def test_a_produce_row_never_takes_another_batch_from_the_supplier_warehouse(self):
+		entries = self._run("B-CO")
+		self.assertNotIn(
+			"B-LATEST-IN-SUPPLIER-WH", [r.batch_no for r in entries["Repack"].items]
+		)
+
+	def test_a_customers_metal_comes_back_and_is_produced_as_the_customers(self):
+		entries = self._run("B-CUST")
+		receipt = entries["Material Receipt for Certification"]
+		self.assertEqual(
+			{(r.inventory_type, r.customer) for r in receipt.items}, {("Customer Goods", _CUSTOMER)}
+		)
+		self.assertEqual(
+			{(r.inventory_type, r.customer) for r in entries["Repack"].items},
+			{("Customer Goods", _CUSTOMER)},
+		)
+
+	def test_company_metal_stays_regular_stock(self):
+		entries = self._run("B-CO")
+		self.assertEqual(
+			{(r.inventory_type, r.get("customer")) for r in entries["Repack"].items},
+			{("Regular Stock", None)},
+		)
+
+	def test_an_item_that_does_not_mint_its_own_batches_keeps_the_old_fallback(self):
+		entries = self._run("B-CO", {"M22": (1, 0, 1), "M24": (1, 0, 0), "ML22": (1, 0, 0)})
+		self.assertEqual(
+			[r.batch_no for r in self._produced(entries)],
+			["B-LATEST-IN-SUPPLIER-WH", "B-LATEST-IN-SUPPLIER-WH"],
+		)

@@ -23,6 +23,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	validate_loss_ownership_carried,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.serial_ownership import (
+	stamp_serial_row_ownership,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
 	should_allow_zero_valuation,
 )
@@ -363,6 +366,11 @@ def before_validate(self, method):
 
 	# Must run BEFORE the blanket default below, which is what erases the evidence.
 	validate_loss_ownership_carried(self)
+
+	# A serial row carries the lane its serial was last received in -- exactly what ERPNext's
+	# serial inventory-dimension check compares the outward SLE against. Before the blanket
+	# default, which would otherwise book a customer's finished piece as "Regular Stock".
+	stamp_serial_row_ownership(self)
 
 	# Ensure all items have a valid inventory_type to prevent None in Stock Ledger Entry
 	for row in self.items:
