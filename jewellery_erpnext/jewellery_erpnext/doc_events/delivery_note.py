@@ -141,9 +141,6 @@ def update_dn_einvoice_items(self, bom_cache=None):
 	def get_einvoice_item(filters):
 		return _match_einvoice_item(einvoice_items, filters) or (None, None, None)
 
-	hallmarking_item, hallmarking_hsn, hallmarking_uom = get_einvoice_item(
-		{"is_for_hallmarking": 1}
-	)
 	certification_item, certification_hsn, certification_uom = get_einvoice_item(
 		{"is_for_certification": 1}
 	)
