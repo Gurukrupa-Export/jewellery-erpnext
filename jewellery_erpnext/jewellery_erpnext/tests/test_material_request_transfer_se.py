@@ -18,6 +18,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils im
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils import metal_utils
 from jewellery_erpnext.jewellery_erpnext.doc_events import material_request as mr_mod
+from jewellery_erpnext.jewellery_erpnext.doc_events import stock_entry as se_events
 from jewellery_erpnext.jewellery_erpnext.serialize import LockTimeoutError
 
 _MR = "jewellery_erpnext.jewellery_erpnext.doc_events.material_request"
@@ -1149,4 +1150,139 @@ class TestPrefetchPurityPercentages(IntegrationTestCase):
 			frappe.local.request_cache = defaultdict(dict)
 		else:
 			frappe.local.request_cache = self._saved_cache
+		return super().tearDown()
+
+
+_SE = "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry"
+
+# What ERPNext's StockEntry.on_cancel assigns before the app's on_cancel hook runs.
+_ERPNEXT_IGNORED = (
+	"GL Entry",
+	"Stock Ledger Entry",
+	"Repost Item Valuation",
+	"Serial and Batch Bundle",
+)
+
+
+class _CancellingEntry(SimpleNamespace):
+	"""The slice of a cancelling Stock Entry that release_material_request_links reads."""
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+
+def _entry(name, *requests):
+	return _CancellingEntry(
+		name=name,
+		ignore_linked_doctypes=_ERPNEXT_IGNORED,
+		items=[SimpleNamespace(material_request=mr) for mr in requests],
+	)
+
+
+def _stamps(**kwargs):
+	"""MR-1 as the hook reads it: stamped with every step of its own chain."""
+	values = {
+		"name": "MR-1",
+		"custom_reserve_se": "SE-RESERVE",
+		"custom_transfer_se": "SE-TRANSFER",
+		"custom_department_transfer_se": "SE-DEPT",
+		"custom_mop_se": None,
+	}
+	values.update(kwargs)
+	return values
+
+
+class TestReleaseMaterialRequestLinks(IntegrationTestCase):
+	"""A request stamps its entries and their rows point back at it, so neither could be
+	cancelled first -- KGJPL-MR-MF-26-46334's entries could not be reversed for a split."""
+
+	@classmethod
+	def setUpClass(cls):
+		# Build the translation cache before frappe.get_all is stubbed.
+		frappe._("Material Request")
+
+	def _release(self, entry, *requests):
+		"""Run the hook with the request read stubbed to ``requests``.
+
+		Returns the get_all and set_value mocks.
+		"""
+		real_get_all = frappe.get_all
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "Material Request":
+				return [frappe._dict(r) for r in requests]
+			return real_get_all(doctype, *args, **kwargs)
+
+		with patch.object(
+			se_events.frappe, "get_all", side_effect=_get_all
+		) as get_all, patch(f"{_SE}.frappe.db.set_value") as set_value:
+			se_events.release_material_request_links(entry)
+		return get_all, set_value
+
+	def test_on_cancel_releases_the_request(self):
+		entry = _entry("SE-DEPT", "MR-1")
+		with patch.object(se_events, "update_manufacturing_operation"), patch.object(
+			se_events, "sync_mop_log_for_stock_entry"
+		), patch.object(se_events, "release_material_request_links") as release:
+			se_events.on_cancel(entry)
+		release.assert_called_once_with(entry)
+
+	def test_erpnexts_ignore_list_is_kept_and_the_request_added(self):
+		entry = _entry("SE-DEPT", "MR-1")
+		self._release(entry, _stamps())
+		self.assertEqual(
+			entry.ignore_linked_doctypes, (*_ERPNEXT_IGNORED, "Material Request")
+		)
+
+	def test_a_transit_receipt_without_request_rows_reads_nothing(self):
+		"""MAT-STE-57555: the End Transit receipt's rows carry no material_request."""
+		entry = _entry("SE-RECEIPT", None)
+		get_all, set_value = self._release(entry)
+		get_all.assert_not_called()
+		set_value.assert_not_called()
+		self.assertIn("Material Request", entry.ignore_linked_doctypes)
+
+	def test_only_submitted_requests_on_its_own_rows_are_read(self):
+		get_all, _ = self._release(_entry("SE-DEPT", "MR-2", "MR-1", "MR-2"))
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"],
+			{"name": ["in", ["MR-1", "MR-2"]], "docstatus": 1},
+		)
+
+	def test_only_the_stamp_naming_this_entry_is_cleared(self):
+		_, set_value = self._release(_entry("SE-DEPT", "MR-1"), _stamps())
+		set_value.assert_called_once_with(
+			"Material Request",
+			"MR-1",
+			{"custom_department_transfer_se": None},
+			update_modified=False,
+		)
+
+	def test_clearing_the_transfer_stamp_clears_its_state_and_error(self):
+		_, set_value = self._release(_entry("SE-TRANSFER", "MR-1"), _stamps())
+		set_value.assert_called_once_with(
+			"Material Request",
+			"MR-1",
+			{
+				"custom_transfer_se": None,
+				"custom_transfer_se_state": None,
+				"custom_transfer_se_error": None,
+			},
+			update_modified=False,
+		)
+
+	def test_the_mop_stamp_is_matched_by_value(self):
+		"""custom_mop_se is Data, not a Link, but records the same step."""
+		_, set_value = self._release(
+			_entry("SE-MOP", "MR-1"), _stamps(custom_mop_se="SE-MOP")
+		)
+		set_value.assert_called_once_with(
+			"Material Request", "MR-1", {"custom_mop_se": None}, update_modified=False
+		)
+
+	def test_a_request_stamped_with_other_entries_is_untouched(self):
+		_, set_value = self._release(_entry("SE-OTHER", "MR-1"), _stamps())
+		set_value.assert_not_called()
+
+	def tearDown(self):
 		return super().tearDown()
