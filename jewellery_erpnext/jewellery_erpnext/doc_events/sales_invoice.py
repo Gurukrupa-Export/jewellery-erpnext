@@ -45,6 +45,9 @@ def before_validate(self, method):
 			if flt(row.base_amount) > 0:
 				row.base_amount = -1 * flt(row.base_amount)
 		return
+	# Opening invoices keep their entered values: no repricing and no BOM writes.
+	if self.is_opening == "Yes":
+		return
 	if self.sales_type == "Hybrid":
 		has_real_items = any(
 			row.item_code != "Subcontracting Charges" for row in self.items
@@ -186,6 +189,9 @@ def validate(self, method):
 		self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
 		payment_terms_data = update_si_data(self)
 		update_payment_terms(self, payment_terms_data)
+		return
+	# Opening invoices keep their entered values: no BOM, payment-term or tax rework.
+	if self.is_opening == "Yes":
 		return
 	prec = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 
@@ -370,6 +376,9 @@ def on_submit(self, method):
 			row.get("serial_no"),
 			{"status": "Active", "warehouse": "Product Allocation FG - KGJPL"},
 		)
+		return
+	# Opening invoices create no Subcontracting Charges or Certification invoice.
+	if self.is_opening == "Yes":
 		return
 	if self.sales_type == "Hybrid":
 		# _template = SALES_TYPE_ITEM_TAX_TEMPLATE["Outwork"].get(self.company)

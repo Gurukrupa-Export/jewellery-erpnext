@@ -498,6 +498,68 @@ class TestSalesInvoiceBeforeValidate(_SIBase):
 		mocks.get_doc.assert_not_called()
 		mocks.update_income_account.assert_called_once_with(si)
 
+	def test_opening_invoice_skips_repricing(self):
+		# An opening invoice keeps its rows, its entered gold rate and its amounts:
+		# no Sales Order rate lock, no invoice_item rebuild, no BOM re-rate or save.
+		si = DummySalesInvoice(
+			is_opening="Yes",
+			sales_type="Hybrid",
+			gold_rate=1000,
+			item_same_as_above=1,
+			items=[
+				StubItemRow(
+					item_code="RING-1",
+					bom="BOM-1",
+					sales_order="SO-1",
+					rate=500,
+					amount=500,
+				),
+				StubItemRow(item_code="Subcontracting Charges"),
+			],
+		)
+		mocks = _run_with_patches(
+			si,
+			si_events.before_validate,
+			*_std_before_validate_patches(get_value={"return_value": 2000.0}),
+			patch(f"{SI}.frappe.get_doc"),
+		)
+		self.assertEqual(
+			[row.item_code for row in si.items], ["RING-1", "Subcontracting Charges"]
+		)
+		self.assertEqual(si.items[0].rate, 500)
+		self.assertEqual(si.items[0].amount, 500)
+		self.assertEqual(si.gold_rate, 1000)
+		self.assertEqual(si.gold_rate_with_gst, 0)
+		self.assertEqual(si.invoice_item, [])
+		mocks.get_doc.assert_not_called()
+		mocks.get_value.assert_not_called()
+		mocks.update_income_account.assert_not_called()
+		mocks.update_si_data.assert_not_called()
+		mocks.update_payment_terms.assert_not_called()
+
+	def test_opening_return_keeps_sign_flip(self):
+		# The return handling runs before the opening guard, so an opening credit
+		# note still gets negative invoice_item rows.
+		si = DummySalesInvoice(
+			is_return=1,
+			is_opening="Yes",
+			invoice_item=[
+				StubItemRow(qty=2, amount=100, base_amount=100),
+				StubItemRow(qty=-3, amount=-50, base_amount=-50),
+			],
+		)
+		mocks = _run_with_patches(
+			si, si_events.before_validate, *_std_before_validate_patches()
+		)
+		self.assertEqual(si.invoice_item[0].qty, -2.0)
+		self.assertEqual(si.invoice_item[0].amount, -100.0)
+		self.assertEqual(si.invoice_item[0].base_amount, -100.0)
+		self.assertEqual(si.invoice_item[1].qty, -3.0)
+		self.assertEqual(si.invoice_item[1].amount, -50.0)
+		mocks.update_income_account.assert_not_called()
+		mocks.update_si_data.assert_not_called()
+		mocks.update_payment_terms.assert_not_called()
+
 
 class TestSalesInvoiceValidate(_SIBase):
 	def _assert_bom_header_sums(self, si):
@@ -579,6 +641,65 @@ class TestSalesInvoiceValidate(_SIBase):
 		self.assertEqual(si.items[0].amount, 999)
 		self.assertEqual(si.total, 999)
 		mocks.get_doc.assert_called_once_with("BOM", "BOM-1")
+
+	def test_opening_invoice_skips_validate_processing(self):
+		# An opening invoice keeps its entered rates and header totals: no BOM is
+		# read, and payment terms, income account, GST and taxes are not reworked.
+		header_fields = (
+			"custom_diamond_pcs",
+			"custom_gemstone_pcs",
+			"custom_other_weight",
+			"custom_metal_weight",
+			"custom_finding_weight",
+			"custom_diamond_weight",
+			"custom_gemstone_weight",
+			"custom_gross_weight",
+		)
+		si = DummySalesInvoice(
+			is_opening="Yes",
+			company="Other",
+			total=999,
+			items=[StubItemRow(item_code="RING-1", bom="BOM-1", rate=999, amount=999)],
+			**{field: 7 for field in header_fields},
+		)
+		si.calculate_taxes_and_totals = MagicMock()
+		mocks = _run_with_patches(
+			si,
+			si_events.validate,
+			*_std_validate_patches(get_value={"return_value": None}),
+		)
+		self.assertEqual(si.items[0].rate, 999)
+		self.assertEqual(si.items[0].amount, 999)
+		self.assertEqual(si.items[0].custom_diamond_pcs, 0)
+		self.assertEqual(si.total, 999)
+		for field in header_fields:
+			self.assertEqual(si.get(field), 7, field)
+		mocks.get_doc.assert_not_called()
+		mocks.get_value.assert_not_called()
+		mocks.update_income_account.assert_not_called()
+		mocks.update_si_data.assert_not_called()
+		mocks.update_payment_terms.assert_not_called()
+		mocks.set_gst_details.assert_not_called()
+		si.calculate_taxes_and_totals.assert_not_called()
+
+	def test_opening_return_keeps_return_branch(self):
+		# The return branch runs before the opening guard, so an opening credit
+		# note still copies the BOM aggregates and recomputes GST and taxes.
+		si = DummySalesInvoice(
+			is_return=1,
+			is_opening="Yes",
+			items=[StubItemRow(bom="BOM-1"), StubItemRow()],
+		)
+		si.calculate_taxes_and_totals = MagicMock()
+		mocks = _run_with_patches(
+			si, si_events.validate, *_std_validate_patches(include_income_account=False)
+		)
+		mocks.get_doc.assert_called_once_with("BOM", "BOM-1")
+		self._assert_bom_header_sums(si)
+		mocks.set_gst_details.assert_called_once_with(si)
+		mocks.update_si_data.assert_called_once_with(si)
+		mocks.update_payment_terms.assert_called_once_with(si, {})
+		si.calculate_taxes_and_totals.assert_called_once()
 
 
 class TestOnSubmit(_SIBase):
@@ -733,6 +854,124 @@ class TestOnSubmit(_SIBase):
 		with patch(f"{SI}.frappe.get_doc") as mock_get_doc:
 			si_events.on_submit(si, None)
 		mock_get_doc.assert_not_called()
+
+	def test_opening_invoice_creates_no_secondary_invoices(self):
+		# Opening invoices (other than return Hybrids, below) read no BOM and create
+		# neither a Subcontracting Charges invoice nor a Certification invoice.
+		cases = [(0, "Hybrid"), (0, "Outright"), (1, "Outright")]
+		for is_return, sales_type in cases:
+			with self.subTest(is_return=is_return, sales_type=sales_type):
+				si = DummySalesInvoice(
+					is_opening="Yes",
+					is_return=is_return,
+					sales_type=sales_type,
+					company="Other",
+					items=[
+						StubItemRow(
+							item_code="RING-1",
+							bom="BOM-1",
+							sales_order="SO-1",
+							delivery_note="DN-1",
+							serial_no="SN-1",
+						)
+					],
+				)
+				with (
+					patch(f"{SI}.frappe.get_doc", return_value=_bom()) as mock_get_doc,
+					patch(f"{SI}.frappe.copy_doc") as mock_copy_doc,
+					patch(f"{SI}.frappe.new_doc") as mock_new_doc,
+					patch(f"{SI}.frappe.db.get_value") as mock_get_value,
+					patch(f"{SI}.frappe.db.set_value") as mock_set_value,
+					patch(f"{SI}.set_gst_details") as mock_set_gst_details,
+				):
+					si_events.on_submit(si, None)
+				mock_get_doc.assert_not_called()
+				mock_copy_doc.assert_not_called()
+				mock_new_doc.assert_not_called()
+				mock_get_value.assert_not_called()
+				mock_set_value.assert_not_called()
+				mock_set_gst_details.assert_not_called()
+
+	def test_opening_return_hybrid_keeps_return_branch(self):
+		# The return-Hybrid branch runs before the opening guard, so an opening
+		# Hybrid credit note still creates its negative Subcontracting Charges invoice.
+		si = DummySalesInvoice(
+			is_return=1,
+			is_opening="Yes",
+			sales_type="Hybrid",
+			company="Other",
+			items=[
+				StubItemRow(
+					item_code="RING-1",
+					bom="BOM-1",
+					sales_order="SO-1",
+					delivery_note=None,
+					serial_no="SN-1",
+				)
+			],
+		)
+		new_si = DummySalesInvoice(name="NEW-SI")
+		with (
+			patch(f"{SI}.frappe.get_doc", return_value=_bom(making_charge=5)),
+			patch(f"{SI}.frappe.copy_doc", return_value=new_si) as mock_copy_doc,
+			patch(
+				f"{SI}.frappe.db.get_value",
+				return_value=("Labour Item", "HSN-1", "GMS"),
+			),
+			patch(f"{SI}.frappe.db.set_value") as mock_set_value,
+			patch(f"{SI}.set_gst_details"),
+		):
+			si_events.on_submit(si, None)
+		mock_copy_doc.assert_called_once_with(si)
+		self.assertEqual(new_si.sales_invoice, si.name)
+		self.assertEqual(new_si.items[0].item_code, "Subcontracting Charges")
+		self.assertEqual(new_si.items[0].qty, -1)
+		self.assertEqual(new_si.items[0].rate, 5)
+		self.assertEqual(new_si.invoice_item[0]["qty"], -1)
+		mock_set_value.assert_called_once_with(
+			"Serial No",
+			"SN-1",
+			{"status": "Active", "warehouse": "Product Allocation FG - KGJPL"},
+		)
+
+	def test_regular_hybrid_invoice_still_creates_sc_invoice(self):
+		# Contrast for the opening guard: a regular (is_opening "No") Hybrid invoice
+		# still creates its Subcontracting Charges invoice on submit.
+		si = DummySalesInvoice(
+			sales_type="Hybrid",
+			company="Other",
+			items=[
+				StubItemRow(
+					item_code="RING-1",
+					bom="BOM-1",
+					sales_order="SO-1",
+					delivery_note=None,
+				)
+			],
+		)
+		new_si = DummySalesInvoice(name="NEW-SI")
+
+		def _get_value(doctype, *args, **kwargs):
+			if doctype == "E Invoice Item":
+				return ("Labour Item", "HSN-1", "GMS")
+			# Customer.custom_separate_hallmarking_invoice is unset.
+			return None
+
+		with (
+			patch(f"{SI}.frappe.get_doc", return_value=_bom(making_charge=5)),
+			patch(f"{SI}.frappe.copy_doc", return_value=new_si) as mock_copy_doc,
+			patch(f"{SI}.frappe.new_doc") as mock_new_doc,
+			patch(f"{SI}.frappe.db.get_value", side_effect=_get_value),
+			patch(f"{SI}.set_gst_details"),
+		):
+			si_events.on_submit(si, None)
+		mock_copy_doc.assert_called_once_with(si)
+		self.assertEqual(new_si.sales_invoice, si.name)
+		self.assertEqual(new_si.items[0].item_code, "Subcontracting Charges")
+		self.assertEqual(new_si.items[0].qty, 1)
+		self.assertEqual(new_si.items[0].rate, 5)
+		self.assertEqual(new_si.invoice_item[0]["qty"], 1)
+		mock_new_doc.assert_not_called()
 
 
 class TestValidateItemCategoryForCustomer(_SIBase):
