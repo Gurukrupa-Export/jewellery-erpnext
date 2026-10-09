@@ -536,6 +536,82 @@ class TestBeforeSubmit(_StockEntryTestCase):
 			se_events.before_submit(se, method=None)
 		self.assertEqual(se.posting_time, "10:00:00.000000")
 
+	_GEPL = "Gurukrupa Export Private Limited"
+
+	def _manual_repack(self, **overrides):
+		"""A manual GE Repack saved with an entered posting time; override one field per case."""
+		attrs = {
+			"stock_entry_type": "Repack",
+			"company": self._GEPL,
+			"set_posting_time": 1,
+			"auto_created": 0,
+			"posting_time": "10:00:00.000000",
+		}
+		attrs.update(overrides)
+		return _Doc(**attrs)
+
+	def _submit(self, se):
+		with patch.object(
+			se_events.frappe.utils, "nowtime", return_value="12:00:00.000000"
+		):
+			se_events.before_submit(se, method=None)
+		return se.posting_time
+
+	def test_keeps_entered_time_for_manual_gurukrupa_repack(self):
+		self.assertEqual(self._submit(self._manual_repack()), "10:00:00.000000")
+
+	def test_exemption_is_scoped_to_gurukrupa_export_only(self):
+		self.assertEqual(se_events.KEEP_ENTERED_POSTING_TIME_COMPANIES, (self._GEPL,))
+
+	def test_auto_created_repack_gets_submit_time(self):
+		se = self._manual_repack(auto_created=1)
+		self.assertEqual(self._submit(se), "12:00:00.000000")
+
+	def test_repack_without_set_posting_time_gets_submit_time(self):
+		for value in (0, None, ""):
+			with self.subTest(set_posting_time=value):
+				se = self._manual_repack(set_posting_time=value)
+				self.assertEqual(self._submit(se), "12:00:00.000000")
+
+	def test_repack_of_other_companies_gets_submit_time(self):
+		for company in (
+			"KG GK Jewellers Private Limited",
+			"Sadguru Diamond",
+			"Gurukrupa Bullions LLP",
+			None,
+		):
+			with self.subTest(company=company):
+				se = self._manual_repack(company=company)
+				self.assertEqual(self._submit(se), "12:00:00.000000")
+
+	def test_other_entry_types_of_gurukrupa_export_get_submit_time(self):
+		for entry_type in (
+			"Material Transfer",
+			"Material Receipt",
+			"Material Issue",
+			"Repack-Metal Conversion",
+			"Subcontracting Repack",
+			"Process Loss",
+		):
+			with self.subTest(stock_entry_type=entry_type):
+				se = self._manual_repack(stock_entry_type=entry_type)
+				self.assertEqual(self._submit(se), "12:00:00.000000")
+
+	def test_manufacture_of_gurukrupa_export_keeps_posting_time(self):
+		se = self._manual_repack(stock_entry_type="Manufacture", set_posting_time=0)
+		self.assertEqual(self._submit(se), "10:00:00.000000")
+
+	def test_helper_treats_missing_fields_as_not_exempt(self):
+		self.assertFalse(
+			se_events._keeps_entered_posting_time(_Doc(stock_entry_type="Repack"))
+		)
+		self.assertFalse(
+			se_events._keeps_entered_posting_time(
+				_Doc(stock_entry_type="Repack", company=self._GEPL)
+			)
+		)
+		self.assertTrue(se_events._keeps_entered_posting_time(self._manual_repack()))
+
 
 # ------------------------------------------------------------------ onsubmit dispatch
 class TestOnSubmitDispatch(_StockEntryTestCase):

@@ -1056,9 +1056,26 @@ def prelock_bins_on_cancel(self, method=None):
 	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 
 
+KEEP_ENTERED_POSTING_TIME_COMPANIES = ("Gurukrupa Export Private Limited",)
+
+
+def _keeps_entered_posting_time(doc):
+	"""True for a manual Repack whose entered posting time must survive submit.
+
+	Only the exact type "Repack", for a listed company, saved with "Edit Posting Date
+	and Time" and not system-created, qualifies. before_submit re-stamps every other
+	non-Manufacture entry with the submit time."""
+	return bool(
+		doc.get("stock_entry_type") == "Repack"
+		and doc.get("company") in KEEP_ENTERED_POSTING_TIME_COMPANIES
+		and cint(doc.get("set_posting_time"))
+		and not cint(doc.get("auto_created"))
+	)
+
+
 def before_submit(self, method):
 	# validation_for_stock_entry_submission(self)
-	if self.stock_entry_type != "Manufacture":
+	if self.stock_entry_type != "Manufacture" and not _keeps_entered_posting_time(self):
 		self.posting_time = frappe.utils.nowtime()
 
 	# group_se_items_and_update_mop_items(self, method)
