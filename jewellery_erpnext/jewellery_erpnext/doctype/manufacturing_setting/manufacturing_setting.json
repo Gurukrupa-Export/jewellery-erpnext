@@ -23,6 +23,7 @@
   "expense_account_for_manufacturing_entry",
   "default_last_operation_department",
   "default_gemstone_item",
+  "default_finding_item",
   "column_break_9vro2",
   "default_diamond_department",
   "default_gemstone_department",
@@ -387,6 +388,12 @@
    "fieldname": "default_gemstone_item",
    "fieldtype": "Link",
    "label": "Default Gemstone item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "default_finding_item",
+   "fieldtype": "Link",
+   "label": "Default Finding Item",
    "options": "Item"
   },
   {
