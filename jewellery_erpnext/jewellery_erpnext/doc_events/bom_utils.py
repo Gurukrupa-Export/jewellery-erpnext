@@ -276,6 +276,7 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 		diamond.sieve_size_range,
 		diamond.size_in_mm,
 		diamond.diamond_size_in_mm,
+		diamond.diamond_sieve_size,
 		range_det.get("std_wt"),
 	)
 
@@ -302,6 +303,10 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 				filters["size_in_mm"] = diamond.size_in_mm
 			if diamond.diamond_size_in_mm:
 				filters["diamond_size_in_mm"] = diamond.diamond_size_in_mm
+			elif not diamond.get("size_in_mm") and diamond.get("diamond_sieve_size"):
+				# A row with neither size is priced by its sieve size, the same
+				# key the Sales Order engine uses for Size (in mm) price lists.
+				filters["diamond_size_in_mm"] = diamond.diamond_sieve_size
 		else:
 			frappe.msgprint(_("Diamond Price List Type Not Specified in Customer"))
 		diamond_price_list_data[key] = frappe.get_list(
@@ -545,6 +550,45 @@ def get_making_charges(self):
 	return get_metal_and_finding_making_rate(self, sub_category, setting_type)
 
 
+def _metal_touch_condition(mcp, metal_touch):
+	"""Match Making Charge Price headers on the BOM row's metal touch.
+
+	Strict and null-safe, the same exact-touch rule as get_gold_rate: a row with
+	a touch matches only that touch, and a row without one matches headers whose
+	touch is NULL or blank. It is never a wildcard. The OR is returned as one
+	criterion, so it stays parenthesised inside the caller's AND chain.
+	"""
+	if metal_touch:
+		return mcp.metal_touch == metal_touch
+	return mcp.metal_touch.isnull() | (mcp.metal_touch == "")
+
+
+def _log_making_charge_miss(
+	self, row, setting_type, subcategory, fallback_subcategory=None
+):
+	"""Record a row for which no Making Charge Price matched.
+
+	Such a row keeps the making, wastage and FG purchase values it already
+	carries, so without this line a stale making charge would go unnoticed.
+	Logged at ERROR level: outside the dev server Frappe's file logger drops
+	anything below ERROR, so a warning would never reach the log.
+	"""
+	frappe.logger("jewellery_erpnext").error(
+		"BOM making charge: no Making Charge Price for %s row %s of %s "
+		"(customer=%s, setting_type=%s, metal_type=%s, metal_touch=%s, "
+		"subcategory=%s, fallback_subcategory=%s); existing making values kept",
+		row.parentfield,
+		row.idx,
+		self.name,
+		self.customer,
+		setting_type,
+		row.metal_type,
+		row.metal_touch,
+		subcategory,
+		fallback_subcategory,
+	)
+
+
 def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 	# Get Making Charge From Making Charge Price Master for mentioned Combinations
 	self.set_additional_rate = False
@@ -608,7 +652,13 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 				True if (subquery and subquery[0][0]) else False
 			)
 
-		key = (child_table, row.parentfield, row.metal_type, subcat_subcategory)
+		key = (
+			child_table,
+			row.parentfield,
+			row.metal_type,
+			row.metal_touch,
+			subcat_subcategory,
+		)
 		if not making_charge_data.get(key) and subcategory_data.get(subcat_subcategory):
 			# Build query
 			query = (
@@ -626,6 +676,7 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 					(MCP.customer == self.customer)
 					& (MCP.setting_type == setting_type)
 					& (MCP.metal_type == row.metal_type)
+					& _metal_touch_condition(MCP, row.metal_touch)
 				)
 			)
 			# Subquery to check for existence
@@ -661,7 +712,13 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 				)
 				finding_subcategory_data[sub_category] = True if subquery else False
 
-			key = (child_table, row.parentfield, row.metal_type, subcat_subcategory)
+			key = (
+				child_table,
+				row.parentfield,
+				row.metal_type,
+				row.metal_touch,
+				subcat_subcategory,
+			)
 			query = (
 				frappe.qb.from_(MCP)
 				.left_join(MCPIS)
@@ -680,6 +737,7 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 					(MCP.customer == self.customer)
 					& (MCP.setting_type == setting_type)
 					& (MCP.metal_type == row.metal_type)
+					& _metal_touch_condition(MCP, row.metal_touch)
 				)
 				.limit(1)
 			)
@@ -693,6 +751,15 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 			making_charge_data[key] = query.run(as_dict=True)
 
 			# AND mcp.metal_purity = '{row.metal_purity}'
+
+		if not making_charge_data.get(key) and not row.is_customer_item:
+			_log_making_charge_miss(
+				self,
+				row,
+				setting_type,
+				subcat_subcategory,
+				sub_category if row.get("finding_type") else None,
+			)
 
 		_set_total_making_charges(self, row, making_charge_data.get(key) or [])
 

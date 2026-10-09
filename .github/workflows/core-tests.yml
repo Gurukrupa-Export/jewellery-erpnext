@@ -80,4 +80,5 @@ jobs:
           rc=0
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order || rc=1
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_gemstone_price_list_layout || rc=1
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_utils_price_lookup || rc=1
           exit $rc
