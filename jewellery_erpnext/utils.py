@@ -165,65 +165,29 @@ def get_item_from_attribute(metal_type, metal_touch, metal_purity, metal_colour=
 	ItemVariantAttribute = frappe.qb.DocType("Item Variant Attribute")
 	Item = frappe.qb.DocType("Item")
 
-	# Subqueries for each attribute
-	mtp = (
-		frappe.qb.from_(ItemVariantAttribute)
-		.select(
-			ItemVariantAttribute.parent,
-			ItemVariantAttribute.attribute_value.as_("metal_type"),
-		)
-		.where(ItemVariantAttribute.attribute == "Metal Type")
-	).as_("mtp")
-
-	mt = (
-		frappe.qb.from_(ItemVariantAttribute)
-		.select(
-			ItemVariantAttribute.parent,
-			ItemVariantAttribute.attribute_value.as_("metal_touch"),
-		)
-		.where(ItemVariantAttribute.attribute == "Metal Touch")
-	).as_("mt")
-
-	mp = (
-		frappe.qb.from_(ItemVariantAttribute)
-		.select(
-			ItemVariantAttribute.parent,
-			ItemVariantAttribute.attribute_value.as_("metal_purity"),
-		)
-		.where(ItemVariantAttribute.attribute == "Metal Purity")
-	).as_("mp")
-
-	mc = (
-		frappe.qb.from_(ItemVariantAttribute)
-		.select(
-			ItemVariantAttribute.parent,
-			ItemVariantAttribute.attribute_value.as_("metal_colour"),
-		)
-		.where(ItemVariantAttribute.attribute == "Metal Colour")
-	).as_("mc")
-
-	# Main query with joins and conditions
+	# Base query starting with Item
 	query = (
-		frappe.qb.from_(mtp)
-		.join(mt)
-		.on(mt.parent == mtp.parent)
-		.join(mp)
-		.on(mp.parent == mtp.parent)
-		.join(mc)
-		.on(mc.parent == mtp.parent)
-		.join(Item)
-		.on(Item.name == mtp.parent)
-		.select(mtp.parent.as_("item_code"))
-		.where(
-			(Item.variant_of == "M")
-			& (mtp.metal_type == metal_type)
-			& (mt.metal_touch == metal_touch)
-			& (mp.metal_purity == metal_purity)
-		)
+		frappe.qb.from_(Item)
+		.select(Item.name.as_("item_code"))
+		.where(Item.variant_of == "M")
 	)
 
-	if metal_colour:
-		query = query.where(mc.metal_colour == metal_colour)
+	attrs = {
+		"Metal Type": metal_type,
+		"Metal Purity": metal_purity,
+		"Metal Colour": metal_colour,
+	}
+
+	for attr_name, attr_val in attrs.items():
+		if attr_val:
+			alias = frappe.qb.DocType("Item Variant Attribute").as_(
+				attr_name.replace(" ", "_").lower()
+			)
+			query = (
+				query.join(alias)
+				.on((alias.parent == Item.name) & (alias.attribute == attr_name))
+				.where(alias.attribute_value == attr_val)
+			)
 
 	data = query.run()
 	if data:
@@ -231,78 +195,10 @@ def get_item_from_attribute(metal_type, metal_touch, metal_purity, metal_colour=
 	return None
 
 
-@frappe.whitelist()
 def get_item_from_attribute_full(
 	metal_type, metal_touch, metal_purity, metal_colour=None
 ):
-	# items are created without metal_touch as attribute so not considering it in condition for now
-	ItemVariantAttribute = frappe.qb.DocType("Item Variant Attribute")
-	Item = frappe.qb.DocType("Item")
-
-	# Subqueries for each attribute
-	mtp = (
-		frappe.qb.from_(ItemVariantAttribute)
-		.select(
-			ItemVariantAttribute.parent,
-			ItemVariantAttribute.attribute_value.as_("metal_type"),
-		)
-		.where(ItemVariantAttribute.attribute == "Metal Type")
-	).as_("mtp")
-
-	mt = (
-		frappe.qb.from_(ItemVariantAttribute)
-		.select(
-			ItemVariantAttribute.parent,
-			ItemVariantAttribute.attribute_value.as_("metal_touch"),
-		)
-		.where(ItemVariantAttribute.attribute == "Metal Touch")
-	).as_("mt")
-
-	mp = (
-		frappe.qb.from_(ItemVariantAttribute)
-		.select(
-			ItemVariantAttribute.parent,
-			ItemVariantAttribute.attribute_value.as_("metal_purity"),
-		)
-		.where(ItemVariantAttribute.attribute == "Metal Purity")
-	).as_("mp")
-
-	mc = (
-		frappe.qb.from_(ItemVariantAttribute)
-		.select(
-			ItemVariantAttribute.parent,
-			ItemVariantAttribute.attribute_value.as_("metal_colour"),
-		)
-		.where(ItemVariantAttribute.attribute == "Metal Colour")
-	).as_("mc")
-
-	# Main query with left joins and conditions
-	query = (
-		frappe.qb.from_(mtp)
-		.left_join(mt)
-		.on(mt.parent == mtp.parent)
-		.left_join(mp)
-		.on(mp.parent == mtp.parent)
-		.left_join(mc)
-		.on(mc.parent == mtp.parent)
-		.right_join(Item)
-		.on(Item.name == mtp.parent)
-		.select(mtp.parent.as_("item_code"))
-		.where(
-			(Item.variant_of == "M")
-			& (mtp.metal_type == metal_type)
-			& (mt.metal_touch == metal_touch)
-			& (mp.metal_purity == metal_purity)
-		)
-	)
-	if metal_colour:
-		query = query.where(mc.metal_colour == metal_colour)
-
-	data = query.run()
-
-	if data:
-		return data
-	return None
+	return get_item_from_attribute(metal_type, metal_touch, metal_purity, metal_colour)
 
 
 def get_variant_of_item(item_code):

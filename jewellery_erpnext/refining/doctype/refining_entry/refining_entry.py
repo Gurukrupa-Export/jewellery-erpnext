@@ -2,6 +2,7 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
+from erpnext.utilities.product import get_item_codes_by_attributes
 
 from jewellery_erpnext.refining.constants import (
 	BATCH_TYPE_UNUSED,
@@ -21,7 +22,11 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 	refining_line_terms,
 	resolve_from_index,
 )
-from jewellery_erpnext.utils import get_variant_of_item, resolve_manufacturing_setting
+from jewellery_erpnext.utils import (
+	get_item_from_attribute,
+	get_variant_of_item,
+	resolve_manufacturing_setting,
+)
 
 #: The pure (24KT-equivalent) Metal Loss variant every refining type books its loss
 #: against. get_dust_item() falls back to a resolution chain only when it is absent.
@@ -248,6 +253,20 @@ class RefiningEntry(Document):
 			3,
 		)
 		if self.qty_to_refine <= 0:
+			if self.refining_type == "Serial Number Refining":
+				frappe.throw(
+					_(
+						"No gold weight to send for external refining. The BOMs of serial(s) {0} "
+						"list no gold lines, and no metal item matches their BOM's Metal Type, "
+						"Touch, Purity and Colour, or their metal weight is 0."
+					).format(
+						", ".join(
+							frappe.bold(sn.serial_number)
+							for sn in self.serial_no_details
+							if sn.serial_number
+						)
+					)
+				)
 			frappe.throw(_("No gold weight to send for external refining."))
 
 	def on_submit_external(self):
@@ -1584,7 +1603,7 @@ class RefiningEntry(Document):
 			if bom_details
 			else 0.0
 		)
-		purity = self.get_item_purity(serial_no.item_code)
+		purity = self.get_serial_purity(serial_no.name, serial_no.item_code, bom_no)
 		# Pure gold is computed from the METAL weight (gold alloy only), NOT the
 		# metal-and-finding (net) weight: findings are not gold, and applying the gold
 		# purity to them over-counts the recoverable metal.
@@ -1812,12 +1831,26 @@ class RefiningEntry(Document):
 			# serial_no_details (see _serial_movement_rows).
 			drop_design_code = bool(cint(self.is_external))
 			for sn_row in self.serial_no_details:
-				purity = self.get_item_purity(sn_row.item_code)
+				bom_no = frappe.db.get_value(
+					"Serial No", sn_row.serial_number, "custom_bom_no"
+				)
+				if not bom_no:
+					bom_no = frappe.db.get_value(
+						"BOM", {"item": sn_row.item_code, "is_active": 1}, "name"
+					)
+				# The scan already stored the purity read from the serial's own BOM.
+				purity = sn_row.metal_purity or self.get_serial_purity(
+					sn_row.serial_number, sn_row.item_code, bom_no
+				)
 				if not purity:
 					frappe.throw(
 						_(
-							"Metal Purity is mandatory for Item {0}. Please check Item Variant Attribute details."
-						).format(frappe.bold(sn_row.item_code))
+							"Metal Purity not found for Serial No {0}. Please set Metal Purity on its BOM {1} or on Item {2}."
+						).format(
+							frappe.bold(sn_row.serial_number),
+							frappe.bold(bom_no or "-"),
+							frappe.bold(sn_row.item_code),
+						)
 					)
 				if not drop_design_code:
 					# Internal: the FG item row is what the Material Transfer SE moves
@@ -1836,27 +1869,24 @@ class RefiningEntry(Document):
 					)
 
 				# Also add the BOM components for visibility (they will be skipped during transfer/repack)
-				bom_no = frappe.db.get_value(
-					"Serial No", sn_row.serial_number, "custom_bom_no"
-				)
-				if not bom_no:
-					bom_no = frappe.db.get_value(
-						"BOM", {"item": sn_row.item_code, "is_active": 1}, "name"
-					)
-
+				gold_lines = 0
 				if bom_no:
 					bom_items = frappe.db.get_all(
 						"BOM Item",
 						filters={"parent": bom_no},
 						fields=["item_code", "qty", "stock_qty", "uom", "stock_uom"],
 					)
+					bom_items.extend(
+						self._get_missing_bom_component_items(bom_no, bom_items)
+					)
 					for b_item in bom_items:
 						# ERPNext allows a BOM to list its own parent item once, and this app never strips
 						# it. That row is the DESIGN CODE again — a piece count, not meltable grams — and
 						# the consolidation key below includes serial_no (set on the FG row, blank here) so
-						# the two never merge. Dropped on the external path only, leaving internal weights
-						# and the internal recovery distribution untouched.
-						if drop_design_code and b_item.item_code == sn_row.item_code:
+						# the two never merge. Dropped on both paths: internally it showed the design code
+						# twice, and as a BOM Component it fed the recovery inputs a 1-piece "1 g" row (or,
+						# being the only component, zeroed them instead of using the serial's pure weight).
+						if b_item.item_code == sn_row.item_code:
 							continue
 						self.append(
 							"material_items",
@@ -1869,6 +1899,13 @@ class RefiningEntry(Document):
 								"purity": self.get_item_purity(b_item.item_code),
 							},
 						)
+						if self.is_gold_item(
+							b_item.item_code
+						) and not self._is_returned_intact(b_item.item_code):
+							gold_lines += 1
+
+				if drop_design_code and not gold_lines:
+					self._append_serial_metal_row(sn_row, bom_no)
 
 		if self.refining_type == "Scrap Refining":
 			# Fetch ALL loss items from the department's Scrap warehouse
@@ -2006,7 +2043,9 @@ class RefiningEntry(Document):
 							input_item_map[pct_flt] = item.item_code
 			else:
 				for sn in self.serial_no_details:
-					purity = self.get_item_purity(sn.item_code)
+					purity = sn.metal_purity or self.get_serial_purity(
+						sn.serial_number, sn.item_code
+					)
 					if purity:
 						pct = frappe.db.get_value(
 							"Attribute Value", purity, "purity_percentage"
@@ -2982,6 +3021,54 @@ class RefiningEntry(Document):
 				seen.add(sre.name)
 				rows.append((mwo, sre))
 		return rows
+
+	def _append_serial_metal_row(self, sn_row, bom_no):
+		"""External only: stand in for the gold of a serial whose BOM lists no gold line.
+
+		Some FG BOMs carry only the design code itself -- BOM-BA01328-001-101 is one line,
+		BA01328-001 x 1 Nos -- with the piece's metal recorded only in the BOM header. External
+		refining reads the gold it sends, bills and expects back from gold Material Items rows,
+		so such a serial added nothing and the submit stopped at "No gold weight to send for
+		external refining". Internal refining already falls back to the serial's own weights
+		for this case (``_compute_input_pure_weight``).
+
+		The row is the serial's metal item at the metal weight its scan read from the BOM
+		header. It is a BOM Component like the lines it stands in for, so the stock builders
+		skip it (the piece itself moves through ``_serial_movement_rows``) while qty_to_refine,
+		the Purchase Order and the pure input all count it. Added only when the BOM gave no gold
+		line, so no weight is counted twice; serials of the same metal merge into one line in
+		the consolidation of ``build_material_table``.
+		"""
+		metal_weight = flt(sn_row.metal_weight, 3)
+		if metal_weight <= 0 or not bom_no:
+			return
+		header = frappe.db.get_value(
+			"BOM",
+			bom_no,
+			["metal_type", "metal_touch", "metal_purity", "metal_colour"],
+			as_dict=True,
+		)
+		if not header or not header.metal_type:
+			return
+		metal_item = get_item_from_attribute(
+			header.metal_type,
+			header.metal_touch,
+			header.metal_purity or sn_row.metal_purity,
+			header.metal_colour,
+		)
+		if not metal_item:
+			return
+		self.append(
+			"material_items",
+			{
+				"item_code": metal_item,
+				"warehouse": self.warehouse,
+				"qty": metal_weight,
+				"uom": "Gram",
+				"source_type": "BOM Component",
+				"purity": self.get_item_purity(metal_item),
+			},
+		)
 
 	def _serial_movement_rows(self):
 		"""Material-Items-shaped rows for the serialised pieces of an EXTERNAL serial
@@ -4547,6 +4634,103 @@ class RefiningEntry(Document):
 		"""
 		return self.is_diamond_item(item_code) or self.is_gemstone_item(item_code)
 
+	def _resolve_bom_component_variant(self, detail):
+		if detail.get("item_variant"):
+			return detail.item_variant
+
+		template = detail.get("item")
+		if not template:
+			return None
+
+		attributes = frappe.get_all(
+			"Item Variant Attribute",
+			filters={"parent": template},
+			fields=["attribute"],
+			order_by="idx asc",
+		)
+		attribute_values = {}
+		for attribute in attributes:
+			fieldname = (
+				"finding_type"
+				if attribute.attribute == "Finding Sub-Category"
+				else frappe.scrub(attribute.attribute)
+			)
+			if value := detail.get(fieldname):
+				attribute_values[attribute.attribute] = value
+		if not attribute_values:
+			return None
+
+		candidates = get_item_codes_by_attributes(attribute_values, template)
+		if not candidates:
+			return None
+
+		candidate_attributes = frappe.get_all(
+			"Item Variant Attribute",
+			filters={"parent": ["in", candidates]},
+			fields=["parent", "attribute", "attribute_value"],
+		)
+		attributes_by_item = {}
+		for attribute in candidate_attributes:
+			attributes_by_item.setdefault(attribute.parent, []).append(attribute)
+
+		matches = [
+			item_code
+			for item_code, item_attributes in attributes_by_item.items()
+			if len(item_attributes) == len(attribute_values)
+			and all(
+				attribute_values.get(attribute.attribute) == attribute.attribute_value
+				for attribute in item_attributes
+			)
+		]
+		return matches[0] if len(matches) == 1 else None
+
+	def _get_missing_bom_component_items(self, bom_no, bom_items):
+		existing_items = {item.item_code for item in bom_items}
+		missing_items = {}
+		for detail_table in (
+			"BOM Metal Detail",
+			"BOM Diamond Detail",
+			"BOM Gemstone Detail",
+			"BOM Finding Detail",
+		):
+			for detail in frappe.get_all(
+				detail_table,
+				filters={"parent": bom_no},
+				fields=["*"],
+			):
+				item_code = self._resolve_bom_component_variant(detail)
+				if not item_code or item_code in existing_items:
+					continue
+				missing_items[item_code] = missing_items.get(item_code, 0) + flt(
+					detail.quantity
+				)
+
+		for detail in frappe.get_all(
+			"BOM Other Detail",
+			filters={"parent": bom_no},
+			fields=["item_code", "quantity"],
+		):
+			item_code = detail.item_code
+			if not item_code or item_code in existing_items:
+				continue
+			missing_items[item_code] = missing_items.get(item_code, 0) + flt(
+				detail.quantity
+			)
+
+		rows = []
+		for item_code, quantity in missing_items.items():
+			uom = frappe.db.get_value("Item", item_code, "stock_uom")
+			rows.append(
+				frappe._dict(
+					item_code=item_code,
+					qty=quantity,
+					stock_qty=quantity,
+					uom=uom,
+					stock_uom=uom,
+				)
+			)
+		return rows
+
 	def auto_classify_recoverable_non_metal(self):
 		diamond_items = {row.item for row in self.recovered_diamond}
 		gemstone_items = {row.item for row in self.recovered_gemstone}
@@ -4567,6 +4751,9 @@ class RefiningEntry(Document):
 						"BOM Item",
 						filters={"parent": bom_name},
 						fields=["item_code", "qty"],
+					)
+					bom_items.extend(
+						self._get_missing_bom_component_items(bom_name, bom_items)
 					)
 
 					# Aggregate quantities by item_code to prevent dropping rows
@@ -4960,6 +5147,36 @@ class RefiningEntry(Document):
 		if item_code and item_code.startswith("DL-"):
 			return "D-" + item_code[3:]
 		return item_code
+
+	def get_serial_purity(self, serial_no, item_code, bom_no=None):
+		# A finished-goods design item carries no Metal Purity attribute, and the item-level
+		# fallback reads the design's NEWEST active BOM, which can be a different piece's BOM
+		# with a blank purity. Read it from the serial's OWN as-built BOM instead — the same
+		# BOM its weights come from — and use the item lookup only when that BOM has none.
+		# Within the BOM the metal detail row wins over the header: the header is filled from
+		# the first metal row only while blank (update_specifications), so it can keep an order
+		# spec (e.g. 91.9) while the metal actually used, and its manufacturing order, say
+		# 91.75. First row by idx, the same row update_specifications copies.
+		if not bom_no:
+			bom_no = frappe.db.get_value("Serial No", serial_no, "custom_bom_no")
+		if not bom_no:
+			bom_no = frappe.db.get_value(
+				"BOM", {"item": item_code, "is_active": 1}, "name"
+			)
+		if bom_no:
+			purity = frappe.db.get_value(
+				"BOM Metal Detail",
+				{
+					"parent": bom_no,
+					"parenttype": "BOM",
+					"metal_purity": ["is", "set"],
+				},
+				"metal_purity",
+				order_by="idx asc",
+			) or frappe.db.get_value("BOM", bom_no, "metal_purity")
+			if purity:
+				return purity
+		return self.get_item_purity(item_code)
 
 	def get_item_purity(self, item_code):
 		# Memoize within the request: this is called per material row and does up to
