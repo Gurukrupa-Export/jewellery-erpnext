@@ -1061,3 +1061,220 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			mock_get_taxes.return_value = {}
 			res = po_events.make_quotation("PO-3", None)
 			self.assertEqual(len(res.items), 0)
+
+
+class TestMakeSubcontractingOrderEnrichments(IntegrationTestCase):
+	"""What make_subcontracting_order stamps on the Purchase Orders a Manufacturing Plan raises.
+
+	Three header/row enrichments, each with its own source:
+
+	* the four order dimensions, copied from the plan header -- but only when the plan was
+	  drawn from Sales Orders, since an MWO-only plan never has its header refreshed;
+	* custom_copy_bom on FG Purchase rows, read from the Sales Order Item each row was
+	  planned from, in a single query that covers FG Purchase rows only;
+	* gold_rate_with_gst (and gold_rate, converted as purchase_order.js does), stamped only
+	  when every source Sales Order with a rate agrees.
+
+	DB-free per the suite convention: setUpClass is a deliberate no-op, the plan is a
+	frappe._dict and every Purchase Order is a MagicMock.
+	"""
+
+	MODULE = "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		# flt(x, 3) rounds through System Settings; read it before frappe.get_all is faked.
+		frappe.get_system_settings("rounding_method")
+
+		self.sales_order_rates = []
+		self.sales_order_item_rows = []
+
+		def get_all(doctype, *args, **kwargs):
+			if doctype == "Sales Order":
+				return [
+					frappe._dict(gold_rate_with_gst=rate)
+					for rate in self.sales_order_rates
+				]
+			if doctype == "Sales Order Item":
+				return [frappe._dict(row) for row in self.sales_order_item_rows]
+			return []
+
+		for target, kwargs in (
+			("frappe.new_doc", {}),
+			("frappe.db.get_single_value", {"return_value": "Subcontracting Service"}),
+			("frappe.get_all", {"side_effect": get_all}),
+		):
+			patcher = patch(f"{self.MODULE}.{target}", **kwargs)
+			setattr(self, "mock_" + target.rsplit(".", 1)[-1], patcher.start())
+			self.addCleanup(patcher.stop)
+
+	def _new_po(self):
+		po = MagicMock()
+		po.gold_rate_with_gst = None
+		po.gold_rate = None
+		return po
+
+	def _calls_for(self, doctype):
+		return [c for c in self.mock_get_all.call_args_list if c.args[0] == doctype]
+
+	@staticmethod
+	def _row(**kwargs):
+		row = {
+			"supplier": "_Test Supplier A",
+			"customer": "_Test Customer",
+			"purchase_type": "FG Purchase",
+			"customer_po": "_TEST-CPO",
+			"item_code": "_TEST-ITEM-1",
+			"subcontracting_qty": 1,
+			"manufacturing_bom": "_TEST-BOM-1",
+			"diamond_quality": "_TEST-DQ",
+			"child_po": "_TEST-CHILD-PO",
+			"estimated_delivery_date": "2026-08-10",
+			"name": "_TEST-MPT-1",
+		}
+		row.update(kwargs)
+		return frappe._dict(row)
+
+	@staticmethod
+	def _plan(rows, **header):
+		return frappe._dict(
+			name="_TEST-MPLAN",
+			company="_Test Company",
+			manufacturing_plan_table=rows,
+			**header,
+		)
+
+	def test_stamps_order_dimensions_from_plan_header(self):
+		po = self._new_po()
+		self.mock_new_doc.return_value = po
+		plan = self._plan(
+			[self._row(sales_order="_TEST-SO-1")],
+			order_type="_TEST-ORDER-TYPE",
+			sales_type="_TEST-SALES-TYPE",
+			flow_type="_TEST-FLOW-TYPE",
+			design_type="_TEST-DESIGN-TYPE",
+		)
+
+		po_events.make_subcontracting_order(plan)
+
+		self.assertEqual(po.set.call_count, 4)
+		self.assertEqual(
+			{c.args[0]: c.args[1] for c in po.set.call_args_list},
+			{
+				"custom_order_type": "_TEST-ORDER-TYPE",
+				"custom_sales_type": "_TEST-SALES-TYPE",
+				"custom_flow_type": "_TEST-FLOW-TYPE",
+				"custom_design_type": "_TEST-DESIGN-TYPE",
+			},
+		)
+
+	def test_no_order_dimensions_without_sales_order_rows(self):
+		"""An MWO-only plan keeps whatever its header held; that must not reach the PO."""
+		po = self._new_po()
+		self.mock_new_doc.return_value = po
+		plan = self._plan(
+			[self._row(mwo="_TEST-MWO-1")],
+			order_type="_TEST-STALE",
+			sales_type="_TEST-STALE",
+			flow_type="_TEST-STALE",
+			design_type="_TEST-STALE",
+		)
+
+		po_events.make_subcontracting_order(plan)
+
+		stamped = {c.args[0] for c in po.set.call_args_list}
+		self.assertFalse(stamped & set(po_events.PO_DIMENSION_FIELDS.values()))
+		po.save.assert_called_once()
+
+	def test_fg_rows_carry_copy_bom_from_sales_order_item(self):
+		fg_po, service_po = self._new_po(), self._new_po()
+		self.mock_new_doc.side_effect = [fg_po, service_po]
+		self.sales_order_item_rows = [
+			{"name": "_TEST-SOI-1", "copy_bom": "_TEST-BOM-ORIGIN-1"}
+		]
+		plan = self._plan(
+			[
+				self._row(sales_order="_TEST-SO-1", docname="_TEST-SOI-1"),
+				self._row(
+					supplier="_Test Supplier B",
+					purchase_type="Subcontracting",
+					sales_order="_TEST-SO-1",
+					docname="_TEST-SOI-2",
+					name="_TEST-MPT-2",
+				),
+			]
+		)
+
+		po_events.make_subcontracting_order(plan)
+
+		soi_calls = self._calls_for("Sales Order Item")
+		self.assertEqual(len(soi_calls), 1)
+		self.assertEqual(
+			soi_calls[0].kwargs["filters"], {"name": ["in", ["_TEST-SOI-1"]]}
+		)
+
+		fg_payload = fg_po.append.call_args.args[1]
+		self.assertEqual(fg_payload["custom_copy_bom"], "_TEST-BOM-ORIGIN-1")
+		service_payload = service_po.append.call_args.args[1]
+		self.assertNotIn("custom_copy_bom", service_payload)
+
+	def test_rows_without_docname_get_no_copy_bom_and_no_query(self):
+		po = self._new_po()
+		self.mock_new_doc.return_value = po
+
+		po_events.make_subcontracting_order(self._plan([self._row()]))
+
+		self.assertIsNone(po.append.call_args.args[1]["custom_copy_bom"])
+		self.assertEqual(self._calls_for("Sales Order Item"), [])
+
+	def test_common_gold_rate_stamped_before_items(self):
+		po = self._new_po()
+		self.mock_new_doc.return_value = po
+		seen_at_first_append = []
+		po.append.side_effect = lambda *args: seen_at_first_append.append(
+			(po.gold_rate_with_gst, po.gold_rate)
+		)
+		self.sales_order_rates = [1030.0, 1030.0]
+		plan = self._plan(
+			[
+				self._row(sales_order="_TEST-SO-1"),
+				self._row(sales_order="_TEST-SO-2", name="_TEST-MPT-2"),
+			]
+		)
+
+		po_events.make_subcontracting_order(plan)
+
+		self.assertEqual(po.gold_rate_with_gst, 1030.0)
+		self.assertEqual(po.gold_rate, 1000.0)
+		self.assertEqual(seen_at_first_append[0], (1030.0, 1000.0))
+		self.assertEqual(len(self._calls_for("Sales Order")), 1)
+
+	def test_gold_rate_left_blank_when_sources_disagree_or_zero(self):
+		cases = (
+			("disagree", [1000.0, 2000.0], None, None),
+			("zero ignored", [0, 1000.0], 1000.0, 970.874),
+			("all zero", [0, 0], None, None),
+		)
+		for label, rates, expected_with_gst, expected_rate in cases:
+			with self.subTest(label):
+				po = self._new_po()
+				self.mock_new_doc.return_value = po
+				self.sales_order_rates = rates
+				plan = self._plan(
+					[
+						self._row(sales_order="_TEST-SO-1"),
+						self._row(sales_order="_TEST-SO-2", name="_TEST-MPT-2"),
+					]
+				)
+
+				po_events.make_subcontracting_order(plan)
+
+				self.assertEqual(po.gold_rate_with_gst, expected_with_gst)
+				self.assertEqual(po.gold_rate, expected_rate)
+
+	def test_source_gold_rate_without_sales_order_rows_skips_query(self):
+		self.assertIsNone(po_events._source_gold_rate(self._plan([self._row()])))
+		self.mock_get_all.assert_not_called()

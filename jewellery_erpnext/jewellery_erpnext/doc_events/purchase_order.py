@@ -251,9 +251,44 @@ def update_rate(self):
 				)
 
 
+# Manufacturing Plan header field -> Purchase Order header field for the four order dimensions
+# that ManufacturingPlan.set_order_dimensions stamps on the plan. Defined here rather than in
+# manufacturing_plan.py because that module imports this one.
+PO_DIMENSION_FIELDS = {
+	"order_type": "custom_order_type",
+	"sales_type": "custom_sales_type",
+	"flow_type": "custom_flow_type",
+	"design_type": "custom_design_type",
+}
+
+
 def make_subcontracting_order(doc):
 	default_item = frappe.db.get_single_value("Jewellery Settings", "service_item")
 	supplier_wise_items = frappe._dict()
+
+	# set_order_dimensions stamps the plan header only from Sales Order rows. A plan built from
+	# Manufacturing Work Orders alone keeps whatever its header already held, so those values are
+	# not copied onto its Purchase Orders.
+	has_so_rows = any(row.get("sales_order") for row in doc.manufacturing_plan_table)
+
+	# Copy BOM of the Sales Order Item each FG Purchase row was planned from: one query for the
+	# whole plan, and none when no FG Purchase row points at a Sales Order Item.
+	fg_docnames = {
+		row.docname
+		for row in doc.manufacturing_plan_table
+		if row.purchase_type == "FG Purchase" and row.get("docname")
+	}
+	so_copy_bom = {}
+	if fg_docnames:
+		so_copy_bom = {
+			soi.name: soi.copy_bom
+			for soi in frappe.get_all(
+				"Sales Order Item",
+				filters={"name": ["in", sorted(fg_docnames)]},
+				fields=["name", "copy_bom"],
+			)
+		}
+
 	for row in doc.manufacturing_plan_table:
 		if not supplier_wise_items.get(row.supplier):
 			supplier_wise_items.setdefault(row.supplier, {"items": []})
@@ -268,6 +303,7 @@ def make_subcontracting_order(doc):
 					"item_code": (row.item_code),
 					"qty": row.subcontracting_qty,
 					"manufacturing_bom": row.manufacturing_bom,
+					"custom_copy_bom": so_copy_bom.get(row.get("docname")),
 					"diamond_quality": row.diamond_quality,
 					"custom_manufacturing_plan": doc.name,
 					"custom_m_plan_details": row.name,
@@ -291,6 +327,14 @@ def make_subcontracting_order(doc):
 				}
 			)
 
+	order_dimensions = {}
+	if has_so_rows:
+		order_dimensions = {
+			po_field: doc.get(plan_field)
+			for plan_field, po_field in PO_DIMENSION_FIELDS.items()
+		}
+	gold_rate_with_gst = _source_gold_rate(doc)
+
 	for row in supplier_wise_items:
 		po_doc = frappe.new_doc("Purchase Order")
 		po_doc.supplier = row
@@ -303,9 +347,48 @@ def make_subcontracting_order(doc):
 		po_doc.manufacturing_plan = doc.name
 		po_doc.custom_customer_po = supplier_wise_items[row].get("custom_customer_po")
 		po_doc.is_subcontracted = supplier_wise_items[row].get("is_subcontracted")
+		for po_field, value in order_dimensions.items():
+			po_doc.set(po_field, value)
+		if gold_rate_with_gst:
+			po_doc.gold_rate_with_gst = gold_rate_with_gst
+			# The same conversion purchase_order.js makes when the rate is typed in.
+			po_doc.gold_rate = flt(gold_rate_with_gst / 1.03, 3)
 		for item in supplier_wise_items[row]["items"]:
 			po_doc.append("items", item)
 		po_doc.save()
+
+
+def _source_gold_rate(doc):
+	"""Gold rate (with GST) for the Purchase Order header, taken from the source Sales Orders.
+
+	Informational only. The stamp records the rate the source orders were taken at; nothing
+	reprices from it. update_rate prices FG Purchase rows from their BOM and the row's own metal
+	amount and never reads the header rate, so stamping it cannot change any amount.
+
+	Returns a rate only when every source Sales Order that has one agrees on it. A plan with no
+	Sales Order rows, no rate at all, or two different rates returns None, and the header is left
+	blank.
+	"""
+	sales_orders = {
+		row.sales_order
+		for row in doc.manufacturing_plan_table
+		if row.get("sales_order")
+	}
+	if not sales_orders:
+		return None
+
+	# One query however many orders feed the plan.
+	rates = {
+		flt(row.gold_rate_with_gst)
+		for row in frappe.get_all(
+			"Sales Order",
+			filters={"name": ["in", list(sales_orders)]},
+			fields=["gold_rate_with_gst"],
+		)
+	}
+	rates.discard(0)
+
+	return rates.pop() if len(rates) == 1 else None
 
 
 def on_cancel(doc, method=None):
