@@ -1019,8 +1019,9 @@ class TestBatchRepackIntegration(IntegrationTestCase):
 	"""Real Stock Entry, Batch and ledger rows for the CI seed company.
 
 	Skipped where the seed (create_test_data) is absent. Each test runs inside a savepoint
-	that is rolled back; ``frappe.db.commit`` is stubbed so nothing escapes it, and stock
-	reposts are not executed for the back-dated entries.
+	that is rolled back; ``frappe.db.commit`` is stubbed so nothing escapes it, stock
+	reposts are not executed for the back-dated entries, and the EOD sync lock reads as
+	not running (a lock left committed by earlier suites would refuse every Stock Entry).
 	"""
 
 	@classmethod
@@ -1279,7 +1280,8 @@ class TestBatchRepackIntegration(IntegrationTestCase):
 			)
 
 		before = counts()
-		with self.assertRaises(frappe.ValidationError):
+		# Pinned to the balance refusal, so no other ValidationError can satisfy it.
+		with self.assertRaisesRegex(frappe.ValidationError, "is more than the"):
 			repack.create_repack_stock_entry(
 				source_batch, CI_WAREHOUSE, 6, 250, branch=self.branch
 			)
