@@ -131,3 +131,4 @@ jewellery_erpnext.patches.keep_last_7_days_of_error_log
 jewellery_erpnext.patches.audit_pmo_row_ownership
 jewellery_erpnext.patches.add_ref_customer_fields
 jewellery_erpnext.patches.quotation_invoice_item_grid_columns
+jewellery_erpnext.patches.add_serial_and_batch_bundle_item_index
