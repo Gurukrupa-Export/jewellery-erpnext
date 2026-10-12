@@ -55,6 +55,7 @@ doctype_js = {
 	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
 	"Payment Entry": "public/js/doctype_js/payment_entry.js",
 	"Warehouse": "public/js/doctype_js/warehouse.js",
+	"Batch": "public/js/doctype_js/batch.js",
 }
 
 doctype_list_js = {

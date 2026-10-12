@@ -77,4 +77,5 @@ jobs:
           cd ~/frappe-bench
           rc=0
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry || rc=1
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_repack || rc=1
           exit $rc
