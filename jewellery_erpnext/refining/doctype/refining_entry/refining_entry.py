@@ -1,4 +1,5 @@
 import frappe
+from erpnext.utilities.product import get_item_codes_by_attributes
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
@@ -66,6 +67,26 @@ def secondary_item_row(value="Scrap"):
 		else "type"
 	)
 	return {fieldname: value}
+
+
+def returned_stone_row(rate):
+	"""Valuation fields for a stone the refiner hands back, received at ``rate``.
+
+	Pinned as Manual so every costing pass (validate, then submit) keeps it: ERPNext deducts a
+	Manual secondary row from the consumed value and gives the refined metal the rest. Left to
+	``allow_zero_valuation_rate`` alone the rate flipped between its valuation and 0 on each
+	pass on ERPNext 16.36+, so the stones came in at 0. The flag stays only for a stone no
+	rate is known for, so it can still post.
+	"""
+	row = {
+		"set_basic_rate_manually": 1,
+		# ERPNext re-derives set_basic_rate_manually from this on a BOM-less secondary row.
+		"valuation_type": "Manual",
+		"basic_rate": flt(rate),
+	}
+	if not flt(rate):
+		row["allow_zero_valuation_rate"] = 1
+	return row
 
 
 def _default_receiving_warehouse(company):
@@ -735,7 +756,9 @@ class RefiningEntry(Document):
 			"t_warehouse": target_wh,
 			"is_finished_item": 1,
 			"use_serial_batch_fields": 1,
-			"allow_zero_valuation_rate": 1,
+			# No allow_zero_valuation_rate: on this row it zeroed the rate ERPNext costs from
+			# the consumed material, so the refined metal came in at 0 and its batch was
+			# diluted (MAT-STE-63010: a 464,888 piece out, 21 g of 24KT in at 0).
 			**output_owner_row,
 		}
 		# Reuse the 24KT item's EXISTING batch in the receiving warehouse when there is one
@@ -794,12 +817,11 @@ class RefiningEntry(Document):
 				"uom": r["uom"] or frappe.db.get_value("Item", ret_item, "stock_uom"),
 				"t_warehouse": target_wh,
 				# Scrap-type by-product (NOT a finished good): the single finished good is
-				# the pure metal above, so the Manufacture auto-costs it from the consumed
-				# inputs and these land at zero valuation — mirrors create_repack_se.
+				# the pure metal above. The stone comes back at its own rate (set below, once
+				# its batch is known) and the metal is costed from what is left.
 				**secondary_item_row(),
 				"is_finished_item": 0,
 				"use_serial_batch_fields": 1,
-				"allow_zero_valuation_rate": 1,
 			}
 			# Same existing-batch-first rule as the metal row, and the customer is carried
 			# through — but ONLY when the Item permits it, exactly as _recovered_output_customer
@@ -822,6 +844,9 @@ class RefiningEntry(Document):
 				row["customer"] = ret_customer
 			if ret_batch:
 				row["batch_no"] = ret_batch
+			row.update(
+				returned_stone_row(self._returned_stone_rate(ret_item, ret_batch))
+			)
 			se.append("items", row)
 
 		self._assert_no_loss_output(se)
@@ -1876,6 +1901,11 @@ class RefiningEntry(Document):
 						"BOM Item",
 						filters={"parent": bom_no},
 						fields=["item_code", "qty", "stock_qty", "uom", "stock_uom"],
+					)
+					bom_items.extend(
+						self._get_missing_bom_component_items(
+							bom_no, bom_items, block_unmatched_stones=True
+						)
 					)
 					for b_item in bom_items:
 						# ERPNext allows a BOM to list its own parent item once, and this app never strips
@@ -3938,6 +3968,33 @@ class RefiningEntry(Document):
 			return inv_type == "Customer Goods" and batch_customer == customer
 		return not batch_is_customer_owned
 
+	def _returned_stone_rate(self, item_code, batch_no=None):
+		"""Rate a diamond or gemstone handed back by the refiner is received at.
+
+		The Batch Rate of the batch it goes back into first, so the batch keeps the rate it
+		shows. Then the item's last purchase rate, then the newest Batch Rate any batch of the
+		item carries (a stone made in-house, never bought). The warehouse valuation is not
+		used: earlier receipts took stones in at 0 and diluted it (MAT-STE-63008 left
+		D-NT-RO-6B-+11.5-12 at 0 in Central RM). 0 only when none of these is known.
+		"""
+		has_batch_rate = frappe.get_meta("Batch").has_field("custom_metal_rate")
+		if batch_no and has_batch_rate:
+			if rate := flt(frappe.db.get_value("Batch", batch_no, "custom_metal_rate")):
+				return rate
+		if rate := flt(frappe.db.get_value("Item", item_code, "last_purchase_rate")):
+			return rate
+		if has_batch_rate:
+			latest = frappe.get_all(
+				"Batch",
+				filters={"item": item_code, "custom_metal_rate": [">", 0]},
+				fields=["custom_metal_rate"],
+				order_by="creation desc",
+				limit=1,
+			)
+			if latest:
+				return flt(latest[0].custom_metal_rate)
+		return 0.0
+
 	def _receive_target_batch(self, item_code, warehouse, customer=None, exclude=None):
 		"""Batch to receive refining output into: an EXISTING one when there is one,
 		otherwise a freshly minted one.
@@ -4633,6 +4690,164 @@ class RefiningEntry(Document):
 		"""
 		return self.is_diamond_item(item_code) or self.is_gemstone_item(item_code)
 
+	def _resolve_bom_component_variant(self, detail):
+		if detail.get("item_variant"):
+			return detail.item_variant
+
+		template = detail.get("item")
+		if not template:
+			return None
+
+		attributes = frappe.get_all(
+			"Item Variant Attribute",
+			filters={"parent": template},
+			fields=["attribute"],
+			order_by="idx asc",
+		)
+		attribute_values = {}
+		for attribute in attributes:
+			fieldname = (
+				"finding_type"
+				if attribute.attribute == "Finding Sub-Category"
+				else frappe.scrub(attribute.attribute)
+			)
+			if value := detail.get(fieldname):
+				attribute_values[attribute.attribute] = value
+		if not attribute_values:
+			return None
+
+		candidates = get_item_codes_by_attributes(attribute_values, template)
+		if not candidates:
+			return None
+
+		candidate_attributes = frappe.get_all(
+			"Item Variant Attribute",
+			filters={"parent": ["in", candidates]},
+			fields=["parent", "attribute", "attribute_value"],
+		)
+		attributes_by_item = {}
+		for attribute in candidate_attributes:
+			attributes_by_item.setdefault(attribute.parent, {})[
+				attribute.attribute
+			] = attribute.attribute_value
+
+		fits = [
+			item_code
+			for item_code, item_attributes in attributes_by_item.items()
+			if all(item_attributes.get(k) == v for k, v in attribute_values.items())
+		]
+		exact = [
+			item_code
+			for item_code in fits
+			if len(attributes_by_item[item_code]) == len(attribute_values)
+		]
+		if exact:
+			return exact[0] if len(exact) == 1 else None
+		# A repair-order BOM row can leave attributes blank that its item carries -- a
+		# gemstone with no Grade or PR (BOM-BA00122-001-002). The one item that agrees on
+		# every attribute the row does give is that stone; two or more is a guess.
+		return fits[0] if len(fits) == 1 else None
+
+	def _get_missing_bom_component_items(
+		self, bom_no, bom_items, block_unmatched_stones=False
+	):
+		existing_items = {item.item_code for item in bom_items}
+		missing_items = {}
+		unresolved = []
+		unresolved_stones = []
+		# Tracking Bom keeps its rows in these same child tables, so scope every read to BOM.
+		component_tables = {
+			"BOM Metal Detail": (
+				"metal_type",
+				"metal_touch",
+				"metal_purity",
+				"metal_colour",
+			),
+			"BOM Diamond Detail": ("diamond_type", "stone_shape", "diamond_sieve_size"),
+			"BOM Gemstone Detail": ("gemstone_type", "stone_shape", "gemstone_size"),
+			"BOM Finding Detail": ("finding_category", "finding_type"),
+		}
+		for detail_table, label_fields in component_tables.items():
+			for detail in frappe.get_all(
+				detail_table,
+				filters={"parent": bom_no, "parenttype": "BOM"},
+				fields=["*"],
+				order_by="idx asc",
+			):
+				item_code = self._resolve_bom_component_variant(detail)
+				if not item_code:
+					label = (
+						" / ".join(
+							str(detail.get(f)) for f in label_fields if detail.get(f)
+						)
+						or detail_table
+					)
+					if detail_table in ("BOM Diamond Detail", "BOM Gemstone Detail"):
+						unresolved_stones.append(label)
+					else:
+						unresolved.append(label)
+					continue
+				if item_code in existing_items:
+					continue
+				missing_items[item_code] = missing_items.get(item_code, 0) + flt(
+					detail.quantity
+				)
+
+		# A stone comes back from refining intact and is received into stock as its item, so
+		# a stone row with no item cannot be refined: stop the scan rather than drop it or
+		# guess one. Raised only where Material Items are built -- an entry already past its
+		# scan keeps the warning below and is not stopped part-way through its lifecycle.
+		if block_unmatched_stones and unresolved_stones:
+			frappe.throw(
+				_(
+					"These stones of BOM {0} match no item: {1}. Create the item, or set the "
+					"Item Variant on those BOM rows, then scan the serial again."
+				).format(frappe.bold(bom_no), ", ".join(unresolved_stones)),
+				title=_("Stone Item Missing"),
+			)
+		unresolved += unresolved_stones
+
+		# A row with no Item Variant that matches no single item (a metal purity no item
+		# carries) is left out -- guessing would put the wrong item into stock. Say so once
+		# per BOM instead of dropping it silently.
+		warned = self.__dict__.setdefault("_unresolved_bom_warned", set())
+		if unresolved and bom_no not in warned:
+			warned.add(bom_no)
+			frappe.msgprint(
+				_(
+					"These components of BOM {0} match no single item and are left out of "
+					"Material Items: {1}. Set the Item Variant on those BOM rows to include them."
+				).format(frappe.bold(bom_no), ", ".join(unresolved)),
+				indicator="orange",
+				alert=True,
+			)
+
+		for detail in frappe.get_all(
+			"BOM Other Detail",
+			filters={"parent": bom_no, "parenttype": "BOM"},
+			fields=["item_code", "quantity"],
+		):
+			item_code = detail.item_code
+			if not item_code or item_code in existing_items:
+				continue
+			missing_items[item_code] = missing_items.get(item_code, 0) + flt(
+				detail.quantity
+			)
+
+		rows = []
+		for item_code, quantity in missing_items.items():
+			uom = frappe.db.get_value("Item", item_code, "stock_uom")
+			rows.append(
+				frappe._dict(
+					item_code=item_code,
+					qty=quantity,
+					stock_qty=quantity,
+					uom=uom,
+					stock_uom=uom,
+				)
+			)
+		return rows
+
 	def auto_classify_recoverable_non_metal(self):
 		diamond_items = {row.item for row in self.recovered_diamond}
 		gemstone_items = {row.item for row in self.recovered_gemstone}
@@ -4653,6 +4868,9 @@ class RefiningEntry(Document):
 						"BOM Item",
 						filters={"parent": bom_name},
 						fields=["item_code", "qty"],
+					)
+					bom_items.extend(
+						self._get_missing_bom_component_items(bom_name, bom_items)
 					)
 
 					# Aggregate quantities by item_code to prevent dropping rows
