@@ -3276,6 +3276,12 @@ class TestSerialMaterialRows(IntegrationTestCase):
 			refining_entry as re_module,
 		)
 
+		self.partial_calls = []
+
+		def resolve(detail, allow_partial=False):
+			self.partial_calls.append((detail, allow_partial))
+			return (resolved or (lambda d: None))(detail)
+
 		re = frappe.new_doc("Refining Entry")
 		with (
 			patch.object(
@@ -3283,11 +3289,7 @@ class TestSerialMaterialRows(IntegrationTestCase):
 				"get_all",
 				side_effect=lambda doctype, **kw: details.get(doctype, []),
 			),
-			patch.object(
-				re,
-				"_resolve_bom_component_variant",
-				side_effect=resolved or (lambda detail: None),
-			),
+			patch.object(re, "_resolve_bom_component_variant", side_effect=resolve),
 			patch.object(re_module.frappe.db, "get_value", return_value="Carat"),
 			patch.object(re_module.frappe, "msgprint") as msgprint,
 		):
@@ -3329,7 +3331,27 @@ class TestSerialMaterialRows(IntegrationTestCase):
 		msgprint.assert_called_once()
 		self.assertIn("Gold / 22KT / 92.0 / Yellow", msgprint.call_args[0][0])
 
-	def _resolve_with(self, detail, template_attributes, items):
+	def test_only_stone_rows_may_take_a_partial_match(self):
+		"""Review N10: the blank-attribute match is for stones; metal and finding rows keep
+		the exact match."""
+		tables = (
+			"BOM Metal Detail",
+			"BOM Diamond Detail",
+			"BOM Gemstone Detail",
+			"BOM Finding Detail",
+		)
+		self._missing_with({t: [frappe._dict(quantity=1, table=t)] for t in tables})
+		self.assertEqual(
+			{detail.table: partial for detail, partial in self.partial_calls},
+			{
+				"BOM Metal Detail": False,
+				"BOM Diamond Detail": True,
+				"BOM Gemstone Detail": True,
+				"BOM Finding Detail": False,
+			},
+		)
+
+	def _resolve_with(self, detail, template_attributes, items, allow_partial=True):
 		"""``_resolve_bom_component_variant`` against ``items`` ({code: {attribute: value}})."""
 		from jewellery_erpnext.refining.doctype.refining_entry import (
 			refining_entry as re_module,
@@ -3351,12 +3373,39 @@ class TestSerialMaterialRows(IntegrationTestCase):
 				re_module, "get_item_codes_by_attributes", return_value=list(items)
 			),
 		):
-			return re._resolve_bom_component_variant(detail)
+			return re._resolve_bom_component_variant(
+				detail, allow_partial=allow_partial
+			)
 
 	GEM_ATTRIBUTES = ("Gemstone Type", "Stone Shape", "Gemstone Grade", "Gemstone PR")
 	EMERALD_ROW = frappe._dict(
 		item="G", item_variant=None, gemstone_type="Emerald", stone_shape="Round"
 	)
+
+	def test_a_metal_row_does_not_take_a_partial_match(self):
+		"""Review N10: a metal row with a blank purity must not become whichever single
+		metal item happens to exist."""
+		row = frappe._dict(
+			item="M",
+			item_variant=None,
+			metal_type="Gold",
+			metal_touch="22KT",
+			metal_colour="Yellow",
+		)
+		item = {
+			"Metal Type": "Gold",
+			"Metal Touch": "22KT",
+			"Metal Purity": "91.75",
+			"Metal Colour": "Yellow",
+		}
+		self.assertIsNone(
+			self._resolve_with(
+				row,
+				("Metal Type", "Metal Touch", "Metal Purity", "Metal Colour"),
+				{"M-G-22KT-91.75-Y": item},
+				allow_partial=False,
+			)
+		)
 
 	def test_a_stone_row_without_grade_and_pr_finds_its_one_item(self):
 		"""BOM-BA00122-001-002's Emerald leaves Grade and PR blank; its item carries both."""
@@ -3553,7 +3602,12 @@ class TestSerialMaterialRows(IntegrationTestCase):
 			patch.object(
 				RefiningEntry,
 				"is_gold_item",
-				side_effect=lambda code: code.startswith(("M-", "ML-")),
+				side_effect=lambda code: code.startswith(("M-", "ML-", "F-")),
+			),
+			patch.object(
+				RefiningEntry,
+				"is_finding_item",
+				side_effect=lambda code: code.startswith("F-"),
 			),
 			patch.object(RefiningEntry, "_is_returned_intact", return_value=False),
 			patch.object(re_module, "get_item_from_attribute", return_value=metal_item),
@@ -3621,6 +3675,37 @@ class TestSerialMaterialRows(IntegrationTestCase):
 			[("M-G-22KT-91.75-Y", 47.696)],
 		)
 
+	FINDING = frappe._dict(
+		item_code="F-G-22KT", qty=0.35, stock_qty=0.35, uom="Gram", stock_uom="Gram"
+	)
+
+	def test_external_finding_only_bom_still_sends_the_serials_metal(self):
+		"""Review N5: a gold finding is a few grams, not the piece's metal body, so it must not
+		switch the stand-in off."""
+		re, _ = self._build(
+			is_external=1, bom_items=[*self.DESIGN_ONLY_BOM, self.FINDING]
+		)
+		self.assertEqual(
+			sorted((row.item_code, flt(row.qty, 3)) for row in re.material_items),
+			[("F-G-22KT", 0.35), ("M-G-22KT-91.75-Y", 23.848)],
+		)
+
+	def test_external_metal_and_finding_lines_get_no_stand_in(self):
+		metal = frappe._dict(
+			item_code="ML-G-22KT",
+			qty=23.848,
+			stock_qty=23.848,
+			uom="Gram",
+			stock_uom="Gram",
+		)
+		re, _ = self._build(
+			is_external=1, bom_items=[*self.DESIGN_ONLY_BOM, metal, self.FINDING]
+		)
+		self.assertEqual(
+			sorted((row.item_code, flt(row.qty, 3)) for row in re.material_items),
+			[("F-G-22KT", 0.35), ("ML-G-22KT", 23.848)],
+		)
+
 	def test_no_metal_item_for_the_header_adds_nothing(self):
 		re, _ = self._build(is_external=1, bom_items=self.DESIGN_ONLY_BOM, metal_item=None)
 		self.assertEqual(list(re.material_items), [])
@@ -3645,7 +3730,9 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 
 	STONE_QTY = 2.24
 
-	def _receipt(self, stone_rate=0.0):
+	def _receipt(self, stone_rate=0.0, cost_on_insert=False):
+		"""Run receive_from_supplier up to insert, or with ``cost_on_insert`` through an insert
+		that costs the entry as ERPNext would, up to submit."""
 		from jewellery_erpnext.refining.doctype.refining_entry import (
 			refining_entry as re_module,
 		)
@@ -3681,6 +3768,21 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 		class _Built(Exception):
 			pass
 
+		class _Submitted(Exception):
+			pass
+
+		def insert(se, *args, **kwargs):
+			if not cost_on_insert:
+				raise _Built
+			for row in se.items:
+				row.conversion_factor = 1
+				row.transfer_qty = row.qty
+			for row in se.items:
+				if row.s_warehouse:
+					row.basic_rate = row.basic_amount = self.PIECE_VALUE
+			self._cost(se, 1)
+			se.total_outgoing_value = self.PIECE_VALUE
+
 		with (
 			patch.object(re_module.frappe, "new_doc", side_effect=new_doc),
 			patch.object(
@@ -3704,10 +3806,17 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 			),
 			patch.object(RefiningEntry, "_assert_no_loss_output"),
 			patch.object(RefiningEntry, "set_dust_receipt_difference_account"),
-			patch("frappe.model.document.Document.insert", side_effect=_Built),
+			patch(
+				"frappe.model.document.Document.insert",
+				autospec=True,
+				side_effect=insert,
+			),
+			patch("frappe.model.document.Document.submit", side_effect=_Submitted),
 		):
-			with self.assertRaises(_Built):
+			try:
 				re.receive_from_supplier(recovery_weight=21.0)
+			except (_Built, _Submitted) as stopped:
+				self.reached_submit = isinstance(stopped, _Submitted)
 
 		se = captured["se"]
 		for row in se.items:
@@ -3755,7 +3864,25 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 				msg=passes,
 			)
 
-	def _stone_rate(self, batch_rate=0, last_purchase_rate=0, latest_batch_rate=None):
+	def test_stones_worth_more_than_the_piece_stop_the_receipt(self):
+		"""Review N9: ERPNext gives the metal what is left with no floor, so stones valued above
+		the piece would book the refined metal below zero."""
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._receipt(stone_rate=250000, cost_on_insert=True)
+		self.assertIn("D-STONE", str(caught.exception))
+
+	def test_a_normal_receipt_passes_the_guard(self):
+		self._receipt(stone_rate=46415, cost_on_insert=True)
+		self.assertTrue(self.reached_submit)
+
+	def _stone_rate(
+		self,
+		batch_rate=0,
+		last_purchase_rate=0,
+		latest_batch_rate=None,
+		consumed=None,
+		consumed_rates=None,
+	):
 		from jewellery_erpnext.refining.doctype.refining_entry import (
 			refining_entry as re_module,
 		)
@@ -3772,6 +3899,11 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 
 		def get_all(doctype, *args, **kwargs):
 			if doctype == "Batch":
+				if kwargs.get("as_list"):
+					return [
+						(b, (consumed_rates or {}).get(b, 0))
+						for b in kwargs["filters"]["name"][1]
+					]
 				return (
 					[frappe._dict(custom_metal_rate=latest_batch_rate)]
 					if latest_batch_rate
@@ -3789,7 +3921,7 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 				return_value=frappe._dict(has_field=lambda f: True),
 			),
 		):
-			return re._returned_stone_rate("D-STONE", "BATCH-1")
+			return re._returned_stone_rate("D-STONE", "BATCH-1", consumed=consumed)
 
 	def test_stone_rate_prefers_the_batch_it_returns_into(self):
 		self.assertEqual(self._stone_rate(46550, 46415, 41607), 46550)
@@ -3803,3 +3935,22 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 
 	def test_stone_rate_is_zero_when_nothing_is_known(self):
 		self.assertEqual(self._stone_rate(0, 0, None), 0)
+
+	def test_a_consumed_stone_goes_back_at_the_rate_it_went_out_at(self):
+		"""Review N9: scrap, unused and work-order refining consume the stones out of the
+		supplier warehouse first, so they return at those batches' qty-weighted rate."""
+		self.assertEqual(
+			self._stone_rate(
+				46550,
+				46415,
+				41607,
+				consumed=[("OUT-1", 1.0), ("OUT-2", 3.0)],
+				consumed_rates={"OUT-1": 40000, "OUT-2": 44000},
+			),
+			43000,
+		)
+
+	def test_consumed_batches_with_no_rate_fall_back(self):
+		self.assertEqual(
+			self._stone_rate(46550, 46415, 41607, consumed=[("OUT-1", 1.0)]), 46550
+		)

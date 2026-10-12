@@ -841,14 +841,29 @@ class RefiningEntry(Document):
 				row["customer"] = ret_customer
 			if ret_batch:
 				row["batch_no"] = ret_batch
+			# A stone consumed out of the supplier warehouse above (every type but Serial) goes
+			# back at the rate of the batches it went out of; a serial's stones were inside the
+			# piece and have no consumed batch of their own.
+			consumed = (
+				None
+				if r["from_bom"]
+				else [
+					(src.batch_no, flt(src.qty))
+					for src in se.items
+					if src.s_warehouse and src.item_code == ret_item and src.batch_no
+				]
+			)
 			row.update(
-				returned_stone_row(self._returned_stone_rate(ret_item, ret_batch))
+				returned_stone_row(
+					self._returned_stone_rate(ret_item, ret_batch, consumed=consumed)
+				)
 			)
 			se.append("items", row)
 
 		self._assert_no_loss_output(se)
 
 		se.insert(ignore_permissions=True)
+		self._assert_refined_metal_not_below_zero(se)
 		se.submit()
 
 		# Backfill purity on rows that don't have one (e.g. added via scan_scrap_qr_action):
@@ -1893,7 +1908,7 @@ class RefiningEntry(Document):
 					)
 
 				# Also add the BOM components for visibility (they will be skipped during transfer/repack)
-				gold_lines = 0
+				metal_lines = 0
 				if bom_no:
 					bom_items = frappe.db.get_all(
 						"BOM Item",
@@ -1925,12 +1940,18 @@ class RefiningEntry(Document):
 								"purity": self.get_item_purity(b_item.item_code),
 							},
 						)
-						if self.is_gold_item(
-							b_item.item_code
-						) and not self._is_returned_intact(b_item.item_code):
-							gold_lines += 1
+						# A finding is gold too, but only a few grams of it: the stand-in below is for
+						# a serial whose BOM gave no METAL line, so a finding must not switch it off.
+						# The stand-in sends the serial's metal weight, which excludes findings, so
+						# the two never count the same gold.
+						if (
+							self.is_gold_item(b_item.item_code)
+							and not self.is_finding_item(b_item.item_code)
+							and not self._is_returned_intact(b_item.item_code)
+						):
+							metal_lines += 1
 
-				if drop_design_code and not gold_lines:
+				if drop_design_code and not metal_lines:
 					self._append_serial_metal_row(sn_row, bom_no)
 
 		if self.refining_type == "Scrap Refining":
@@ -3049,7 +3070,7 @@ class RefiningEntry(Document):
 		return rows
 
 	def _append_serial_metal_row(self, sn_row, bom_no):
-		"""External only: stand in for the gold of a serial whose BOM lists no gold line.
+		"""External only: stand in for the gold of a serial whose BOM lists no metal line.
 
 		Some FG BOMs carry only the design code itself -- BOM-BA01328-001-101 is one line,
 		BA01328-001 x 1 Nos -- with the piece's metal recorded only in the BOM header. External
@@ -3061,8 +3082,9 @@ class RefiningEntry(Document):
 		The row is the serial's metal item at the metal weight its scan read from the BOM
 		header. It is a BOM Component like the lines it stands in for, so the stock builders
 		skip it (the piece itself moves through ``_serial_movement_rows``) while qty_to_refine,
-		the Purchase Order and the pure input all count it. Added only when the BOM gave no gold
-		line, so no weight is counted twice; serials of the same metal merge into one line in
+		the Purchase Order and the pure input all count it. Added only when the BOM gave no metal
+		line -- a gold finding does not count, and the metal weight leaves findings out -- so no
+		weight is counted twice; serials of the same metal merge into one line in
 		the consolidation of ``build_material_table``.
 		"""
 		metal_weight = flt(sn_row.metal_weight, 3)
@@ -3961,16 +3983,35 @@ class RefiningEntry(Document):
 			return inv_type == "Customer Goods" and batch_customer == customer
 		return not batch_is_customer_owned
 
-	def _returned_stone_rate(self, item_code, batch_no=None):
+	def _returned_stone_rate(self, item_code, batch_no=None, consumed=None):
 		"""Rate a diamond or gemstone handed back by the refiner is received at.
 
-		The Batch Rate of the batch it goes back into first, so the batch keeps the rate it
-		shows. Then the item's last purchase rate, then the newest Batch Rate any batch of the
-		item carries (a stone made in-house, never bought). The warehouse valuation is not
-		used: earlier receipts took stones in at 0 and diluted it (MAT-STE-63008 left
-		D-NT-RO-6B-+11.5-12 at 0 in Central RM). 0 only when none of these is known.
+		``consumed`` is ``[(batch_no, qty)]`` for a stone that went out of the supplier
+		warehouse on this receipt: it comes back at the qty-weighted Batch Rate of those
+		batches -- the rate it went out at, so value does not move between the stone and the
+		refined metal. A serial's stones were inside the piece and have none, so they take the
+		Batch Rate of the batch they go back into, then the item's last purchase rate, then the
+		newest Batch Rate any batch of the item carries (a stone made in-house, never bought).
+		The warehouse valuation is not used: earlier receipts took stones in at 0 and diluted
+		it (MAT-STE-63008 left D-NT-RO-6B-+11.5-12 at 0 in Central RM). 0 only when none of
+		these is known.
 		"""
 		has_batch_rate = frappe.get_meta("Batch").has_field("custom_metal_rate")
+		if consumed and has_batch_rate:
+			rates = dict(
+				frappe.get_all(
+					"Batch",
+					filters={"name": ["in", [b for b, _qty in consumed]]},
+					fields=["name", "custom_metal_rate"],
+					as_list=True,
+				)
+			)
+			total_qty = sum(flt(qty) for _b, qty in consumed)
+			if total_qty and (
+				rate := sum(flt(rates.get(b)) * flt(qty) for b, qty in consumed)
+				/ total_qty
+			):
+				return rate
 		if batch_no and has_batch_rate:
 			if rate := flt(frappe.db.get_value("Batch", batch_no, "custom_metal_rate")):
 				return rate
@@ -3987,6 +4028,32 @@ class RefiningEntry(Document):
 			if latest:
 				return flt(latest[0].custom_metal_rate)
 		return 0.0
+
+	def _assert_refined_metal_not_below_zero(self, se):
+		"""ERPNext books the refined metal at what the material sent out is worth minus the
+		stones handed back, with no floor. Stones valued above that would put the metal at a
+		negative rate, so stop and name them rather than post it or clamp it silently."""
+		metal = next((row for row in se.items if row.is_finished_item), None)
+		if not metal or flt(metal.basic_rate) >= 0:
+			return
+		stones = [
+			row for row in se.items if row.t_warehouse and not row.is_finished_item
+		]
+		frappe.throw(
+			_(
+				"The stones handed back are valued at {0}, more than the {1} the material sent "
+				"to the refiner is worth, so {2} would be received below zero. Check the rates "
+				"of: {3}."
+			).format(
+				flt(sum(flt(row.basic_amount) for row in stones), 2),
+				flt(se.total_outgoing_value, 2),
+				frappe.bold(metal.item_code),
+				", ".join(
+					f"{row.item_code} @ {flt(row.basic_rate, 2)}" for row in stones
+				),
+			),
+			title=_("Returned Stones Exceed Material Value"),
+		)
 
 	def _receive_target_batch(self, item_code, warehouse, customer=None, exclude=None):
 		"""Batch to receive refining output into: an EXISTING one when there is one,
@@ -4687,7 +4754,7 @@ class RefiningEntry(Document):
 		"""
 		return self.is_diamond_item(item_code) or self.is_gemstone_item(item_code)
 
-	def _resolve_bom_component_variant(self, detail):
+	def _resolve_bom_component_variant(self, detail, allow_partial=False):
 		if detail.get("item_variant"):
 			return detail.item_variant
 
@@ -4742,7 +4809,11 @@ class RefiningEntry(Document):
 			return exact[0] if len(exact) == 1 else None
 		# A repair-order BOM row can leave attributes blank that its item carries -- a
 		# gemstone with no Grade or PR (BOM-BA00122-001-002). The one item that agrees on
-		# every attribute the row does give is that stone; two or more is a guess.
+		# every attribute the row does give is that stone; two or more is a guess. Only for
+		# stones (``allow_partial``): a metal or finding row with a blank purity or size must
+		# not become whichever single item happens to exist.
+		if not allow_partial:
+			return None
 		return fits[0] if len(fits) == 1 else None
 
 	def _get_missing_bom_component_items(
@@ -4771,7 +4842,11 @@ class RefiningEntry(Document):
 				fields=["*"],
 				order_by="idx asc",
 			):
-				item_code = self._resolve_bom_component_variant(detail)
+				item_code = self._resolve_bom_component_variant(
+					detail,
+					allow_partial=detail_table
+					in ("BOM Diamond Detail", "BOM Gemstone Detail"),
+				)
 				if not item_code:
 					label = (
 						" / ".join(
