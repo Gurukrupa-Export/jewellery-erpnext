@@ -112,6 +112,7 @@ frappe.ui.form.on("Metal Conversions", {
 		});
 	},
 	target_item(frm) {
+		clear_source_batches(frm);
 		// Calculate Metal
 		calculate_metal(frm);
 	},

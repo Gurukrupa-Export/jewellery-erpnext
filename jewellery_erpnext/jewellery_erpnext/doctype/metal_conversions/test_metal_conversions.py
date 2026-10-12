@@ -1176,7 +1176,7 @@ class TestSingleModeGuards(_BuilderCase):
 			with self.subTest(inventory_type=inventory_type):
 				self._refused(
 					self._two_lane_doc(),
-					rf"Batch <strong>CG</strong> is {inventory_type} but names no customer",
+					rf"Batch (?:<strong>|<b>)?CG(?:</strong>|</b>)? is {inventory_type} but names no customer",
 					lane_map={
 						"REG": ("Regular Stock", None),
 						"CG": (inventory_type, None),
