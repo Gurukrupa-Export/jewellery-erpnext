@@ -3188,6 +3188,16 @@ def create_test_data():
 
 			_ensure_batch_employee_field()
 
+			# Batch / Purchase Receipt Item / Sales Invoice Item.custom_certificate_id are
+			# NOT in the git_action_v16 fixtures either -- same reasoning as above. Without
+			# them set_batch_certificate_id's has_column guards turn the Purchase Receipt
+			# and credit-note stamping into a silent no-op on CI sites.
+			from jewellery_erpnext.patches.add_batch_certificate_id_fields import (
+				execute as _ensure_batch_certificate_id_fields,
+			)
+
+			_ensure_batch_certificate_id_fields()
+
 			# Stock Reservation Entry.custom_replaced_sre_snapshot is declared only by
 			# its patch (no fixture, no custom/*.json), so it must be provisioned here
 			# for test_site too, else _restore_reduced_sres raises "Unknown column

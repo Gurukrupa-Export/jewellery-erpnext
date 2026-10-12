@@ -321,6 +321,9 @@ doc_events = {
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.on_submit",
+			# Credit notes only (it returns at once otherwise). Last: it re-reads the row
+			# bundles that stock-ledger posting wrote during the controller's on_submit.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_transactions.set_batch_certificate_id",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
@@ -356,7 +359,10 @@ doc_events = {
 			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
 		],
 		"before_submit": "jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
-		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.on_submit",
+		"on_submit": [
+			"jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.on_submit",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_transactions.set_batch_certificate_id",
+		],
 	},
 	"Batch": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.validate",
