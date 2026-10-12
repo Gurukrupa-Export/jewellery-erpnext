@@ -66,22 +66,24 @@ def secondary_item_row(value="Scrap"):
 	return {fieldname: value}
 
 
-def returned_at_zero_row():
-	"""Valuation fields for a stone the refiner hands back: received at rate 0, every time.
+def returned_stone_row(rate):
+	"""Valuation fields for a stone the refiner hands back, received at ``rate``.
 
-	``allow_zero_valuation_rate`` alone does not hold a row at 0 on ERPNext 16.36+:
-	``set_basic_rate`` zeroes such a row only once it already carries a rate, and costs it at
-	its valuation otherwise. The rate therefore flips on every costing pass (validate, then
-	submit), and so does the share left for the refined metal. Manual at 0 is skipped by every
-	pass, and the flag still lets a stone with no valuation history post.
+	Pinned as Manual so every costing pass (validate, then submit) keeps it: ERPNext deducts a
+	Manual secondary row from the consumed value and gives the refined metal the rest. Left to
+	``allow_zero_valuation_rate`` alone the rate flipped between its valuation and 0 on each
+	pass on ERPNext 16.36+, so the stones came in at 0. The flag stays only for a stone no
+	rate is known for, so it can still post.
 	"""
-	return {
-		"allow_zero_valuation_rate": 1,
+	row = {
 		"set_basic_rate_manually": 1,
 		# ERPNext re-derives set_basic_rate_manually from this on a BOM-less secondary row.
 		"valuation_type": "Manual",
-		"basic_rate": 0,
+		"basic_rate": flt(rate),
 	}
+	if not flt(rate):
+		row["allow_zero_valuation_rate"] = 1
+	return row
 
 
 def _default_receiving_warehouse(company):
@@ -812,10 +814,9 @@ class RefiningEntry(Document):
 				"uom": r["uom"] or frappe.db.get_value("Item", ret_item, "stock_uom"),
 				"t_warehouse": target_wh,
 				# Scrap-type by-product (NOT a finished good): the single finished good is
-				# the pure metal above, so the Manufacture auto-costs it from the consumed
-				# inputs and these land at zero valuation.
+				# the pure metal above. The stone comes back at its own rate (set below, once
+				# its batch is known) and the metal is costed from what is left.
 				**secondary_item_row(),
-				**returned_at_zero_row(),
 				"is_finished_item": 0,
 				"use_serial_batch_fields": 1,
 			}
@@ -840,6 +841,9 @@ class RefiningEntry(Document):
 				row["customer"] = ret_customer
 			if ret_batch:
 				row["batch_no"] = ret_batch
+			row.update(
+				returned_stone_row(self._returned_stone_rate(ret_item, ret_batch))
+			)
 			se.append("items", row)
 
 		self._assert_no_loss_output(se)
@@ -3956,6 +3960,33 @@ class RefiningEntry(Document):
 			# batch would leave the ledger and the Batch master permanently disagreeing.
 			return inv_type == "Customer Goods" and batch_customer == customer
 		return not batch_is_customer_owned
+
+	def _returned_stone_rate(self, item_code, batch_no=None):
+		"""Rate a diamond or gemstone handed back by the refiner is received at.
+
+		The Batch Rate of the batch it goes back into first, so the batch keeps the rate it
+		shows. Then the item's last purchase rate, then the newest Batch Rate any batch of the
+		item carries (a stone made in-house, never bought). The warehouse valuation is not
+		used: earlier receipts took stones in at 0 and diluted it (MAT-STE-63008 left
+		D-NT-RO-6B-+11.5-12 at 0 in Central RM). 0 only when none of these is known.
+		"""
+		has_batch_rate = frappe.get_meta("Batch").has_field("custom_metal_rate")
+		if batch_no and has_batch_rate:
+			if rate := flt(frappe.db.get_value("Batch", batch_no, "custom_metal_rate")):
+				return rate
+		if rate := flt(frappe.db.get_value("Item", item_code, "last_purchase_rate")):
+			return rate
+		if has_batch_rate:
+			latest = frappe.get_all(
+				"Batch",
+				filters={"item": item_code, "custom_metal_rate": [">", 0]},
+				fields=["custom_metal_rate"],
+				order_by="creation desc",
+				limit=1,
+			)
+			if latest:
+				return flt(latest[0].custom_metal_rate)
+		return 0.0
 
 	def _receive_target_batch(self, item_code, warehouse, customer=None, exclude=None):
 		"""Batch to receive refining output into: an EXISTING one when there is one,

@@ -3627,12 +3627,13 @@ class TestSerialMaterialRows(IntegrationTestCase):
 
 
 class TestExternalReceiveValuation(IntegrationTestCase):
-	"""MAT-STE-63010: the receipt from the refiner took the refined 24KT in at rate 0.
+	"""MAT-STE-63010 / MAT-STE-63014: the receipt from the refiner took its rows in at rate 0.
 
-	Its row carried allow_zero_valuation_rate, which ERPNext 16.36+ applies as "zero the rate
+	The rows carried allow_zero_valuation_rate, which ERPNext 16.36+ applies as "zero the rate
 	once the row holds one", so the rate costed from the consumed piece was wiped on the next
-	costing pass: a 464,888.31 piece went out and 21 g of gold came in at 0. The entry is built
-	by receive_from_supplier itself (stopped at insert) and costed by ERPNext's set_basic_rate as
+	costing pass: a 464,888.31 piece went out and 21 g of gold came in at 0. A returned diamond
+	now comes back at its own rate and the gold takes the rest. The entry is built by
+	receive_from_supplier itself (stopped at insert) and costed by ERPNext's set_basic_rate as
 	often as validate and submit run it. DB-free apart from metadata.
 	"""
 
@@ -3642,7 +3643,9 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 
 	PIECE_VALUE = 464888.31
 
-	def _receipt(self):
+	STONE_QTY = 2.24
+
+	def _receipt(self, stone_rate=0.0):
 		from jewellery_erpnext.refining.doctype.refining_entry import (
 			refining_entry as re_module,
 		)
@@ -3660,7 +3663,7 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 			"material_items",
 			{
 				"item_code": "D-STONE",
-				"qty": 2.24,
+				"qty": self.STONE_QTY,
 				"uom": "Carat",
 				"source_type": "BOM Component",
 			},
@@ -3692,6 +3695,9 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 			),
 			patch.object(RefiningEntry, "_receive_target_batch", return_value=None),
 			patch.object(
+				RefiningEntry, "_returned_stone_rate", return_value=stone_rate
+			),
+			patch.object(
 				RefiningEntry,
 				"_is_returned_intact",
 				side_effect=lambda code: code == "D-STONE",
@@ -3714,20 +3720,86 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 		self.assertEqual(rows["M-G-24KT-99.9-Y"].is_finished_item, 1)
 		self.assertFalse(rows["M-G-24KT-99.9-Y"].allow_zero_valuation_rate)
 
-	def test_refined_metal_carries_the_consumed_value_on_every_pass(self):
+	def _cost(self, se, passes):
+		with patch.object(
+			se, "set_rate_for_outgoing_items", return_value=self.PIECE_VALUE
+		):
+			for _ in range(passes):
+				se.set_basic_rate(
+					reset_outgoing_rate=False, raise_error_if_no_rate=False
+				)
+
+	def test_a_returned_stone_keeps_its_rate_and_the_metal_takes_the_rest(self):
+		"""MAT-STE-63014 took D-NT-RO-6B-+11.5-12 back at 0; its purchase rate is 46,415."""
 		for passes in (1, 2, 3):
-			se, rows = self._receipt()
-			with patch.object(
-				se, "set_rate_for_outgoing_items", return_value=self.PIECE_VALUE
-			):
-				for _ in range(passes):
-					se.set_basic_rate(
-						reset_outgoing_rate=False, raise_error_if_no_rate=False
-					)
+			se, rows = self._receipt(stone_rate=46415)
+			self._cost(se, passes)
+			self.assertEqual(flt(rows["D-STONE"].basic_rate), 46415, msg=passes)
+			self.assertAlmostEqual(
+				flt(rows["M-G-24KT-99.9-Y"].basic_rate),
+				(self.PIECE_VALUE - self.STONE_QTY * 46415) / 21.0,
+				places=2,
+				msg=passes,
+			)
+
+	def test_a_stone_with_no_known_rate_comes_in_at_zero(self):
+		for passes in (1, 2, 3):
+			se, rows = self._receipt(stone_rate=0)
+			self._cost(se, passes)
+			self.assertEqual(flt(rows["D-STONE"].basic_rate), 0, msg=passes)
+			self.assertTrue(rows["D-STONE"].allow_zero_valuation_rate)
 			self.assertAlmostEqual(
 				flt(rows["M-G-24KT-99.9-Y"].basic_rate),
 				self.PIECE_VALUE / 21.0,
 				places=2,
 				msg=passes,
 			)
-			self.assertEqual(flt(rows["D-STONE"].basic_rate), 0, msg=passes)
+
+	def _stone_rate(self, batch_rate=0, last_purchase_rate=0, latest_batch_rate=None):
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		real_get_value, real_get_all = frappe.db.get_value, frappe.get_all
+
+		# Pass every other read through: on a fresh site get_meta("Batch") reads the DB itself.
+		def get_value(doctype, *args, **kwargs):
+			if doctype == "Batch":
+				return batch_rate
+			if doctype == "Item":
+				return last_purchase_rate
+			return real_get_value(doctype, *args, **kwargs)
+
+		def get_all(doctype, *args, **kwargs):
+			if doctype == "Batch":
+				return (
+					[frappe._dict(custom_metal_rate=latest_batch_rate)]
+					if latest_batch_rate
+					else []
+				)
+			return real_get_all(doctype, *args, **kwargs)
+
+		re = frappe.new_doc("Refining Entry")
+		with (
+			patch.object(re_module.frappe.db, "get_value", side_effect=get_value),
+			patch.object(re_module.frappe, "get_all", side_effect=get_all),
+			patch.object(
+				re_module.frappe,
+				"get_meta",
+				return_value=frappe._dict(has_field=lambda f: True),
+			),
+		):
+			return re._returned_stone_rate("D-STONE", "BATCH-1")
+
+	def test_stone_rate_prefers_the_batch_it_returns_into(self):
+		self.assertEqual(self._stone_rate(46550, 46415, 41607), 46550)
+
+	def test_stone_rate_falls_back_to_the_last_purchase_rate(self):
+		"""The batch MAT-STE-63008 minted at 0 (KG2F102-DNTROX6K05L00-1C3N1)."""
+		self.assertEqual(self._stone_rate(0, 46415, 41607), 46415)
+
+	def test_stone_rate_falls_back_to_the_newest_batch_rate(self):
+		self.assertEqual(self._stone_rate(0, 0, 41607), 41607)
+
+	def test_stone_rate_is_zero_when_nothing_is_known(self):
+		self.assertEqual(self._stone_rate(0, 0, None), 0)
