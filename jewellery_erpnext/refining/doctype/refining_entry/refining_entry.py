@@ -1,8 +1,8 @@
 import frappe
+from erpnext.utilities.product import get_item_codes_by_attributes
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
-from erpnext.utilities.product import get_item_codes_by_attributes
 
 from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
 	can_be_customer_goods,
@@ -4690,28 +4690,58 @@ class RefiningEntry(Document):
 	def _get_missing_bom_component_items(self, bom_no, bom_items):
 		existing_items = {item.item_code for item in bom_items}
 		missing_items = {}
-		component_tables = (
-			"BOM Metal Detail",
-			"BOM Diamond Detail",
-			"BOM Gemstone Detail",
-			"BOM Finding Detail",
-		)
-		for detail_table in component_tables:
+		unresolved = []
+		# Tracking Bom keeps its rows in these same child tables, so scope every read to BOM.
+		component_tables = {
+			"BOM Metal Detail": (
+				"metal_type",
+				"metal_touch",
+				"metal_purity",
+				"metal_colour",
+			),
+			"BOM Diamond Detail": ("diamond_type", "stone_shape", "diamond_sieve_size"),
+			"BOM Gemstone Detail": ("gemstone_type", "stone_shape", "gemstone_size"),
+			"BOM Finding Detail": ("finding_category", "finding_type"),
+		}
+		for detail_table, label_fields in component_tables.items():
 			for detail in frappe.get_all(
 				detail_table,
-				filters={"parent": bom_no},
+				filters={"parent": bom_no, "parenttype": "BOM"},
 				fields=["*"],
 			):
 				item_code = self._resolve_bom_component_variant(detail)
-				if not item_code or item_code in existing_items:
+				if not item_code:
+					unresolved.append(
+						" / ".join(
+							str(detail.get(f)) for f in label_fields if detail.get(f)
+						)
+						or detail_table
+					)
+					continue
+				if item_code in existing_items:
 					continue
 				missing_items[item_code] = missing_items.get(item_code, 0) + flt(
 					detail.quantity
 				)
 
+		# A row with no Item Variant that matches no single item (a gemstone without its Grade
+		# and PR, a metal purity no item carries) is left out -- guessing would put the wrong
+		# item into stock. Say so once per BOM instead of dropping it silently.
+		warned = self.__dict__.setdefault("_unresolved_bom_warned", set())
+		if unresolved and bom_no not in warned:
+			warned.add(bom_no)
+			frappe.msgprint(
+				_(
+					"These components of BOM {0} match no single item and are left out of "
+					"Material Items: {1}. Set the Item Variant on those BOM rows to include them."
+				).format(frappe.bold(bom_no), ", ".join(unresolved)),
+				indicator="orange",
+				alert=True,
+			)
+
 		for detail in frappe.get_all(
 			"BOM Other Detail",
-			filters={"parent": bom_no},
+			filters={"parent": bom_no, "parenttype": "BOM"},
 			fields=["item_code", "quantity"],
 		):
 			item_code = detail.item_code

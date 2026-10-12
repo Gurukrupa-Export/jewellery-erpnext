@@ -3239,6 +3239,8 @@ class TestSerialMaterialRows(IntegrationTestCase):
 				"get_item_codes_by_attributes",
 				return_value=[diamond_code],
 			) as get_item_codes,
+			# CI's test data has no D-NT-RO-6B-+11.5-12; the stock UOM is not what this pins.
+			patch.object(re_module.frappe.db, "get_value", return_value="Carat"),
 		):
 			rows = re._get_missing_bom_component_items("BOM-1", [])
 
@@ -3256,6 +3258,43 @@ class TestSerialMaterialRows(IntegrationTestCase):
 			},
 			"D",
 		)
+
+	def test_an_unmatched_bom_component_is_left_out_with_a_warning(self):
+		"""A repair-order gemstone row carries no Grade and PR, so it matches no single item.
+		It must not be guessed into stock, and must not vanish silently either."""
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		gem = frappe._dict(
+			item="G",
+			item_variant=None,
+			quantity=0.24,
+			gemstone_type="Ruby",
+			stone_shape="Round",
+			gemstone_size="2.20 MM",
+		)
+		seen_filters = []
+
+		def get_all(doctype, filters=None, **kwargs):
+			if doctype.startswith("BOM "):
+				seen_filters.append(filters)
+			return [gem] if doctype == "BOM Gemstone Detail" else []
+
+		re = frappe.new_doc("Refining Entry")
+		with (
+			patch.object(re_module.frappe, "get_all", side_effect=get_all),
+			patch.object(re, "_resolve_bom_component_variant", return_value=None),
+			patch.object(re_module.frappe, "msgprint") as msgprint,
+		):
+			rows = re._get_missing_bom_component_items("BOM-1", [])
+			re._get_missing_bom_component_items("BOM-1", [])
+
+		self.assertEqual(rows, [])
+		msgprint.assert_called_once()
+		self.assertIn("BOM-1", msgprint.call_args[0][0])
+		self.assertIn("Ruby / Round / 2.20 MM", msgprint.call_args[0][0])
+		self.assertTrue(all(f.get("parenttype") == "BOM" for f in seen_filters))
 
 	def test_bom_component_details_cover_all_standard_material_tables(self):
 		from jewellery_erpnext.refining.doctype.refining_entry import (
