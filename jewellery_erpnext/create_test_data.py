@@ -3128,6 +3128,15 @@ def create_test_data():
 
 			_ensure_purchase_order_order_dimension_fields()
 
+			# Removes v15 Custom Field rows that shadow the standard sales_type / flow_type /
+			# design_type fields of the planning doctypes. A no-op on fresh and CI sites; it is
+			# wired here for the same install-app reason as the patches above.
+			from jewellery_erpnext.patches.reconcile_v15_order_dimension_custom_fields import (
+				execute as _reconcile_v15_order_dimension_custom_fields,
+			)
+
+			_reconcile_v15_order_dimension_custom_fields()
+
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
 			# Without them every Sales Order / Delivery Note / Sales Invoice save raises
