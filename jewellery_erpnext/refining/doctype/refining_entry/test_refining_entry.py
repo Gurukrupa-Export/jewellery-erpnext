@@ -3260,8 +3260,8 @@ class TestSerialMaterialRows(IntegrationTestCase):
 		)
 
 	def test_an_unmatched_bom_component_is_left_out_with_a_warning(self):
-		"""A repair-order gemstone row carries no Grade and PR, so it matches no single item.
-		It must not be guessed into stock, and must not vanish silently either."""
+		"""Outside the scan (recovery classification of an entry already submitted) a row that
+		matches no item must not be guessed into stock, and must not vanish silently either."""
 		from jewellery_erpnext.refining.doctype.refining_entry import (
 			refining_entry as re_module,
 		)
@@ -3295,6 +3295,145 @@ class TestSerialMaterialRows(IntegrationTestCase):
 		self.assertIn("BOM-1", msgprint.call_args[0][0])
 		self.assertIn("Ruby / Round / 2.20 MM", msgprint.call_args[0][0])
 		self.assertTrue(all(f.get("parenttype") == "BOM" for f in seen_filters))
+
+	def _missing_with(self, details, resolved=None, **kwargs):
+		"""``_get_missing_bom_component_items`` over ``{detail_table: [rows]}``, resolving each
+		row through ``resolved`` (row -> item code or None)."""
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		with (
+			patch.object(
+				re_module.frappe,
+				"get_all",
+				side_effect=lambda doctype, **kw: details.get(doctype, []),
+			),
+			patch.object(
+				re,
+				"_resolve_bom_component_variant",
+				side_effect=resolved or (lambda detail: None),
+			),
+			patch.object(re_module.frappe.db, "get_value", return_value="Carat"),
+			patch.object(re_module.frappe, "msgprint") as msgprint,
+		):
+			return re._get_missing_bom_component_items("BOM-1", [], **kwargs), msgprint
+
+	def test_a_stone_with_no_item_stops_the_scan(self):
+		"""BOM-BA00122-001-002: a 4.50 MM Ruby no item carries. Received intact into stock,
+		it needs an item -- the scan stops and names it rather than leaving it out."""
+		ruby = frappe._dict(
+			quantity=1.06,
+			gemstone_type="Ruby",
+			stone_shape="Round",
+			gemstone_size="4.50 MM",
+		)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._missing_with(
+				{"BOM Gemstone Detail": [ruby]}, block_unmatched_stones=True
+			)
+		self.assertIn("BOM-1", str(caught.exception))
+		self.assertIn("Ruby / Round / 4.50 MM", str(caught.exception))
+
+	def test_a_metal_row_with_no_item_only_warns_on_the_scan(self):
+		"""Metal is melted, not received back as itself, and the serial's own weights cover
+		it, so an unmatched metal row keeps the warning even where stones stop the scan."""
+		metal = frappe._dict(
+			quantity=23.8,
+			metal_type="Gold",
+			metal_touch="22KT",
+			metal_purity="92.0",
+			metal_colour="Yellow",
+		)
+		emerald = frappe._dict(quantity=0.81, gemstone_type="Emerald")
+		rows, msgprint = self._missing_with(
+			{"BOM Metal Detail": [metal], "BOM Gemstone Detail": [emerald]},
+			resolved=lambda d: "G-EMERALD" if d.gemstone_type else None,
+			block_unmatched_stones=True,
+		)
+		self.assertEqual([(r.item_code, r.qty) for r in rows], [("G-EMERALD", 0.81)])
+		msgprint.assert_called_once()
+		self.assertIn("Gold / 22KT / 92.0 / Yellow", msgprint.call_args[0][0])
+
+	def _resolve_with(self, detail, template_attributes, items):
+		"""``_resolve_bom_component_variant`` against ``items`` ({code: {attribute: value}})."""
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		def get_all(doctype, filters=None, **kwargs):
+			if filters.get("parent") == detail.item:
+				return [frappe._dict(attribute=a) for a in template_attributes]
+			return [
+				frappe._dict(parent=code, attribute=a, attribute_value=v)
+				for code, attrs in items.items()
+				for a, v in attrs.items()
+			]
+
+		re = frappe.new_doc("Refining Entry")
+		with (
+			patch.object(re_module.frappe, "get_all", side_effect=get_all),
+			patch.object(
+				re_module, "get_item_codes_by_attributes", return_value=list(items)
+			),
+		):
+			return re._resolve_bom_component_variant(detail)
+
+	GEM_ATTRIBUTES = ("Gemstone Type", "Stone Shape", "Gemstone Grade", "Gemstone PR")
+	EMERALD_ROW = frappe._dict(
+		item="G", item_variant=None, gemstone_type="Emerald", stone_shape="Round"
+	)
+
+	def test_a_stone_row_without_grade_and_pr_finds_its_one_item(self):
+		"""BOM-BA00122-001-002's Emerald leaves Grade and PR blank; its item carries both."""
+		item = {
+			"Gemstone Type": "Emerald",
+			"Stone Shape": "Round",
+			"Gemstone Grade": "Real Non-Treated",
+			"Gemstone PR": "1500",
+		}
+		self.assertEqual(
+			self._resolve_with(self.EMERALD_ROW, self.GEM_ATTRIBUTES, {"G-ED": item}),
+			"G-ED",
+		)
+
+	def test_two_items_that_fill_the_blanks_differently_are_a_guess(self):
+		items = {
+			code: {
+				"Gemstone Type": "Emerald",
+				"Stone Shape": "Round",
+				"Gemstone PR": pr,
+			}
+			for code, pr in (("G-ED-1500", "1500"), ("G-ED-2500", "2500"))
+		}
+		self.assertIsNone(
+			self._resolve_with(self.EMERALD_ROW, self.GEM_ATTRIBUTES, items)
+		)
+
+	def test_an_item_with_exactly_the_rows_attributes_wins(self):
+		items = {
+			"G-ED": {"Gemstone Type": "Emerald", "Stone Shape": "Round"},
+			"G-ED-1500": {
+				"Gemstone Type": "Emerald",
+				"Stone Shape": "Round",
+				"Gemstone PR": "1500",
+			},
+		}
+		self.assertEqual(
+			self._resolve_with(self.EMERALD_ROW, self.GEM_ATTRIBUTES, items), "G-ED"
+		)
+
+	def test_the_serial_scan_asks_for_stones_to_be_matched(self):
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		with patch.object(
+			RefiningEntry, "_get_missing_bom_component_items", return_value=[]
+		) as missing:
+			self._build(is_external=0)
+		self.assertTrue(missing.call_args.kwargs.get("block_unmatched_stones"))
 
 	def test_bom_component_details_cover_all_standard_material_tables(self):
 		from jewellery_erpnext.refining.doctype.refining_entry import (

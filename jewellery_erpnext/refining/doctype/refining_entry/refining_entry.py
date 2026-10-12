@@ -1899,7 +1899,9 @@ class RefiningEntry(Document):
 						fields=["item_code", "qty", "stock_qty", "uom", "stock_uom"],
 					)
 					bom_items.extend(
-						self._get_missing_bom_component_items(bom_no, bom_items)
+						self._get_missing_bom_component_items(
+							bom_no, bom_items, block_unmatched_stones=True
+						)
 					)
 					for b_item in bom_items:
 						# ERPNext allows a BOM to list its own parent item once, and this app never strips
@@ -4694,23 +4696,34 @@ class RefiningEntry(Document):
 		)
 		attributes_by_item = {}
 		for attribute in candidate_attributes:
-			attributes_by_item.setdefault(attribute.parent, []).append(attribute)
+			attributes_by_item.setdefault(attribute.parent, {})[
+				attribute.attribute
+			] = attribute.attribute_value
 
-		matches = [
+		fits = [
 			item_code
 			for item_code, item_attributes in attributes_by_item.items()
-			if len(item_attributes) == len(attribute_values)
-			and all(
-				attribute_values.get(attribute.attribute) == attribute.attribute_value
-				for attribute in item_attributes
-			)
+			if all(item_attributes.get(k) == v for k, v in attribute_values.items())
 		]
-		return matches[0] if len(matches) == 1 else None
+		exact = [
+			item_code
+			for item_code in fits
+			if len(attributes_by_item[item_code]) == len(attribute_values)
+		]
+		if exact:
+			return exact[0] if len(exact) == 1 else None
+		# A repair-order BOM row can leave attributes blank that its item carries -- a
+		# gemstone with no Grade or PR (BOM-BA00122-001-002). The one item that agrees on
+		# every attribute the row does give is that stone; two or more is a guess.
+		return fits[0] if len(fits) == 1 else None
 
-	def _get_missing_bom_component_items(self, bom_no, bom_items):
+	def _get_missing_bom_component_items(
+		self, bom_no, bom_items, block_unmatched_stones=False
+	):
 		existing_items = {item.item_code for item in bom_items}
 		missing_items = {}
 		unresolved = []
+		unresolved_stones = []
 		# Tracking Bom keeps its rows in these same child tables, so scope every read to BOM.
 		component_tables = {
 			"BOM Metal Detail": (
@@ -4728,15 +4741,20 @@ class RefiningEntry(Document):
 				detail_table,
 				filters={"parent": bom_no, "parenttype": "BOM"},
 				fields=["*"],
+				order_by="idx asc",
 			):
 				item_code = self._resolve_bom_component_variant(detail)
 				if not item_code:
-					unresolved.append(
+					label = (
 						" / ".join(
 							str(detail.get(f)) for f in label_fields if detail.get(f)
 						)
 						or detail_table
 					)
+					if detail_table in ("BOM Diamond Detail", "BOM Gemstone Detail"):
+						unresolved_stones.append(label)
+					else:
+						unresolved.append(label)
 					continue
 				if item_code in existing_items:
 					continue
@@ -4744,9 +4762,23 @@ class RefiningEntry(Document):
 					detail.quantity
 				)
 
-		# A row with no Item Variant that matches no single item (a gemstone without its Grade
-		# and PR, a metal purity no item carries) is left out -- guessing would put the wrong
-		# item into stock. Say so once per BOM instead of dropping it silently.
+		# A stone comes back from refining intact and is received into stock as its item, so
+		# a stone row with no item cannot be refined: stop the scan rather than drop it or
+		# guess one. Raised only where Material Items are built -- an entry already past its
+		# scan keeps the warning below and is not stopped part-way through its lifecycle.
+		if block_unmatched_stones and unresolved_stones:
+			frappe.throw(
+				_(
+					"These stones of BOM {0} match no item: {1}. Create the item, or set the "
+					"Item Variant on those BOM rows, then scan the serial again."
+				).format(frappe.bold(bom_no), ", ".join(unresolved_stones)),
+				title=_("Stone Item Missing"),
+			)
+		unresolved += unresolved_stones
+
+		# A row with no Item Variant that matches no single item (a metal purity no item
+		# carries) is left out -- guessing would put the wrong item into stock. Say so once
+		# per BOM instead of dropping it silently.
 		warned = self.__dict__.setdefault("_unresolved_bom_warned", set())
 		if unresolved and bom_no not in warned:
 			warned.add(bom_no)
