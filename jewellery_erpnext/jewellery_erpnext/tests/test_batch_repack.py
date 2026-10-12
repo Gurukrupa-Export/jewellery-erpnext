@@ -35,6 +35,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.batch import repack
 from jewellery_erpnext.jewellery_erpnext.doc_events import (
 	stock_entry as stock_entry_events,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings import eod_lock
 
 COMPANY = repack.REPACK_COMPANIES[0]
 OTHER_COMPANY = "Another Test Company"
@@ -1047,6 +1048,12 @@ class TestBatchRepackIntegration(IntegrationTestCase):
 		stack = ExitStack()
 		self.addCleanup(stack.close)
 		stack.enter_context(patch.object(frappe.db, "commit", lambda *a, **k: None))
+		# Earlier suites in the same CI job can leave an EOD sync lock committed on the
+		# shared site, and the Stock Entry EOD guard then refuses every entry. These tests
+		# are not about the EOD lock, so it reads as not running here.
+		stack.enter_context(
+			patch.object(eod_lock, "is_eod_sync_locked", return_value=False)
+		)
 		stack.enter_context(patch.object(repack, "REPACK_COMPANIES", (CI_COMPANY,)))
 		if KEEPS_ENTERED_TIME:
 			stack.enter_context(
