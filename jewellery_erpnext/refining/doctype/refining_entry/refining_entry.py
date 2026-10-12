@@ -66,6 +66,24 @@ def secondary_item_row(value="Scrap"):
 	return {fieldname: value}
 
 
+def returned_at_zero_row():
+	"""Valuation fields for a stone the refiner hands back: received at rate 0, every time.
+
+	``allow_zero_valuation_rate`` alone does not hold a row at 0 on ERPNext 16.36+:
+	``set_basic_rate`` zeroes such a row only once it already carries a rate, and costs it at
+	its valuation otherwise. The rate therefore flips on every costing pass (validate, then
+	submit), and so does the share left for the refined metal. Manual at 0 is skipped by every
+	pass, and the flag still lets a stone with no valuation history post.
+	"""
+	return {
+		"allow_zero_valuation_rate": 1,
+		"set_basic_rate_manually": 1,
+		# ERPNext re-derives set_basic_rate_manually from this on a BOM-less secondary row.
+		"valuation_type": "Manual",
+		"basic_rate": 0,
+	}
+
+
 def _default_receiving_warehouse(company):
 	"""Company's default warehouse for a purchase, for stock lines with nowhere else to go."""
 	if not company:
@@ -733,7 +751,9 @@ class RefiningEntry(Document):
 			"t_warehouse": target_wh,
 			"is_finished_item": 1,
 			"use_serial_batch_fields": 1,
-			"allow_zero_valuation_rate": 1,
+			# No allow_zero_valuation_rate: on this row it zeroed the rate ERPNext costs from
+			# the consumed material, so the refined metal came in at 0 and its batch was
+			# diluted (MAT-STE-63010: a 464,888 piece out, 21 g of 24KT in at 0).
 			**output_owner_row,
 		}
 		# Reuse the 24KT item's EXISTING batch in the receiving warehouse when there is one
@@ -793,11 +813,11 @@ class RefiningEntry(Document):
 				"t_warehouse": target_wh,
 				# Scrap-type by-product (NOT a finished good): the single finished good is
 				# the pure metal above, so the Manufacture auto-costs it from the consumed
-				# inputs and these land at zero valuation — mirrors create_repack_se.
+				# inputs and these land at zero valuation.
 				**secondary_item_row(),
+				**returned_at_zero_row(),
 				"is_finished_item": 0,
 				"use_serial_batch_fields": 1,
-				"allow_zero_valuation_rate": 1,
 			}
 			# Same existing-batch-first rule as the metal row, and the customer is carried
 			# through — but ONLY when the Item permits it, exactly as _recovered_output_customer

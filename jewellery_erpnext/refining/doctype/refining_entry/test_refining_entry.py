@@ -3485,3 +3485,110 @@ class TestSerialMaterialRows(IntegrationTestCase):
 	def test_no_metal_item_for_the_header_adds_nothing(self):
 		re, _ = self._build(is_external=1, bom_items=self.DESIGN_ONLY_BOM, metal_item=None)
 		self.assertEqual(list(re.material_items), [])
+
+
+class TestExternalReceiveValuation(IntegrationTestCase):
+	"""MAT-STE-63010: the receipt from the refiner took the refined 24KT in at rate 0.
+
+	Its row carried allow_zero_valuation_rate, which ERPNext 16.36+ applies as "zero the rate
+	once the row holds one", so the rate costed from the consumed piece was wiped on the next
+	costing pass: a 464,888.31 piece went out and 21 g of gold came in at 0. The entry is built
+	by receive_from_supplier itself (stopped at insert) and costed by ERPNext's set_basic_rate as
+	often as validate and submit run it. DB-free apart from metadata.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	PIECE_VALUE = 464888.31
+
+	def _receipt(self):
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SERIAL
+		re.is_external = 1
+		re.docstatus = 1
+		re.supplier_warehouse = "Refiner WIP - T"
+		re.refined_metal_item = "M-G-24KT-99.9-Y"
+		re.append(
+			"material_items",
+			{
+				"item_code": "D-STONE",
+				"qty": 2.24,
+				"uom": "Carat",
+				"source_type": "BOM Component",
+			},
+		)
+		piece = frappe._dict(item_code="FG-DESIGN", qty=1, uom="Nos", serial_no="SN-1")
+		captured = {}
+		real_new_doc = frappe.new_doc
+
+		def new_doc(doctype, *args, **kwargs):
+			doc = real_new_doc(doctype, *args, **kwargs)
+			if doctype == "Stock Entry":
+				captured["se"] = doc
+			return doc
+
+		class _Built(Exception):
+			pass
+
+		with (
+			patch.object(re_module.frappe, "new_doc", side_effect=new_doc),
+			patch.object(
+				RefiningEntry,
+				"_get_source_dept_rm_warehouse",
+				return_value="Central RM - T",
+			),
+			patch.object(RefiningEntry, "_serial_movement_rows", return_value=[piece]),
+			patch.object(RefiningEntry, "_stamp_batch_ownership"),
+			patch.object(
+				RefiningEntry, "_recovered_output_customer", return_value=None
+			),
+			patch.object(RefiningEntry, "_receive_target_batch", return_value=None),
+			patch.object(
+				RefiningEntry,
+				"_is_returned_intact",
+				side_effect=lambda code: code == "D-STONE",
+			),
+			patch.object(RefiningEntry, "_assert_no_loss_output"),
+			patch.object(RefiningEntry, "set_dust_receipt_difference_account"),
+			patch("frappe.model.document.Document.insert", side_effect=_Built),
+		):
+			with self.assertRaises(_Built):
+				re.receive_from_supplier(recovery_weight=21.0)
+
+		se = captured["se"]
+		for row in se.items:
+			row.conversion_factor = 1
+			row.transfer_qty = row.qty
+		return se, {row.item_code: row for row in se.items}
+
+	def test_refined_metal_is_not_flagged_zero_valuation(self):
+		_se, rows = self._receipt()
+		self.assertEqual(rows["M-G-24KT-99.9-Y"].is_finished_item, 1)
+		self.assertFalse(rows["M-G-24KT-99.9-Y"].allow_zero_valuation_rate)
+
+	def test_refined_metal_carries_the_consumed_value_on_every_pass(self):
+		for passes in (1, 2, 3):
+			se, rows = self._receipt()
+			with patch.object(
+				se, "set_rate_for_outgoing_items", return_value=self.PIECE_VALUE
+			):
+				for _ in range(passes):
+					se.set_basic_rate(
+						reset_outgoing_rate=False, raise_error_if_no_rate=False
+					)
+			self.assertAlmostEqual(
+				flt(rows["M-G-24KT-99.9-Y"].basic_rate),
+				self.PIECE_VALUE / 21.0,
+				places=2,
+				msg=passes,
+			)
+			self.assertEqual(flt(rows["D-STONE"].basic_rate), 0, msg=passes)
