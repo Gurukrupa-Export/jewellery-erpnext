@@ -23,6 +23,10 @@ Target:
     [NEW] custom_section_design_attribute → design_attribute →
     [325] creativity (Tab Break)
 
+Sites with no Item ``field_order`` Property Setter get one seeded from the current
+effective order first: ``customer_items`` is a standard field, so ``insert_after``
+cannot move it and only a ``field_order`` entry can.
+
 Safe to re-run: guarded by existence checks and idempotent key lookups.
 
     bench --site <site> execute jewellery_erpnext.patches.move_item_customer_items_to_sales.execute
@@ -33,7 +37,10 @@ import json
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
-from jewellery_erpnext.patches.field_order_utils import rewrite_insert_after_chain
+from jewellery_erpnext.patches.field_order_utils import (
+	ensure_field_order_setter,
+	rewrite_insert_after_chain,
+)
 
 DOCTYPE = "Item"
 
@@ -81,10 +88,9 @@ def execute():
 		update=True,
 	)
 	# Anchor each Section Break on the field that PRECEDES it and chain its table
-	# off the section, so the insert_after chain on its own yields the intended
-	# order where no field_order Property Setter exists. rewrite_insert_after_chain
-	# skips block members with no Custom Field row, so the standard `customer_items`
-	# field is left untouched while `design_attribute` is re-anchored on its section.
+	# off the section. This only governs custom fields absent from field_order;
+	# rewrite_insert_after_chain skips the standard `customer_items` (no Custom
+	# Field row), so it is the field_order splice below that actually moves it.
 	rewrite_insert_after_chain(DOCTYPE, (SALES_SECTION, SALES_TABLE), SALES_ANCHOR)
 	rewrite_insert_after_chain(DOCTYPE, (DA_SECTION, DA_TABLE), DA_ANCHOR)
 
@@ -99,59 +105,30 @@ def execute():
 			},
 		)
 
-	# 2. Update field_order Property Setter (the authoritative layout source)
-	ps_row = frappe.db.sql(
-		"SELECT name, value FROM `tabProperty Setter`"
-		" WHERE doc_type=%s AND property='field_order'",
-		(DOCTYPE,),
-		as_dict=True,
-	)
-	if not ps_row:
-		frappe.clear_cache(doctype=DOCTYPE)
-		print(
-			"[move_item_customer_items_to_sales] no field_order setter"
-			" — sections created, field_order is DB-default"
-		)
-		return
+	# 2. Update field_order Property Setter (the authoritative layout source).
+	# Seeded from the effective order when missing — without it a standard field
+	# like `customer_items` cannot be moved at all.
+	frappe.clear_cache(doctype=DOCTYPE)
+	ps = ensure_field_order_setter(DOCTYPE)
+	known = {df.fieldname for df in frappe.get_meta(DOCTYPE, cached=False).fields}
+	field_order = json.loads(ps.value)
 
-	field_order = json.loads(ps_row[0].value)
-	changed = False
+	new_order = field_order
+	for anchor, block in (
+		(SALES_ANCHOR, (SALES_SECTION, SALES_TABLE)),
+		(DA_ANCHOR, (DA_SECTION, DA_TABLE)),
+	):
+		spliced = splice_after(new_order, anchor, block, known)
+		if spliced is None:
+			print(
+				f"[move_item_customer_items_to_sales] skipped {block}:"
+				f" anchor {anchor} or a block field is missing — layout left as is"
+			)
+			continue
+		new_order = spliced
 
-	# --- Move 1: customer_items into Sales tab ---
-	# Remove from old position(s)
-	for f in (SALES_TABLE, SALES_SECTION):
-		while f in field_order:
-			field_order.remove(f)
-			changed = True
-
-	# Inject after SALES_ANCHOR
-	if SALES_ANCHOR in field_order:
-		idx = field_order.index(SALES_ANCHOR) + 1
-		for i, f in enumerate((SALES_SECTION, SALES_TABLE)):
-			field_order.insert(idx + i, f)
-		changed = True
-
-	# --- Move 2: design_attribute under its own section ---
-	# Remove from old position(s)
-	for f in (DA_TABLE, DA_SECTION):
-		while f in field_order:
-			field_order.remove(f)
-			changed = True
-
-	# Inject after DA_ANCHOR
-	if DA_ANCHOR in field_order:
-		idx = field_order.index(DA_ANCHOR) + 1
-		for i, f in enumerate((DA_SECTION, DA_TABLE)):
-			field_order.insert(idx + i, f)
-		changed = True
-
-	if changed:
-		frappe.db.set_value(
-			"Property Setter",
-			ps_row[0].name,
-			"value",
-			json.dumps(field_order),
-		)
+	if new_order != field_order:
+		frappe.db.set_value("Property Setter", ps.name, "value", json.dumps(new_order))
 
 	# 3. Re-index Custom Field rows
 	frappe.db.sql("UPDATE `tabCustom Field` SET idx = 0 WHERE dt = %s", (DOCTYPE,))
@@ -164,3 +141,17 @@ def execute():
 		f" {DA_TABLE} under {DA_SECTION} ({DA_SECTION_LABEL})"
 		f" after {DA_ANCHOR}"
 	)
+
+
+def splice_after(order, anchor, block, known):
+	"""Return ``order`` with ``block`` placed directly after ``anchor``, or None if the
+	anchor is not in ``order`` or a block field does not exist on the doctype.
+
+	Validates before removing anything, so a missing anchor can never drop the block
+	out of the order. Idempotent: an already-spliced order comes back unchanged.
+	"""
+	if anchor not in order or anchor in block or not set(block) <= known:
+		return None
+	remaining = [name for name in order if name not in block]
+	idx = remaining.index(anchor) + 1
+	return remaining[:idx] + list(block) + remaining[idx:]
