@@ -319,6 +319,13 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	setup: function (frm) {
+		// A Material Request stamps its entries (custom_reserve_se and friends) and every
+		// entry's rows point back at it, so the cancel dialog walked request -> all its sibling
+		// entries and offered to cancel them, the request included, in an order that cannot
+		// succeed. on_cancel releases the request server-side; ERPNext's own list is kept.
+		frm.ignore_doctypes_on_cancel_all = [
+			...new Set([...(frm.ignore_doctypes_on_cancel_all || []), "Material Request"]),
+		];
 		frm.set_query("item_template", function (doc) {
 			return { filters: { has_variants: 1 } };
 		});
