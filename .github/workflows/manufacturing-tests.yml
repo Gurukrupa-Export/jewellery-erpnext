@@ -3,7 +3,7 @@ name: Manufacturing Tests
 on:
   pull_request:
     branches:
-      - gurukrupa-prod
+      - v16_develop_aerele
       - kgg_uat
       - kggk_prod
   workflow_dispatch:
