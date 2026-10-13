@@ -184,7 +184,10 @@ def update_source_betch(self):
 	# be a source at all, so a Finding source draws company stock alone too.
 	is_finding_source = not is_melting_loss and is_finding_item(self.get("source_item"))
 	is_finding_target = not is_melting_loss and is_finding_item(self.get("target_item"))
-	regular_only = is_melting_loss or is_finding_source or is_finding_target
+	# Chain Subcontracting books its Process Loss through the same Regular-Stock scrap row as
+	# melting loss (chain_subcontracting.run_receive), so it draws company stock alone too.
+	is_chain = bool(self.get("is_chain_subcontracting"))
+	regular_only = is_melting_loss or is_finding_source or is_finding_target or is_chain
 
 	lane_map = get_batch_lane_map([i.batch_no for i in batch_data])
 
@@ -284,6 +287,13 @@ def update_source_betch(self):
 					"of {0} can be used. The Regular Stock available in {1} is {2}."
 				).format(self.source_item, self.source_warehouse, total_qty)
 			)
+		if is_chain:
+			frappe.throw(
+				_(
+					"Chain Subcontracting uses Regular Stock only. The Regular Stock of {0} "
+					"available in {1} is {2}."
+				).format(self.source_item, self.source_warehouse, total_qty)
+			)
 		frappe.throw(
 			_(
 				"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
@@ -352,6 +362,10 @@ def _validate_entered_source_batches(
 			elif is_finding_target:
 				reason = _("{0} cannot be converted into a Finding item.").format(
 					inventory_type
+				)
+			elif self.get("is_chain_subcontracting"):
+				reason = _(
+					"a Chain Subcontracting conversion can only use Regular Stock."
 				)
 			else:
 				reason = _("a melting loss can only use Regular Stock.")
