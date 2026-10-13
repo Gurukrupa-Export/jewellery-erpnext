@@ -416,3 +416,35 @@ class TestPlanGradesTheEffectiveCustomer(UnitTestCase):
 			customer="EXTERNAL", ref_customer=None, internal_flags={"EXTERNAL": 0}
 		)
 		self.assertEqual(so_det.get("diamond_grade"), "PLAIN")
+
+
+class TestPlanSubmitQueuesKggkSync(UnitTestCase):
+	"""Submitting a Manufacturing Plan hands it to gke_customization's KGGK sync.
+
+	The sync creates Items and BOMs on KGGK only from a submitted plan, so without this hook
+	nothing new reaches KGGK unless somebody presses Prefill or Retry.
+	"""
+
+	DELEGATE = (
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events."
+		"add_item_bom_to_kggk.add_item_bom_to_kggk"
+	)
+
+	def test_plan_submit_is_hooked_to_the_delegate(self):
+		from jewellery_erpnext import hooks
+
+		self.assertEqual(
+			hooks.doc_events["Manufacturing Plan"]["on_submit"], self.DELEGATE
+		)
+		self.assertTrue(callable(frappe.get_attr(self.DELEGATE)))
+
+	def test_delegate_hands_the_plan_to_kggk_sync(self):
+		plan = frappe._dict(name="MPLAN-TEST-0001")
+		with patch(
+			"gke_customization.gke_order_forms.doc_events.kggk_sync.on_submit",
+			return_value="queued",
+		) as on_submit:
+			result = frappe.get_attr(self.DELEGATE)(plan, "on_submit")
+
+		on_submit.assert_called_once_with(plan, "on_submit")
+		self.assertEqual(result, "queued")

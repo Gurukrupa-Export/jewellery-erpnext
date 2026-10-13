@@ -456,6 +456,10 @@ class ParentManufacturingOrder(Document):
 				"Metal Criteria",
 				{**criteria, "metal_type": ("is", "not set")},
 				"metal_purity",
+			metal_purity = frappe.db.get_value(
+				"Metal Criteria",
+				{"parent": self.manufacturer, "metal_touch": self.metal_touch},
+				["metal_purity"],
 			)
 			if metal_purity:
 				self.metal_purity = metal_purity
