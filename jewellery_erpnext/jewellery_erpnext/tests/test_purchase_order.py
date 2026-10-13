@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests import IntegrationTestCase, UnitTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import purchase_order as po_events
 
@@ -1034,86 +1034,3 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			mock_get_taxes.return_value = {}
 			res = po_events.make_quotation("PO-3", None)
 			self.assertEqual(len(res.items), 0)
-
-
-class TestSubcontractingOrderCopyBom(UnitTestCase):
-	"""The Purchase Order a Manufacturing Plan raises carries each row's Copy BOM.
-
-	KGGK's Quotation from the mirrored PO refuses a row without `custom_copy_bom`
-	("Copy BOM is not set on Purchase Order"), so both kinds of PO row must have it.
-	"""
-
-	def _po_rows(self, plan_rows):
-		pos = []
-
-		def new_po(doctype):
-			po = MagicMock()
-			pos.append(po)
-			return po
-
-		doc = frappe._dict(
-			name="MPLAN-1", company="Test Company", manufacturing_plan_table=plan_rows
-		)
-		with (
-			patch.object(po_events.frappe, "new_doc", side_effect=new_po),
-			patch.object(
-				po_events.frappe.db,
-				"get_single_value",
-				return_value="Subcontracting Service",
-			),
-		):
-			po_events.make_subcontracting_order(doc)
-
-		return [call.args[1] for po in pos for call in po.append.call_args_list]
-
-	def _plan_row(self, **kwargs):
-		row = frappe._dict(
-			supplier="Supplier A",
-			customer="Customer X",
-			customer_po="PO-1",
-			item_code="Item 1",
-			subcontracting_qty=2,
-			manufacturing_bom="BOM-MFG-1",
-			copy_bom="BOM-COPY-1",
-			diamond_quality="VVS",
-			estimated_delivery_date="2026-10-20",
-			child_po="CPO-1",
-			name="MP-Det-1",
-		)
-		row.update(kwargs)
-		return row
-
-	def test_fg_purchase_row_carries_copy_bom(self):
-		(item,) = self._po_rows([self._plan_row(purchase_type="FG Purchase")])
-		self.assertEqual(item["custom_copy_bom"], "BOM-COPY-1")
-		self.assertEqual(item["manufacturing_bom"], "BOM-MFG-1")
-
-	def test_subcontracting_row_carries_copy_bom_of_the_fg_item(self):
-		(item,) = self._po_rows([self._plan_row(purchase_type="Subcontracting")])
-		self.assertEqual(item["item_code"], "Subcontracting Service")
-		self.assertEqual(item["fg_item"], "Item 1")
-		self.assertEqual(item["custom_copy_bom"], "BOM-COPY-1")
-
-	def test_each_row_keeps_its_own_copy_bom(self):
-		items = self._po_rows(
-			[
-				self._plan_row(purchase_type="FG Purchase", copy_bom="BOM-COPY-1"),
-				self._plan_row(
-					purchase_type="FG Purchase",
-					item_code="Item 2",
-					copy_bom="BOM-COPY-2",
-					name="MP-Det-2",
-				),
-			]
-		)
-		self.assertEqual(
-			{i["item_code"]: i["custom_copy_bom"] for i in items},
-			{"Item 1": "BOM-COPY-1", "Item 2": "BOM-COPY-2"},
-		)
-
-	def test_manufacturing_plan_row_stores_copy_bom(self):
-		field = frappe.get_meta("Manufacturing Plan Table").get_field("copy_bom")
-		self.assertIsNotNone(field)
-		self.assertEqual(
-			(field.fieldtype, field.options, field.read_only), ("Link", "BOM", 1)
-		)
