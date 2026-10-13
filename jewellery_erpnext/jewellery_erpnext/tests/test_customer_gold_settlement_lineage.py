@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import frappe
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.customer_subcontracting import customer_gold_components as cgc
 from jewellery_erpnext.customer_subcontracting import customer_gold_fulfilment as cgf
@@ -26,6 +27,9 @@ from jewellery_erpnext.customer_subcontracting import customer_gold_return as cg
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	VALUATION_NOMINAL,
 )
+
+#: The real ``frappe.get_all``, saved before any test patches it (see test_customer_gold_fulfilment).
+_REAL_GET_ALL = frappe.get_all
 
 CUSTOMER = "CG-CUST-A"
 OTHER = "CG-CUST-B"
@@ -607,6 +611,9 @@ class TestSerialOnlyDelivery(_LineageCase):
 		self.owners = {}
 		#: serial -> (components, pieces produced)
 		self.productions = {}
+		#: serials whose delivery wrote a custody event
+		self.delivered = set()
+		self.owner_lookup = MagicMock(side_effect=lambda s, w=None: self.owners.get(s))
 
 		def write_event(**kwargs):
 			self.events.append(frappe._dict(kwargs))
@@ -624,8 +631,11 @@ class TestSerialOnlyDelivery(_LineageCase):
 			patch.object(
 				cgf, "_row_serials", side_effect=lambda row: list(row.serials)
 			),
+			patch.object(cgf, "_serial_owner", self.owner_lookup),
 			patch.object(
-				cgf, "_serial_owner", side_effect=lambda s: self.owners.get(s)
+				cgf,
+				"_serial_delivery_recorded",
+				side_effect=lambda doc, s, customer: s in self.delivered,
 			),
 			patch.object(
 				cgc,
@@ -746,6 +756,7 @@ class TestSerialOnlyDelivery(_LineageCase):
 	def test_a_return_restores_the_same_value(self):
 		self.owners["SER-1"] = CUSTOMER
 		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+		self.delivered.add("SER-1")
 
 		(event,) = self._deliver(["SER-1"], -1, is_return=1)
 
@@ -764,3 +775,183 @@ class TestSerialOnlyDelivery(_LineageCase):
 	def test_a_serial_owned_by_the_document_customer_passes(self):
 		self.owners["SER-1"] = CUSTOMER
 		cgf.validate_customer_gold_entitlement(self._doc(["SER-1"], 1))
+
+	def test_a_return_of_a_delivery_that_released_nothing_restores_nothing(self):
+		"""Review F1: delivered before serial-only pieces were recorded, so no event exists.
+		Restoring a derived value would credit gold that never left the customer's position."""
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+
+		self.assertEqual(self._deliver(["SER-1"], -1, is_return=1), [])
+		self.log_error.assert_called_once()
+		self.assertIn("SER-1", self.log_error.call_args.kwargs["message"])
+
+	def test_the_owner_is_read_once_for_both_hooks(self):
+		"""Review O1: before_submit and on_submit share the document, so the serial's owner is
+		looked up once."""
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+		doc = self._doc(["SER-1"], 1)
+		doc.flags = frappe._dict()
+
+		cgf.validate_customer_gold_entitlement(doc)
+		cgf.record_fulfilment(doc)
+
+		self.owner_lookup.assert_called_once()
+		self.assertEqual(len(self.events), 1)
+
+
+class TestSerialOwnerSource(unittest.TestCase):
+	"""Review Q1/Q3: where a serial-only piece's owner comes from."""
+
+	def _owner(self, holding, produced=(None, None), warehouse="FG - WH"):
+		with (
+			patch.object(cgf, "_serial_holding", return_value=holding) as holding_read,
+			patch.object(
+				cgf, "_produced_ownership", return_value=produced
+			) as produced_read,
+		):
+			owner = cgf._serial_owner("SER-1", warehouse)
+		return owner, holding_read, produced_read
+
+	def test_the_ledger_entry_into_the_warehouse_answers(self):
+		owner, _holding, produced = self._owner((cgf.CUSTOMER_GOODS, CUSTOMER))
+		self.assertEqual(owner, CUSTOMER)
+		produced.assert_not_called()
+
+	def test_an_unstamped_ledger_entry_falls_back_to_the_producing_row(self):
+		owner, _holding, produced = self._owner(
+			(None, None), produced=(cgf.CUSTOMER_GOODS, CUSTOMER)
+		)
+		self.assertEqual(owner, CUSTOMER)
+		produced.assert_called_once()
+
+	def test_an_explicit_company_holding_is_never_overridden(self):
+		owner, _holding, produced = self._owner(
+			("Regular Stock", None), produced=(cgf.CUSTOMER_GOODS, CUSTOMER)
+		)
+		self.assertIsNone(owner)
+		produced.assert_not_called()
+
+	def test_no_warehouse_skips_the_ledger_read(self):
+		owner, holding, _produced = self._owner(
+			None, produced=(cgf.CUSTOMER_GOODS, CUSTOMER), warehouse=None
+		)
+		self.assertEqual(owner, CUSTOMER)
+		holding.assert_not_called()
+
+
+class TestSerialComposition(unittest.TestCase):
+	"""Review Q2: a producing entry with several finished rows splits what it consumed."""
+
+	def _production(self, finished_qtys, serial_row=0):
+		finished = [
+			frappe._dict(
+				name=f"FG-{i}",
+				s_warehouse=None,
+				t_warehouse="FG - WH",
+				is_finished_item=1,
+				transfer_qty=qty,
+			)
+			for i, qty in enumerate(finished_qtys)
+		]
+		consumed = frappe._dict(
+			name="RM-1",
+			s_warehouse="WIP - WH",
+			t_warehouse=None,
+			is_finished_item=0,
+			transfer_qty=4.0,
+		)
+
+		def get_value(doctype, name, fieldname=None, *args, **kwargs):
+			if doctype == "Serial No":
+				return frappe._dict(
+					reference_doctype="Stock Entry", reference_name="SE-1"
+				)
+			if doctype == "Stock Entry":
+				return frappe._dict(docstatus=1, purpose="Manufacture")
+			raise AssertionError(f"unexpected read: {doctype} {name} {fieldname}")
+
+		def get_all(doctype, *args, **kwargs):
+			if doctype == "Stock Entry Detail":
+				return [consumed, *finished]
+			return _REAL_GET_ALL(doctype, *args, **kwargs)
+
+		with (
+			patch(f"{cgc.__name__}.frappe.db.get_value", side_effect=get_value),
+			patch(f"{cgc.__name__}.frappe.get_all", side_effect=get_all),
+			patch.object(cgc, "_finished_row_of", return_value=finished[serial_row]),
+		):
+			return cgc.serial_production("SER-1")
+
+	def test_one_finished_row_takes_everything_consumed(self):
+		production = self._production([1.0])
+		self.assertEqual(production.share, 1.0)
+		self.assertEqual(production.produced, 1.0)
+		self.assertEqual(production.consumed_rows, ["RM-1"])
+
+	def test_several_finished_rows_split_by_quantity(self):
+		production = self._production([1.0, 3.0], serial_row=1)
+		self.assertEqual(production.finished_row, "FG-1")
+		self.assertAlmostEqual(production.share, 0.75)
+
+	def test_components_are_scaled_by_the_rows_share(self):
+		drawn = []
+
+		def resolve(batch_no, qty, *args, **kwargs):
+			drawn.append((batch_no, qty))
+			return [_component(qty, GOLD_24, customer=CUSTOMER, source_batch=batch_no)]
+
+		with (
+			patch.object(
+				cgc,
+				"serial_production",
+				return_value=frappe._dict(
+					consumed_rows=["RM-1"], share=0.5, produced=1.0
+				),
+			),
+			patch.object(cgc, "_consumed_batches", return_value=[("RCPT-A", -4.0)]),
+			patch.object(cgc, "resolve_components", side_effect=resolve),
+		):
+			components, produced = cgc.resolve_serial_components("SER-1")
+
+		self.assertEqual(drawn, [("RCPT-A", 2.0)])
+		self.assertEqual(produced, 1.0)
+		self.assertEqual(components[0]["qty"], 2.0)
+
+
+class TestSerialLookupsRunOnTheDatabase(IntegrationTestCase):
+	"""Review O2: every new serial-only query, against the real schema -- read-only.
+
+	The cases above mock the queries; this proves the SQL itself is valid (tables, columns,
+	joins) on whatever site the suite runs on, without writing anything.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_an_unknown_serial_has_no_holding_owner_or_production(self):
+		serial = "CG-NO-SUCH-SERIAL"
+		self.assertIsNone(cgf._serial_holding(serial, "CG-NO-SUCH-WAREHOUSE"))
+		self.assertIsNone(cgf._serial_owner(serial, "CG-NO-SUCH-WAREHOUSE"))
+		self.assertIsNone(cgc.serial_production(serial))
+		self.assertEqual(cgc.resolve_serial_components(serial), ([], 0.0))
+
+	def test_the_bundle_queries_run_for_unknown_rows(self):
+		rows = [frappe._dict(name="CG-NO-SUCH-ROW")]
+		self.assertIsNone(cgc._finished_row_of("CG-NO-SUCH-SERIAL", rows))
+		self.assertEqual(list(cgc._consumed_batches(["CG-NO-SUCH-ROW"])), [])
+
+	def test_a_real_serial_resolves_without_error(self):
+		"""Exercises the joins on real rows where the site has any serial made by a Stock Entry."""
+		serial = frappe.db.get_value(
+			"Serial No",
+			{"reference_doctype": "Stock Entry"},
+			["name", "warehouse"],
+			as_dict=True,
+		)
+		if not serial:
+			self.skipTest("no serial created by a Stock Entry on this site")
+		cgf._serial_owner(serial.name, serial.warehouse)
+		cgc.resolve_serial_components(serial.name)

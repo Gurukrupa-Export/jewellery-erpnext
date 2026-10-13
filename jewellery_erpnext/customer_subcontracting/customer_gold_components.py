@@ -328,38 +328,86 @@ SERIAL_PRODUCING_PURPOSES = ("Manufacture", "Repack")
 
 
 def serial_production(serial_no):
-	"""``(stock entry, finished row)`` of the latest submitted entry that produced ``serial_no``.
+	"""What produced ``serial_no``: a dict of the entry, its finished row, and this piece's share.
 
-	``None`` when no Manufacture or Repack put the serial into stock. Read from the serial's
-	inward Serial and Batch Entry, the same place ``produced_qty`` reads a batch from.
+	``None`` when the serial was not created by a submitted Manufacture or Repack. The entry is
+	read from ``Serial No.reference_name`` -- ERPNext stamps the creating voucher there -- so
+	this is a primary-key lookup, not a scan of the serial's ledger. Every later read goes
+	through an indexed column (Stock Entry Detail ``parent``, Serial and Batch Bundle
+	``voucher_detail_no``).
+
+	``share`` is this piece's row's part of everything the entry finished. An entry with one
+	finished row -- every SNC Manufacture -- gives 1.0; with several, the consumed stock is
+	split between them by quantity instead of being attributed whole to each.
 	"""
 	if not serial_no:
 		return None
 
+	ref = frappe.db.get_value(
+		"Serial No", serial_no, ["reference_doctype", "reference_name"], as_dict=True
+	)
+	if not ref or ref.reference_doctype != "Stock Entry" or not ref.reference_name:
+		return None
+
+	entry = frappe.db.get_value(
+		"Stock Entry", ref.reference_name, ["docstatus", "purpose"], as_dict=True
+	)
+	if (
+		not entry
+		or entry.docstatus != 1
+		or entry.purpose not in SERIAL_PRODUCING_PURPOSES
+	):
+		return None
+
+	rows = frappe.get_all(
+		"Stock Entry Detail",
+		filters={"parent": ref.reference_name},
+		fields=[
+			"name",
+			"s_warehouse",
+			"t_warehouse",
+			"is_finished_item",
+			"transfer_qty",
+		],
+	)
+	finished = [r for r in rows if r.is_finished_item]
+	if not finished:
+		return None
+
+	row = finished[0] if len(finished) == 1 else _finished_row_of(serial_no, finished)
+	if not row:
+		return None
+
+	total = sum(flt(r.transfer_qty) for r in finished)
+	return frappe._dict(
+		voucher_no=ref.reference_name,
+		finished_row=row.name,
+		produced=flt(row.transfer_qty, QTY_PRECISION),
+		share=flt(row.transfer_qty) / total if len(finished) > 1 and total > 0 else 1.0,
+		consumed_rows=[r.name for r in rows if r.s_warehouse],
+	)
+
+
+def _finished_row_of(serial_no, finished):
+	"""Which of several finished rows put ``serial_no`` into stock."""
 	sbe = frappe.qb.DocType("Serial and Batch Entry")
 	sbb = frappe.qb.DocType("Serial and Batch Bundle")
-	se = frappe.qb.DocType("Stock Entry")
-	rows = (
-		frappe.qb.from_(sbe)
-		.join(sbb)
+	hit = (
+		frappe.qb.from_(sbb)
+		.join(sbe)
 		.on(sbe.parent == sbb.name)
-		.join(se)
-		.on(se.name == sbb.voucher_no)
-		.select(sbb.voucher_no, sbb.voucher_detail_no)
+		.select(sbb.voucher_detail_no)
 		.where(
-			(sbe.serial_no == serial_no)
-			& (sbb.voucher_type == "Stock Entry")
+			sbb.voucher_detail_no.isin([r.name for r in finished])
 			& (sbb.type_of_transaction == "Inward")
 			& (sbb.is_cancelled == 0)
-			& (sbb.docstatus == 1)
-			& (se.docstatus == 1)
-			& (se.purpose.isin(SERIAL_PRODUCING_PURPOSES))
+			& (sbe.serial_no == serial_no)
 		)
-		.orderby(sbb.posting_datetime, order=frappe.qb.desc)
 		.limit(1)
 	).run()
-
-	return (rows[0][0], rows[0][1]) if rows else None
+	if not hit:
+		return None
+	return next((r for r in finished if r.name == hit[0][0]), None)
 
 
 def resolve_serial_components(serial_no):
@@ -369,26 +417,36 @@ def resolve_serial_components(serial_no):
 	(``record_batch_components``, from the producing entry's outward batch entries). An item
 	with no batch tracking has nowhere to store it, so it is rebuilt here from the same
 	inputs the batch path would have recorded: every batch the producing entry consumed,
-	resolved transitively and merged. The denominator is the quantity of the finished row,
-	the same "pieces produced" ``attribution_basis`` uses for a piece counted in Nos.
+	resolved transitively and merged -- scaled to this row's share when the entry finished
+	more than one row. The denominator is the quantity of the finished row, the same "pieces
+	produced" ``attribution_basis`` uses for a piece counted in Nos.
 
 	``([], 0.0)`` when the serial was not produced from consumed stock.
 	"""
 	production = serial_production(serial_no)
-	if not production:
+	if not production or not production.consumed_rows:
 		return [], 0.0
 
-	voucher_no, finished_row = production
+	components = []
+	for batch_no, qty in _consumed_batches(production.consumed_rows):
+		components.extend(
+			resolve_components(batch_no, abs(flt(qty)) * production.share)
+		)
+
+	return merge_components(components), production.produced
+
+
+def _consumed_batches(row_names):
+	"""``[(batch_no, qty)]`` the given Stock Entry Detail rows drew, from their outward bundles."""
 	sbe = frappe.qb.DocType("Serial and Batch Entry")
 	sbb = frappe.qb.DocType("Serial and Batch Bundle")
-	consumed = (
-		frappe.qb.from_(sbe)
-		.join(sbb)
+	return (
+		frappe.qb.from_(sbb)
+		.join(sbe)
 		.on(sbe.parent == sbb.name)
 		.select(sbe.batch_no, sbe.qty)
 		.where(
-			(sbb.voucher_type == "Stock Entry")
-			& (sbb.voucher_no == voucher_no)
+			sbb.voucher_detail_no.isin(row_names)
 			& (sbb.type_of_transaction == "Outward")
 			& (sbb.is_cancelled == 0)
 			& (sbb.docstatus == 1)
@@ -396,16 +454,6 @@ def resolve_serial_components(serial_no):
 			& (sbe.batch_no != "")
 		)
 	).run()
-
-	components = []
-	for batch_no, qty in consumed:
-		components.extend(resolve_components(batch_no, abs(flt(qty))))
-
-	produced = flt(
-		frappe.db.get_value("Stock Entry Detail", finished_row, "transfer_qty"),
-		QTY_PRECISION,
-	)
-	return merge_components(components), produced
 
 
 def _shares_one_unit(batch_no, components):

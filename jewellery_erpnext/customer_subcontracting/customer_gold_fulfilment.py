@@ -249,17 +249,38 @@ def _batch_owner(batch_no):
 	return batch.custom_customer or None
 
 
-def _serial_owner(serial_no):
+def _serial_owner(serial_no, warehouse=None):
 	"""Owner of a SERIAL-ONLY piece, or ``None`` when it is not customer-owned.
 
 	With no batch there is no ``Batch.custom_customer`` to read, so the owner is taken from the
-	inventory dimensions of the Stock Ledger Entry that last brought the serial into stock --
-	the same ownership erpnext's dimension check enforces when the serial is moved out. Only
-	inward entries count, so the delivery's own outward entry never answers for itself.
+	inventory dimensions of the Stock Ledger Entry that last brought the serial into
+	``warehouse`` -- the same ownership erpnext's dimension check enforces when the serial is
+	moved out. Only inward entries count, so the delivery's own outward entry never answers for
+	itself. Filtering on the warehouse is what lets the read use Serial and Batch Entry's
+	``(warehouse, serial_no, posting_datetime)`` index; without it the join scanned the whole
+	Stock Ledger for every serial.
+
+	When that entry carries no inventory type (dimension columns missing or never stamped), the
+	finished row of the entry that produced the serial answers instead. An explicit non-customer
+	inventory type is an answer, not a gap, and is never overridden.
 	"""
 	if not serial_no:
 		return None
 
+	holding = _serial_holding(serial_no, warehouse) if warehouse else None
+	if holding and holding[0]:
+		inventory_type, customer = holding
+	else:
+		inventory_type, customer = _produced_ownership(serial_no)
+
+	if inventory_type != CUSTOMER_GOODS:
+		return None
+	return customer or None
+
+
+def _serial_holding(serial_no, warehouse):
+	"""``(inventory_type, customer)`` of the latest inward ledger entry of ``serial_no`` into
+	``warehouse``, or ``None``."""
 	sbe = frappe.qb.DocType("Serial and Batch Entry")
 	sle = frappe.qb.DocType("Stock Ledger Entry")
 	rows = (
@@ -268,19 +289,61 @@ def _serial_owner(serial_no):
 		.on(sle.serial_and_batch_bundle == sbe.parent)
 		.select(sle.inventory_type, sle.customer)
 		.where(
-			(sbe.serial_no == serial_no)
+			(sbe.warehouse == warehouse)
+			& (sbe.serial_no == serial_no)
 			& (sle.is_cancelled == 0)
 			& (sle.actual_qty > 0)
 		)
-		.orderby(sle.posting_datetime, order=frappe.qb.desc)
-		.orderby(sle.creation, order=frappe.qb.desc)
+		.orderby(sbe.posting_datetime, order=frappe.qb.desc)
 		.limit(1)
 	).run()
+	return tuple(rows[0]) if rows else None
 
-	if not rows or rows[0][0] != CUSTOMER_GOODS:
-		return None
 
-	return rows[0][1] or None
+def _produced_ownership(serial_no):
+	"""``(inventory_type, customer)`` stamped on the finished row that produced ``serial_no``."""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
+		serial_production,
+	)
+
+	production = serial_production(serial_no)
+	if not production:
+		return None, None
+	row = frappe.db.get_value(
+		"Stock Entry Detail",
+		production.finished_row,
+		["inventory_type", "customer"],
+		as_dict=True,
+	)
+	return (row.inventory_type, row.customer) if row else (None, None)
+
+
+def _row_serial_owners(doc, row):
+	"""``{serial: owner}`` for a batch-less row, read once per document.
+
+	The entitlement check (``before_submit``) and the event writer (``on_submit``) both need
+	the owners of the same serials; they share one Document object, so the answer is kept on
+	its flags rather than read twice.
+	"""
+	flags = getattr(doc, "flags", None)
+	cache = None
+	if flags is not None:
+		cache = flags.get("cg_serial_owners")
+		if cache is None:
+			cache = flags.cg_serial_owners = {}
+
+	owners = {}
+	for serial_no in _row_serials(row):
+		if not serial_no:
+			continue
+		key = (serial_no, row.get("warehouse"))
+		if cache is not None and key in cache:
+			owners[serial_no] = cache[key]
+			continue
+		owners[serial_no] = _serial_owner(serial_no, row.get("warehouse"))
+		if cache is not None:
+			cache[key] = owners[serial_no]
+	return owners
 
 
 def _row_batches(row):
@@ -778,9 +841,7 @@ def validate_customer_gold_entitlement(doc, method=None):
 		owners = (
 			[_batch_owner(batch_no) for batch_no in batches]
 			if batches
-			else [
-				_serial_owner(serial_no) for serial_no in _row_serials(row) if serial_no
-			]
+			else list(_row_serial_owners(doc, row).values())
 		)
 		for owner in owners:
 			if not owner or owner == document_customer:
@@ -1646,10 +1707,24 @@ def record_fulfilment(doc, method=None):
 			# A serial-only piece: no batch to name its owner or hold its components, so each
 			# serial is resolved on its own -- two serials on one row may come from different
 			# productions, even different owners.
-			serials = [s for s in _row_serials(row) if s]
+			owners = _row_serial_owners(doc, row)
+			serials = list(owners)
 			for serial_no in serials:
-				customer = _serial_owner(serial_no)
+				customer = owners[serial_no]
 				if not customer:
+					continue
+				if flt(row.get("qty")) < 0 and not _serial_delivery_recorded(
+					doc, serial_no, customer
+				):
+					# Delivered before serial-only pieces were recorded: the delivery released
+					# nothing, so a return must restore nothing.
+					frappe.log_error(
+						title="Customer Gold: serial-only return not restored",
+						message=(
+							f"{doc.doctype} {doc.name} row {row.name} returns serial {serial_no}, "
+							f"whose delivery wrote no custody event. Nothing was restored."
+						),
+					)
 					continue
 				qty = flt(row.get("qty")) / len(serials)
 				share = _serial_customer_share(
@@ -1695,6 +1770,21 @@ def record_fulfilment(doc, method=None):
 		)
 
 	settle_customer_gold_liability(doc, written)
+
+
+def _serial_delivery_recorded(doc, serial_no, customer):
+	"""Whether a Delivery event was written for ``serial_no`` -- by the document this one returns
+	against when it names one, else by any delivery of the serial."""
+	filters = {
+		"serial_no": serial_no,
+		"customer": customer,
+		"cg_event_kind": EVENT_DELIVERY,
+	}
+	against = doc.get("return_against")
+	if against:
+		filters["reference_doctype"] = doc.doctype
+		filters["reference_docname"] = against
+	return bool(frappe.db.exists(LEDGER_DOCTYPE, filters))
 
 
 def _post_fulfilment_events(
