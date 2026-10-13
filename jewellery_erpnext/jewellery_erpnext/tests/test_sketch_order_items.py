@@ -8,14 +8,17 @@ make_items runs on submit:
 * a Final Sketch Approval CMO row marked "Copy Paste Item" re-uses the design Item the
   designer picked: that Item is re-stamped with this Sketch Order (the order_form_type /
   order_form_id Dynamic Link pair and the two custom sketch-order ids) and no new Item is
-  created. A Copy Paste row with no Item is skipped silently;
+  created. A Copy Paste row with no Item is skipped silently. An Item whose
+  order_form_id already points at another order (an Order, a Repair Order or another
+  Sketch Order) is used as it is and not re-stamped, and one message lists such Items;
 * every other row ("New Item" or blank) still creates a new design Item;
 * a Purchase Sketch Order still creates one Item for the order itself.
 
 on_cancel only sets workflow_state to "Cancelled" on the in-memory document.
 
 DB-free per the suite convention: setUpClass is neutralised, the Item builders are
-mocked and frappe.db.set_value / frappe.msgprint are replaced with MagicMocks.
+mocked, frappe.db.set_value / frappe.msgprint are replaced with MagicMocks and
+frappe.db.get_value answers the Item's current order link from ``self.item_links``.
 
 Run with:
   bench --site <site> run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sketch_order_items
@@ -24,6 +27,7 @@ Run with:
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
+import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.gurukrupa_exports.doctype.sketch_order import (
@@ -66,9 +70,19 @@ class TestSketchOrderMakeItems(IntegrationTestCase):
 		)
 		self.create_for_po = MagicMock(return_value="DES-PO")
 		self.update_template = MagicMock()
+		# item -> (order_form_type, order_form_id) currently on the Item
+		self.item_links = {}
+
+		def get_value(doctype, name, fieldname=None, *args, **kwargs):
+			assert doctype == "Item", doctype
+			link = self.item_links.get(name)
+			if link is None:
+				return None
+			return frappe._dict(order_form_type=link[0], order_form_id=link[1])
 
 		patchers = [
 			patch.object(so_module.frappe.db, "set_value", self.set_value),
+			patch.object(so_module.frappe.db, "get_value", side_effect=get_value),
 			patch.object(so_module.frappe, "msgprint", self.msgprint),
 			patch.object(so_module, "_", side_effect=lambda msg: msg),
 			patch.object(
@@ -155,6 +169,87 @@ class TestSketchOrderMakeItems(IntegrationTestCase):
 		self.create_template.assert_not_called()
 		self.update_template.assert_not_called()
 		self.msgprint.assert_not_called()
+
+	def _restamp_call(self, item, sketch_order="SKO-0001"):
+		return call(
+			"Item",
+			item,
+			{
+				"order_form_type": "Sketch Order",
+				"order_form_id": sketch_order,
+				"custom_sketch_order_form_id": "SOF-0001",
+				"custom_sketch_order_id": sketch_order,
+			},
+		)
+
+	def test_copy_paste_item_owned_by_another_order_is_not_restamped(self):
+		for owner in (
+			("Order", "ORD-0007"),
+			("Repair Order", "RPO-0003"),
+			("Sketch Order", "SKO-0999"),
+		):
+			with self.subTest(owner=owner):
+				self.set_value.reset_mock()
+				self.msgprint.reset_mock()
+				self.item_links = {"DES-OWNED": owner}
+				doc = _sketch_order(
+					[_row("CMO-1", item_remark="Copy Paste Item", item="DES-OWNED")]
+				)
+
+				SketchOrder.make_items(doc)
+
+				self.set_value.assert_not_called()
+				self.create_template.assert_not_called()
+				self.msgprint.assert_called_once()
+				message = self.msgprint.call_args.args[0]
+				self.assertIn(f"DES-OWNED ({owner[0]} {owner[1]})", message)
+				self.assertEqual(self.msgprint.call_args.kwargs["indicator"], "orange")
+
+	def test_copy_paste_item_free_or_already_on_this_order_is_restamped(self):
+		for link in (("", ""), ("Order", ""), ("Sketch Order", "SKO-0001")):
+			with self.subTest(link=link):
+				self.set_value.reset_mock()
+				self.msgprint.reset_mock()
+				self.item_links = {"DES-FREE": link}
+				doc = _sketch_order(
+					[_row("CMO-1", item_remark="Copy Paste Item", item="DES-FREE")]
+				)
+
+				SketchOrder.make_items(doc)
+
+				self.assertEqual(
+					self.set_value.call_args_list, [self._restamp_call("DES-FREE")]
+				)
+				self.msgprint.assert_not_called()
+
+	def test_mixed_copy_paste_rows_restamp_only_free_items_and_warn_once(self):
+		self.item_links = {
+			"DES-ORDER": ("Order", "ORD-0007"),
+			"DES-OTHER-SKO": ("Sketch Order", "SKO-0999"),
+		}
+		new_row = _row("CMO-4", item_remark="New Item")
+		doc = _sketch_order(
+			[
+				_row("CMO-1", item_remark="Copy Paste Item", item="DES-ORDER"),
+				_row("CMO-2", item_remark="Copy Paste Item", item="DES-FREE"),
+				_row("CMO-3", item_remark="Copy Paste Item", item="DES-OTHER-SKO"),
+				new_row,
+			]
+		)
+
+		SketchOrder.make_items(doc)
+
+		new_calls = self._new_item_calls(doc, new_row)
+		self.assertEqual(
+			self.set_value.call_args_list,
+			[self._restamp_call("DES-FREE"), new_calls["set_value"]],
+		)
+		self.assertEqual(len(self.msgprint.call_args_list), 2)
+		self.assertEqual(self.msgprint.call_args_list[0], new_calls["msgprint"])
+		warning = self.msgprint.call_args_list[1]
+		self.assertIn("DES-ORDER (Order ORD-0007)", warning.args[0])
+		self.assertIn("DES-OTHER-SKO (Sketch Order SKO-0999)", warning.args[0])
+		self.assertNotIn("DES-FREE", warning.args[0])
 
 	def test_copy_paste_row_without_item_is_noop(self):
 		for blank_item in (None, ""):
