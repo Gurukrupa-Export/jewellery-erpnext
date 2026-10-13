@@ -711,9 +711,12 @@ def create_manufacturing_order(doc, row, cache_data=None):
 			)
 
 		if bom_details:
-			# Update dictionary values using subscript notation
+			# Update dictionary values using subscript notation. The BOM header field is
+			# metal_type_ (trailing underscore); so_det's own key is plain metal_type, and
+			# falling back to the wrong one blanked the PMO's metal type whenever the BOM
+			# header was empty -- which then lost the PMO its Metal Criteria purity.
 			so_det["metal_type"] = bom_details.get("metal_type_") or so_det.get(
-				"metal_type_"
+				"metal_type"
 			)
 			so_det["metal_colour"] = bom_details.get("metal_colour") or so_det.get(
 				"metal_colour"

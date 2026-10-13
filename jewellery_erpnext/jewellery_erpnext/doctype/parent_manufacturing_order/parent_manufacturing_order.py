@@ -264,6 +264,27 @@ def _validate_metal_item_attributes(item_code, row, bom_table):
 		)
 
 
+def _tracking_bom_metal_type(tracking_bom, metal_touch):
+	"""Metal type of the tracking BOM's first metal row at this touch, or None.
+
+	A PMO's own metal_type comes from its master BOM's header or its Sales Order Item, and both
+	are often blank. The tracking BOM's metal rows are what its Manufacturing Work Orders are
+	built from, so they are the authority on which metal this touch is.
+	"""
+	if not (tracking_bom and metal_touch):
+		return None
+	return frappe.db.get_value(
+		"BOM Metal Detail",
+		{
+			"parent": tracking_bom,
+			"parenttype": "Tracking Bom",
+			"metal_touch": metal_touch,
+		},
+		"metal_type",
+		order_by="idx asc",
+	)
+
+
 class ParentManufacturingOrder(Document):
 	def before_save(self):
 		is_new = self.is_new()
@@ -418,11 +439,19 @@ class ParentManufacturingOrder(Document):
 		if self.custom_tracking_bom:
 			# Match the metal type too: the same touch carries a different purity per metal
 			# (Gold 22KT vs Silver 22KT). A row with no metal type still applies to any metal.
+			# A PMO without a metal type of its own takes it from its tracking BOM for this
+			# lookup only -- self.metal_type is left alone, since it overrides every MWO's.
+			metal_type = self.metal_type or _tracking_bom_metal_type(
+				self.custom_tracking_bom, self.metal_touch
+			)
 			criteria = {"parent": self.manufacturer, "metal_touch": self.metal_touch}
-			metal_purity = frappe.db.get_value(
-				"Metal Criteria",
-				{**criteria, "metal_type": self.metal_type},
-				"metal_purity",
+			metal_purity = (
+				metal_type
+				and frappe.db.get_value(
+					"Metal Criteria",
+					{**criteria, "metal_type": metal_type},
+					"metal_purity",
+				)
 			) or frappe.db.get_value(
 				"Metal Criteria",
 				{**criteria, "metal_type": ("is", "not set")},
