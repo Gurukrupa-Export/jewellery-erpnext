@@ -249,6 +249,19 @@ def update_rate(self):
 				)
 
 
+# Manufacturing Plan fieldname -> Purchase Order fieldname. The plan stamps these from its source
+# Sales Orders in set_order_dimensions(), which throws on any disagreement, so every subcontracting
+# Purchase Order raised from one plan carries the same single value. The Purchase Order fields are
+# created by the add_purchase_order_order_dimension_fields patch. Kept here rather than derived from
+# manufacturing_plan.ORDER_DIMENSION_MAP because that module imports this one.
+PO_ORDER_DIMENSION_MAP = {
+	"order_type": "custom_order_type",
+	"sales_type": "custom_sales_type",
+	"flow_type": "custom_flow_type",
+	"design_type": "custom_design_type",
+}
+
+
 def make_subcontracting_order(doc):
 	default_item = frappe.db.get_single_value("Jewellery Settings", "service_item")
 	supplier_wise_items = frappe._dict()
@@ -305,6 +318,8 @@ def make_subcontracting_order(doc):
 		po_doc.manufacturing_plan = doc.name
 		po_doc.custom_customer_po = supplier_wise_items[row].get("custom_customer_po")
 		po_doc.is_subcontracted = supplier_wise_items[row].get("is_subcontracted")
+		for plan_field, po_field in PO_ORDER_DIMENSION_MAP.items():
+			po_doc.set(po_field, doc.get(plan_field))
 		for item in supplier_wise_items[row]["items"]:
 			po_doc.append("items", item)
 		po_doc.save()
