@@ -322,6 +322,92 @@ def produced_qty(batch_no):
 	return flt(rows[0][1] if rows and rows[0][1] else 0.0, QTY_PRECISION)
 
 
+#: What can make a serialised piece out of consumed stock. A Material Receipt consumes nothing,
+#: so unlike ``PRODUCING_PURPOSES`` it has no composition to read back.
+SERIAL_PRODUCING_PURPOSES = ("Manufacture", "Repack")
+
+
+def serial_production(serial_no):
+	"""``(stock entry, finished row)`` of the latest submitted entry that produced ``serial_no``.
+
+	``None`` when no Manufacture or Repack put the serial into stock. Read from the serial's
+	inward Serial and Batch Entry, the same place ``produced_qty`` reads a batch from.
+	"""
+	if not serial_no:
+		return None
+
+	sbe = frappe.qb.DocType("Serial and Batch Entry")
+	sbb = frappe.qb.DocType("Serial and Batch Bundle")
+	se = frappe.qb.DocType("Stock Entry")
+	rows = (
+		frappe.qb.from_(sbe)
+		.join(sbb)
+		.on(sbe.parent == sbb.name)
+		.join(se)
+		.on(se.name == sbb.voucher_no)
+		.select(sbb.voucher_no, sbb.voucher_detail_no)
+		.where(
+			(sbe.serial_no == serial_no)
+			& (sbb.voucher_type == "Stock Entry")
+			& (sbb.type_of_transaction == "Inward")
+			& (sbb.is_cancelled == 0)
+			& (sbb.docstatus == 1)
+			& (se.docstatus == 1)
+			& (se.purpose.isin(SERIAL_PRODUCING_PURPOSES))
+		)
+		.orderby(sbb.posting_datetime, order=frappe.qb.desc)
+		.limit(1)
+	).run()
+
+	return (rows[0][0], rows[0][1]) if rows else None
+
+
+def resolve_serial_components(serial_no):
+	"""What a SERIAL-ONLY piece is made of: ``(components, pieces produced)``.
+
+	A batch-tracked piece has its composition written onto its batch at production
+	(``record_batch_components``, from the producing entry's outward batch entries). An item
+	with no batch tracking has nowhere to store it, so it is rebuilt here from the same
+	inputs the batch path would have recorded: every batch the producing entry consumed,
+	resolved transitively and merged. The denominator is the quantity of the finished row,
+	the same "pieces produced" ``attribution_basis`` uses for a piece counted in Nos.
+
+	``([], 0.0)`` when the serial was not produced from consumed stock.
+	"""
+	production = serial_production(serial_no)
+	if not production:
+		return [], 0.0
+
+	voucher_no, finished_row = production
+	sbe = frappe.qb.DocType("Serial and Batch Entry")
+	sbb = frappe.qb.DocType("Serial and Batch Bundle")
+	consumed = (
+		frappe.qb.from_(sbe)
+		.join(sbb)
+		.on(sbe.parent == sbb.name)
+		.select(sbe.batch_no, sbe.qty)
+		.where(
+			(sbb.voucher_type == "Stock Entry")
+			& (sbb.voucher_no == voucher_no)
+			& (sbb.type_of_transaction == "Outward")
+			& (sbb.is_cancelled == 0)
+			& (sbb.docstatus == 1)
+			& sbe.batch_no.isnotnull()
+			& (sbe.batch_no != "")
+		)
+	).run()
+
+	components = []
+	for batch_no, qty in consumed:
+		components.extend(resolve_components(batch_no, abs(flt(qty))))
+
+	produced = flt(
+		frappe.db.get_value("Stock Entry Detail", finished_row, "transfer_qty"),
+		QTY_PRECISION,
+	)
+	return merge_components(components), produced
+
+
 def _shares_one_unit(batch_no, components):
 	"""Whether the batch and every component are counted in the same stock UOM."""
 	item = frappe.db.get_value("Batch", batch_no, "item")

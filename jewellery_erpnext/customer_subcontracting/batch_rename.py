@@ -605,6 +605,13 @@ def create_child_batches(doc, method=None):
 		if not row.t_warehouse:
 			continue
 
+		# A serial-only item -- an SNC's finished piece whose Item has no batch tracking --
+		# is identified by its serial and can never hold a batch: Batch.validate throws
+		# "The selected item cannot have Batch" and the whole SNC submit rolls back. Only
+		# an explicit 0 skips; an item that cannot be read is left to mint as before.
+		if frappe.db.get_value("Item", row.item_code, "has_batch_no", cache=True) == 0:
+			continue
+
 		lane_key = _row_lane_key(row)
 
 		if single_lane:

@@ -578,3 +578,189 @@ class TestFineBasisMatchesQuantityBasis(unittest.TestCase):
 						cgf.quantity_basis(GOLD_22, gross, COMPANY),
 						cgf.fine_basis(gross * 91.8 / 100.0, COMPANY),
 					)
+
+
+class TestSerialOnlyDelivery(_LineageCase):
+	"""A serial-only piece has no batch: owner and composition are resolved from the serial.
+
+	DN-26-00039 / KLHGX62F1032: stock left, but ``_batch_owner(None)`` skipped the row and no
+	custody event was written. The serial path must release exactly what a batch-tracked piece
+	made from the same inputs releases.
+	"""
+
+	PIECE_COMPONENTS = [
+		_component(
+			CUSTOMER_IN_PIECE, GOLD_24, customer=CUSTOMER, source_batch="RCPT-A"
+		),
+		_component(0.449, ALLOY, source_batch="AL-1"),
+		_component(0.396, DIAMOND, source_batch="DIA-1"),
+	]
+
+	batch_item = {"RCPT-A": GOLD_24, "RCPT-22": GOLD_22}
+	booked = {(CUSTOMER, "RCPT-A"): RATE_A, (CUSTOMER, "RCPT-22"): RATE_B}
+
+	def setUp(self):
+		super().setUp()
+		self.events = []
+		self.log_error = MagicMock()
+		#: serial -> owner
+		self.owners = {}
+		#: serial -> (components, pieces produced)
+		self.productions = {}
+
+		def write_event(**kwargs):
+			self.events.append(frappe._dict(kwargs))
+			return f"EV-{len(self.events)}"
+
+		patches = [
+			patch.object(cgf, "is_physical_fulfilment", return_value=True),
+			patch.object(cgf, "is_customer_gold_enabled", return_value=True),
+			patch.object(
+				cgf,
+				"get_customer_gold_valuation_policy",
+				return_value=VALUATION_NOMINAL,
+			),
+			patch.object(cgf, "_row_batches", return_value=[]),
+			patch.object(
+				cgf, "_row_serials", side_effect=lambda row: list(row.serials)
+			),
+			patch.object(
+				cgf, "_serial_owner", side_effect=lambda s: self.owners.get(s)
+			),
+			patch.object(
+				cgc,
+				"resolve_serial_components",
+				side_effect=lambda s: self.productions.get(s, ([], 0.0)),
+			),
+			patch.object(cgf, "_batch_owner", side_effect=AssertionError("no batch")),
+			patch.object(cgf, "_write_event", side_effect=write_event),
+			patch.object(cgf, "settle_customer_gold_liability"),
+			patch.object(cgf, "_allocate_fulfilment"),
+			patch.object(cgf, "_row_carrying_value", MagicMock(return_value=-11.58)),
+			patch.object(cgf, "reference_purity", return_value=99.9),
+			patch(f"{cgf.__name__}.frappe.get_cached_value", return_value="INR"),
+			patch(f"{cgf.__name__}.frappe.log_error", self.log_error),
+		]
+		for p in patches:
+			p.start()
+			self.addCleanup(p.stop)
+
+	def _doc(self, serials, qty, customer=CUSTOMER, is_return=0):
+		row = frappe._dict(
+			name="ROW-1",
+			idx=1,
+			item_code=PIECE,
+			qty=qty,
+			batch_no=None,
+			serials=serials,
+			stock_uom="Nos",
+		)
+		return frappe._dict(
+			doctype="Delivery Note",
+			name="DN-1",
+			company=COMPANY,
+			customer=customer,
+			is_return=is_return,
+			items=[row],
+		)
+
+	def _deliver(self, serials, qty, is_return=0):
+		cgf.record_fulfilment(self._doc(serials, qty, is_return=is_return))
+		return self.events
+
+	def test_a_serial_only_piece_writes_its_delivery_event(self):
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+
+		(event,) = self._deliver(["SER-1"], 1)
+
+		self.assertEqual(event.customer, CUSTOMER)
+		self.assertEqual(event.serial_no, "SER-1")
+		self.assertIsNone(event.batch_no)
+		self.assertEqual(event.cg_gross_qty_delta, -1)
+		self.assertAlmostEqual(
+			event.cg_carrying_value_delta,
+			-round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			places=2,
+		)
+		self.assertAlmostEqual(event.cg_fine_gold_delta, -4.986, places=3)
+
+	def test_only_the_customer_material_in_a_mixed_piece_is_released(self):
+		"""KLHGX62F1032's shape: company gold and stones, 0.06 g of the customer's finding."""
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (
+			[
+				_component(0.06, GOLD_22, customer=CUSTOMER, source_batch="RCPT-22"),
+				_component(1.888, GOLD_22, source_batch="CO-22"),
+				_component(0.483, DIAMOND, source_batch="DIA-1"),
+			],
+			1.0,
+		)
+
+		(event,) = self._deliver(["SER-1"], 1)
+
+		self.assertAlmostEqual(
+			event.cg_fine_gold_delta, -round(0.06 * 0.918, 3), places=3
+		)
+		self.assertAlmostEqual(
+			event.cg_carrying_value_delta, -round(0.06 * RATE_B, 2), places=2
+		)
+
+	def test_a_company_owned_serial_writes_nothing(self):
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+		self.assertEqual(self._deliver(["SER-1"], 1), [])
+
+	def test_each_serial_on_a_row_is_priced_from_its_own_production(self):
+		self.owners.update({"SER-1": CUSTOMER, "SER-2": CUSTOMER})
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+		self.productions["SER-2"] = (
+			[_component(2.0, GOLD_24, customer=CUSTOMER, source_batch="RCPT-A")],
+			1.0,
+		)
+
+		first, second = self._deliver(["SER-1", "SER-2"], 2)
+
+		self.assertEqual((first.serial_no, second.serial_no), ("SER-1", "SER-2"))
+		self.assertEqual(
+			(first.cg_gross_qty_delta, second.cg_gross_qty_delta), (-1, -1)
+		)
+		self.assertAlmostEqual(
+			first.cg_carrying_value_delta,
+			-round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			places=2,
+		)
+		self.assertAlmostEqual(
+			second.cg_carrying_value_delta, -round(2.0 * RATE_A, 2), places=2
+		)
+
+	def test_a_piece_with_no_production_record_is_logged_never_valued(self):
+		"""No composition: the stock value may hold company material, so nothing is released."""
+		self.owners["SER-1"] = CUSTOMER
+
+		(event,) = self._deliver(["SER-1"], 1)
+
+		self.assertIsNone(event.cg_carrying_value_delta)
+		self.log_error.assert_called_once()
+		self.assertIn("serial SER-1", self.log_error.call_args.kwargs["message"])
+
+	def test_a_return_restores_the_same_value(self):
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+
+		(event,) = self._deliver(["SER-1"], -1, is_return=1)
+
+		self.assertEqual(event.cg_event_kind, cgf.EVENT_DELIVERY_RETURN)
+		self.assertAlmostEqual(
+			event.cg_carrying_value_delta,
+			round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			places=2,
+		)
+
+	def test_a_serial_owned_by_another_customer_is_blocked(self):
+		self.owners["SER-1"] = OTHER
+		with self.assertRaises(frappe.ValidationError):
+			cgf.validate_customer_gold_entitlement(self._doc(["SER-1"], 1))
+
+	def test_a_serial_owned_by_the_document_customer_passes(self):
+		self.owners["SER-1"] = CUSTOMER
+		cgf.validate_customer_gold_entitlement(self._doc(["SER-1"], 1))
