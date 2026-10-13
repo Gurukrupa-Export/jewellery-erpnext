@@ -215,6 +215,58 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		self.assertEqual(mock_new_doc.call_count, 2)
 
 	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_single_value"
+	)
+	def test_make_subcontracting_order_stamps_order_dimensions(
+		self, mock_get_single_value, mock_new_doc
+	):
+		"""Every Purchase Order raised from a plan carries the plan's four order dimensions."""
+		mock_get_single_value.return_value = "Subcontracting Service"
+		doc = frappe._dict(
+			name="MPLAN-4",
+			company="Test Company",
+			order_type="Sales",
+			sales_type="Regular",
+			flow_type="MTO",
+			design_type="Fancy",
+			manufacturing_plan_table=[
+				frappe._dict(
+					supplier=supplier,
+					customer="Customer X",
+					purchase_type="Subcontracting",
+					customer_po="PO-1",
+					item_code="Item 1",
+					subcontracting_qty=1,
+					estimated_delivery_date="2026-08-10",
+					child_po="CPO-1",
+					name=f"MP-Det-{supplier}",
+				)
+				for supplier in ("Supplier A", "Supplier B")
+			],
+		)
+		po_docs = [MagicMock(), MagicMock()]
+		mock_new_doc.side_effect = po_docs
+		po_events.make_subcontracting_order(doc)
+
+		expected = {
+			"custom_order_type": "Sales",
+			"custom_sales_type": "Regular",
+			"custom_flow_type": "MTO",
+			"custom_design_type": "Fancy",
+		}
+		for po_doc in po_docs:
+			stamped = {
+				call.args[0]: call.args[1]
+				for call in po_doc.set.call_args_list
+				if call.args[0] in expected
+			}
+			self.assertEqual(stamped, expected)
+			po_doc.save.assert_called_once()
+
+	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.get_doc"
 	)
 	@patch(
