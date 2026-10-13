@@ -278,9 +278,23 @@ def _serial_owner(serial_no, warehouse=None):
 	return customer or None
 
 
+#: The ownership columns a serial-only piece is read from. ``inventory_type`` ships with the
+#: apps; ``customer`` is created by the site's Customer Inventory Dimension, so a site without
+#: that dimension (a fresh CI site) has no such column on any of these tables.
+OWNERSHIP_COLUMNS = ("inventory_type", "customer")
+
+
+def _has_ownership_columns(doctype):
+	return all(frappe.db.has_column(doctype, column) for column in OWNERSHIP_COLUMNS)
+
+
 def _serial_holding(serial_no, warehouse):
 	"""``(inventory_type, customer)`` of the latest inward ledger entry of ``serial_no`` into
-	``warehouse``, or ``None``."""
+	``warehouse``, or ``None`` -- also when the ledger carries no ownership columns, so the
+	caller falls back instead of failing on an unknown column."""
+	if not _has_ownership_columns("Stock Ledger Entry"):
+		return None
+
 	sbe = frappe.qb.DocType("Serial and Batch Entry")
 	sle = frappe.qb.DocType("Stock Ledger Entry")
 	rows = (
@@ -307,7 +321,7 @@ def _produced_ownership(serial_no):
 	)
 
 	production = serial_production(serial_no)
-	if not production:
+	if not production or not _has_ownership_columns("Stock Entry Detail"):
 		return None, None
 	row = frappe.db.get_value(
 		"Stock Entry Detail",

@@ -955,3 +955,23 @@ class TestSerialLookupsRunOnTheDatabase(IntegrationTestCase):
 			self.skipTest("no serial created by a Stock Entry on this site")
 		cgf._serial_owner(serial.name, serial.warehouse)
 		cgc.resolve_serial_components(serial.name)
+
+	def test_a_site_without_the_customer_dimension_reads_no_owner(self):
+		"""CI's site has no Customer Inventory Dimension, so ``customer`` exists on neither the
+		ledger nor Stock Entry Detail. The lookup must fall through to "not customer-owned",
+		never fail the delivery on an unknown column."""
+		real_has_column = frappe.db.has_column
+
+		def has_column(doctype, column):
+			return False if column == "customer" else real_has_column(doctype, column)
+
+		serial = frappe.db.get_value(
+			"Serial No",
+			{"reference_doctype": "Stock Entry"},
+			["name", "warehouse"],
+			as_dict=True,
+		) or frappe._dict(name="CG-NO-SUCH-SERIAL", warehouse="CG-NO-SUCH-WAREHOUSE")
+		with patch.object(frappe.db, "has_column", side_effect=has_column):
+			self.assertIsNone(cgf._serial_holding(serial.name, serial.warehouse or "W"))
+			self.assertEqual(cgf._produced_ownership(serial.name), (None, None))
+			self.assertIsNone(cgf._serial_owner(serial.name, serial.warehouse))
