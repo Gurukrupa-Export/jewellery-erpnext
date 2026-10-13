@@ -416,17 +416,10 @@ class ParentManufacturingOrder(Document):
 
 	def metal_details(self):
 		if self.custom_tracking_bom:
-			# Match the metal type too: the same touch carries a different purity per metal
-			# (Gold 22KT vs Silver 22KT). A row with no metal type still applies to any metal.
-			criteria = {"parent": self.manufacturer, "metal_touch": self.metal_touch}
 			metal_purity = frappe.db.get_value(
 				"Metal Criteria",
-				{**criteria, "metal_type": self.metal_type},
-				"metal_purity",
-			) or frappe.db.get_value(
-				"Metal Criteria",
-				{**criteria, "metal_type": ("is", "not set")},
-				"metal_purity",
+				{"parent": self.manufacturer, "metal_touch": self.metal_touch},
+				["metal_purity"],
 			)
 			if metal_purity:
 				self.metal_purity = metal_purity

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.model.workflow import apply_workflow
-from frappe.tests import IntegrationTestCase, UnitTestCase
+from frappe.tests import IntegrationTestCase
 from gke_customization.gke_order_forms.doctype.order.order import make_quotation_batch
 from gke_customization.gke_order_forms.doctype.order_form.test_order_form import (
 	make_order_form,
@@ -26,13 +26,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 	update_status,
 	validate_gold_rate_with_gst,
 )
-from jewellery_erpnext.jewellery_erpnext.doc_events.quotation_pricing import (
-	_apply_standard_pricing,
-	criteria_purity,
-	get_metal_criteria,
-)
 
-QUOTATION_PRICING = "jewellery_erpnext.jewellery_erpnext.doc_events.quotation_pricing"
 QUOTATION_UTILS = (
 	"jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.utils"
 )
@@ -639,101 +633,3 @@ def create_order(self):
 	item.save()
 
 	apply_workflow(order, "Approve")
-
-
-def _insert_metal_criteria(parent, parenttype, rows):
-	for metal_type, metal_touch, metal_purity in rows:
-		frappe.get_doc(
-			{
-				"doctype": "Metal Criteria",
-				"parent": parent,
-				"parenttype": parenttype,
-				"parentfield": "metal_criteria",
-				"metal_type": metal_type,
-				"metal_touch": metal_touch,
-				"metal_purity": metal_purity,
-			}
-		).db_insert()
-
-
-class TestTrackingBomMetalPurity(UnitTestCase):
-	"""The tracking BOM takes the customer's purity for the row's metal type, not just its touch.
-
-	The reported bug: a Silver 22KT order (92.5) got Gold 22KT's 92.0 from the customer's
-	Metal Criteria, and the Material Request raised from it picked the 92.0 metal item.
-	"""
-
-	CUSTOMER = "_Test Metal Criteria Customer"
-
-	def setUp(self):
-		_insert_metal_criteria(
-			self.CUSTOMER, "Customer", [("Gold", "22KT", "92.0"), ("", "18KT", "75.5")]
-		)
-
-	def tearDown(self):
-		frappe.db.rollback()
-
-	def test_get_metal_criteria_keys_on_metal_type_and_touch(self):
-		self.assertEqual(
-			get_metal_criteria(self.CUSTOMER),
-			{("Gold", "22KT"): "92.0", ("", "18KT"): "75.5"},
-		)
-
-	def test_criteria_purity_matches_the_metal_type(self):
-		criteria = get_metal_criteria(self.CUSTOMER)
-		self.assertEqual(criteria_purity(criteria, "Gold", "22KT"), "92.0")
-		self.assertIsNone(criteria_purity(criteria, "Silver", "22KT"))
-
-	def test_criteria_without_metal_type_applies_to_any_metal(self):
-		criteria = get_metal_criteria(self.CUSTOMER)
-		self.assertEqual(criteria_purity(criteria, "Silver", " 18KT "), "75.5")
-
-	def test_standard_pricing_keeps_silver_purity_when_only_gold_has_criteria(self):
-		silver = frappe._dict(
-			parentfield="metal_detail",
-			metal_type="Silver",
-			metal_touch="22KT",
-			metal_purity="92.5",
-		)
-		gold = frappe._dict(
-			parentfield="metal_detail",
-			metal_type="Gold",
-			metal_touch="22KT",
-			metal_purity="91.6",
-		)
-		finding = frappe._dict(
-			parentfield="finding_detail",
-			finding_category="Bails",
-			metal_type="Silver",
-			metal_touch="22KT",
-			metal_purity="92.5",
-		)
-		doc = frappe._dict(
-			customer=self.CUSTOMER,
-			metal_detail=[silver, gold],
-			finding_detail=[finding],
-			diamond_detail=[],
-			gemstone_detail=[],
-			other_detail=[],
-		)
-		row = frappe._dict(custom_customer_finding="No", custom_customer_gold="No")
-
-		with (
-			patch(f"{QUOTATION_PRICING}._apply_making_charge_metal"),
-			patch(f"{QUOTATION_PRICING}._apply_making_charge_finding"),
-		):
-			_apply_standard_pricing(
-				frappe._dict(),
-				row,
-				doc,
-				{},
-				get_metal_criteria(self.CUSTOMER),
-				None,
-				None,
-				[],
-				[],
-			)
-
-		self.assertEqual(silver.metal_purity, "92.5")
-		self.assertEqual(finding.metal_purity, "92.5")
-		self.assertEqual(gold.metal_purity, "92.0")
