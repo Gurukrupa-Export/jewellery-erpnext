@@ -3273,6 +3273,15 @@ def create_test_data():
 
 			_ensure_ref_customer_fields()
 
+			# Batch.custom_worker_cost / custom_total_cost (Finding Manufacturing - Without
+			# SO). Patch-only like the fields above, so provision them here for test_site too,
+			# else apply_worker_cost_to_batch writes a missing column.
+			from jewellery_erpnext.patches.add_batch_worker_cost_fields import (
+				execute as _ensure_batch_worker_cost_fields,
+			)
+
+			_ensure_batch_worker_cost_fields()
+
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:
 			# it must be provisioned here for test_site, else get_or_create_zero_tax_template

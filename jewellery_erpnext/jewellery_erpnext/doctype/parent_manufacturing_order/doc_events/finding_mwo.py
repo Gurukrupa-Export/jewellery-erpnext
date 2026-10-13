@@ -4,15 +4,15 @@ import frappe
 from frappe import _
 from frappe.model.mapper import get_mapped_doc
 
-from jewellery_erpnext.utils import get_item_from_attribute
-
 
 def create_finding_mwo(self, finding_data=None):
 	if not finding_data:
 		return
 
 	for row in finding_data:
-		if frappe.db.get_value("Item", row.item_variant, "custom_is_manufacturing_item"):
+		if frappe.db.get_value(
+			"Item", row.item_variant, "custom_is_manufacturing_item"
+		):
 			mwo_doc = get_mapped_doc(
 				"Parent Manufacturing Order",
 				self.name,
@@ -25,7 +25,9 @@ def create_finding_mwo(self, finding_data=None):
 			)
 			mwo_doc.type = "Finding Manufacturing"
 			mwo_doc.item_code = row.item_variant
-			mwo_doc.master_bom = frappe.db.get_value("Item", row.item_variant, "master_bom")
+			mwo_doc.master_bom = frappe.db.get_value(
+				"Item", row.item_variant, "master_bom"
+			)
 			mwo_doc.metal_touch = row.metal_touch
 			mwo_doc.metal_type = row.metal_type
 			mwo_doc.metal_purity = row.metal_purity
@@ -33,14 +35,63 @@ def create_finding_mwo(self, finding_data=None):
 			mwo_doc.seq = int(self.name.split("-")[-1])
 			mwo_doc.is_finding_mwo = True
 			mwo_doc.auto_created = 1
-			mwo_doc.department = frappe.db.get_value("Manufacturing Setting", {"manufacturer": mwo_doc.manufacturer}, "default_department")
+			mwo_doc.department = frappe.db.get_value(
+				"Manufacturing Setting",
+				{"manufacturer": mwo_doc.manufacturer},
+				"default_department",
+			)
 			mwo_doc.save()
+
+
+def create_finding_without_so_mwo(self):
+	"""Create the Manufacturing Work Order for a submitted Without-SO finding PMO.
+
+	Built the way create_finding_mwo builds a finding MWO, but from the PMO alone: there is
+	no Tracking BOM row to read the item and metal off, so they come from the PMO, which the
+	Manufacturing Plan stamped from its Finding Details row. One PMO is one finding piece, so
+	it gets exactly one MWO. Left in Draft like every other auto-created MWO; submitting it is
+	what raises the Manufacturing Operation."""
+	if frappe.db.exists(
+		"Manufacturing Work Order",
+		{"manufacturing_order": self.name, "docstatus": ["<", 2]},
+	):
+		return
+
+	mwo_doc = get_mapped_doc(
+		"Parent Manufacturing Order",
+		self.name,
+		{
+			"Parent Manufacturing Order": {
+				"doctype": "Manufacturing Work Order",
+				"field_map": {"name": "manufacturing_order"},
+			}
+		},
+	)
+	mwo_doc.type = "Finding Manufacturing"
+	mwo_doc.item_code = self.item_code
+	mwo_doc.master_bom = frappe.db.get_value("Item", self.item_code, "master_bom")
+	mwo_doc.metal_type = self.metal_type
+	mwo_doc.metal_touch = self.metal_touch
+	mwo_doc.metal_purity = self.metal_purity
+	mwo_doc.metal_colour = self.metal_colour
+	mwo_doc.seq = int(self.name.split("-")[-1])
+	mwo_doc.is_finding_mwo = 1
+	mwo_doc.is_without_so = 1
+	mwo_doc.auto_created = 1
+	mwo_doc.department = frappe.db.get_value(
+		"Manufacturing Setting",
+		{"manufacturer": self.manufacturer},
+		"default_department",
+	)
+	mwo_doc.save()
+	return mwo_doc
 
 
 def create_stock_entry(self, department_data):
 	for key, values in department_data.items():
 		warehouse = frappe.db.get_value(
-			"Warehouse", {"department": key, "warehouse_type": "Manufacturing", "disabled": 0}
+			"Warehouse",
+			{"department": key, "warehouse_type": "Manufacturing", "disabled": 0},
 		)
 		stock_data = frappe.db.get_all(
 			"Stock Entry Detail",
@@ -70,7 +121,11 @@ def create_stock_entry(self, department_data):
 def create_se_entry(self, stock_data, central_department, warehouse):
 	transit_warehouse = frappe.db.get_value(
 		"Warehouse",
-		{"department": central_department, "warehouse_type": "Manufacturing", "disabled": 0},
+		{
+			"department": central_department,
+			"warehouse_type": "Manufacturing",
+			"disabled": 0,
+		},
 		["default_in_transit_warehouse", "name"],
 		as_dict=1,
 	)
@@ -147,13 +202,23 @@ def get_items_for_pmo(source_name, target_doc=None, ignore_permissions=False):
 	)
 
 	central_mfg_warehouse = frappe.db.get_value(
-		"Warehouse", {"department": central_department, "warehouse_type": "Manufacturing", "disabled": 0}
+		"Warehouse",
+		{
+			"department": central_department,
+			"warehouse_type": "Manufacturing",
+			"disabled": 0,
+		},
 	)
-	filters = {"custom_parent_manufacturing_order": source_name, "t_warehouse": central_mfg_warehouse}
+	filters = {
+		"custom_parent_manufacturing_order": source_name,
+		"t_warehouse": central_mfg_warehouse,
+	}
 	if target_doc.custom_item_type:
 		variant_of_dict = {"Gemstone": "G", "Diamond": "D"}
 		if variant_of_dict.get(target_doc.custom_item_type):
-			filters.update({"custom_variant_of": variant_of_dict.get(target_doc.custom_item_type)})
+			filters.update(
+				{"custom_variant_of": variant_of_dict.get(target_doc.custom_item_type)}
+			)
 
 	stock_entry_details = frappe.db.get_all(
 		"Stock Entry Detail",
@@ -180,10 +245,12 @@ def get_items_for_pmo(source_name, target_doc=None, ignore_permissions=False):
 			"items",
 			{
 				"s_warehouse": warehouse
-				if target_doc.stock_entry_type == "Work Order for Customer Approval Receive"
+				if target_doc.stock_entry_type
+				== "Work Order for Customer Approval Receive"
 				else None,
 				"t_warehouse": warehouse
-				if target_doc.stock_entry_type == "Work Order for Customer Approval Issue"
+				if target_doc.stock_entry_type
+				== "Work Order for Customer Approval Issue"
 				else None,
 				"item_code": row.item_code,
 				"pcs": row.pcs,

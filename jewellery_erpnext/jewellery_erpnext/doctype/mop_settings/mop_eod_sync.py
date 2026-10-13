@@ -3527,11 +3527,32 @@ def _resolve_mwo_so_anchor(mwo, mwo_cache=None):
 			mo,
 			["sales_order", "sales_order_item", "manufacturer"],
 		) or (None, None, None)
-	resolved = None
+	# The reservation voucher: the Sales Order line, or -- for a Finding Manufacturing -
+	# Without SO order, which has none -- the work order itself, as
+	# doc_events/stock_entry.get_mwo_reservation_voucher anchors it. The sales_order keys
+	# stay None for such an order, so the Customer Goods ownership check keeps refusing to
+	# heal against a missing Sales Order.
+	voucher_type = voucher_no = voucher_detail_no = None
 	if sales_order:
+		voucher_type, voucher_no, voucher_detail_no = (
+			"Sales Order",
+			sales_order,
+			sales_order_item,
+		)
+	elif mo and frappe.db.get_value("Manufacturing Work Order", mwo, "is_without_so"):
+		voucher_type, voucher_no, voucher_detail_no = (
+			"Manufacturing Work Order",
+			mwo,
+			mwo,
+		)
+	resolved = None
+	if voucher_no:
 		resolved = {
 			"sales_order": sales_order,
 			"sales_order_item": sales_order_item,
+			"voucher_type": voucher_type,
+			"voucher_no": voucher_no,
+			"voucher_detail_no": voucher_detail_no,
 			"base_mr_voucher_qty": _eod_base_mr_voucher_qty(mo, mfr or mo_manufacturer),
 		}
 	if mwo_cache is not None:
@@ -3553,7 +3574,8 @@ def _build_and_submit_mwo_sre(
 	has_serial_no,
 	stock_uom,
 ):
-	"""Construct + submit ONE Sales-Order-anchored MWO Stock Reservation Entry at
+	"""Construct + submit ONE MWO Stock Reservation Entry (anchored to the Sales Order, or to
+	the work order for a Without-SO order) at
 	``warehouse`` and return its name.
 
 	Extracted verbatim from ``_reserve_sres_from_eod_se_rows`` (the SO demand-cap lift plus
@@ -3571,11 +3593,15 @@ def _build_and_submit_mwo_sre(
 	# intentionally over-reserved across components, so size voucher_qty to cover the
 	# current reservation. The source SRE was already cancelled, so it is excluded from
 	# this global sum.
+	# A dict without the voucher keys is a Sales Order anchor (the shape before Without-SO
+	# orders were anchored to their work order).
+	voucher_type = resolved.get("voucher_type") or "Sales Order"
+	voucher_no = resolved.get("voucher_no") or resolved.get("sales_order")
+	voucher_detail_no = resolved.get("voucher_detail_no") or resolved.get(
+		"sales_order_item"
+	)
 	total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-		item_code,
-		"Sales Order",
-		resolved["sales_order"],
-		resolved["sales_order_item"],
+		item_code, voucher_type, voucher_no, voucher_detail_no
 	)
 	floor = flt(total_so_reserved) + reserved_qty
 	base_mr_voucher_qty = resolved["base_mr_voucher_qty"]
@@ -3585,9 +3611,9 @@ def _build_and_submit_mwo_sre(
 		effective_voucher_qty = floor
 
 	new_sre = frappe.new_doc("Stock Reservation Entry")
-	new_sre.voucher_type = "Sales Order"
-	new_sre.voucher_no = resolved["sales_order"]
-	new_sre.voucher_detail_no = resolved["sales_order_item"]
+	new_sre.voucher_type = voucher_type
+	new_sre.voucher_no = voucher_no
+	new_sre.voucher_detail_no = voucher_detail_no
 	new_sre.voucher_qty = effective_voucher_qty
 	new_sre.item_code = item_code
 	new_sre.warehouse = warehouse

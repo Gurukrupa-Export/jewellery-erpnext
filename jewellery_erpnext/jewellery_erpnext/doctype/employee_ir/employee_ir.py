@@ -103,6 +103,16 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validati
 	validate_loss_tables_required,
 	validate_manually_book_loss_details,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_costing import (
+	apply_without_so_working_time,
+	is_without_so_mwo,
+	reset_without_so_costing_on_receive_cancel,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_repack import (
+	create_without_so_finding_repack,
+	release_without_so_repack_reservations,
+	stamp_without_so_worker_cost,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	update_new_mop_wtg,
 )
@@ -208,6 +218,9 @@ class EmployeeIR(Document):
 				self.create_subcontracting_order()
 		else:
 			self.on_submit_receive()
+			# After the receive closed each operation's timer, so the work order's worker
+			# cost includes this operation.
+			stamp_without_so_worker_cost(self)
 			self._announce_customer_loss_posted()
 		# Last statement: a hit here rolls the whole submit back.
 		current_operation_guard.final_draft_check(self)
@@ -351,7 +364,11 @@ class EmployeeIR(Document):
 			current_operation_guard.guard_cancel(self)
 			self.on_submit_issue_new(cancel=True)
 		else:
+			# Before the receive cancel reverses the Without-SO repack: ERPNext will not take
+			# a reserved finding batch back out of the warehouse.
+			release_without_so_repack_reservations(self)
 			self.on_submit_receive(cancel=True)
+			reset_without_so_costing_on_receive_cancel(self)
 
 	def on_submit_issue_new(self, cancel=False):
 		# if self.mop_data:
@@ -599,6 +616,11 @@ class EmployeeIR(Document):
 				stock_entry_name = inject_extra_metal_for_eir_receive(
 					self, row, extra_transfer_rows=finding_rows
 				)
+
+				# Finding Manufacturing - Without SO: the metal this receive brought in becomes
+				# the work order's finding item. Before the MOP Log calls below, so the balance
+				# carried to the next operation is the finding.
+				create_without_so_finding_repack(self, row, stock_entry_name)
 
 				# Combined-loss receive: create_mop_log_for_employee_ir_receive
 				# now subtracts employee_loss_details + manually_book_loss_details
@@ -1795,6 +1817,8 @@ def batch_add_time_logs(self, mop_args_list):
 				if not row.to_time:
 					row.to_time = get_datetime(args.get("complete_time"))
 					calculation_time_log(doc, row, self)
+					if is_without_so_mwo(doc.manufacturing_work_order):
+						apply_without_so_working_time(doc, row, self.employee)
 					break
 
 		elif args.get("start_time"):
