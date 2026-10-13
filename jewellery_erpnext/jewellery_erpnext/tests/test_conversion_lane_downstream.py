@@ -333,6 +333,61 @@ class TestCreateChildBatches(IntegrationTestCase):
 		self.assertEqual(len(minted), 1)
 		self.assertEqual(minted[0].custom_customer, "TNCU0001")
 
+	def _run_with_batch_flags(self, doc, flags):
+		"""Run with ``Item.has_batch_no`` answered from ``flags`` ({item_code: 0/1})."""
+
+		def get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Item" and fieldname == "has_batch_no":
+				return flags.get(name)
+			return None
+
+		with patch("frappe.db.get_value", side_effect=get_value):
+			return self._run(doc)
+
+	def _single_customer_entry(self, produce_item):
+		return _FakeSE(
+			[
+				_row(
+					name="s1",
+					s_warehouse="W",
+					batch_no=CUSTOMER_PARENT,
+					inventory_type="Customer Goods",
+					customer="TNCU0001",
+				),
+				_row(
+					name="fg1",
+					item_code=produce_item,
+					t_warehouse="Tagging FG",
+					inventory_type="Customer Goods",
+					customer="TNCU0001",
+				),
+			],
+			customer="TNCU0001",
+		)
+
+	def test_a_serial_only_finished_piece_gets_no_child_batch(self):
+		"""SNC: every source is one customer's, the finished piece has no batch tracking.
+		Minting one made Batch.validate throw "The selected item cannot have Batch"."""
+		doc = self._single_customer_entry("PE00351-002")
+
+		minted = self._run_with_batch_flags(doc, {"PE00351-002": 0})
+
+		self.assertEqual(minted, [])
+		self.assertIsNone(doc.items[1].batch_no)
+
+	def test_a_batch_tracked_finished_piece_still_gets_its_child_batch(self):
+		doc = self._single_customer_entry("RI00210-004")
+
+		minted = self._run_with_batch_flags(doc, {"RI00210-004": 1})
+
+		self.assertEqual(len(minted), 1)
+		self.assertEqual(minted[0].batch_id, "TNCU0001-2F06-RI00210-004-01-A")
+
+	def test_an_unreadable_item_flag_still_mints(self):
+		"""Only an explicit has_batch_no=0 skips; a missing Item keeps the old behaviour."""
+		doc = self._single_customer_entry("M-G-18KT-75.0-Y")
+		self.assertEqual(len(self._run_with_batch_flags(doc, {})), 1)
+
 
 class _FakeBundle:
 	def __init__(self, entries, voucher_detail_no, voucher_type="Stock Entry"):
