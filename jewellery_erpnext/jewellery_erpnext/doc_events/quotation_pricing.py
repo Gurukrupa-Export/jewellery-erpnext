@@ -8,6 +8,32 @@ They apply diamond, metal, finding, gemstone pricing based on customer price lis
 import frappe
 
 
+def get_metal_criteria(parent):
+	"""``{(metal_type, metal_touch): metal_purity}`` from a party's Metal Criteria.
+
+	Keyed on the metal type as well as the touch: the same touch can carry a different
+	purity per metal (Gold 22KT is 92.0 where Silver 22KT is 92.5), and a touch-only key
+	let whichever row came last decide for every metal. Rows without a metal type are kept
+	under ``""`` so `criteria_purity` can still fall back to them.
+	"""
+	return {
+		(row.metal_type or "", (row.metal_touch or "").strip()): row.metal_purity
+		for row in frappe.get_list(
+			"Metal Criteria",
+			{"parent": parent},
+			["metal_type", "metal_touch", "metal_purity"],
+			ignore_permissions=1,
+		)
+	}
+
+
+def criteria_purity(metal_criteria, metal_type, metal_touch):
+	"""The Metal Criteria purity for this metal type and touch; a row with no metal type matches any."""
+	touch = (metal_touch or "").strip()
+	purity = metal_criteria.get((metal_type or "", touch))
+	return purity or metal_criteria.get(("", touch))
+
+
 def _apply_kg_gk_pricing(
 	self,
 	row,
@@ -123,7 +149,11 @@ def _apply_standard_pricing(
 			elif item.parentfield != "finding_detail":
 				item.is_customer_item = 1
 		if item.metal_touch:
-			item.metal_purity = metal_criteria.get(item.metal_touch)
+			# No criteria for this metal and touch keeps the purity copied from the source BOM.
+			item.metal_purity = (
+				criteria_purity(metal_criteria, item.metal_type, item.metal_touch)
+				or item.metal_purity
+			)
 
 	# Metal pricing
 	for metal in doc.metal_detail:
