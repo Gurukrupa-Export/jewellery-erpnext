@@ -6,6 +6,7 @@ on:
       - v16_develop_aerele
       - kgg_uat
       - kggk_prod
+      - gurukrupa-prod
   workflow_dispatch:
 
 concurrency:
@@ -69,3 +70,13 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_serial_bom_weights
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_weight_totals
+
+      - name: Run PR-added modules
+        if: ${{ !cancelled() }}
+        run: |
+          cd ~/frappe-bench
+          rc=0
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry || rc=1
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_repack || rc=1
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_certificate_id || rc=1
+          exit $rc

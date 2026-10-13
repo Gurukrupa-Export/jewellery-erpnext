@@ -3118,6 +3118,25 @@ def create_test_data():
 
 			_ensure_design_type_fields()
 
+			# Purchase Order.custom_order_type / custom_sales_type / custom_flow_type /
+			# custom_design_type are patch-only for the same reason. Without them the order
+			# dimensions make_subcontracting_order stamps on a plan's Purchase Orders are
+			# silently dropped on save.
+			from jewellery_erpnext.patches.add_purchase_order_order_dimension_fields import (
+				execute as _ensure_purchase_order_order_dimension_fields,
+			)
+
+			_ensure_purchase_order_order_dimension_fields()
+
+			# Removes v15 Custom Field rows that shadow the standard sales_type / flow_type /
+			# design_type fields of the planning doctypes. A no-op on fresh and CI sites; it is
+			# wired here for the same install-app reason as the patches above.
+			from jewellery_erpnext.patches.reconcile_v15_order_dimension_custom_fields import (
+				execute as _reconcile_v15_order_dimension_custom_fields,
+			)
+
+			_reconcile_v15_order_dimension_custom_fields()
+
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
 			# Without them every Sales Order / Delivery Note / Sales Invoice save raises
@@ -3168,6 +3187,25 @@ def create_test_data():
 			)
 
 			_ensure_batch_employee_field()
+
+			# Batch / Purchase Receipt Item / Sales Invoice Item.custom_certificate_id are
+			# NOT in the git_action_v16 fixtures either -- same reasoning as above. Without
+			# them set_batch_certificate_id's has_column guards turn the Purchase Receipt
+			# and credit-note stamping into a silent no-op on CI sites.
+			from jewellery_erpnext.patches.add_batch_certificate_id_fields import (
+				execute as _ensure_batch_certificate_id_fields,
+			)
+
+			_ensure_batch_certificate_id_fields()
+
+			# Journal Entry.custom_repack_stock_entry links a Batch Repack's Journal Entry to
+			# its Stock Entry. The Repack tool refuses to run without it, so it is
+			# provisioned here for CI sites too.
+			from jewellery_erpnext.patches.add_journal_entry_repack_stock_entry_field import (
+				execute as _ensure_repack_stock_entry_field,
+			)
+
+			_ensure_repack_stock_entry_field()
 
 			# Stock Reservation Entry.custom_replaced_sre_snapshot is declared only by
 			# its patch (no fixture, no custom/*.json), so it must be provisioned here

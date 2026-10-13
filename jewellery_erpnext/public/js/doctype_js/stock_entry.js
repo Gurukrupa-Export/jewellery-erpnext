@@ -957,31 +957,33 @@ frappe.ui.form.on("Stock Entry Detail", {
 			disableSaveButton();
 			serial_item.push(...row.serial_no.split("\n"));
 		}
-		frappe.call({
-			method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validation_of_serial_item",
-			args: {
-				issue_doc: frm.doc.name,
-			},
-			callback: function (response) {
-				var serial_item_list = response.message;
-				if (serial_item.length > row.qty) {
-					disableSaveButton();
-					frappe.throw(__("Error: Please remove serial no"));
-				} else if (serial_item.length < row.qty) {
-					disableSaveButton();
-					frappe.throw(__("Error: There are less serial no. Please add"));
-				} else {
-					for (let i = 0; i <= serial_item.length; i++) {
-						if (serial_item[i] != serial_item_list[row.item_code][i]) {
-							disableSaveButton();
-							frappe.throw(__("Error: Serial number is  not present"));
-							return;
+		if (!frm.is_new()) {
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validation_of_serial_item",
+				args: {
+					issue_doc: frm.doc.name,
+				},
+				callback: function (response) {
+					var serial_item_list = response.message;
+					if (serial_item.length > row.qty) {
+						disableSaveButton();
+						frappe.throw(__("Error: Please remove serial no"));
+					} else if (serial_item.length < row.qty) {
+						disableSaveButton();
+						frappe.throw(__("Error: There are less serial no. Please add"));
+					} else {
+						for (let i = 0; i <= serial_item.length; i++) {
+							if (serial_item[i] != serial_item_list[row.item_code][i]) {
+								disableSaveButton();
+								frappe.throw(__("Error: Serial number is  not present"));
+								return;
+							}
 						}
+						frm.refresh();
 					}
-					frm.refresh();
-				}
-			},
-		});
+				},
+			});
+		}
 	},
 	edit_bom: function (frm, cdt, cdn) {
 		let row = locals[cdt][cdn];

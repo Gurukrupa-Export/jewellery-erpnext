@@ -58,9 +58,30 @@ class SketchOrder(Document):
 	def on_submit(self):
 		self.make_items()
 
+	def on_cancel(self):
+		self.workflow_state = "Cancelled"
+
 	def make_items(self):
 		if self.order_type != "Purchase":
+			not_restamped = []
 			for row in self.final_sketch_approval_cmo:
+				if row.item_remark == "Copy Paste Item":
+					if row.item:
+						owner = _copy_paste_item_owner(row.item, self.name)
+						if owner:
+							not_restamped.append(f"{row.item} ({owner})")
+							continue
+						frappe.db.set_value(
+							"Item",
+							row.item,
+							{
+								"order_form_type": "Sketch Order",
+								"order_form_id": self.name,
+								"custom_sketch_order_form_id": self.sketch_order_form,
+								"custom_sketch_order_id": self.name,
+							},
+						)
+					continue
 				item_template = create_item_template_from_sketch_order(self, row.name)
 				update_item_template(self, item_template)
 				frappe.db.set_value(row.doctype, row.name, "item", item_template)
@@ -68,6 +89,15 @@ class SketchOrder(Document):
 					_("New Item Created: {0}").format(
 						get_link_to_form("Item", item_template)
 					)
+				)
+			if not_restamped:
+				frappe.msgprint(
+					_(
+						"These Copy Paste Items already belong to another order, so they "
+						"were used as they are and not re-stamped: {0}"
+					).format(", ".join(not_restamped)),
+					title=_("Copy Paste Items not re-stamped"),
+					indicator="orange",
 				)
 		if self.order_type == "Purchase":
 			item_template = create_item_for_po(self, self.name)
@@ -78,6 +108,27 @@ class SketchOrder(Document):
 					get_link_to_form("Item", item_template)
 				)
 			)
+
+
+def _copy_paste_item_owner(item, sketch_order):
+	"""The order a Copy Paste Item already belongs to, or None when it may be re-stamped.
+
+	An Item whose ``order_form_id`` is blank, or already points at this Sketch Order, takes
+	this Sketch Order's stamp. An Item linked to an Order, a Repair Order or another Sketch
+	Order keeps its link: its order's lookups read it (a Repair Order's Manufacturing Work
+	Order finds its design BOM through it).
+	"""
+	current = frappe.db.get_value(
+		"Item", item, ["order_form_type", "order_form_id"], as_dict=True
+	)
+	if not current or not current.order_form_id:
+		return None
+	if (
+		current.order_form_type == "Sketch Order"
+		and current.order_form_id == sketch_order
+	):
+		return None
+	return f"{current.order_form_type} {current.order_form_id}"
 
 
 def update_item_template(self, item_template):
