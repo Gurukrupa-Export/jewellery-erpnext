@@ -23,7 +23,7 @@ import unittest
 from contextlib import ExitStack, contextmanager
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
@@ -36,6 +36,9 @@ from jewellery_erpnext.jewellery_erpnext.doc_events import (
 	stock_entry as stock_entry_events,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings import eod_lock
+from jewellery_erpnext.patches import (
+	add_journal_entry_repack_stock_entry_field as je_link_patch,
+)
 
 COMPANY = repack.REPACK_COMPANIES[0]
 OTHER_COMPANY = "Another Test Company"
@@ -210,6 +213,7 @@ def _repack_env(
 	denied=(),
 	type_allowed=True,
 	fields=(),
+	link_ready=True,
 ):
 	"""Patch every DB boundary of repack.py and record the documents it builds.
 
@@ -269,6 +273,7 @@ def _repack_env(
 		patch_repack("get_name_from_hash", return_value="HASHBATCH")
 		patch_repack("make_autoname", return_value="SERIES-0001")
 		patch_repack("batch_uses_naming_series", return_value=False)
+		patch_repack("_journal_entry_link_ready", return_value=link_ready)
 		yield recorder
 
 
@@ -396,6 +401,10 @@ class TestRepackRefusals(IntegrationTestCase):
 		for pair in repack.REQUIRED_PERMISSIONS:
 			with self.subTest(denied=pair):
 				self.assertRefused({"denied": [pair]}, exc=frappe.PermissionError)
+
+	def test_site_without_the_journal_entry_link_field_is_refused(self):
+		"""Without it a cancelled Repack would leave its Journal Entry posted."""
+		self.assertRefused({"link_ready": False})
 
 	def test_mandatory_branch_without_a_value_is_refused(self):
 		self.assertRefused(
@@ -602,6 +611,8 @@ class TestRepackJournalEntry(IntegrationTestCase):
 		se = recorder.one("Stock Entry")
 		je = recorder.one("Journal Entry")
 		self.assertEqual(result, {"stock_entry": se.name, "journal_entry": je.name})
+		# The link is what lets the Stock Entry cancel find and cancel this entry.
+		self.assertEqual(je.get(repack.JE_LINK_FIELD), se.name)
 		self.assertEqual(je.company, COMPANY)
 		self.assertEqual(je.voucher_type, "Journal Entry")
 		self.assertEqual(je.posting_date, se.posting_date)
@@ -971,6 +982,136 @@ class TestBatchRepackContext(IntegrationTestCase):
 		self.assertEqual(warehouse_queries, [])
 
 
+class TestRepackCancelCancelsJournalEntries(IntegrationTestCase):
+	"""cancel_linked_journal_entries: the Stock Entry on_cancel hook."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _cancel(self, se, linked=(), ready=True, denied=(), journal_entries=None):
+		if journal_entries is None:
+			journal_entries = {name: MagicMock(name=name) for name in linked}
+		with patch.object(
+			repack, "_journal_entry_link_ready", return_value=ready
+		), patch.object(
+			repack.frappe, "get_all", return_value=list(linked)
+		) as get_all, patch.object(
+			repack.frappe,
+			"has_permission",
+			side_effect=lambda doctype, ptype, doc=None, **k: doc not in denied,
+		), patch.object(
+			repack.frappe,
+			"get_doc",
+			side_effect=lambda doctype, name: journal_entries[name],
+		):
+			repack.cancel_linked_journal_entries(se, "on_cancel")
+		return get_all, journal_entries
+
+	def test_other_entry_types_are_not_looked_at(self):
+		for se_type in ("Material Transfer", "Manufacture", "Repack-Metal Conversion"):
+			with self.subTest(se_type=se_type):
+				se = frappe._dict(name="SE-1", stock_entry_type=se_type)
+				get_all, _journal_entries = self._cancel(se, linked=["JE-1"])
+				get_all.assert_not_called()
+
+	def test_site_without_the_link_field_does_nothing(self):
+		se = frappe._dict(name="SE-1", stock_entry_type="Repack")
+		get_all, _journal_entries = self._cancel(se, linked=["JE-1"], ready=False)
+		get_all.assert_not_called()
+
+	def test_each_submitted_linked_journal_entry_is_cancelled(self):
+		se = frappe._dict(name="SE-REPACK-0001", stock_entry_type="Repack")
+		get_all, journal_entries = self._cancel(se, linked=["JE-1", "JE-2"])
+
+		get_all.assert_called_once_with(
+			"Journal Entry",
+			filters={repack.JE_LINK_FIELD: "SE-REPACK-0001", "docstatus": 1},
+			pluck="name",
+			order_by="creation asc",
+		)
+		for name in ("JE-1", "JE-2"):
+			journal_entries[name].cancel.assert_called_once_with()
+
+	def test_no_linked_journal_entry_cancels_nothing(self):
+		se = frappe._dict(name="SE-1", stock_entry_type="Repack")
+		_get_all, journal_entries = self._cancel(se, linked=[])
+		self.assertEqual(journal_entries, {})
+
+	def test_missing_journal_entry_cancel_permission_refuses_the_cancel(self):
+		se = frappe._dict(name="SE-1", stock_entry_type="Repack")
+		journal_entries = {"JE-1": MagicMock(), "JE-2": MagicMock()}
+		with self.assertRaisesRegex(frappe.PermissionError, "JE-1"):
+			self._cancel(
+				se,
+				linked=["JE-1", "JE-2"],
+				denied=("JE-1",),
+				journal_entries=journal_entries,
+			)
+		for journal_entry in journal_entries.values():
+			journal_entry.cancel.assert_not_called()
+
+
+class TestRepackJournalEntryFieldPatch(IntegrationTestCase):
+	"""add_journal_entry_repack_stock_entry_field: create only where missing, never update."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _ensure(self, custom_field=False, column=False, docfield=False):
+		exists = {"Custom Field": custom_field, "DocField": docfield}
+		with patch.object(
+			je_link_patch.frappe.db,
+			"exists",
+			side_effect=lambda doctype, filters: exists[doctype],
+		), patch.object(
+			je_link_patch.frappe.db, "has_column", return_value=column
+		), patch.object(je_link_patch, "create_custom_fields") as creator, patch.object(
+			je_link_patch.frappe, "logger"
+		) as logger, patch("builtins.print") as printed:
+			created = je_link_patch.ensure_repack_stock_entry_field()
+		return created, creator, logger.return_value.error, printed
+
+	def test_field_definition(self):
+		(df,) = je_link_patch.CUSTOM_FIELDS["Journal Entry"]
+		self.assertEqual(df["fieldname"], repack.JE_LINK_FIELD)
+		self.assertEqual((df["fieldtype"], df["options"]), ("Link", "Stock Entry"))
+		self.assertEqual((df["read_only"], df["no_copy"]), (1, 1))
+		self.assertEqual(df["search_index"], 1)
+
+	def test_missing_field_is_created_with_update_false(self):
+		created, creator, log_error, _printed = self._ensure()
+		self.assertTrue(created)
+		creator.assert_called_once_with(
+			{"Journal Entry": je_link_patch.CUSTOM_FIELDS["Journal Entry"]},
+			ignore_validate=True,
+			update=False,
+		)
+		log_error.assert_not_called()
+
+	def test_existing_custom_field_is_left_alone(self):
+		created, creator, _log_error, _printed = self._ensure(
+			custom_field=True, column=True
+		)
+		self.assertFalse(created)
+		creator.assert_not_called()
+
+	def test_standard_column_is_left_alone(self):
+		created, creator, log_error, _printed = self._ensure(column=True, docfield=True)
+		self.assertFalse(created)
+		creator.assert_not_called()
+		log_error.assert_not_called()
+
+	def test_orphan_column_is_logged_and_nothing_is_created(self):
+		created, creator, log_error, printed = self._ensure(column=True)
+		self.assertFalse(created)
+		creator.assert_not_called()
+		message = printed.call_args.args[0]
+		self.assertIn("left as is", message)
+		log_error.assert_called_once_with(message)
+
+
 class TestBatchRepackRegistration(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -980,9 +1121,22 @@ class TestBatchRepackRegistration(IntegrationTestCase):
 		doctype_js = frappe.get_hooks("doctype_js", app_name="jewellery_erpnext")
 		self.assertIn("public/js/doctype_js/batch.js", doctype_js["Batch"])
 
-	def test_module_is_reached_only_through_its_whitelisted_methods(self):
-		hooks = frappe.get_hooks(app_name="jewellery_erpnext")
-		self.assertNotIn("customization.batch.repack", repr(hooks))
+	def test_module_is_hooked_only_into_stock_entry_cancel(self):
+		"""Whitelisted methods aside, the only hook is the Journal Entry cancel."""
+		handler = (
+			"jewellery_erpnext.jewellery_erpnext.customization.batch.repack."
+			"cancel_linked_journal_entries"
+		)
+		doc_events = frappe.get_hooks("doc_events", app_name="jewellery_erpnext")
+		on_cancel = doc_events["Stock Entry"]["on_cancel"]
+		# After the existing Stock Entry cancel handler, so that one runs first.
+		self.assertEqual(on_cancel[-1], handler)
+		self.assertEqual(
+			on_cancel[0],
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
+		)
+		hooks = repr(frappe.get_hooks(app_name="jewellery_erpnext"))
+		self.assertEqual(hooks.count("customization.batch.repack"), 1)
 
 	def test_create_is_post_only(self):
 		self.assertEqual(
@@ -1305,3 +1459,66 @@ class TestBatchRepackIntegration(IntegrationTestCase):
 		self.assertEqual(se.docstatus, 1)
 		self.assertTrue(frappe.db.get_value("Batch", target.batch_no, "batch_id"))
 		self.assertEqual(self._balance(target.batch_no), 1)
+
+	def _repack_with_journal_entry(self):
+		"""A submitted Repack entry and its submitted, linked Journal Entry."""
+		if not frappe.db.has_column("Journal Entry", repack.JE_LINK_FIELD):
+			self.fail(
+				f"Journal Entry.{repack.JE_LINK_FIELD} is not provisioned; "
+				"see create_test_data"
+			)
+		source_batch = self._receive(qty=5, rate=100)
+		result = repack.create_repack_stock_entry(
+			source_batch, CI_WAREHOUSE, 2, 250, branch=self.branch
+		)
+		se = frappe.get_doc("Stock Entry", result["stock_entry"])
+		if result["journal_entry"]:
+			return se, result["journal_entry"]
+
+		# The CI seed company has no perpetual inventory, so the entry posts no GL and
+		# the tool makes no Journal Entry. Post a balanced one linked the way it links.
+		je = frappe.new_doc("Journal Entry")
+		je.company = CI_COMPANY
+		je.posting_date = se.posting_date
+		je.user_remark = f"Batch Repack cancel test for {se.name}"
+		je.set(repack.JE_LINK_FIELD, se.name)
+		for account, debit, credit in (
+			(self.accounts.stock_adjustment_account, 0, 10),
+			(self.accounts.stock_received_but_not_billed, 10, 0),
+		):
+			je.append(
+				"accounts",
+				{
+					"account": account,
+					"cost_center": self.accounts.cost_center,
+					"debit_in_account_currency": debit,
+					"credit_in_account_currency": credit,
+				},
+			)
+		if self.branch:
+			repack._apply_dimension(je.accounts, self.dimension.fieldname, self.branch)
+		je.insert()
+		je.submit()
+		return se, je.name
+
+	def test_cancelling_the_repack_entry_cancels_its_journal_entry(self):
+		se, je_name = self._repack_with_journal_entry()
+		self.assertEqual(
+			frappe.db.get_value("Journal Entry", je_name, repack.JE_LINK_FIELD), se.name
+		)
+
+		se.reload()
+		se.cancel()
+
+		self.assertEqual(frappe.db.get_value("Stock Entry", se.name, "docstatus"), 2)
+		self.assertEqual(frappe.db.get_value("Journal Entry", je_name, "docstatus"), 2)
+
+	def test_a_journal_entry_cancelled_first_does_not_block_the_entry_cancel(self):
+		se, je_name = self._repack_with_journal_entry()
+		frappe.get_doc("Journal Entry", je_name).cancel()
+
+		se.reload()
+		se.cancel()
+
+		self.assertEqual(frappe.db.get_value("Stock Entry", se.name, "docstatus"), 2)
+		self.assertEqual(frappe.db.get_value("Journal Entry", je_name, "docstatus"), 2)

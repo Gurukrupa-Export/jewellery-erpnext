@@ -248,7 +248,11 @@ doc_events = {
 			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
 		],
-		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
+		"on_cancel": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
+			# Batch form Repack: its Journal Entry is cancelled with the entry.
+			"jewellery_erpnext.jewellery_erpnext.customization.batch.repack.cancel_linked_journal_entries",
+		],
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},

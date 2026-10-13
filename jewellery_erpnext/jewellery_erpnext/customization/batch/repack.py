@@ -31,6 +31,10 @@ Adapted from the source line's Batch Repack tool (3ce93808, d74e7f3e, 93223a69 a
   rows and both Journal Entry rows. Its field name and whether it is mandatory are read
   from the Accounting Dimension metadata.
 * The GL net is summed with the query builder (v16 rejects string SQL aggregates).
+* The Journal Entry records its Stock Entry in ``custom_repack_stock_entry``, and
+  cancelling that Stock Entry cancels the Journal Entry in the same transaction
+  (``cancel_linked_journal_entries``, a Stock Entry ``on_cancel`` hook), so a Repack is
+  reversed as one unit. A site without that field refuses the Repack.
 
 The entry never carries manufacturing references, so the Stock Entry submit hooks skip
 reservations and the MOP Log for it.
@@ -54,6 +58,9 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type import (
 )
 
 REPACK_COMPANIES = ("Gurukrupa Export Private Limited",)
+# Journal Entry field that holds the Repack Stock Entry; added by the
+# add_journal_entry_repack_stock_entry_field patch.
+JE_LINK_FIELD = "custom_repack_stock_entry"
 REPACK_STOCK_ENTRY_TYPE = "Repack"
 CUSTOMER_INVENTORY_TYPES = ("Customer Goods", "Customer Stock")
 
@@ -154,6 +161,15 @@ def create_repack_stock_entry(
 	refusal = _item_refusal(item)
 	if refusal:
 		frappe.throw(refusal)
+
+	if not _journal_entry_link_ready():
+		frappe.throw(
+			_(
+				"Batch Repack needs the Repack Stock Entry field on Journal Entry, so that "
+				"cancelling the entry also cancels its Journal Entry. Run bench migrate on "
+				"this site first."
+			)
+		)
 
 	if not (math.isfinite(qty) and math.isfinite(target_rate)):
 		frappe.throw(_("Qty and Target Rate must be finite numbers."))
@@ -603,6 +619,40 @@ def _net_stock_adjustment(se_name, account):
 	return flt(totals.get("debit")) - flt(totals.get("credit"))
 
 
+def _journal_entry_link_ready():
+	return bool(frappe.db.has_column("Journal Entry", JE_LINK_FIELD))
+
+
+def cancel_linked_journal_entries(doc, method=None):
+	"""Stock Entry ``on_cancel``: cancel the Journal Entries a Batch Repack posted for it.
+
+	Runs after the Stock Entry's own cancel hooks and before Frappe's back-link check, so
+	the submitted Journal Entry that links to the entry is cancelled first and does not
+	block the cancel. Only ``Repack`` entries are looked at. The user needs Journal Entry
+	cancel permission; without it the whole cancel is refused and nothing changes.
+	"""
+	if doc.get("stock_entry_type") != REPACK_STOCK_ENTRY_TYPE:
+		return
+	if not _journal_entry_link_ready():
+		return
+
+	for name in frappe.get_all(
+		"Journal Entry",
+		filters={JE_LINK_FIELD: doc.name, "docstatus": 1},
+		pluck="name",
+		order_by="creation asc",
+	):
+		if not frappe.has_permission("Journal Entry", "cancel", doc=name):
+			frappe.throw(
+				_(
+					"Cancelling {0} also cancels its Journal Entry {1}, which needs "
+					"Journal Entry cancel permission."
+				).format(doc.name, name),
+				frappe.PermissionError,
+			)
+		frappe.get_doc("Journal Entry", name).cancel()
+
+
 def _make_repack_journal_entry(se, accounts, net, dimension=None, branch=None):
 	"""Move the Stock Entry's net Stock Adjustment into Stock Received But Not Billed.
 
@@ -624,6 +674,7 @@ def _make_repack_journal_entry(se, accounts, net, dimension=None, branch=None):
 	je.title = adjustment_account
 	je.user_remark = _("Stock Adjustment Entry | Repack: {0}").format(se.name)
 	je.remark = _("Note: Stock Adjustment Entry | Ref: {0}").format(se.name)
+	je.set(JE_LINK_FIELD, se.name)
 
 	je.append(
 		"accounts",

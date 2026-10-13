@@ -3198,6 +3198,15 @@ def create_test_data():
 
 			_ensure_batch_certificate_id_fields()
 
+			# Journal Entry.custom_repack_stock_entry links a Batch Repack's Journal Entry to
+			# its Stock Entry. The Repack tool refuses to run without it, so it is
+			# provisioned here for CI sites too.
+			from jewellery_erpnext.patches.add_journal_entry_repack_stock_entry_field import (
+				execute as _ensure_repack_stock_entry_field,
+			)
+
+			_ensure_repack_stock_entry_field()
+
 			# Stock Reservation Entry.custom_replaced_sre_snapshot is declared only by
 			# its patch (no fixture, no custom/*.json), so it must be provisioned here
 			# for test_site too, else _restore_reduced_sres raises "Unknown column
