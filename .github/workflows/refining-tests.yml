@@ -3,7 +3,7 @@ name: Refining & Advanced Tests
 on:
   pull_request:
     branches:
-      - v16_develop_aerele
+      - gurukrupa-prod
       - kgg_uat
       - kggk_prod
   workflow_dispatch:
