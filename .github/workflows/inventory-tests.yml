@@ -3,9 +3,10 @@ name: Inventory Tests
 on:
   pull_request:
     branches:
-      - v16_develop_aerele
       - kgg_uat
       - kggk_prod
+      - gurukrupa-prod
+
   workflow_dispatch:
 
 concurrency:
