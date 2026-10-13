@@ -795,13 +795,15 @@ def _set_total_making_charges(self, metal, making_charge_details):
 				making_charges.get("rate_per_gm_threshold") or 0
 			):
 				# Per-piece making is charged once per BOM: the first row below
-				# the threshold takes rate_per_pc, even when it is 0, and every
-				# later row takes 0.
+				# the threshold whose rate_per_pc is positive takes it, and every
+				# later row takes 0. A row without a per-piece rate does not use
+				# up the charge.
 				if self.per_pc_rate_applied:
 					metal_making_charges = 0
 				else:
 					metal_making_charges = making_charges.get("rate_per_pc")
-					self.per_pc_rate_applied = True
+					if flt(metal_making_charges) > 0:
+						self.per_pc_rate_applied = True
 			else:
 				metal_making_charges = metal.making_rate * (
 					metal.quantity + additional_net_weight

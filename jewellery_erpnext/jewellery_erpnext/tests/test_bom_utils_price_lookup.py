@@ -513,9 +513,10 @@ class TestMakingChargeLookupAgainstDatabase(IntegrationTestCase):
 class TestPerPieceMakingOnce(_MakingChargeEngineCase):
 	"""Below the per-gram threshold, per-piece making is charged once per BOM.
 
-	The first metal or finding row below the threshold (metal_detail before
-	finding_detail; Silver and customer-item rows skipped) takes rate_per_pc and
-	every later row takes 0. Above the threshold every row keeps per-gram making.
+	The first metal or finding row below the threshold whose rate_per_pc is
+	positive (metal_detail before finding_detail; Silver and customer-item rows
+	skipped) takes it, and every later row takes 0. A row with no per-piece rate
+	does not use up the charge. Above the threshold every row keeps per-gram making.
 	"""
 
 	PER_PIECE = _making_row(rate_per_gm=10, rate_per_pc=500, rate_per_gm_threshold=5)
@@ -572,10 +573,9 @@ class TestPerPieceMakingOnce(_MakingChargeEngineCase):
 		self.assertEqual(finding.making_amount, 0)
 		self.assertEqual(amount, 540)
 
-	def test_first_row_with_no_per_piece_rate_still_uses_up_the_charge(self):
-		# Source behaviour, kept on purpose: the flag is set by the first row
-		# below the threshold whatever its rate_per_pc, so a later row with a
-		# positive rate_per_pc gets 0 and the BOM charges no per-piece making.
+	def test_first_row_without_a_per_piece_rate_leaves_the_charge_to_the_next(self):
+		# Only a positive rate_per_pc uses up the charge, so a 0 or blank first
+		# row does not swallow the next row's per-piece making.
 		for rate_per_pc in (0, None):
 			with self.subTest(rate_per_pc=rate_per_pc):
 				first = _metal(idx=1, metal_touch="18KT")
@@ -590,8 +590,27 @@ class TestPerPieceMakingOnce(_MakingChargeEngineCase):
 				)
 
 				self.assertEqual(first.making_amount, rate_per_pc)
-				self.assertEqual(second.making_amount, 0)
-				self.assertEqual(amount, 0)
+				self.assertEqual(second.making_amount, 500)
+				self.assertEqual(amount, 500)
+
+	def test_only_the_first_positive_rate_is_charged(self):
+		rows = [
+			_metal(idx=1, metal_touch="18KT"),
+			_metal(idx=2, metal_touch="22KT"),
+			_finding(idx=1, metal_touch="22KT"),
+		]
+		catalog = {
+			(ITEM, "18KT"): dict(self.PER_PIECE, rate_per_pc=0),
+			(ITEM, "22KT"): self.PER_PIECE,
+			(FINDING, "22KT"): dict(self.PER_PIECE, rate_per_pc=300),
+		}
+
+		_fake, amount = self._price(
+			_bom(rows[:2], rows[2:], metal_and_finding_weight=2), catalog
+		)
+
+		self.assertEqual([row.making_amount for row in rows], [0, 500, 0])
+		self.assertEqual(amount, 500)
 
 	def test_a_row_that_misses_does_not_use_up_the_charge(self):
 		first = _metal(idx=1, metal_touch="18KT", making_amount=70)
