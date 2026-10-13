@@ -10,8 +10,12 @@
   step raises, so the conversion can find (and, on cancel, delete) it.
 * The ``Semi FG Subcontracting`` service item that PO is raised for, copied from
   ``FG Subcontracting`` -- the service item Gemstone Conversion's resize flow bills -- so
-  it carries the same group, UOM, HSN and item defaults. Skipped when that template is
+  it carries the same group, HSN and item defaults. Skipped when that template is
   missing (a fresh / CI site); the Issue step names the missing item instead.
+  Its UOM is Gram, not the template's "Nos": the PO line is the Source Qty in grams, and
+  ERPNext ships "Nos" as a whole-number UOM, which refuses 10.250
+  (``PurchaseOrder.validate`` -> ``validate_uom_is_integer``, on both ``uom`` and
+  ``stock_uom``).
 
 Because ``install-app`` marks patches complete WITHOUT running them on fresh / CI sites,
 this is wired in two idempotent places per the app convention: this ``post_model_sync``
@@ -28,6 +32,7 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 CHAIN_SC_PO_ITEM = "Semi FG Subcontracting"
 TEMPLATE_ITEM = "FG Subcontracting"
+PO_ITEM_UOM = "Gram"
 
 
 def execute():
@@ -89,4 +94,10 @@ def _ensure_po_item():
 	item.item_code = CHAIN_SC_PO_ITEM
 	item.item_name = CHAIN_SC_PO_ITEM
 	item.description = CHAIN_SC_PO_ITEM
+	if frappe.db.exists("UOM", PO_ITEM_UOM):
+		item.stock_uom = PO_ITEM_UOM
+		item.purchase_uom = None
+		item.sales_uom = None
+		# Item.add_default_uom_in_conversion_factor_table adds Gram x 1 on save.
+		item.uoms = []
 	item.insert(ignore_permissions=True)

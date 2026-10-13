@@ -8,6 +8,9 @@ runs on any site and says nothing about the stock ledger -- the desk walk-throug
 covers that. Stubs are keyed on what they answer (never a blanket ``frappe.db.get_value``),
 and ``flt`` is replaced by a deterministic shim, because frappe's own returns 0.0 when the
 rounding setting cannot be read.
+
+Lock order is asserted by recording the calls into ``lock_order``; whether two real requests
+deadlock is not something a stub can show.
 """
 
 from types import SimpleNamespace
@@ -30,9 +33,13 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events im
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events import (
 	melting_loss,
 )
+from jewellery_erpnext.patches import add_metal_conversion_chain_sc as chain_sc_patch
 from jewellery_erpnext.patches import add_metal_conversion_workflow as workflow_patch
 
 _REAL_GET_ALL = frappe.get_all
+
+_LOCK_ORDER = "jewellery_erpnext.jewellery_erpnext.lock_order"
+_SCRAP_WAREHOUSE = "jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse"
 
 EMPLOYEE_DEPT = {"EMP-1": "Chain - GK", "EMP-2": "Polish - GK", "EMP-X": None}
 DEPT_RM = {"Chain - GK": "Chain RM - GK", "Polish - GK": "Polish RM - GK"}
@@ -246,26 +253,32 @@ class TestAfterValidate(_ChainCase):
 		run_issue.assert_not_called()
 		self.assertEqual(doc.batch, "KEEP")
 
+	def test_back_to_draft_with_an_issue_runs_cancel_issue(self):
+		doc = _chain_doc(workflow_state="Draft", chain_issue_stock_entry="SE-ISSUE-1")
+		with (
+			patch.object(cs, "run_cancel_issue") as run_cancel_issue,
+			patch.object(cs, "run_issue") as run_issue,
+		):
+			cs.after_validate(doc)
+		run_cancel_issue.assert_called_once_with(doc)
+		run_issue.assert_not_called()
+
 
 class TestValidateIssue(_ChainCase):
 	def setUp(self):
 		super().setUp()
 		self.batch_item = {"B-1": "M-G-22KT-91.6-Y", "B-2": "M-G-22KT-91.6-Y"}
 		self.available = {"B-1": 6.0, "B-2": 4.0}
+		self.po_uom = ("Gram", 0)
 
 		def _get_all(doctype, *args, **kwargs):
 			if doctype == "Batch":
 				return [[name, item] for name, item in self.batch_item.items()]
 			return _REAL_GET_ALL(doctype, *args, **kwargs)
 
-		def _exists(doctype, name=None, *args, **kwargs):
-			if doctype == "Item":
-				return name == cs.CHAIN_SC_PO_ITEM
-			raise AssertionError(f"unexpected exists({doctype!r})")
-
 		for p in (
 			patch.object(cs.frappe, "get_all", side_effect=_get_all),
-			patch.object(cs.frappe.db, "exists", side_effect=_exists),
+			patch.object(cs, "_po_item_uom", side_effect=lambda: self.po_uom),
 			patch.object(
 				cs,
 				"get_batch_qty",
@@ -302,9 +315,29 @@ class TestValidateIssue(_ChainCase):
 			cs.validate_issue(self._ready(source_qty=12.0))
 
 	def test_missing_po_item_is_refused(self):
-		with patch.object(cs.frappe.db, "exists", return_value=False):
-			with self.assertRaises(ValidationError):
-				cs.validate_issue(self._ready())
+		self.po_uom = (None, 0)
+		with self.assertRaisesRegex(ValidationError, "does not exist"):
+			cs.validate_issue(self._ready())
+
+	def _fractional(self):
+		# 10.25 g, fully allocated, so only the UOM rule can refuse it.
+		self.available["B-1"] = 6.25
+		return self._ready(
+			source_qty=10.25,
+			source_batch_details=[_row("B-1", 6.25), _row("B-2", 4.0)],
+		)
+
+	def test_whole_number_uom_refuses_a_fractional_qty(self):
+		self.po_uom = ("Nos", 1)
+		with self.assertRaisesRegex(ValidationError, "whole-number"):
+			cs.validate_issue(self._fractional())
+
+	def test_gram_takes_a_fractional_qty(self):
+		cs.validate_issue(self._fractional())
+
+	def test_whole_number_uom_takes_a_whole_qty(self):
+		self.po_uom = ("Nos", 1)
+		cs.validate_issue(self._ready())
 
 	def test_missing_inputs_are_reported(self):
 		doc = self._ready()
@@ -320,6 +353,8 @@ class TestValidateReceive(_ChainCase):
 		super().setUp()
 		self.supplier_stock = {"B-1": 6.0, "B-2": 4.0}
 		self.issue_status = 1
+		# No purity on either item unless a test sets one: the fine-metal check skips.
+		self.purity = {}
 
 		def _receive_get_value(doctype, name=None, fieldname=None, *args, **kwargs):
 			if doctype == "Stock Entry" and fieldname == "docstatus":
@@ -332,6 +367,9 @@ class TestValidateReceive(_ChainCase):
 				cs,
 				"get_batch_qty",
 				side_effect=lambda batch_no, warehouse: self.supplier_stock[batch_no],
+			),
+			patch.object(
+				cs, "_metal_purity", side_effect=lambda item: self.purity.get(item)
 			),
 		):
 			p.start()
@@ -381,6 +419,20 @@ class TestValidateReceive(_ChainCase):
 		with self.assertRaises(ValidationError):
 			cs.validate_receive(self._received())
 
+	def test_same_purity_passes(self):
+		self.purity = {"M-G-22KT-91.6-Y": 91.6, "CH-22KT": 91.6}
+		cs.validate_receive(self._received())
+
+	def test_target_cannot_hold_more_fine_metal_than_was_issued(self):
+		# 10 g at 75% is 7.5 g fine; 9.5 g at 91.6% would be 8.702 g.
+		self.purity = {"M-G-22KT-91.6-Y": 75.0, "CH-22KT": 91.6}
+		with self.assertRaisesRegex(ValidationError, "fine metal"):
+			cs.validate_receive(self._received())
+
+	def test_missing_purity_skips_the_fine_metal_check(self):
+		self.purity = {"M-G-22KT-91.6-Y": 75.0}
+		cs.validate_receive(self._received())
+
 
 class TestRunReceive(_ChainCase):
 	def _run(self, target_qty):
@@ -393,6 +445,8 @@ class TestRunReceive(_ChainCase):
 			target_qty=target_qty,
 		)
 		with (
+			# Lock order has its own suite (TestReceiveLockOrder).
+			patch.object(cs, "_lock_receive"),
 			patch.object(
 				cs, "make_repack_stock_entry", return_value="SE-REPACK-1"
 			) as repack,
@@ -435,6 +489,102 @@ class TestRunReceive(_ChainCase):
 		doc, repack, loss, transfer = self._run(10.0)
 		loss.assert_not_called()
 		transfer.assert_called_once()
+
+
+class TestReceiveLockOrder(_ChainCase):
+	"""Receive pins every counter, then every Bin, before its first Stock Entry (F3)."""
+
+	def _run(self, target_qty):
+		events = []
+		doc = _chain_doc(
+			workflow_state="Receive",
+			chain_issue_stock_entry="SE-ISSUE-1",
+			chain_supplier_warehouse="SUP-1 MSL WH - GK",
+			to_warehouse="Polish RM - GK",
+			target_item="CH-22KT",
+			target_qty=target_qty,
+		)
+		with (
+			patch(
+				f"{_LOCK_ORDER}.series_stubs",
+				side_effect=lambda company, *types: list(types),
+			),
+			patch(
+				f"{_LOCK_ORDER}.preallocate_series_for_docs",
+				side_effect=lambda *stubs: events.append(("counters", set(stubs))),
+			),
+			patch(
+				f"{_LOCK_ORDER}.lock_bins",
+				side_effect=lambda pairs: events.append(("bins", set(pairs))),
+			),
+			patch.object(
+				melting_loss, "_resolve_loss_item", return_value="ML-22KT"
+			) as resolve_loss_item,
+			patch(_SCRAP_WAREHOUSE, return_value="Chain Scrap - GK"),
+			patch.object(
+				cs,
+				"make_repack_stock_entry",
+				side_effect=lambda *a: events.append("repack") or "SE-REPACK-1",
+			),
+			patch.object(
+				melting_loss,
+				"make_process_loss_entry",
+				side_effect=lambda *a, **k: events.append("loss") or "SE-LOSS-1",
+			),
+			patch.object(
+				cs,
+				"make_final_transfer",
+				side_effect=lambda *a: events.append("transfer") or "SE-TRANSFER-1",
+			),
+		):
+			cs.run_receive(doc)
+		return events, resolve_loss_item
+
+	def test_counters_then_bins_then_the_entries(self):
+		events, _resolve = self._run(9.5)
+		self.assertEqual(
+			events[0],
+			(
+				"counters",
+				{
+					mc.CONVERSION_SE_TYPE,
+					cs.CHAIN_SC_SE_TYPE,
+					melting_loss.MELTING_LOSS_SE_TYPE,
+				},
+			),
+		)
+		self.assertEqual(
+			events[1],
+			(
+				"bins",
+				{
+					("M-G-22KT-91.6-Y", "SUP-1 MSL WH - GK"),
+					("CH-22KT", "SUP-1 MSL WH - GK"),
+					("CH-22KT", "Polish RM - GK"),
+					("ML-22KT", "Chain Scrap - GK"),
+				},
+			),
+		)
+		self.assertEqual(events[2:], ["repack", "loss", "transfer"])
+
+	def test_zero_loss_pins_no_loss_counter_or_bin(self):
+		events, resolve_loss_item = self._run(10.0)
+		self.assertEqual(
+			events[0], ("counters", {mc.CONVERSION_SE_TYPE, cs.CHAIN_SC_SE_TYPE})
+		)
+		self.assertEqual(
+			events[1],
+			(
+				"bins",
+				{
+					("M-G-22KT-91.6-Y", "SUP-1 MSL WH - GK"),
+					("CH-22KT", "SUP-1 MSL WH - GK"),
+					("CH-22KT", "Polish RM - GK"),
+				},
+			),
+		)
+		self.assertEqual(events[2:], ["repack", "transfer"])
+		resolve_loss_item.assert_not_called()
 
 
 class _FakeDoc(SimpleNamespace):
@@ -570,6 +720,7 @@ class TestSubcontractingPO(_BuilderCase):
 				}[dt],
 			),
 			patch.object(cs, "nowdate", return_value="2026-10-12"),
+			patch.object(cs, "_po_item_uom", return_value=("Gram", 0)),
 		):
 			name = cs.make_subcontracting_po(self._doc(date="2026-09-01"))
 		self.assertEqual(name, "PO-1")
@@ -586,6 +737,9 @@ class TestSubcontractingPO(_BuilderCase):
 				{
 					"item_code": cs.CHAIN_SC_PO_ITEM,
 					"qty": 10.0,
+					# The item's own stock UOM, so no purchase-UOM conversion applies.
+					"uom": "Gram",
+					"conversion_factor": 1,
 					"schedule_date": "2026-10-12",
 				}
 			],
@@ -653,8 +807,20 @@ class TestProcessLossEntry(IntegrationTestCase):
 		doc.db_set.assert_not_called()
 
 
+#: The rows of the four entries a received chain conversion owns.
+_ENTRY_ROWS = [
+	frappe._dict(item_code="CH-22KT", s_warehouse="SUP", t_warehouse="TO"),
+	frappe._dict(item_code="M-G-22KT-91.6-Y", s_warehouse="SUP", t_warehouse=None),
+	frappe._dict(item_code="ML-22KT", s_warehouse=None, t_warehouse="SCRAP"),
+	frappe._dict(item_code="CH-22KT", s_warehouse=None, t_warehouse="SUP"),
+	frappe._dict(item_code="M-G-22KT-91.6-Y", s_warehouse="DEPT", t_warehouse="SUP"),
+]
+
+
 class TestCancelChain(_ChainCase):
-	def _cancel(self, po_status):
+	def _cancel(
+		self, po_status, entries=("SE-TRANSFER-1", "SE-REPACK-1", "SE-ISSUE-1")
+	):
 		order = []
 		doc = _chain_doc(
 			chain_issue_stock_entry="SE-ISSUE-1",
@@ -667,8 +833,20 @@ class TestCancelChain(_ChainCase):
 				return po_status
 			raise AssertionError(doctype)
 
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "Stock Entry":
+				return list(entries)
+			if doctype == "Stock Entry Detail":
+				return _ENTRY_ROWS
+			return _REAL_GET_ALL(doctype, *args, **kwargs)
+
 		with (
 			patch.object(cs.frappe.db, "get_value", side_effect=_get_value),
+			patch.object(cs.frappe, "get_all", side_effect=_get_all),
+			patch(
+				f"{_LOCK_ORDER}.lock_bins",
+				side_effect=lambda pairs: order.append(("lock", set(pairs))),
+			),
 			patch.object(
 				cs, "_cancel_stock_entry", side_effect=lambda name: order.append(name)
 			),
@@ -689,20 +867,142 @@ class TestCancelChain(_ChainCase):
 
 	def test_reverse_order_and_draft_po_deleted(self):
 		order, delete_doc, doc = self._cancel(po_status=0)
-		self.assertEqual(order, ["SE-TRANSFER-1", "loss", "repack", "SE-ISSUE-1"])
+		self.assertEqual(order[1:], ["SE-TRANSFER-1", "loss", "repack", "SE-ISSUE-1"])
 		delete_doc.assert_called_once_with(
 			"Purchase Order", "PO-1", ignore_permissions=True
 		)
 		doc.db_set.assert_called_once_with("chain_purchase_order", None)
 
+	def test_every_bin_is_locked_before_the_first_cancel(self):
+		order, _delete_doc, _doc = self._cancel(po_status=0)
+		self.assertEqual(
+			order[0],
+			(
+				"lock",
+				{
+					("CH-22KT", "SUP"),
+					("CH-22KT", "TO"),
+					("M-G-22KT-91.6-Y", "SUP"),
+					("M-G-22KT-91.6-Y", "DEPT"),
+					("ML-22KT", "SCRAP"),
+				},
+			),
+		)
+
+	def test_nothing_to_lock_without_entries(self):
+		order, _delete_doc, _doc = self._cancel(po_status=0, entries=())
+		self.assertNotIn(
+			"lock", [event[0] for event in order if isinstance(event, tuple)]
+		)
+
 	def test_submitted_po_stops_everything(self):
 		with self.assertRaises(ValidationError):
 			self._cancel(po_status=1)
 
-	def test_issued_doc_cannot_be_deleted(self):
-		with self.assertRaises(ValidationError):
-			cs.guard_trash(_chain_doc(chain_issue_stock_entry="SE-ISSUE-1"))
-		cs.guard_trash(_chain_doc())
+
+class TestCancelIssue(_ChainCase):
+	"""Issue -> Draft (Cancel Issue) undoes an Issue that has not been received (F2)."""
+
+	def _cancel_issue(self, po_status, po="PO-1"):
+		# Kept on the test so a refusal can still be checked for what ran before it.
+		self.cancelled = cancelled = []
+		doc = _chain_doc(
+			workflow_state="Draft",
+			chain_issue_stock_entry="SE-ISSUE-1",
+			chain_purchase_order=po,
+			target_item="CH-22KT",
+			target_qty=9.5,
+			chain_process_loss_qty=0.5,
+		)
+
+		def _get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Purchase Order" and fieldname == "docstatus":
+				return po_status
+			raise AssertionError(f"unexpected get_value({doctype!r}, {name!r})")
+
+		with (
+			patch.object(cs.frappe.db, "get_value", side_effect=_get_value),
+			patch.object(
+				cs,
+				"_cancel_stock_entry",
+				side_effect=lambda name: cancelled.append(name),
+			),
+			patch.object(cs.frappe, "delete_doc") as delete_doc,
+		):
+			cs.run_cancel_issue(doc)
+		return doc, cancelled, delete_doc
+
+	def test_cancels_the_issue_and_deletes_the_draft_po(self):
+		doc, cancelled, delete_doc = self._cancel_issue(po_status=0)
+		self.assertEqual(cancelled, ["SE-ISSUE-1"])
+		delete_doc.assert_called_once_with(
+			"Purchase Order", "PO-1", force=True, ignore_permissions=True
+		)
+		self.assertIsNone(doc.chain_issue_stock_entry)
+		self.assertIsNone(doc.chain_purchase_order)
+		# The receipt typed in the Issue state will not happen now.
+		self.assertIsNone(doc.target_item)
+		self.assertEqual(doc.target_qty, 0)
+		self.assertEqual(doc.chain_process_loss_qty, 0)
+		# The allocation stays: the metal is back in the department warehouse.
+		self.assertEqual(
+			[row.batch for row in doc.source_batch_details], ["B-1", "B-2"]
+		)
+
+	def test_a_submitted_po_stops_it_before_anything_is_cancelled(self):
+		with self.assertRaisesRegex(ValidationError, "PO-1"):
+			self._cancel_issue(po_status=1)
+		self.assertEqual(self.cancelled, [])
+
+	def test_a_cancelled_po_is_left_alone(self):
+		doc, cancelled, delete_doc = self._cancel_issue(po_status=2)
+		self.assertEqual(cancelled, ["SE-ISSUE-1"])
+		delete_doc.assert_not_called()
+		self.assertIsNone(doc.chain_purchase_order)
+
+	def test_no_po_reads_no_po(self):
+		doc, cancelled, delete_doc = self._cancel_issue(po_status=None, po=None)
+		self.assertEqual(cancelled, ["SE-ISSUE-1"])
+		delete_doc.assert_not_called()
+
+	def test_an_entry_cancelled_by_hand_is_not_cancelled_again(self):
+		def _get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Stock Entry" and fieldname == "docstatus":
+				return 2
+			raise AssertionError(doctype)
+
+		with (
+			patch.object(cs.frappe.db, "get_value", side_effect=_get_value),
+			patch.object(cs.frappe, "get_doc") as get_doc,
+		):
+			cs._cancel_stock_entry("SE-ISSUE-1")
+		get_doc.assert_not_called()
+
+
+class TestGuardTrash(_ChainCase):
+	"""Delete is refused only while the Issue keeps metal at the supplier (F2)."""
+
+	def _guard(self, issue_status, **fields):
+		def _get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Stock Entry" and fieldname == "docstatus":
+				return issue_status
+			raise AssertionError(doctype)
+
+		with patch.object(cs.frappe.db, "get_value", side_effect=_get_value):
+			cs.guard_trash(_chain_doc(**fields))
+
+	def test_a_live_issue_cannot_be_deleted(self):
+		with self.assertRaisesRegex(ValidationError, "Cancel Issue"):
+			self._guard(1, chain_issue_stock_entry="SE-ISSUE-1")
+
+	def test_a_cancelled_conversion_can_be_deleted(self):
+		self._guard(None, docstatus=2, chain_issue_stock_entry="SE-ISSUE-1")
+
+	def test_an_issue_cancelled_by_hand_can_be_deleted(self):
+		self._guard(2, chain_issue_stock_entry="SE-ISSUE-1")
+
+	def test_a_never_issued_conversion_can_be_deleted(self):
+		self._guard(None)
 
 
 class TestControllerRouting(IntegrationTestCase):
@@ -756,7 +1056,7 @@ class TestWorkflowPatch(IntegrationTestCase):
 	def test_draft_offers_issue_or_submit_never_both(self):
 		from_draft = {
 			action: condition
-			for state, action, _next, condition in workflow_patch.TRANSITIONS
+			for state, action, _next, condition, _allowed in workflow_patch.TRANSITIONS
 			if state == workflow_patch.DRAFT
 		}
 		self.assertEqual(
@@ -778,3 +1078,144 @@ class TestWorkflowPatch(IntegrationTestCase):
 		status = dict(workflow_patch.STATES)
 		self.assertEqual(status[workflow_patch.ISSUE], "0")
 		self.assertEqual(status[workflow_patch.RECEIVE], "1")
+
+	def test_cancel_issue_is_system_manager_only(self):
+		self.assertIn(
+			(
+				workflow_patch.ISSUE,
+				workflow_patch.CANCEL_ISSUE_ACTION,
+				workflow_patch.DRAFT,
+				None,
+				workflow_patch.SYSTEM_MANAGER,
+			),
+			workflow_patch.TRANSITIONS,
+		)
+		others = [
+			row[4] for row in workflow_patch.TRANSITIONS if row[1] != "Cancel Issue"
+		]
+		self.assertEqual(set(others), {workflow_patch.ALL})
+
+	def _workflow_before_cancel_issue(self):
+		"""The workflow as the first version of the patch created it."""
+		workflow = _FakeWorkflow(
+			states=[state for state, _doc_status in workflow_patch.STATES],
+			transitions=[
+				(row[0], row[1])
+				for row in workflow_patch.TRANSITIONS
+				if row[1] != workflow_patch.CANCEL_ISSUE_ACTION
+			],
+		)
+		return workflow
+
+	def test_an_existing_workflow_gets_only_cancel_issue(self):
+		workflow = self._workflow_before_cancel_issue()
+		before = list(workflow.transitions)
+		with patch.object(workflow_patch.frappe, "logger"):
+			workflow_patch._add_missing(workflow)
+		self.assertEqual(workflow.transitions[: len(before)], before)
+		added = workflow.transitions[len(before) :]
+		self.assertEqual(len(added), 1)
+		self.assertEqual(
+			(added[0].state, added[0].action, added[0].next_state, added[0].allowed),
+			("Issue", "Cancel Issue", "Draft", "System Manager"),
+		)
+		workflow.save.assert_called_once_with(ignore_permissions=True)
+
+	def test_a_complete_workflow_is_not_saved(self):
+		workflow = self._workflow_before_cancel_issue()
+		with patch.object(workflow_patch.frappe, "logger"):
+			workflow_patch._add_missing(workflow)
+			workflow_patch._add_missing(workflow)
+		workflow.save.assert_called_once()
+
+	def test_execute_amends_an_existing_workflow_and_creates_a_missing_one(self):
+		workflow = self._workflow_before_cancel_issue()
+		for exists, add_calls, create_calls in ((True, 1, 0), (False, 0, 1)):
+			with (
+				patch.object(workflow_patch, "_ensure_masters"),
+				patch.object(workflow_patch.frappe.db, "exists", return_value=exists),
+				patch.object(workflow_patch.frappe.db, "get_value", return_value=None),
+				patch.object(workflow_patch.frappe, "get_doc", return_value=workflow),
+				patch.object(workflow_patch, "_add_missing") as add_missing,
+				patch.object(workflow_patch, "_create_workflow") as create_workflow,
+			):
+				workflow_patch.execute()
+			self.assertEqual(add_missing.call_count, add_calls, exists)
+			self.assertEqual(create_workflow.call_count, create_calls, exists)
+
+
+class _FakeWorkflow(SimpleNamespace):
+	def __init__(self, states, transitions):
+		super().__init__(
+			name="Metal Conversions",
+			states=[frappe._dict(state=state) for state in states],
+			transitions=[
+				frappe._dict(state=state, action=action)
+				for state, action in transitions
+			],
+			save=MagicMock(),
+		)
+
+	def append(self, table, row):
+		getattr(self, table).append(frappe._dict(row))
+
+
+class TestEnsurePoItem(IntegrationTestCase):
+	"""The PO service item is created in Gram, not the template's "Nos" (F1)."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _ensure(self, existing=False, template=True, gram=True):
+		template_doc = SimpleNamespace(name=chain_sc_patch.TEMPLATE_ITEM)
+		copy = SimpleNamespace(
+			stock_uom="Nos",
+			purchase_uom="Nos",
+			sales_uom="Nos",
+			uoms=[frappe._dict(uom="Nos", conversion_factor=1)],
+			insert=MagicMock(),
+		)
+		answers = {
+			("Item", chain_sc_patch.CHAIN_SC_PO_ITEM): existing,
+			("Item", chain_sc_patch.TEMPLATE_ITEM): template,
+			("UOM", chain_sc_patch.PO_ITEM_UOM): gram,
+		}
+
+		def _exists(doctype, name=None, *args, **kwargs):
+			return answers[(doctype, name)]
+
+		with (
+			patch.object(chain_sc_patch.frappe.db, "exists", side_effect=_exists),
+			patch.object(chain_sc_patch.frappe, "get_doc", return_value=template_doc),
+			patch.object(
+				chain_sc_patch.frappe, "copy_doc", return_value=copy
+			) as copy_doc,
+			patch.object(chain_sc_patch.frappe, "logger"),
+		):
+			chain_sc_patch._ensure_po_item()
+		return copy, copy_doc
+
+	def test_created_in_gram(self):
+		item, _copy_doc = self._ensure()
+		self.assertEqual(item.item_code, chain_sc_patch.CHAIN_SC_PO_ITEM)
+		self.assertEqual(item.stock_uom, "Gram")
+		self.assertIsNone(item.purchase_uom)
+		self.assertIsNone(item.sales_uom)
+		# ERPNext adds the Gram x 1 row itself on save.
+		self.assertEqual(item.uoms, [])
+		item.insert.assert_called_once_with(ignore_permissions=True)
+
+	def test_keeps_the_template_uom_when_gram_is_missing(self):
+		item, _copy_doc = self._ensure(gram=False)
+		self.assertEqual(item.stock_uom, "Nos")
+		self.assertEqual(len(item.uoms), 1)
+		item.insert.assert_called_once()
+
+	def test_an_existing_item_is_left_alone(self):
+		_item, copy_doc = self._ensure(existing=True)
+		copy_doc.assert_not_called()
+
+	def test_no_template_no_item(self):
+		_item, copy_doc = self._ensure(template=False)
+		copy_doc.assert_not_called()
