@@ -3090,6 +3090,10 @@ def enqueue_bom_creation(self):
 
 def create_boms_in_background(sales_order, user=None):
 	"""Re-save the Sales Order with BOM creation run inline (see before_validate)."""
+	# Frappe retries a job (RetryBackgroundJobError below) without its user, so a
+	# retry would otherwise save the order and its BOMs as Administrator.
+	if user and frappe.session.user != user:
+		frappe.set_user(user)
 	failures, error = [], None
 	try:
 		doc = frappe.get_doc("Sales Order", sales_order)
@@ -3265,18 +3269,22 @@ def fill_items_from_serial_no(serial_nos):
 	if not requested:
 		return {"details": {}, "missing": serial_nos}
 
-	serials = frappe.get_all(
+	# get_list, not get_all: the per-row lookup this replaces applied the user's
+	# User Permissions, so a serial or item outside them is reported as missing.
+	serials = frappe.get_list(
 		"Serial No",
 		filters={"name": ["in", list(set(requested.values()))]},
 		fields=["name", "item_code", "custom_bom_no", "custom_gross_wt", "warehouse"],
+		limit_page_length=0,
 	)
 	item_codes = list({d.item_code for d in serials if d.item_code})
 	items = (
 		{
 			d.name: d
-			for d in frappe.get_all(
+			for d in frappe.get_list(
 				"Item",
 				filters={"name": ["in", item_codes]},
+				limit_page_length=0,
 				fields=[
 					"name",
 					"item_name",
