@@ -153,6 +153,7 @@ doc_events = {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Sales Order": {
+		"onload": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.onload",
 		"before_validate": [
 			# "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
