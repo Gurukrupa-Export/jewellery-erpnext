@@ -27,6 +27,25 @@
   "target_warehouse",
   "column_break_aw0qk",
   "stock_entry",
+  "chain_subcontracting_section",
+  "is_chain_manufacturing",
+  "dept_is_chain_manufacturing",
+  "dept_is_chain_subcontracting",
+  "to_employee",
+  "to_department",
+  "to_warehouse",
+  "column_break_chain1",
+  "is_chain_subcontracting",
+  "chain_supplier",
+  "chain_supplier_warehouse",
+  "chain_process_loss_qty",
+  "chain_entries_section",
+  "chain_issue_stock_entry",
+  "chain_purchase_order",
+  "column_break_chain2",
+  "chain_repack_stock_entry",
+  "chain_loss_stock_entry",
+  "chain_transfer_stock_entry",
   "metal_converter_tab",
   "source_item",
   "source_qty",
@@ -170,7 +189,8 @@
    "fieldtype": "Link",
    "label": "Source Item",
    "mandatory_depends_on": "eval:doc.is_melting_loss == 1",
-   "options": "Item"
+   "options": "Item",
+   "read_only_depends_on": "eval:doc.is_chain_subcontracting && !doc.chain_supplier"
   },
   {
    "fieldname": "source_qty",
@@ -218,7 +238,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "depends_on": "eval:doc.source_qty && !doc.is_melting_loss",
+   "depends_on": "eval:doc.source_qty && !doc.is_melting_loss && (!doc.is_chain_subcontracting || ['Issue','Receive','Submitted'].includes(doc.workflow_state))",
    "fieldname": "target_item",
    "fieldtype": "Link",
    "label": "Target Item",
@@ -229,7 +249,7 @@
    "fieldname": "target_qty",
    "fieldtype": "Float",
    "label": "Target Qty",
-   "read_only": 1
+   "read_only_depends_on": "eval:!doc.is_chain_subcontracting"
   },
   {
    "default": "0",
@@ -304,7 +324,7 @@
    "fieldtype": "Section Break"
   },
   {
-   "depends_on": "eval:doc.batch",
+   "depends_on": "eval:doc.batch && !doc.is_chain_subcontracting",
    "fieldname": "supplier",
    "fieldtype": "Link",
    "label": "Supplier",
@@ -414,6 +434,149 @@
    "fieldtype": "Table",
    "label": "Source Batch Details",
    "options": "Alloy Batch Details"
+  },
+  {
+   "collapsible": 0,
+   "depends_on": "eval:!doc.multiple_metal_converter && (doc.dept_is_chain_manufacturing || doc.is_chain_manufacturing == 'Yes')",
+   "fieldname": "chain_subcontracting_section",
+   "fieldtype": "Section Break",
+   "label": "Chain Manufacturing"
+  },
+  {
+   "default": "No",
+   "depends_on": "eval:doc.dept_is_chain_manufacturing || doc.is_chain_manufacturing == 'Yes'",
+   "description": "Available when the Employee's Department has Is Chain Manufacturing checked.",
+   "fieldname": "is_chain_manufacturing",
+   "fieldtype": "Select",
+   "label": "Is Chain Manufacturing",
+   "options": "No\nYes"
+  },
+  {
+   "default": "0",
+   "fieldname": "dept_is_chain_manufacturing",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Department Is Chain Manufacturing",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "dept_is_chain_subcontracting",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Department Is Chain Subcontracting",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.is_chain_manufacturing == 'Yes'",
+   "description": "The employee the converted metal is finally transferred to.",
+   "fieldname": "to_employee",
+   "fieldtype": "Link",
+   "label": "To Employee",
+   "mandatory_depends_on": "eval:doc.is_chain_manufacturing == 'Yes'",
+   "options": "Employee"
+  },
+  {
+   "depends_on": "eval:doc.to_employee",
+   "fieldname": "to_department",
+   "fieldtype": "Link",
+   "label": "To Department",
+   "options": "Department",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.to_employee",
+   "fieldname": "to_warehouse",
+   "fieldtype": "Link",
+   "label": "To Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_chain1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.is_chain_manufacturing == 'Yes' && doc.dept_is_chain_subcontracting",
+   "fieldname": "is_chain_subcontracting",
+   "fieldtype": "Check",
+   "label": "Is Chain Subcontracting"
+  },
+  {
+   "depends_on": "eval:doc.is_chain_subcontracting",
+   "fieldname": "chain_supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "mandatory_depends_on": "eval:doc.is_chain_subcontracting",
+   "options": "Supplier"
+  },
+  {
+   "depends_on": "eval:doc.chain_supplier",
+   "fieldname": "chain_supplier_warehouse",
+   "fieldtype": "Link",
+   "label": "Supplier Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.is_chain_subcontracting && doc.target_qty",
+   "description": "Source Qty - Target Qty",
+   "fieldname": "chain_process_loss_qty",
+   "fieldtype": "Float",
+   "label": "Process Loss Qty",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.chain_issue_stock_entry",
+   "fieldname": "chain_entries_section",
+   "fieldtype": "Section Break",
+   "label": "Chain Subcontracting Entries"
+  },
+  {
+   "fieldname": "chain_issue_stock_entry",
+   "fieldtype": "Link",
+   "label": "Issue Stock Entry",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "chain_purchase_order",
+   "fieldtype": "Link",
+   "label": "Purchase Order",
+   "no_copy": 1,
+   "options": "Purchase Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_chain2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "chain_repack_stock_entry",
+   "fieldtype": "Link",
+   "label": "Repack Stock Entry",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "chain_loss_stock_entry",
+   "fieldtype": "Link",
+   "label": "Process Loss Stock Entry",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "chain_transfer_stock_entry",
+   "fieldtype": "Link",
+   "label": "Transfer Stock Entry",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
@@ -424,7 +587,7 @@
    "link_fieldname": "custom_metal_conversion_reference"
   }
  ],
- "modified": "2026-09-29 16:30:00.000000",
+ "modified": "2026-10-12 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Metal Conversions",

@@ -20,6 +20,21 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_led
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	CUSTOMER_INVENTORY_TYPES,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.chain_subcontracting import (
+	after_validate as after_chain_validate,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.chain_subcontracting import (
+	cancel_chain,
+	chain_issued,
+	get_department_chain_flags,
+	guard_trash,
+	is_chain_sc,
+	run_receive,
+	set_issue_warehouses,
+	set_to_warehouse,
+	validate_chain,
+	validate_receive,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.lanes import (
 	REGULAR_STOCK,
 	build_lanes,
@@ -84,7 +99,18 @@ def template_index(remark):
 
 
 class MetalConversions(Document):
+	def before_submit(self):
+		if is_chain_sc(self):
+			# Only the workflow's Receive action may submit a chain conversion.
+			validate_receive(self)
+
 	def on_submit(self):
+		if is_chain_sc(self):
+			# Receive: Repack and Process Loss at the supplier, then the transfer to the
+			# To Employee (chain_subcontracting.run_receive). The target was typed in, so
+			# the purity check and the alloy balance do not apply.
+			run_receive(self)
+			return
 		if self.get("is_melting_loss"):
 			# Pure loss-recording mode: book ONLY the Loss Qty as a Process Loss SE
 			# (RM -> Scrap). No conversion Stock Entry is created.
@@ -132,13 +158,20 @@ class MetalConversions(Document):
 		# Melting-loss guards + conversion-field clearing MUST run first so the
 		# downstream alloy / batch helpers see the cleared state.
 		validate_melting_loss(self)
+		# Chain fields are resolved before the allocation, which reads source_warehouse.
+		validate_chain(self)
 		validate_source_target_differ(self)
 		validate_finding_to_finding(self)
 		update_alloy_betch(self)
-		update_source_betch(self)
+		# Once Issue has moved the metal to the supplier the allocation is a record, not a
+		# plan: re-allocating against the department warehouse would find nothing there.
+		if not chain_issued(self):
+			update_source_betch(self)
 		validate_customer_metal_target(self)
 		validate_customer_finding_source(self)
 		self.set_remarks()
+		# Last: the Issue action books its transfer and PO from the finished allocation.
+		after_chain_validate(self)
 
 	def set_remarks(self):
 		"""Guard Remarks and keep it in step with Percentage.
@@ -174,12 +207,28 @@ class MetalConversions(Document):
 		return render_remark_options(self.percentage, self.precision("percentage"))
 
 	def on_cancel(self):
+		if is_chain_sc(self):
+			# Final transfer, Process Loss, Repack, then Issue -- see cancel_chain.
+			cancel_chain(self)
+			return
 		# Scoped cascade: the auto-created entries this document owns -- its Process Loss
 		# (melting-loss mode) and its Repack-Metal Conversion -- are cancelled through the
 		# standard controller, so a conversion whose output was already used cannot be
 		# cancelled at all rather than half-cancelled.
 		cancel_melting_loss_stock_entries(self)
 		cancel_conversion_stock_entries(self)
+
+	def on_trash(self):
+		guard_trash(self)
+
+	@frappe.whitelist()
+	def refresh_chain_details(self):
+		"""Fill To Department / To Warehouse and the Supplier's warehouse for the form."""
+		if self.get("is_chain_manufacturing") != "Yes":
+			return
+		set_to_warehouse(self)
+		if is_chain_sc(self) and not chain_issued(self):
+			set_issue_warehouses(self)
 
 	def validate_target_qty(self):
 		"""Target Qty must be what the purity masters make of Source Qty, to one posting unit.
@@ -337,7 +386,7 @@ class MetalConversions(Document):
 			{"disabled": 0, "department": dpt, "warehouse_type": "Raw Material"},
 			"name",
 		)
-		if not mnf:
+		if not s_wh:
 			errors.append("Warehouse Missing Warehouse Master Department Not Set")
 		if errors:
 			frappe.throw("<br>".join(errors))
@@ -347,6 +396,14 @@ class MetalConversions(Document):
 			self.manufacturer = mnf
 			self.source_warehouse = s_wh
 			self.target_warehouse = s_wh
+			# Chain Manufacturing is offered only where the department allows it.
+			manufacturing, subcontracting = get_department_chain_flags(dpt)
+			self.dept_is_chain_manufacturing = cint(manufacturing)
+			self.dept_is_chain_subcontracting = cint(subcontracting)
+			if not manufacturing:
+				self.is_chain_manufacturing = "No"
+			if not (manufacturing and subcontracting):
+				self.is_chain_subcontracting = 0
 
 	@frappe.whitelist()
 	def calculate_metal_conversion(self):
@@ -1425,6 +1482,7 @@ def get_source_batches(doctype, txt, searchfield, start, page_len, filters):
 	batches = get_batch_no(doctype, txt, searchfield, start, page_len, filters)
 	regular_only = (
 		cint(filters.get("is_melting_loss"))
+		or cint(filters.get("is_chain_subcontracting"))
 		or is_finding_item(filters.get("item_code"))
 		or is_finding_item(filters.get("target_item"))
 	)
