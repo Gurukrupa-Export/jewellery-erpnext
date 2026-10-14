@@ -568,6 +568,16 @@ def create_tree_on_issue(eir):
 		# straight through, which is what makes it usable here: this runs from
 		# ``on_submit``, when the document is already submitted.
 		row.db_set("tree_number", tree.name, update_modified=False)
+		# The casting operation itself carries the tree too, so Submit Tree can tell whether
+		# the casting work behind it is Finished. Not copied to the next operation's MOP.
+		if row.get("manufacturing_operation"):
+			frappe.db.set_value(
+				"Manufacturing Operation",
+				row.manufacturing_operation,
+				"tree_number",
+				tree.name,
+				update_modified=False,
+			)
 
 	# ...and on the header, so the tree is visible without scrolling the grid. An Issue
 	# builds exactly one tree, so this can never be ambiguous the way a Receive can.
@@ -614,6 +624,19 @@ def unlink_tree_on_issue_cancel(eir):
 		# Scoped to THIS tree: on a re-issue the row may already carry a newer one.
 		if row.get("tree_number") and (not tree_name or row.tree_number == tree_name):
 			row.db_set("tree_number", None, update_modified=False)
+		# Same for the operation's own stamp (scoped to this tree, as above).
+		if row.get("manufacturing_operation"):
+			mop_tree = frappe.db.get_value(
+				"Manufacturing Operation", row.manufacturing_operation, "tree_number"
+			)
+			if mop_tree and (not tree_name or mop_tree == tree_name):
+				frappe.db.set_value(
+					"Manufacturing Operation",
+					row.manufacturing_operation,
+					"tree_number",
+					None,
+					update_modified=False,
+				)
 		current = frappe.db.get_value(
 			"Manufacturing Work Order", row.manufacturing_work_order, "tree_number"
 		)
