@@ -3,9 +3,10 @@ name: Inventory Tests
 on:
   pull_request:
     branches:
-      - kgg_uat
+      - kggk_uat
       - kggk_prod
       - gurukrupa-prod
+      - gurukrupa-uat
 
   workflow_dispatch:
 

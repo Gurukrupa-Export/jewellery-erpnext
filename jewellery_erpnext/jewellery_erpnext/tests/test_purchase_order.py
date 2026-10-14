@@ -5,6 +5,51 @@ from frappe.tests import IntegrationTestCase, UnitTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import purchase_order as po_events
 
+# Captured at import, before any patch replaces the attribute, so a side_effect can
+# still reach the real implementation.
+_REAL_DB_GET_VALUE = frappe.db.get_value
+
+
+def _bom_state_only(bom_state):
+	"""``frappe.db.get_value`` side effect that answers the BOM lookup and nothing else.
+
+	A blanket ``return_value`` is not safe here. ``update_rate`` rounds through
+	``flt(value, row.precision("rate"))``, and flt's rounding method comes from
+	System Settings via ``frappe.db.get_value`` -- so a blanket mock hands the BOM
+	state dict back as the rounding method and the rate silently comes out 0.0.
+	Worse, it only bites the first test to run: later ones read a warm cache and
+	look fine, which makes the failure look unrelated to the mock.
+	"""
+
+	def side_effect(*args, **kwargs):
+		if args and args[0] == "BOM":
+			return bom_state
+		return _REAL_DB_GET_VALUE(*args, **kwargs)
+
+	return side_effect
+
+
+def _bom_calls(mock_get_value):
+	"""Only the BOM state lookups, so incidental framework reads do not count."""
+	return [c for c in mock_get_value.call_args_list if c.args and c.args[0] == "BOM"]
+
+
+class DummyPORow(frappe._dict):
+	"""Purchase Order Item stub.
+
+	Real child rows are Documents, so the production code rounds through
+	``row.precision("rate")``. A bare ``frappe._dict`` answers a missing attribute
+	with ``None`` rather than raising, so ``row.precision`` would be ``None`` and
+	the call fails with "'NoneType' object is not callable" -- several steps away
+	from the real cause. Mirrors the opposite trap noted in CLAUDE.md, where a row
+	had to be a plain object BECAUSE ``frappe._dict`` is dict-like.
+	"""
+
+	def precision(self, fieldname):
+		# PO Item.rate is Currency; 2 matches the default and keeps the arithmetic
+		# in these tests exact.
+		return 2
+
 
 class DummyPO:
 	def __init__(self, **kwargs):
@@ -15,8 +60,10 @@ class DummyPO:
 		self.company_address = kwargs.get("company_address", "Addr2")
 		self.billing_address = kwargs.get("billing_address", "Addr2")
 		self.total = kwargs.get("total", 1000.0)
-		if "items" in kwargs:
-			self.items = kwargs["items"]
+		# Always present, even when the test passes none: a real Purchase Order
+		# always has the child table, and _quotation_rates iterates it before the
+		# main loop gets a chance to short-circuit.
+		self.items = kwargs.get("items", [])
 		if "taxes" in kwargs:
 			self.taxes = kwargs["taxes"]
 		self.custom_customer_po = kwargs.get("custom_customer_po", "CUST-PO")
@@ -24,6 +71,10 @@ class DummyPO:
 		self.ref_customer = kwargs.get("ref_customer", "Customer X")
 		self._is_new = kwargs.get("is_new", False)
 		self.calculate_taxes_and_totals = MagicMock()
+		# update_rate re-runs both of these after repricing, because the controller's
+		# own validate already ran against the pre-update rates. Real Purchase Orders
+		# inherit them from AccountsController.
+		self.set_total_in_words = MagicMock()
 
 		for k, v in kwargs.items():
 			if k != "is_new":
@@ -155,22 +206,27 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 	def test_update_rate(self, mock_get_value):
 		po = DummyPO(
 			purchase_type="FG Purchase",
-			items=[frappe._dict(manufacturing_bom="BOM-1", metal_amount=1000)],
+			items=[DummyPORow(manufacturing_bom="BOM-1", metal_amount=1000)],
 		)
-		mock_get_value.return_value = frappe._dict(
-			making_fg_purchase=100,
-			finding_bom_amount=50,
-			diamond_fg_purchase=200,
-			gemstone_fg_purchase=10,
-			certification_amount=5,
-			freight_amount=15,
-			hallmarking_amount=20,
-			custom_duty_amount=0,
+		mock_get_value.side_effect = _bom_state_only(
+			frappe._dict(
+				making_fg_purchase=100,
+				finding_bom_amount=50,
+				diamond_fg_purchase=200,
+				gemstone_fg_purchase=10,
+				certification_amount=5,
+				freight_amount=15,
+				hallmarking_amount=20,
+				custom_duty_amount=0,
+			)
 		)
 		po_events.update_rate(po)
 		item = po.items[0]
 		self.assertEqual(item.making_amount, 100)
-		self.assertEqual(item.rate, 1000 + 100 + 50 + 200 + 10 + 5 + 15 + 20 + 0)
+		# metal_amount (1000) and finding_bom_amount (50) are NOT in the rate --
+		# both are valuations at the BOM's own gold rate, which is a selling figure
+		# rather than what the supplier charges. Only the FG Purchase components sum.
+		self.assertEqual(item.rate, 100 + 200 + 10 + 5 + 15 + 20 + 0)
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
@@ -522,10 +578,10 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 	)
 	def test_update_rate_no_bom(self, mock_get_value):
 		po = DummyPO(
-			purchase_type="FG Purchase", items=[frappe._dict(manufacturing_bom=None)]
+			purchase_type="FG Purchase", items=[DummyPORow(manufacturing_bom=None)]
 		)
 		po_events.update_rate(po)
-		mock_get_value.assert_not_called()
+		self.assertEqual(_bom_calls(mock_get_value), [])
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.get_doc"
@@ -598,10 +654,18 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		po_events.on_cancel(frappe._dict())
 		self.assertTrue(True)
 
-	def test_update_rate_is_new(self):
-		po = DummyPO(purchase_type="FG Purchase", is_new=True)
+	def test_update_rate_no_items_is_a_noop(self):
+		"""An FG Purchase order with an empty item table must not throw.
+
+		Was ``test_update_rate_is_new``, which asserted nothing: ``update_rate`` has
+		no ``is_new`` guard -- its only early return is the ``purchase_type`` check --
+		so the flag it passed was never read. What is worth pinning is that
+		``_quotation_rates`` tolerates an order with no rows, since it iterates
+		``doc.items`` before the main loop can short-circuit.
+		"""
+		po = DummyPO(purchase_type="FG Purchase")
 		po_events.update_rate(po)
-		self.assertTrue(True)
+		self.assertEqual(po.items, [])
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_value"
@@ -694,24 +758,28 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		po = DummyPO(
 			purchase_type="FG Purchase",
 			items=[
-				frappe._dict(manufacturing_bom="BOM-1", metal_amount=1000),
-				frappe._dict(manufacturing_bom="BOM-1", metal_amount=2000),
+				DummyPORow(manufacturing_bom="BOM-1", metal_amount=1000),
+				DummyPORow(manufacturing_bom="BOM-1", metal_amount=2000),
 			],
 		)
-		mock_get_value.return_value = frappe._dict(
-			making_fg_purchase=100,
-			finding_bom_amount=50,
-			diamond_fg_purchase=200,
-			gemstone_fg_purchase=10,
-			certification_amount=5,
-			freight_amount=15,
-			hallmarking_amount=20,
-			custom_duty_amount=0,
+		mock_get_value.side_effect = _bom_state_only(
+			frappe._dict(
+				making_fg_purchase=100,
+				finding_bom_amount=50,
+				diamond_fg_purchase=200,
+				gemstone_fg_purchase=10,
+				certification_amount=5,
+				freight_amount=15,
+				hallmarking_amount=20,
+				custom_duty_amount=0,
+			)
 		)
 		po_events.update_rate(po)
-		mock_get_value.assert_called_once()
-		self.assertEqual(po.items[0].rate, 1000 + 400)
-		self.assertEqual(po.items[1].rate, 2000 + 400)
+		# One BOM state snapshot, reused: both rows get the same component sum, and
+		# their differing metal_amount does not enter the rate.
+		self.assertEqual(len(_bom_calls(mock_get_value)), 1)
+		self.assertEqual(po.items[0].rate, 350)
+		self.assertEqual(po.items[1].rate, 350)
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
