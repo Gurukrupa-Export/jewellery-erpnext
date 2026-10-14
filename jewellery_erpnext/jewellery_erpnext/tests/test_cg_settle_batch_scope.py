@@ -105,11 +105,17 @@ def _world(ledger, lineage=frozenset({B01}), finder=None, batches=None, mr=None)
 	batches = BATCHES if batches is None else batches
 	real_db_get_value = frappe.db.get_value
 
-	def db_get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+	def db_get_value(*args, **kwargs):
+		# Answer only the Batch read; hand every other call to the real get_value EXACTLY as
+		# made. Re-mapping the arguments broke DocType meta loading, which calls
+		# get_value(..., filters=..., as_dict=True): on a cold System Settings cache flt()
+		# swallowed that TypeError and turned every quantity into 0.0.
+		doctype = args[0] if args else kwargs.get("doctype")
 		if doctype == "Batch":
+			name = args[1] if len(args) > 1 else kwargs.get("filters")
 			record = batches.get(name)
 			return frappe._dict(record) if record else None
-		return real_db_get_value(doctype, name, fieldname, *args, **kwargs)
+		return real_db_get_value(*args, **kwargs)
 
 	def consumable_map(batch_nos, item_code, warehouses):
 		return {
@@ -155,6 +161,12 @@ def _world(ledger, lineage=frozenset({B01}), finder=None, batches=None, mr=None)
 			)
 		)
 		stack.enter_context(patch(f"{_C}._execute", mocks.execute))
+		# flt(x, precision) reads the rounding method from System Settings and returns 0.0 if
+		# that read raises. A fake above that broke it would silently zero every quantity, so
+		# fail loudly here instead.
+		assert (
+			frappe.utils.flt(1.0, 3) == 1.0
+		), "a fake broke System Settings: flt() zeroes"
 		yield mocks
 
 
