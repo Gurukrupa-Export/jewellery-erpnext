@@ -19,8 +19,6 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation_pricing import (
 	_apply_kg_gk_pricing,
 	_apply_standard_pricing,
-	criteria_purity,
-	get_metal_criteria,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import (
 	set_tracking_bom_rate_in_quotation,
@@ -732,7 +730,18 @@ def create_tracking_bom_directly(self):
 	"""Create Tracking BOM directly from Template BOM."""
 	item_codes = tuple([row.item_code for row in self.items if row.item_code])
 
-	metal_criteria = get_metal_criteria(self.party_name)
+	metal_criteria = (
+		frappe.get_list(
+			"Metal Criteria",
+			{"parent": self.party_name},
+			["metal_type", "metal_touch", "metal_purity"],
+			ignore_permissions=1,
+		)
+		or {}
+	)
+	metal_criteria = {
+		(row.metal_type, row.metal_touch): row.metal_purity for row in metal_criteria
+	}
 	error_logs = []
 	self.custom_bom_creation_logs = None
 	attribute_data = frappe._dict()
@@ -1214,7 +1223,7 @@ def _apply_customer_pricing(
 	for idx, metal in enumerate(tracking_bom.metal_detail, start=1):
 		if not metal.metal_purity:
 			touch = (metal.metal_touch or "").strip()
-			purity = criteria_purity(metal_criteria, metal.metal_type, touch)
+			purity = metal_criteria.get(touch)
 			if not purity and row.get("metal_purity"):
 				purity = row.metal_purity
 			if purity:
@@ -1227,7 +1236,7 @@ def _apply_customer_pricing(
 	for idx, find in enumerate(tracking_bom.finding_detail, start=1):
 		if not find.metal_purity:
 			touch = (find.metal_touch or "").strip()
-			purity = criteria_purity(metal_criteria, find.metal_type, touch)
+			purity = metal_criteria.get(touch)
 			if not purity and row.get("metal_purity"):
 				purity = row.metal_purity
 			if purity:
