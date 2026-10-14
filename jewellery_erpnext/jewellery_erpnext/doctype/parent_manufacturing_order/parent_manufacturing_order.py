@@ -34,7 +34,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	update_parent_details,
 )
-from jewellery_erpnext.utils import update_existing
+from jewellery_erpnext.utils import get_serial_bom, update_existing
 
 _VARIANT_TO_ITEM_TYPE = {
 	"M": "metal_item",
@@ -436,8 +436,12 @@ class ParentManufacturingOrder(Document):
 					self.custom_tracking_bom,
 					{"reference_doctype": self.doctype, "reference_docname": self.name},
 				)
-		if self.serial_no:
-			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
+		# The serial's BOM is the BOM of THAT serial -- the one tagged to it (as kggk_prod
+		# always did) -- not whatever the quotation / plan row carried, which for a repair
+		# is usually the item's design BOM. The row's value is kept only when the serial
+		# has no BOM of its own.
+		if serial_bom := get_serial_bom(self.serial_no):
+			if serial_bom != self.serial_id_bom:
 				self.db_set("serial_id_bom", serial_bom)
 
 	def validate(self):
