@@ -35,6 +35,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	create_finding_mwo,
 	create_finding_without_so_mwo,
 	create_stock_entry,
+	delete_without_so_drafts,
+	validate_without_so_source_submitted,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	update_parent_details,
@@ -297,6 +299,10 @@ class ParentManufacturingOrder(Document):
 		# frappe runs validate + before_submit on submit and skips before_save, so the grade has
 		# to be resolved here too: without it a PMO that reached submit without a stored grade
 		# silently skips the tracking BOM update below.
+		if self.is_without_so:
+			validate_without_so_source_submitted(
+				"Manufacturing Plan", self.manufacturing_plan, _("Manufacturing Plan")
+			)
 		self._set_diamond_grade()
 		if self.diamond_grade and self.custom_tracking_bom:
 			frappe.db.sql(
@@ -501,6 +507,11 @@ class ParentManufacturingOrder(Document):
 		# gemstone_details_set_mandatory_field(self)
 
 	def on_cancel(self):
+		if self.is_without_so:
+			delete_without_so_drafts(
+				"Manufacturing Work Order", {"manufacturing_order": self.name}
+			)
+			return
 		update_existing(
 			"Manufacturing Plan Table",
 			self.rowname,
@@ -983,7 +994,7 @@ def make_finding_without_so_order(source_doc, row, mp_context=None):
 	doc.manufacturing_plan = source_doc.name
 	doc.qty = 1
 	doc.rowname = row.name
-	doc.insert(ignore_mandatory=True)
+	doc.insert()
 	return doc
 
 

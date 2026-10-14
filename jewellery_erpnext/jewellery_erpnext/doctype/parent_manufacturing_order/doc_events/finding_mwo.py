@@ -87,6 +87,27 @@ def create_finding_without_so_mwo(self):
 	return mwo_doc
 
 
+def delete_without_so_drafts(doctype, filters):
+	"""Delete the Draft documents a cancelled Without-SO source raised.
+
+	Frappe's cancel link check only stops on submitted links, so without this the drafts would
+	survive the cancel and could still be submitted into live manufacturing."""
+	for name in frappe.get_all(
+		doctype, filters={**filters, "docstatus": 0}, pluck="name"
+	):
+		frappe.delete_doc(doctype, name, ignore_permissions=True)
+
+
+def validate_without_so_source_submitted(doctype, name, label):
+	"""Refuse to submit a Without-SO document whose source is no longer submitted."""
+	if not name or frappe.db.get_value(doctype, name, "docstatus") != 1:
+		frappe.throw(
+			_("{0} {1} is not submitted; this document cannot be submitted.").format(
+				label, frappe.bold(name or "-")
+			)
+		)
+
+
 def create_stock_entry(self, department_data):
 	for key, values in department_data.items():
 		warehouse = frappe.db.get_value(

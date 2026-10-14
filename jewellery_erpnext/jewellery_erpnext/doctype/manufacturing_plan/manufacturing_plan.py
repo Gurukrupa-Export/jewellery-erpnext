@@ -20,6 +20,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	pick_diamond_grade,
 	resolve_diamond_grade,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
+	delete_without_so_drafts,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	resolve_parent_chains,
 )
@@ -59,6 +62,11 @@ def is_subcontracting_selected(value):
 
 class ManufacturingPlan(Document):
 	def on_cancel(self):
+		if self.select_manufacture_order == FINDING_WITHOUT_SO:
+			delete_without_so_drafts(
+				"Parent Manufacturing Order", {"manufacturing_plan": self.name}
+			)
+			return
 		frappe.db.sql(
 			"""
             UPDATE `tabSales Order Item` soi
@@ -206,6 +214,7 @@ class ManufacturingPlan(Document):
 		row. They are left in Draft for the user to review and submit one by one; the
 		Manufacturing Work Order comes from that submit, not from this one."""
 		mp_context = get_mp_context()
+		validate_finding_without_so_context(mp_context)
 		created = 0
 		for row in self.finding_details:
 			for _i in range(cint(row.qty)):
@@ -774,6 +783,21 @@ def finding_attribute_query(doctype, txt, searchfield, start, page_len, filters)
 		""",
 		values,
 	)
+
+
+def validate_finding_without_so_context(mp_context):
+	"""A Without-SO plan raises PMOs that need a manufacturer and its default department to
+	make their work order, so stop the submit before any PMO is made without them."""
+	if not mp_context.get("manufacturer"):
+		frappe.throw(
+			_("Set a default Manufacturer for your user before submitting this plan.")
+		)
+	if not mp_context.get("finding_default_department"):
+		frappe.throw(
+			_(
+				"Set Default Department in Manufacturing Setting for Manufacturer {0}."
+			).format(frappe.bold(mp_context.get("manufacturer")))
+		)
 
 
 def get_mp_context():

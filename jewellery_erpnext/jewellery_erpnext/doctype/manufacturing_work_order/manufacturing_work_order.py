@@ -21,6 +21,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_ev
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 	validate_not_eod_sync_locked,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
+	validate_without_so_source_submitted,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
 )
@@ -66,6 +69,12 @@ class ManufacturingWorkOrder(Document):
 
 	def before_submit(self):
 		self.validate_photoshop_images()
+		if self.is_without_so:
+			validate_without_so_source_submitted(
+				"Parent Manufacturing Order",
+				self.manufacturing_order,
+				_("Parent Manufacturing Order"),
+			)
 
 	def on_submit(self):
 		if self.for_fg:

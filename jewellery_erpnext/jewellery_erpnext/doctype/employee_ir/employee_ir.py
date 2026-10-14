@@ -111,6 +111,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_repack import (
 	create_without_so_finding_repack,
 	release_without_so_repack_reservations,
+	restamp_without_so_batches_on_receive_cancel,
 	stamp_without_so_worker_cost,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
@@ -369,6 +370,7 @@ class EmployeeIR(Document):
 			release_without_so_repack_reservations(self)
 			self.on_submit_receive(cancel=True)
 			reset_without_so_costing_on_receive_cancel(self)
+			restamp_without_so_batches_on_receive_cancel(self)
 
 	def on_submit_issue_new(self, cancel=False):
 		# if self.mop_data:

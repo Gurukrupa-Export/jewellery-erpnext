@@ -195,6 +195,20 @@ def stamp_without_so_worker_cost(eir):
 			apply_worker_cost_to_batch(batch_no, worker_cost)
 
 
+def restamp_without_so_batches_on_receive_cancel(eir):
+	"""Re-stamp the finding batches that survive a cancelled Receive.
+
+	Every Receive stamps the work order's cumulative worker cost on all its finding batches, so
+	once the cancelled Receive's operation cost is reset, the earlier batches still carry the
+	cost it added. Run after that reset, when the work order's worker cost is the surviving one."""
+	for mwo in {row.manufacturing_work_order for row in eir.employee_ir_operations}:
+		if not is_without_so_mwo(mwo):
+			continue
+		worker_cost = get_mwo_worker_cost(mwo)
+		for batch_no in _repack_finding_batches(mwo):
+			apply_worker_cost_to_batch(batch_no, worker_cost)
+
+
 def release_without_so_repack_reservations(eir):
 	"""Cancel the reservations on the finding batches this Receive's Repacks produced.
 
