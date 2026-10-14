@@ -24,11 +24,31 @@ from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item
 
 import copy
 
+def _needs_fifo_batch(row):
+	return (
+		row.s_warehouse
+		and not row.batch_no
+		and not row.serial_no
+		and frappe.db.get_value("Item", row.item_code, "has_batch_no")
+	)
+
+
 def before_validate(self, method):
 	validate_ir(self)
+	# a new draft with an empty batch gets FIFO batches on save (replaces the FIFO button)
 	if (
-		not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
-	) or self.flags.throw_batch_error:
+		(
+			not self.get("__islocal")
+			and frappe.db.exists("Stock Entry", self.name)
+			and self.docstatus == 0
+		)
+		or self.flags.throw_batch_error
+		or (
+			self.docstatus == 0
+			and not self.auto_created
+			and any(_needs_fifo_batch(row) for row in self.items)
+		)
+	):
 		self.update_batches()
 
 	pure_item_purity = None
@@ -37,8 +57,12 @@ def before_validate(self, method):
 
 	for row in self.items:
 
-		if not row.batch_no and not row.serial_no and row.s_warehouse:
-			frappe.throw(_("Please click Get FIFO Batch Button"))
+		if _needs_fifo_batch(row):
+			frappe.throw(
+				_("No stock available to allocate a batch for {0} in {1}").format(
+					row.item_code, row.s_warehouse
+				)
+			)
 
 		if not self.auto_created and row.manufacturing_operation:
 
