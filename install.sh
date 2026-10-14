@@ -24,7 +24,7 @@ bench get-app hrms --branch version-16
 bench get-app payments --branch develop
 bench get-app lending --branch version-16-beta
 bench get-app wiki --branch version-3
-bench get-app helpdesk --branch main
+bench get-app helpdesk --branch main --skip-assets
 bench get-app telephony --branch develop
 
 bench get-app https://github.com/resilient-tech/india-compliance.git --branch version-16
