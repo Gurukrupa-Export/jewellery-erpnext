@@ -23,7 +23,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, nowtime, today
+from frappe.utils import flt, nowtime, today
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	resolve_batch_ownership,
@@ -363,7 +363,7 @@ def _prepare_loss_row(eir, row, table_name):
 
 	mwo = _resolve_mwo(eir, row, table_name)
 	sre_doc, candidates = _find_sre(eir, row, mwo, table_name, qty)
-	t_warehouse = _resolve_t_warehouse(eir, table_name)
+	t_warehouse = _resolve_t_warehouse(eir)
 	loss_item = _resolve_loss_item(eir, row, table_name)
 
 	_validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name)
@@ -736,61 +736,16 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 	)
 
 
-def _resolve_t_warehouse(eir, table_name):
-	"""Resolve target warehouse based on is_raw_material."""
-	if cint(eir.is_raw_material):
-		return _resolve_raw_material_warehouse(eir)
+def _resolve_t_warehouse(eir):
+	"""Resolve target warehouse. Process Loss always uses the Department Scrap warehouse.
+
+	Kept as a named indirection over ``_resolve_scrap_warehouse`` so the call site
+	still reads as "the loss row's TARGET warehouse" rather than naming one
+	particular warehouse type. It no longer takes ``table_name``: that existed only
+	to report which child table an ``is_raw_material`` resolution failed on, and
+	that branch is gone.
+	"""
 	return _resolve_scrap_warehouse(eir)
-
-
-def _resolve_raw_material_warehouse(eir):
-	if eir.subcontracting == "Yes":
-		if not eir.subcontractor:
-			frappe.throw(
-				_(
-					"Employee IR {0}: subcontractor is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"company": eir.company,
-				"subcontractor": eir.subcontractor,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for "
-					"subcontractor {1}"
-				).format(eir.name, eir.subcontractor)
-			)
-	else:
-		if not eir.employee:
-			frappe.throw(
-				_(
-					"Employee IR {0}: employee is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"employee": eir.employee,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for employee {1}"
-				).format(eir.name, eir.employee)
-			)
-	return wh
 
 
 def _resolve_scrap_warehouse(eir):
@@ -825,11 +780,45 @@ def _resolve_scrap_warehouse(eir):
 	return results[0].name
 
 
+def _resolve_manufacturer(eir, row, table_name):
+	"""Resolve the Manufacturer whose Variant Loss Table maps the loss variant.
+
+	``Employee IR.manufacturer`` is optional and is left blank on plenty of live
+	receives, so it cannot be the only source: before loss was routed to the
+	Scrap warehouse the raw-material branch never read it, and those receives
+	posted fine. Fall back to the row's Manufacturing Work Order (which fetches
+	``manufacturer`` from its PMO) and then to the Department master, both of
+	which point at the same Manufacturer when the EIR field is set. Throw only
+	when none of the three yields one, since the Variant Loss Table lookup is
+	keyed by Manufacturer and has nothing to fall back on.
+	"""
+	if eir.manufacturer:
+		return eir.manufacturer
+
+	mwo = getattr(row, "manufacturing_work_order", None)
+	if mwo:
+		manufacturer = frappe.db.get_value(
+			"Manufacturing Work Order", mwo, "manufacturer"
+		)
+		if manufacturer:
+			return manufacturer
+
+	if eir.department:
+		manufacturer = frappe.db.get_value("Department", eir.department, "manufacturer")
+		if manufacturer:
+			return manufacturer
+
+	frappe.throw(
+		_(
+			"Employee IR {0}: manufacturer is required to look up loss item and "
+			"could not be derived from {1} row {2} (Manufacturing Work Order {3}) "
+			"or from Department {4}"
+		).format(eir.name, table_name, row.idx, mwo or "-", eir.department or "-")
+	)
+
+
 def _resolve_loss_item(eir, row, table_name):
 	"""Return the item_code to use on the produce row of the Process Loss SE."""
-	if cint(eir.is_raw_material):
-		# Same item — loss moves to employee/subcontractor raw-material warehouse.
-		return row.item_code
 
 	# Scrap path: resolve the dust/loss variant via the manufacturer's mapping.
 	if not row.variant_of:
@@ -841,17 +830,12 @@ def _resolve_loss_item(eir, row, table_name):
 		)
 	# loss_type defaults to "Loss" when not explicitly set on the child row.
 	loss_type = row.loss_type or "Loss"
-	if not eir.manufacturer:
-		frappe.throw(
-			_("Employee IR {0}: manufacturer is required to look up loss item").format(
-				eir.name
-			)
-		)
+	manufacturer = _resolve_manufacturer(eir, row, table_name)
 
 	loss_variant_template = frappe.db.get_value(
 		"Variant Loss Table",
 		{
-			"parent": eir.manufacturer,
+			"parent": manufacturer,
 			"parenttype": "Manufacturer",
 			"parentfield": "custom_variant_loss_table",
 			"variant": row.variant_of,
@@ -867,7 +851,7 @@ def _resolve_loss_item(eir, row, table_name):
 				"({4} row {5})"
 			).format(
 				eir.name,
-				eir.manufacturer,
+				manufacturer,
 				row.variant_of,
 				loss_type,
 				table_name,
