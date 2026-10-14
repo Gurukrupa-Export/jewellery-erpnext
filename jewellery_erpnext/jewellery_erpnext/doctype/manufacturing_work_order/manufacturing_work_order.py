@@ -473,6 +473,21 @@ class ManufacturingWorkOrder(Document):
 			)
 		return design_bom, pmo_name
 
+	def _resolve_serial_bom(self):
+		"""The as-built BOM of the serial being unpacked (Serial No.custom_bom_no).
+
+		That, and not the Repair Order's design BOM, describes what is physically in the
+		piece. No fallback: unpacking against another BOM would book the wrong materials.
+		"""
+		serial_bom = frappe.db.get_value("Serial No", self.serial_no, "custom_bom_no")
+		if not serial_bom:
+			frappe.throw(
+				_(
+					"Serial No {0} has no BOM (BOM No); cannot work out what to unpack."
+				).format(self.serial_no)
+			)
+		return serial_bom
+
 	def _resolve_full_repair_components(self, pmo_name, design_bom):
 		"""Resolve the FULL bookable component list for this repair from the design
 		BOM's detail tables, so the unpack disassembles the WHOLE item (all metal,
@@ -571,14 +586,14 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_unpack_serial_no_stock_entry(self):
-		"""Unpack a repaired FG serial into the Repair Order's BOM raw materials as
-		Customer Goods.
+		"""Unpack a repaired FG serial into the raw materials of ITS OWN BOM as Customer
+		Goods.
 
 		Consumes the finished-good serial from the RM warehouse that currently holds
-		it and books the Repair Order BOM's raw materials straight into the
-		department's Manufacturing warehouse, so the repair operations have their
-		inputs without a separate stock transfer. Only valid for Repair work orders
-		(see the Unpack Raw Material button). This is a Customer-Goods sibling of
+		it and books the raw materials of the serial's as-built BOM (Serial No.custom_bom_no)
+		back into that same warehouse, so the repair operations have their inputs without
+		a separate stock transfer. Only valid for Repair work orders (see the Unpack
+		Serial No button). This is a Customer-Goods sibling of
 		create_repair_un_pack_stock_entry (which stays for the legacy flow).
 		"""
 		pmo_type = frappe.db.get_value(
@@ -592,15 +607,15 @@ class ManufacturingWorkOrder(Document):
 				)
 			)
 
-		# The BOM to unpack lives on the linked Repair Order, not the MWO's inherited
-		# master_bom. Persist it onto the PMO + this MWO (it drives repair
-		# pricing/quotation); the components actually booked come from its full design
-		# composition, resolved below.
+		# The Repair Order's design BOM is still persisted onto the PMO + this MWO (it
+		# drives repair pricing/quotation), but it is NOT what gets unpacked: the piece in
+		# hand was built against its own BOM, so the components booked come from that one.
 		design_bom, pmo_name = self._resolve_repair_order_bom()
 		frappe.db.set_value(
 			"Parent Manufacturing Order", pmo_name, "master_bom", design_bom
 		)
 		self.db_set("master_bom", design_bom)
+		serial_bom = self._resolve_serial_bom()
 
 		# Source: the RM warehouse that currently holds the serial (not the
 		# manufacturer's repair warehouse used by the legacy method).
@@ -616,22 +631,10 @@ class ManufacturingWorkOrder(Document):
 		# department before it can be unpacked here.
 		self._assert_serial_in_department(source_wh)
 
-		# Target: the department's Manufacturing warehouse.
-		target_wh = frappe.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"warehouse_type": "Manufacturing",
-				"department": self.department,
-			},
-			"name",
-		)
-		if not target_wh:
-			frappe.throw(
-				_("Manufacturing warehouse not found for department {0}").format(
-					self.department
-				)
-			)
+		# Target: the warehouse the serial is unpacked out of. The unpacked material
+		# stays (and is reserved) there; it is not moved to the department's working
+		# warehouse.
+		target_wh = source_wh
 
 		source_inventory_type, source_customer, customer = _resolve_unpack_inventory(
 			self.serial_no, self.manufacturing_order
@@ -672,22 +675,22 @@ class ManufacturingWorkOrder(Document):
 			)
 
 		# Unpack the FULL item, not the reduced repair new_bom: resolve every
-		# component (metal + each diamond group + findings) from the design BOM's
+		# component (metal + each diamond group + findings) from the serial's own BOM's
 		# detail tables. Downstream (MOP weights, repack) is MOP-Log-driven off the
 		# rows we book here, so booking the full set is what makes the operation
 		# reflect the whole item.
 		components, design_gross, design_qty = self._resolve_full_repair_components(
-			pmo_name, design_bom
+			pmo_name, serial_bom
 		)
 		if not components:
 			frappe.throw(
 				_(
-					"No components resolved from design BOM {0}; nothing to unpack."
-				).format(design_bom)
+					"No components resolved from BOM {0} of Serial No {1}; nothing to unpack."
+				).format(serial_bom, self.serial_no)
 			)
 
 		self._assert_components_bookable(
-			[comp["item_code"] for comp in components], design_bom
+			[comp["item_code"] for comp in components], serial_bom
 		)
 
 		se = frappe.get_doc(

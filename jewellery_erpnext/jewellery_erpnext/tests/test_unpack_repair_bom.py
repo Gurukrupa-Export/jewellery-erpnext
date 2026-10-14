@@ -140,3 +140,151 @@ class TestAssertComponentsBookable(IntegrationTestCase):
 
 	def test_empty_bom_ok(self):
 		_check_bookable({})
+
+
+# ---------------------------------------------------------------------------
+# The unpack reads the SERIAL's own BOM and stays in the serial's warehouse
+# ---------------------------------------------------------------------------
+class _FakeUnpackSE:
+	"""Captures the Repair Unpack Stock Entry the method builds."""
+
+	name = "STE-UNPACK-1"
+
+	def __init__(self, doc):
+		self.doc = doc
+		self.items = []
+		self.submitted = False
+
+	def append(self, _table, row):
+		self.items.append(frappe._dict(row))
+
+	def save(self):
+		pass
+
+	def submit(self):
+		self.submitted = True
+
+
+def _unpack(serial_bom="BOM-SERIAL", serial_wh="RM-WH - X", dept_wh="MFG-WH - X"):
+	"""Run create_unpack_serial_no_stock_entry with every read mocked.
+
+	Returns (se, components_bom, master_bom_writes): the entry that was built, the BOM that
+	was handed to the component resolver, and what was written to PMO.master_bom.
+	"""
+	seen = {}
+	fake = SimpleNamespace(
+		name="MWO-1",
+		manufacturing_order="PMO-1",
+		manufacturing_operation="MOP-1",
+		serial_no="SN-1",
+		item_code="EA02144-006",
+		qty=1,
+		docstatus=1,
+		department="Dept",
+		company="C",
+		branch="B",
+		manufacturer="M",
+	)
+	fake.find_existing_unpack_entry = lambda: None
+	fake._assert_serial_matches_item = lambda: None
+	fake._assert_serial_in_department = lambda wh: None
+	fake._assert_components_bookable = lambda *a, **k: None
+	fake._resolve_repair_order_bom = lambda: ("BOM-DESIGN", "PMO-1")
+	fake._resolve_serial_bom = lambda: ManufacturingWorkOrder._resolve_serial_bom(fake)
+	fake.db_set = lambda *a, **k: None
+
+	def resolve_components(pmo_name, bom):
+		seen["bom"] = bom
+		return [{"item_code": "M-G-18KT", "qty": 6.0}], 7.91, 1.0
+
+	fake._resolve_full_repair_components = resolve_components
+
+	def gv(doctype, name=None, fieldname=None, *a, **k):
+		if doctype == "Parent Manufacturing Order":
+			return "Repair"
+		if doctype == "Serial No":
+			return {
+				"custom_bom_no": serial_bom,
+				"warehouse": serial_wh,
+				"purchase_document_no": None,
+			}.get(fieldname)
+		if doctype == "Item":
+			return (0, None)
+		if doctype == "Warehouse":
+			return dept_wh
+		return None
+
+	mock_db = MagicMock()
+	mock_db.get_value.side_effect = gv
+	mock_db.get_all.return_value = []
+	created = []
+
+	def new_se(doc):
+		se = _FakeUnpackSE(doc)
+		created.append(se)
+		return se
+
+	with (
+		patch(f"{MOD}.frappe.db", mock_db),
+		patch(f"{MOD}.frappe.get_doc", side_effect=new_se),
+		patch(
+			f"{MOD}._resolve_unpack_inventory",
+			return_value=("Regular Stock", None, "CUST-1"),
+		),
+	):
+		ManufacturingWorkOrder.create_unpack_serial_no_stock_entry(fake)
+
+	master_writes = [
+		c.args
+		for c in mock_db.set_value.call_args_list
+		if c.args[2] == "master_bom"
+	]
+	return created[0], seen.get("bom"), master_writes
+
+
+class TestUnpackUsesTheSerialsOwnBom(IntegrationTestCase):
+	def test_components_come_from_the_serials_bom_not_the_design_bom(self):
+		se, components_bom, _writes = _unpack(serial_bom="BOM-SERIAL")
+		self.assertEqual(components_bom, "BOM-SERIAL")
+		self.assertTrue(se.submitted)
+
+	def test_the_design_bom_is_still_persisted_as_master_bom(self):
+		# master_bom drives repair pricing/quotation; only the unpacked components changed.
+		_se, _bom, writes = _unpack()
+		self.assertEqual(
+			writes, [("Parent Manufacturing Order", "PMO-1", "master_bom", "BOM-DESIGN")]
+		)
+
+	def test_a_serial_without_a_bom_stops_the_unpack_and_builds_nothing(self):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			_unpack(serial_bom=None)
+		self.assertIn("SN-1", str(ctx.exception))
+
+	def test_resolve_serial_bom_reads_custom_bom_no(self):
+		asked = []
+
+		def gv(doctype, name, fieldname):
+			asked.append((doctype, name, fieldname))
+			return "BOM-SERIAL"
+
+		mock_db = MagicMock()
+		mock_db.get_value.side_effect = gv
+		fake = SimpleNamespace(serial_no="SN-1")
+		with patch(f"{MOD}.frappe.db", mock_db):
+			self.assertEqual(ManufacturingWorkOrder._resolve_serial_bom(fake), "BOM-SERIAL")
+		self.assertEqual(asked, [("Serial No", "SN-1", "custom_bom_no")])
+
+
+class TestUnpackStaysInTheSerialsWarehouse(IntegrationTestCase):
+	def test_every_component_lands_in_the_warehouse_the_serial_leaves(self):
+		se, _bom, _writes = _unpack(serial_wh="RM-WH - X", dept_wh="MFG-WH - X")
+		source = [r for r in se.items if r.get("s_warehouse")]
+		targets = [r for r in se.items if r.get("t_warehouse")]
+		self.assertEqual([r.s_warehouse for r in source], ["RM-WH - X"])
+		self.assertTrue(targets)
+		self.assertEqual({r.t_warehouse for r in targets}, {"RM-WH - X"})
+
+	def test_the_departments_manufacturing_warehouse_is_not_used(self):
+		se, _bom, _writes = _unpack(serial_wh="RM-WH - X", dept_wh="MFG-WH - X")
+		self.assertNotIn("MFG-WH - X", {r.get("t_warehouse") for r in se.items})
+
