@@ -73,6 +73,9 @@ jobs:
           # C09 released-alloy carve-out cases.
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.test_metal_conversions
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_metal_conversion_customer_finding
+          # Added 2026-10-12: Metal Conversions Chain Subcontracting (Issue/Receive workflow,
+          # Chain SC transfers, draft PO, Repack + Process Loss at the supplier). Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_metal_conversion_chain_sc
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_manufacturing_operation_balance_details_report
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_loss_valuation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_photoshop_images

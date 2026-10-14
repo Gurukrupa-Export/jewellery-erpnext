@@ -133,3 +133,6 @@ jewellery_erpnext.patches.add_ref_customer_fields
 jewellery_erpnext.patches.quotation_invoice_item_grid_columns
 jewellery_erpnext.patches.add_serial_and_batch_bundle_item_index
 jewellery_erpnext.patches.add_batch_worker_cost_fields
+jewellery_erpnext.patches.seed_stock_entry_types #2026-10-12 Material Transfer (Chain SC)
+jewellery_erpnext.patches.add_metal_conversion_chain_sc
+jewellery_erpnext.patches.add_metal_conversion_workflow

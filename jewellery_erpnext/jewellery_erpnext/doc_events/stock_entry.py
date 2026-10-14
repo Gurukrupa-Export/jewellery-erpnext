@@ -1233,7 +1233,8 @@ def onsubmit(self, method):
 
 	# A producer that writes its own reservation and MOP Log rows (the Without-SO finding
 	# repack) opts out here: the generic bridge would log its consumed rows as positive.
-	if (getattr(self, "flags", None) or {}).get("skip_mwo_reservation"):
+	flags = getattr(self, "flags", None)
+	if isinstance(flags, dict) and flags.get("skip_mwo_reservation"):
 		return
 
 	types_for_reservation = frappe.db.get_all(
