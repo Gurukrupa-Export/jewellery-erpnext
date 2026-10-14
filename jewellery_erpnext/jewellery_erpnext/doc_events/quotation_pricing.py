@@ -123,7 +123,7 @@ def _apply_standard_pricing(
 			elif item.parentfield != "finding_detail":
 				item.is_customer_item = 1
 		if item.metal_touch:
-			item.metal_purity = metal_criteria.get(item.metal_touch)
+			item.metal_purity = metal_criteria.get((item.metal_type, item.metal_touch))
 
 	# Metal pricing
 	for metal in doc.metal_detail:
@@ -252,7 +252,9 @@ def _apply_handling_charges(diamond, entry, multiplier):
 		if not rate:
 			percentage = entry.get("outwork_handling_charges_in_percentage") or 0
 			rate = (entry.get("rate") or 0) * (percentage / 100)
-		diamond.total_diamond_rate = rate + (entry.get("supplier_fg_purchase_rate") or 0)
+		diamond.total_diamond_rate = rate + (
+			entry.get("supplier_fg_purchase_rate") or 0
+		)
 		diamond.diamond_rate_for_specified_quantity = (
 			diamond.total_diamond_rate * multiplier
 		)
@@ -400,7 +402,7 @@ def _apply_making_charge_metal(self, doc, metal, customer):
 					wastage_rate = match.get("subcontracting_wastage", 0)
 					fg_purchase_rate = 0
 					fg_purchase_amount = 0
-					rate_per_gm = (match.get("supplier_fg_purchase_rate") or 0)
+					rate_per_gm = match.get("supplier_fg_purchase_rate") or 0
 				else:
 					metal.rate = doc.gold_rate_with_gst
 					wastage_rate = match.get("wastage", 0) / 100

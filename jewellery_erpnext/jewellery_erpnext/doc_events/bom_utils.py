@@ -111,20 +111,25 @@ def get_gold_rate(self):
 		item.actual_quantity = item.quantity
 		item.quantity = item.quantity
 		item.difference_qty = item.actual_quantity - item.quantity
-		if not metal_purity_data.get((self.customer, item.metal_touch)):
-			metal_purity_data[(self.customer, item.metal_touch)] = frappe.db.get_value(
+		purity_key = (self.customer, item.metal_type, item.metal_touch)
+		if not metal_purity_data.get(purity_key):
+			metal_purity_data[purity_key] = frappe.db.get_value(
 				"Metal Criteria",
-				{"parent": self.customer, "metal_touch": item.metal_touch},
+				{
+					"parent": self.customer,
+					"metal_type": item.metal_type,
+					"metal_touch": item.metal_touch,
+				},
 				"metal_purity",
 			)
 
-		metal_purity = metal_purity_data[(self.customer, item.metal_touch)]
+		metal_purity = metal_purity_data[purity_key]
 		item.customer_metal_purity = metal_purity
-		if item.metal_type=='Silver':
+		if item.metal_type == "Silver":
 			item.rate = 0
 			item.amount = 0
 			item.difference = 0
-			
+
 			continue
 		# company_metal_purity = item.purity_percentage or 0
 		# ///////////////////////////////////////////////////////////////////////////
@@ -417,12 +422,12 @@ def get_gemstone_rate(self):
 		# 			"from_size_height": ["<=", stone.size_height],
 		# 		}
 		# 	)
-			# filters.update(
-			# 	{
-			# 		"to_stone_size": [">=", stone.gemstone_size],
-			# 		"from_stone_size": ["<=", stone.gemstone_size],
-			# 	}
-			# )
+		# filters.update(
+		# 	{
+		# 		"to_stone_size": [">=", stone.gemstone_size],
+		# 		"from_stone_size": ["<=", stone.gemstone_size],
+		# 	}
+		# )
 		else:
 			filters["gemstone_type"] = stone.gemstone_type
 			filters["stone_shape"] = stone.stone_shape
@@ -569,7 +574,7 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 	# 	)
 
 	for row in self.metal_detail + self.finding_detail:
-		if row.metal_type == 'Silver':
+		if row.metal_type == "Silver":
 			row.making_rate = 0
 			row.making_amount = 0
 			row.wastage_rate = 0
