@@ -1,16 +1,18 @@
 """Put Metal Conversions under the Gemstone Conversion resize workflow.
 
-Chain Subcontracting is a two-stage conversion -- the metal goes to a subcontractor on
-**Issue** and comes back converted on **Receive** -- so it takes the same shape as the
-Gemstone Conversion resize flow, whose workflow has only ever lived in the database::
+Chain Manufacturing is a two-stage conversion -- the metal goes to an employee, or to a
+subcontractor, on **Issue** and comes back converted on **Receive** -- so it takes the same
+shape as the Gemstone Conversion resize flow, whose workflow has only ever lived in the
+database::
 
     Draft --Submit--> Submitted                  every non-chain conversion, as today
     Draft --Issue---> Issue --Receive--> Receive --Submit--> Submitted
                       Issue --Cancel Issue--> Draft
-                                                 Chain Subcontracting only
+                                                 Chain Manufacturing only
 
 * **Issue** keeps docstatus 0: the transition is a save, and ``MetalConversions.validate``
-  books the Issue transfer and the draft PO (``chain_subcontracting.run_issue``).
+  books the Issue transfer -- and, subcontracted, the draft PO
+  (``chain_subcontracting.run_issue``).
 * **Cancel Issue** undoes an Issue that has not been received: the transfer is cancelled
   and the draft PO deleted (``chain_subcontracting.run_cancel_issue``). System Manager
   only -- the role that may cancel a Metal Conversion at all
@@ -20,9 +22,11 @@ Gemstone Conversion resize flow, whose workflow has only ever lived in the datab
 * **Receive -> Submitted** carries no stock effect; it is kept so the two doctypes read the
   same in the desk.
 
-The two Draft transitions are mutually exclusive on ``is_chain_subcontracting``, so a
-document never offers both. ``!= 1`` rather than ``== 0`` keeps a NULL flag -- every
-document saved before the field existed -- on the plain Submit route.
+The two Draft transitions are mutually exclusive on ``is_chain_manufacturing``, so a
+document never offers both. ``!= "Yes"`` rather than ``== "No"`` keeps a NULL value --
+every document saved before the field existed -- on the plain Submit route. The first
+version keyed them on ``is_chain_subcontracting``, when only a subcontractor could convert
+a chain; ``_add_missing`` moves a workflow still carrying those conditions onto these.
 
 **State order matters.** ``Workflow.update_default_workflow_status`` back-fills a blank
 ``workflow_state`` with the FIRST state per ``doc_status``, and
@@ -41,8 +45,9 @@ Can also be run ad-hoc::
 
 Idempotent and additive: a missing workflow is created; an existing one only gets the
 states and transitions it lacks (keyed on state, and on state + action), appended the way
-``add_mr_transfer_to_department_workflow`` does it. No existing row is changed, so anything
-an administrator later configures in the desk survives migrate.
+``add_mr_transfer_to_department_workflow`` does it, and a Draft condition rewritten only
+while it still reads exactly as this patch's first version wrote it. Any other row --
+including a condition an administrator changed -- is left alone.
 """
 
 import frappe
@@ -63,8 +68,15 @@ CANCEL_ISSUE_ACTION = "Cancel Issue"
 ALL = "All"
 SYSTEM_MANAGER = "System Manager"
 
-IS_CHAIN = "doc.is_chain_subcontracting == 1"
-NOT_CHAIN = "doc.is_chain_subcontracting != 1"
+IS_CHAIN = 'doc.is_chain_manufacturing == "Yes"'
+NOT_CHAIN = 'doc.is_chain_manufacturing != "Yes"'
+
+# The Draft conditions the first version of this patch wrote, when a chain conversion
+# could only go to a subcontractor -- {(state, action): condition}.
+LEGACY_CONDITIONS = {
+	(DRAFT, SUBMIT_ACTION): "doc.is_chain_subcontracting != 1",
+	(DRAFT, ISSUE_ACTION): "doc.is_chain_subcontracting == 1",
+}
 
 # (state, doc_status) -- Submitted before Receive, see the module docstring.
 STATES = [
@@ -150,12 +162,20 @@ def _create_workflow():
 
 
 def _add_missing(workflow):
-	"""Append the states and transitions this patch defines that ``workflow`` lacks.
+	"""Append the states and transitions this patch defines that ``workflow`` lacks, and
+	move a Draft condition still reading as the first version wrote it.
 
 	Appended, never reordered: back-fill only ever reads the first state per doc_status,
-	which an existing workflow already has. Saves only when something was added.
+	which an existing workflow already has. Saves only when something changed.
 	"""
 	added = []
+
+	current = {(row[0], row[1]): row[3] for row in TRANSITIONS}
+	for row in workflow.transitions:
+		key = (row.state, row.action)
+		if key in LEGACY_CONDITIONS and row.condition == LEGACY_CONDITIONS[key]:
+			row.condition = current[key]
+			added.append(f"condition of {row.state} --{row.action}-->")
 
 	have_states = {row.state for row in workflow.states}
 	for state, doc_status in STATES:
@@ -176,5 +196,5 @@ def _add_missing(workflow):
 		return
 	workflow.save(ignore_permissions=True)
 	frappe.logger().info(
-		f"add_metal_conversion_workflow: added {', '.join(added)} to {workflow.name!r}"
+		f"add_metal_conversion_workflow: updated {', '.join(added)} on {workflow.name!r}"
 	)

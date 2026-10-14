@@ -28,7 +28,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ch
 	chain_issued,
 	get_department_chain_flags,
 	guard_trash,
-	is_chain_sc,
+	is_chain,
 	run_receive,
 	set_issue_warehouses,
 	set_to_warehouse,
@@ -100,15 +100,15 @@ def template_index(remark):
 
 class MetalConversions(Document):
 	def before_submit(self):
-		if is_chain_sc(self):
+		if is_chain(self):
 			# Only the workflow's Receive action may submit a chain conversion.
 			validate_receive(self)
 
 	def on_submit(self):
-		if is_chain_sc(self):
-			# Receive: Repack and Process Loss at the supplier, then the transfer to the
-			# To Employee (chain_subcontracting.run_receive). The target was typed in, so
-			# the purity check and the alloy balance do not apply.
+		if is_chain(self):
+			# Receive: Repack and Process Loss with the employee or supplier, then the
+			# return to the department (chain_subcontracting.run_receive). The target was
+			# typed in, so the purity check and the alloy balance do not apply.
 			run_receive(self)
 			return
 		if self.get("is_melting_loss"):
@@ -207,7 +207,7 @@ class MetalConversions(Document):
 		return render_remark_options(self.percentage, self.precision("percentage"))
 
 	def on_cancel(self):
-		if is_chain_sc(self):
+		if is_chain(self):
 			# Final transfer, Process Loss, Repack, then Issue -- see cancel_chain.
 			cancel_chain(self)
 			return
@@ -223,12 +223,12 @@ class MetalConversions(Document):
 
 	@frappe.whitelist()
 	def refresh_chain_details(self):
-		"""Fill To Department / To Warehouse and the Supplier's warehouse for the form."""
-		if self.get("is_chain_manufacturing") != "Yes":
+		"""Fill the To Employee's or the Supplier's warehouse for the form."""
+		# After Issue the work warehouse holds the metal and is frozen.
+		if not is_chain(self) or chain_issued(self):
 			return
 		set_to_warehouse(self)
-		if is_chain_sc(self) and not chain_issued(self):
-			set_issue_warehouses(self)
+		set_issue_warehouses(self)
 
 	def validate_target_qty(self):
 		"""Target Qty must be what the purity masters make of Source Qty, to one posting unit.
@@ -1475,14 +1475,15 @@ def get_source_batches(doctype, txt, searchfield, start, page_len, filters):
 	"""Batch picker for Source Batch Details: the Source Item's batches in the warehouse.
 
 	Customer batches are left out wherever the save would refuse them -- a Finding source
-	(point 4), a Finding target (point 1) or a melting loss -- so they are not selectable.
+	(point 4), a Finding target (point 1), a melting loss or a chain conversion -- so they
+	are not selectable.
 	"""
 	if not filters.get("item_code"):
 		return []
 	batches = get_batch_no(doctype, txt, searchfield, start, page_len, filters)
 	regular_only = (
 		cint(filters.get("is_melting_loss"))
-		or cint(filters.get("is_chain_subcontracting"))
+		or cint(filters.get("is_chain"))
 		or is_finding_item(filters.get("item_code"))
 		or is_finding_item(filters.get("target_item"))
 	)

@@ -35,6 +35,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events im
 )
 from jewellery_erpnext.patches import add_metal_conversion_chain_sc as chain_sc_patch
 from jewellery_erpnext.patches import add_metal_conversion_workflow as workflow_patch
+from jewellery_erpnext.patches import (
+	remove_unused_chain_sc_stock_entry_type as cleanup_patch,
+)
+from jewellery_erpnext.patches import seed_stock_entry_types as seed_patch
 
 _REAL_GET_ALL = frappe.get_all
 
@@ -44,6 +48,7 @@ _SCRAP_WAREHOUSE = "jewellery_erpnext.jewellery_erpnext.doctype.gemstone_convers
 EMPLOYEE_DEPT = {"EMP-1": "Chain - GK", "EMP-2": "Polish - GK", "EMP-X": None}
 DEPT_RM = {"Chain - GK": "Chain RM - GK", "Polish - GK": "Polish RM - GK"}
 SUPPLIER_RM = {"SUP-1": "SUP-1 MSL WH - GK"}
+EMPLOYEE_WH = {"EMP-2": "EMP-2 MFG WH - GK"}
 
 
 def _det_flt(value, precision=None, rounding_method=None):
@@ -84,7 +89,6 @@ def _chain_doc(**fields):
 		target_warehouse="Chain RM - GK",
 		is_chain_manufacturing="Yes",
 		is_chain_subcontracting=1,
-		to_employee="EMP-2",
 		chain_supplier="SUP-1",
 		source_item="M-G-22KT-91.6-Y",
 		source_qty=10.0,
@@ -99,6 +103,19 @@ def _chain_doc(**fields):
 	doc.meta = SimpleNamespace(get_label=lambda f: f.replace("_", " ").title())
 	doc.db_set = MagicMock()
 	return doc
+
+
+#: Is Chain Subcontracting unticked: the metal goes to the To Employee.
+EMPLOYEE_MODE = {
+	"is_chain_subcontracting": 0,
+	"chain_supplier": None,
+	"to_employee": "EMP-2",
+}
+
+
+def _employee_doc(**fields):
+	"""A chain conversion given to an employee."""
+	return _chain_doc(**{**EMPLOYEE_MODE, **fields})
 
 
 def _get_value(doctype, name=None, fieldname=None, *args, **kwargs):
@@ -130,6 +147,11 @@ class _ChainCase(IntegrationTestCase):
 				"get_supplier_rm_warehouse",
 				side_effect=lambda s, company=None: SUPPLIER_RM.get(s),
 			),
+			patch.object(
+				cs,
+				"get_employee_warehouse",
+				side_effect=lambda e, company=None: EMPLOYEE_WH.get(e),
+			),
 			patch.object(cs, "get_department_chain_flags", return_value=(True, True)),
 		]
 		for p in self._patches:
@@ -152,15 +174,36 @@ class TestValidateChain(_ChainCase):
 			self.assertIsNone(doc.get(field), field)
 		self.assertEqual(doc.dept_is_chain_manufacturing, 1)
 
-	def test_chain_resolves_every_warehouse_from_masters(self):
+	def test_supplier_mode_resolves_its_warehouses_from_masters(self):
 		doc = _chain_doc(source_warehouse="Hand Picked WH", target_qty=9.5)
 		cs.validate_chain(doc)
 		self.assertEqual(doc.source_warehouse, "Chain RM - GK")
 		self.assertEqual(doc.target_warehouse, "Chain RM - GK")
 		self.assertEqual(doc.chain_supplier_warehouse, "SUP-1 MSL WH - GK")
-		self.assertEqual(doc.to_department, "Polish - GK")
-		self.assertEqual(doc.to_warehouse, "Polish RM - GK")
+		self.assertEqual(cs.work_warehouse(doc), "SUP-1 MSL WH - GK")
 		self.assertEqual(doc.chain_process_loss_qty, 0.5)
+
+	def test_employee_mode_resolves_the_employees_own_warehouse(self):
+		doc = _employee_doc(source_warehouse="Hand Picked WH")
+		cs.validate_chain(doc)
+		self.assertEqual(doc.source_warehouse, "Chain RM - GK")
+		self.assertEqual(doc.to_department, "Polish - GK")
+		self.assertEqual(doc.to_warehouse, "EMP-2 MFG WH - GK")
+		self.assertEqual(cs.work_warehouse(doc), "EMP-2 MFG WH - GK")
+
+	def test_one_party_only(self):
+		# Ticked: a supplier, and any To Employee is dropped.
+		doc = _chain_doc(to_employee="EMP-2", to_warehouse="EMP-2 MFG WH - GK")
+		cs.validate_chain(doc)
+		for field in cs.EMPLOYEE_FIELDS:
+			self.assertIsNone(doc.get(field), field)
+		self.assertEqual(doc.chain_supplier, "SUP-1")
+		# Unticked: the To Employee, and any Supplier is dropped.
+		doc = _employee_doc(chain_supplier="SUP-1")
+		cs.validate_chain(doc)
+		for field in cs.SUPPLIER_FIELDS:
+			self.assertIsNone(doc.get(field), field)
+		self.assertEqual(doc.to_employee, "EMP-2")
 
 	def test_department_follows_the_employee(self):
 		doc = _chain_doc(department="Somewhere Else")
@@ -182,10 +225,15 @@ class TestValidateChain(_ChainCase):
 			with patch.object(cs, "get_department_chain_flags", return_value=flags):
 				with self.assertRaises(ValidationError, msg=str(flags)):
 					cs.validate_chain(_chain_doc())
+		with patch.object(
+			cs, "get_department_chain_flags", return_value=(False, False)
+		):
+			with self.assertRaises(ValidationError):
+				cs.validate_chain(_employee_doc())
 
-	def test_chain_manufacturing_without_subcontracting_is_refused(self):
-		with self.assertRaises(ValidationError):
-			cs.validate_chain(_chain_doc(is_chain_subcontracting=0))
+	def test_employee_mode_needs_no_subcontracting_department(self):
+		with patch.object(cs, "get_department_chain_flags", return_value=(True, False)):
+			cs.validate_chain(_employee_doc())
 
 	def test_other_modes_are_refused(self):
 		for fields in ({"multiple_metal_converter": 1}, {"is_melting_loss": 1}):
@@ -193,10 +241,10 @@ class TestValidateChain(_ChainCase):
 				cs.validate_chain(_chain_doc(**fields))
 
 	def test_missing_warehouses_are_named(self):
-		with self.assertRaises(ValidationError):
+		with self.assertRaisesRegex(ValidationError, "Raw Material"):
 			cs.validate_chain(_chain_doc(chain_supplier="SUP-NO-WH"))
-		with self.assertRaises(ValidationError):
-			cs.validate_chain(_chain_doc(to_employee="EMP-X"))
+		with self.assertRaisesRegex(ValidationError, "Manufacturing"):
+			cs.validate_chain(_employee_doc(to_employee="EMP-X"))
 
 
 class TestFrozenAfterIssue(_ChainCase):
@@ -214,11 +262,43 @@ class TestFrozenAfterIssue(_ChainCase):
 			{"source_qty": 11.0},
 			{"chain_supplier": "SUP-2"},
 			{"source_item": "M-OTHER"},
-			{"source_batch_details": [_row("B-9", 10.0)]},
 			{"chain_issue_stock_entry": None},
 		):
 			with self.assertRaises(ValidationError, msg=str(changes)):
 				cs.validate_chain(self._issued(**changes))
+
+	def test_an_emptied_allocation_is_put_back(self):
+		# The form's target_item handler used to clear the table when the Target Item was
+		# typed in after Issue (MCON00800): the save must go through with the issued rows.
+		doc = self._issued(
+			source_batch_details=[], target_item="CH-22KT", target_qty=7.0
+		)
+		cs.validate_chain(doc)
+		self.assertEqual(
+			[(row["batch"], row["qty"]) for row in doc.source_batch_details],
+			[("B-1", 6.0), ("B-2", 4.0)],
+		)
+
+	def test_a_changed_allocation_is_put_back(self):
+		doc = self._issued(source_batch_details=[_row("B-9", 10.0)])
+		cs.validate_chain(doc)
+		self.assertEqual(
+			[(row["batch"], row["qty"]) for row in doc.source_batch_details],
+			[("B-1", 6.0), ("B-2", 4.0)],
+		)
+
+	def test_the_to_employee_cannot_change_after_issue(self):
+		before = _employee_doc(
+			chain_issue_stock_entry="SE-ISSUE-1", to_warehouse="EMP-2 MFG WH - GK"
+		)
+		doc = _employee_doc(
+			chain_issue_stock_entry="SE-ISSUE-1",
+			to_warehouse="EMP-2 MFG WH - GK",
+			_before=before,
+		)
+		doc.to_employee = "EMP-9"
+		with self.assertRaises(ValidationError):
+			cs.validate_chain(doc)
 
 	def test_issued_doc_skips_eligibility(self):
 		# A department unticked after Issue must not strand the metal at the supplier.
@@ -246,7 +326,7 @@ class TestAfterValidate(_ChainCase):
 
 	def test_non_chain_is_untouched(self):
 		doc = _chain_doc(
-			is_chain_subcontracting=0, workflow_state="Issue", batch="KEEP"
+			is_chain_manufacturing="No", workflow_state="Issue", batch="KEEP"
 		)
 		with patch.object(cs, "run_issue") as run_issue:
 			cs.after_validate(doc)
@@ -343,8 +423,18 @@ class TestValidateIssue(_ChainCase):
 		doc = self._ready()
 		doc.chain_supplier = None
 		doc.chain_supplier_warehouse = None
+		with self.assertRaisesRegex(ValidationError, "Supplier is not selected"):
+			cs.validate_issue(doc)
+
+	def test_employee_mode_passes_without_a_po_item(self):
+		# No supplier, so no Purchase Order and no service item to check.
+		self.po_uom = (None, 0)
+		cs.validate_issue(self._ready(**EMPLOYEE_MODE))
+
+	def test_employee_mode_needs_the_to_employee(self):
+		doc = self._ready(**EMPLOYEE_MODE)
 		doc.to_employee = None
-		with self.assertRaises(ValidationError):
+		with self.assertRaisesRegex(ValidationError, "To Employee is not selected"):
 			cs.validate_issue(doc)
 
 
@@ -433,14 +523,33 @@ class TestValidateReceive(_ChainCase):
 		self.purity = {"M-G-22KT-91.6-Y": 75.0}
 		cs.validate_receive(self._received())
 
+	def _received_from_employee(self, **fields):
+		# An issued document keeps the To Employee's warehouse Issue resolved; it is frozen.
+		doc = _employee_doc(
+			workflow_state="Receive",
+			chain_issue_stock_entry="SE-ISSUE-1",
+			to_warehouse="EMP-2 MFG WH - GK",
+			target_item="CH-22KT",
+			target_qty=9.5,
+		)
+		cs.validate_chain(doc)
+		doc.update(fields)
+		return doc
+
+	def test_an_employee_receive_passes(self):
+		cs.validate_receive(self._received_from_employee())
+
+	def test_an_employee_receive_needs_their_warehouse(self):
+		with self.assertRaisesRegex(ValidationError, "Manufacturing warehouse"):
+			cs.validate_receive(self._received_from_employee(to_warehouse=None))
+
 
 class TestRunReceive(_ChainCase):
-	def _run(self, target_qty):
-		doc = _chain_doc(
+	def _run(self, target_qty, doc=None):
+		doc = doc or _chain_doc(
 			workflow_state="Receive",
 			chain_issue_stock_entry="SE-ISSUE-1",
 			chain_supplier_warehouse="SUP-1 MSL WH - GK",
-			to_warehouse="Polish RM - GK",
 			target_item="CH-22KT",
 			target_qty=target_qty,
 		)
@@ -490,17 +599,27 @@ class TestRunReceive(_ChainCase):
 		loss.assert_not_called()
 		transfer.assert_called_once()
 
+	def test_an_employee_loss_comes_from_their_warehouse(self):
+		doc = _employee_doc(
+			workflow_state="Receive",
+			chain_issue_stock_entry="SE-ISSUE-1",
+			to_warehouse="EMP-2 MFG WH - GK",
+			target_item="CH-22KT",
+			target_qty=9.5,
+		)
+		_doc, _repack, loss, _transfer = self._run(9.5, doc=doc)
+		self.assertEqual(loss.call_args.kwargs["source_wh"], "EMP-2 MFG WH - GK")
+
 
 class TestReceiveLockOrder(_ChainCase):
 	"""Receive pins every counter, then every Bin, before its first Stock Entry (F3)."""
 
-	def _run(self, target_qty):
+	def _run(self, target_qty, doc=None):
 		events = []
-		doc = _chain_doc(
+		doc = doc or _chain_doc(
 			workflow_state="Receive",
 			chain_issue_stock_entry="SE-ISSUE-1",
 			chain_supplier_warehouse="SUP-1 MSL WH - GK",
-			to_warehouse="Polish RM - GK",
 			target_item="CH-22KT",
 			target_qty=target_qty,
 		)
@@ -548,7 +667,7 @@ class TestReceiveLockOrder(_ChainCase):
 				"counters",
 				{
 					mc.CONVERSION_SE_TYPE,
-					cs.CHAIN_SC_SE_TYPE,
+					cs.RETURN_SE_TYPE,
 					melting_loss.MELTING_LOSS_SE_TYPE,
 				},
 			),
@@ -560,7 +679,8 @@ class TestReceiveLockOrder(_ChainCase):
 				{
 					("M-G-22KT-91.6-Y", "SUP-1 MSL WH - GK"),
 					("CH-22KT", "SUP-1 MSL WH - GK"),
-					("CH-22KT", "Polish RM - GK"),
+					# The return lands in the issuing department's RM warehouse.
+					("CH-22KT", "Chain RM - GK"),
 					("ML-22KT", "Chain Scrap - GK"),
 				},
 			),
@@ -570,7 +690,7 @@ class TestReceiveLockOrder(_ChainCase):
 	def test_zero_loss_pins_no_loss_counter_or_bin(self):
 		events, resolve_loss_item = self._run(10.0)
 		self.assertEqual(
-			events[0], ("counters", {mc.CONVERSION_SE_TYPE, cs.CHAIN_SC_SE_TYPE})
+			events[0], ("counters", {mc.CONVERSION_SE_TYPE, cs.RETURN_SE_TYPE})
 		)
 		self.assertEqual(
 			events[1],
@@ -579,12 +699,33 @@ class TestReceiveLockOrder(_ChainCase):
 				{
 					("M-G-22KT-91.6-Y", "SUP-1 MSL WH - GK"),
 					("CH-22KT", "SUP-1 MSL WH - GK"),
-					("CH-22KT", "Polish RM - GK"),
+					("CH-22KT", "Chain RM - GK"),
 				},
 			),
 		)
 		self.assertEqual(events[2:], ["repack", "transfer"])
 		resolve_loss_item.assert_not_called()
+
+	def test_an_employee_receive_locks_their_warehouse(self):
+		doc = _employee_doc(
+			workflow_state="Receive",
+			chain_issue_stock_entry="SE-ISSUE-1",
+			to_warehouse="EMP-2 MFG WH - GK",
+			target_item="CH-22KT",
+			target_qty=10.0,
+		)
+		events, _resolve = self._run(10.0, doc=doc)
+		self.assertEqual(
+			events[1],
+			(
+				"bins",
+				{
+					("M-G-22KT-91.6-Y", "EMP-2 MFG WH - GK"),
+					("CH-22KT", "EMP-2 MFG WH - GK"),
+					("CH-22KT", "Chain RM - GK"),
+				},
+			),
+		)
 
 
 class _FakeDoc(SimpleNamespace):
@@ -634,19 +775,30 @@ class _BuilderCase(_ChainCase):
 	def _doc(self, **fields):
 		doc = _chain_doc(
 			chain_supplier_warehouse="SUP-1 MSL WH - GK",
-			to_warehouse="Polish RM - GK",
 			target_item="CH-22KT",
 			target_qty=9.5,
 		)
 		doc.update(fields)
 		return doc
 
+	def _employee(self, **fields):
+		return _employee_doc(
+			to_warehouse="EMP-2 MFG WH - GK",
+			target_item="CH-22KT",
+			target_qty=9.5,
+			**fields,
+		)
+
 
 class TestStockEntryBuilders(_BuilderCase):
 	def test_issue_moves_each_batch_department_to_supplier(self):
 		cs.make_issue_stock_entry(self._doc())
 		se = self.captured[-1]
-		self.assertEqual(se.payload["stock_entry_type"], cs.CHAIN_SC_SE_TYPE)
+		self.assertEqual(
+			se.payload["stock_entry_type"], "Material Transfer to Subcontractor"
+		)
+		self.assertEqual(se.payload["subcontractor"], "SUP-1")
+		self.assertNotIn("to_employee", se.payload)
 		self.assertEqual(se.payload["purpose"], "Material Transfer")
 		self.assertEqual(se.payload["custom_metal_conversion_reference"], "MCON-CH-1")
 		self.assertEqual(se.payload["auto_created"], 1)
@@ -658,6 +810,18 @@ class TestStockEntryBuilders(_BuilderCase):
 			self.assertEqual(row["t_warehouse"], "SUP-1 MSL WH - GK")
 			self.assertEqual(row["inventory_type"], "Regular Stock")
 		self.assertTrue(se.saved and se.submitted)
+
+	def test_issue_to_an_employee_goes_to_their_warehouse(self):
+		cs.make_issue_stock_entry(self._employee())
+		se = self.captured[-1]
+		self.assertEqual(
+			se.payload["stock_entry_type"], "Material Transfer to Employee"
+		)
+		self.assertEqual(se.payload["to_employee"], "EMP-2")
+		self.assertNotIn("subcontractor", se.payload)
+		for row in se.items:
+			self.assertEqual(row["s_warehouse"], "Chain RM - GK")
+			self.assertEqual(row["t_warehouse"], "EMP-2 MFG WH - GK")
 
 	def test_repack_stays_inside_the_supplier_warehouse(self):
 		with patch.object(
@@ -690,13 +854,24 @@ class TestStockEntryBuilders(_BuilderCase):
 		):
 			cs.make_final_transfer(self._doc(), "SE-REPACK-1", 9.5)
 		se = self.captured[-1]
-		self.assertEqual(se.payload["stock_entry_type"], cs.CHAIN_SC_SE_TYPE)
+		self.assertEqual(se.payload["stock_entry_type"], "Material Transfer")
 		self.assertEqual(len(se.items), 1)
 		row = se.items[0]
 		self.assertEqual(row["batch_no"], "TB-1")
 		self.assertEqual(row["item_code"], "CH-22KT")
 		self.assertEqual(row["s_warehouse"], "SUP-1 MSL WH - GK")
-		self.assertEqual(row["t_warehouse"], "Polish RM - GK")
+		# Back to the issuing department, as Gemstone Conversion returns a resize.
+		self.assertEqual(row["t_warehouse"], "Chain RM - GK")
+
+	def test_an_employee_return_leaves_their_warehouse(self):
+		with patch.object(
+			cs, "_produced_batches", return_value=[{"batch": "TB-1", "qty": 9.5}]
+		) as produced:
+			cs.make_final_transfer(self._employee(), "SE-REPACK-1", 9.5)
+		produced.assert_called_once_with("SE-REPACK-1", "CH-22KT", "EMP-2 MFG WH - GK")
+		row = self.captured[-1].items[0]
+		self.assertEqual(row["s_warehouse"], "EMP-2 MFG WH - GK")
+		self.assertEqual(row["t_warehouse"], "Chain RM - GK")
 
 	def test_final_transfer_refuses_a_short_repack(self):
 		with patch.object(
@@ -1065,14 +1240,16 @@ class TestWorkflowPatch(IntegrationTestCase):
 		self.assertEqual(
 			from_draft[workflow_patch.SUBMIT_ACTION], workflow_patch.NOT_CHAIN
 		)
-		for flag, expected in ((1, "Issue"), (0, "Submit"), (None, "Submit")):
-			doc = frappe._dict(is_chain_subcontracting=flag)
+		# Either mode of Chain Manufacturing issues; a document saved before the field
+		# existed (None) keeps the plain Submit.
+		for value, expected in (("Yes", "Issue"), ("No", "Submit"), (None, "Submit")):
+			doc = frappe._dict(is_chain_manufacturing=value)
 			offered = [
 				action
 				for action, condition in from_draft.items()
 				if frappe.safe_eval(condition, None, {"doc": doc})
 			]
-			self.assertEqual(offered, [expected], flag)
+			self.assertEqual(offered, [expected], value)
 
 	def test_issue_is_a_save_and_receive_a_submit(self):
 		status = dict(workflow_patch.STATES)
@@ -1121,6 +1298,51 @@ class TestWorkflowPatch(IntegrationTestCase):
 		)
 		workflow.save.assert_called_once_with(ignore_permissions=True)
 
+	def _workflow_with_conditions(self, **conditions):
+		"""Every transition present, the two Draft rows carrying ``conditions``."""
+		return _FakeWorkflow(
+			states=[state for state, _doc_status in workflow_patch.STATES],
+			transitions=[
+				(
+					row[0],
+					row[1],
+					conditions.get(row[1], row[3])
+					if row[0] == workflow_patch.DRAFT
+					else row[3],
+				)
+				for row in workflow_patch.TRANSITIONS
+			],
+		)
+
+	def _draft_conditions(self, workflow):
+		return {
+			row.action: row.condition
+			for row in workflow.transitions
+			if row.state == workflow_patch.DRAFT
+		}
+
+	def test_first_release_conditions_move_to_chain_manufacturing(self):
+		workflow = self._workflow_with_conditions(
+			Submit="doc.is_chain_subcontracting != 1",
+			Issue="doc.is_chain_subcontracting == 1",
+		)
+		with patch.object(workflow_patch.frappe, "logger"):
+			workflow_patch._add_missing(workflow)
+		self.assertEqual(
+			self._draft_conditions(workflow),
+			{"Submit": workflow_patch.NOT_CHAIN, "Issue": workflow_patch.IS_CHAIN},
+		)
+		workflow.save.assert_called_once_with(ignore_permissions=True)
+
+	def test_a_condition_an_administrator_changed_is_left_alone(self):
+		workflow = self._workflow_with_conditions(Issue="doc.custom_ready == 1")
+		with patch.object(workflow_patch.frappe, "logger"):
+			workflow_patch._add_missing(workflow)
+		self.assertEqual(
+			self._draft_conditions(workflow)["Issue"], "doc.custom_ready == 1"
+		)
+		workflow.save.assert_not_called()
+
 	def test_a_complete_workflow_is_not_saved(self):
 		workflow = self._workflow_before_cancel_issue()
 		with patch.object(workflow_patch.frappe, "logger"):
@@ -1145,13 +1367,19 @@ class TestWorkflowPatch(IntegrationTestCase):
 
 
 class _FakeWorkflow(SimpleNamespace):
+	"""``transitions`` rows are ``(state, action)`` or ``(state, action, condition)``."""
+
 	def __init__(self, states, transitions):
 		super().__init__(
 			name="Metal Conversions",
 			states=[frappe._dict(state=state) for state in states],
 			transitions=[
-				frappe._dict(state=state, action=action)
-				for state, action in transitions
+				frappe._dict(
+					state=row[0],
+					action=row[1],
+					condition=row[2] if len(row) > 2 else None,
+				)
+				for row in transitions
 			],
 			save=MagicMock(),
 		)
@@ -1219,3 +1447,74 @@ class TestEnsurePoItem(IntegrationTestCase):
 	def test_no_template_no_item(self):
 		_item, copy_doc = self._ensure(template=False)
 		copy_doc.assert_not_called()
+
+
+class TestNoStockEntryTypeOfItsOwn(IntegrationTestCase):
+	"""Chain Manufacturing books the existing transfer types; it seeds none of its own."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_the_seed_list_has_no_chain_sc_type_and_has_the_issue_types(self):
+		seeded = {row[0] for row in seed_patch.STOCK_ENTRY_TYPES}
+		self.assertNotIn(cleanup_patch.STOCK_ENTRY_TYPE, seeded)
+		self.assertIn(cs.ISSUE_TO_EMPLOYEE_SE_TYPE, seeded)
+		self.assertIn(cs.ISSUE_TO_SUPPLIER_SE_TYPE, seeded)
+
+	def _cleanup(self, exists=True, entries=(), delete_side_effect=None):
+		"""Run the patch over a type whose Stock Entries have the docstatuses ``entries``."""
+		self.count_filters = []
+
+		def _exists(doctype, *args, **kwargs):
+			self.assertEqual(doctype, "Stock Entry Type")
+			return exists
+
+		def _count(doctype, filters=None, *args, **kwargs):
+			self.assertEqual(doctype, "Stock Entry")
+			self.count_filters.append(filters)
+			# Apply the patch's own docstatus filter, so a test proves it is there.
+			operator, bound = filters["docstatus"]
+			self.assertEqual(operator, "<")
+			return sum(1 for docstatus in entries if docstatus < bound)
+
+		with (
+			patch.object(cleanup_patch.frappe.db, "exists", side_effect=_exists),
+			patch.object(cleanup_patch.frappe.db, "count", side_effect=_count),
+			patch.object(
+				cleanup_patch.frappe, "delete_doc", side_effect=delete_side_effect
+			) as delete_doc,
+			patch.object(cleanup_patch.frappe, "logger"),
+			patch.object(cleanup_patch, "print", create=True) as printed,
+		):
+			cleanup_patch.execute()
+		self.printed = [c.args[0] for c in printed.call_args_list]
+		return delete_doc
+
+	def test_an_unused_type_is_deleted(self):
+		delete_doc = self._cleanup()
+		delete_doc.assert_called_once_with(
+			"Stock Entry Type", cleanup_patch.STOCK_ENTRY_TYPE, ignore_permissions=True
+		)
+		self.assertIn("deleted", self.printed[0])
+
+	def test_a_submitted_or_draft_entry_keeps_it_and_says_why(self):
+		for entries in ((1,), (0,), (1, 1, 2)):
+			self._cleanup(entries=entries).assert_not_called()
+			self.assertIn("kept", self.printed[0])
+			self.assertEqual(
+				self.count_filters[0]["stock_entry_type"],
+				cleanup_patch.STOCK_ENTRY_TYPE,
+			)
+
+	def test_only_cancelled_entries_do_not_keep_it(self):
+		# As Frappe's own delete check: a cancelled entry does not hold a master.
+		self._cleanup(entries=(2, 2, 2)).assert_called_once()
+
+	def test_a_missing_type_is_a_no_op(self):
+		self._cleanup(exists=None).assert_not_called()
+		self.assertEqual(self.count_filters, [])
+
+	def test_a_type_linked_elsewhere_is_kept_without_failing_migrate(self):
+		self._cleanup(delete_side_effect=frappe.LinkExistsError)
+		self.assertIn("another record links it", self.printed[0])

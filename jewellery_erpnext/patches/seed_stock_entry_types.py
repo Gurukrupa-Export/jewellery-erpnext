@@ -82,10 +82,6 @@ STOCK_ENTRY_TYPES = [
 	("Repack-Diamond Conversion", "Repack", 0, 0),
 	("Repack-Gemstone Conversion", "Repack", 0, 0),
 	("Repack-Metal Conversion", "Repack", 0, 0),
-	# Both stock legs of a Metal Conversions Chain Subcontracting run: Issue (department
-	# RM -> supplier RM) and the final Receive transfer (supplier RM -> To Employee's
-	# department RM).
-	("Material Transfer (Chain SC)", "Material Transfer", 0, 0),
 	("Repack-Repair Unpack", "Repack", 0, 0),
 	("Repair Unpack", "Repack", 0, 0),
 	("Return Raw Material to Customer", "Return Raw Material to Customer", 0, 1),
