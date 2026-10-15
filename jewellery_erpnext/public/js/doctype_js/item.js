@@ -36,6 +36,9 @@ function filter_not_allowed_attribute_values(frm, dialog) {
 		});
 		return selected;
 	};
+	// Responses can arrive out of order; only apply one computed for the
+	// selection still in the dialog, so a stale reply cannot clear newer input.
+	const is_current = (selected) => JSON.stringify(selected) === JSON.stringify(get_selected());
 
 	attributes.forEach((attribute) => {
 		const field = dialog.fields_dict[attribute];
@@ -44,10 +47,12 @@ function filter_not_allowed_attribute_values(frm, dialog) {
 
 		// Replace ERPNext's unfiltered get_item_attribute lookup.
 		field.$input.off("input").on("input", function (e) {
+			const selected = get_selected();
 			frappe.call({
 				method: "jewellery_erpnext.jewellery_erpnext.doc_events.item.get_allowed_attribute_values",
-				args: { item_attribute: attribute, txt: e.target.value, selected: get_selected() },
+				args: { item_attribute: attribute, txt: e.target.value, selected: selected },
 				callback: (r) => {
+					if (!is_current(selected)) return;
 					input.awesomplete.list = r.message || [];
 				},
 			});
@@ -55,10 +60,12 @@ function filter_not_allowed_attribute_values(frm, dialog) {
 
 		// Clear any selected value that the new selection blocks.
 		field.$input.on("change awesomplete-selectcomplete", function () {
+			const selected = get_selected();
 			frappe.call({
 				method: "jewellery_erpnext.jewellery_erpnext.doc_events.item.get_blocked_attributes",
-				args: { selected: get_selected() },
+				args: { selected: selected },
 				callback: (r) => {
+					if (!is_current(selected)) return;
 					(r.message || []).forEach((blocked) => dialog.set_value(blocked, ""));
 				},
 			});
