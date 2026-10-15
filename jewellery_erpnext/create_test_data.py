@@ -3049,6 +3049,18 @@ def create_test_data():
 
 			_seed_stock_entry_types()
 
+			from jewellery_erpnext.patches.add_metal_conversion_chain_sc import (
+				execute as _add_metal_conversion_chain_sc,
+			)
+
+			_add_metal_conversion_chain_sc()
+
+			from jewellery_erpnext.patches.add_metal_conversion_workflow import (
+				execute as _add_metal_conversion_workflow,
+			)
+
+			_add_metal_conversion_workflow()
+
 			from jewellery_erpnext.patches.add_stock_entry_type_allowed_roles import (
 				execute as _ensure_stock_entry_type_allowed_roles_field,
 			)

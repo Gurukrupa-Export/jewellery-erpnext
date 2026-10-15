@@ -19,6 +19,7 @@ frappe.ui.form.on("Metal Conversions", {
 		// Remarks ships no options in the DocType JSON, so a saved doc has nothing to
 		// render its stored value against until this runs.
 		set_remark_options(frm);
+		toggle_chain_fields(frm);
 	},
 	setup(frm) {
 		// Set Metal Tab Filter
@@ -99,11 +100,73 @@ frappe.ui.form.on("Metal Conversions", {
 		});
 	},
 	target_item(frm) {
+		// A chain conversion's Target Qty is what came back from the employee or supplier,
+		// typed in at Receive -- not a purity calculation. Its batches were drawn on the
+		// server and moved by Issue, so they are never cleared here.
+		if (is_chain(frm)) {
+			set_chain_loss(frm);
+			return;
+		}
 		// Calculate Metal
 		calculate_metal(frm);
 	},
 	calculate(frm) {
 		calculate_Multiple_conversion(frm);
+	},
+	is_chain_manufacturing(frm) {
+		if (is_chain(frm)) {
+			// No alloy and no target until Receive.
+			clear_metal_field(frm);
+		} else {
+			frm.set_value({ to_employee: null, chain_supplier: null, is_chain_subcontracting: 0 });
+		}
+		toggle_chain_fields(frm);
+	},
+	is_chain_subcontracting(frm) {
+		// One party converts the metal: the Supplier when ticked, else the To Employee.
+		if (frm.doc.is_chain_subcontracting) {
+			frm.set_value("to_employee", null);
+		} else {
+			frm.set_value("chain_supplier", null);
+		}
+		toggle_chain_fields(frm);
+	},
+	to_employee(frm) {
+		if (!frm.doc.to_employee) {
+			frm.set_value({ to_department: null, to_warehouse: null });
+			return;
+		}
+		refresh_chain_details(frm);
+	},
+	chain_supplier(frm) {
+		if (!frm.doc.chain_supplier) {
+			frm.set_value("chain_supplier_warehouse", null);
+			return;
+		}
+		refresh_chain_details(frm);
+	},
+	target_qty(frm) {
+		set_chain_loss(frm);
+	},
+	before_workflow_action(frm) {
+		if (frm.selected_workflow_action === "Cancel Issue") {
+			return confirm_cancel_issue(frm);
+		}
+		if (frm.selected_workflow_action !== "Receive") return;
+		const missing = [];
+		if (!frm.doc.target_item) missing.push(__("Target Item"));
+		if (!flt(frm.doc.target_qty)) missing.push(__("Target Qty"));
+		let message = null;
+		if (missing.length) {
+			message = __("Enter {0} before Receive.", [missing.join(", ")]);
+		} else if (flt(frm.doc.target_qty) > flt(frm.doc.source_qty)) {
+			message = __("Target Qty cannot be greater than Source Qty.");
+		}
+		if (message) {
+			// workflow.js froze the page and only unfreezes after the action runs.
+			frappe.dom.unfreeze();
+			frappe.throw(message);
+		}
 	},
 });
 frappe.ui.form.on("MC Source Table", {
@@ -253,8 +316,82 @@ function get_detail_tab_value(frm) {
 			frm.refresh_field("branch");
 			frm.refresh_field("source_warehouse");
 			frm.refresh_field("target_warehouse");
+			frm.refresh_fields();
+			toggle_chain_fields(frm);
 		},
 	});
+}
+
+// ---- Chain Manufacturing (doc_events/chain_subcontracting.py) ----
+
+// Chain Manufacturing in either mode: to the To Employee, or to a Supplier.
+function is_chain(frm) {
+	return frm.doc.is_chain_manufacturing === "Yes";
+}
+
+// The To Employee's and the Supplier's warehouses come from their masters.
+function refresh_chain_details(frm) {
+	frappe.call({
+		method: "refresh_chain_details",
+		doc: frm.doc,
+		callback() {
+			frm.refresh_fields();
+			toggle_chain_fields(frm);
+		},
+	});
+}
+
+function set_chain_loss(frm) {
+	if (!is_chain(frm)) return;
+	const loss = frm.doc.target_qty ? flt(frm.doc.source_qty) - flt(frm.doc.target_qty) : 0;
+	frm.set_value("chain_process_loss_qty", loss);
+}
+
+function toggle_chain_fields(frm) {
+	const chain = is_chain(frm);
+	const issued = !!frm.doc.chain_issue_stock_entry;
+
+	// The single/multiple, melting-loss and alloy modes do not apply to a chain conversion.
+	frm.toggle_display(["multiple_metal_converter", "is_melting_loss"], !chain);
+	// The allocated batch is shown, never picked: the server fills it from the FIFO draw.
+	frm.toggle_display("batch", chain && !!frm.doc.batch);
+	frm.set_df_property("batch", "read_only", chain ? 1 : 0);
+	frm.set_df_property("source_batch_details", "read_only", chain ? 1 : 0);
+
+	// Issue has moved the metal: what it moved can no longer change.
+	[
+		"employee",
+		"is_chain_manufacturing",
+		"is_chain_subcontracting",
+		"to_employee",
+		"chain_supplier",
+		"source_item",
+		"source_qty",
+	].forEach((field) => frm.set_df_property(field, "read_only", issued ? 1 : 0));
+}
+
+// Cancel Issue undoes the Issue entry and deletes the draft PO, so it asks first. workflow.js
+// froze the page before this hook; the dialog needs it unfrozen, and a refusal stops the action.
+function confirm_cancel_issue(frm) {
+	frappe.dom.unfreeze();
+	const message = frm.doc.chain_purchase_order
+		? __(
+				"Cancel Issue cancels {0}, deletes draft Purchase Order {1} and returns this conversion to Draft. Continue?",
+				[frm.doc.chain_issue_stock_entry, frm.doc.chain_purchase_order]
+		  )
+		: __("Cancel Issue cancels {0} and returns this conversion to Draft. Continue?", [
+				frm.doc.chain_issue_stock_entry,
+		  ]);
+	return new Promise((resolve, reject) =>
+		frappe.confirm(
+			message,
+			() => {
+				frappe.dom.freeze();
+				resolve();
+			},
+			() => reject()
+		)
+	);
 }
 function calculate_metal(frm) {
 	if (frm.doc.target_item) {
