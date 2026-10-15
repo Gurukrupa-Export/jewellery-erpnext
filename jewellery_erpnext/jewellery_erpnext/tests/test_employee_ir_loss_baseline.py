@@ -2289,7 +2289,64 @@ class TestLossManufacturerFallback(IntegrationTestCase):
 				),
 				"LOSS-ITEM-1",
 			)
-		mock_loss_item.assert_called_once_with("GK", "ORIGINAL-ITEM", "VARIANT", "Loss")
+		mock_loss_item.assert_called_once_with(
+			"GK",
+			"ORIGINAL-ITEM",
+			"VARIANT",
+			"Loss",
+			loss_variant_template="LOSS-VARIANT-TEMPLATE",
+		)
+
+	def test_loss_item_uses_resolved_manufacturer_template(self):
+		"""F1: the same (variant, loss_type) maps to ML-A under Manufacturer A and
+		ML-B under B. The template read from the resolved Manufacturer's row must be
+		the one handed to ``get_item_loss_item`` -- not merely checked to exist."""
+		templates = {"MFR-A": "ML-A", "MFR-B": "ML-B"}
+
+		def get_value(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Variant Loss Table":
+				return templates[filters["parent"]]
+			if doctype == "Item":
+				return {"is_stock_item": 1, "has_variants": 0, "disabled": 0}
+			raise AssertionError(f"unexpected get_value on {doctype}")
+
+		with patch("frappe.db.get_value", side_effect=get_value), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+			return_value="LOSS-ITEM-A",
+		) as mock_loss_item:
+			loss_stock_entry._resolve_loss_item(
+				_doc(manufacturer="MFR-A"), self._row(), "employee_loss_details"
+			)
+		self.assertEqual(
+			mock_loss_item.call_args.kwargs["loss_variant_template"], "ML-A"
+		)
+
+	def test_get_item_loss_item_prefers_passed_template_over_unscoped_lookup(self):
+		"""F1, helper side: an unscoped Variant Loss Table lookup that would answer
+		with another Manufacturer's template (ML-B) must not be consulted."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.main_slip import main_slip
+
+		def get_value(doctype, *args, **kwargs):
+			if doctype == "Variant Loss Table":
+				return "ML-B"
+			raise AssertionError(f"unexpected get_value on {doctype}")
+
+		with patch("frappe.db.get_value", side_effect=get_value) as mock_get, patch(
+			"frappe.db.get_all", return_value=[]
+		), patch(
+			"jewellery_erpnext.utils.set_items_from_attribute", return_value=None
+		) as mock_set, patch.object(
+			main_slip, "create_loss_item", return_value="ML-A-ITEM"
+		) as mock_create:
+			self.assertEqual(
+				main_slip.get_item_loss_item(
+					"GK", "ORIGINAL-ITEM", "M", "Loss", loss_variant_template="ML-A"
+				),
+				"ML-A-ITEM",
+			)
+		mock_get.assert_not_called()
+		self.assertEqual(mock_set.call_args.args[0], "ML-A")
+		self.assertEqual(mock_create.call_args.args[0], "ML-A")
 
 	def test_loss_item_throws_when_no_variant_loss_mapping(self):
 		def no_mapping(doctype, filters=None, fieldname="name", *args, **kwargs):

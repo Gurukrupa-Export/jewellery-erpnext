@@ -865,7 +865,11 @@ def _resolve_loss_item(eir, row, table_name):
 	)
 
 	loss_item = get_item_loss_item(
-		eir.company, row.item_code, row.variant_of, loss_type
+		eir.company,
+		row.item_code,
+		row.variant_of,
+		loss_type,
+		loss_variant_template=loss_variant_template,
 	)
 	if not loss_item:
 		frappe.throw(
