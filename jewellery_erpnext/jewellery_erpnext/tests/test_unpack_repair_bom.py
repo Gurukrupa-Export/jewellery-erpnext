@@ -272,6 +272,9 @@ def _unpack(
 
 	with (
 		patch(f"{MOD}.frappe.db", mock_db),
+		# flt(x, precision) reads the rounding method through frappe.db; with the db mocked
+		# that depends on whatever the settings cache held, so pin it.
+		patch(f"{MOD}.frappe.get_system_settings", return_value=None),
 		patch(f"{MOD}.frappe.get_doc", side_effect=new_se),
 		patch(
 			f"{MOD}._resolve_unpack_inventory",
