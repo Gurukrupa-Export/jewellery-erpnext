@@ -1,16 +1,16 @@
 # Copyright (c) 2026, Nirali and contributors
 # See license.txt
 
+from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
-from contextlib import ExitStack, contextmanager
-import frappe
 
+import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.customer_subcontracting.sub_utils import (
-	repack,
 	cg_settle,
+	repack,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events import (
 	utils as batch_utils,
@@ -533,6 +533,20 @@ def _patch_execute():
 		yield
 
 
+@contextmanager
+def _batch_scope(have=0.0, lineage=(MR_BATCH,)):
+	"""The planner path for a row carrying MR_BATCH: the batch passes validation, its own
+	consumable qty in the target is ``have``, and its lineage is ``lineage``.
+
+	A row naming a batch is settled by that batch alone, so ``_owner_qty_in_warehouse``
+	(every batch of the customer) is never consulted for it."""
+	with ExitStack() as stack:
+		stack.enter_context(patch(f"{_C}._validate_row_batch"))
+		stack.enter_context(patch(f"{_C}._batch_lineage", return_value=set(lineage)))
+		stack.enter_context(patch(f"{_C}._batch_qty_in_warehouse", return_value=have))
+		yield
+
+
 class TestSettleValidation(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -590,7 +604,7 @@ class TestSettleCase1Available(IntegrationTestCase):
 		mr = _mr([_row(qty=10.0)])
 		with patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=10.0), patch(
+		), _batch_scope(have=10.0), patch(
 			f"{_C}.find_owner_rm_warehouse"
 		) as finder, patch(f"{_C}._transfer") as tr, patch(f"{_C}._convert") as cv:
 			res = cg_settle.settle_material_request("MAT-MR-1")
@@ -605,7 +619,7 @@ class TestSettleCase1Available(IntegrationTestCase):
 		calls = []
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=4.0), patch(
+		), _batch_scope(have=4.0), patch(
 			f"{_C}._gather_convertible", return_value=None
 		), patch(
 			f"{_C}.find_owner_rm_warehouse",
@@ -641,7 +655,7 @@ class TestSettleCase2SamePurity(IntegrationTestCase):
 		mr = _mr([_row(qty=10.0)])
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=0.0), patch(
+		), _batch_scope(have=0.0), patch(
 			f"{_C}._gather_convertible", return_value=None
 		), patch(
 			f"{_C}.find_owner_rm_warehouse",
@@ -672,7 +686,7 @@ class TestSettleCase2SamePurity(IntegrationTestCase):
 		mr = _mr([_row(qty=10.0)])
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=0.0), patch(
+		), _batch_scope(have=0.0), patch(
 			f"{_C}._gather_convertible", return_value=None
 		), patch(
 			f"{_C}.find_owner_rm_warehouse",
@@ -709,7 +723,7 @@ class TestSettleCase2SamePurity(IntegrationTestCase):
 		mr = _mr([_row(qty=10.0)])
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(  # noqa: SIM117
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=0.0), patch(
+		), _batch_scope(have=0.0), patch(
 			f"{_C}._gather_convertible", return_value=None
 		), patch(
 			f"{_C}.find_owner_rm_warehouse",
@@ -722,7 +736,7 @@ class TestSettleCase2SamePurity(IntegrationTestCase):
 		mr = _mr([_row(qty=10.0)])
 		with patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=0.0), patch(
+		), _batch_scope(have=0.0), patch(
 			f"{_C}._gather_convertible", return_value=None
 		), patch(
 			f"{_C}.find_owner_rm_warehouse",
@@ -754,7 +768,7 @@ class TestSettleConvertInPlace(IntegrationTestCase):
 		}
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=0.0), patch(
+		), _batch_scope(have=0.0), patch(
 			f"{_C}._gather_convertible", return_value=gathered
 		) as gc, patch(
 			f"{_C}._reserve_regular",
@@ -812,7 +826,7 @@ class TestSettleConvertInPlace(IntegrationTestCase):
 		}
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=0.0), patch(
+		), _batch_scope(have=0.0), patch(
 			f"{_C}._gather_convertible", return_value=gathered
 		), patch(
 			f"{_C}._reserve_regular",
@@ -841,7 +855,7 @@ class TestSettleCase3Convert(IntegrationTestCase):
 		mr = _mr([_row(qty=10.0, pure=9.16)])
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=0.0), patch(
+		), _batch_scope(have=0.0), patch(
 			f"{_C}._gather_convertible", return_value=None
 		), patch(
 			f"{_C}.find_owner_rm_warehouse",
@@ -925,11 +939,13 @@ class TestConvertBatchStamping(IntegrationTestCase):
 	def test_target_batch_is_stamped_and_returned_without_query(self):
 		out, appended, gv = self._run_convert(MR_BATCH)
 		self.assertEqual(out, MR_BATCH)
-		
+
 		# no need to look up the produced batch
-		se_calls = [c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"]
+		se_calls = [
+			c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"
+		]
 		self.assertEqual(len(se_calls), 0)
-		
+
 		self.assertEqual(
 			appended[1]["batch_no"], MR_BATCH
 		)  # stamped on the produced row
@@ -937,10 +953,12 @@ class TestConvertBatchStamping(IntegrationTestCase):
 	def test_no_target_batch_falls_back_to_the_auto_minted_batch(self):
 		out, appended, gv = self._run_convert(None, produced_query="AUTO-A-A")
 		self.assertEqual(out, "AUTO-A-A")
-		
-		se_calls = [c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"]
+
+		se_calls = [
+			c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"
+		]
 		self.assertEqual(len(se_calls), 1)
-		
+
 		self.assertNotIn("batch_no", appended[1])
 
 	def tearDown(self):
@@ -958,7 +976,7 @@ class TestSettleAllocationGuard(IntegrationTestCase):
 		calls = []
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}._owner_qty_in_warehouse", return_value=0.0), patch(
+		), _batch_scope(have=0.0), patch(
 			f"{_C}._gather_convertible", return_value=None
 		), patch(
 			f"{_C}.find_owner_rm_warehouse",
@@ -975,16 +993,17 @@ class TestSettleAllocationGuard(IntegrationTestCase):
 		for m in maps[1:]:
 			self.assertIs(m, maps[0])
 
-	def test_second_row_cannot_reuse_target_stock_claimed_by_first_row(self):
-		# consumed_target behaviour, end to end: the target holds 8 of the customer's
-		# item; two rows each need 5. Row 1 is satisfied from the target and claims it,
-		# so row 2 no longer sees that stock as free and must source its 2-unit shortfall.
-		mr = _mr([_row(idx=1, qty=5.0), _row(idx=2, qty=5.0)])
+	def _settle_two_rows_over_eight_in_target(self, rows, batch_holding_the_eight):
+		"""Two rows of 5 over 8 units in the target; returns (result, same-purity finds)."""
+		mr = _mr(rows)
 		calls = []
 		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
 			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
-		), patch(f"{_C}.frappe.get_all", return_value=["B-TGT"]), patch(
-			f"{_C}._consumable_batch_qty_map", return_value={("B-TGT", TARGET): 8.0}
+		), patch(f"{_C}.frappe.get_all", return_value=[batch_holding_the_eight]), patch(
+			f"{_C}._consumable_batch_qty_map",
+			return_value={(batch_holding_the_eight, TARGET): 8.0},
+		), patch(f"{_C}._validate_row_batch"), patch(
+			f"{_C}._batch_lineage", return_value={MR_BATCH}
 		), patch(f"{_C}._gather_convertible", return_value=None), patch(
 			f"{_C}.find_owner_rm_warehouse",
 			side_effect=_ladder(
@@ -995,15 +1014,39 @@ class TestSettleAllocationGuard(IntegrationTestCase):
 		), patch(f"{_C}._transfer"):
 			res = cg_settle.settle_material_request("MAT-MR-1")
 
-		# Only row 2 needed sourcing; row 1 was Available from the target.
-		self.assertEqual(res["settled"], [2])
 		same_calls = [
 			c
 			for c in calls
 			if c["owner"] == CUSTOMER and not c.get("search_different_purity")
 		]
+		return res, same_calls
+
+	def test_second_row_cannot_reuse_target_stock_claimed_by_first_row(self):
+		# consumed_target behaviour, end to end: the target holds 8 of the MR's batch; two
+		# rows of that batch each need 5. Row 1 is satisfied from the target and claims it,
+		# so row 2 no longer sees that stock as free and must source its 2-unit shortfall.
+		# Runs the real per-batch count (_batch_qty_in_warehouse) and its claims.
+		res, same_calls = self._settle_two_rows_over_eight_in_target(
+			[_row(idx=1, qty=5.0), _row(idx=2, qty=5.0)], MR_BATCH
+		)
+
+		# Only row 2 needed sourcing; row 1 was Available from the target.
+		self.assertEqual(res["settled"], [2])
 		self.assertEqual(len(same_calls), 1)
 		self.assertEqual(same_calls[0]["qty"], 2.0)  # 5 required - 3 remaining
+
+	def test_rows_without_a_batch_still_share_the_customer_wide_pool(self):
+		# The same claim, for rows that name no batch: those still count every batch of the
+		# customer in the target (here B-TGT), through the real _owner_qty_in_warehouse.
+		res, same_calls = self._settle_two_rows_over_eight_in_target(
+			[_row(idx=1, qty=5.0, batch=None), _row(idx=2, qty=5.0, batch=None)],
+			"B-TGT",
+		)
+
+		self.assertEqual(res["settled"], [2])
+		self.assertEqual(len(same_calls), 1)
+		self.assertEqual(same_calls[0]["qty"], 2.0)
+		self.assertIsNone(same_calls[0]["batch_nos"])  # no batch, no batch scope
 
 	def tearDown(self):
 		return super().tearDown()
