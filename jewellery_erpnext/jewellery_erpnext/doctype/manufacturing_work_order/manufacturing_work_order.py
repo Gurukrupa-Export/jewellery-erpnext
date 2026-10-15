@@ -13,6 +13,7 @@ from frappe.model.naming import make_autoname
 from frappe.utils import cint, flt, get_datetime, get_link_to_form, now, strip_html
 from frappe.utils.background_jobs import is_job_enqueued
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import owner_of, same
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.utils import (
 	add_time_log,
 	create_se_entry,
@@ -62,6 +63,41 @@ class ManufacturingWorkOrder(Document):
 				self.custom_tracking_bom,
 				{"reference_doctype": self.doctype, "reference_docname": self.name},
 			)
+
+	def validate(self):
+		# The hooks.py validate (mwo_sync.sync_mould_id) runs after this; nothing else
+		# touches the current-operation pointer on save.
+		self._clear_foreign_operation_pointer()
+
+	def _clear_foreign_operation_pointer(self):
+		"""A draft keeps only a current operation it owns.
+
+		``manufacturing_operation`` names the work order's CURRENT operation, and a
+		work order gets its first operation only from its own submit
+		(create_manufacturing_operation). Before that the field can only hold an
+		inherited value: the parent's operation on a split child made before the field
+		was no_copy, or the cancelled original's operation on an Amend (Frappe's amend
+		copies no_copy fields). Whatever reads the pointer -- the Stock Entry form, the
+		EOD reservation heals, the audits -- would then take another work order's
+		operation for this one's. Submitted work orders are left alone: the IR flows
+		move their pointer.
+		"""
+		if cint(self.docstatus) != 0 or not self.manufacturing_operation:
+			return
+		owner = owner_of(self.manufacturing_operation)
+		if owner and same(owner, self.name):
+			return
+		self.manufacturing_operation = None
+
+	def on_discard(self):
+		"""Close a discarded draft the way on_cancel closes a cancelled work order.
+
+		Frappe v16's Discard sets docstatus 2 with db_set and never runs on_cancel, so a
+		discarded split child kept the "Not Started" it was mapped with, and the
+		parent's operation it pointed at. A discarded work order has no current
+		operation.
+		"""
+		self.db_set({"manufacturing_operation": None, "status": "Cancelled"})
 
 	def before_submit(self):
 		self.validate_photoshop_images()
@@ -1044,6 +1080,24 @@ def create_manufacturing_operation(doc):
 # "Manufacturing Plan & Management  - KGJPL".
 SPLIT_ALLOWED_DEPARTMENT = "Manufacturing Plan & Management"
 
+# The parent's runtime state, which a split child must not inherit. get_mapped_doc
+# copies every same-named field that is not no_copy, so each child started as a draft
+# that read "Not Started", carried the parent's start time and pointed at the PARENT's
+# current operation -- which anything reading the pointer then took for the child's.
+# The child's own submit sets the operation, the start time and the status (on_submit,
+# create_manufacturing_operation). tree_number and has_split_mwo are the parent's too:
+# a child joins a casting tree through its own Casting issue, and the split flag marks
+# the parent once its children exist. manufacturing_operation and start_datetime are
+# also no_copy; they are named here as well so the split does not depend on the site's
+# DocField metadata having been migrated.
+SPLIT_CHILD_FIELD_NO_MAP = (
+	"manufacturing_operation",
+	"start_datetime",
+	"status",
+	"tree_number",
+	"has_split_mwo",
+)
+
 _CANCEL_SPLIT_BLOCKERS_METHOD = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.cancel_split_blocking_stock_entries"
 
 
@@ -1478,17 +1532,20 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 			f"Following operation should be closed before splitting work order: {', '.join(open_operations)}"
 		)
 	for i in range(0, cint(count)):
-		mop = get_mapped_doc(
+		child = get_mapped_doc(
 			"Manufacturing Work Order",
 			docname,
 			{
 				"Manufacturing Work Order": {
 					"doctype": "Manufacturing Work Order",
 					"field_map": {"name": "split_from"},
+					"field_no_map": list(SPLIT_CHILD_FIELD_NO_MAP),
 				}
 			},
 		)
-		mop.save()
+		# Not submitted yet: on_submit stamps "Not Started" and the start time.
+		child.status = "Draft"
+		child.save()
 	pending_operations = frappe.get_all(
 		"Manufacturing Operation",
 		{"manufacturing_work_order": docname, "status": "Not Started"},
