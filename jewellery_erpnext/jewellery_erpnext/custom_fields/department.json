@@ -152,6 +152,32 @@
    "insert_after": "custom_stock_reconciliation_column_break",
    "label": "To Time",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_chain_manufacturing_section",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_stock_reconciliation_to_time",
+   "label": "Chain Manufacturing",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Employees of this department may raise a Chain Manufacturing Metal Conversion.",
+   "dt": "Department",
+   "fieldname": "custom_is_chain_manufacturing",
+   "fieldtype": "Check",
+   "insert_after": "custom_chain_manufacturing_section",
+   "label": "Is Chain Manufacturing",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "A Chain Manufacturing Metal Conversion from this department may be sent to a subcontractor.",
+   "dt": "Department",
+   "fieldname": "custom_is_chain_subcontracting",
+   "fieldtype": "Check",
+   "insert_after": "custom_is_chain_manufacturing",
+   "label": "Is Chain Subcontracting",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
