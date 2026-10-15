@@ -1472,3 +1472,218 @@ class TestCustomStockReservationEntry(IntegrationTestCase):
 			sre.auto_reserve_serial_and_batch("Voucher")
 
 		parent_mock.assert_called_once_with("Voucher")
+
+
+class TestLineWideVoucherQtyRealDB(IntegrationTestCase):
+	"""Real-database regression for the Sales Order line limit (SAL-ORD-2026-01547): real
+	Material Request / PMO rows feed the real aggregation SQL, and real Stock Reservation
+	Entries go through ERPNext's own allowed-qty check on submit. Only ``create_mop_log`` is
+	patched -- it needs a full Manufacturing Operation and is not under test.
+
+	Context rows are written with ``db_insert`` (no hooks), and every test rolls back in
+	``tearDown``; nothing on the reservation path commits."""
+
+	FINDING_QTY = 1.02
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def tearDown(self):
+		frappe.db.rollback()
+		frappe.clear_cache()
+
+	def _raw(self, doctype, **fields):
+		doc = frappe.get_doc({"doctype": doctype, **fields})
+		doc.name = fields.get("name") or frappe.generate_hash(length=10)
+		doc.db_insert()
+		return doc.name
+
+	def _setup_line(self, pieces=3, stock_qty=10.0):
+		"""One Sales Order line with ``pieces`` PMOs; each PMO has one MR for metal, diamond
+		and the finding (1.02 g), like PMO-GEPL-EA03205-002-0021. ``stock_qty`` of the
+		finding sits in the warehouse."""
+		tag = frappe.generate_hash(length=6)
+		self.company = frappe.db.get_value("Company", {}, "name")
+		self.warehouse = self._raw(
+			"Warehouse",
+			name=f"_T SRE Line {tag}",
+			warehouse_name=f"_T SRE Line {tag}",
+			company=self.company,
+			is_group=0,
+		)
+		self.item = self._raw(
+			"Item",
+			name=f"F-_T-SRE-{tag}",
+			item_code=f"F-_T-SRE-{tag}",
+			item_name=f"F-_T-SRE-{tag}",
+			stock_uom="Gram",
+			is_stock_item=1,
+			has_batch_no=0,
+			has_serial_no=0,
+		)
+		self.sales_order = self._raw(
+			"Sales Order", name=f"_T-SO-{tag}", company=self.company, docstatus=1
+		)
+		self.so_item = self._raw(
+			"Sales Order Item",
+			parent=self.sales_order,
+			parenttype="Sales Order",
+			parentfield="items",
+			item_code=self.item,
+			qty=pieces,
+			stock_qty=pieces,
+			conversion_factor=1,
+			delivered_qty=0,
+			warehouse=self.warehouse,
+		)
+		self.pmos = [
+			self._add_pmo(self.sales_order, self.so_item) for _ in range(pieces)
+		]
+		self._raw(
+			"Stock Ledger Entry",
+			item_code=self.item,
+			warehouse=self.warehouse,
+			company=self.company,
+			posting_date=frappe.utils.add_days(frappe.utils.nowdate(), -1),
+			posting_time="00:00:00",
+			posting_datetime=f"{frappe.utils.add_days(frappe.utils.nowdate(), -1)} 00:00:00",
+			actual_qty=stock_qty,
+			qty_after_transaction=stock_qty,
+			voucher_type="Stock Entry",
+			voucher_no=f"_T-SE-{tag}",
+			is_cancelled=0,
+			docstatus=1,
+		)
+
+	def _add_pmo(self, sales_order, so_item, finding_qty=None, mr_docstatus=1):
+		pmo = self._raw(
+			"Parent Manufacturing Order",
+			sales_order=sales_order,
+			sales_order_item=so_item,
+			manufacturer=f"_T-MNF-{frappe.generate_hash(length=6)}",
+			docstatus=1,
+		)
+		finding_qty = self.FINDING_QTY if finding_qty is None else finding_qty
+		mr = self._raw(
+			"Material Request",
+			manufacturing_order=pmo,
+			docstatus=mr_docstatus,
+			custom_total_quantity=0.834 + 0.08 + finding_qty,
+		)
+		for item_code, qty in (
+			("M-_T-METAL", 0.834),
+			("D-_T-DIA", 0.08),
+			(self.item, finding_qty),
+		):
+			self._raw(
+				"Material Request Item",
+				parent=mr,
+				parenttype="Material Request",
+				parentfield="items",
+				item_code=item_code,
+				qty=qty,
+				stock_qty=qty,
+				docstatus=mr_docstatus,
+			)
+		return pmo
+
+	def _transfer(self, pmo, qty=None):
+		row = MagicMock()
+		row.item_code = self.item
+		row.qty = self.FINDING_QTY if qty is None else qty
+		row.t_warehouse = self.warehouse
+		row.s_warehouse = None
+		row.uom = "Gram"
+		row.batch_no = None
+		row.manufacturing_operation = f"MOP-{pmo}"
+		row.get = MagicMock(side_effect=lambda k, d=None: getattr(row, k, d))
+
+		doc = MagicMock()
+		doc.stock_entry_type = "Material Transfer (WORK ORDER)"
+		doc.manufacturing_order = pmo
+		doc.manufacturing_work_order = f"MWO-{pmo}"
+		doc.manufacturer = None
+		doc.employee_ir = None
+		doc.company = self.company
+		doc.items = [row]
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log"
+		):
+			stock_reservation_entry_for_mwo(doc)
+
+	def _sres(self):
+		return frappe.get_all(
+			"Stock Reservation Entry",
+			filters={"voucher_no": self.sales_order, "docstatus": 1},
+			fields=["manufacturing_work_order", "reserved_qty", "voucher_qty"],
+			order_by="creation asc",
+		)
+
+	def test_third_piece_reserves_against_real_sre_validation(self):
+		"""Pieces 1 and 2 reserve 1.02 g each; piece 3 then reserves its 1.02 g through
+		ERPNext's real allowed-qty check. With the old per-PMO limit (1.934) this raised
+		"Cannot reserve more than Allowed Qty"."""
+		self._setup_line(pieces=3)
+
+		for pmo in self.pmos:
+			self._transfer(pmo)
+
+		sres = self._sres()
+		self.assertEqual(len(sres), 3)
+		self.assertEqual(
+			[s.manufacturing_work_order for s in sres], [f"MWO-{p}" for p in self.pmos]
+		)
+		for sre in sres:
+			self.assertAlmostEqual(sre.reserved_qty, 1.02, places=3)
+		# Line-wide finding qty: 3 x 1.02 (no tolerance configured for the test manufacturer).
+		self.assertAlmostEqual(sres[-1].voucher_qty, 3.06, places=3)
+		self.assertAlmostEqual(
+			frappe.db.get_value("Sales Order Item", self.so_item, "stock_reserved_qty"),
+			3.06,
+			places=3,
+		)
+
+	def test_cancelled_mr_and_other_line_do_not_raise_the_limit(self):
+		"""A cancelled MR on this line and a PMO on another line of the same Sales Order both
+		ask for 5 g of the finding. Neither may count: after two pieces hold 2.04 g, a 1.5 g
+		request is still over the line limit (3.06 - 2.04 = 1.02) and ERPNext refuses it
+		without creating a reservation."""
+		self._setup_line(pieces=3)
+		self._add_pmo(self.sales_order, self.so_item, finding_qty=5.0, mr_docstatus=2)
+		other_line = self._raw(
+			"Sales Order Item",
+			parent=self.sales_order,
+			parenttype="Sales Order",
+			parentfield="items",
+			item_code=self.item,
+			qty=1,
+			stock_qty=1,
+			conversion_factor=1,
+			warehouse=self.warehouse,
+		)
+		self._add_pmo(self.sales_order, other_line, finding_qty=5.0)
+
+		self._transfer(self.pmos[0])
+		self._transfer(self.pmos[1])
+
+		with self.assertRaisesRegex(
+			frappe.ValidationError, "Cannot reserve more than Allowed Qty"
+		):
+			self._transfer(self.pmos[2], qty=1.5)
+		self.assertEqual(len(self._sres()), 2)
+
+	def test_stock_shortage_still_refused(self):
+		"""Raising the limit does not bypass stock: with only 2.04 g in the warehouse, the
+		third piece is refused and no reservation is created."""
+		self._setup_line(pieces=3, stock_qty=2.04)
+
+		self._transfer(self.pmos[0])
+		self._transfer(self.pmos[1])
+
+		with self.assertRaisesRegex(
+			frappe.ValidationError, "Cannot reserve more than Allowed Qty"
+		):
+			self._transfer(self.pmos[2])
+		self.assertEqual(len(self._sres()), 2)
