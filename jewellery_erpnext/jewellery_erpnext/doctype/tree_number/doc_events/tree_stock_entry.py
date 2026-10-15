@@ -834,6 +834,41 @@ def issue_material(tree, item_code, qty, source_warehouse=None):
 	return se.name
 
 
+def _tree_loss_allowed(tree):
+	"""Grams of loss the tree's operation allows on a Tree Number (0 = no limit)."""
+	if not tree.get("operation"):
+		return 0.0
+	return flt(
+		frappe.db.get_value(
+			"Department Operation", tree.operation, "allow_loss_on_tree_number"
+		)
+	)
+
+
+def _validate_tree_loss_allowed(tree, plan, eps):
+	"""Refuse a loss that takes the tree past its operation's "Allow loss on Tree number".
+
+	The cap (grams) is Department Operation.allow_loss_on_tree_number and covers the whole
+	tree: the loss already booked on every material row plus the loss in this call. Blank or
+	0 means the operation sets no limit. Submit Tree's write-off of the leftover pending goes
+	through receive_material, so it is held to the same cap.
+	"""
+	allowed = _tree_loss_allowed(tree)
+	if allowed <= 0:
+		return
+
+	booked = sum(flt(md.loss_qty) for md in tree.material_details)
+	new_loss = sum(flt(p["loss"]) for p in plan)
+	if booked + new_loss - allowed > eps:
+		frappe.throw(
+			_(
+				"Tree {0}: loss of {1} g with {2} g already booked exceeds the {3} g allowed on a "
+				"Tree Number for operation {4}."
+			).format(tree.name, new_loss, booked, allowed, tree.operation),
+			title=_("Loss Above Allowed On Tree Number"),
+		)
+
+
 def receive_material(tree, rows):
 	"""Receive / book loss for a tree (`rows` = [{item_code, receive_qty, loss_qty}]).
 
@@ -886,6 +921,8 @@ def receive_material(tree, rows):
 
 	if not plan:
 		frappe.throw(_("Enter a Receive Qty or Loss Qty on at least one item."))
+
+	_validate_tree_loss_allowed(tree, plan, eps)
 
 	msl_wh = tree.get("msl_warehouse") or _resolve_msl_warehouse(tree)
 	has_recv = any(flt(p["recv"], prec) > 0 for p in plan)
