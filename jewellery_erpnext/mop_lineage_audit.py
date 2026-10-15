@@ -28,6 +28,11 @@ instead of cloning the tail snapshot (see ``create_mop_log_for_department_ir``).
 **Negative batch balances (ledger corruption sweep):**
 
     bench --site <site> execute jewellery_erpnext.mop_lineage_audit.audit_negative_batch_balances
+
+**Work order <-> operation link integrity (records pairing a MOP with a work order that does not
+own it; read-only, System Manager):**
+
+    bench --site <site> execute jewellery_erpnext.mop_lineage_audit.audit_mwo_mop_consistency --kwargs "{'limit': 50}"
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ import subprocess
 from pathlib import Path
 
 import frappe
-from frappe.utils import cint, flt
+from frappe.utils import add_to_date, cint, flt, get_datetime, sbool
 
 from jewellery_erpnext.utils import carat_to_gram, clamp_negative_balance
 
@@ -1277,6 +1282,720 @@ def audit_post_refining_contamination(
 	return out[:limit]
 
 
+# ----------------------------------------------------------------------------------------------
+# Work order <-> operation link integrity (MWO <-> MOP)
+# ----------------------------------------------------------------------------------------------
+#
+# A Manufacturing Operation belongs to exactly one work order: its own ``manufacturing_work_order``,
+# set when the operation is created and never rewritten (see ``doc_events/mwo_mop_link.py``). Every
+# record that stores BOTH must store the operation's own work order. The detectors below find the
+# records that do not. ``patches/repair_mwo_mop_link_labels.py`` plans its writes from the SAME
+# ``mwo_mop_findings()`` output, so the audit and the repair cannot disagree about what is wrong.
+#
+# Cost: MOP Log has no index on ``manufacturing_operation`` on production (only
+# ``mop_mwo_creation_idx`` and ``mop_eod_sync_idx``), and Stock Entry Detail stores the operation and
+# work order as Small Text. So every detector is one sequential pass joined to Manufacturing
+# Operation / Work Order by PRIMARY KEY -- no range join, no per-row subquery. The only time-window
+# lookup (``mwo_mop_make_receive_foreign_sre``) is seeded from the handful of mis-keyed reservations
+# and probes ``tabStock Entry.creation``, which is indexed.
+
+MWO_MOP_OPEN_STATUSES = ("Not Started", "On Hold", "WIP", "QC Pending", "QC Completed")
+MWO_MOP_CLOSED_MWO_STATUSES = ("Completed", "Closed", "Cancelled", "Stopped")
+# A MOP Log row created more than this long BEFORE its operation was not written for it: the
+# operation's short name was re-issued over rows a deleted operation left behind. A few seconds of
+# slack because a row and its operation can be written in one request whose clock reads straddle a
+# second boundary.
+MWO_MOP_NAME_REUSE_SECONDS = 5
+MAKE_RECEIVE_ENTRY_TYPE = "Material Receive (WORK ORDER)"
+
+
+def _sorted(rows: list, *keys: str) -> list:
+	"""Order a small result in Python instead of SQL. An ORDER BY on the driving table of a full
+	scan makes MariaDB filesort the WHOLE table before the join -- minutes on the MOP Log under load
+	-- while what comes back is a handful of rows."""
+	return sorted(
+		rows,
+		key=lambda row: tuple(
+			(row.get(k) is None, row.get(k) if row.get(k) is not None else 0)
+			for k in keys
+		),
+	)
+
+
+def _mwo_mop_open_condition(alias: str) -> str:
+	"""SQL predicate: ``alias`` is live work -- an open status and not a cancel's Revert leftover.
+
+	kggk_uat keeps the operation a cancelled Department Issue / Employee Receive minted, marked
+	``department_ir_status = "Revert"`` with status Not Started: history, not an open operation. The
+	column (and the option) exist on every line, so the exclusion applies wherever the column does.
+	"""
+	statuses = ", ".join(frappe.db.escape(status) for status in MWO_MOP_OPEN_STATUSES)
+	condition = f"{alias}.status IN ({statuses})"
+	if frappe.db.has_column("Manufacturing Operation", "department_ir_status"):
+		condition += f" AND IFNULL({alias}.department_ir_status, '') != 'Revert'"
+	return condition
+
+
+def mwo_mop_reservation_stock_entry_types() -> list[str]:
+	"""Stock Entry types that reserve stock against the HEADER work order on submit.
+
+	The list ``doc_events/stock_entry.py`` reads before ``stock_reservation_entry_for_mwo``: the
+	reservation takes its work order from the header and its operation from the row, so for these
+	types every row's operation must belong to the header work order, not just to its own row label.
+	"""
+	return frappe.db.get_all(
+		"Stock Entry Type To Reservation",
+		filters={"parent": "MOP Settings"},
+		pluck="stock_entry_type_to_reservation",
+	)
+
+
+def mwo_mop_ir_row_mismatches() -> list[dict]:
+	"""Employee IR / Department IR operation rows (parent not cancelled) whose work order is not the
+	owner of their operation. A blank row work order counts too: the repair fills it from the owner.
+
+	Carries the owner's PMO and finding flag so the repair can re-derive the row fields that are
+	``fetch_from`` the work order (DIR ``parent_manufacturing_order``, EIR ``is_finding_mwo``).
+
+	``is_name_reuse`` marks a row whose operation was created more than ``MWO_MOP_NAME_REUSE_SECONDS``
+	AFTER its document (a child row's ``creation`` is its parent's): the operation's short name was
+	re-issued over one the document really named, or the row was added to a draft older than the
+	operation. Either way the owner is not known to be the row's -- the repair reports it instead of
+	relabelling it (the MOP Log rule, ``mwo_mop_log_findings``).
+	"""
+	seconds = cint(MWO_MOP_NAME_REUSE_SECONDS)
+	return frappe.db.sql(
+		f"""
+		SELECT 'Employee IR' AS parenttype, p.name AS parent, p.docstatus AS parent_docstatus,
+			p.type AS ir_type, p.operation, r.name AS row_name, r.idx,
+			r.manufacturing_operation AS mop, r.manufacturing_work_order AS row_mwo,
+			m.manufacturing_work_order AS owner, NULL AS row_pmo, w.manufacturing_order AS owner_pmo,
+			r.is_finding_mwo AS row_is_finding_mwo, w.is_finding_mwo AS owner_is_finding_mwo,
+			(p.creation < m.creation - INTERVAL {seconds} SECOND) AS is_name_reuse
+		FROM `tabEmployee IR Operation` r
+		INNER JOIN `tabEmployee IR` p ON p.name = r.parent
+		INNER JOIN `tabManufacturing Operation` m ON m.name = r.manufacturing_operation
+		LEFT JOIN `tabManufacturing Work Order` w ON w.name = m.manufacturing_work_order
+		WHERE r.parenttype = 'Employee IR'
+		  AND p.docstatus < 2
+		  AND IFNULL(m.manufacturing_work_order, '') != ''
+		  AND IFNULL(r.manufacturing_work_order, '') != m.manufacturing_work_order
+		UNION ALL
+		SELECT 'Department IR', p.name, p.docstatus, p.type, NULL, r.name, r.idx,
+			r.manufacturing_operation, r.manufacturing_work_order, m.manufacturing_work_order,
+			r.parent_manufacturing_order, w.manufacturing_order, NULL, NULL,
+			(p.creation < m.creation - INTERVAL {seconds} SECOND)
+		FROM `tabDepartment IR Operation` r
+		INNER JOIN `tabDepartment IR` p ON p.name = r.parent
+		INNER JOIN `tabManufacturing Operation` m ON m.name = r.manufacturing_operation
+		LEFT JOIN `tabManufacturing Work Order` w ON w.name = m.manufacturing_work_order
+		WHERE r.parenttype = 'Department IR'
+		  AND p.docstatus < 2
+		  AND IFNULL(m.manufacturing_work_order, '') != ''
+		  AND IFNULL(r.manufacturing_work_order, '') != m.manufacturing_work_order
+		ORDER BY parenttype, parent, idx
+		""",
+		as_dict=True,
+	)
+
+
+def mwo_mop_se_header_mismatches() -> list[dict]:
+	"""Non-cancelled Stock Entries whose header operation belongs to another work order than the
+	header's. Headers with an operation but no work order (plain Repacks) are not pairings, so they
+	are not reported. Process Loss headers are held to this rule too: their header pair is taken
+	from the first loss row, so it is consistent by construction.
+
+	``is_name_reuse``: the operation is more than ``MWO_MOP_NAME_REUSE_SECONDS`` newer than the entry
+	(see :func:`mwo_mop_ir_row_mismatches`), so the repair leaves the entry to a person.
+	"""
+	seconds = cint(MWO_MOP_NAME_REUSE_SECONDS)
+	rows = frappe.db.sql(
+		f"""
+		SELECT se.name, se.docstatus, se.stock_entry_type, se.purpose, se.auto_created,
+			se.employee_ir, se.custom_eir_operation_row, se.manufacturing_operation AS mop,
+			se.manufacturing_work_order AS mwo, m.manufacturing_work_order AS owner,
+			se.manufacturing_order AS pmo, w.manufacturing_order AS owner_pmo, se.custom_tree_number,
+			(se.creation < m.creation - INTERVAL {seconds} SECOND) AS is_name_reuse
+		FROM `tabStock Entry` se
+		INNER JOIN `tabManufacturing Operation` m ON m.name = se.manufacturing_operation
+		LEFT JOIN `tabManufacturing Work Order` w ON w.name = m.manufacturing_work_order
+		WHERE se.docstatus < 2
+		  AND IFNULL(se.manufacturing_work_order, '') != ''
+		  AND IFNULL(m.manufacturing_work_order, '') != ''
+		  AND m.manufacturing_work_order != se.manufacturing_work_order
+		""",
+		as_dict=True,
+	)
+	return _sorted(rows, "name")
+
+
+def mwo_mop_se_row_mismatches(reservation_types: list[str] | None = None) -> list[dict]:
+	"""Stock Entry Detail rows whose operation belongs to another work order. Two rules, ``rule``
+	says which one fired (``row`` wins when both do):
+
+	* ``row`` -- the owner differs from the row's own work order, or from the header's when the row
+	  carries none (``COALESCE``). A Process Loss row is compared with its OWN label only: those
+	  entries are multi-work-order by design and their header names just the first loss row's.
+	* ``reservation_header`` -- for a reservation type (see
+	  :func:`mwo_mop_reservation_stock_entry_types`), the owner differs from the HEADER work order,
+	  because the reservation is keyed by the header. Repack counts only with a header work order
+	  AND order, the same condition the submit hook applies. Process Loss is never held to it.
+
+	The joined operation must exist: production stores these row fields as Small Text, so nothing
+	ever validated them as links.
+	"""
+	if reservation_types is None:
+		reservation_types = mwo_mop_reservation_stock_entry_types()
+	reservation_types = tuple(t for t in reservation_types if t and t != "Process Loss")
+
+	expected = """CASE WHEN se.stock_entry_type = 'Process Loss'
+			THEN NULLIF(d.custom_manufacturing_work_order, '')
+			ELSE COALESCE(
+				NULLIF(d.custom_manufacturing_work_order, ''), NULLIF(se.manufacturing_work_order, '')
+			)
+		END"""
+	header_rule = "0"
+	params: dict = {}
+	if reservation_types:
+		header_rule = """(se.stock_entry_type IN %(reservation_types)s
+			AND IFNULL(se.manufacturing_work_order, '') != ''
+			AND (se.stock_entry_type != 'Repack' OR IFNULL(se.manufacturing_order, '') != '')
+			AND m.manufacturing_work_order != se.manufacturing_work_order)"""
+		params["reservation_types"] = reservation_types
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT se.name AS stock_entry, se.docstatus, se.stock_entry_type, se.auto_created,
+			se.employee_ir, se.custom_eir_operation_row, d.name AS row_name, d.idx,
+			d.manufacturing_operation AS mop, d.custom_manufacturing_work_order AS row_mwo,
+			se.manufacturing_work_order AS header_mwo, m.manufacturing_work_order AS owner,
+			IF(IFNULL(m.manufacturing_work_order != {expected}, 0), 'row', 'reservation_header') AS rule
+		FROM `tabStock Entry` se
+		INNER JOIN `tabStock Entry Detail` d ON d.parent = se.name AND d.parenttype = 'Stock Entry'
+		INNER JOIN `tabManufacturing Operation` m ON m.name = d.manufacturing_operation
+		WHERE se.docstatus < 2
+		  AND IFNULL(d.manufacturing_operation, '') != ''
+		  AND IFNULL(m.manufacturing_work_order, '') != ''
+		  AND (m.manufacturing_work_order != {expected} OR {header_rule})
+		""",
+		params,
+		as_dict=True,
+	)
+	return _sorted(rows, "stock_entry", "idx")
+
+
+def mwo_mop_sre_mismatches() -> list[dict]:
+	"""Stock Reservation Entries whose work order is not the owner of their operation, active and
+	cancelled alike (``docstatus`` tells them apart; cancelled ones are history)."""
+	rows = frappe.db.sql(
+		"""
+		SELECT s.name, s.docstatus, s.status, s.manufacturing_work_order AS sre_mwo,
+			s.manufacturing_operation AS mop, m.manufacturing_work_order AS owner,
+			s.voucher_type, s.voucher_no, s.voucher_detail_no, s.from_voucher_no, s.item_code,
+			s.warehouse, s.reserved_qty, s.delivered_qty, s.creation, s.modified
+		FROM `tabStock Reservation Entry` s
+		INNER JOIN `tabManufacturing Operation` m ON m.name = s.manufacturing_operation
+		WHERE IFNULL(s.manufacturing_operation, '') != ''
+		  AND IFNULL(m.manufacturing_work_order, '') != ''
+		  AND IFNULL(s.manufacturing_work_order, '') != m.manufacturing_work_order
+		""",
+		as_dict=True,
+	)
+	return _sorted(rows, "creation", "name")
+
+
+def mwo_mop_log_findings() -> dict:
+	"""Live MOP Log rows that do not carry their operation's work order, from ONE pass over the
+	ledger, split three ways:
+
+	* ``stamps`` -- the operation exists and the stamp is not its owner. Repairable in place.
+	* ``name_reuse`` -- the row is older than its operation by more than
+	  ``MWO_MOP_NAME_REUSE_SECONDS``: the short operation name was re-issued over a deleted
+	  operation's rows, whatever they are stamped with. Never repaired here -- relabelling would hand
+	  someone else's metal to this operation; it needs a decision on the ledger itself.
+	* ``orphans`` -- the operation does not exist any more (purged). Counted only.
+	"""
+	seconds = cint(MWO_MOP_NAME_REUSE_SECONDS)
+	rows = frappe.db.sql(
+		f"""
+		SELECT l.name, l.manufacturing_operation AS mop, l.manufacturing_work_order AS stamp,
+			m.manufacturing_work_order AS owner, l.voucher_type, l.voucher_no, l.item_code,
+			l.batch_no, l.is_synced, l.creation, m.creation AS mop_creation,
+			(m.name IS NULL) AS is_orphan,
+			(m.name IS NOT NULL AND l.creation < m.creation - INTERVAL {seconds} SECOND) AS is_name_reuse,
+			(w.name IS NOT NULL) AS stamp_exists
+		FROM `tabMOP Log` l
+		LEFT JOIN `tabManufacturing Operation` m ON m.name = l.manufacturing_operation
+		LEFT JOIN `tabManufacturing Work Order` w ON w.name = l.manufacturing_work_order
+		WHERE l.is_cancelled = 0
+		  AND IFNULL(l.manufacturing_operation, '') != ''
+		  AND (
+			m.name IS NULL
+			OR l.creation < m.creation - INTERVAL {seconds} SECOND
+			OR (
+				IFNULL(m.manufacturing_work_order, '') != ''
+				AND IFNULL(l.manufacturing_work_order, '') != m.manufacturing_work_order
+			)
+		  )
+		""",
+		as_dict=True,
+	)
+
+	stamps: list[dict] = []
+	name_reuse: list[dict] = []
+	orphan_rows = 0
+	orphan_mops: set = set()
+	for row in _sorted(rows, "mop", "creation", "name"):
+		is_orphan = cint(row.pop("is_orphan"))
+		is_name_reuse = cint(row.pop("is_name_reuse"))
+		stamp_exists = cint(row.pop("stamp_exists"))
+		if is_orphan:
+			orphan_rows += 1
+			orphan_mops.add(row.mop)
+		elif is_name_reuse:
+			row["stamp_exists"] = stamp_exists
+			name_reuse.append(row)
+		else:
+			stamps.append(row)
+	return {
+		"stamps": stamps,
+		"name_reuse": name_reuse,
+		"orphans": {"rows": orphan_rows, "operations": len(orphan_mops)},
+	}
+
+
+def mwo_mop_pointer_foreign() -> list[dict]:
+	"""Work orders whose current-operation pointer names an operation owned by ANOTHER work order,
+	any docstatus (a split child copies its parent's pointer)."""
+	rows = frappe.db.sql(
+		"""
+		SELECT w.name AS mwo, w.docstatus, w.status, w.split_from,
+			w.manufacturing_operation AS pointer, m.manufacturing_work_order AS pointer_owner,
+			m.status AS pointer_status
+		FROM `tabManufacturing Work Order` w
+		INNER JOIN `tabManufacturing Operation` m ON m.name = w.manufacturing_operation
+		WHERE IFNULL(m.manufacturing_work_order, '') != ''
+		  AND m.manufacturing_work_order != w.name
+		""",
+		as_dict=True,
+	)
+	return _sorted(rows, "docstatus", "mwo")
+
+
+def mwo_mop_pointer_stale() -> list[dict]:
+	"""Submitted, open work orders still pointing at their own FINISHED operation although that
+	operation has an open successor of the same work order (``previous_mop``): the receive that
+	minted the successor moved some other work order's pointer instead.
+
+	One entry per work order; ``successor`` is the newest open successor (``open_successors`` lists
+	them all, newest first). Own Finished pointers WITHOUT a successor are not this defect (cancelled
+	transfers, desk edits) and are not reported.
+	"""
+	rows = frappe.db.sql(
+		f"""
+		SELECT w.name AS mwo, w.status, w.manufacturing_operation AS pointer,
+			p.status AS pointer_status, s.name AS successor, s.status AS successor_status
+		FROM `tabManufacturing Work Order` w
+		INNER JOIN `tabManufacturing Operation` p
+			ON p.name = w.manufacturing_operation AND p.manufacturing_work_order = w.name
+		INNER JOIN `tabManufacturing Operation` s
+			ON s.manufacturing_work_order = w.name AND s.previous_mop = p.name
+		WHERE w.docstatus = 1
+		  AND IFNULL(w.status, '') NOT IN %(closed)s
+		  AND p.status = 'Finished'
+		  AND {_mwo_mop_open_condition("s")}
+		ORDER BY w.name, s.creation DESC, s.name DESC
+		""",
+		{"closed": MWO_MOP_CLOSED_MWO_STATUSES},
+		as_dict=True,
+	)
+	by_mwo: dict = {}
+	for row in rows:
+		entry = by_mwo.get(row.mwo)
+		if entry is None:
+			entry = by_mwo[row.mwo] = frappe._dict(
+				mwo=row.mwo,
+				status=row.status,
+				pointer=row.pointer,
+				pointer_status=row.pointer_status,
+				successor=row.successor,
+				successor_status=row.successor_status,
+				open_successors=[],
+			)
+		entry.open_successors.append(row.successor)
+	return list(by_mwo.values())
+
+
+def mwo_mop_pointer_on_non_submitted() -> dict:
+	"""Draft and discarded work orders that carry a current-operation pointer.
+
+	Neither should: a draft has no operations of its own yet, and Discard (docstatus 0 -> 2 without
+	``on_cancel``) leaves status and pointer as they were. A properly cancelled work order (status
+	Cancelled) keeping its OWN last pointer is history, so it is only counted
+	(``cancelled_own_pointer``); one keeping a foreign pointer is still reported.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT w.name AS mwo, w.docstatus, w.status, w.split_from,
+			w.manufacturing_operation AS pointer, m.manufacturing_work_order AS pointer_owner,
+			IFNULL(m.manufacturing_work_order = w.name, 0) AS pointer_is_own
+		FROM `tabManufacturing Work Order` w
+		LEFT JOIN `tabManufacturing Operation` m ON m.name = w.manufacturing_operation
+		WHERE w.docstatus != 1
+		  AND IFNULL(w.manufacturing_operation, '') != ''
+		""",
+		as_dict=True,
+	)
+	findings: list[dict] = []
+	cancelled_own = 0
+	for row in _sorted(rows, "docstatus", "mwo"):
+		row["pointer_is_own"] = cint(row.pointer_is_own)
+		if (
+			cint(row.docstatus) == 2
+			and row.status == "Cancelled"
+			and row.pointer_is_own
+		):
+			cancelled_own += 1
+			continue
+		findings.append(row)
+	return {"rows": findings, "cancelled_own_pointer": cancelled_own}
+
+
+def mwo_mop_casting_receive_without_tree() -> list[dict]:
+	"""Submitted casting Receive rows (Department Operation ``tree_no_reqd``) labelled with another
+	work order than their operation's, with no ``tree_number`` although the operation was issued on a
+	tree.
+
+	A casting receive resolves its tree from the ROW work order (``resolve_receive_tree_numbers``),
+	so a row labelled with a sibling's work order resolved none: the row and its injection Stock
+	Entry lost the tree, and the receive charged no tree for it. The authority is the casting Issue
+	row of the same operation, which pinned the tree at submit. ``issue_tree`` is that tree when the
+	Issue rows agree on exactly one, else None (``issue_trees`` lists them) -- an ambiguous row is
+	report-only. A tree-less row whose label is right is not this defect and is not listed.
+
+	``received_gross_wt``, ``gross_wt``, ``is_raw_material`` and ``subcontracting`` let the repair
+	report what the tree never recorded (``tree_casting.tree_draw_by_tree``'s per-row rule).
+	"""
+	candidates = frappe.db.sql(
+		"""
+		SELECT p.name AS parent, p.operation, p.is_raw_material, p.subcontracting, r.name AS row_name,
+			r.idx, r.manufacturing_operation AS mop, r.manufacturing_work_order AS row_mwo,
+			m.manufacturing_work_order AS owner, r.gross_wt, r.received_gross_wt
+		FROM `tabEmployee IR Operation` r
+		INNER JOIN `tabEmployee IR` p ON p.name = r.parent
+		INNER JOIN `tabDepartment Operation` o ON o.name = p.operation
+		INNER JOIN `tabManufacturing Operation` m ON m.name = r.manufacturing_operation
+		WHERE r.parenttype = 'Employee IR'
+		  AND p.docstatus = 1
+		  AND p.type = 'Receive'
+		  AND o.tree_no_reqd = 1
+		  AND IFNULL(r.tree_number, '') = ''
+		  AND IFNULL(m.manufacturing_work_order, '') != ''
+		  AND IFNULL(r.manufacturing_work_order, '') != m.manufacturing_work_order
+		ORDER BY p.name, r.idx
+		""",
+		as_dict=True,
+	)
+	if not candidates:
+		return []
+
+	issue_trees: dict = {}
+	for row in frappe.db.sql(
+		"""
+		SELECT DISTINCT r.manufacturing_operation AS mop, r.tree_number
+		FROM `tabEmployee IR Operation` r
+		INNER JOIN `tabEmployee IR` p ON p.name = r.parent
+		WHERE r.parenttype = 'Employee IR'
+		  AND p.docstatus = 1
+		  AND p.type = 'Issue'
+		  AND IFNULL(r.tree_number, '') != ''
+		  AND r.manufacturing_operation IN %(mops)s
+		""",
+		{"mops": tuple(sorted({row.mop for row in candidates}))},
+		as_dict=True,
+	):
+		issue_trees.setdefault(row.mop, set()).add(row.tree_number)
+
+	out: list[dict] = []
+	for row in candidates:
+		trees = sorted(issue_trees.get(row.mop) or ())
+		if not trees:
+			continue
+		row["issue_trees"] = trees
+		row["issue_tree"] = trees[0] if len(trees) == 1 else None
+		out.append(row)
+	return out
+
+
+def mwo_mop_subcontracting_log_mismatches() -> list[dict]:
+	"""Subcontracting Logs whose work order is not the owner of their operation (report-only:
+	they copy the Stock Entry header they were written from)."""
+	if not frappe.db.table_exists("Subcontracting Log"):
+		return []
+	rows = frappe.db.sql(
+		"""
+		SELECT l.name, l.docstatus, l.reference_doctype, l.reference_docname,
+			l.manufacturing_work_order_name AS mwo, l.manufacturing_operation_name AS mop,
+			m.manufacturing_work_order AS owner, l.settlement_required
+		FROM `tabSubcontracting Log` l
+		INNER JOIN `tabManufacturing Operation` m ON m.name = l.manufacturing_operation_name
+		WHERE IFNULL(l.manufacturing_operation_name, '') != ''
+		  AND IFNULL(m.manufacturing_work_order, '') != ''
+		  AND IFNULL(l.manufacturing_work_order_name, '') != m.manufacturing_work_order
+		""",
+		as_dict=True,
+	)
+	return _sorted(rows, "name")
+
+
+def mwo_mop_process_loss_exclusions() -> dict:
+	"""How many Process Loss rows the header rule deliberately does NOT judge: rows whose operation
+	belongs to another work order than the header (which names only the first loss row's). Reported
+	so the exemption stays visible instead of silent."""
+	row = frappe.db.sql(
+		"""
+		SELECT COUNT(*) AS n_rows, COUNT(DISTINCT se.name) AS n_stock_entries
+		FROM `tabStock Entry` se
+		INNER JOIN `tabStock Entry Detail` d ON d.parent = se.name AND d.parenttype = 'Stock Entry'
+		INNER JOIN `tabManufacturing Operation` m ON m.name = d.manufacturing_operation
+		WHERE se.docstatus < 2
+		  AND se.stock_entry_type = 'Process Loss'
+		  AND IFNULL(se.manufacturing_work_order, '') != ''
+		  AND IFNULL(m.manufacturing_work_order, '') != ''
+		  AND m.manufacturing_work_order != se.manufacturing_work_order
+		""",
+		as_dict=True,
+	)[0]
+	return {"rows": cint(row.n_rows), "stock_entries": cint(row.n_stock_entries)}
+
+
+def mwo_mop_make_receive_foreign_sre(sre_rows: list[dict] | None = None) -> list[dict]:
+	"""Make Receive Entries that consumed a reservation whose operation belongs to another work order.
+
+	Make Receive Entry lists and checks reservations by work order only, so a reservation keyed
+	(header work order, a sibling's operation) passes and the sibling's metal is received. Seeded
+	from the mis-keyed CANCELLED reservations (consumption cancels them inside the receive's own
+	request): for each, the Material Receive (WORK ORDER) entries of the same work order, item and
+	source warehouse created between 10 s before and 5 s after the cancellation.
+	"""
+	if sre_rows is None:
+		sre_rows = mwo_mop_sre_mismatches()
+	out: list[dict] = []
+	for sre in sre_rows:
+		if (
+			cint(sre.get("docstatus")) != 2
+			or not sre.get("modified")
+			or not sre.get("sre_mwo")
+		):
+			continue
+		cancelled_on = get_datetime(sre["modified"])
+		for hit in frappe.db.sql(
+			"""
+			SELECT se.name AS stock_entry, se.docstatus AS stock_entry_docstatus, se.creation,
+				se.manufacturing_operation AS stock_entry_mop, d.name AS row_name, d.qty
+			FROM `tabStock Entry` se
+			INNER JOIN `tabStock Entry Detail` d
+				ON d.parent = se.name AND d.parenttype = 'Stock Entry'
+			WHERE se.creation BETWEEN %(start)s AND %(end)s
+			  AND se.stock_entry_type = %(stock_entry_type)s
+			  AND se.docstatus IN (1, 2)
+			  AND se.manufacturing_work_order = %(mwo)s
+			  AND d.item_code = %(item_code)s
+			  AND d.s_warehouse = %(warehouse)s
+			ORDER BY se.creation, d.idx
+			""",
+			{
+				"start": add_to_date(cancelled_on, seconds=-10),
+				"end": add_to_date(cancelled_on, seconds=5),
+				"stock_entry_type": MAKE_RECEIVE_ENTRY_TYPE,
+				"mwo": sre["sre_mwo"],
+				"item_code": sre.get("item_code"),
+				"warehouse": sre.get("warehouse"),
+			},
+			as_dict=True,
+		):
+			out.append(
+				frappe._dict(
+					sre=sre["name"],
+					sre_mwo=sre["sre_mwo"],
+					sre_mop=sre.get("mop"),
+					sre_mop_owner=sre.get("owner"),
+					item_code=sre.get("item_code"),
+					warehouse=sre.get("warehouse"),
+					sre_cancelled_on=sre["modified"],
+					**hit,
+				)
+			)
+	return out
+
+
+def mwo_mop_findings(include_expensive: bool = False) -> dict:
+	"""Every MWO <-> MOP detector, raw and uncapped: the single input of both
+	:func:`audit_mwo_mop_consistency` and ``patches/repair_mwo_mop_link_labels``.
+
+	``include_expensive`` adds the whole-ledger negative-balance sweep (the definition
+	:func:`audit_negative_batch_balances` already owns) and the Make Receive Entry trace.
+	"""
+	sre = mwo_mop_sre_mismatches()
+	findings = {
+		"ir_rows": mwo_mop_ir_row_mismatches(),
+		"se_headers": mwo_mop_se_header_mismatches(),
+		"se_rows": mwo_mop_se_row_mismatches(),
+		"sre": sre,
+		"mop_log": mwo_mop_log_findings(),
+		"pointer_foreign": mwo_mop_pointer_foreign(),
+		"pointer_stale": mwo_mop_pointer_stale(),
+		"pointer_on_non_submitted": mwo_mop_pointer_on_non_submitted(),
+		"casting_receive_without_tree": mwo_mop_casting_receive_without_tree(),
+		"subcontracting_log": mwo_mop_subcontracting_log_mismatches(),
+		"process_loss_multi_mwo": mwo_mop_process_loss_exclusions(),
+	}
+	if include_expensive:
+		findings["negative_latest_balances"] = audit_negative_batch_balances(limit=0)
+		findings[
+			"make_receive_consumed_foreign_sre"
+		] = mwo_mop_make_receive_foreign_sre(sre)
+	return findings
+
+
+def mwo_mop_counts(findings: dict) -> dict:
+	"""``{class: count}`` for a :func:`mwo_mop_findings` result -- the counts the audit reports."""
+	counts = {
+		"ir_rows": len(findings["ir_rows"]),
+		"se_headers": len(findings["se_headers"]),
+		"se_rows": len(findings["se_rows"]),
+		"sre": len(findings["sre"]),
+		"mop_log_stamps": len(findings["mop_log"]["stamps"]),
+		"mop_log_name_reuse": len(findings["mop_log"]["name_reuse"]),
+		"mop_log_orphans": findings["mop_log"]["orphans"]["rows"],
+		"pointer_foreign": len(findings["pointer_foreign"]),
+		"pointer_stale": len(findings["pointer_stale"]),
+		"pointer_on_non_submitted": len(findings["pointer_on_non_submitted"]["rows"]),
+		"casting_receive_without_tree": len(findings["casting_receive_without_tree"]),
+		"subcontracting_log": len(findings["subcontracting_log"]),
+		"process_loss_multi_mwo": findings["process_loss_multi_mwo"]["rows"],
+	}
+	for key in ("negative_latest_balances", "make_receive_consumed_foreign_sre"):
+		if key in findings:
+			counts[key] = len(findings[key])
+	return counts
+
+
+def _tally(rows, key) -> dict:
+	tally: dict = {}
+	for row in rows:
+		value = key(row) if callable(key) else row.get(key)
+		tally[value] = tally.get(value, 0) + 1
+	return tally
+
+
+def _count_name_reuse(rows) -> int:
+	"""Rows whose operation is newer than their document (``is_name_reuse``): reported, never repaired."""
+	return sum(1 for row in rows if cint(row.get("is_name_reuse")))
+
+
+def _se_origin(row) -> str:
+	if not cint(row.get("auto_created")):
+		return "manual"
+	return "eir_injection" if row.get("custom_eir_operation_row") else "other_auto"
+
+
+@frappe.whitelist()
+def audit_mwo_mop_consistency(
+	limit: int = 200, include_expensive: bool = False
+) -> dict:
+	"""Read-only census of records that pair a Manufacturing Operation with a work order that does
+	not own it. Returns ``{class: {"count": n, "rows": [...]}}``: ``rows`` is capped at ``limit``
+	per class (``limit=0`` returns everything), ``count`` never is; some classes add a breakdown.
+
+	Classes: ``ir_rows`` and ``se_headers`` (each with ``name_reuse``: rows whose operation is newer
+	than their document), ``se_rows``, ``sre`` (``active`` / ``cancelled``),
+	``mop_log_stamps``, ``mop_log_name_reuse``, ``mop_log_orphans`` (count only),
+	``pointer_foreign`` (``by_docstatus``), ``pointer_stale``, ``pointer_on_non_submitted``,
+	``casting_receive_without_tree``, ``subcontracting_log`` and ``process_loss_multi_mwo`` (the
+	exemption, count only); with ``include_expensive`` also ``negative_latest_balances`` and
+	``make_receive_consumed_foreign_sre``. System Manager only: it reads every work order.
+
+	Every detector is a full pass over its table (see the section comment): seconds on a site the
+	size of kggk-prod, but on a ledger of millions of MOP Log rows the whole census can outlast a web
+	request. There, run it with ``bench execute`` (module docstring) instead of System Console::
+
+	    frappe.call(
+	        "jewellery_erpnext.mop_lineage_audit.audit_mwo_mop_consistency", {limit: 50}
+	    )
+	"""
+	frappe.only_for("System Manager")
+	limit = max(cint(limit), 0)
+	findings = mwo_mop_findings(include_expensive=bool(sbool(include_expensive)))
+
+	def bucket(rows, **extra):
+		rows = list(rows or ())
+		return {"count": len(rows), "rows": rows[:limit] if limit else rows, **extra}
+
+	sre = findings["sre"]
+	mop_log = findings["mop_log"]
+	non_submitted = findings["pointer_on_non_submitted"]
+	process_loss = findings["process_loss_multi_mwo"]
+	out = {
+		"ir_rows": bucket(
+			findings["ir_rows"],
+			by_parenttype=_tally(findings["ir_rows"], "parenttype"),
+			name_reuse=_count_name_reuse(findings["ir_rows"]),
+		),
+		"se_headers": bucket(
+			findings["se_headers"],
+			by_origin=_tally(findings["se_headers"], _se_origin),
+			name_reuse=_count_name_reuse(findings["se_headers"]),
+		),
+		"se_rows": bucket(
+			findings["se_rows"], by_rule=_tally(findings["se_rows"], "rule")
+		),
+		"sre": bucket(
+			sre,
+			active=sum(1 for row in sre if cint(row.docstatus) == 1),
+			cancelled=sum(1 for row in sre if cint(row.docstatus) == 2),
+		),
+		"mop_log_stamps": bucket(mop_log["stamps"]),
+		"mop_log_name_reuse": bucket(
+			mop_log["name_reuse"],
+			operations=len({row.mop for row in mop_log["name_reuse"]}),
+		),
+		"mop_log_orphans": {
+			"count": mop_log["orphans"]["rows"],
+			"operations": mop_log["orphans"]["operations"],
+			"rows": [],
+		},
+		"pointer_foreign": bucket(
+			findings["pointer_foreign"],
+			by_docstatus=_tally(findings["pointer_foreign"], "docstatus"),
+		),
+		"pointer_stale": bucket(findings["pointer_stale"]),
+		"pointer_on_non_submitted": bucket(
+			non_submitted["rows"],
+			cancelled_own_pointer=non_submitted["cancelled_own_pointer"],
+		),
+		"casting_receive_without_tree": bucket(
+			findings["casting_receive_without_tree"]
+		),
+		"subcontracting_log": bucket(findings["subcontracting_log"]),
+		"process_loss_multi_mwo": {
+			"count": process_loss["rows"],
+			"stock_entries": process_loss["stock_entries"],
+			"rows": [],
+		},
+	}
+	if "negative_latest_balances" in findings:
+		negatives = findings["negative_latest_balances"]
+		out["negative_latest_balances"] = bucket(
+			negatives,
+			operations=len({row["manufacturing_operation"] for row in negatives}),
+		)
+		out["make_receive_consumed_foreign_sre"] = bucket(
+			findings["make_receive_consumed_foreign_sre"]
+		)
+	return out
+
+
 def run_all_audits(receive_doc: str | None = None) -> dict:
 	"""Entry point for `bench execute jewellery_erpnext.mop_lineage_audit.run_all_audits`."""
 	out: dict = {"parity": get_deployment_parity_record()}
@@ -1335,4 +2054,6 @@ def run_all_audits(receive_doc: str | None = None) -> dict:
 	out["mop_balance_drift"] = audit_mop_balance_drift(rows=balance_rows)
 	out["negative_batch_balances"] = audit_negative_batch_balances(rows=balance_rows)
 	out["post_refining_contamination"] = audit_post_refining_contamination()
+	# Cheap classes only: the expensive negative-balance sweep is already in this output above.
+	out["mwo_mop_consistency"] = audit_mwo_mop_consistency()
 	return out
