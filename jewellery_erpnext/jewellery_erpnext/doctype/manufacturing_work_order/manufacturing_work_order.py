@@ -473,6 +473,21 @@ class ManufacturingWorkOrder(Document):
 			)
 		return design_bom, pmo_name
 
+	def _resolve_serial_bom(self):
+		"""The as-built BOM of the serial being unpacked (Serial No.custom_bom_no).
+
+		That, and not the Repair Order's design BOM, describes what is physically in the
+		piece. No fallback: unpacking against another BOM would book the wrong materials.
+		"""
+		serial_bom = frappe.db.get_value("Serial No", self.serial_no, "custom_bom_no")
+		if not serial_bom:
+			frappe.throw(
+				_(
+					"Serial No {0} has no BOM (BOM No); cannot work out what to unpack."
+				).format(self.serial_no)
+			)
+		return serial_bom
+
 	def _resolve_full_repair_components(self, pmo_name, design_bom):
 		"""Resolve the FULL bookable component list for this repair from the design
 		BOM's detail tables, so the unpack disassembles the WHOLE item (all metal,
@@ -510,15 +525,17 @@ class ManufacturingWorkOrder(Document):
 		set_item_variant(design)
 
 		components = {}
+		pieces = {}
 		order = []
 
-		def _add(item_code, qty):
+		def _add(item_code, qty, pcs=0):
 			if not item_code or not qty:
 				return
 			if item_code not in components:
 				components[item_code] = 0
 				order.append(item_code)
 			components[item_code] += flt(qty)
+			pieces[item_code] = pieces.get(item_code, 0) + flt(pcs)
 
 		for table in (
 			"metal_detail",
@@ -526,13 +543,19 @@ class ManufacturingWorkOrder(Document):
 			"finding_detail",
 			"gemstone_detail",
 		):
+			counts_pieces = table in ("diamond_detail", "gemstone_detail")
 			for row in design.get(table) or []:
-				_add(row.get("item_variant"), row.get("quantity"))
+				_add(
+					row.get("item_variant"),
+					row.get("quantity"),
+					row.get("pcs") if counts_pieces else 0,
+				)
 		for row in design.get("other_detail") or []:
 			_add(row.get("item_code"), row.get("quantity"))
 
 		component_rows = [
-			{"item_code": code, "qty": components[code]} for code in order
+			{"item_code": code, "qty": components[code], "pcs": pieces.get(code, 0)}
+			for code in order
 		]
 		return component_rows, flt(design.gross_weight), flt(design.quantity) or 1.0
 
@@ -571,14 +594,14 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_unpack_serial_no_stock_entry(self):
-		"""Unpack a repaired FG serial into the Repair Order's BOM raw materials as
-		Customer Goods.
+		"""Unpack a repaired FG serial into the raw materials of ITS OWN BOM as Customer
+		Goods.
 
 		Consumes the finished-good serial from the RM warehouse that currently holds
-		it and books the Repair Order BOM's raw materials straight into the
-		department's Manufacturing warehouse, so the repair operations have their
-		inputs without a separate stock transfer. Only valid for Repair work orders
-		(see the Unpack Raw Material button). This is a Customer-Goods sibling of
+		it and books the raw materials of the serial's as-built BOM (Serial No.custom_bom_no)
+		into the work order's warehouse (see _resolve_unpack_target_warehouse), so the repair
+		operations have their inputs without a separate stock transfer. Only valid for Repair work orders (see the Unpack
+		Serial No button). This is a Customer-Goods sibling of
 		create_repair_un_pack_stock_entry (which stays for the legacy flow).
 		"""
 		pmo_type = frappe.db.get_value(
@@ -592,15 +615,15 @@ class ManufacturingWorkOrder(Document):
 				)
 			)
 
-		# The BOM to unpack lives on the linked Repair Order, not the MWO's inherited
-		# master_bom. Persist it onto the PMO + this MWO (it drives repair
-		# pricing/quotation); the components actually booked come from its full design
-		# composition, resolved below.
+		# The Repair Order's design BOM is still persisted onto the PMO + this MWO (it
+		# drives repair pricing/quotation), but it is NOT what gets unpacked: the piece in
+		# hand was built against its own BOM, so the components booked come from that one.
 		design_bom, pmo_name = self._resolve_repair_order_bom()
 		frappe.db.set_value(
 			"Parent Manufacturing Order", pmo_name, "master_bom", design_bom
 		)
 		self.db_set("master_bom", design_bom)
+		serial_bom = self._resolve_serial_bom()
 
 		# Source: the RM warehouse that currently holds the serial (not the
 		# manufacturer's repair warehouse used by the legacy method).
@@ -616,22 +639,7 @@ class ManufacturingWorkOrder(Document):
 		# department before it can be unpacked here.
 		self._assert_serial_in_department(source_wh)
 
-		# Target: the department's Manufacturing warehouse.
-		target_wh = frappe.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"warehouse_type": "Manufacturing",
-				"department": self.department,
-			},
-			"name",
-		)
-		if not target_wh:
-			frappe.throw(
-				_("Manufacturing warehouse not found for department {0}").format(
-					self.department
-				)
-			)
+		target_wh = self._resolve_unpack_target_warehouse()
 
 		source_inventory_type, source_customer, customer = _resolve_unpack_inventory(
 			self.serial_no, self.manufacturing_order
@@ -644,50 +652,26 @@ class ManufacturingWorkOrder(Document):
 				).format(self.manufacturing_order)
 			)
 
-		# Average per-item rate from the serial's original purchase entry.
-		parent_entry = frappe.db.get_value(
-			"Serial No", self.serial_no, "purchase_document_no"
-		)
-		raw_item_data = (
-			frappe.db.get_all(
-				"Stock Entry Detail",
-				{"parent": parent_entry},
-				["basic_rate", "item_code"],
-			)
-			if parent_entry
-			else []
-		)
-
-		from collections import defaultdict
-
-		row_dict = defaultdict(
-			lambda: {"count": 0, "total_basic_rate": 0, "avg_basic_rate": 0}
-		)
-		for row in raw_item_data:
-			row_dict[row.item_code]["count"] += 1
-			row_dict[row.item_code]["total_basic_rate"] += row.basic_rate
-			row_dict[row.item_code]["avg_basic_rate"] = (
-				row_dict[row.item_code]["total_basic_rate"]
-				/ row_dict[row.item_code]["count"]
-			)
-
 		# Unpack the FULL item, not the reduced repair new_bom: resolve every
-		# component (metal + each diamond group + findings) from the design BOM's
+		# component (metal + each diamond group + findings) from the serial's own BOM's
 		# detail tables. Downstream (MOP weights, repack) is MOP-Log-driven off the
 		# rows we book here, so booking the full set is what makes the operation
 		# reflect the whole item.
 		components, design_gross, design_qty = self._resolve_full_repair_components(
-			pmo_name, design_bom
+			pmo_name, serial_bom
 		)
 		if not components:
 			frappe.throw(
 				_(
-					"No components resolved from design BOM {0}; nothing to unpack."
-				).format(design_bom)
+					"No components resolved from BOM {0} of Serial No {1}; nothing to unpack."
+				).format(serial_bom, self.serial_no)
 			)
 
 		self._assert_components_bookable(
-			[comp["item_code"] for comp in components], design_bom
+			[comp["item_code"] for comp in components], serial_bom
+		)
+		component_rates = self._unpack_component_rates(
+			[comp["item_code"] for comp in components]
 		)
 
 		se = frappe.get_doc(
@@ -757,33 +741,160 @@ class ManufacturingWorkOrder(Document):
 				batch_doc.save()
 				batch_no = batch_doc.name
 
-			rate = 0
-			if row_dict.get(item_code) and row_dict[item_code].get("avg_basic_rate"):
-				rate = row_dict[item_code].get("avg_basic_rate")
+			row = {
+				"item_code": item_code,
+				"qty": qty,
+				"inventory_type": "Customer Goods",
+				"customer": customer,
+				"t_warehouse": target_wh,
+				"department": self.department,
+				"use_serial_batch_fields": 1,
+				"set_basic_rate_manually": 1,
+				"basic_rate": flt(component_rates.get(item_code)),
+				"batch_no": batch_no,
+				# All unpacked materials belong to THIS repair MWO's operation so
+				# they surface in its MOP (MOP Log is keyed by the row's operation).
+				"custom_manufacturing_work_order": self.name,
+				"manufacturing_operation": self.manufacturing_operation,
+			}
+			# Stones carry the BOM's piece count; without it the row keeps the
+			# field's default of 1 and the MOP shows 1 pc for a 35-stone group.
+			if flt(comp.get("pcs")):
+				row["pcs"] = cint(round(flt(self.qty) * flt(comp["pcs"]) / design_qty))
+			se.append("items", row)
 
-			se.append(
-				"items",
-				{
-					"item_code": item_code,
-					"qty": qty,
-					"inventory_type": "Customer Goods",
-					"customer": customer,
-					"t_warehouse": target_wh,
-					"department": self.department,
-					"use_serial_batch_fields": 1,
-					"set_basic_rate_manually": 1,
-					"basic_rate": rate,
-					"batch_no": batch_no,
-					# All unpacked materials belong to THIS repair MWO's operation so
-					# they surface in its MOP (MOP Log is keyed by the row's operation).
-					"custom_manufacturing_work_order": self.name,
-					"manufacturing_operation": self.manufacturing_operation,
-				},
-			)
-
+		# First save lets ERPNext value the serial being consumed; the components are then
+		# re-rated so what comes back adds up to exactly that value (nothing booked to
+		# the Difference Account, nothing left at a 0 rate).
+		se.save()
+		self._rate_unpacked_components(se)
 		se.save()
 		se.submit()
 		return se.name
+
+	def _resolve_unpack_target_warehouse(self):
+		"""Where the unpacked material goes: the work order's own warehouse, the same
+		rule Material Transfer (WORK ORDER) uses. A Not Started operation takes the
+		department's Manufacturing warehouse; one that is WIP with an employee takes
+		that employee's Manufacturing warehouse.
+		"""
+		mop = (
+			frappe.db.get_value(
+				"Manufacturing Operation",
+				self.manufacturing_operation,
+				["status", "employee", "department"],
+				as_dict=True,
+			)
+			if self.manufacturing_operation
+			else None
+		) or frappe._dict()
+		department = mop.get("department") or self.department
+
+		if mop.get("status") == "WIP" and mop.get("employee"):
+			warehouse = frappe.db.get_value(
+				"Warehouse",
+				{
+					"employee": mop.employee,
+					"warehouse_type": "Manufacturing",
+					"disabled": 0,
+				},
+				"name",
+			)
+			if not warehouse:
+				frappe.throw(
+					_("Manufacturing warehouse not found for employee {0}").format(
+						mop.employee
+					)
+				)
+			return warehouse
+
+		warehouse = frappe.db.get_value(
+			"Warehouse",
+			{
+				"department": department,
+				"warehouse_type": "Manufacturing",
+				"disabled": 0,
+			},
+			"name",
+		)
+		if not warehouse:
+			frappe.throw(
+				_("Manufacturing warehouse not found for department {0}").format(
+					department
+				)
+			)
+		return warehouse
+
+	def _unpack_component_rates(self, item_codes):
+		"""Per-unit rate of each component, as it was when this piece was made.
+
+		The serial's own creation entry is the record of what each component cost, so its
+		consumed rows give the rates (qty-weighted per item). Items it does not cover fall
+		back to the Item's last purchase rate. Only the proportions matter:
+		_rate_unpacked_components scales the set to the value of the serial.
+		"""
+		rates = {}
+		entry = frappe.db.sql(
+			"""
+			SELECT bundle.voucher_no
+			FROM `tabSerial and Batch Entry` entry
+			JOIN `tabSerial and Batch Bundle` bundle ON bundle.name = entry.parent
+			WHERE entry.serial_no = %s
+				AND bundle.voucher_type = 'Stock Entry'
+				AND bundle.type_of_transaction = 'Inward'
+				AND bundle.docstatus = 1
+				AND bundle.is_cancelled = 0
+			ORDER BY bundle.creation ASC
+			LIMIT 1
+			""",
+			(self.serial_no,),
+		)
+		if entry:
+			totals = {}
+			for row in frappe.db.get_all(
+				"Stock Entry Detail",
+				{"parent": entry[0][0], "s_warehouse": ["is", "set"]},
+				["item_code", "qty", "basic_rate"],
+			):
+				qty, amount = totals.get(row.item_code, (0.0, 0.0))
+				totals[row.item_code] = (
+					qty + flt(row.qty),
+					amount + flt(row.qty) * flt(row.basic_rate),
+				)
+			rates = {
+				item: amount / qty for item, (qty, amount) in totals.items() if qty
+			}
+
+		for item_code in item_codes:
+			if not flt(rates.get(item_code)):
+				rates[item_code] = flt(
+					frappe.db.get_value("Item", item_code, "last_purchase_rate")
+				)
+		return rates
+
+	def _rate_unpacked_components(self, se):
+		"""Scale the component rates so they add up to the value of the serial consumed.
+
+		``se`` has been saved once, so its source row carries the value ERPNext took for the
+		serial. The last component takes the rounding remainder so the two sides match to the
+		paisa.
+		"""
+		source_value = sum(
+			flt(row.basic_rate) * flt(row.qty) for row in se.items if row.s_warehouse
+		)
+		targets = [row for row in se.items if row.t_warehouse]
+		booked = sum(flt(row.basic_rate) * flt(row.qty) for row in targets)
+		if not (targets and source_value > 0 and booked > 0):
+			return
+
+		factor = source_value / booked
+		running = 0.0
+		for row in targets[:-1]:
+			row.basic_rate = flt(flt(row.basic_rate) * factor, 6)
+			running += flt(flt(row.basic_rate) * flt(row.qty), 2)
+		last = targets[-1]
+		if flt(last.qty):
+			last.basic_rate = flt((source_value - running) / flt(last.qty), 6)
 
 	def validate_photoshop_images(self):
 		"""Block FG submission when the Design Code Item is flagged 'Is Photoshop

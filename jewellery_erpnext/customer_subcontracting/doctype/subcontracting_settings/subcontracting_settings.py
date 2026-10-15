@@ -33,6 +33,13 @@ RECEIPT_PURPOSE = "Material Receipt"
 class SubcontractingSettings(Document):
 	def validate(self):
 		validate_customer_gold_settings(self)
+		# Not gated on the Customer Gold flow: the Hybrid rule applies with the flow off too.
+		# Imported here because hybrid_findings imports this module.
+		from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+			validate_hybrid_finding_categories,
+		)
+
+		validate_hybrid_finding_categories(self)
 
 
 def validate_customer_gold_settings(doc):
@@ -244,6 +251,48 @@ def _validate_account(account, company, idx, label, expected_root_type=None):
 				frappe.bold(expected_root_type),
 			)
 		)
+
+
+def has_settings_capability(fieldname):
+	"""True when ``Subcontracting Settings`` exists AND actually carries ``fieldname``.
+
+	A NARROW CAPABILITY CHECK, NOT AN EXCEPTION CATCH -- and the distinction is the whole point.
+
+	The previous implementation called ``get_single_value`` and caught
+	``(InvalidColumnName, DoesNotExistError)``. That did not work, and the reason is an upstream
+	Frappe defect rather than a misreading. ``frappe/database/database.py:917-921`` reads::
+
+	    frappe.throw(
+	        _("Field {0} does not exist on {1}").format(
+	            frappe.bold(fieldname), frappe.bold(doctype), self.InvalidColumnName
+	        )
+	    )
+
+	``self.InvalidColumnName`` is the THIRD positional argument to ``str.format()``. The format
+	string has only ``{0}`` and ``{1}``, so the class is silently discarded and ``frappe.throw``
+	falls back to its default, plain ``frappe.ValidationError``. ``InvalidColumnName`` is a
+	SUBCLASS of ``ValidationError`` (``database.py:101``), and ``except SubClass`` cannot catch a
+	raised superclass -- so the missing-FIELD case was never caught. Only the missing-DOCTYPE case
+	was. Reproduced on ``gk`` and ``alfarsi``.
+
+	Widening the catch to ``ValidationError`` is explicitly rejected by the recovery
+	specification (§4.3): it would swallow every unrelated business validation raised anywhere
+	beneath this call. So the question is asked BEFORE the call instead of rescued after it.
+
+	``frappe.db.exists("DocType", ...)`` never throws for an absent DocType. ``Meta.has_field``
+	is an in-memory dict lookup over ``_fields``, which ``Meta.process`` populates from DocFields
+	AND Custom Fields -- so it sees this app's provisioned fields, which ``frappe.db.field_exists``
+	(DocField-only) would miss. ``get_meta`` is cache-first, so on a warm cache this costs no
+	query at all; the old path paid a real ``tabSingles`` round-trip before throwing.
+	"""
+	if not frappe.db.exists("DocType", SETTINGS_DOCTYPE):
+		return False
+
+	try:
+		return bool(frappe.get_meta(SETTINGS_DOCTYPE).has_field(fieldname))
+	except frappe.DoesNotExistError:
+		# Narrow, and only for the race where the DocType row vanishes between the two calls.
+		return False
 
 
 def is_customer_gold_enabled():

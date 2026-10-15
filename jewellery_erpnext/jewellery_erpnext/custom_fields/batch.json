@@ -70,6 +70,18 @@
   },
   {
    "dt": "Batch",
+   "fieldname": "custom_ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "custom_customer",
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "dt": "Batch",
    "fieldname": "custom_origin_entries",
    "fieldtype": "Table",
    "insert_after": "custom_section_break_jhbup",
