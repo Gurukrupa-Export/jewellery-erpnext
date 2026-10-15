@@ -5,6 +5,11 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+	get_batch_ref_customer_map,
+	hybrid_settlement_context,
+	is_own_hybrid_finding,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	create_mr_wo_stock_entry,
 	get_make_receive_entry_rows,
@@ -46,9 +51,24 @@ def _mwo_needs_settlement(mwo):
 	):
 		return False
 	pmo_is_customer_gold = _is_customer_gold(mwo)
+	rows = _get_receivable_gold_rows(mwo)
+	hybrid = _hybrid_finding_context(mwo, rows, pmo_is_customer_gold)
 	return any(
-		_row_needs_settlement(mwo, row, pmo_is_customer_gold)
-		for row in _get_receivable_gold_rows(mwo)
+		_row_needs_settlement(mwo, row, pmo_is_customer_gold, hybrid) for row in rows
+	)
+
+
+def _hybrid_finding_context(mwo, rows, pmo_is_customer_gold):
+	"""Context for the Hybrid exemption in ``_row_needs_settlement``, or ``None``.
+
+	Built only where it can change an answer: a regular (not customer-gold) order holding a
+	customer-owned row. A customer-gold order already treats its own customer's batch as owned.
+	"""
+	if pmo_is_customer_gold:
+		return None
+	return hybrid_settlement_context(
+		mwo.manufacturing_order,
+		[row.get("item_code") for row in rows if row.get("batch_customer")],
 	)
 
 
@@ -60,18 +80,25 @@ def _is_customer_gold(mwo):
 	)
 
 
-def _row_needs_settlement(mwo, row, pmo_is_customer_gold):
+def _row_needs_settlement(mwo, row, pmo_is_customer_gold, hybrid=None):
 	"""Decide whether an original transfer gold row must be settled by SNC.
 
 	A batch received under a "Customer Repair" voucher is never settled by SNC,
 	regardless of order type or batch ownership (business rule): repair gold is
 	returned as-is, so no owner gold is owed against it.
 
+	A Hybrid order's listed finding drawn from its own customer's batch (Customer Goods
+	received for the order's Ref Customer) is not borrowed either: ``hybrid_findings``
+	requires exactly that batch, so settling it would swap the customer's finding back out.
+	``hybrid`` is ``_hybrid_finding_context``.
+
 	Subcontracting order: settle whenever the borrowed gold is not the order
 	customer's own gold (covers other-customer gold and regular/company gold).
 	Regular order: settle only when a customer's gold was borrowed.
 	"""
 	if row.get("batch_voucher_type") == "Customer Repair":
+		return False
+	if is_own_hybrid_finding(hybrid, row):
 		return False
 	batch_customer = row.get("batch_customer")
 	if pmo_is_customer_gold:
@@ -178,10 +205,12 @@ def create_snc(mwo):
 	# Make Receive uses -- loss-adjusted, per current batch), so the replacement
 	# transfer mirrors the received rows row-for-row instead of copying the stale
 	# earliest Material Transfer.
+	receivable_rows = _get_receivable_gold_rows(mwo)
+	hybrid = _hybrid_finding_context(mwo, receivable_rows, pmo_is_customer_gold)
 	settle_rows = [
 		row
-		for row in _get_receivable_gold_rows(mwo)
-		if _row_needs_settlement(mwo, row, pmo_is_customer_gold)
+		for row in receivable_rows
+		if _row_needs_settlement(mwo, row, pmo_is_customer_gold, hybrid)
 	]
 	if not settle_rows:
 		frappe.throw(_("No borrowed gold rows to settle found."))
@@ -567,6 +596,13 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 				"s_warehouse": row.get("s_warehouse"),
 			}
 		)
+	# The end customer each batch was received for, for the Hybrid exemption in
+	# _row_needs_settlement. One read for all rows; nothing when no row has a batch.
+	ref_customers = get_batch_ref_customer_map(
+		[item["batch_no"] for item in receive_items]
+	)
+	for item in receive_items:
+		item["batch_ref_customer"] = ref_customers.get(item["batch_no"])
 	return receive_items
 
 
