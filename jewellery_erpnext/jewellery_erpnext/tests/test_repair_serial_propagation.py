@@ -213,9 +213,10 @@ class TestMakeManufacturingOrderCarriesRepairLineage(IntegrationTestCase):
 
 
 class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
-	"""after_insert derives serial_id_bom from BOM.tag_no -- as a FALLBACK only."""
+	"""after_insert gives the PMO the BOM of ITS serial (as kggk_prod always did); the plan
+	row's value only stands when the serial has no BOM of its own."""
 
-	def _run(self, serial_no, serial_id_bom, tagged_bom):
+	def _run(self, serial_no, serial_id_bom, tagged_bom, serial_custom_bom=None):
 		written = {}
 		fake = SimpleNamespace(
 			custom_tracking_bom=None,
@@ -225,6 +226,7 @@ class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
 		)
 		mock_db = MagicMock()
 		mock_db.exists.return_value = tagged_bom
+		mock_db.get_value.return_value = serial_custom_bom
 		with patch(f"{PMO_MOD}.frappe.db", mock_db):
 			ParentManufacturingOrder.after_insert(fake)
 		return written
@@ -233,10 +235,24 @@ class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
 		written = self._run("SN-1", None, "BOM-FROM-TAG")
 		self.assertEqual(written.get("serial_id_bom"), "BOM-FROM-TAG")
 
-	def test_does_not_overwrite_the_value_carried_from_the_plan_row(self):
-		"""The order was raised against a specific serial BOM. A BOM that merely happens
-		to be tagged to the same serial must not silently replace it."""
-		written = self._run("SN-1", "BOM-FROM-ROW", "BOM-FROM-TAG")
+	def test_the_serials_tagged_bom_replaces_the_design_bom_carried_from_the_row(self):
+		"""A repair row carries the item's design BOM as its serial BOM (quotation
+		custom_serial_id_bom); the serial's own BOM must win."""
+		written = self._run("SN-1", "BOM-DESIGN-FROM-ROW", "BOM-FROM-TAG")
+		self.assertEqual(written.get("serial_id_bom"), "BOM-FROM-TAG")
+
+	def test_the_serials_own_bom_no_wins_over_a_tagged_bom(self):
+		written = self._run(
+			"SN-1", "BOM-DESIGN-FROM-ROW", "BOM-FROM-TAG", serial_custom_bom="BOM-AS-BUILT"
+		)
+		self.assertEqual(written.get("serial_id_bom"), "BOM-AS-BUILT")
+
+	def test_a_value_already_equal_is_not_rewritten(self):
+		written = self._run("SN-1", "BOM-FROM-TAG", "BOM-FROM-TAG")
+		self.assertNotIn("serial_id_bom", written)
+
+	def test_the_row_value_stands_when_the_serial_has_no_bom_of_its_own(self):
+		written = self._run("SN-1", "BOM-FROM-ROW", None)
 		self.assertNotIn("serial_id_bom", written)
 
 	def test_no_serial_means_no_derivation(self):
@@ -486,3 +502,39 @@ class TestRepairLineageReachesPMO(IntegrationTestCase):
 				self.assertEqual(mwo.master_bom, pmo.master_bom)
 				self.assertEqual(mwo.serial_id_bom, pmo.serial_id_bom)
 				self.assertEqual(mwo.serial_no, pmo.serial_no)
+
+
+class TestGetSerialBom(IntegrationTestCase):
+	"""utils.get_serial_bom: the serial's own BOM, never a Template that shares its tag."""
+
+	def _bom(self, custom_bom_no, tagged):
+		from jewellery_erpnext.utils import get_serial_bom
+
+		mock_db = MagicMock()
+		mock_db.get_value.return_value = custom_bom_no
+		mock_db.exists.return_value = tagged
+		with patch("jewellery_erpnext.utils.frappe.db", mock_db):
+			return get_serial_bom("SN-1"), mock_db
+
+	def test_the_serials_own_bom_no_is_used(self):
+		bom, _db = self._bom("BOM-AS-BUILT", "BOM-TAGGED")
+		self.assertEqual(bom, "BOM-AS-BUILT")
+
+	def test_a_tagged_bom_is_the_fallback(self):
+		bom, _db = self._bom(None, "BOM-TAGGED")
+		self.assertEqual(bom, "BOM-TAGGED")
+
+	def test_only_a_submitted_finish_goods_bom_counts_as_tagged(self):
+		# A repair adds a Template BOM carrying the same tag_no; it is not the serial's BOM.
+		_bom, db = self._bom(None, "BOM-TAGGED")
+		self.assertEqual(
+			db.exists.call_args[0],
+			("BOM", {"tag_no": "SN-1", "bom_type": "Finish Goods", "docstatus": 1}),
+		)
+
+	def test_no_serial_or_no_bom_gives_none(self):
+		from jewellery_erpnext.utils import get_serial_bom
+
+		self.assertIsNone(get_serial_bom(None))
+		self.assertIsNone(self._bom(None, None)[0])
+
