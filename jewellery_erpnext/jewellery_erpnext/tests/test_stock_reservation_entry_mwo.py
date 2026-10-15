@@ -1235,6 +1235,128 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		mock_sre.assert_not_called()
 		mock_sync.assert_not_called()
 
+	def _run_line_scoped_reservation(
+		self, pmo_mr_qty, line_rows, item_code, so_reserved
+	):
+		"""Drive one inbound row of ``item_code`` (1.02 g) through the reservation. ``pmo_mr_qty``
+		is the existing per-PMO ``custom_total_quantity`` sum (None = no MR on the PMO),
+		``line_rows`` the per-item MR qty over every PMO on the Sales Order line, and
+		``so_reserved`` what the line already holds. Returns (sre, line_query_calls)."""
+		line_calls = []
+
+		def _sql(query, *args):
+			if "custom_total_quantity" in str(query):
+				return [[pmo_mr_qty]]
+			if "tabMaterial Request Item" in str(query):
+				line_calls.append((query, args))
+				return line_rows
+			return None
+
+		def _cached(doctype, name, fields):
+			if doctype == "Parent Manufacturing Order":
+				return ("SO-1", "SOI-1", "MNF-1")
+			if doctype == "Item":
+				return (0, 0)
+			raise AssertionError(doctype)
+
+		sre = MagicMock()
+		doc = MagicMock()
+		doc.stock_entry_type = "Material Transfer (WORK ORDER)"
+		doc.manufacturing_order = "PMO-21"
+		doc.manufacturing_work_order = "MWO-21"
+		doc.company = "GE"
+		doc.manufacturer = None
+		doc.employee_ir = None
+
+		row = MagicMock()
+		row.item_code = item_code
+		row.qty = 1.02
+		row.t_warehouse = "WH-Casting"
+		row.s_warehouse = "WH-Reserve"
+		row.uom = "Gram"
+		row.batch_no = None
+		row.manufacturing_operation = "MOP-21"
+		row.get = MagicMock(side_effect=lambda k, d=None: getattr(row, k, d))
+		doc.items = [row]
+
+		prefix = "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry"
+		with (
+			patch(f"{prefix}.create_mop_log"),
+			patch(f"{prefix}.lock_bins_for_rows"),
+			patch(f"{prefix}.frappe.new_doc", return_value=sre),
+			patch(
+				f"{prefix}.get_sre_reserved_qty_for_voucher_detail_no",
+				return_value=so_reserved,
+			),
+			patch(f"{prefix}.get_available_qty_to_reserve", return_value=1.02),
+			patch(f"{prefix}.frappe.get_cached_value", side_effect=_cached),
+			patch(f"{prefix}.frappe.db.sql", side_effect=_sql),
+			patch(f"{prefix}.frappe.db.get_value", return_value=50),
+		):
+			stock_reservation_entry_for_mwo(doc)
+
+		return sre, line_calls
+
+	def test_voucher_qty_covers_all_pieces_of_the_so_line(self):
+		"""Third piece of a Sales Order line (SAL-ORD-2026-01547): pieces 13 and 19 already
+		hold 1.02 g each of the screw. The old per-PMO limit ((0.834 + 0.08 + 1.02) x 1.5 =
+		2.901) left only 0.861 g; the line-wide qty of the screw (3 x 1.02) x 1.5 = 4.59 is
+		larger, so it wins and the 1.02 g fits."""
+		sre, line_calls = self._run_line_scoped_reservation(
+			pmo_mr_qty=1.934,
+			line_rows=[("F-SCREW", 3.06), ("M-METAL", 2.502), ("D-DIA", 0.24)],
+			item_code="F-SCREW",
+			so_reserved=2.04,
+		)
+
+		self.assertEqual(len(line_calls), 1)
+		query, args = line_calls[0]
+		self.assertIn("pmo.sales_order_item", query)
+		self.assertEqual(args[0]["so"], "SO-1")
+		self.assertEqual(args[0]["soi"], "SOI-1")
+		self.assertAlmostEqual(sre.voucher_qty, 4.59, places=6)
+		self.assertEqual(sre.reserved_qty, 1.02)
+		# ERPNext's allowed qty is now 4.59 - 2.04 = 2.55 >= 1.02.
+		self.assertGreaterEqual(sre.voucher_qty - 2.04, sre.reserved_qty)
+		sre.submit.assert_called_once()
+
+	def test_voucher_qty_never_drops_below_existing_pmo_limit(self):
+		"""Single piece: the screw's own line qty (1.02) is below the PMO's all-items total
+		(1.934), so the existing limit 1.934 x 1.5 = 2.901 is kept -- the change never makes
+		the limit stricter than before."""
+		sre, _calls = self._run_line_scoped_reservation(
+			pmo_mr_qty=1.934,
+			line_rows=[("F-SCREW", 1.02), ("M-METAL", 0.834), ("D-DIA", 0.08)],
+			item_code="F-SCREW",
+			so_reserved=0.0,
+		)
+
+		self.assertAlmostEqual(sre.voucher_qty, 2.901, places=6)
+
+	def test_item_not_requested_on_the_line_keeps_existing_pmo_limit(self):
+		"""An item no MR on the line requested keeps the existing per-PMO limit."""
+		sre, _calls = self._run_line_scoped_reservation(
+			pmo_mr_qty=1.934,
+			line_rows=[("M-METAL", 2.502)],
+			item_code="F-SCREW",
+			so_reserved=0.0,
+		)
+
+		self.assertAlmostEqual(sre.voucher_qty, 2.901, places=6)
+
+	def test_pmo_without_mr_keeps_fallback_and_skips_line_query(self):
+		"""No MR on this PMO: the existing fallback (already reserved + this reservation)
+		stays, and other pieces' MRs are not even queried, so they cannot impose a limit."""
+		sre, line_calls = self._run_line_scoped_reservation(
+			pmo_mr_qty=None,
+			line_rows=[("F-SCREW", 3.06)],
+			item_code="F-SCREW",
+			so_reserved=2.04,
+		)
+
+		self.assertEqual(line_calls, [])
+		self.assertAlmostEqual(sre.voucher_qty, 3.06, places=6)
+
 
 def _bare_sre(**fields):
 	# Bypass Document.__init__ — we only exercise the override branch logic;
