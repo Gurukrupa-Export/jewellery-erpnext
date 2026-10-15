@@ -5,8 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
+from frappe.model.mapper import map_fields
 from frappe.tests import IntegrationTestCase, UnitTestCase
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
 	manufacturing_work_order as mwo_mod,
@@ -964,3 +965,364 @@ def create_pmo(self):
 	pmo.save()
 	pmo.submit()
 	return pmo
+
+
+# What a submitted parent carries and a split child must not: on_submit stamps it.
+PARENT_START = "2026-01-05 10:00:00"
+SPLIT_RUNTIME_FIELDS = {
+	"manufacturing_operation",
+	"start_datetime",
+	"status",
+	"tree_number",
+	"has_split_mwo",
+}
+
+
+class TestSplitChildStartsClean(UnitTestCase):
+	"""A split child is a NEW draft work order. It must not start out with its parent's
+	current operation, start time, status, casting tree or split flag.
+
+	The live shape: never-submitted split children pointing at their parent's current
+	operation, two of them discarded and still reading "Not Started". The split mapped
+	the parent with no field_no_map, frappe.model.mapper.map_fields copies every
+	same-named field whose DocField is not no_copy, and Frappe v16's Discard never runs
+	on_cancel. The schema half is checked on the site's meta and through Frappe's own
+	mapper and copy rules on unsaved documents; the rest is mock-only, like the split
+	classes above. TestSplitChildPointerLifecycle runs the same story on the CI seed.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# See TestSplitWorkOrderEligibility.setUpClass: build the translation cache unpatched.
+		frappe._("Work Order")
+
+	# --- schema --------------------------------------------------------------------------
+
+	def test_pointer_and_start_time_are_no_copy(self):
+		meta = frappe.get_meta("Manufacturing Work Order")
+		for fieldname in ("manufacturing_operation", "start_datetime"):
+			with self.subTest(fieldname=fieldname):
+				df = meta.get_field(fieldname)
+				self.assertIsNotNone(
+					df, f"{fieldname} is missing from Manufacturing Work Order"
+				)
+				self.assertEqual(cint(df.no_copy), 1)
+
+	def test_a_duplicate_does_not_carry_the_pointer_or_the_start_time(self):
+		"""Frappe's own no_copy rule rather than the flag alone; desk Duplicate applies the
+		same rule in the browser. Amend still copies no_copy fields, which is what
+		validate's pointer check is for."""
+		source = frappe.new_doc("Manufacturing Work Order")
+		source.update(
+			{
+				"manufacturing_operation": "MOP-PARENT",
+				"start_datetime": PARENT_START,
+				"seq": 7,
+			}
+		)
+
+		duplicate = frappe.copy_doc(source, ignore_no_copy=False)
+
+		self.assertFalse(duplicate.manufacturing_operation)
+		self.assertFalse(duplicate.start_datetime)
+		self.assertEqual(duplicate.seq, 7)
+
+	# --- create_split_work_order ---------------------------------------------------------
+
+	def _split(self, count=2):
+		"""Run the split with the database stubbed: one record per child made, holding the
+		table map handed to get_mapped_doc and the status the child was saved with."""
+		made = []
+		real_get_all = frappe.get_all
+
+		def _mapped(from_doctype, from_docname, table_maps, *args, **kwargs):
+			child = MagicMock()
+			child.status = "Not Started"  # what the old mapping copied from the parent
+			record = frappe._dict(
+				source=(from_doctype, from_docname), table_maps=table_maps, saved_as=[]
+			)
+			child.save.side_effect = lambda: record.saved_as.append(child.status)
+			made.append(record)
+			return child
+
+		def _gv(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Manufacturing Setting" and fieldname == "wo_split_limit":
+				return 0
+			return None
+
+		def _ga(doctype, *args, **kwargs):
+			if doctype == "Manufacturing Operation":
+				return []  # nothing open, nothing pending
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch.object(mwo_mod, "validate_split_eligibility"),
+			patch.object(mwo_mod, "_get_split_material_requests", return_value=[]),
+			patch("frappe.db.get_value", side_effect=_gv),
+			patch("frappe.get_all", side_effect=_ga),
+			patch.object(mwo_mod, "get_mapped_doc", side_effect=_mapped),
+			patch.object(mwo_mod, "set_values_in_bulk"),
+			patch("frappe.db.set_value"),
+		):
+			mwo_mod.create_split_work_order("MWO-PARENT", "Test_Company", "Labh", count)
+		return made
+
+	def test_each_child_is_mapped_from_the_parent_and_saved_as_a_draft(self):
+		made = self._split(count=2)
+		self.assertEqual(len(made), 2)
+		for record in made:
+			self.assertEqual(record.source, ("Manufacturing Work Order", "MWO-PARENT"))
+			self.assertEqual(record.saved_as, ["Draft"])
+
+	def test_the_split_names_the_parents_runtime_fields(self):
+		(record,) = self._split(count=1)
+		table_map = record.table_maps["Manufacturing Work Order"]
+		self.assertEqual(table_map["doctype"], "Manufacturing Work Order")
+		self.assertEqual(table_map["field_map"], {"name": "split_from"})
+		self.assertEqual(set(table_map["field_no_map"]), SPLIT_RUNTIME_FIELDS)
+
+	def test_the_split_mapping_leaves_the_parents_runtime_state_behind(self):
+		"""Drive Frappe's own map_fields with the exact table map the split passes."""
+		(record,) = self._split(count=1)
+		table_map = record.table_maps["Manufacturing Work Order"]
+		parent = frappe.new_doc("Manufacturing Work Order")
+		parent.update(
+			{
+				"name": "MWO-PARENT",
+				"manufacturing_operation": "MOP-PARENT",
+				"start_datetime": PARENT_START,
+				"status": "Not Started",
+				"tree_number": "TREE-PARENT",
+				"has_split_mwo": 1,
+				"seq": 7,
+			}
+		)
+
+		# Control: a mapping without field_no_map -- the old split -- hands these over.
+		bare = frappe.new_doc("Manufacturing Work Order")
+		map_fields(parent, bare, {"doctype": "Manufacturing Work Order"}, None)
+		self.assertEqual(bare.status, "Not Started")
+		self.assertEqual(bare.tree_number, "TREE-PARENT")
+		self.assertEqual(cint(bare.has_split_mwo), 1)
+
+		child = frappe.new_doc("Manufacturing Work Order")
+		map_fields(parent, child, table_map, None)
+
+		self.assertFalse(child.manufacturing_operation)
+		self.assertFalse(child.start_datetime)
+		self.assertEqual(child.status, "Draft")
+		self.assertFalse(child.tree_number)
+		self.assertEqual(cint(child.has_split_mwo), 0)
+		# The rest of the parent still comes over, and the child knows where it came from.
+		self.assertEqual(child.seq, 7)
+		self.assertEqual(child.split_from, "MWO-PARENT")
+
+	# --- validate: a draft keeps only an operation it owns ------------------------------
+
+	def _clear(self, *, docstatus=0, pointer="MOP-PARENT", owner="MWO-PARENT"):
+		doc = frappe._dict(
+			name="MWO-CHILD", docstatus=docstatus, manufacturing_operation=pointer
+		)
+		with patch.object(mwo_mod, "owner_of", return_value=owner) as lookup:
+			mwo_mod.ManufacturingWorkOrder._clear_foreign_operation_pointer(doc)
+		return doc, lookup
+
+	def test_validate_runs_the_pointer_check(self):
+		doc = MagicMock()
+		mwo_mod.ManufacturingWorkOrder.validate(doc)
+		doc._clear_foreign_operation_pointer.assert_called_once_with()
+
+	def test_a_draft_drops_an_operation_another_work_order_owns(self):
+		"""A legacy split child, or an Amend of a cancelled work order: Frappe's amend
+		copies no_copy fields, so the draft arrives pointing at the original's operation."""
+		doc, lookup = self._clear()
+		self.assertIsNone(doc.manufacturing_operation)
+		lookup.assert_called_once_with("MOP-PARENT")
+
+	def test_a_draft_keeps_an_operation_it_owns(self):
+		# Names compare the way MariaDB compares them: case-insensitively.
+		doc, _ = self._clear(pointer="MOP-OWN", owner="mwo-child")
+		self.assertEqual(doc.manufacturing_operation, "MOP-OWN")
+
+	def test_a_draft_drops_an_operation_that_no_longer_exists(self):
+		doc, _ = self._clear(owner=None)
+		self.assertIsNone(doc.manufacturing_operation)
+
+	def test_a_submitted_work_order_is_left_to_the_ir_flows(self):
+		doc, lookup = self._clear(docstatus=1)
+		self.assertEqual(doc.manufacturing_operation, "MOP-PARENT")
+		lookup.assert_not_called()
+
+	def test_no_operation_means_no_lookup(self):
+		_, lookup = self._clear(pointer=None)
+		lookup.assert_not_called()
+
+	# --- on_discard ----------------------------------------------------------------------
+
+	def test_discard_drops_the_pointer_and_cancels(self):
+		doc = MagicMock()
+		mwo_mod.ManufacturingWorkOrder.on_discard(doc)
+		doc.db_set.assert_called_once_with(
+			{"manufacturing_operation": None, "status": "Cancelled"}
+		)
+
+
+def _pending_siblings_message(fg_name):
+	"""What the finished-goods submit gate says about its siblings ("" when none block)."""
+	fg = frappe.get_doc("Manufacturing Work Order", fg_name)
+	try:
+		fg.validate_other_work_orders()
+	except frappe.ValidationError as e:
+		return str(e)
+	finally:
+		frappe.clear_messages()
+	return ""
+
+
+class TestSplitChildPointerLifecycle(IntegrationTestCase):
+	"""The same story end to end on the CI seed: split a submitted work order into two
+	drafts, submit one of them and discard the other.
+
+	setUpClass skips IntegrationTestCase.setUpClass, like TestManufacturingWorkOrder above
+	and the other create_pmo-based classes in this app: the base would build Frappe test
+	records for every doctype a work order links to. Nothing is rolled back, so run this on
+	a disposable site (CI's test_site).
+
+	Two Material Request helpers are stubbed. Both are covered by the mock classes above
+	and neither touches the pointer. _get_split_material_requests filters on
+	Material Request.custom_manufacturing_work_order, a column that only the
+	add_material_request_mwo_field patch creates -- and install-app records patches as
+	applied without running them, so a freshly installed CI site has no such column.
+	create_mr_for_split_work_order copies the order's MRD for the submitted child.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		# What create_pmo's helpers read from their first argument.
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		cls.warehouse = frappe.get_value(
+			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
+		)
+
+		pmo = create_pmo(cls)
+		work_orders = frappe.get_all(
+			"Manufacturing Work Order",
+			filters={"manufacturing_order": pmo.name},
+			fields=["name", "for_fg"],
+			order_by="creation asc",
+		)
+		cls.fg_name = next(w.name for w in work_orders if w.for_fg)
+		parent = frappe.get_doc(
+			"Manufacturing Work Order",
+			next(w.name for w in work_orders if not w.for_fg),
+		)
+		parent.submit()
+		cls.parent_name = parent.name
+		cls.parent_mop = parent.manufacturing_operation
+
+		with patch.object(mwo_mod, "_get_split_material_requests", return_value=[]):
+			mwo_mod.create_split_work_order(
+				parent.name, parent.company, parent.manufacturer, 2
+			)
+
+		# A snapshot taken before the tests below submit one child and discard the other.
+		cls.children = frappe.get_all(
+			"Manufacturing Work Order",
+			filters={"split_from": parent.name},
+			fields=["name", "docstatus", *sorted(SPLIT_RUNTIME_FIELDS)],
+			order_by="creation asc",
+		)
+
+	def test_children_start_as_drafts_without_the_parents_state(self):
+		self.assertTrue(self.parent_mop)
+		self.assertEqual(len(self.children), 2)
+		for child in self.children:
+			with self.subTest(child=child.name):
+				self.assertEqual(child.docstatus, 0)
+				self.assertEqual(child.status, "Draft")
+				self.assertFalse(child.manufacturing_operation)
+				self.assertFalse(child.start_datetime)
+				self.assertFalse(child.tree_number)
+				self.assertEqual(cint(child.has_split_mwo), 0)
+		# The split closes the parent but leaves it on its own operation.
+		parent = frappe.db.get_value(
+			"Manufacturing Work Order",
+			self.parent_name,
+			["manufacturing_operation", "has_split_mwo"],
+			as_dict=True,
+		)
+		self.assertEqual(parent.manufacturing_operation, self.parent_mop)
+		self.assertEqual(cint(parent.has_split_mwo), 1)
+
+	def test_submitting_a_child_points_it_at_its_own_operation(self):
+		child = frappe.get_doc("Manufacturing Work Order", self.children[0].name)
+		with patch.object(mwo_mod, "create_mr_for_split_work_order") as mint_mr:
+			child.submit()
+		mint_mr.assert_called_once_with(child.name, child.company, child.manufacturer)
+
+		row = frappe.db.get_value(
+			"Manufacturing Work Order",
+			child.name,
+			["manufacturing_operation", "status", "start_datetime"],
+			as_dict=True,
+		)
+		self.assertTrue(row.manufacturing_operation)
+		self.assertNotEqual(row.manufacturing_operation, self.parent_mop)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Manufacturing Operation",
+				row.manufacturing_operation,
+				"manufacturing_work_order",
+			),
+			child.name,
+		)
+		self.assertEqual(row.status, "Not Started")
+		self.assertTrue(row.start_datetime)
+
+	def test_saving_a_draft_drops_a_pointer_it_does_not_own(self):
+		# The legacy shape, written straight to the database the way the old mapping left
+		# it (validate never saw it): a draft pointing at another work order's operation.
+		frappe.db.set_value(
+			"Manufacturing Work Order",
+			self.fg_name,
+			"manufacturing_operation",
+			self.parent_mop,
+			update_modified=False,
+		)
+		fg = frappe.get_doc("Manufacturing Work Order", self.fg_name)
+		self.assertEqual(fg.manufacturing_operation, self.parent_mop)
+
+		fg.save()
+
+		self.assertFalse(
+			frappe.db.get_value(
+				"Manufacturing Work Order", self.fg_name, "manufacturing_operation"
+			)
+		)
+
+	def test_discarding_a_child_clears_its_pointer_and_cancels_it(self):
+		name = self.children[1].name
+		frappe.db.set_value(
+			"Manufacturing Work Order",
+			name,
+			"manufacturing_operation",
+			self.parent_mop,
+			update_modified=False,
+		)
+		# A draft sibling blocks the finished-goods submit...
+		self.assertIn(f"<b>{name}</b>", _pending_siblings_message(self.fg_name))
+
+		frappe.get_doc("Manufacturing Work Order", name).discard()
+
+		row = frappe.db.get_value(
+			"Manufacturing Work Order",
+			name,
+			["docstatus", "status", "manufacturing_operation"],
+			as_dict=True,
+		)
+		self.assertEqual(row.docstatus, 2)
+		self.assertEqual(row.status, "Cancelled")
+		self.assertFalse(row.manufacturing_operation)
+		# ...a discarded one no longer does: validate_other_work_orders skips docstatus 2.
+		self.assertNotIn(f"<b>{name}</b>", _pending_siblings_message(self.fg_name))
