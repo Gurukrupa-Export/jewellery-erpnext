@@ -2146,6 +2146,111 @@ class TestRowsAndEmptyDocuments(_GuardHarness):
 
 
 # ==============================================================================================
+# a row's work order must own its operation
+# ==============================================================================================
+
+
+class TestRowWorkOrderOwnsItsOperation(_GuardHarness):
+	"""``_row_problems``: "Row N: operation X belongs to work order Y, not Z."
+
+	A row that names operation X of work order Y next to work order Z acts on Z -- its pointer,
+	its department, its ledger stamps -- while it moves Y's operation (the mislabelled receive
+	rows behind ``doc_events/mwo_mop_link.py``). Each test pairs work order ``own``'s current
+	operation with a second work order ``other``, both submitted and otherwise healthy, so this
+	rule is the only one that can refuse.
+
+	On insert Frappe validates links BEFORE ``before_insert`` and, unless the row's work order is
+	``fetch_if_empty``, replaces the posted work order with the operation's own, so the guard sees
+	the replaced value. ``ignore_links`` (an import, an integration) skips that step; the insert
+	test sets it, so it checks what is left -- the guard -- whatever the row DocField says. A
+	submit never re-fetches (the rows arrive as stored), so the submit test starts from a saved
+	draft whose row label was then written straight to the table: the shape a legacy draft has,
+	from when the cell was editable and nothing compared it with the operation. The guard runs
+	first on every path; should a later controller check (``doc_events/mwo_mop_link.py``) ever
+	refuse the row first, it says the same line, so the real submit asserts the message on any
+	ValidationError and the guard's own verdict is pinned through its Submission Queue preflight.
+	"""
+
+	def _pair(self):
+		w = self.world
+		own, own_mop = fx.make_work_order(w, "MM")
+		other, _other_mop = fx.make_work_order(w, "MM")
+		return own, own_mop, other
+
+	def _document(self, doctype, rows):
+		w = self.world
+		if doctype == "Employee IR":
+			return fx.employee_ir(w, "Issue", rows, employee="MM1")
+		return fx.department_ir(w, "Issue", rows, current="MM", to="PP")
+
+	def assertNamesTheOwner(self, message, mop, own, other):
+		self.assertIn(
+			f"operation {frappe.bold(mop)} belongs to work order {frappe.bold(own)}, "
+			f"not {frappe.bold(other)}",
+			message,
+		)
+
+	def test_a_new_document_pairing_an_operation_with_another_work_order_is_never_created(
+		self,
+	):
+		for doctype in ("Employee IR", "Department IR"):
+			with self.subTest(doctype=doctype):
+				own, own_mop, other = self._pair()
+				before = fx.snapshot(own, other)
+				doc = self._document(doctype, [(own_mop, other)])
+				doc.flags.ignore_links = True
+
+				message = self.assertGuard(CurrentOperationError, fx.insert_ir, doc)
+
+				self.assertNamesTheOwner(message, own_mop, own, other)
+				self.assertFalse(frappe.db.exists(doctype, doc.flags.fixture_name))
+				self.assertEqual(fx.snapshot(own, other), before)
+
+	def test_a_draft_relabelled_onto_another_work_order_cannot_be_submitted(self):
+		for doctype, table in (
+			("Employee IR", "employee_ir_operations"),
+			("Department IR", "department_ir_operation"),
+		):
+			with self.subTest(doctype=doctype):
+				own, own_mop, other = self._pair()
+				draft = fx.insert_ir(self._document(doctype, [own]))
+				(row,) = fx.reload(draft).get(table)
+				self.assertEqual(
+					(row.manufacturing_operation, row.manufacturing_work_order),
+					(own_mop, own),
+				)
+				frappe.db.set_value(
+					row.doctype,
+					row.name,
+					"manufacturing_work_order",
+					other,
+					update_modified=False,
+				)
+				before = fx.snapshot(own, other)
+
+				# The guard alone: the lock-free check the Submission Queue runs at enqueue time.
+				message = self.assertGuard(
+					CurrentOperationError,
+					current_operation_guard.preflight,
+					fx.reload(draft),
+				)
+				self.assertNamesTheOwner(message, own_mop, own, other)
+
+				# The real submit, with every check that runs on it.
+				with self.assertRaises(frappe.ValidationError) as ctx:
+					fx.submit_ir(draft)
+				self.assertNamesTheOwner(str(ctx.exception), own_mop, own, other)
+
+				self.assertEqual(self.docstatus(doctype, draft.name), 0)
+				self.assertEqual(fx.snapshot(own, other), before)
+				self.assertEqual(fx.mop_logs(voucher_no=draft.name), [])
+				self.assertEqual(
+					(fx.pointer(own), fx.operation(own_mop).status),
+					(own_mop, "Not Started"),
+				)
+
+
+# ==============================================================================================
 # no false positives on states and holders the client offers
 # ==============================================================================================
 

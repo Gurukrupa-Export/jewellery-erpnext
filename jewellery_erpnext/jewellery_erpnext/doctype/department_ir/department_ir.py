@@ -12,6 +12,12 @@ from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	check_rows,
+	mop_owners,
+	refetch_from_work_order,
+	set_current_operation,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
 	WEIGHT_FIELDS,
 	get_summary_data,
@@ -65,7 +71,20 @@ class DepartmentIR(Document):
 		# `docstatus != 1`, so none of it runs at submit. The guard also runs before
 		# validate_and_update_gross_wt_from_mop writes the previous MOP.
 		current_operation_guard.on_before_validate(self)
+		# A row that arrived with only its operation gets that operation's own work order (an
+		# insert without link validation skips fetch_from), so validate_allowed_operation, the
+		# repairing check and validate_mwo below judge it. A row naming ANOTHER work order is the
+		# guard's to judge -- refused above, or logged in its warn mode -- so check_rows' messages
+		# are not reported a second time. See doc_events/mwo_mop_link.py.
+		check_rows(self.department_ir_operation)
 		if self.docstatus != 1:
+			# A draft row's order was fetched (fetch_if_empty) from the work order the client posted,
+			# before the operation's fetch replaced that work order with the owner: re-read it from the
+			# row's final work order.
+			refetch_from_work_order(
+				self.department_ir_operation,
+				{"parent_manufacturing_order": "manufacturing_order"},
+			)
 			if self.company != frappe.db.get_value(
 				"Department", self.current_department, "company"
 			):
@@ -259,7 +278,16 @@ class DepartmentIR(Document):
 					"status": "Not Started",
 				}
 			)
+		# The department moves on the work order that OWNS each received operation (one query for
+		# all rows), not on the row's own work order: the two are validated equal, but the kill
+		# switch's warn mode lets a mismatched row through, and the operation is what moved.
+		owners = mop_owners(
+			row.manufacturing_operation for row in self.department_ir_operation
+		)
 		for row in self.department_ir_operation:
+			mwo = (
+				owners.get(row.manufacturing_operation) or row.manufacturing_work_order
+			)
 			if not cancel:
 				create_mop_log_for_department_ir(
 					self, row, department_wh, in_transit_wh, row.manufacturing_operation
@@ -273,7 +301,7 @@ class DepartmentIR(Document):
 			# the receiver.
 			frappe.db.set_value(
 				"Manufacturing Work Order",
-				row.manufacturing_work_order,
+				mwo,
 				"department",
 				(self.previous_department or self.current_department)
 				if cancel
@@ -282,7 +310,7 @@ class DepartmentIR(Document):
 
 			pmo = frappe.db.get_value(
 				"Manufacturing Work Order",
-				row.manufacturing_work_order,
+				mwo,
 				"manufacturing_order",
 			)
 			if pmo:
@@ -416,8 +444,21 @@ class DepartmentIR(Document):
 			# (lock_order RULE E).
 			for mop_name in cancel_voucher_mop_logs(self.doctype, self.name):
 				recalculate_manufacturing_operation_weights(mop_name)
+		# Cancel only: the operation this Issue minted is a copy of the row's operation, so it
+		# carries that operation's own work order -- find it by the owner, not by the row.
+		owners = (
+			mop_owners(
+				row.manufacturing_operation for row in self.department_ir_operation
+			)
+			if cancel
+			else {}
+		)
 		for row in self.department_ir_operation:
 			if cancel:
+				owner = (
+					owners.get(row.manufacturing_operation)
+					or row.manufacturing_work_order
+				)
 				se_list = frappe.db.get_list(
 					"Stock Entry", {"department_ir": self.name}
 				)
@@ -433,11 +474,11 @@ class DepartmentIR(Document):
 						None,
 					)
 
-				frappe.db.set_value(
-					"Manufacturing Work Order",
-					row.manufacturing_work_order,
-					"manufacturing_operation",
+				# Back to the row's operation, on the work order that owns it.
+				set_current_operation(
 					row.manufacturing_operation,
+					expected_mwo=row.manufacturing_work_order,
+					doc=self,
 				)
 				# The operation this IR created is left in place on cancel, not deleted: once later IRs
 				# have worked it, MOP Logs, Subcontracting Logs, Stock Entries and the next operation
@@ -449,7 +490,7 @@ class DepartmentIR(Document):
 					"Manufacturing Operation",
 					{
 						"department_issue_id": self.name,
-						"manufacturing_work_order": row.manufacturing_work_order,
+						"manufacturing_work_order": owner,
 					},
 				)
 				if created_operation:
@@ -793,7 +834,10 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc.previous_mop = mop
 	new_mop_doc.operation = None
 	new_mop_doc.previous_se_data_updated = 0
-	if is_mwo_refined(mwo):
+	# The copy keeps `mop`'s own work order, and that is the one whose refining and pointer matter
+	# here; `mwo` is only what the Issue row says (validated equal, except in warn mode).
+	owner = new_mop_doc.manufacturing_work_order or mwo
+	if is_mwo_refined(owner):
 		# The MWO's metal has left for the refinery: every operation created after
 		# the Refining Entry must start at 0. copy_doc above keeps no_copy fields
 		# (default ignore_no_copy=True), so the source operation's pre-refining
@@ -818,8 +862,11 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 			if hasattr(new_mop_doc, field):
 				setattr(new_mop_doc, field, 0)
 	new_mop_doc.insert()
-	frappe.db.set_value(
-		"Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name
+	# Point the new operation's OWNER at it; a row whose `mwo` disagrees is reported, never obeyed.
+	set_current_operation(
+		new_mop_doc.name,
+		expected_mwo=mwo,
+		doc=frappe._dict(doctype="Department IR", name=ir_name),
 	)
 	return new_mop_doc
 

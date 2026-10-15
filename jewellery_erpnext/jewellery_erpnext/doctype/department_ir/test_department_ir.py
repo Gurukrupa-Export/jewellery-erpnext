@@ -9,6 +9,10 @@ from frappe.types.frappedict import _dict as FrappeDict
 from jewellery_erpnext.jewellery_erpnext.doc_events import (
 	current_operation_guard as guard,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	CURRENT_OPERATION_GUARD_KEY,
+	set_current_operation,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
 	DepartmentIR,
 	add_time_log_optimize,
@@ -1063,6 +1067,10 @@ def _warm_guard_caches():
 	frappe.get_system_settings("float_precision")
 	frappe.format(frappe.utils.now_datetime(), {"fieldtype": "Datetime"})
 	frappe.utils.flt(1.23456, 3)
+	# The controller's work order / operation lookups (mwo_mop_link) read through frappe.get_all,
+	# which loads the meta through frappe.db.get_value on a cold cache.
+	frappe.get_meta("Manufacturing Operation")
+	frappe.get_meta("Manufacturing Work Order")
 
 
 def _record(calls, label, result=None, raises=None):
@@ -2049,6 +2057,9 @@ class TestDepartmentIRCurrentOperationWiring(IntegrationTestCase):
 		def get_value(doctype, filters=None, *args, **kwargs):
 			if doctype == "Manufacturing Operation" and isinstance(filters, dict):
 				return "MOP-NEW"
+			if doctype == "Manufacturing Operation" and filters == "MOP-1":
+				# set_current_operation asks the row operation for its owner.
+				return "MWO-1"
 			return None
 
 		with (
@@ -2141,4 +2152,333 @@ class TestDepartmentIRCurrentOperationWiring(IntegrationTestCase):
 		writes = self._receive_writes(doc, cancel=False)
 		self.assertIn(
 			("Manufacturing Work Order", "MWO-1", "department", "Dept-B"), writes
+		)
+
+	def test_receive_moves_the_department_of_the_operations_owner(self):
+		"""On submit and on cancel the department moves on the work order that OWNS the received
+		operation: the two are validated equal, but warn mode lets a mismatched row through."""
+		for cancel, department in ((False, "Dept-B"), (True, "Dept-A")):
+			with self.subTest(cancel=cancel):
+				doc = _guard_dir(
+					"Receive",
+					rows=(("MOP-2", "MWO-ROW"),),
+					docstatus=2 if cancel else 1,
+				)
+				with patch(
+					f"{_DIR_MODULE}.mop_owners", return_value={"MOP-2": "MWO-1"}
+				):
+					writes = self._receive_writes(doc, cancel=cancel)
+				self.assertIn(
+					("Manufacturing Work Order", "MWO-1", "department", department),
+					writes,
+				)
+				self.assertFalse(
+					[
+						w
+						for w in writes
+						if w[:2] == ("Manufacturing Work Order", "MWO-ROW")
+					]
+				)
+
+	def test_issue_cancel_finds_and_points_back_through_the_operations_owner(self):
+		"""Warn mode lets an Issue row naming another work order through. Its cancel still finds
+		the operation the Issue minted by the row operation's OWNER (the minted copy carries that
+		work order) and points the owner back; the row's work order is reported, never written."""
+		set_values = []
+		lookups = []
+
+		def get_value(doctype, filters=None, *args, **kwargs):
+			if doctype == "Manufacturing Operation" and isinstance(filters, dict):
+				lookups.append(filters)
+				return "MOP-NEW"
+			if doctype == "Manufacturing Operation" and filters == "MOP-1":
+				return "MWO-OWNER"
+			return None
+
+		with (
+			patch.dict(frappe.local.conf, {CURRENT_OPERATION_GUARD_KEY: "warn"}),
+			patch(f"{_DIR_MODULE}.mop_owners", return_value={"MOP-1": "MWO-OWNER"}),
+			patch(f"{_DIR_MODULE}.get_datetime", return_value="2026-01-01 12:00:00"),
+			patch.object(frappe.db, "sql", return_value=[]),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch.object(frappe.db, "get_list", return_value=[]),
+			patch.object(
+				frappe.db, "set_value", side_effect=lambda *a, **k: set_values.append(a)
+			),
+			patch.object(
+				frappe,
+				"get_doc",
+				side_effect=lambda doctype, name=None, *a, **k: FrappeDict(name=name),
+			),
+			patch.object(frappe, "log_error") as log_error,
+			patch.object(frappe, "msgprint"),
+			patch(f"{_DIR_MODULE}.ensure_operation_not_in_use"),
+			patch(_PC_TAGGING_SYNC),
+		):
+			DepartmentIR.on_submit_issue_new(
+				_guard_dir(
+					"Issue",
+					rows=(("MOP-1", "MWO-ROW"),),
+					name="DIR-I-0001",
+					docstatus=2,
+				),
+				cancel=True,
+			)
+		self.assertEqual(
+			lookups,
+			[
+				{
+					"department_issue_id": "DIR-I-0001",
+					"manufacturing_work_order": "MWO-OWNER",
+				}
+			],
+		)
+		self.assertIn(
+			(
+				"Manufacturing Work Order",
+				"MWO-OWNER",
+				"manufacturing_operation",
+				"MOP-1",
+			),
+			set_values,
+		)
+		self.assertFalse(
+			[w for w in set_values if w[:2] == ("Manufacturing Work Order", "MWO-ROW")]
+		)
+		log_error.assert_called_once()
+		self.assertIn(
+			"refusing to move the current operation",
+			log_error.call_args.kwargs["message"],
+		)
+
+
+# ----------------------------------------------------------------------------------------------
+# Work order <-> operation link integrity (doc_events/mwo_mop_link.py) on the Department IR
+#
+# The current-operation guard refuses a row whose operation belongs to another work order (one
+# test each on insert and submit below); this branch adds the read-only cell re-derived on every
+# draft save (and a blank one filled), the order fetched from it refetched, and the pointer and
+# department written on the operation's OWNER.
+# ----------------------------------------------------------------------------------------------
+
+EOD_LOCK_CHECK = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.is_eod_sync_locked"
+DIR_FIXTURE_SAVEPOINT = "mwo_mop_link_dir_fixture"
+DIR_TEST_SAVEPOINT = "mwo_mop_link_dir_test"
+
+
+def other_work_order(holder, mo):
+	"""A work order that does NOT own ``mo``: a sibling from the same PMO (``create_pmo`` makes one
+	per metal row plus the FG one), else any other work order on the site, else the newest work
+	order of a second PMO -- last, because ``create_pmo`` commits (see
+	TestDepartmentIRWorkOrderOperationLink) and would end the caller's savepoint."""
+	others = {"name": ("!=", mo.manufacturing_work_order), "docstatus": ("!=", 2)}
+	sibling = frappe.db.get_value(
+		"Manufacturing Work Order",
+		{"manufacturing_order": mo.manufacturing_order, **others},
+		"name",
+	) or frappe.db.get_value("Manufacturing Work Order", others, "name")
+	if sibling:
+		return sibling
+	create_pmo(holder)
+	return frappe.get_last_doc("Manufacturing Work Order").name
+
+
+def _department_issue(mop, mwo):
+	"""An UNSAVED Department IR Issue of ``mop`` from Manufacturing Plan & Management to Waxing,
+	its row carrying work order ``mwo`` (``None`` for a blank cell)."""
+	doc = frappe.new_doc("Department IR")
+	doc.company = "Test_Company"
+	doc.manufacturer = "Shubh"
+	doc.type = "Issue"
+	doc.current_department = "Manufacturing Plan & Management - T"
+	doc.next_department = "Waxing - T"
+	doc.append(
+		"department_ir_operation",
+		{"manufacturing_operation": mop, "manufacturing_work_order": mwo},
+	)
+	return doc
+
+
+def _dir_row_value(doc, fieldname="manufacturing_work_order"):
+	return frappe.db.get_value(
+		"Department IR Operation", doc.department_ir_operation[0].name, fieldname
+	)
+
+
+class TestDepartmentIRWorkOrderOperationLink(IntegrationTestCase):
+	"""A Department IR row must carry the work order that OWNS its operation. The Issue points that
+	owner at the operation it mints (and back on cancel), and the Receive moves that owner's
+	department.
+
+	The PMO and its work order's current operation are built once per class. IntegrationTestCase
+	would register a class rollback in setUpClass, but this module skips that bootstrap (see
+	TestDepartmentIR) and ``bench run-tests`` commits whatever is left when the run ends.
+	``create_pmo`` itself COMMITS -- gke_customization's Timesheet and Order hooks call
+	frappe.db.commit() while the Sales Order behind the PMO is built -- so the PMO persists, like
+	every create_pmo fixture in these modules, and the class SAVEPOINT is taken right after it: the
+	submitted work order and its operation are rolled back by the class cleanup, and every test runs
+	inside a SAVEPOINT of its own. Nothing on the Department IR path commits, so both survive until
+	they are rolled back.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		cls.warehouse = frappe.get_value(
+			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
+		)
+		# An EOD lock leaked by another suite on a shared site would refuse every save here.
+		eod = patch(EOD_LOCK_CHECK, return_value=False)
+		eod.start()
+		cls.addClassCleanup(eod.stop)
+		create_pmo(cls)
+		frappe.db.savepoint(DIR_FIXTURE_SAVEPOINT)
+		cls.addClassCleanup(frappe.db.rollback, save_point=DIR_FIXTURE_SAVEPOINT)
+		cls.mo = mo_creation()
+		cls.mop = cls.mo.name
+		cls.mwo = cls.mo.manufacturing_work_order
+		cls.other_mwo = other_work_order(cls, cls.mo)
+
+	def setUp(self):
+		super().setUp()
+		frappe.db.savepoint(DIR_TEST_SAVEPOINT)
+		self.addCleanup(frappe.db.rollback, save_point=DIR_TEST_SAVEPOINT)
+		self.addCleanup(frappe.clear_messages)
+
+	def test_insert_with_another_work_order_is_refused(self):
+		"""Without link validation -- an import or API write that skips fetch_from -- the row keeps
+		the sibling's work order, and on this branch the current-operation guard refuses it."""
+		doc = _department_issue(self.mop, self.other_mwo)
+		with self.assertRaises(guard.CurrentOperationError) as cm:
+			doc.insert(ignore_links=True)
+		message = str(cm.exception)
+		self.assertIn("belongs to work order", message)
+		self.assertIn(self.mwo, message)
+		self.assertIn(self.other_mwo, message)
+
+	def test_draft_save_takes_the_work_order_from_the_operation(self):
+		"""The row's work order is a read-only fetch_from WITHOUT fetch_if_empty, so every draft save
+		re-derives it from the operation: a foreign value posted with the row does not survive. Nor
+		does the order fetched from it: Frappe fetches ``parent_manufacturing_order`` from the POSTED
+		work order before the operation's fetch replaces that work order, so before_validate reads it
+		again from the owner. The sibling is given an order of its own here (siblings share one)."""
+		foreign_pmo = f"TDIR-PMO-{frappe.generate_hash(length=6)}"
+		frappe.get_doc(
+			{"doctype": "Parent Manufacturing Order", "name": foreign_pmo}
+		).db_insert()
+		frappe.db.set_value(
+			"Manufacturing Work Order",
+			self.other_mwo,
+			"manufacturing_order",
+			foreign_pmo,
+		)
+		frappe.db.value_cache.clear()
+		doc = _department_issue(self.mop, self.other_mwo)
+		doc.insert()
+		self.assertEqual(_dir_row_value(doc), self.mwo)
+		self.assertEqual(
+			_dir_row_value(doc, "parent_manufacturing_order"),
+			frappe.db.get_value(
+				"Manufacturing Work Order", self.mwo, "manufacturing_order"
+			),
+		)
+
+	def test_blank_work_order_is_filled_from_the_operation(self):
+		"""A row that arrives with only its operation gets the operation's own work order -- and the
+		order read from that work order. Inserted without link validation, so it is the controller,
+		not fetch_from, that fills both."""
+		doc = _department_issue(self.mop, None)
+		doc.insert(ignore_links=True)
+		self.assertEqual(_dir_row_value(doc), self.mwo)
+		self.assertEqual(
+			_dir_row_value(doc, "parent_manufacturing_order"),
+			frappe.db.get_value(
+				"Manufacturing Work Order", self.mwo, "manufacturing_order"
+			),
+		)
+
+	def test_tampered_row_is_refused_on_submit(self):
+		"""fetch_from is not re-applied on the submit transition: a row re-pointed after its last
+		save reaches the guard as it is, and is refused before the Issue mints anything."""
+		doc = _department_issue(self.mop, self.mwo)
+		doc.insert()
+		frappe.db.set_value(
+			"Department IR Operation",
+			doc.department_ir_operation[0].name,
+			"manufacturing_work_order",
+			self.other_mwo,
+		)
+		with self.assertRaises(guard.CurrentOperationError) as cm:
+			frappe.get_doc("Department IR", doc.name).submit()
+		self.assertIn("belongs to work order", str(cm.exception))
+		self.assertIn(self.other_mwo, str(cm.exception))
+		self.assertFalse(
+			frappe.db.exists("Manufacturing Operation", {"previous_mop": self.mop})
+		)
+
+	def test_issue_points_the_owner_at_its_new_operation_and_receive_moves_it(self):
+		with patch(
+			f"{_DIR_MODULE}.set_current_operation", wraps=set_current_operation
+		) as pointer_write:
+			dir_issue = dir_for_issue(
+				"Manufacturing Plan & Management - T", "Waxing - T", self.mo
+			)
+		minted = frappe.db.get_value(
+			"Manufacturing Operation",
+			{"department_issue_id": dir_issue.name, "previous_mop": self.mop},
+			"name",
+		)
+		self.assertTrue(minted)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Manufacturing Operation", minted, "manufacturing_work_order"
+			),
+			self.mwo,
+		)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Manufacturing Work Order", self.mwo, "manufacturing_operation"
+			),
+			minted,
+		)
+		pointer_write.assert_called_once()
+		self.assertEqual(pointer_write.call_args.args[0], minted)
+		self.assertEqual(pointer_write.call_args.kwargs.get("expected_mwo"), self.mwo)
+
+		dir_for_receive(dir_issue)
+		self.assertEqual(
+			frappe.db.get_value("Manufacturing Work Order", self.mwo, "department"),
+			"Waxing - T",
+		)
+
+	def test_issue_cancel_points_the_owner_back_and_keeps_its_operation_as_revert(self):
+		"""kggk_uat keeps the operation a cancelled Issue minted, marked Revert, and moves the
+		pointer back to the row's operation -- on that operation's owner."""
+		dir_issue = dir_for_issue(
+			"Manufacturing Plan & Management - T", "Waxing - T", self.mo
+		)
+		minted = frappe.db.get_value(
+			"Manufacturing Operation",
+			{"department_issue_id": dir_issue.name, "previous_mop": self.mop},
+			"name",
+		)
+		with patch(
+			f"{_DIR_MODULE}.set_current_operation", wraps=set_current_operation
+		) as pointer_write:
+			frappe.get_doc("Department IR", dir_issue.name).cancel()
+
+		self.assertEqual(
+			frappe.db.get_value(
+				"Manufacturing Work Order", self.mwo, "manufacturing_operation"
+			),
+			self.mop,
+		)
+		pointer_write.assert_called_once()
+		self.assertEqual(pointer_write.call_args.args[0], self.mop)
+		self.assertEqual(pointer_write.call_args.kwargs.get("expected_mwo"), self.mwo)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Manufacturing Operation", minted, ["department_ir_status", "status"]
+			),
+			("Revert", "Not Started"),
 		)
