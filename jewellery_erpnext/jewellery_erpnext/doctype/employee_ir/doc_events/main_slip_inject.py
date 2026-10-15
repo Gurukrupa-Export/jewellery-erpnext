@@ -70,6 +70,12 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	owner_of,
+	report,
+	row_problem,
+	same,
+)
 from jewellery_erpnext.utils import get_item_from_attribute
 
 REPACK_STOCK_ENTRY_TYPE = "Repack"
@@ -599,7 +605,9 @@ def inject_extra_metal_for_eir_receive(eir, row, extra_transfer_rows=None):
 	if has_gain and getattr(eir, "main_slip", None):
 		if _existing_injection_se(eir.name, row.name):
 			return []
-		target_items = _resolve_inject_metal_items(row.manufacturing_work_order, extra)
+		target_items = _resolve_inject_metal_items(
+			_injection_work_order(eir, row), extra
+		)
 		created = _inject_via_main_slip_batches(eir, row, target_items, dept_wh)
 		# The Main Slip path mints one Stock Entry per batch segment, so there is no single
 		# transfer to append to; the extra rows get their own, built exactly the same way.
@@ -608,7 +616,7 @@ def inject_extra_metal_for_eir_receive(eir, row, extra_transfer_rows=None):
 
 	segments = (
 		_resolve_fallback_inject_segments(
-			eir, row.manufacturing_work_order, extra, dept_wh
+			eir, _injection_work_order(eir, row), extra, dept_wh
 		)
 		if has_gain
 		else []
@@ -1292,7 +1300,45 @@ def _resolve_department_warehouse(department):
 	)
 
 
-def _stamp_se_header(se, eir, row):
+def _injection_work_order(eir, row):
+	"""The work order every injection for ``row`` is booked to: the OWNER of the row's operation.
+
+	``row.manufacturing_work_order`` is an Employee IR cell that used to be freely editable, and copying
+	it put a sibling's work order on the injection's header, its rows, the reservation keyed off that
+	header and the MOP Log stamps, while the metal itself went to the row's operation (see
+	``doc_events/mwo_mop_link``). The operation is the anchor, so the work order is derived from it. A row
+	whose cell disagrees is reported -- raised in enforce mode; in warn mode logged, then booked to the
+	owner. An operation that cannot be resolved keeps the row's own cell, as before. For a consistent row
+	the result is the row's work order, so nothing changes.
+
+	Remembered per row on ``eir.flags`` (a MOP never changes owner), so the several Stock Entries one row
+	can mint cost one lookup and, in warn mode, one log entry.
+	"""
+	row_mwo = getattr(row, "manufacturing_work_order", None)
+	mop = getattr(row, "manufacturing_operation", None)
+	flags = getattr(eir, "flags", None)
+	memo = (
+		flags.setdefault("injection_work_orders", {})
+		if isinstance(flags, dict)
+		else None
+	)
+	key = (getattr(row, "name", None), mop)
+	if memo is not None and key in memo:
+		return memo[key]
+
+	owner = owner_of(mop)
+	if owner and row_mwo and not same(owner, row_mwo):
+		report(
+			[row_problem(getattr(row, "idx", None) or "?", mop, owner, row_mwo)],
+			doc=eir,
+		)
+	mwo = owner or row_mwo
+	if memo is not None:
+		memo[key] = mwo
+	return mwo
+
+
+def _stamp_se_header(se, eir, row, mwo=None):
 	"""Common header for every injection Stock Entry, including casting tree provenance.
 
 	``custom_tree_number`` records which casting tree this draw belongs to. Without it the metal
@@ -1303,17 +1349,21 @@ def _stamp_se_header(se, eir, row):
 	filled the row in ``validate`` and the helper short-circuits on it, but a non-casting operation
 	that still carries a tree (a finding repack) is answered only by its ``MWO`` fallback.
 
+	The work order and PMO are the operation's owner's (``_injection_work_order``); the builders pass
+	the ``mwo`` they also stamp on their rows.
+
 	Imported inside the function to keep this module's import graph free of ``tree_casting``.
 	"""
 	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 		row_tree_name,
 	)
 
+	mwo = mwo or _injection_work_order(eir, row)
 	se.company = eir.company
 	se.manufacturing_order = frappe.get_cached_value(
-		"Manufacturing Work Order", row.manufacturing_work_order, "manufacturing_order"
+		"Manufacturing Work Order", mwo, "manufacturing_order"
 	)
-	se.manufacturing_work_order = row.manufacturing_work_order
+	se.manufacturing_work_order = mwo
 	se.manufacturing_operation = row.manufacturing_operation
 	se.employee_ir = eir.name
 	se.custom_eir_operation_row = row.name
@@ -1339,9 +1389,10 @@ def _build_material_transfer_from_segments(
 	difference is that they already know their batch and its owner, which a metal segment leaves
 	to the FIFO pass.
 	"""
+	mwo = _injection_work_order(eir, row)
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
-	_stamp_se_header(se, eir, row)
+	_stamp_se_header(se, eir, row, mwo)
 	for seg in transfer_segments:
 		se.append(
 			"items",
@@ -1352,7 +1403,7 @@ def _build_material_transfer_from_segments(
 				"t_warehouse": dept_wh,
 				"uom": "Gram",
 				"manufacturing_operation": row.manufacturing_operation,
-				"custom_manufacturing_work_order": row.manufacturing_work_order,
+				"custom_manufacturing_work_order": mwo,
 				"use_serial_batch_fields": 1,
 			},
 		)
@@ -1365,7 +1416,7 @@ def _build_material_transfer_from_segments(
 			"uom": frappe.db.get_value("Item", extra["item_code"], "stock_uom")
 			or "Gram",
 			"manufacturing_operation": row.manufacturing_operation,
-			"custom_manufacturing_work_order": row.manufacturing_work_order,
+			"custom_manufacturing_work_order": mwo,
 			"use_serial_batch_fields": 1,
 		}
 		# The batch is already resolved by the producer, so this row takes
@@ -1387,9 +1438,10 @@ def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dep
 	Pure metal is consumed from the single MSL ``source_wh``; the produced alloy
 	lands in the MOP department warehouse.
 	"""
+	mwo = _injection_work_order(eir, row)
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
-	_stamp_se_header(se, eir, row)
+	_stamp_se_header(se, eir, row, mwo)
 	for seg in purity_segments:
 		se.append(
 			"items",
@@ -1409,7 +1461,7 @@ def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dep
 				"t_warehouse": dept_wh,
 				"uom": "Gram",
 				"manufacturing_operation": row.manufacturing_operation,
-				"custom_manufacturing_work_order": row.manufacturing_work_order,
+				"custom_manufacturing_work_order": mwo,
 				"use_serial_batch_fields": 1,
 			},
 		)
@@ -1461,9 +1513,10 @@ def _build_material_transfer_se(
 ):
 	"""Main Slip path: Material Transfer (WORK ORDER) - consume + produce the
 	same item, from source warehouse to MOP department warehouse."""
+	mwo = _injection_work_order(eir, row)
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
-	_stamp_se_header(se, eir, row)
+	_stamp_se_header(se, eir, row, mwo)
 	se.append(
 		"items",
 		_stamp_row_ownership(
@@ -1475,7 +1528,7 @@ def _build_material_transfer_se(
 				"uom": "Gram",
 				"batch_no": batch_no,
 				"manufacturing_operation": row.manufacturing_operation,
-				"custom_manufacturing_work_order": row.manufacturing_work_order,
+				"custom_manufacturing_work_order": mwo,
 				"use_serial_batch_fields": 1,
 			},
 			batch_no,
@@ -1503,9 +1556,10 @@ def _build_purity_repack_se(
 	target alloy into the MOP department warehouse. Purity conversion applied
 	by the caller: produce_qty = consume_qty * source_purity / target_purity.
 	"""
+	mwo = _injection_work_order(eir, row)
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
-	_stamp_se_header(se, eir, row)
+	_stamp_se_header(se, eir, row, mwo)
 	consume = _stamp_row_ownership(
 		{
 			"item_code": source_item,
@@ -1529,7 +1583,7 @@ def _build_purity_repack_se(
 		"t_warehouse": dept_wh,
 		"uom": "Gram",
 		"manufacturing_operation": row.manufacturing_operation,
-		"custom_manufacturing_work_order": row.manufacturing_work_order,
+		"custom_manufacturing_work_order": mwo,
 		"use_serial_batch_fields": 1,
 	}
 	inv, cust = normalize_ownership(
