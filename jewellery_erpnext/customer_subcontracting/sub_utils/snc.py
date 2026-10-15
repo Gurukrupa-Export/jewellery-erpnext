@@ -358,6 +358,7 @@ def find_owner_rm_warehouse(
 	warehouses=None,
 	allocated=None,
 	reserve=True,
+	batch_nos=None,
 ):
 	"""Locate a batch of ``owner_customer``'s metal big enough for the requirement.
 
@@ -365,6 +366,7 @@ def find_owner_rm_warehouse(
 	company); ``allocated`` is a caller-owned ``{(batch_no, warehouse): qty}`` map that
 	makes a multi-row run self-consistent -- see :func:`_find_available_owner_batch`.
 	``reserve`` decides whether a hit is *recorded* in that map or merely read against.
+	``batch_nos`` restricts the candidates to those batches (None = any of the owner's).
 	"""
 	if not search_different_purity:
 		return _find_available_owner_batch(
@@ -375,6 +377,7 @@ def find_owner_rm_warehouse(
 			warehouses=warehouses,
 			allocated=allocated,
 			reserve=reserve,
+			batch_nos=batch_nos,
 		)
 
 	required_purity = _get_purity_label(item_code)
@@ -394,6 +397,7 @@ def find_owner_rm_warehouse(
 				warehouses=warehouses,
 				allocated=allocated,
 				reserve=reserve,
+				batch_nos=batch_nos,
 			)
 			if batch:
 				batch["qty"] = source_qty
@@ -722,8 +726,13 @@ def _find_available_owner_batch(
 	warehouses=None,
 	allocated=None,
 	reserve=True,
+	batch_nos=None,
 ):
 	"""Find one (batch, warehouse) holding at least ``required_qty`` of the owner's metal.
+
+	``batch_nos`` -- when given, only those batches are candidates (an empty collection
+	finds nothing). Settle passes a Material Request batch's lineage here so another
+	receipt's metal can never settle it.
 
 	``allocated`` -- when the caller passes a ``{(batch_no, warehouse): qty}`` dict, the
 	running claim is subtracted from BOTH availability checks. The finder takes no
@@ -754,6 +763,10 @@ def _find_available_owner_batch(
 			"custom_inventory_type": "Regular Stock",
 			"disabled": 0,
 		}
+	if batch_nos is not None:
+		if not batch_nos:
+			return None
+		batch_filters["name"] = ["in", list(batch_nos)]
 	batches = frappe.get_all(
 		"Batch", filters=batch_filters, pluck="name", order_by="creation asc"
 	)
