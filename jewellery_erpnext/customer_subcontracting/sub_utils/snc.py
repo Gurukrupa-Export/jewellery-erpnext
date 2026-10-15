@@ -5,12 +5,21 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
+	snc_settlement_conversion,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	create_mr_wo_stock_entry,
 	get_make_receive_entry_rows,
 )
 
 PURITY_PRIORITY = ("24KT", "22KT", "20KT", "18KT")
+# Item templates whose borrowed rows SNC settles: Metal and Finding variants...
+SETTLEABLE_TEMPLATES = ("M", "F")
+FINDING_TEMPLATE = "F"
+# ...of gold only (M-G-..., F-G-...). The owner-stock finders source gold purities
+# only, so silver, Export Gold, alloy or Lux rows could never be settled.
+SETTLEABLE_METAL_TYPE = "G"
 
 
 @frappe.whitelist()
@@ -184,107 +193,112 @@ def create_snc(mwo):
 		if _row_needs_settlement(mwo, row, pmo_is_customer_gold)
 	]
 	if not settle_rows:
-		frappe.throw(_("No borrowed gold rows to settle found."))
+		frappe.throw(_("No borrowed metal or finding rows to settle found."))
 
 	created = {"make_receive": None, "conversions": [], "transfers": []}
-	transfer_rows = []
-	# One allocation map for the whole settlement: the owner-batch finders take no DB
-	# hold, so without it two settle rows can be handed the same batch and over-draw it.
+	# Store/department Raw Material warehouses only: a karigar's or subcontractor's RM
+	# warehouse can hold small residues of the same batch, and settling out of it would
+	# post against that person's stock.
+	source_warehouses = _get_snc_source_warehouses(mwo.company)
+
+	# Pass 1 -- find every row's owner stock BEFORE anything is submitted. The finders
+	# take no DB hold, so every hit is reserved in one allocation map for the whole
+	# settlement; without it two rows can be handed the same batch and over-draw it.
+	# Nothing is minted yet, so no finder can re-discover a conversion's output either.
 	allocated = {}
+	plan = []
 	for row in settle_rows:
-		# Reserves: consumed by the ONE Material Transfer built at the very end, so
-		# nothing reduces the ledger before the next row looks.
-		required_batch = find_owner_batch(
+		owner_batch = find_owner_batch(
 			owner_customer,
 			row["item_code"],
 			row["qty"],
 			company=mwo.company,
+			warehouses=source_warehouses,
 			allocated=allocated,
 		)
-		if required_batch:
-			# Receive the borrowed gold once, then bring the owner's own gold back
-			# to the warehouse this row was received from.
-			if created["make_receive"] is None:
-				created["make_receive"] = trigger_make_receive(
-					mwo, required_batch["warehouse"], receive_items=settle_rows
-				)
-			transfer_rows.append(
-				{
-					"item_code": row["item_code"],
-					"qty": row["qty"],
-					"custom_pure_qty": row["custom_pure_qty"],
-					"batch_no": required_batch["batch_no"],
-					"s_warehouse": required_batch["warehouse"],
-					"t_warehouse": row["s_warehouse"],
-				}
-			)
+		if owner_batch:
+			plan.append((row, owner_batch, False))
 			continue
 
-		# Reads the map but does NOT reserve: the conversion below submits immediately,
-		# so the ledger is already reduced before the next row looks. Reserving as well
-		# would double-count the same source quantity.
-		source_batch = find_owner_rm_warehouse(
-			owner_customer,
-			row["item_code"],
-			row["custom_pure_qty"],
-			search_different_purity=True,
-			company=mwo.company,
-			allocated=allocated,
-			reserve=False,
-		)
+		if _item_template(row["item_code"]) == FINDING_TEMPLATE:
+			# A finding is made from the owner's metal (any purity), not from the same
+			# finding at another purity -- the Metal Conversions M -> F pattern.
+			source_batch = find_owner_metal_for_finding(
+				owner_customer,
+				row["item_code"],
+				row["custom_pure_qty"],
+				required_qty=row["qty"],
+				company=mwo.company,
+				warehouses=source_warehouses,
+				allocated=allocated,
+			)
+		else:
+			source_batch = find_owner_rm_warehouse(
+				owner_customer,
+				row["item_code"],
+				row["custom_pure_qty"],
+				search_different_purity=True,
+				company=mwo.company,
+				warehouses=source_warehouses,
+				allocated=allocated,
+			)
 		if not source_batch:
-			frappe.throw(
-				_("No available stock for {0}.").format(_owner_label(owner_customer))
-			)
+			frappe.throw(_no_owner_stock_message(owner_customer, row))
+		plan.append((row, source_batch, True))
 
-		if created["make_receive"] is None:
-			created["make_receive"] = trigger_make_receive(
-				mwo, source_batch["warehouse"], receive_items=settle_rows
+	# Pass 2 -- ONE Make Receive that lands each borrowed row in the warehouse its own
+	# settlement draws from, so the conversions and the transfer below find the received
+	# batch where they look for it. One receive, not one per warehouse: a second receive
+	# in the same run would reference a Stock Reservation Entry the first had already
+	# cancelled and recreated.
+	receive_items = [
+		dict(row, t_warehouse=source["warehouse"]) for row, source, _convert in plan
+	]
+	created["make_receive"] = trigger_make_receive(
+		mwo, receive_items[0]["t_warehouse"], receive_items=receive_items
+	)
+
+	transfer_rows = []
+	for row, source, convert in plan:
+		batch_no = source["batch_no"]
+		if convert:
+			conversion = create_repack_metal_conversion(
+				mwo=mwo,
+				original_transfer=original_transfer,
+				source_batch=source,
+				required_item_code=row["item_code"],
+				required_pure_qty=row["custom_pure_qty"],
+				required_qty=row["qty"],
+				owner_customer=owner_customer,
 			)
-		conversion = create_repack_metal_conversion(
-			mwo=mwo,
-			original_transfer=original_transfer,
-			source_batch=source_batch,
-			required_item_code=row["item_code"],
-			required_pure_qty=row["custom_pure_qty"],
-			required_qty=row["qty"],
-			owner_customer=owner_customer,
-		)
-		created["conversions"].append(conversion["stock_entry"])
-		# The owner conversion above is systematic only (no physical movement),
-		# so mirror it on the borrowed usage batch in the SAME warehouse: convert
-		# it back from the expected purity to the available/source purity, keeping
-		# each purity physically balanced.
-		usage_conversion = create_repack_metal_conversion(
-			mwo=mwo,
-			original_transfer=original_transfer,
-			source_batch={
-				"item_code": row["item_code"],
-				"batch_no": row["batch_no"],
-				"qty": row["qty"],
-				"warehouse": source_batch["warehouse"],
-			},
-			required_item_code=source_batch["item_code"],
-			required_pure_qty=row["custom_pure_qty"],
-			required_qty=source_batch["qty"],
-			owner_customer=row.get("batch_customer"),
-		)
-		created["conversions"].append(usage_conversion["stock_entry"])
-		# Claim the conversion OUTPUT. This is the claim that actually fixes the
-		# original crash: the output is fresh owner stock that no finder returned, so
-		# without recording it here a later row's find_owner_batch re-discovers the
-		# batch this row just minted and both rows draw on the same 1.0 g.
-		output_key = (conversion["target_batch"], conversion["warehouse"])
-		allocated[output_key] = flt(allocated.get(output_key, 0), 3) + flt(
-			row["qty"], 3
-		)
+			created["conversions"].append(conversion["stock_entry"])
+			# The owner conversion above is systematic only (no physical movement), so
+			# mirror it on the borrowed usage batch in the SAME warehouse: convert it
+			# back to the owner's source item, keeping each item physically balanced.
+			usage_conversion = create_repack_metal_conversion(
+				mwo=mwo,
+				original_transfer=original_transfer,
+				source_batch={
+					"item_code": row["item_code"],
+					"batch_no": row["batch_no"],
+					"qty": row["qty"],
+					"warehouse": source["warehouse"],
+				},
+				required_item_code=source["item_code"],
+				required_pure_qty=row["custom_pure_qty"],
+				required_qty=source["qty"],
+				owner_customer=row.get("batch_customer"),
+			)
+			created["conversions"].append(usage_conversion["stock_entry"])
+			batch_no = conversion["target_batch"]
+		# Bring the owner's own metal back to the warehouse this row was received from.
 		transfer_rows.append(
 			{
 				"item_code": row["item_code"],
 				"qty": row["qty"],
 				"custom_pure_qty": row["custom_pure_qty"],
-				"batch_no": conversion["target_batch"],
-				"s_warehouse": conversion["warehouse"],
+				"batch_no": batch_no,
+				"s_warehouse": source["warehouse"],
 				"t_warehouse": row["s_warehouse"],
 			}
 		)
@@ -301,6 +315,18 @@ def create_snc(mwo):
 
 def _owner_label(owner_customer):
 	return "Customer {0}".format(owner_customer) if owner_customer else "Regular Stock"
+
+
+def _no_owner_stock_message(owner_customer, row):
+	message = _("No available stock for {0} to settle {1} g of {2}.").format(
+		_owner_label(owner_customer), flt(row["qty"], 3), frappe.bold(row["item_code"])
+	)
+	if _item_template(row["item_code"]) == FINDING_TEMPLATE:
+		message += " " + _(
+			"A finding is settled from the same finding, or from the owner's metal of the "
+			"same metal type and colour held in one batch in a store Raw Material warehouse."
+		)
+	return message
 
 
 def find_owner_batch(
@@ -375,6 +401,49 @@ def find_owner_rm_warehouse(
 	return None
 
 
+def find_owner_metal_for_finding(
+	owner_customer,
+	finding_item_code,
+	required_pure_qty,
+	required_qty=None,
+	company=None,
+	warehouses=None,
+	allocated=None,
+	reserve=True,
+):
+	"""Locate ``owner_customer``'s metal that can be converted into ``finding_item_code``.
+
+	Candidates share the finding's metal type and colour; the finding's own touch is tried
+	first, then ``PURITY_PRIORITY``. The returned ``qty`` is the source metal quantity that
+	carries ``required_pure_qty`` of fine metal -- or exactly ``required_qty`` when the metal
+	has the finding's purity, so a same-purity conversion stays 1:1 by weight instead of
+	drifting through the 3-decimal pure qty. ``allocated`` / ``reserve`` behave as in
+	:func:`_find_available_owner_batch`.
+	"""
+	finding_purity = _get_item_purity(finding_item_code)
+	for candidate_item in _get_metal_items_for_finding(finding_item_code):
+		source_purity = _get_item_purity(candidate_item)
+		if not source_purity:
+			continue
+		if required_qty and source_purity == finding_purity:
+			source_qty = flt(required_qty, 3)
+		else:
+			source_qty = flt(flt(required_pure_qty) / (source_purity / 100), 3)
+		batch = _find_available_owner_batch(
+			owner_customer,
+			candidate_item,
+			source_qty,
+			company,
+			warehouses=warehouses,
+			allocated=allocated,
+			reserve=reserve,
+		)
+		if batch:
+			batch["qty"] = source_qty
+			return batch
+	return None
+
+
 def create_repack_metal_conversion(
 	mwo,
 	original_transfer,
@@ -390,9 +459,13 @@ def create_repack_metal_conversion(
 			_("Could not determine purity for item {0}.").format(required_item_code)
 		)
 
-	target_qty = flt(flt(required_pure_qty) / (required_purity / 100), 3)
+	# Produce exactly the weight the caller needs: the owner leg the borrowed row's qty
+	# (so the transfer never comes up 0.001 g short), the mirror leg the owner metal
+	# spent (so the two legs are an exact weight swap). Re-deriving it from the 3-decimal
+	# pure qty drifts by 0.001 g in about 4% of different-purity conversions.
+	target_qty = flt(required_qty, 3)
 	if target_qty <= 0:
-		target_qty = flt(required_qty, 3)
+		target_qty = flt(flt(required_pure_qty) / (required_purity / 100), 3)
 
 	inventory_type = _owner_inventory_type(owner_customer)
 	se = frappe.new_doc("Stock Entry")
@@ -434,7 +507,11 @@ def create_repack_metal_conversion(
 		},
 	)
 	se.insert(ignore_permissions=True)
-	_submit_consuming_stock_entry(se)
+	# The batch this conversion mints for a customer is exempt from the Customer Goods
+	# item-flag guard only while THIS entry is being submitted by SNC (server-only marker;
+	# the entry's own fields can be posted by any client).
+	with snc_settlement_conversion(se.name):
+		_submit_consuming_stock_entry(se)
 
 	target_batch = frappe.db.get_value(
 		"Stock Entry Detail",
@@ -505,10 +582,10 @@ def create_material_transfer_work_order(
 
 
 def _get_receivable_gold_rows(mwo, target_warehouse=None):
-	"""Gold (M-G-) rows the operation ACTUALLY holds now, from the same live Make
-	Receive source (loss-adjusted SRE remaining), shaped like ``create_mr_wo_stock_entry``
-	receive_items plus the ``batch_customer`` / ``custom_pure_qty`` / ``s_warehouse``
-	the settlement transfer needs.
+	"""Metal and Finding (``SETTLEABLE_TEMPLATES``) rows the operation ACTUALLY holds now,
+	from the same live Make Receive source (loss-adjusted SRE remaining), shaped like
+	``create_mr_wo_stock_entry`` receive_items plus the ``batch_customer`` /
+	``custom_pure_qty`` / ``s_warehouse`` the settlement transfer needs.
 
 	The Make Receive rows carry neither ``inventory_type``/``customer`` nor
 	``custom_pure_qty``: ownership is read off the Batch master and pure qty is
@@ -531,8 +608,8 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 	receive_items = []
 	for row in rows:
 		item_code = row.get("item_code") or ""
-		# SNC only settles gold; receive gold rows only, never diamond/findings.
-		if not item_code.startswith("M-G-"):
+		# SNC settles gold Metal and Finding rows only, never diamond/gemstone.
+		if not _is_settleable_item(item_code):
 			continue
 		qty = flt(row.get("available_to_receive_qty"), 3)
 		if qty <= 0:
@@ -579,15 +656,38 @@ def trigger_make_receive(mwo, target_warehouse, receive_items=None):
 	if not receive_items:
 		frappe.throw(_("No Make Receive rows are available for SNC."))
 
-	return create_mr_wo_stock_entry(
+	result = create_mr_wo_stock_entry(
 		{
 			"manufacturing_operation": mwo.manufacturing_operation,
 			"receive_items": receive_items,
 		},
-		request_id="SNC-"
-		+ hashlib.md5(f"{mwo.name}-{target_warehouse}".encode()).hexdigest()[:10],
+		request_id=_snc_request_id(mwo, target_warehouse, receive_items),
 		target_warehouse=target_warehouse,
 	)
+	# A replayed request returns the earlier receive without receiving anything, and
+	# the conversions/transfer that follow would then act on stock that never moved.
+	if isinstance(result, dict) and result.get("idempotent"):
+		frappe.throw(
+			_(
+				"These borrowed rows were already received by {0}. Reload the "
+				"Manufacturing Work Order and try again."
+			).format(result.get("docname"))
+		)
+	return result
+
+
+def _snc_request_id(mwo, target_warehouse, receive_items):
+	"""Idempotency key for the SNC Make Receive: the work order plus exactly what is
+	being received. Keyed on the work order and warehouse alone, a settlement that
+	re-opens on the same operation would replay the earlier receive."""
+	rows = sorted(
+		f"{row.get('stock_reservation_entry')}:{row.get('stock_reservation_entry_detail')}"
+		f":{row.get('batch_no')}:{row.get('t_warehouse') or target_warehouse}"
+		f":{flt(row.get('qty'), 3)}"
+		for row in receive_items
+	)
+	key = f"{mwo.name}|{'|'.join(rows)}"
+	return "SNC-" + hashlib.md5(key.encode()).hexdigest()[:10]
 
 
 def _get_mwo(mwo):
@@ -771,6 +871,22 @@ def _get_raw_material_warehouses(company=None):
 	)
 
 
+def _get_snc_source_warehouses(company=None):
+	"""Raw Material warehouses SNC may draw the owner's stock from: the store and
+	department ones only. A karigar's (employee) or subcontractor's RM warehouse can
+	hold small legacy residues of the same batch; settling out of it would post
+	against that person's stock."""
+	filters = {
+		"warehouse_type": "Raw Material",
+		"disabled": 0,
+		"employee": ["is", "not set"],
+		"subcontractor": ["is", "not set"],
+	}
+	if company:
+		filters["company"] = company
+	return frappe.get_all("Warehouse", filters=filters, pluck="name")
+
+
 def _get_gold_items_for_purity(purity, required_item_code):
 	colour = (required_item_code or "").split("-")[-1]
 	filters = {"disabled": 0}
@@ -783,6 +899,53 @@ def _get_gold_items_for_purity(purity, required_item_code):
 		for item in items
 		if item.startswith("M-G-") and _get_purity_label(item) == purity
 	]
+
+
+def _get_metal_items_for_finding(finding_item_code):
+	"""Metal (``M``) items a finding can be converted from: same metal type and colour,
+	the finding's own touch first, then the rest of ``PURITY_PRIORITY``. Within a touch
+	the finding's exact purity comes first.
+
+	``F-G-22KT-91.75-Y-BA-1RNB-4.00 MM`` -> type ``G``, touch ``22KT``, colour ``Y``.
+	"""
+	parts = (finding_item_code or "").split("-")
+	if len(parts) < 5:
+		return []
+	metal_type, touch, colour = parts[1], parts[2], parts[4]
+	items = frappe.get_all(
+		"Item",
+		filters={
+			"variant_of": "M",
+			"disabled": 0,
+			"name": ["like", f"M-{metal_type}-%-{colour}"],
+		},
+		pluck="name",
+	)
+	finding_purity = _get_item_purity(finding_item_code)
+	touch_order = [touch] + [p for p in PURITY_PRIORITY if p != touch]
+	candidates = []
+	for label in touch_order:
+		same_touch = [item for item in items if _get_purity_label(item) == label]
+		same_touch.sort(key=lambda item: abs(_get_item_purity(item) - finding_purity))
+		candidates.extend(same_touch)
+	return candidates
+
+
+def _is_settleable_item(item_code):
+	parts = (item_code or "").split("-")
+	return (
+		len(parts) > 1
+		and parts[1] == SETTLEABLE_METAL_TYPE
+		and _item_template(item_code) in SETTLEABLE_TEMPLATES
+	)
+
+
+def _item_template(item_code):
+	# One column, not frappe.get_cached_value -- that loads the whole Item doc (see
+	# _get_item_purity), and this runs per receivable row on every MWO form refresh.
+	if not item_code:
+		return None
+	return frappe.db.get_value("Item", item_code, "variant_of", cache=True)
 
 
 def _get_item_purity(item_code):
@@ -810,8 +973,9 @@ def _get_item_purity(item_code):
 		if purity:
 			return flt(purity)
 
+	# Purity is the 4th segment of both M-G-22KT-91.75-Y and F-G-22KT-91.75-Y-BA-...
 	try:
-		return flt((item_code or "").split("-")[-2])
+		return flt((item_code or "").split("-")[3])
 	except (TypeError, ValueError, IndexError):
 		return 0
 
