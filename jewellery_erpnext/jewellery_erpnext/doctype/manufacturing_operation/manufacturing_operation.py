@@ -12,6 +12,7 @@ from frappe.query_builder import Criterion, CustomFunction
 from frappe.query_builder.functions import IfNull, Max, Sum
 from frappe.utils import (
 	cint,
+	cstr,
 	flt,
 	get_datetime,
 	now,
@@ -23,6 +24,12 @@ from frappe.utils import (
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
 	carry_rates_from_source_batches,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	bold,
+	enforcing,
+	report,
+	same,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_current_mop_balance_rows,
@@ -30,6 +37,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_last_mop_index,
 	get_mop_transfer_pcs_rows,
 	get_mwo_balance_rows,
+	get_operation_owners,
 )
 from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
 from jewellery_erpnext.utils import (
@@ -3958,18 +3966,66 @@ def get_linked_stock_entries(mwo, department):
 	)
 
 
+def _sres_on_foreign_operations(sres, manufacturing_work_order):
+	"""The reservations in ``sres`` whose operation belongs to ANOTHER work order.
+
+	THE one rule Make Receive Entry applies on both sides: ``get_make_receive_entry_rows``
+	leaves these reservations out of the popup and ``create_mr_wo_stock_entry`` refuses them,
+	so the two cannot disagree -- they once did, about availability, when each resolved it its
+	own way. The Receive Unused/Loose Material twin reaches both through
+	``get_make_scrap_entry_rows`` and ``create_scrap_wo_stock_entry``. Both sides also read
+	the guard's kill switch the same way (``mwo_mop_link.enforcing``).
+
+	Why: an Employee IR row once paired an operation with a sibling's work order, so the Stock
+	Entry it injected -- and the reservation that entry created -- carried the sibling's MWO
+	next to the right operation. Make Receive Entry lists reservations by MWO only, and the
+	sibling consumed it: the cast metal came out of the wrong half and the ledgers of both
+	halves ended crossed. The operation is the anchor, so a reservation whose operation
+	another work order owns is that work order's material, whatever MWO it is keyed to.
+
+	Only a PROVEN foreign owner counts. A reservation that names an earlier operation of the
+	same work order is normal (the stamp is written once and not moved on handoff), and one
+	whose operation is blank, deleted or has no work order cannot be judged -- refusing it
+	would strand really reserved stock behind a missing label.
+
+	Returns ``{sre_name: (operation, owning work order)}`` from a single owner lookup.
+	"""
+	sres = list(sres or ())
+	owners = get_operation_owners(sre.get("manufacturing_operation") for sre in sres)
+	foreign = {}
+	for sre in sres:
+		mop = cstr(sre.get("manufacturing_operation")).strip()
+		owner = owners.get(mop) if mop else None
+		if owner and not same(owner, manufacturing_work_order):
+			foreign[sre.get("name")] = (mop, owner)
+	return foreign
+
+
+def _foreign_sre_message(sre_name, mop, owner, manufacturing_work_order):
+	return _(
+		"Stock Reservation Entry {0} is keyed to work order {1} but reserves the material of "
+		"operation {2}, which belongs to work order {3}. Receiving it here would consume the "
+		"other work order's reservation; ask Central to correct the reservation."
+	).format(bold(sre_name), bold(manufacturing_work_order), bold(mop), bold(owner))
+
+
 @frappe.whitelist()
 def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	"""Return rows for the Make Receive Entry dialog, sourced from active
 	Stock Reservation Entry rows linked to the MOP's Manufacturing Work Order.
 
-	Returns a dict ``{"rows": [...], "skipped": [...], "active_sre_count": N}``
-	so the JS dialog can distinguish:
+	Returns a dict ``{"rows": [...], "skipped": [...], "active_sre_count": N,
+	"excluded": [...]}`` so the JS dialog can distinguish:
 
 	  * No active SRE at all (active_sre_count == 0).
 	  * Active SRE but every row consumed by loss / no MOP balance left
 	    (rows == [], skipped non-empty with reason="mop_zero_balance").
 	  * Actionable rows present.
+
+	``excluded`` lists reservations keyed to this work order whose operation belongs to
+	another one (see ``_sres_on_foreign_operations``). They are left out before anything
+	else is derived from the list -- they count in neither ``active_sre_count`` nor any
+	balance -- and an orange message names them, since the dialog knows nothing of them.
 
 	Available qty is the SRE's own remaining (reserved_qty - delivered_qty);
 	we do NOT subtract previous Material Receive Stock Entries because partial
@@ -4033,6 +4089,40 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 			"manufacturing_operation",
 		],
 	)
+
+	# A reservation whose operation another work order owns is not this work order's to
+	# receive -- the same rule create_mr_wo_stock_entry refuses by, through the same helper.
+	# Dropped here, before any key, balance, PCS split or count is derived from the list. In
+	# the guard's warn mode it stays, and the validator logs it when it is received.
+	excluded = []
+	foreign_sres = _sres_on_foreign_operations(sres, mo.manufacturing_work_order)
+	if foreign_sres and enforcing():
+		excluded = [
+			{
+				"stock_reservation_entry": sre.name,
+				"item_code": sre.item_code,
+				"warehouse": sre.warehouse,
+				"manufacturing_operation": foreign_sres[sre.name][0],
+				"operation_work_order": foreign_sres[sre.name][1],
+				"reason": "operation_of_another_work_order",
+			}
+			for sre in sres
+			if sre.name in foreign_sres
+		]
+		sres = [sre for sre in sres if sre.name not in foreign_sres]
+		frappe.msgprint(
+			"<br>".join(
+				_foreign_sre_message(
+					row["stock_reservation_entry"],
+					row["manufacturing_operation"],
+					row["operation_work_order"],
+					mo.manufacturing_work_order,
+				)
+				for row in excluded
+			),
+			title=_("Reservation Of Another Work Order Left Out"),
+			indicator="orange",
+		)
 
 	# Batch the already-received aggregations: ONE SQL per metric covering
 	# every (item_code, s_warehouse) referenced by the SREs, instead of
@@ -4117,16 +4207,13 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 		else:
 			all_keys.add((s.item_code, None))
 
-	# ONE balance map for every line, MWO-scoped, keyed (item_code, batch_no).
-	# There is deliberately no manufacturing_operation component: the underlying
-	# ``qty_after_transaction_batch_based`` is an MWO-wide running sum stamped
-	# with whichever operation wrote it, so it carries no per-operation meaning
-	# (see ``get_mwo_balance_rows``). Reading it per-MOP returned a snapshot
-	# frozen at that operation's last write — which is how this popup came to
-	# show a balance its own server-side validator then rejected: on handoff the
-	# source operation is zeroed and the destination carries the balance
-	# forward, while the SRE keeps pointing at the operation it was created
-	# against. ``create_mr_wo_stock_entry`` MUST build this map the same way.
+	# ONE balance map for every line, MWO-scoped, keyed (item_code, batch_no): the
+	# latest row across the work order's own operations (see ``get_mwo_balance_rows``).
+	# There is deliberately no manufacturing_operation component: on handoff the source
+	# operation is zeroed and the destination carries the balance forward, while the SRE
+	# keeps pointing at the operation it was created against. Reading per-MOP is how this
+	# popup came to show a balance its own server-side validator then rejected.
+	# ``create_mr_wo_stock_entry`` MUST build this map the same way.
 	mop_log_balance_map: dict[tuple, dict] = {
 		(row.get("item_code"), row.get("batch_no")): row
 		for row in get_mwo_balance_rows(mo.manufacturing_work_order, keys=all_keys)
@@ -4432,6 +4519,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 		"rows": rows,
 		"skipped": skipped,
 		"active_sre_count": len(sres),
+		"excluded": excluded,
 	}
 
 
@@ -4704,6 +4792,25 @@ def create_mr_wo_stock_entry(
 					"Row {0}: Stock Reservation Entry {1} does not belong to "
 					"this Manufacturing Work Order"
 				).format(row.get("idx") or "?", sre_name)
+			)
+		# Keyed to this work order is not enough: the popup's own rule, through the same
+		# helper, refuses a reservation whose operation another work order owns. The popup
+		# never offers one, so this catches a stale dialog or a direct call. Warn mode logs
+		# it and lets the receive through, exactly as the popup then lists it.
+		foreign_sre = _sres_on_foreign_operations([sre], mo.manufacturing_work_order)
+		if foreign_sre:
+			mop, owner = foreign_sre[sre.name]
+			report(
+				[
+					_("Row {0}: {1}").format(
+						row.get("idx") or "?",
+						_foreign_sre_message(
+							sre.name, mop, owner, mo.manufacturing_work_order
+						),
+					)
+				],
+				doc=frappe._dict(doctype="Stock Reservation Entry", name=sre.name),
+				title=_("Reservation Of Another Work Order"),
 			)
 
 		# Authoritative SRE-side remaining qty.
@@ -5901,6 +6008,15 @@ def update_new_mop_wtg(
 		return
 
 	# Build (item, batch) → loss bucket map filtered to this Receive row.
+	#
+	# Keyed on the Employee IR row's OWN labels (operation, work order), never on a MOP Log
+	# stamp: book_metal_loss copies both from the operation row into employee_loss_details,
+	# and manual loss rows are booked against an operation row's pair. Stamping the new rows
+	# with this operation's own work order (below) therefore does not change which loss is
+	# applied, and once the IR row's work order is checked against its operation the
+	# work-order half of the key is redundant. (A manual loss row pairing an operation with a
+	# DIFFERENT row's work order matches neither row and is not applied here, while its
+	# Process Loss entry still posts -- that pair has to be refused where the IR rows are.)
 	loss_map: dict = {}
 	if employee_ir_doc is not None and employee_ir_operation_row is not None:
 		full_loss_map = get_employee_ir_loss_map(employee_ir_doc) or {}
@@ -6110,7 +6226,11 @@ def update_new_mop_wtg(
 		)
 		mop_log.to_warehouse = to_warehouse if to_warehouse else log.to_warehouse
 		mop_log.manufacturing_operation = self.name
-		mop_log.manufacturing_work_order = log.manufacturing_work_order
+		# The NEW operation's own work order, never the source row's stamp: copying it
+		# carried a sibling's label from a mis-paired receive onto every successor, and the
+		# work order's own Make Receive / EOD readers then lost the balance to the sibling.
+		# MOPLog.validate derives the same owner; writing it here keeps the writer honest.
+		mop_log.manufacturing_work_order = self.manufacturing_work_order
 		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
 		mop_log.is_synced = 0
 		# flow_index = 0: baseline + loss are part of the new MOP's initial
