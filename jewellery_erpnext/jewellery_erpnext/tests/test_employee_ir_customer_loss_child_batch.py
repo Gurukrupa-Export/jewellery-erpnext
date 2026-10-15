@@ -171,17 +171,13 @@ class TestReceiveProcessLossSubmitPath(IntegrationTestCase):
 		reduce_sre.assert_not_called()
 
 	def test_the_incident_weights_book_exactly_0_010_g_on_the_customer_batch(self):
-		rows = baseline.TestBookMetalLossWaterfall._rows((PARENT_12_A, 12.36))
-		ownership = baseline.TestBookMetalLossWaterfall._own(
-			**{PARENT_12_A: "Customer Goods"}
-		)
-		doc, by_batch = baseline.TestBookMetalLossWaterfall._run(
-			self, rows, gwt=12.36, r_gwt=12.35, ownership=ownership
+		rows = baseline.TestBookMetalLossFlatSplit._rows((PARENT_12_A, 12.36))
+		by_batch = baseline.TestBookMetalLossFlatSplit._run(
+			self, rows, gwt=12.36, r_gwt=12.35
 		)
 		self.assertAlmostEqual(
 			by_batch[PARENT_12_A]["proportionally_loss"], 0.01, places=3
 		)
-		self.assertEqual(doc.spills, [(PARENT_12_A, 0.01)])
 
 
 class TestPostedCustomerLossQuery(IntegrationTestCase):
