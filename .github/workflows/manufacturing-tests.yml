@@ -4,8 +4,9 @@ on:
   pull_request:
     branches:
       - gurukrupa-prod
-      - kgg_uat
+      - kggk_uat
       - kggk_prod
+      - gurukrupa-uat
   workflow_dispatch:
 
 concurrency:
