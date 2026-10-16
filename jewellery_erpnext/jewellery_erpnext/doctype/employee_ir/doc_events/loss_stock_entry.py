@@ -772,8 +772,14 @@ def _resolve_loss_item(eir, row, table_name):
 		get_item_loss_item,
 	)
 
+	# Hand over the template just validated for THIS manufacturer; left to itself the helper
+	# re-reads the Variant Loss Table by variant + loss type with no manufacturer filter.
 	loss_item = get_item_loss_item(
-		eir.company, row.item_code, row.variant_of, loss_type
+		eir.company,
+		row.item_code,
+		row.variant_of,
+		loss_type,
+		loss_variant=loss_variant_template,
 	)
 	if not loss_item:
 		frappe.throw(

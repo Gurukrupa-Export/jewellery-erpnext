@@ -2078,6 +2078,48 @@ class TestResolvers(IntegrationTestCase):
 				self.assertEqual(t_warehouse, "Scrap - GK")
 				self.assertEqual(loss_item, "LOSS-ITEM-1")
 
+	def test_process_loss_resolves_under_the_manufacturers_own_template(self):
+		"""Two manufacturers map the same variant + loss type to different templates. The
+		Employee IR's own manufacturer's template must reach get_item_loss_item, whose own
+		Variant Loss Table lookup carries no manufacturer filter."""
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		mappings = {"MFR-A": "ML-A", "MFR-B": "ML-B"}
+		real_get_value = frappe.db.get_value
+
+		def get_value(doctype, filters=None, *args, **kwargs):
+			if doctype == "Variant Loss Table":
+				return mappings.get(filters.get("parent"))
+			return real_get_value(doctype, filters, *args, **kwargs)
+
+		eir = _doc(manufacturer="MFR-A")
+		row = SimpleNamespace(
+			item_code="M-G-22KT-91.9-Y", variant_of="M", idx=1, loss_type="Loss"
+		)
+		with (
+			patch("frappe.db.get_value", side_effect=get_value),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+				return_value="ML-A-G-22KT-91.9-Y",
+			) as mock_resolve,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.ensure_loss_item_stockable",
+				side_effect=lambda item: item,
+			),
+		):
+			loss_item = loss_stock_entry._resolve_loss_item(
+				eir, row, "employee_loss_details"
+			)
+
+		self.assertEqual(loss_item, "ML-A-G-22KT-91.9-Y")
+		mock_resolve.assert_called_once_with(
+			eir.company, "M-G-22KT-91.9-Y", "M", "Loss", loss_variant="ML-A"
+		)
+
 	def test_scrap_warehouse(self):
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse",

@@ -612,6 +612,51 @@ class TestItemLossItemResolution(IntegrationTestCase):
 		self.assertEqual(result, "ML-G-22KT-91.9-Y")
 		mock_create.assert_called_once_with("ML", {"Metal Type": "Gold"})
 
+	def test_a_template_resolved_by_the_caller_is_used_as_given(self):
+		"""Employee IR passes the template it read from its own Manufacturer's Variant Loss
+		Table. The unscoped variant + loss type lookup must not run: once a second
+		manufacturer maps the same pair, it could hand back that sibling's template."""
+		real_get_value = frappe.db.get_value
+		asked = []
+
+		def get_value(doctype, *args, **kwargs):
+			asked.append(doctype)
+			if doctype == "Variant Loss Table":
+				raise AssertionError("the unscoped Variant Loss Table lookup ran")
+			if doctype == "Item":
+				return "HSN-1"
+			return real_get_value(doctype, *args, **kwargs)
+
+		resolved_item = _loss_item_doc("ML-A-G-22KT-91.9-Y", variant_of="ML-A")
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=get_value,
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=resolved_item,
+			) as mock_set,
+		):
+			result = get_item_loss_item(
+				"Test Co", "M-G-22KT-91.9-Y", "M", "Loss", loss_variant="ML-A"
+			)
+
+		self.assertEqual(result, "ML-A-G-22KT-91.9-Y")
+		self.assertEqual(mock_set.call_args.args[0], "ML-A")
+		self.assertNotIn("Variant Loss Table", asked)
+
 
 class TestLossMappingMatrix(IntegrationTestCase):
 	"""Variant + loss_type combinations described in the spec must all
