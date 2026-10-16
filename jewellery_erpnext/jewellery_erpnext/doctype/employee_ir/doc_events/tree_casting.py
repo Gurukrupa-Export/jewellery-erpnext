@@ -626,7 +626,14 @@ def unlink_tree_on_issue_cancel(eir):
 			)
 
 	if tree_name:
-		_scrub_draft_tree_stamps(tree_name)
+		_scrub_draft_tree_stamps(
+			tree_name,
+			{
+				r.manufacturing_work_order
+				for r in eir.employee_ir_operations
+				if r.manufacturing_work_order
+			},
+		)
 
 		# The Issue Material button may have created physical Dept->MSL Stock Entries stamped
 		# with this tree; cancel them so they aren't orphaned when the tree is deleted.
@@ -638,7 +645,7 @@ def unlink_tree_on_issue_cancel(eir):
 		frappe.delete_doc("Tree Number", tree_name, ignore_permissions=True, force=True)
 
 
-def _scrub_draft_tree_stamps(tree_name):
+def _scrub_draft_tree_stamps(tree_name, work_orders=()):
 	"""Clear this tree off every OTHER document's draft rows before it is force-deleted.
 
 	``resolve_receive_tree_numbers`` stamps the tree on a Receive while it is still a draft, so
@@ -658,27 +665,98 @@ def _scrub_draft_tree_stamps(tree_name):
 	Raw SQL rather than ``set_value`` with a filter dict: this is a cross-parent sweep over an
 	unbounded set of documents, and it must not drag arbitrary draft Employee IRs through
 	``validate()`` in the middle of a cancel.
+
+	``tree_number`` is not indexed, so a ``... WHERE tree_number = ..`` UPDATE would scan both
+	tables and, under REPEATABLE READ, keep every row of ``tabEmployee IR`` and ``tabEmployee IR
+	Operation`` locked until the cancel commits (lock_order RULE E). Instead:
+
+	* a plain read finds the stamps older than this transaction's snapshot, on any work order;
+	* a stamp committed AFTER the snapshot -- a draft Receive saved while this cancel waited on its
+	  current-operation block -- can only be on ``work_orders`` (only they still carry this tree),
+	  so a ``LOCK IN SHARE MODE NOWAIT`` read over that range of the ``manufacturing_work_order``
+	  index returns the latest committed rows there, never waits, and makes a row being written
+	  right now a "busy, retry" (the old locking UPDATE saw such rows too);
+	* both sets, and their draft headers, are cleared by primary key with the conditions
+	  re-checked in the UPDATE.
+
+	Without that index (before ``migrate``) the plain read alone is used, as before.
 	"""
-	frappe.db.sql(
-		"""
-		UPDATE `tabEmployee IR Operation` eiro
-		INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
-		SET eiro.tree_number = NULL
-		WHERE eiro.parenttype = 'Employee IR'
-		  AND eiro.tree_number = %(tree)s
-		  AND eir.docstatus = 0
-		""",
-		{"tree": tree_name},
-	)
-	frappe.db.sql(
-		"""
-		UPDATE `tabEmployee IR`
-		SET tree_number = NULL
-		WHERE tree_number = %(tree)s
-		  AND docstatus = 0
-		""",
-		{"tree": tree_name},
-	)
+	rows = {
+		(r[0], r[1])
+		for r in frappe.db.sql(
+			"""
+			SELECT eiro.name, eiro.parent
+			FROM `tabEmployee IR Operation` eiro
+			INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+			WHERE eiro.parenttype = 'Employee IR'
+			  AND eiro.tree_number = %(tree)s
+			  AND eir.docstatus = 0
+			""",
+			{"tree": tree_name},
+		)
+		or ()
+	}
+	mwos = sorted({m for m in work_orders or () if m})
+	if mwos:
+		from jewellery_erpnext.jewellery_erpnext.doc_events import (
+			current_operation_guard as guard,
+		)
+
+		index = guard._draft_index_name()
+		if index:
+			try:
+				rows.update(
+					(r[0], r[1])
+					for r in frappe.db.sql(
+						f"""
+						SELECT name, parent FROM `tabEmployee IR Operation` FORCE INDEX (`{index}`)
+						WHERE manufacturing_work_order IN %(mwos)s
+						  AND parenttype = 'Employee IR'
+						  AND tree_number = %(tree)s
+						LOCK IN SHARE MODE NOWAIT
+						""",
+						{"mwos": mwos, "tree": tree_name},
+					)
+					or ()
+				)
+			except (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
+				guard._busy(_("Work order"), mwos, plural=_("these work orders"))
+	if rows:
+		frappe.db.sql(
+			"""
+			UPDATE `tabEmployee IR Operation` eiro
+			INNER JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+			SET eiro.tree_number = NULL
+			WHERE eiro.name IN %(names)s
+			  AND eiro.parenttype = 'Employee IR'
+			  AND eiro.tree_number = %(tree)s
+			  AND eir.docstatus = 0
+			""",
+			{"tree": tree_name, "names": sorted(name for name, _parent in rows)},
+		)
+	heads = {
+		r[0]
+		for r in frappe.db.sql(
+			"""
+			SELECT name FROM `tabEmployee IR`
+			WHERE tree_number = %(tree)s
+			  AND docstatus = 0
+			""",
+			{"tree": tree_name},
+		)
+		or ()
+	} | {parent for _name, parent in rows}
+	if heads:
+		frappe.db.sql(
+			"""
+			UPDATE `tabEmployee IR`
+			SET tree_number = NULL
+			WHERE name IN %(names)s
+			  AND tree_number = %(tree)s
+			  AND docstatus = 0
+			""",
+			{"tree": tree_name, "names": sorted(heads)},
+		)
 
 
 # ---------------------------------------------------------------------------

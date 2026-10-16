@@ -585,13 +585,25 @@ class TestUnlinkTreeOnIssueCancel(IntegrationTestCase):
 		pass
 
 	def _cancel(
-		self, rows, tree_name="TREE-0001", casting=True, header_tree="TREE-0001"
+		self,
+		rows,
+		tree_name="TREE-0001",
+		casting=True,
+		header_tree="TREE-0001",
+		draft_index=None,
+		answer=None,
 	):
 		"""rows: [(mwo, row_tree_number, live_mwo_tree_number)].
 
 		``header_tree`` defaults to the tree being deleted because that is what
-		``create_tree_on_issue`` would have stamped on the way out.
+		``create_tree_on_issue`` would have stamped on the way out. ``draft_index`` is what
+		the guard reports as the Employee IR Operation ``manufacturing_work_order`` index
+		(``None``: not created yet); ``answer(query)`` returns rows for the faked SQL.
 		"""
+		from jewellery_erpnext.jewellery_erpnext.doc_events import (
+			current_operation_guard,
+		)
+
 		eir = _EIRDoc(
 			name="EIR-1",
 			operation="Casting",
@@ -635,9 +647,17 @@ class TestUnlinkTreeOnIssueCancel(IntegrationTestCase):
 			patch.object(tree_casting.frappe.db, "sql") as sql,
 			patch.object(tree_casting.frappe, "delete_doc") as delete_doc,
 			patch.object(tree_stock_entry, "cancel_tree_stock_entries"),
+			patch.object(
+				current_operation_guard, "_draft_index_name", return_value=draft_index
+			),
 		):
 			order = []
-			sql.side_effect = lambda *a, **k: order.append("sql")
+
+			def fake_sql(query, *a, **k):
+				order.append("sql")
+				return answer(query) if answer else None
+
+			sql.side_effect = fake_sql
 			delete_doc.side_effect = lambda *a, **k: order.append("delete_doc")
 			tree_casting.unlink_tree_on_issue_cancel(eir)
 			self.sql = sql
@@ -3398,3 +3418,66 @@ class TestScrubDraftTreeStamps(IntegrationTestCase):
 	def test_a_non_casting_cancel_scrubs_nothing(self):
 		self._cancel([("MWO-A", None, None)], casting=False)
 		self.sql.assert_not_called()
+
+	INDEX = "manufacturing_work_order_index"
+
+	def test_a_locking_read_covers_the_issues_own_work_orders(self):
+		"""A draft stamped while this cancel waited on its block is newer than its snapshot:
+		only a locking read sees it, and only the Issue's work orders can carry this tree."""
+		self._cancel(
+			[("MWO-B", "TREE-0001", "TREE-0001"), ("MWO-A", "TREE-0001", "TREE-0001")],
+			draft_index=self.INDEX,
+		)
+		locking = [
+			call
+			for call in self.sql.call_args_list
+			if "LOCK IN SHARE MODE NOWAIT" in call.args[0]
+		]
+		self.assertEqual(len(locking), 1)
+		self.assertIn(f"FORCE INDEX (`{self.INDEX}`)", locking[0].args[0])
+		self.assertEqual(
+			locking[0].args[1], {"mwos": ["MWO-A", "MWO-B"], "tree": "TREE-0001"}
+		)
+
+	def test_rows_found_only_by_the_locking_read_are_cleared_with_their_header(self):
+		def answer(query):
+			if "LOCK IN SHARE MODE NOWAIT" in query:
+				return [("ROW-NEW", "EIR-NEW")]
+			return None
+
+		self._cancel(
+			[("MWO-A", "TREE-0001", "TREE-0001")], draft_index=self.INDEX, answer=answer
+		)
+		updates = [
+			call
+			for call in self.sql.call_args_list
+			if call.args[0].lstrip().startswith("UPDATE")
+		]
+		self.assertEqual(len(updates), 2)
+		self.assertEqual(updates[0].args[1]["names"], ["ROW-NEW"])
+		self.assertEqual(updates[1].args[1]["names"], ["EIR-NEW"])
+		for call in updates:
+			self.assertIn("docstatus = 0", call.args[0])
+
+	def test_a_row_being_written_right_now_is_busy_not_skipped(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+			WorkOrderBusyError,
+		)
+
+		def answer(query):
+			if "LOCK IN SHARE MODE NOWAIT" in query:
+				raise frappe.QueryTimeoutError("lock wait")
+			return None
+
+		with self.assertRaises(WorkOrderBusyError):
+			self._cancel(
+				[("MWO-A", "TREE-0001", "TREE-0001")],
+				draft_index=self.INDEX,
+				answer=answer,
+			)
+
+	def test_without_the_index_only_the_plain_reads_run(self):
+		self._cancel([("MWO-A", "TREE-0001", "TREE-0001")], draft_index=None)
+		self.assertFalse(
+			any("LOCK IN SHARE MODE" in statement for statement in self._statements())
+		)

@@ -242,17 +242,37 @@ class TestStockEntryMopLogBridge(UnitTestCase):
 
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.sql")
 	def test_cancel_path_marks_logs_cancelled(self, mock_sql):
+		"""The voucher's rows are read first and flipped by primary key: a voucher-filtered
+		UPDATE has no index on production and would lock every MOP Log row of the site."""
 		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 			sync_mop_log_for_stock_entry,
 		)
 
+		mock_sql.side_effect = [(("LOG-2",), ("LOG-1",)), None]
 		se = self._se([self._row()])
 		sync_mop_log_for_stock_entry(se, is_cancelled=True)
-		mock_sql.assert_called_once()
-		sql, params = mock_sql.call_args[0]
-		self.assertIn("UPDATE `tabMOP Log`", sql)
-		self.assertIn("is_cancelled = 1", sql)
+		self.assertEqual(mock_sql.call_count, 2)
+		read, params = mock_sql.call_args_list[0][0]
+		self.assertTrue(read.strip().startswith("SELECT name FROM `tabMOP Log`"), read)
+		self.assertIn("voucher_no = %s", read)
 		self.assertEqual(params, ("SE-BRIDGE-001",))
+		update, params = mock_sql.call_args_list[1][0]
+		self.assertIn("UPDATE `tabMOP Log`", update)
+		self.assertIn("SET is_cancelled = 1", update)
+		self.assertIn("WHERE name IN %(names)s", update)
+		self.assertNotIn("voucher_no", update)
+		self.assertEqual(params, {"names": ["LOG-1", "LOG-2"]})
+
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.sql")
+	def test_cancel_of_a_voucher_without_logs_writes_nothing(self, mock_sql):
+		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+			sync_mop_log_for_stock_entry,
+		)
+
+		mock_sql.return_value = ()
+		sync_mop_log_for_stock_entry(self._se([self._row()]), is_cancelled=True)
+		mock_sql.assert_called_once()
+		self.assertNotIn("UPDATE", mock_sql.call_args[0][0])
 
 
 class TestEmployeeIrReceiveDiamondParity(UnitTestCase):

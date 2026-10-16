@@ -453,3 +453,221 @@ class TestDocumentNamingRuleForDoc(IntegrationTestCase):
 
 	def tearDown(self):
 		return super().tearDown()
+
+
+class TestLockWaitClause(IntegrationTestCase):
+	"""_lock_wait_clause: how long a work-order lifecycle row lock may wait (RULE D / RULE E)."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_none_keeps_the_server_default(self):
+		self.assertEqual(lock_order._lock_wait_clause(None), "")
+
+	def test_zero_or_negative_never_waits(self):
+		for wait in (0, -1, "0"):
+			with self.subTest(wait=wait):
+				self.assertEqual(lock_order._lock_wait_clause(wait), " NOWAIT")
+
+	def test_positive_waits_that_many_seconds(self):
+		for wait, clause in ((15, " WAIT 15"), ("7", " WAIT 7"), (50, " WAIT 50")):
+			with self.subTest(wait=wait):
+				self.assertEqual(lock_order._lock_wait_clause(wait), clause)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestUpdateByPrimaryKey(IntegrationTestCase):
+	"""update_by_primary_key: set_value with a filter dict, but locking only the rows it changes
+	(a filtered UPDATE no index serves locks the whole table under REPEATABLE READ)."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_reads_the_names_then_updates_them_by_primary_key(self):
+		filters = {"docstatus": 2, "manufacturing_operation": "MOP-9"}
+		with (
+			patch.object(
+				lock_order.frappe.db, "get_values", return_value=["R-2", "R-1", "R-2"]
+			) as read,
+			patch.object(lock_order.frappe.db, "set_value") as write,
+		):
+			names = lock_order.update_by_primary_key(
+				"Department IR Operation", filters, "manufacturing_operation", None
+			)
+		self.assertEqual(names, ["R-1", "R-2"])
+		read.assert_called_once_with(
+			"Department IR Operation", filters, "name", pluck=True, order_by="name asc"
+		)
+		write.assert_called_once_with(
+			"Department IR Operation",
+			{
+				"docstatus": 2,
+				"manufacturing_operation": "MOP-9",
+				"name": ("in", ["R-1", "R-2"]),
+			},
+			"manufacturing_operation",
+			None,
+			update_modified=True,
+		)
+		self.assertEqual(filters, {"docstatus": 2, "manufacturing_operation": "MOP-9"})
+
+	def test_nothing_matching_writes_nothing(self):
+		with (
+			patch.object(lock_order.frappe.db, "get_values", return_value=[]),
+			patch.object(lock_order.frappe.db, "set_value") as write,
+		):
+			self.assertEqual(
+				lock_order.update_by_primary_key("Thing", {"a": 1}, "b", 2), []
+			)
+		write.assert_not_called()
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestLockRowsByName(IntegrationTestCase):
+	"""_lock_rows_by_name and its two callers (lock_manufacturing_operations, lock_work_orders):
+	one primary-key FOR UPDATE per distinct row, in sorted order, returning the locking reads."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _row_for(query, values, as_dict=False):
+		return [frappe._dict(name=values[0], status="WIP")]
+
+	@patch.object(lock_order.frappe.db, "sql")
+	def test_one_primary_key_lock_per_distinct_name_in_sorted_order(self, mock_sql):
+		mock_sql.side_effect = self._row_for
+		locked = lock_order._lock_rows_by_name(
+			"tabThing", ("name", "status"), ["B", "A", "B", "", None], 15
+		)
+		self.assertEqual([c.args[1] for c in mock_sql.call_args_list], [("A",), ("B",)])
+		for c in mock_sql.call_args_list:
+			self.assertEqual(
+				c.args[0],
+				"SELECT `name`, `status` FROM `tabThing` WHERE name = %s FOR UPDATE WAIT 15",
+			)
+			self.assertTrue(c.kwargs.get("as_dict"))
+		self.assertEqual(list(locked), ["A", "B"])
+
+	@patch.object(lock_order.frappe.db, "sql")
+	def test_wait_suffix_follows_the_requested_wait(self, mock_sql):
+		mock_sql.return_value = []
+		for wait, ending in (
+			(None, "FOR UPDATE"),
+			(0, "FOR UPDATE NOWAIT"),
+			(3, "FOR UPDATE WAIT 3"),
+		):
+			with self.subTest(wait=wait):
+				mock_sql.reset_mock()
+				lock_order._lock_rows_by_name("tabThing", ("name",), ["A"], wait)
+				self.assertTrue(
+					mock_sql.call_args.args[0].endswith(ending), mock_sql.call_args
+				)
+
+	@patch.object(lock_order.frappe.db, "sql")
+	def test_a_callable_wait_is_asked_once_per_statement(self, mock_sql):
+		"""How the guard spreads ONE lock budget over the rows of a block: each statement waits
+		what the callable says is left of it."""
+		mock_sql.return_value = []
+		left = iter([15, 9, 0])
+		lock_order._lock_rows_by_name(
+			"tabThing", ("name",), ["C", "A", "B"], lambda: next(left)
+		)
+		self.assertEqual(
+			[
+				(c.args[1], c.args[0].split("FOR UPDATE")[1])
+				for c in mock_sql.call_args_list
+			],
+			[(("A",), " WAIT 15"), (("B",), " WAIT 9"), (("C",), " NOWAIT")],
+		)
+
+	@patch.object(lock_order.frappe.db, "sql")
+	def test_missing_rows_are_left_out(self, mock_sql):
+		mock_sql.side_effect = [[frappe._dict(name="A")], []]
+		locked = lock_order._lock_rows_by_name("tabThing", ("name",), ["A", "B"], None)
+		self.assertEqual(list(locked), ["A"])
+
+	@patch.object(lock_order.frappe.db, "sql")
+	def test_no_names_issue_no_statement(self, mock_sql):
+		self.assertEqual(
+			lock_order._lock_rows_by_name("tabThing", ("name",), [None, ""], 15), {}
+		)
+		mock_sql.assert_not_called()
+
+	@patch.object(lock_order.frappe.db, "sql")
+	def test_returned_rows_are_the_locking_reads_themselves(self, mock_sql):
+		"""Callers decide from these rows: a plain re-read could show an older snapshot."""
+		row = frappe._dict(name="A", status="Finished")
+		mock_sql.return_value = [row]
+		locked = lock_order._lock_rows_by_name(
+			"tabThing", ("name", "status"), ["A"], None
+		)
+		self.assertIs(locked["A"], row)
+
+	@patch.object(lock_order.frappe.db, "sql")
+	def test_a_failed_lock_names_the_row_it_waited_for(self, mock_sql):
+		"""The guard's WorkOrderBusyError then names the busy row, not every row it wanted."""
+		error = frappe.QueryTimeoutError("1205")
+		mock_sql.side_effect = [[frappe._dict(name="A")], error]
+		with self.assertRaises(frappe.QueryTimeoutError) as cm:
+			lock_order._lock_rows_by_name("tabThing", ("name",), ["C", "B", "A"], 15)
+		self.assertIs(cm.exception, error)
+		self.assertEqual(cm.exception.lock_row_name, "B")
+		self.assertEqual(mock_sql.call_count, 2)  # C was never asked for
+
+	@patch.object(lock_order, "_lock_rows_by_name", return_value={})
+	def test_manufacturing_operations_lock_their_table_with_the_guard_fields(
+		self, mock_rows
+	):
+		lock_order.lock_manufacturing_operations(["MOP-1"], wait=0)
+		mock_rows.assert_called_once_with(
+			"tabManufacturing Operation",
+			lock_order.MANUFACTURING_OPERATION_LOCK_FIELDS,
+			["MOP-1"],
+			0,
+		)
+
+	@patch.object(lock_order, "_lock_rows_by_name", return_value={})
+	def test_work_orders_lock_their_table_with_the_guard_fields(self, mock_rows):
+		lock_order.lock_work_orders({"MWO-1"})
+		mock_rows.assert_called_once_with(
+			"tabManufacturing Work Order",
+			lock_order.WORK_ORDER_LOCK_FIELDS,
+			{"MWO-1"},
+			None,
+		)
+
+	def test_lock_fields_cover_every_column_the_guard_decides_on(self):
+		"""A column missing here reads as None from the locked row and silently passes a rule."""
+		self.assertLessEqual(
+			{
+				"name",
+				"manufacturing_work_order",
+				"company",
+				"department",
+				"status",
+				"department_ir_status",
+				"operation",
+				"employee",
+				"subcontractor",
+				"department_issue_id",
+				"department_receive_id",
+				# compared with the snapshot after the wait (the guard's snapshot check)
+				"modified",
+			},
+			set(lock_order.MANUFACTURING_OPERATION_LOCK_FIELDS),
+		)
+		self.assertLessEqual(
+			{"name", "docstatus", "manufacturing_operation"},
+			set(lock_order.WORK_ORDER_LOCK_FIELDS),
+		)
+
+	def tearDown(self):
+		return super().tearDown()

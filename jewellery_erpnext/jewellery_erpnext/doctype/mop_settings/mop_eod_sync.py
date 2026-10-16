@@ -923,6 +923,59 @@ def _plan_mwo_group(
 					)
 		return None
 
+	# Hold an MWO whose unsynced logs sit on an OPEN operation that is not its current one.
+	# _find_last_operation picks the operation owning the newest unsynced log and never looks at
+	# the work order's pointer, so a stale transaction (an Employee Issue draft submitted after
+	# the work order moved on) would otherwise take over the plan and move stale balances.
+	pointer, stale_ops = _open_non_pointer_operations(mwo, mop_data_list)
+	if stale_ops:
+		stale_names = [md["mop_name"] for md in stale_ops]
+		failures.append(
+			{
+				"step": "ambiguous_current_operation",
+				"mwo": mwo,
+				"company": company,
+				"last_mop": pointer,
+				"affected_mops": all_mop_names,
+				"error_message": (
+					f"Open operation(s) {', '.join(stale_names)} are not work order {mwo}'s current "
+					f"operation {pointer}; the MWO is held (no transfer, logs stay unsynced) until the "
+					"stale transaction is repaired."
+				),
+				"suggested_fix": (
+					"Run jewellery_erpnext.mop_lineage_audit.audit_current_operation_conflicts and the "
+					"reviewed repair, then a selective EOD for this MWO."
+				),
+			}
+		)
+		stats["failed_mwos"] += 1
+		if sync_log_name:
+			for md in stale_ops:
+				for log in md.get("logs") or []:
+					_insert_sync_log_item(
+						sync_log_name,
+						{
+							"manufacturing_work_order": mwo,
+							"manufacturing_operation": md["mop_name"],
+							"company": company,
+							"item_code": log.item_code,
+							"batch_no": log.batch_no,
+							"qty": flt(log.qty_after_transaction_batch_based, 3),
+							"status": "Failed",
+							"sync_stage": "Collect MOP Log",
+							"error_type": "Validation Failed",
+							"error_message": (
+								f"Operation {md['mop_name']} is open but is not the current "
+								f"operation {pointer} of {mwo}."
+							),
+							"suggested_fix": (
+								"Repair the stale transaction (current-operation audit), then run a "
+								"selective EOD."
+							),
+						},
+					)
+		return None
+
 	last_mop_data = _find_last_operation(mop_data_list)
 	if not last_mop_data:
 		_mark_all_mwo_mop_logs_synced([mwo], selective=selective)
@@ -2874,6 +2927,9 @@ def _group_logs_by_company_and_mwo(logs):
 				"manufacturing_order",
 				"department",
 				"loss_wt",
+				# read by _open_non_pointer_operations (stale current-operation hold)
+				"status",
+				"department_ir_status",
 			],
 			limit_page_length=0,
 		):
@@ -3054,6 +3110,49 @@ def _apply_mwo_filter_rows(logs, filter_rows):
 			excluded.append(log)
 
 	return included, excluded
+
+
+def _open_non_pointer_operations(mwo, mop_data_list):
+	"""``(pointer, [mop_data])`` for gathered operations that are OPEN but not the work order's
+	current operation (``Manufacturing Work Order.manufacturing_operation``).
+
+	Only those MWOs are held: logs on a FINISHED predecessor are normal (an Employee IR Receive
+	writes audit copies on its source operation) and keep today's behaviour. On the kggk-prod
+	copy of 2026-10-05 this matched 2 of the 571 MWOs with unsynced logs -- exactly the two whose
+	finished operations a stale Employee Issue had reopened.
+
+	Returns ``(None, [])`` whenever the answer cannot be established (no such MWO, not submitted,
+	no pointer, an operation without a known status), so edge states and DB-free planner tests
+	keep the existing behaviour.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+		is_open_operation,
+	)
+
+	if not mwo or not mop_data_list:
+		return None, []
+	mwo_row = frappe.db.get_value(
+		"Manufacturing Work Order",
+		mwo,
+		["docstatus", "manufacturing_operation"],
+		as_dict=True,
+	)
+	if not mwo_row or cint(mwo_row.get("docstatus")) != 1:
+		return None, []
+	pointer = mwo_row.get("manufacturing_operation")
+	if not pointer or not isinstance(pointer, str):
+		return None, []
+	stale = []
+	for md in mop_data_list:
+		mop_doc = md.get("mop_doc") or {}
+		status = mop_doc.get("status") if hasattr(mop_doc, "get") else None
+		if not isinstance(status, str) or not status:
+			return None, []
+		if md.get("mop_name") != pointer and is_open_operation(
+			status, mop_doc.get("department_ir_status")
+		):
+			stale.append(md)
+	return pointer, stale
 
 
 def _find_last_operation(mop_data_list):
