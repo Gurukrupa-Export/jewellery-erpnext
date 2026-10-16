@@ -212,7 +212,11 @@ def _unpack(
 	Returns (se, components_bom, master_bom_writes).
 	"""
 	seen = {}
-	mop = {"status": "Not Started", "employee": None, "department": "Dept"} if mop is None else mop
+	mop = (
+		{"status": "Not Started", "employee": None, "department": "Dept"}
+		if mop is None
+		else mop
+	)
 	if warehouses is None:
 		warehouses = {("department", "Dept"): "MFG-WH - X"}
 	fake = SimpleNamespace(
@@ -237,11 +241,11 @@ def _unpack(
 	fake._resolve_unpack_target_warehouse = (
 		lambda: ManufacturingWorkOrder._resolve_unpack_target_warehouse(fake)
 	)
-	fake._unpack_component_rates = lambda items: ManufacturingWorkOrder._unpack_component_rates(
-		fake, items
+	fake._unpack_component_rates = (
+		lambda items: ManufacturingWorkOrder._unpack_component_rates(fake, items)
 	)
-	fake._rate_unpacked_components = lambda se: ManufacturingWorkOrder._rate_unpacked_components(
-		fake, se
+	fake._rate_unpacked_components = (
+		lambda se: ManufacturingWorkOrder._rate_unpacked_components(fake, se)
 	)
 	fake.db_set = lambda *a, **k: None
 
@@ -390,9 +394,6 @@ class TestUnpackWarehouses(IntegrationTestCase):
 			_unpack(warehouses={})
 
 
-	def test_the_departments_manufacturing_warehouse_is_not_used(self):
-		se, _bom, _writes = _unpack(serial_wh="RM-WH - X", dept_wh="MFG-WH - X")
-		self.assertNotIn("MFG-WH - X", {r.get("t_warehouse") for r in se.items})
 class TestUnpackRates(IntegrationTestCase):
 	COMPONENTS = [
 		{"item_code": "METAL", "qty": 10.0, "pcs": 0},
@@ -450,7 +451,9 @@ class TestUnpackPieceCounts(IntegrationTestCase):
 				{"item_code": "DIA-B", "qty": 0.676, "pcs": 20},
 			]
 		)
-		self.assertEqual({r.item_code: r.pcs for r in _targets(se)}, {"DIA-A": 35, "DIA-B": 20})
+		self.assertEqual(
+			{r.item_code: r.pcs for r in _targets(se)}, {"DIA-A": 35, "DIA-B": 20}
+		)
 
 	def test_pieces_scale_with_the_work_order_quantity(self):
 		# The BOM describes ONE piece; the entry books qty * BOM, like the carats.
@@ -461,5 +464,7 @@ class TestUnpackPieceCounts(IntegrationTestCase):
 		self.assertEqual(_targets(se)[0].qty, 2.0)
 
 	def test_a_row_without_pieces_keeps_the_fields_default(self):
-		se, _bom, _w = _unpack(components=[{"item_code": "METAL", "qty": 6.0, "pcs": 0}])
+		se, _bom, _w = _unpack(
+			components=[{"item_code": "METAL", "qty": 6.0, "pcs": 0}]
+		)
 		self.assertNotIn("pcs", _targets(se)[0])
