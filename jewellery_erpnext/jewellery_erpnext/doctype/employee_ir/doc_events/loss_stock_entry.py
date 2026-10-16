@@ -23,7 +23,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, nowtime, today
+from frappe.utils import flt, nowtime, today
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	resolve_batch_ownership,
@@ -363,7 +363,7 @@ def _prepare_loss_row(eir, row, table_name):
 
 	mwo = _resolve_mwo(eir, row, table_name)
 	sre_doc, candidates = _find_sre(eir, row, mwo, table_name, qty)
-	t_warehouse = _resolve_t_warehouse(eir, table_name)
+	t_warehouse = _resolve_t_warehouse(eir)
 	loss_item = _resolve_loss_item(eir, row, table_name)
 
 	_validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name)
@@ -736,61 +736,16 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 	)
 
 
-def _resolve_t_warehouse(eir, table_name):
-	"""Resolve target warehouse based on is_raw_material."""
-	if cint(eir.is_raw_material):
-		return _resolve_raw_material_warehouse(eir)
+def _resolve_t_warehouse(eir):
+	"""Resolve target warehouse. Process Loss always uses the Department Scrap warehouse.
+
+	Kept as a named indirection over ``_resolve_scrap_warehouse`` so the call site
+	still reads as "the loss row's TARGET warehouse" rather than naming one
+	particular warehouse type. It no longer takes ``table_name``: that existed only
+	to report which child table an ``is_raw_material`` resolution failed on, and
+	that branch is gone.
+	"""
 	return _resolve_scrap_warehouse(eir)
-
-
-def _resolve_raw_material_warehouse(eir):
-	if eir.subcontracting == "Yes":
-		if not eir.subcontractor:
-			frappe.throw(
-				_(
-					"Employee IR {0}: subcontractor is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"company": eir.company,
-				"subcontractor": eir.subcontractor,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for "
-					"subcontractor {1}"
-				).format(eir.name, eir.subcontractor)
-			)
-	else:
-		if not eir.employee:
-			frappe.throw(
-				_(
-					"Employee IR {0}: employee is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"employee": eir.employee,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for employee {1}"
-				).format(eir.name, eir.employee)
-			)
-	return wh
 
 
 def _resolve_scrap_warehouse(eir):
@@ -825,11 +780,45 @@ def _resolve_scrap_warehouse(eir):
 	return results[0].name
 
 
+def _resolve_manufacturer(eir, row, table_name):
+	"""Resolve the Manufacturer whose Variant Loss Table maps the loss variant.
+
+	``Employee IR.manufacturer`` is optional and is left blank on plenty of live
+	receives, so it cannot be the only source: before loss was routed to the
+	Scrap warehouse the raw-material branch never read it, and those receives
+	posted fine. Fall back to the row's Manufacturing Work Order (which fetches
+	``manufacturer`` from its PMO) and then to the Department master, both of
+	which point at the same Manufacturer when the EIR field is set. Throw only
+	when none of the three yields one, since the Variant Loss Table lookup is
+	keyed by Manufacturer and has nothing to fall back on.
+	"""
+	if eir.manufacturer:
+		return eir.manufacturer
+
+	mwo = getattr(row, "manufacturing_work_order", None)
+	if mwo:
+		manufacturer = frappe.db.get_value(
+			"Manufacturing Work Order", mwo, "manufacturer"
+		)
+		if manufacturer:
+			return manufacturer
+
+	if eir.department:
+		manufacturer = frappe.db.get_value("Department", eir.department, "manufacturer")
+		if manufacturer:
+			return manufacturer
+
+	frappe.throw(
+		_(
+			"Employee IR {0}: manufacturer is required to look up loss item and "
+			"could not be derived from {1} row {2} (Manufacturing Work Order {3}) "
+			"or from Department {4}"
+		).format(eir.name, table_name, row.idx, mwo or "-", eir.department or "-")
+	)
+
+
 def _resolve_loss_item(eir, row, table_name):
 	"""Return the item_code to use on the produce row of the Process Loss SE."""
-	if cint(eir.is_raw_material):
-		# Same item — loss moves to employee/subcontractor raw-material warehouse.
-		return row.item_code
 
 	# Scrap path: resolve the dust/loss variant via the manufacturer's mapping.
 	if not row.variant_of:
@@ -841,17 +830,12 @@ def _resolve_loss_item(eir, row, table_name):
 		)
 	# loss_type defaults to "Loss" when not explicitly set on the child row.
 	loss_type = row.loss_type or "Loss"
-	if not eir.manufacturer:
-		frappe.throw(
-			_("Employee IR {0}: manufacturer is required to look up loss item").format(
-				eir.name
-			)
-		)
+	manufacturer = _resolve_manufacturer(eir, row, table_name)
 
 	loss_variant_template = frappe.db.get_value(
 		"Variant Loss Table",
 		{
-			"parent": eir.manufacturer,
+			"parent": manufacturer,
 			"parenttype": "Manufacturer",
 			"parentfield": "custom_variant_loss_table",
 			"variant": row.variant_of,
@@ -867,7 +851,7 @@ def _resolve_loss_item(eir, row, table_name):
 				"({4} row {5})"
 			).format(
 				eir.name,
-				eir.manufacturer,
+				manufacturer,
 				row.variant_of,
 				loss_type,
 				table_name,
@@ -876,11 +860,16 @@ def _resolve_loss_item(eir, row, table_name):
 		)
 
 	from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
+		ensure_loss_item_stockable,
 		get_item_loss_item,
 	)
 
 	loss_item = get_item_loss_item(
-		eir.company, row.item_code, row.variant_of, loss_type
+		eir.company,
+		row.item_code,
+		row.variant_of,
+		loss_type,
+		loss_variant_template=loss_variant_template,
 	)
 	if not loss_item:
 		frappe.throw(
@@ -889,7 +878,12 @@ def _resolve_loss_item(eir, row, table_name):
 				"variant_of={1}, loss_type={2} ({3} row {4})"
 			).format(eir.name, row.variant_of, loss_type, table_name, row.idx)
 		)
-	return loss_item
+	# Re-checked here even though get_item_loss_item already guarantees it: the
+	# template's update_variants push runs in a background job after commit once a
+	# template has more than 30 variants, so it can flip this item back to
+	# non-stock between resolution and se.insert(). ERPNext's validate_item would
+	# then reject the produce row with a bare "is not a stock Item".
+	return ensure_loss_item_stockable(loss_item)
 
 
 # ---------------------------------------------------------------------------
@@ -966,6 +960,33 @@ def _validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name):
 # ---------------------------------------------------------------------------
 
 
+def _stamp_loss_tree(se, eir):
+	"""Stamp ``custom_tree_number`` on the combined loss SE -- only when it is unambiguous.
+
+	Unlike the per-row injection Stock Entries, this is ONE Repack spanning every loss row on the
+	Employee IR, so a single header field can only tell the truth when the whole document belongs
+	to one casting tree. A CASTING Receive now always does -- a work order from a second tree is
+	rejected by ``tree_casting.validate_single_casting_tree`` -- so for those this always
+	resolves.
+
+	The abstain stays for everything outside that invariant: NON-casting receives (a finding
+	repack keeps its tree past casting, so one can legitimately span several), documents created
+	before the rule, and submits that skipped ``validate``. Stamping one of those with whichever
+	tree happened to sort first would be worse than leaving it blank -- the tree netting would
+	then subtract another tree's loss from this one's pool.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
+		row_tree_name,
+		single_tree_or_none,
+	)
+
+	tree_name = single_tree_or_none(
+		row_tree_name(row) for row in eir.employee_ir_operations
+	)
+	if tree_name:
+		se.custom_tree_number = tree_name
+
+
 def _build_combined_loss_se(eir, pending):
 	"""Build ONE Repack SE with consume+produce row pairs for all loss entries."""
 	first = pending[0]
@@ -982,6 +1003,7 @@ def _build_combined_loss_se(eir, pending):
 	se.manufacturing_work_order = mwo
 	se.department = eir.department
 	se.to_department = eir.department
+	_stamp_loss_tree(se, eir)
 
 	if eir.subcontracting == "Yes":
 		se.subcontractor = eir.subcontractor

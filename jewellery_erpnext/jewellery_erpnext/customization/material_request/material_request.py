@@ -3,9 +3,13 @@ import json
 import frappe
 from frappe import _
 from frappe.model.mapper import get_mapped_doc
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.prefetch import (
 	mri_warehouse_map,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.transit import (
+	has_non_transit_target,
 )
 
 
@@ -14,6 +18,11 @@ def make_mop_stock_entry(self, **kwargs):
 	try:
 		if isinstance(self, str):
 			self = json.loads(self)
+		# before_update_after_submit fires on every update-after-submit save while the
+		# document sits in "Material Transferred to MOP", so without this a plain Update
+		# mints a second Work Order Stock Entry and a second set of MOP Log rows.
+		if self.get("custom_mop_se"):
+			return None
 		if not self.get("custom_reserve_se"):
 			return
 
@@ -87,160 +96,269 @@ def make_mop_stock_entry(self, **kwargs):
 		return e
 
 
-@frappe.whitelist()
-def make_department_stock_entry(self, **kwargs):
-	# c = (
-	# self.custom_material_request_department_transfer[-2].department
-	# if len(self.custom_material_request_department_transfer) > 1
-	# else self.custom_department
-	# )
+def get_submitted_from_reserve_se(mr_name, stock_entry=None):
+	"""Name of a submitted "Material Transfer From Reserve" entry that moved ``mr_name``.
 
-	if isinstance(self, str):
-		self = json.loads(self)
-	if not self.get("custom_reserve_se"):
+	Keyed on the entry's rows, not on ``Material Request.custom_transfer_se``: a request
+	split off another one by ``frappe.copy_doc`` carries the parent's stamp, which names the
+	entry that moved the parent's material rather than its own. Pass ``stock_entry`` to ask
+	about that one entry.
+	"""
+	existing = frappe.db.sql(
+		"""
+		SELECT se.name FROM `tabStock Entry` se
+		JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+		WHERE se.stock_entry_type = 'Material Transfer From Reserve'
+		  AND se.docstatus = 1 AND sed.material_request = %(mr_name)s
+		  AND (%(stock_entry)s IS NULL OR se.name = %(stock_entry)s)
+		LIMIT 1
+		""",
+		{"mr_name": mr_name, "stock_entry": stock_entry},
+	)
+	return existing[0][0] if existing else None
+
+
+def validate_from_reserve_done(self):
+	"""Refuse to move a request's material before it has reached ``set_warehouse``.
+
+	The reserve Stock Entry parks the material in the department's Reserve warehouse; the
+	"Material Transfer From Reserve" entry that ``MR.on_submit`` defers to a background job
+	(``doc_events.material_request.materialize_transfer_se``) is what brings it into
+	``set_warehouse``. Nothing in the workflow waits for that job, so when it is still
+	running or has failed, ``set_warehouse`` does not hold the material and the transfer
+	would only fail later on stock -- with a message that points nowhere near the cause.
+	"""
+	state = self.get("custom_transfer_se_state")
+	if state == "Pending":
+		frappe.throw(
+			_(
+				"The Material Transfer From Reserve entry for this request is still being "
+				"created. Please try again in a few seconds; if this persists, ask your "
+				"system manager to check the background job."
+			)
+		)
+
+	if state == "Failed":
+		frappe.throw(
+			_(
+				"The Material Transfer From Reserve entry for this request failed, so the "
+				"material has not reached {0}. Ask your system manager to re-create it. "
+				"Error: {1}"
+			).format(
+				self.get("set_warehouse"),
+				self.get("custom_transfer_se_error") or _("(not recorded)"),
+			)
+		)
+
+	transfer_se = self.get("custom_transfer_se")
+	if not transfer_se or not get_submitted_from_reserve_se(self.name, transfer_se):
+		frappe.throw(
+			_(
+				"No submitted Material Transfer From Reserve entry moved this request's "
+				"material into {0}, so there is nothing there to transfer."
+			).format(self.get("set_warehouse"))
+		)
+
+
+def validate_department_transfer_received(self):
+	"""Refuse to hand the material on while its Transfer to Department is still in transit.
+
+	``make_department_transfer_stock_entry`` sends the material to the destination's
+	transit warehouse; it reaches ``custom_destination_warehouse`` -- the source the MOP
+	transfer reads -- only once the receiving department ends the transit. Entries made
+	before it became a transit leg carry add_to_transit too but moved the material straight
+	into the destination, so only an entry whose rows went into Transit is waited on.
+	"""
+	transfer_se = self.get("custom_department_transfer_se")
+	if not transfer_se:
 		return
 
-	se_doc = frappe.get_doc("Stock Entry", self.get("custom_reserve_se"))
-
-	new_se_doc = frappe.copy_doc(se_doc)
-	new_se_doc.stock_entry_type = "Material Transfered to Department"
-	new_se_doc.auto_created = 1
-	new_se_doc.to_department = self.get("custom_department")
-	new_se_doc.add_to_transit = 0
-	# warehouse_data = frappe._dict()
-	t_warehouse = frappe.db.get_value(
-		"Warehouse",
-		{"department": self.get("custom_department"), "warehouse_type": "Reserve"},
-		"name",
+	transfer = frappe.db.get_value(
+		"Stock Entry", transfer_se, ["add_to_transit", "per_transferred"], as_dict=True
 	)
-	if not t_warehouse:
-		# self.custom_custom_counter -= 1
-		# self.db_set("custom_custom_counter", self.custom_custom_counter)
-		# frappe.db.commit()  # force commit
-		self.custom_material_request_department_transfer.pop(-1)
-		frappe.throw("No warehouse for Selected Department ")
-
-	s_warehouse = frappe.db.sql(
-		f"""WITH last_se AS (
-		SELECT sei.parent AS stock_entry_name
-		FROM `tabStock Entry Detail` sei
-		WHERE sei.material_request = '{self.name}'
-		ORDER BY sei.creation DESC
-		LIMIT 1
+	if (
+		transfer
+		and transfer.add_to_transit
+		and flt(transfer.per_transferred) < 100
+		and not has_non_transit_target(transfer_se)
+	):
+		frappe.throw(
+			_(
+				"The material is still in transit to {0}: Stock Entry {1} has not been "
+				"received yet. The receiving department must End Transit on {1} before it "
+				"can be transferred to a Manufacturing Operation."
+			).format(self.get("custom_destination_warehouse"), transfer_se)
 		)
-		SELECT sei.t_warehouse
-		FROM `tabStock Entry Detail` sei
-		JOIN last_se ON sei.parent = last_se.stock_entry_name
-		GROUP BY sei.t_warehouse
-		HAVING COUNT(DISTINCT sei.t_warehouse) = 1
-		""",
-		as_dict=1,
+
+
+def make_department_transfer_stock_entry(self):
+	"""Send a submitted request's material out of ``set_warehouse`` to another department.
+
+	This is the "Transfer to Department" half of the workflow's final step -- the sibling
+	of ``make_mop_stock_entry``, reached when ``custom_operation_type`` selects the
+	department route instead of the MOP one. The deferred "Material Transfer From Reserve"
+	Stock Entry must already have put the material in ``set_warehouse`` -- see
+	``validate_from_reserve_done`` -- so that is the source.
+
+	The entry is a transit leg, like the MR's "Material Transfer (In Transit)": it moves the
+	material into the operator's ``custom_destination_warehouse``'s Default In-Transit
+	Warehouse with Add to Transit on, and the receiving department ends the transit (End
+	Transit, which ``doc_events.stock_entry.make_stock_in_entry`` routes into
+	``custom_destination_warehouse``). ERPNext v16.36.0 only accepts Add to Transit into a
+	Transit warehouse, so a destination that is itself a Transit warehouse is refused, and
+	Transfer to MOP waits for the receipt (``validate_department_transfer_received``). The
+	request's ``transfer_status`` goes In Transit on this entry and Completed on its receipt.
+
+	Not whitelisted, unlike the older makers beside it: the only caller is
+	``before_update_after_submit``, and exposing it would let an API client mint a
+	submitted Stock Entry while skipping the workflow transition that gates it.
+
+	The reserve Stock Entry is the template, exactly as it is for the MOP makers. It
+	already carries the rows' ``material_request`` / ``material_request_item`` links --
+	the Material Request reference this entry keeps -- along with ``batch_no``, ``pcs``,
+	``inventory_type``, ``customer`` and the alternative item already substituted into
+	``item_code`` (which ``CustomStockEntry.validate_with_material_request`` accepts,
+	matching against both ``item_code`` and ``custom_alternative_item``).
+
+	Deliberately does NOT stamp ``custom_material_request_reference`` on the header. That
+	field is the gate for ``doc_events.stock_entry.validate_material_request_warehouses``,
+	which asserts every row's ``t_warehouse`` equals ``Material Request Item.warehouse`` --
+	the precise routing this transfer departs from. Leaving it blank matches the three
+	Stock Entries this chain already creates.
+
+	``Material Transfer (DEPARTMENT)`` is absent from
+	``MOP Settings.stock_entry_type_to_reservation``, so submitting it writes no Stock
+	Reservation Entries and no MOP Log rows -- correct for a move that hands the material
+	to a department rather than to an operation.
+	"""
+	# before_update_after_submit fires on every update-after-submit save while the
+	# document sits in this state, so the stamp is the guard against a second entry.
+	if self.get("custom_department_transfer_se"):
+		return None
+
+	department = self.get("custom_destination_department")
+	warehouse = self.get("custom_destination_warehouse")
+
+	if not department:
+		frappe.throw(_("Please select a Destination Department."))
+
+	if not warehouse:
+		frappe.throw(_("Please select a Destination Warehouse."))
+
+	if not self.get("set_warehouse"):
+		frappe.throw(
+			_(
+				"Target Warehouse is not set on this Material Request, so there is no "
+				"source to transfer the material from."
+			)
+		)
+
+	if self.get("set_warehouse") == warehouse:
+		frappe.throw(
+			_("The source warehouse and the target warehouse cannot be the same.")
+		)
+
+	target = frappe.db.get_value(
+		"Warehouse",
+		warehouse,
+		[
+			"department",
+			"company",
+			"is_group",
+			"warehouse_type",
+			"default_in_transit_warehouse",
+		],
+		as_dict=True,
 	)
-	if s_warehouse:
-		s_warehouse = s_warehouse[0]["t_warehouse"]
-	new_se_doc.to_warehouse = t_warehouse
+
+	if not target:
+		frappe.throw(_("Destination Warehouse {0} not found.").format(warehouse))
+
+	if target.is_group:
+		frappe.throw(
+			_("Destination Warehouse {0} is a group warehouse.").format(warehouse)
+		)
+
+	if target.warehouse_type == "Transit":
+		frappe.throw(
+			_(
+				"Destination Warehouse {0} is a Transit warehouse. Choose the department's "
+				"own warehouse; the material goes through its transit warehouse on the way."
+			).format(warehouse)
+		)
+
+	transit_warehouse = target.default_in_transit_warehouse
+	if not transit_warehouse:
+		frappe.throw(
+			_(
+				"Transit warehouse is not mentioned in Destination Warehouse {0}. Set its "
+				"Default In-Transit Warehouse."
+			).format(warehouse)
+		)
+
+	if target.department != department:
+		frappe.throw(
+			_("Destination Warehouse {0} belongs to department {1}, not {2}.").format(
+				warehouse, target.department or _("(not set)"), department
+			)
+		)
+
+	if target.company != self.get("company"):
+		frappe.throw(
+			_("Destination Warehouse {0} belongs to company {1}, not {2}.").format(
+				warehouse, target.company or _("(not set)"), self.get("company")
+			)
+		)
+
+	if not self.get("custom_reserve_se"):
+		frappe.throw(
+			_(
+				"This Material Request has no Reserve Stock Entry, so there is nothing "
+				"to transfer."
+			)
+		)
+
+	validate_from_reserve_done(self)
+
+	se_doc = frappe.get_doc("Stock Entry", self.get("custom_reserve_se"))
+	new_se_doc = frappe.copy_doc(se_doc)
+
+	new_se_doc.stock_entry_type = "Material Transfer (DEPARTMENT)"
+	new_se_doc.purpose = "Material Transfer"
+	new_se_doc.auto_created = 1
+	# A transit leg. Set explicitly rather than left to the type's fetch: a 1 is never
+	# fetched away, so this holds whatever the Stock Entry Type is configured with.
+	new_se_doc.add_to_transit = 1
+	new_se_doc.to_department = department
+	new_se_doc.from_warehouse = self.get("set_warehouse")
+	new_se_doc.to_warehouse = transit_warehouse
+	# The reserve SE predates any operation; make sure a copied value can never leak in
+	# and pull this entry into the MOP ledger.
+	new_se_doc.manufacturing_operation = None
+
 	for row in new_se_doc.items:
-		# 	 = frappe.db.get_value("Warehouse",{"department": c, "warehouse_type":"Reserve"},"name")
-		# if not warehouse_data.get(row.material_request_item):
-		# 	warehouse_data[row.material_request_item] = frappe.db.get_value(
-		# 		"Material Request Item", row.material_request_item, "warehouse"
-		# 	)
-		# s_warehouse = warehouse_data.get(row.material_request_item)
-		row.to_department = self.get("custom_department")
-		row.s_warehouse = s_warehouse
-		row.t_warehouse = t_warehouse
+		row.s_warehouse = self.get("set_warehouse")
+		row.t_warehouse = transit_warehouse
+		row.to_department = department
+		row.manufacturing_operation = None
 		row.serial_and_batch_bundle = None
 
 	new_se_doc.save()
 	new_se_doc.submit()
-	frappe.msgprint(_("Stock Entry Created"))
-
-	if self.custom_material_request_department_transfer:
-		last_row = self.custom_material_request_department_transfer[-1]
-		last_row.db_set("stock_entry_created", 1)  # update DB
-		last_row.stock_entry_created = 1  # update in memory (so UI shows it)
-
-	# self.db_set("custom_mop_se", new_se_doc.name)
-	frappe.db.set_value(
-		"Material Request", self.get("name"), "custom_reserve_se", new_se_doc.name
-	)
+	frappe.msgprint(_("Stock Entry {0} created").format(new_se_doc.name))
+	self.db_set("custom_department_transfer_se", new_se_doc.name)
 
 	return new_se_doc.name
-
-	# except Exception as e:
-	# 	frappe.log_error("data Error", e)
-	# 	frappe.throw(str(e))
-	# 	return e
-
-
-@frappe.whitelist()
-def update_department_and_create_stock_entry(material_request_name, new_department):
-	doc = frappe.get_doc("Material Request", material_request_name)
-	current_department = doc.custom_department
-
-	# 1. If department is same, throw
-	if new_department == current_department:
-		frappe.throw("Raw material is already in this department.")
-
-	# 2. Check if last Stock Entry (Material Transfer) for this MR is already from current to target department
-	# Get last Stock Entry for this Material Request
-	last_stock_entry = frappe.db.sql(
-		"""
-		SELECT
-			se.name, sed.s_warehouse, sed.t_warehouse
-		FROM
-			`tabStock Entry` se
-			JOIN `tabStock Entry Detail` sed ON se.name = sed.parent
-		WHERE
-			se.docstatus = 1
-			AND sed.material_request = %s
-		ORDER BY se.creation DESC
-		LIMIT 1
-	""",
-		(material_request_name,),
-		as_dict=1,
-	)
-
-	# Set up expected s_warehouse and t_warehouse for new entry
-	# s_warehouse = None
-	t_warehouse = frappe.db.get_value(
-		"Warehouse", {"department": new_department, "warehouse_type": "Reserve"}, "name"
-	)
-	if not t_warehouse:
-		frappe.throw("No warehouse for Selected Department")
-
-	if last_stock_entry:
-		# s_warehouse_last = last_stock_entry[0].get("s_warehouse")
-		t_warehouse_last = last_stock_entry[0].get("t_warehouse")
-		# Your logic for what the new s_warehouse should be
-		# s_warehouse = ...
-		# Example logic: if equal, throw
-		if t_warehouse_last == t_warehouse:
-			frappe.throw("Raw material is already in this department.")
-
-	# 3. Update department, reset counter
-	# (write-reduction) one UPDATE on this MR row instead of four consecutive db_set
-	# calls -- fewer row re-locks and one `modified` bump instead of four.
-	doc.db_set(
-		{
-			"custom_department": new_department,
-			"custom_custom_counter": 1,
-			"workflow_state": "Material Transferred to Department",
-			"custom_operation_type": "Transfer to Department",
-		}
-	)
-
-	# 4. Call to create Stock Entry
-	new_se_name = make_department_stock_entry(
-		doc.as_dict()
-	)  # Pass document as dict or as needed
-	return new_se_name
 
 
 @frappe.whitelist()
 def make_department_mop_stock_entry(self, **kwargs):
 	if isinstance(self, str):
 		self = json.loads(self)
+	# Same idempotency guard as make_mop_stock_entry: this state re-saves, and each save
+	# would otherwise create another Work Order Stock Entry.
+	if self.get("custom_mop_se"):
+		return None
 	if not self.get("custom_reserve_se"):
 		return
 
@@ -258,27 +376,40 @@ def make_department_mop_stock_entry(self, **kwargs):
 			).format(kwargs.get("mop"))
 		)
 
+	# A Transfer to Department sends the material to its destination through transit; it
+	# is only there once received.
+	validate_department_transfer_received(self)
+
+	# A Transfer to Department already moved the material, and recorded where to. Read that
+	# rather than inferring it from "the newest Stock Entry Detail row against this request":
+	# the query below filters on no docstatus and would follow any other entry booked against
+	# the request afterwards.
 	s_warehouse = ""
-	s_warehouse = frappe.db.sql(
-		f"""WITH last_se AS (
-			SELECT sei.parent AS stock_entry_name
-			FROM `tabStock Entry Detail` sei
-			WHERE sei.material_request = '{self.name}'
-			ORDER BY sei.creation DESC
-			LIMIT 1
-			)
-			SELECT sei.t_warehouse
-			FROM `tabStock Entry Detail` sei
-			JOIN last_se ON sei.parent = last_se.stock_entry_name
-			GROUP BY sei.t_warehouse
-			HAVING COUNT(DISTINCT sei.t_warehouse) = 1
-			""",
-		as_dict=1,
-	)
-	if s_warehouse:
-		s_warehouse = s_warehouse[0]["t_warehouse"]
+	if self.get("custom_department_transfer_se") and self.get(
+		"custom_destination_warehouse"
+	):
+		s_warehouse = self.get("custom_destination_warehouse")
 	else:
-		s_warehouse = self.items[0].warehouse
+		s_warehouse = frappe.db.sql(
+			f"""WITH last_se AS (
+				SELECT sei.parent AS stock_entry_name
+				FROM `tabStock Entry Detail` sei
+				WHERE sei.material_request = '{self.name}'
+				ORDER BY sei.creation DESC
+				LIMIT 1
+				)
+				SELECT sei.t_warehouse
+				FROM `tabStock Entry Detail` sei
+				JOIN last_se ON sei.parent = last_se.stock_entry_name
+				GROUP BY sei.t_warehouse
+				HAVING COUNT(DISTINCT sei.t_warehouse) = 1
+				""",
+			as_dict=1,
+		)
+		if s_warehouse:
+			s_warehouse = s_warehouse[0]["t_warehouse"]
+		else:
+			s_warehouse = self.items[0].warehouse
 	manufacturing_work_order, manufacturing_order = frappe.get_cached_value(
 		"Manufacturing Operation",
 		kwargs.get("mop"),

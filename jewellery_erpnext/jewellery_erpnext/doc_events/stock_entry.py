@@ -959,6 +959,55 @@ def _throw_warehouse_mismatch(row, label, expected, actual):
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
+	release_material_request_links(self)
+
+
+# The Material Request fields that record "this step was done by Stock Entry X". All but
+# custom_mop_se (Data) are Link fields, which is what makes the request a back-link.
+_MR_STEP_ENTRY_FIELDS = (
+	"custom_reserve_se",
+	"custom_transfer_se",
+	"custom_department_transfer_se",
+	"custom_mop_se",
+)
+
+
+def release_material_request_links(self):
+	"""Let this entry cancel without its Material Request, and take it off the request.
+
+	The request stamps its entries (_MR_STEP_ENTRY_FIELDS) while every entry's rows point
+	back through material_request, so frappe's back-link check made each wait for the other
+	to be cancelled first -- neither ever could, and the desk's "Cancel All" walked that loop
+	into the request and every sibling entry. The request is ignored here, not in
+	before_cancel: ERPNext's StockEntry.on_cancel assigns ignore_linked_doctypes outright,
+	and check_no_back_links_exist reads it only after every on_cancel hook has run.
+
+	A stamp naming this entry is cleared, since the step it records is undone. Only the
+	submitted requests on this entry's own rows are touched: a draft is no back-link, and a
+	request carrying a copied link (split work order, desk Duplicate) is not this entry's.
+	"""
+	self.ignore_linked_doctypes = (
+		*(self.get("ignore_linked_doctypes") or ()),
+		"Material Request",
+	)
+
+	requests = {row.material_request for row in self.items if row.material_request}
+	if not requests:
+		return
+
+	for mr in frappe.get_all(
+		"Material Request",
+		filters={"name": ["in", sorted(requests)], "docstatus": 1},
+		fields=["name", *_MR_STEP_ENTRY_FIELDS],
+	):
+		stamps = {f: None for f in _MR_STEP_ENTRY_FIELDS if mr.get(f) == self.name}
+		if not stamps:
+			continue
+		if "custom_transfer_se" in stamps:
+			stamps.update(custom_transfer_se_state=None, custom_transfer_se_error=None)
+		# Not a save: validate_department_transfer_frozen refuses any normal update that
+		# touches custom_department_transfer_se.
+		frappe.db.set_value("Material Request", mr.name, stamps, update_modified=False)
 
 
 def prelock_bins(self, method=None):
@@ -975,10 +1024,20 @@ def prelock_bins(self, method=None):
 	# enable per site with site_config "serialize_stock_submit_by_item": 1 and A/B measure.
 	if frappe.conf.get("serialize_stock_submit_by_item"):
 		lock_items([r.item_code for r in self.items])
-	# Canonical position 2: pin this SE's naming-series counter (tabSeries) FOR UPDATE
-	# *before* any Bin lock, so a transaction can never hold a Bin while waiting on the
-	# series row another transaction holds while waiting on that Bin. Re-entrant with the
-	# getseries() call already made at insert (same row, same txn) — purely additive.
+	# Canonical position 2: pin this SE's naming counter FOR UPDATE *before* any Bin lock,
+	# so a transaction can never hold a Bin while waiting on the counter row another
+	# transaction holds while waiting on that Bin.
+	#
+	# What this costs depends on whether naming is sharded, and the helper decides per doc:
+	#   * NOT sharded — the SE falls back to the single shared MAT-STE- tabSeries row, which
+	#     a nested SE minted by an on_submit cascade will also want. Pinned unconditionally,
+	#     exactly as before, so the cascade can never take it after its Bin locks.
+	#   * SHARDED — the SE names off its own per-(company x type) Document Naming Rule
+	#     counter. By this point the doc is always already named (frappe runs set_new_name()
+	#     inside insert() BEFORE run_before_save_methods(), and the update path never names),
+	#     so it will not increment that counter again and nothing is pinned.
+	# Pinning the shared row here for every submit is what made it the dominant 1213 source
+	# in the Sep-2026 production Error Log; sharding is what actually removes the contention.
 	preallocate_series_for_docs(self)
 	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 
@@ -1549,8 +1608,64 @@ def get_warehouse_details(
 	return d_warehouse, e_warehouse
 
 
+def _department_transfer_destination(source):
+	"""Where a Transfer to Department transit leg is received into, if ``source`` is one.
+
+	``make_department_transfer_stock_entry`` sends the material to the destination's
+	transit warehouse and stamps the entry on its request as
+	``custom_department_transfer_se``; the request's ``custom_destination_warehouse`` is
+	where it lands. The entry carries no ``custom_material_request_reference`` and its rows'
+	Material Request Item warehouse is the request's old ``set_warehouse``, so neither End
+	Transit mapper's own routing fits it.
+	"""
+	if source.get("stock_entry_type") != "Material Transfer (DEPARTMENT)":
+		return None
+
+	return frappe.db.get_value(
+		"Material Request",
+		{"custom_department_transfer_se": source.get("name"), "docstatus": 1},
+		"custom_destination_warehouse",
+	)
+
+
+def _department_destination_lookup():
+	"""``_department_transfer_destination`` memoised per mapping: one query, not one per row."""
+	destinations = {}
+
+	def lookup(source):
+		key = source.get("name")
+		if key not in destinations:
+			destinations[key] = _department_transfer_destination(source)
+		return destinations[key]
+
+	return lookup
+
+
+def _remaining_transit_qty(row, precision):
+	"""Stock-UOM quantity of a transit row not received yet.
+
+	ERPNext's own ``make_stock_in_entry`` rule. ``transferred_qty`` is kept in stock UOM
+	(``StockEntry.update_transferred_qty`` sums the receipts' ``transfer_qty``), so it is
+	taken off ``transfer_qty``, never off the row's transaction-UOM ``qty``. A row with
+	nothing left is not mapped again, and a later End Transit carries only the remainder.
+	"""
+	return flt(
+		flt(row.get("transfer_qty")) - flt(row.get("transferred_qty")), precision
+	)
+
+
+def _remaining_transit_row_qty(row, precision):
+	"""``_remaining_transit_qty`` in the row's own UOM, for the receipt's ``qty``."""
+	return _remaining_transit_qty(row, precision) / (
+		flt(row.get("conversion_factor")) or 1
+	)
+
+
 @frappe.whitelist()
 def make_stock_in_entry(source_name, target_doc=None):
+	department_destination = _department_destination_lookup()
+	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
+
 	def set_missing_values(source, target):
 		if target.stock_entry_type == "Customer Goods Received":
 			target.stock_entry_type = "Customer Goods Issue"
@@ -1577,8 +1692,12 @@ def make_stock_in_entry(source_name, target_doc=None):
 					target_wh = wh.warehouse
 			target_doc.t_warehouse = target_wh
 
+		destination = department_destination(source_parent)
+		if destination:
+			target_doc.t_warehouse = destination
+
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = source_doc.qty
+		target_doc.qty = _remaining_transit_row_qty(source_doc, qty_precision)
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -1598,7 +1717,7 @@ def make_stock_in_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				# "condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				"condition": lambda doc: _remaining_transit_qty(doc, qty_precision) > 0,
 			},
 		},
 		target_doc,
@@ -1777,6 +1896,11 @@ def create_material_receipt_for_sales_person(source_name):
 
 	target_doc.stock_entry_type = "Material Receipt - Sales Person"
 	target_doc.docstatus = 0
+	# The clone above copies the issue's transit fields too. A return receipt is neither
+	# in transit nor the receipt leg of a transit entry, and ERPNext rejects Add to Transit
+	# into a non-Transit warehouse.
+	target_doc.add_to_transit = 0
+	target_doc.outgoing_stock_entry = None
 	target_doc.posting_date = frappe.utils.nowdate()
 	target_doc.posting_time = frappe.utils.nowtime()
 
@@ -1869,6 +1993,9 @@ def create_material_receipt_for_customer_approval(source_name, cust_name):
 
 	target_doc.update(frappe.get_doc("Stock Entry", source_name).as_dict())
 	target_doc.docstatus = 0
+	# Same as create_material_receipt_for_sales_person: never a transit entry or leg.
+	target_doc.add_to_transit = 0
+	target_doc.outgoing_stock_entry = None
 
 	target_doc.items = []
 	for item in frappe.get_all(
@@ -1901,6 +2028,9 @@ validates serial items entered are equal to quantity or not if not appropriate e
 
 @frappe.whitelist()
 def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
+	department_destination = _department_destination_lookup()
+	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
+
 	def set_missing_values(source, target):
 		target.stock_entry_type = source.stock_entry_type
 		target.set_missing_values()
@@ -1920,8 +2050,12 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 				)
 				target_doc.t_warehouse = warehouse
 
+		destination = department_destination(source_parent)
+		if destination:
+			target_doc.t_warehouse = destination
+
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = source_doc.qty - source_doc.transferred_qty
+		target_doc.qty = _remaining_transit_row_qty(source_doc, qty_precision)
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -1941,7 +2075,7 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				"condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				"condition": lambda doc: _remaining_transit_qty(doc, qty_precision) > 0,
 			},
 		},
 		target_doc,

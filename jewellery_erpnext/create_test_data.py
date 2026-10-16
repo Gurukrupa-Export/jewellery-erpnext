@@ -31,7 +31,7 @@ def create_test_data():
 		create(
 			{
 				"doctype": "Attribute Value",
-				"attribute_value": "Close",
+				"attribute_value": "Nova Glow",
 				"is_setting_type": 1,
 			}
 		)
@@ -39,9 +39,9 @@ def create_test_data():
 		create(
 			{
 				"doctype": "Attribute Value",
-				"attribute_value": "Close Setting",
+				"attribute_value": "Nova Glow Setting",
 				"is_sub_setting_type": 1,
-				"parent_attribute_value": "Close",
+				"parent_attribute_value": "Nova Glow",
 			}
 		)
 
@@ -218,7 +218,7 @@ def create_test_data():
 				"attribute_name": "Setting Type",
 				"item_attribute_values": [
 					{"attribute_value": "Open", "abbr": "OP"},
-					{"attribute_value": "Close", "abbr": "CL"},
+					{"attribute_value": "Nova Glow", "abbr": "CL"},
 				],
 			}
 		)
@@ -228,7 +228,7 @@ def create_test_data():
 				"doctype": "Item Attribute",
 				"attribute_name": "Sub Setting Type1",
 				"item_attribute_values": [
-					{"attribute_value": "Close Setting", "abbr": "CLS"},
+					{"attribute_value": "Nova Glow Setting", "abbr": "CLS"},
 					{"attribute_value": "Close-Open Setting", "abbr": "CES"},
 				],
 			}
@@ -239,7 +239,7 @@ def create_test_data():
 				"doctype": "Item Attribute",
 				"attribute_name": "Sub Setting Type2",
 				"item_attribute_values": [
-					{"attribute_value": "Close Setting", "abbr": "CLS"},
+					{"attribute_value": "Nova Glow Setting", "abbr": "CLS"},
 					{"attribute_value": "Close-Open Setting", "abbr": "CES"},
 				],
 			}
@@ -1080,7 +1080,7 @@ def create_test_data():
 					"item_category": "Mugappu",
 					"item_subcategory": "Casual Mugappu",
 					"item_category_code": "MU",
-					"setting_type": "Close",
+					"setting_type": "Nova Glow",
 					"sequence": "01087",
 					"productivity": "Studded",
 					"designer": frappe.db.exists(
@@ -1154,7 +1154,7 @@ def create_test_data():
 			{
 				"customer": "Test_Customer_External",
 				"metal_touch": "22KT",
-				"setting_type": "Close",
+				"setting_type": "Nova Glow",
 				"metal_type": "Gold",
 			},
 		):
@@ -1162,7 +1162,7 @@ def create_test_data():
 				{
 					"doctype": "Making Charge Price",
 					"customer": "Test_Customer_External",
-					"setting_type": "Close",
+					"setting_type": "Nova Glow",
 					"currency": "INR",
 					"metal_touch": "22KT",
 					"metal_type": "Gold",
@@ -3013,11 +3013,53 @@ def create_test_data():
 
 			_ensure_mr_is_free_item_field()
 
+			from jewellery_erpnext.patches.add_mr_department_transfer_fields import (
+				execute as _ensure_mr_department_transfer_fields,
+			)
+
+			_ensure_mr_department_transfer_fields()
+
+			# Beyond the Workflow State master this is a no-op on a site with no Material
+			# Request workflow, which is every test site -- that workflow has only ever
+			# lived in the production database.
+			from jewellery_erpnext.patches.add_mr_transfer_to_department_workflow import (
+				execute as _ensure_mr_transfer_to_department_workflow,
+			)
+
+			_ensure_mr_transfer_to_department_workflow()
+
+			# A no-op here -- the two patches above now create everything with the corrected
+			# values -- but wired in for the same reason every other patch is: install-app
+			# marks patches complete without running them.
+			from jewellery_erpnext.patches.update_mr_department_transfer_visibility import (
+				execute as _update_mr_department_transfer_visibility,
+			)
+
+			_update_mr_department_transfer_visibility()
+
+			from jewellery_erpnext.patches.add_mr_department_to_mop_transition import (
+				execute as _add_mr_department_to_mop_transition,
+			)
+
+			_add_mr_department_to_mop_transition()
+
 			from jewellery_erpnext.patches.seed_stock_entry_types import (
 				execute as _seed_stock_entry_types,
 			)
 
 			_seed_stock_entry_types()
+
+			from jewellery_erpnext.patches.add_metal_conversion_chain_sc import (
+				execute as _add_metal_conversion_chain_sc,
+			)
+
+			_add_metal_conversion_chain_sc()
+
+			from jewellery_erpnext.patches.add_metal_conversion_workflow import (
+				execute as _add_metal_conversion_workflow,
+			)
+
+			_add_metal_conversion_workflow()
 
 			from jewellery_erpnext.patches.add_stock_entry_type_allowed_roles import (
 				execute as _ensure_stock_entry_type_allowed_roles_field,
@@ -3059,23 +3101,43 @@ def create_test_data():
 
 			po_refining_entry_field()
 
-			# Serial No.custom_ownership_tag is NOT in the git_action_v16 fixtures, so —
-			# like the other custom-field patches above — it must be provisioned here for
+			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures, so — like
+			# the other custom-field patches above — it must be provisioned here for
 			# test_site, else create_manufacturing_entry's set_value raises
-			# "Unknown column 'custom_ownership_tag'" the moment an SNC is submitted.
-			from jewellery_erpnext.patches.add_serial_no_ownership_tag_field import (
-				execute as _ensure_serial_no_ownership_tag_field,
-			)
-
-			_ensure_serial_no_ownership_tag_field()
-
-			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures either — same
-			# reasoning as custom_ownership_tag above.
+			# "Unknown column 'custom_order_type'" the moment an SNC is submitted.
 			from jewellery_erpnext.patches.add_serial_no_order_type_field import (
 				execute as _ensure_serial_no_order_type_field,
 			)
 
 			_ensure_serial_no_order_type_field()
+
+			# Serial No.custom_sales_type / custom_flow_type (and the matching Quotation /
+			# Sales Order / Material Request fields) are patch-only for the same reason.
+			# Without them create_manufacturing_entry's stamp raises "Unknown column
+			# 'custom_sales_type'" the moment an SNC is submitted.
+			from jewellery_erpnext.patches.add_order_sales_flow_type_fields import (
+				execute as _ensure_order_sales_flow_type_fields,
+			)
+
+			_ensure_order_sales_flow_type_fields()
+
+			# Quotation / Sales Order.custom_design_type is patch-only for the same reason,
+			# and must come after the flow type patch above -- custom_flow_type is its
+			# insert_after anchor on both doctypes.
+			from jewellery_erpnext.patches.add_design_type_fields import (
+				execute as _ensure_design_type_fields,
+			)
+
+			_ensure_design_type_fields()
+
+			# Purchase Order.custom_order_type / custom_sales_type / custom_flow_type /
+			# custom_design_type are patch-only for the same reason; make_subcontracting_order
+			# stamps them from the Manufacturing Plan on submit.
+			from jewellery_erpnext.patches.add_purchase_order_order_dimension_fields import (
+				execute as _ensure_purchase_order_order_dimension_fields,
+			)
+
+			_ensure_purchase_order_order_dimension_fields()
 
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
@@ -3089,13 +3151,34 @@ def create_test_data():
 
 			# Serial No.custom_stamping_no is patch-only for the same reason. `bench
 			# install-app` marks every patch as already applied on a fresh site, so
-			# `bench migrate` never runs it and set_stamping_no -- a before_save hook on
-			# EVERY Serial No -- had no field to read.
+			# `bench migrate` never runs it and set_stamping_no -- which every Serial
+			# Number Creator submit calls -- had no field to read.
 			from jewellery_erpnext.patches.add_serial_no_stamping_no_field import (
 				execute as _ensure_serial_no_stamping_no_field,
 			)
 
 			_ensure_serial_no_stamping_no_field()
+
+			# The UNIQUE backstop on custom_stamping_no, so tests run against the same
+			# constraint production has. execute() seeds the tabSeries counters first (it
+			# calls seed_serial_no_stamping_series at its tail), so the index is built over
+			# already-consistent data.
+			from jewellery_erpnext.patches.add_serial_no_stamping_unique_index import (
+				execute as _ensure_serial_no_stamping_unique_index,
+			)
+
+			_ensure_serial_no_stamping_unique_index()
+			# The FG-serial BOM weight block on Material Request Item / Stock Entry Detail
+			# (custom_bom_gross_weight ... custom_bom_total_gemstone_pcs). Patch-only for
+			# the same reason as the Serial No fields above, and the git_action_v16 Custom
+			# Field fixture predates it, so without this the columns are missing on
+			# test_site and everything validate_fg_serial_rows / set_fg_bom_weights stamps
+			# is silently dropped on save.
+			from jewellery_erpnext.patches.add_fg_serial_bom_weight_fields import (
+				execute as _ensure_fg_serial_bom_weight_fields,
+			)
+
+			_ensure_fg_serial_bom_weight_fields()
 
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
@@ -3133,6 +3216,15 @@ def create_test_data():
 			)
 
 			_ensure_stock_entry_jwelex_tag_field()
+
+			# Stock Entry.ref_customer / Batch.custom_ref_customer (customer-batch-only
+			# Hybrid findings). Patch-only like the fields above, so provision them here
+			# for test_site too, else batch_rename / hybrid_findings read a missing column.
+			from jewellery_erpnext.patches.add_ref_customer_fields import (
+				execute as _ensure_ref_customer_fields,
+			)
+
+			_ensure_ref_customer_fields()
 
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (
@@ -3179,6 +3271,21 @@ def create_test_data():
 
 
 def setup_data():
+	# Must run before the first Item is inserted, not with the rest of the Stock Settings
+	# block further down: erpnext's Item.validate now throws "Cannot enable Has Batch No as
+	# Activate Serial / Batch No for Item is disabled in Stock Settings" for any item that
+	# turns on has_batch_no / has_serial_no while this flag is off, so the 13 batch-tracked
+	# items in create_users_data cannot be created before it is set. erpnext made the same
+	# reordering in its own bootstrap (update_stock_settings moved ahead of make_item).
+	#
+	# set_single_value, not get_single(...).save(): this runs against a freshly migrated site
+	# before any warehouse or UOM exists, and a full save would run StockSettings.validate
+	# against that empty site. It writes the Singles row directly and clears the document
+	# cache, which is what frappe.get_single_value reads.
+	frappe.db.set_single_value(
+		"Stock Settings", "enable_serial_and_batch_no_for_item", 1
+	)
+
 	if not frappe.db.exists("Stock Entry Type", "Process Loss"):
 		frappe.get_doc(
 			{
@@ -3272,16 +3379,16 @@ def setup_data():
 
 	for _setting_value in (
 		{"attribute_value": "Open", "is_setting_type": 1},
-		{"attribute_value": "Close", "is_setting_type": 1},
+		{"attribute_value": "Nova Glow", "is_setting_type": 1},
 		{
 			"attribute_value": "Close-Open Setting",
 			"is_sub_setting_type": 1,
 			"parent_attribute_value": "Open",
 		},
 		{
-			"attribute_value": "Close Setting",
+			"attribute_value": "Nova Glow Setting",
 			"is_sub_setting_type": 1,
-			"parent_attribute_value": "Close",
+			"parent_attribute_value": "Nova Glow",
 		},
 	):
 		if not frappe.db.exists("Attribute Value", _setting_value["attribute_value"]):

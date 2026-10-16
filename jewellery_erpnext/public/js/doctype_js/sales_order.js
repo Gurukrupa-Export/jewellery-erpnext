@@ -22,22 +22,38 @@ frappe.ui.form.on("Sales Order", {
 	},
 	refresh: function (frm) {
 		patch_barcode_scanner_for_serial_no_rows(frm);
-		if (frm.is_new() && !frm.doc.sales_type) {
-			let quotation = (frm.doc.items || [])
-				.map((d) => d.prevdoc_docname)
-				.filter(Boolean)[0];
+		patch_items_grid_for_serial_upload(frm);
+		patch_serial_no_item_trigger(frm);
+		listen_for_background_bom_job(frm);
+		if (is_bom_job_pending(frm)) {
+			frm.disable_save();
+			frm.set_intro(
+				__(
+					"BOMs and rates are being created in the background. This form will refresh when they are ready."
+				),
+				"blue"
+			);
+		}
+		if (frm.is_new() && (!frm.doc.sales_type || !frm.doc.custom_flow_type)) {
+			let quotation = (frm.doc.items || []).map((d) => d.prevdoc_docname).filter(Boolean)[0];
 			if (quotation) {
 				frappe.db.get_value(
 					"Quotation",
 					quotation,
-					"custom_sales_type",
+					["custom_sales_type", "custom_flow_type"],
 					(r) => {
-						if (r && r.custom_sales_type) {
+						if (!r) return;
+						if (!frm.doc.sales_type && r.custom_sales_type) {
 							frm.set_value("sales_type", r.custom_sales_type);
+						}
+						// Flow Type normally arrives with the mapper (same fieldname on both
+						// doctypes); this only covers a form opened before that landed.
+						if (!frm.doc.custom_flow_type && r.custom_flow_type) {
+							frm.set_value("custom_flow_type", r.custom_flow_type);
 						}
 					}
 				);
-			} else if (frm.doc.customer) {
+			} else if (frm.doc.customer && !frm.doc.sales_type) {
 				get_sales_type(frm);
 			}
 		}
@@ -189,6 +205,12 @@ frappe.ui.form.on("Sales Order", {
 				{ sales_order: frm.doc.name }
 			);
 		});
+	},
+	before_save: function (frm) {
+		throw_if_bom_job_pending(frm);
+	},
+	before_submit: function (frm) {
+		throw_if_bom_job_pending(frm);
 	},
 	validate: function (frm) {
 		frm.doc.items.forEach(function (d) {
@@ -1536,7 +1558,11 @@ frappe.ui.form.on("Sales Order Item", {
 	},
 	serial_no: function (frm, cdt, cdn) {
 		let child = locals[cdt][cdn];
-		if (child.serial_no) {
+		if (child.serial_no && !child.item_code) {
+			// Same single bulk call as the CSV upload; ERPNext's own serial_no
+			// handler is skipped for such rows (see patch_serial_no_item_trigger).
+			fill_items_from_serial_no(frm);
+		} else if (child.serial_no) {
 			frappe.db
 				.get_value("Serial No", child.serial_no, [
 					"item_code",
@@ -1546,18 +1572,7 @@ frappe.ui.form.on("Sales Order Item", {
 				])
 				.then((r) => {
 					if (r && r.message) {
-						if (!child.item_code) {
-							frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
-						}
-						frappe.model.set_value(cdt, cdn, "bom", r.message.custom_bom_no);
-						frappe.model.set_value(cdt, cdn, "custom_gross_weight", r.message.custom_gross_wt);
-
-						if (r.message.warehouse) {
-							frappe.model.set_value(cdt, cdn, "warehouse", r.message.warehouse);
-							if (!frm.doc.set_warehouse) {
-								frm.set_value("set_warehouse", r.message.warehouse);
-							}
-						}
+						apply_serial_no_details(frm, cdt, cdn, r.message);
 					}
 				});
 		}
@@ -2125,7 +2140,6 @@ function patch_barcode_scanner_for_serial_no_rows(frm) {
 	let original_get_row_to_modify_on_scan = scanner.get_row_to_modify_on_scan;
 	scanner.get_row_to_modify_on_scan = function (...args) {
 		if (this.__scanning_serial_no) {
-	
 			return undefined;
 		}
 		return original_get_row_to_modify_on_scan.apply(this, args);
@@ -2136,6 +2150,189 @@ function patch_barcode_scanner_for_serial_no_rows(frm) {
 		this.__scanning_serial_no = !!data.serial_no;
 		return original_update_table.call(this, data);
 	};
+}
+
+// Assigned directly rather than via set_value: setting the header warehouse that
+// way makes ERPNext set (and fetch stock for) the warehouse of every row.
+function apply_serial_no_details(frm, cdt, cdn, details) {
+	let child = locals[cdt][cdn];
+	child.bom = details.custom_bom_no;
+	child.custom_gross_weight = details.custom_gross_wt;
+	if (details.warehouse) {
+		child.warehouse = details.warehouse;
+		if (!frm.doc.set_warehouse) {
+			frm.doc.set_warehouse = details.warehouse;
+			frm.refresh_field("set_warehouse");
+		}
+	}
+	frm.dirty();
+	frm.refresh_field("items");
+}
+
+// ERPNext's serial_no handler runs a full get_item_details for a row without an
+// item_code; such rows are filled by fill_items_from_serial_no instead.
+function patch_serial_no_item_trigger(frm) {
+	if (frm.__serial_no_trigger_patched || !frm.cscript || !frm.cscript.serial_no) {
+		return;
+	}
+	frm.__serial_no_trigger_patched = true;
+
+	let original_serial_no = frm.cscript.serial_no;
+	frm.cscript.serial_no = function (doc, cdt, cdn) {
+		let row = locals[cdt] && locals[cdt][cdn];
+		if (cdt === "Sales Order Item" && row && row.serial_no && !row.item_code) {
+			row.use_serial_batch_fields = 1;
+			return;
+		}
+		return original_serial_no.apply(this, arguments);
+	};
+}
+
+// The grid's CSV upload writes row values directly without firing field
+// triggers, so rows arrive with a serial_no but no item_code. Fill them all in
+// one server call after the grid refreshes; per-row triggers would fire an
+// item details call and a full form refresh for every row and freeze the page.
+function patch_items_grid_for_serial_upload(frm) {
+	if (frm.__serial_upload_patched) {
+		return;
+	}
+
+	let grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) {
+		return;
+	}
+
+	frm.__serial_upload_patched = true;
+	frm.__serial_not_found = new Set();
+
+	let fill_rows = frappe.utils.debounce(() => fill_items_from_serial_no(frm), 300);
+	let original_refresh = grid.refresh;
+	grid.refresh = function (...args) {
+		let result = original_refresh.apply(this, args);
+		if (!frm.__serial_filling && get_rows_to_fill_from_serial_no(frm).length) {
+			fill_rows();
+		}
+		return result;
+	};
+}
+
+function get_rows_to_fill_from_serial_no(frm) {
+	// The form object is reused across documents; serials not found on one
+	// order must be looked up again on the next.
+	if (frm.__serial_not_found_doc !== frm.doc.name) {
+		frm.__serial_not_found = new Set();
+		frm.__serial_not_found_doc = frm.doc.name;
+	}
+	return (frm.doc.items || []).filter(
+		(d) => d.serial_no && !d.item_code && !frm.__serial_not_found.has(d.serial_no)
+	);
+}
+
+function fill_items_from_serial_no(frm) {
+	let rows = get_rows_to_fill_from_serial_no(frm);
+	if (frm.__serial_filling || !rows.length) {
+		return;
+	}
+
+	frm.__serial_filling = true;
+	frappe
+		.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.fill_items_from_serial_no",
+			args: { serial_nos: [...new Set(rows.map((d) => d.serial_no))] },
+			// Only an upload needs the overlay; a typed serial fills in well under a second.
+			freeze: rows.length > 5,
+			freeze_message: __("Fetching item details from Serial No..."),
+		})
+		.then((r) => {
+			if (!r.message) {
+				return;
+			}
+
+			let { details, missing } = r.message;
+			// Assigned directly (not via set_value) so per-row triggers don't fire;
+			// the remaining item details and rates are filled on save.
+			rows.forEach((d) => {
+				let values = details[d.serial_no];
+				if (!values) {
+					return;
+				}
+				let { warehouse, ...item_values } = values;
+				Object.assign(d, item_values);
+				d.qty = d.qty || 1;
+				// Uploaded rows skip the items_add event that copies the header date.
+				d.delivery_date = d.delivery_date || frm.doc.delivery_date;
+				d.stock_qty = d.qty * d.conversion_factor;
+				if (warehouse) {
+					d.warehouse = warehouse;
+					if (!frm.doc.set_warehouse) {
+						frm.doc.set_warehouse = warehouse;
+					}
+				}
+			});
+
+			frm.dirty();
+			frm.refresh_field("items");
+			frm.refresh_field("set_warehouse");
+
+			if (missing.length) {
+				missing.forEach((serial_no) => frm.__serial_not_found.add(serial_no));
+				frappe.msgprint({
+					title: __("Serial No Not Found"),
+					message: __("Could not fetch Item Code for these Serial Nos: {0}", [missing.join(", ")]),
+					indicator: "orange",
+				});
+			}
+		})
+		.finally(() => {
+			frm.__serial_filling = false;
+		});
+}
+
+function is_bom_job_pending(frm) {
+	return !frm.is_new() && frm.doc.__onload && frm.doc.__onload.bom_job_pending;
+}
+
+function throw_if_bom_job_pending(frm) {
+	if (is_bom_job_pending(frm)) {
+		frappe.throw({
+			title: __("BOM creation in progress"),
+			message: __(
+				"BOMs for this Sales Order are still being created. Please wait for the form to refresh."
+			),
+		});
+	}
+}
+
+// Large draft orders create their BOMs in a background job after saving (see
+// enqueue_bom_creation); reload the form with the rates once it is done.
+function listen_for_background_bom_job(frm) {
+	if (frm.__bom_job_listener) {
+		return;
+	}
+	frm.__bom_job_listener = true;
+
+	frappe.realtime.on("so_bom_job_done", (data) => {
+		if (!data || data.sales_order !== frm.doc.name) {
+			return;
+		}
+		frm.reload_doc().then(() => {
+			if (data.error) {
+				frappe.msgprint({
+					title: __("BOM creation failed"),
+					message: __("BOMs could not be created: {0}", [data.error]),
+					indicator: "red",
+				});
+			} else if (data.failure_message) {
+				frappe.msgprint({
+					title: __("BOM not created for {0} rows", [data.failures]),
+					message: data.failure_message,
+					indicator: "orange",
+				});
+			} else {
+				frappe.show_alert({ message: __("BOMs and rates are ready"), indicator: "green" });
+			}
+		});
+	});
 }
 
 function scan_api_call(input, callback) {

@@ -60,6 +60,9 @@
   "section_break_ibirs",
   "manufacturing_order",
   "order_type",
+  "sales_type",
+  "flow_type",
+  "design_type",
   "status",
   "split_from",
   "column_break_p1ihu",
@@ -80,6 +83,10 @@
   "est_delivery_days",
   "est_mfg_end_due_days",
   "mwo_details_section",
+  "photoshop_images_section",
+  "finish_front_view",
+  "column_break_photoshop",
+  "finish_left_view",
   "weight_details_section",
   "gross_wt",
   "net_wt",
@@ -258,6 +265,29 @@
    "fieldname": "order_type",
    "fieldtype": "Data",
    "label": "Order Type"
+  },
+  {
+   "fetch_from": "manufacturing_order.sales_type",
+   "fieldname": "sales_type",
+   "fieldtype": "Link",
+   "label": "Sales Type",
+   "options": "Sales Type",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_order.flow_type",
+   "fieldname": "flow_type",
+   "fieldtype": "Data",
+   "label": "Flow Type",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_order.design_type",
+   "fieldname": "design_type",
+   "fieldtype": "Link",
+   "label": "Design Type",
+   "options": "Attribute Value",
+   "read_only": 1
   },
   {
    "fetch_from": "manufacturing_order.metal_colour",
@@ -491,6 +521,30 @@
    "fieldname": "mwo_details_section",
    "fieldtype": "Tab Break",
    "label": "MWO Details"
+  },
+  {
+   "depends_on": "eval:doc.for_fg",
+   "fieldname": "photoshop_images_section",
+   "fieldtype": "Section Break",
+   "label": "Photoshop Images"
+  },
+  {
+   "fieldname": "finish_front_view",
+   "fieldtype": "Attach Image",
+   "label": "Finish Front View"
+,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "column_break_photoshop",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "finish_left_view",
+   "fieldtype": "Attach Image",
+   "label": "Finish Left View"
+,
+   "no_copy": 1
   },
   {
    "fieldname": "stock_entry_details",

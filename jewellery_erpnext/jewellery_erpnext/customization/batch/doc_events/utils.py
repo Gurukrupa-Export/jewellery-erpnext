@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import frappe
 from frappe import _
 from frappe.utils import flt
@@ -73,6 +75,7 @@ def update_inventory_dimentions(self):
 		not item_allows_customer_goods
 		and is_customer_inventory
 		and not is_subcontracting_gold_repack(self)
+		and not is_snc_settlement_conversion(self)
 		and not is_process_loss_repack(self)
 		and not is_repair_unpack(self)
 	):
@@ -98,6 +101,33 @@ def update_inventory_dimentions(self):
 			_purchase_receipt_voucher_type(self) or self.custom_customer_voucher_type
 		)
 
+	_stamp_ref_customer(self, is_customer_inventory)
+
+
+def _stamp_ref_customer(batch, is_customer_inventory):
+	"""Copy the minting entry's ``ref_customer`` onto a customer batch, once.
+
+	The batch path ``batch_rename`` does not cover: on a site with the Customer Gold flow off, a
+	Customer Goods Received finding is minted here by ERPNext. Set only while empty, because this
+	runs on every save of the batch -- ``reference_name`` is cleared on cancel, and Manufacture /
+	Repack re-save batches whose own entry carries no Ref Customer. ``hybrid_findings`` reads it.
+	"""
+	if (
+		not is_customer_inventory
+		or batch.reference_doctype != "Stock Entry"
+		or not batch.reference_name
+		or getattr(batch, "custom_ref_customer", None)
+		or not frappe.db.has_column("Stock Entry", "ref_customer")
+		or not frappe.db.has_column("Batch", "custom_ref_customer")
+	):
+		return
+
+	ref_customer = frappe.db.get_value(
+		"Stock Entry", batch.reference_name, "ref_customer"
+	)
+	if ref_customer:
+		batch.custom_ref_customer = ref_customer
+
 
 def _row_value(child_doctype, row_name, fieldname):
 	"""Read one field off the voucher row, tolerating a column that is not there.
@@ -119,6 +149,69 @@ def _row_value(child_doctype, row_name, fieldname):
 		return None
 
 	return frappe.db.get_value(child_doctype, row_name, fieldname)
+
+
+RATE_FIELDS = ("custom_metal_rate", "custom_alloy_rate")
+
+
+def carry_rates_from_source_batches(batch, sources):
+	"""Copy the Batch Rate / Alloy Rate pools onto a HAND-BUILT batch from its source batches.
+
+	``sources`` is ``[(batch_no, qty)]`` -- the batches consumed to make this one, with the
+	quantity taken from each. Both pools are carried, qty-weighted across the sources, which
+	is the same two-pool weighted shape ``batch.on_update`` blends from
+	``custom_origin_entries`` for a Repack-Metal Conversion.
+
+	**Why this exists at all.** ``update_inventory_dimentions`` stamps a new batch's rate from
+	the voucher row that minted it, but it can only do so inside
+	``if frappe.db.exists(row.options, self.custom_voucher_detail_no)``. A batch built by hand
+	BEFORE its Stock Entry exists -- which is what ``finding_repack._create_finding_batch`` and
+	``manufacturing_operation._create_scrap_batch`` both do, so the batch id is known in time to
+	put on the produce row -- has no ``custom_voucher_detail_no`` to resolve, so that stamper can
+	never fire for it. Every batch a plain ``Repack`` has ever minted sits at rate 0 for this
+	reason. ``customer_subcontracting/batch_rename`` hit the same wall from the other direction
+	(it bypasses the stamper via ``frappe.flags.is_batch_autoname``) and solved it the same way:
+	assign the rate directly.
+
+	Carrying BOTH pools unchanged is correct because neither of these repacks changes purity --
+	the same reasoning ``_convert_received_scrap_to_scrap_batch`` already states for its own
+	rate. Note that ``_rate_field_for_item`` choosing a single field is about which pool a
+	*minting row's* rate lands in, not a claim that a batch holds only one: a metal batch
+	minted by a Repack-Metal Conversion legitimately carries both.
+
+	Sources with no rate contribute 0 rather than being dropped, so a partly-unvalued input
+	dilutes the result honestly instead of inventing value -- the same "no fallback to the Bin
+	or Item rate" policy ``loss_valuation`` states.
+	"""
+	usable = [(b, flt(q)) for b, q in (sources or []) if b]
+	if not usable:
+		return batch
+
+	rates = {}
+	for batch_no, _qty in usable:
+		rates[batch_no] = (
+			frappe.db.get_value("Batch", batch_no, RATE_FIELDS, as_dict=True) or {}
+		)
+
+	total_qty = sum(qty for _b, qty in usable)
+	for fieldname in RATE_FIELDS:
+		if not _can_stamp_rate(batch, fieldname):
+			continue
+		if total_qty:
+			value = (
+				sum(
+					flt(rates[batch_no].get(fieldname)) * qty
+					for batch_no, qty in usable
+				)
+				/ total_qty
+			)
+		else:
+			# Every source came through at qty 0 (nothing was really consumed); fall back to a
+			# plain mean so a rate is still carried rather than divided by zero.
+			value = sum(flt(r.get(fieldname)) for r in rates.values()) / len(rates)
+		setattr(batch, fieldname, value)
+
+	return batch
 
 
 def _can_stamp_rate(batch, fieldname):
@@ -271,6 +364,53 @@ def is_subcontracting_gold_repack(batch):
 			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
 		)
 		== "Subcontracting Repack"
+	)
+
+
+@contextmanager
+def snc_settlement_conversion(stock_entry_name):
+	"""Mark ``stock_entry_name`` as one of Create SNC's own settlement conversions while
+	the caller submits it -- the only proof ``is_snc_settlement_conversion`` accepts.
+
+	Request-scoped on purpose: every Stock Entry field a conversion could be recognised by
+	(``stock_entry_type``, ``auto_created``, ``manufacturing_work_order``) is permlevel 0,
+	so any client can post it, whereas ``frappe.flags`` is rebuilt per request and cannot be
+	set by one. Keyed by Stock Entry name rather than a boolean, so no other batch validated
+	in the same request is exempted; restored in ``finally`` like ``is_batch_autoname``.
+	"""
+	previous = frappe.flags.snc_settlement_conversions or set()
+	frappe.flags.snc_settlement_conversions = previous | {stock_entry_name}
+	try:
+		yield
+	finally:
+		frappe.flags.snc_settlement_conversions = previous
+
+
+def is_snc_settlement_conversion(batch):
+	"""Exempt the batch a Create SNC settlement conversion mints for a customer.
+
+	Create SNC (customer_subcontracting/sub_utils/snc.py) settles a customer-gold work
+	order that used company gold or a company finding by converting the customer's own
+	metal into that item -- so the produced batch is the customer's by construction, not
+	by the Item's ``custom_inventory_type_can_be_customer_goods`` flag. Most finding
+	variants do not carry that flag, and the batch is re-saved (re-validated) on submit by
+	``update_parent_batch_id``, so without this exemption the settlement throws "Item ...
+	is not allowed as Customer Goods" and the FG work order stays blocked.
+
+	Only a conversion Create SNC is submitting in THIS request qualifies (see
+	``snc_settlement_conversion``); a Stock Entry that merely looks like one -- posted with
+	the same type, ``auto_created`` and work order -- stays guarded. Every guard evaluation
+	of an SNC batch happens inside that submit; a later direct re-save of the Batch itself
+	is guarded like any other Customer Goods batch of an unflagged item.
+	"""
+	if getattr(batch, "reference_doctype", None) != "Stock Entry":
+		return False
+
+	if not getattr(batch, "custom_customer", None):
+		return False
+
+	return getattr(batch, "reference_name", None) in (
+		frappe.flags.snc_settlement_conversions or ()
 	)
 
 

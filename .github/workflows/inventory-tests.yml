@@ -3,9 +3,11 @@ name: Inventory Tests
 on:
   pull_request:
     branches:
-      - v16_develop_aerele
-      - kgg_uat
+      - kggk_uat
       - kggk_prod
+      - gurukrupa-prod
+      - gurukrupa-uat
+
   workflow_dispatch:
 
 concurrency:
@@ -64,5 +66,10 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sample_goods_guard
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry_warehouse_filters
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_receipt
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_serial_bom_weights
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_weight_totals
+          # Settle on a customer-goods-return Material Request: batch scope. Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_cg_settle_batch_scope

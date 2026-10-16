@@ -54,6 +54,7 @@ def validate_duplication_and_gr_wt(self):
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	loss_details = {}
 	existing_mop = set()
+	existing_mwo = set()
 	is_finding = frappe.db.get_value(
 		"Department Operation", self.operation, "allow_finding_mwo"
 	)
@@ -92,6 +93,22 @@ def validate_duplication_and_gr_wt(self):
 					row.manufacturing_operation
 				)
 			)
+
+		# Same work order twice on one document. The MOP check above cannot catch this:
+		# create_operation_for_next_op mints a NEW Manufacturing Operation per cycle, so a
+		# re-scanned work order arrives with a different MOP and slips straight past it. The
+		# scan field guards this client-side, but every other way a row can appear -- the
+		# Get Operations dialog, Load Full Casting Tree, grid bulk-edit, the REST API -- has
+		# no guard at all until here.
+		if row.manufacturing_work_order:
+			if row.manufacturing_work_order in existing_mwo:
+				frappe.throw(
+					_(
+						"Manufacturing Work Order {0} is already scanned on this Employee IR."
+					).format(row.manufacturing_work_order),
+					title=_("Work Order Already Scanned"),
+				)
+			existing_mwo.add(row.manufacturing_work_order)
 
 		existing_mop.add(row.manufacturing_operation)
 		mop_doc = frappe.db.get_value(
@@ -403,8 +420,6 @@ def validate_employee_ir_receive_delay(doc):
 	issue_cache = {}
 	delay_cache = {}
 	worst_wait = 0
-	worst_row = None
-	worst_issue = None
 
 	for row in doc.employee_ir_operations or []:
 		issue_name = resolve_employee_ir_issue_voucher_for_receive(doc, row)
@@ -440,7 +455,7 @@ def validate_employee_ir_receive_delay(doc):
 		if now < allowed_from:
 			remaining_minutes = math.ceil(time_diff_in_seconds(allowed_from, now) / 60)
 			if remaining_minutes > worst_wait:
-				worst_wait, worst_row, worst_issue = remaining_minutes, row, issue_name
+				worst_wait = remaining_minutes
 
 	if worst_wait > 0:
 		frappe.throw(

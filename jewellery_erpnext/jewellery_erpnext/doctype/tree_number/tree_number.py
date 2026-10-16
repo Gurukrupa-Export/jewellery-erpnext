@@ -49,7 +49,8 @@ class TreeNumber(Document):
 			self.special_powder_weight = 0
 
 	def calculate_material_pending(self):
-		"""Pending Qty = Issue Qty - Receive Qty - Loss Qty per material row.
+		"""Pending Qty = Issue Qty - Receive Qty - Loss Qty per material row, and the
+		derived half of the receive provenance split.
 
 		THE single writer of ``pending_qty`` — ``validate`` runs on every save, so whatever the
 		Issue/Receive paths compute is re-derived here. Keeping one writer is what stops the four
@@ -63,6 +64,9 @@ class TreeNumber(Document):
 		precision = tree_balance.qty_precision()
 		for row in self.material_details:
 			tree_balance.recompute_row_pending(row, precision)
+			# manual_receive_qty is derived, not accumulated, so the two provenance
+			# halves always sum back to receive_qty. See derive_manual_receive.
+			tree_balance.derive_manual_receive(row, precision)
 
 	def after_insert(self):
 		counter = cint(frappe.db.sql("select max(counter) from `tabTree Number`")[0][0])
@@ -189,6 +193,14 @@ class TreeNumber(Document):
 		for md in self.material_details:
 			md.issue_qty = 0
 			md.pending_qty = 0
+			# wo_received_gross_wt has to be cleared here too. The guard above only
+			# refuses a reversal when receive_qty or loss_qty is set, and a casting
+			# receive that returns LESS than it took out draws nothing from the tree --
+			# so it leaves receive_qty at 0 while still recording a gross weight. Left
+			# behind, the Material Balance table would report metal received against a
+			# tree whose ledger reads issued 0 / received 0 / pending 0.
+			md.wo_received_gross_wt = 0
+			md.wo_receive_qty = 0
 		self.status = tree_balance.tree_status(self)
 		self.save(ignore_permissions=True)
 		return cancelled

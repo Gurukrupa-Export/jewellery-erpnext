@@ -89,6 +89,104 @@ def set_bom_rate(self):
 			row.fg_purchase_amount if row.fg_purchase_amount else 0
 		)
 
+	warn_missing_fg_purchase_rate(self)
+
+
+# (child table fieldname, label, price master to check)
+FG_PURCHASE_RATE_SOURCES = (
+	("metal_detail", "Metal Detail", "Making Charge Price"),
+	("finding_detail", "Finding Detail", "Making Charge Price"),
+	("diamond_detail", "Diamond Detail", "Diamond Price List"),
+	("gemstone_detail", "Gemstone Detail", "Gemstone Price List"),
+)
+
+
+def warn_missing_fg_purchase_rate(self):
+	"""Report raw-material rows left without a supplier FG purchase rate.
+
+	The per-table lookups fail quietly: `_set_total_making_charges` assigns nothing at all when no
+	`Making Charge Price` row matches, and `get_gemstone_rate` bails out of its whole loop on the
+	first unpriced stone. Without this the only symptom is a zero rate on the Purchase Order, long
+	after the fact.
+
+	Limited to Manufacturing Process BOMs -- that is the `bom_type` the FG Purchase order reads
+	via `purchase_order.update_rate`, so warning on any other type would only be noise.
+	"""
+	if self.bom_type != "Manufacturing Process":
+		return
+
+	# The Purchase Order self-heal reports its own consolidated summary across every BOM on the
+	# order -- one msgprint per BOM there would be noise.
+	if frappe.flags.get("ignore_fg_rate_warning"):
+		return
+
+	missing = []
+	for fieldname, label, price_master in FG_PURCHASE_RATE_SOURCES:
+		for row in self.get(fieldname) or []:
+			if not flt(row.get("fg_purchase_rate")):
+				missing.append(
+					_("{0} Row #{1}: no FG Purchase Rate - check {2} for customer {3}").format(
+						label, row.idx, price_master, self.customer or _("(not set)")
+					)
+				)
+
+	if missing:
+		frappe.msgprint(
+			"<br>".join(missing),
+			title=_("FG Purchase Rate Missing"),
+			indicator="orange",
+		)
+
+
+def refetch_fg_purchase_rate(bom_names, quiet=False):
+	"""Re-run `BOM.validate` on each BOM so `set_bom_rate` fetches `fg_purchase_rate` from the
+	customer price lists for the metal, finding, diamond and gemstone rows, sets
+	`fg_purchase_amount = fg_purchase_rate * qty`, and rolls the totals up into the BOM Amount tab.
+
+	Needed because the Manufacturing BOM is the Sales Order BOM re-labelled in place with a raw
+	`frappe.db.set_value` (`ManufacturingPlan.validate_qty_with_bom_creation`,
+	`sales_order.create_new_bom`), so `BOM.validate` has never run against
+	`bom_type = "Manufacturing Process"` and the rates are still whatever the Quotation-time save
+	produced.
+
+	Pass `quiet=True` when the caller reports its own summary (the Purchase Order self-heal).
+
+	Returns a dict of `updated` / `skipped` / `failed` BOM names.
+	"""
+	updated, skipped, failed = [], [], []
+
+	for bom_name in sorted(set(bom_names)):
+		# A submitted BOM takes the update_after_submit path on save, which does not run validate --
+		# nothing would be fetched, so skip it rather than write for no reason.
+		if frappe.db.get_value("BOM", bom_name, "docstatus") == 1:
+			skipped.append(bom_name)
+			continue
+
+		# BOM.validate can throw (missing gemstone price list type, missing metal purity, and any
+		# schema drift on the site). Contain each BOM in a savepoint so one bad BOM neither leaves
+		# partial writes behind nor aborts the caller.
+		save_point = "sp" + frappe.generate_hash(length=8)
+		frappe.db.savepoint(save_point)
+		try:
+			frappe.get_doc("BOM", bom_name).save(ignore_permissions=True)
+			frappe.db.release_savepoint(save_point)
+			updated.append(bom_name)
+		except Exception:
+			frappe.db.rollback(save_point=save_point)
+			frappe.log_error(
+				title=f"FG Purchase Rate fetch failed: {bom_name}", message=frappe.get_traceback()
+			)
+			failed.append(bom_name)
+
+	if failed and not quiet:
+		frappe.msgprint(
+			_("Could not fetch FG Purchase Rate for BOM: {0}").format(", ".join(failed)),
+			title=_("FG Purchase Rate"),
+			indicator="orange",
+		)
+
+	return {"updated": updated, "skipped": skipped, "failed": failed}
+
 
 def get_gold_rate(self):
 	# Get the metal purity from the self object or default to 0
@@ -111,15 +209,26 @@ def get_gold_rate(self):
 		item.actual_quantity = item.quantity
 		item.quantity = item.quantity
 		item.difference_qty = item.actual_quantity - item.quantity
-		if not metal_purity_data.get((self.customer, item.metal_touch)):
-			metal_purity_data[(self.customer, item.metal_touch)] = frappe.db.get_value(
+		purity_key = (self.customer, item.metal_type, item.metal_touch)
+		if not metal_purity_data.get(purity_key):
+			metal_purity_data[purity_key] = frappe.db.get_value(
 				"Metal Criteria",
-				{"parent": self.customer, "metal_touch": item.metal_touch},
+				{
+					"parent": self.customer,
+					"metal_type": item.metal_type,
+					"metal_touch": item.metal_touch,
+				},
 				"metal_purity",
 			)
 
-		metal_purity = metal_purity_data[(self.customer, item.metal_touch)]
+		metal_purity = metal_purity_data[purity_key]
 		item.customer_metal_purity = metal_purity
+		if item.metal_type == "Silver":
+			item.rate = 0
+			item.amount = 0
+			item.difference = 0
+
+			continue
 		# company_metal_purity = item.purity_percentage or 0
 		# ///////////////////////////////////////////////////////////////////////////
 		filters = {
@@ -402,21 +511,21 @@ def get_gemstone_rate(self):
 					"to_weight": [">=", gemstone_weight_per_pcs],
 				}
 			)
-		elif stone.price_list_type == "Multiplier" and stone.gemstone_size:
-			filters.update(
-				{
-					"to_size_weight": [">=", stone.size_weight],
-					"to_size_height": [">=", stone.size_height],
-					"from_size_weight": ["<=", stone.size_weight],
-					"from_size_height": ["<=", stone.size_height],
-				}
-			)
-			# filters.update(
-			# 	{
-			# 		"to_stone_size": [">=", stone.gemstone_size],
-			# 		"from_stone_size": ["<=", stone.gemstone_size],
-			# 	}
-			# )
+		# elif stone.price_list_type == "Multiplier" and stone.gemstone_size:
+		# 	filters.update(
+		# 		{
+		# 			"to_size_weight": [">=", stone.size_weight],
+		# 			"to_size_height": [">=", stone.size_height],
+		# 			"from_size_weight": ["<=", stone.size_weight],
+		# 			"from_size_height": ["<=", stone.size_height],
+		# 		}
+		# 	)
+		# filters.update(
+		# 	{
+		# 		"to_stone_size": [">=", stone.gemstone_size],
+		# 		"from_stone_size": ["<=", stone.gemstone_size],
+		# 	}
+		# )
 		else:
 			filters["gemstone_type"] = stone.gemstone_type
 			filters["stone_shape"] = stone.stone_shape
@@ -563,6 +672,14 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 	# 	)
 
 	for row in self.metal_detail + self.finding_detail:
+		if row.metal_type == "Silver":
+			row.making_rate = 0
+			row.making_amount = 0
+			row.wastage_rate = 0
+			row.wastage_amount = 0
+			row.fg_purchase_rate = 0
+			row.fg_purchase_amount = 0
+			continue
 		MCP = frappe.qb.DocType("Making Charge Price")
 		MCPIS = frappe.qb.DocType("Making Charge Price Item Subcategory")
 		MCPFS = frappe.qb.DocType("Making Charge Price Finding Subcategory")

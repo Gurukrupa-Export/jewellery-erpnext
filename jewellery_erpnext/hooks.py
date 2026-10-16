@@ -11,6 +11,27 @@ app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
 # after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
+# Deliberately NOT the line above, which would apply every custom_fields/*.json in the app.
+# This re-asserts one form layout, for two reasons that apply to different environments:
+#
+#   CI         `bench install-app` marks every patches.txt entry completed without running it
+#              (frappe/installer.py:358), so the following `bench migrate` skips the patch
+#              that creates these fields and the form has no Total Pcs at all.
+#   Production the same, PLUS sync_fixtures re-imports gke_customization's Custom Field rows
+#              on every migrate and resets two anchors this layout depends on. migrate.py
+#              runs after_migrate at the end of post_schema_updates, after sync_fixtures, so
+#              this is the only hook that can put them back.
+#
+# Only the first reason is reachable in CI: install.sh moves gke_customization/fixtures aside
+# before installing anything and never restores it. The fixture-reset path is covered instead
+# by TestTotalPcsFieldLayout in tests/test_material_request_customizations.
+#
+# Idempotent. Non-fatal by design, but it prints as well as logging, so a failure is visible
+# in the migrate output rather than only in the Error Log.
+after_migrate = (
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
+)
+
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
 	"Customer": "public/js/doctype_js/customer.js",
@@ -31,7 +52,6 @@ doctype_js = {
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Supplier Quotation": "public/js/doctype_js/supplier_quotation.js",
-	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
 	"Payment Entry": "public/js/doctype_js/payment_entry.js",
 	"Warehouse": "public/js/doctype_js/warehouse.js",
 }
@@ -111,6 +131,11 @@ doc_events = {
 		"before_submit": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 	},
+	# Queue the KGGK item/BOM push for the plan's subcontracting rows. The push itself is a
+	# background job in gke_customization; submitting is never blocked by it.
+	"Manufacturing Plan": {
+		"on_submit": "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.add_item_bom_to_kggk",
+	},
 	"Quotation": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.quotation.quotation.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.validate",
@@ -124,11 +149,15 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
 			# Last in the list: sees the final item rows, after the e-invoice rebuild above.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
+			# Fills inventory_type / customer from the source batch, so the SLE this row
+			# writes carries a lane instead of NULL. See the module docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.inventory_dimension.set_sales_inventory_type",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Sales Order": {
+		"onload": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.onload",
 		"before_validate": [
 			# "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
@@ -180,11 +209,19 @@ doc_events = {
 			# t_warehouse there, and validate_customer_gold_receipt (last before_validate
 			# hook) still rewrites inventory_type afterwards. See the function docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.set_target_inventory_dimensions",
+			# Header totals per material family (metal / finding / diamond / gemstone, plus
+			# stone pcs). At `validate` because before_validate's update_batches REPLACES
+			# self.items wholesale, and because the six fields are allow_on_submit = 0.
+			"jewellery_erpnext.jewellery_erpnext.customization.utils.material_weights.set_material_totals",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
 			# Per-role Stock Entry Type whitelist. Fires only on a direct user save of
 			# the Stock Entry itself, never on the dozen cascades that mint one from
 			# another doctype's lifecycle -- see the module docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.validate_stock_entry_type_permission",
+			# Hybrid orders: a finding listed in Subcontracting Settings must draw a Customer Goods
+			# batch of the order's Ref Customer. At `validate` so it sees the batches
+			# before_validate's update_batches filled; no-op while that table is empty.
+			"jewellery_erpnext.customer_subcontracting.hybrid_findings.validate_hybrid_finding_batches",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
@@ -222,6 +259,13 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
+	},
+	"Stock Entry Type": {
+		# Keep the Stock Entry naming shard complete. A type added after the shard would
+		# otherwise have no Document Naming Rule, so its first document would fall back to
+		# the single shared MAT-STE- tabSeries row and reintroduce the 1213 contention.
+		# No-op on a site that has not been sharded. See the patch module docstring.
+		"after_insert": "jewellery_erpnext.patches.shard_stock_entry_naming_by_type.on_stock_entry_type_insert",
 	},
 	"Manufacturing Work Order": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_id",
@@ -277,6 +321,10 @@ doc_events = {
 			# Separate hook entry, NOT a call inside sales_invoice.validate: that function
 			# returns early for is_return, which would skip every credit note.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
+			# Fills inventory_type / customer from the source batch. Its own entry for the
+			# same is_return reason as above -- a credit note's INWARD leg is exactly the
+			# row that was being written with a NULL lane. Last: needs the final rows.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.inventory_dimension.set_sales_inventory_type",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
@@ -286,11 +334,22 @@ doc_events = {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Serial No": {
-		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.set_stamping_no",
+		# NO stamping hook here, deliberately. `custom_stamping_no` goes onto physical metal
+		# and means "the Serial Number Creator produced this piece", so it is minted at
+		# exactly ONE call site -- serial_number_creator.update_new_serial_no -- and nowhere
+		# else. As a `before_save` hook it stamped EVERY Serial No save: Job Card tagging
+		# (doc_events.job_card.create_serial_no), Product Certification
+		# (product_certification.add_to_serial_no), the serial_reference sales hooks and
+		# every plain desk edit all minted numbers for pieces that are not SNC output.
+		# Re-adding it here re-opens that bug; the guard is
+		# tests.test_stamping_no.TestStampingIsSncOnly.
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table",
 	},
 	"Material Request": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.guard_non_system_manager_field_edits",
+		],
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_update_after_submit",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.create_stock_entry",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.on_submit",
@@ -350,6 +409,7 @@ override_whitelisted_methods = {
 	# Core returns None when a title-link doctype's title_field is empty, which blanks the
 	# Link input until a page reload (Manufacturing Operation with no `operation`).
 	"frappe.desk.search.get_link_title": "jewellery_erpnext.jewellery_erpnext.doc_events.search.get_link_title",
+	"frappe.core.doctype.data_import.data_import.download_template": "jewellery_erpnext.jewellery_erpnext.doc_events.data_export.download_template",
 }
 
 override_doctype_class = {

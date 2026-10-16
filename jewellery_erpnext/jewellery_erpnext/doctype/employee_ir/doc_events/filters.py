@@ -1,4 +1,12 @@
 import frappe
+from frappe.query_builder.functions import IfNull
+
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
+	get_blocked_finding_batches,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.material_loss_gate import (
+	get_blocked_loss_variants,
+)
 
 
 @frappe.whitelist()
@@ -35,6 +43,20 @@ def get_batch_details(doctype, txt, searchfield, start, page_len, filters):
 		.offset(start)
 	)
 	data = query.run()
+
+	# Drop customer-supplied finding batches, so the operator never picks a batch
+	# that submit would only refuse (customer_finding_loss_gate). Prevention, not
+	# enforcement -- that gate remains the authority, and it is applied to the page
+	# of candidates the query already returned rather than pushed into SQL, so the
+	# provenance resolution stays a bounded primary-key lookup.
+	candidates = [
+		{"item_code": filters.get("item_code"), "batch_no": row[0]}
+		for row in data
+		if row and row[0]
+	]
+	blocked = get_blocked_finding_batches(candidates)
+	if blocked:
+		data = [row for row in data if not row or row[0] not in blocked]
 	return data
 
 
@@ -46,6 +68,12 @@ def get_manual_loss_items(doctype, txt, searchfield, start, page_len, filters):
 	# the same ledger get_batch_details reads). Narrowed by manufacturing_operation
 	# when the row supplies it. If no work order is set yet the dropdown is empty
 	# on purpose so the operator selects the work order first.
+	#
+	# Also drops materials the Department Operation refuses loss on, so the
+	# operator never picks an item that validate would only throw on. This is
+	# prevention, not enforcement -- material_loss_gate remains the authority, and
+	# a missing `operation` filter (a browser still running the old bundle) fails
+	# open to the previous behaviour rather than erroring.
 	searchfield = "item_code"
 	if not filters.get("manufacturing_work_order"):
 		return []
@@ -66,6 +94,16 @@ def get_manual_loss_items(doctype, txt, searchfield, start, page_len, filters):
 		query = query.where(
 			ML.manufacturing_operation == filters.get("manufacturing_operation")
 		)
+
+	blocked_variants = get_blocked_loss_variants(filters.get("operation"))
+	if blocked_variants:
+		# Joined on Item.variant_of rather than filtered on the item-code prefix,
+		# so the dropdown and the server gate key on exactly the same signal.
+		# IfNull keeps non-variant items (blank variant_of) visible -- SQL NOT IN
+		# would drop them, and the gate lets them book loss.
+		Item = frappe.qb.DocType("Item")
+		query = query.left_join(Item).on(Item.name == ML.item_code)
+		query = query.where(IfNull(Item.variant_of, "").notin(sorted(blocked_variants)))
 
 	query = (
 		query.where((ML[searchfield].like(f"%{txt}%")))

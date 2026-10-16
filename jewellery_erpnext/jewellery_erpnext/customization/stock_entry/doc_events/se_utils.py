@@ -18,8 +18,20 @@ from frappe import _
 # from frappe.query_builder.functions import CombineDatetime, Locate, Sum
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+	batch_is_eligible,
+	get_batch_ownership_map,
+	hybrid_requirement,
+	shortfall_hint,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.subcontracting_utils import (
 	create_subcontracting_doc,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.bom_weights import (
+	apply_bom_weights,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.diamond_conversion_batches import (
+	get_diamond_conversion_target_batches,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
 	SAMPLE_ALLOWED_SE_TYPES,
@@ -195,6 +207,15 @@ def get_fifo_batches(self, row, consumed=None):
 		row.inventory_type = "Customer Goods"
 		row.customer = customer_item_data.customer
 
+	# Hybrid orders: a finding listed in Subcontracting Settings may come only from the order's
+	# own customer batch -- Customer Goods received for the PMO's Ref Customer (hybrid_findings).
+	# Set before the batch loop below reads row.inventory_type, so neither the "regular instead
+	# of customer goods" fallback nor the Regular Stock branch can ever take such a row.
+	hybrid = hybrid_requirement(self, row)
+	if hybrid:
+		row.inventory_type = "Customer Goods"
+		row.customer = hybrid.customer
+
 	if not row.inventory_type:
 		row.inventory_type = "Regular Stock"
 	# Prefetch the Batch fields read per batch in the loop below (custom_inventory_type
@@ -205,7 +226,10 @@ def get_fifo_batches(self, row, consumed=None):
 	# so the ordinary Regular Stock path keeps issuing zero Batch queries; every reader
 	# is behind an ``and`` that short-circuits before touching an empty map.
 	batch_info = {}
-	if (
+	if hybrid:
+		# The same map plus the Ref Customer that batch_is_eligible reads.
+		batch_info = get_batch_ownership_map([batch.batch_no for batch in batch_data])
+	elif (
 		row.inventory_type in ["Customer Goods", "Customer Stock"]
 		or self.flags.only_regular_stock_allowed
 	):
@@ -214,6 +238,25 @@ def get_fifo_batches(self, row, consumed=None):
 			[batch.batch_no for batch in batch_data],
 			["custom_inventory_type", "custom_customer"],
 		)
+	# Opt-in, and set only by DiamondConversion.before_validate for the "Sieve Size to Sieve
+	# Size" conversion type, which may not re-consume its own output. Every other caller leaves
+	# the flag unset (self.flags is a _dict, so it reads None) and issues zero extra queries.
+	# update_batch_details calls this function once per source row, so the resolved map is
+	# memoised on the doc for the duration of the save rather than re-queried per row.
+	barred_batches = {}
+	if self.flags.exclude_diamond_conversion_target_batches:
+		if self.flags.diamond_conversion_batch_cache is None:
+			self.flags.diamond_conversion_batch_cache = {}
+		cache = self.flags.diamond_conversion_batch_cache
+		unresolved = [
+			batch.batch_no for batch in batch_data if batch.batch_no not in cache
+		]
+		if unresolved:
+			resolved = get_diamond_conversion_target_batches(unresolved)
+			cache.update({batch_no: resolved.get(batch_no) for batch_no in unresolved})
+		barred_batches = {
+			batch.batch_no for batch in batch_data if cache.get(batch.batch_no)
+		}
 	for batch in batch_data:
 		# reduce this batch's availability by what earlier rows already took
 		batch_key = (warehouse, batch.batch_no)
@@ -231,6 +274,12 @@ def get_fifo_batches(self, row, consumed=None):
 			and self.get("stock_entry_type") not in SAMPLE_ALLOWED_SE_TYPES
 			and is_customer_sample_batch(batch.batch_no)
 		):
+			continue
+		# Diamond Conversion output is not eligible input for another Diamond Conversion.
+		if batch.batch_no in barred_batches:
+			continue
+		# A listed Hybrid finding draws only its customer's batch (see ``hybrid`` above).
+		if hybrid and not batch_is_eligible(batch_info.get(batch.batch_no), hybrid):
 			continue
 		if (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
@@ -338,6 +387,8 @@ def get_fifo_batches(self, row, consumed=None):
 		)
 		if row.get("manufacturing_operation"):
 			message += _("<br><b>Ref : {0}</b>").format(row.manufacturing_operation)
+		if hybrid:
+			message += "<br>" + shortfall_hint(hybrid)
 		if self.flags.throw_batch_error:
 			frappe.throw(message)
 			self.flags.throw_batch_error = False
@@ -462,6 +513,26 @@ def set_gross_wt(self):
 				"Serial No", row.serial_no, "custom_gross_wt"
 			)
 			row.gross_weight = gross_weight
+
+
+def set_fg_bom_weights(self):
+	"""Mirror each FG serial's own as-built BOM weights onto its row.
+
+	The Material Request -> Stock Entry mapper already carries these across for free --
+	the fieldnames are identical on Material Request Item and Stock Entry Detail, so
+	``frappe.model.mapper`` copies them with no mapping code. This re-stamps them on
+	every save anyway, for two reasons: ``update_batches`` rebuilds ``self.items``
+	wholesale on each draft save, and a Stock Entry can reach a serial by routes that
+	never touched a Material Request at all.
+
+	Distinct from ``set_gross_wt`` above, which fills the separate, older
+	``Stock Entry Detail.gross_weight`` from ``Serial No.custom_gross_wt``. That field
+	and this block are independent; neither writes the other's column.
+
+	Rows this cannot resolve are left untouched rather than blanked -- see
+	``apply_bom_weights``.
+	"""
+	apply_bom_weights(self.items)
 
 
 def _row_serials(serial_no):

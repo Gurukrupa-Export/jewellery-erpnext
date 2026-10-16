@@ -759,6 +759,15 @@
   "docstatus": 0,
   "doctype": "Workflow State",
   "icon": "",
+  "modified": "2026-09-02 00:00:00.000000",
+  "name": "Material Transferred to Department",
+  "style": "",
+  "workflow_state_name": "Material Transferred to Department"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
   "modified": "2024-08-01 08:35:26.992826",
   "name": "BOM QC",
   "style": "",

@@ -45,6 +45,10 @@ MATCH_FIELDS = (
 	"manufacturing_work_order",
 	"parent_manufacturing_order",
 	"tree_no",
+	# Two samples off one tree are otherwise two rows with identical identities, and
+	# build_issue_row_index is "first row wins" -- so a hand-built Receive for the second
+	# sample would settle onto the first sample's ledger row and permit a double receipt.
+	"sample_name",
 )
 
 
@@ -60,6 +64,7 @@ def _match_filters(row):
 		"manufacturing_work_order": row.get("manufacturing_work_order") or None,
 		"parent_manufacturing_order": row.get("parent_manufacturing_order") or None,
 		"tree_no": row.get("tree_no") or None,
+		"sample_name": row.get("sample_name") or None,
 	}
 
 
@@ -172,19 +177,13 @@ def get_received_map(issue_name, exclude=None, issue_rows=None):
 	if not receives:
 		return received
 
+	# Splatted rather than hand-listed: this used to repeat MATCH_FIELDS by hand, so a field
+	# added to the identity tuple would be absent here and every row's identity would silently
+	# read None for it -- collapsing distinct rows onto one ledger entry.
 	rows = frappe.get_all(
 		"Product Details",
 		filters={"parent": ["in", receives], "parenttype": "Product Certification"},
-		fields=[
-			"parent",
-			"issue_row",
-			"item_code",
-			"serial_no",
-			"manufacturing_work_order",
-			"parent_manufacturing_order",
-			"tree_no",
-			"total_weight",
-		],
+		fields=["parent", "issue_row", "total_weight", *MATCH_FIELDS],
 	)
 	if issue_rows is None:
 		issue_rows = get_issue_rows(issue_name)
