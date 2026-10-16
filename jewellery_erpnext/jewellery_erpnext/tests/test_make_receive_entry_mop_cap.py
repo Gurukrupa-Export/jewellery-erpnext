@@ -11,6 +11,10 @@ Covers:
    message — the SRE-cap and the MOP-cap give different errors.
 4. Replacement SRE qty is capped by min(remaining_reserved_after_receive,
    remaining_mop_after_receive) — the safe rule.
+5. A reservation keyed to this work order whose OPERATION belongs to another
+   one is left out of the popup and refused by the validator (one shared rule),
+   and a MOP Log row stamped with this work order on another work order's
+   operation is not counted in its balance.
 
 Implementation note on mocking: `manufacturing_operation.frappe.db.get_all`
 and `mop_log.frappe.db.get_all` resolve to the SAME underlying object, so
@@ -23,16 +27,21 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
+from frappe.utils import random_string
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import MWOMOPLinkError
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	_build_replacement_sre,
 	_existing_receive_se,
 	create_mr_wo_stock_entry,
+	create_scrap_wo_stock_entry,
 	get_make_receive_entry_rows,
+	get_make_scrap_entry_rows,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_mop_transfer_pcs_rows,
+	get_mwo_balance_rows,
 )
 
 
@@ -3442,3 +3451,355 @@ class TestDialogValidatorAgreement(IntegrationTestCase):
 			stock_entry.append.call_args_list[0][0][1]["s_warehouse"],
 			rows[0]["s_warehouse"],
 		)
+
+
+MFG_OP = (
+	"jewellery_erpnext.jewellery_erpnext.doctype."
+	"manufacturing_operation.manufacturing_operation"
+)
+EOD_LOCK = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.is_eod_sync_locked"
+GUARD_KEY = "mwo_mop_link_guard"
+
+
+class TestForeignOperationRuleIsShared(IntegrationTestCase):
+	"""The popup and its validator decide through ONE helper, ``_sres_on_foreign_operations``.
+
+	They disagreed once already, about availability, because each resolved it its own way.
+	Patching the helper must therefore move BOTH sides: a side that re-implemented the rule
+	inline would ignore the verdict and fail here.
+	"""
+
+	VERDICT = {"SRE-1": ("MOP-SIBLING", "MWO-2")}
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		super().setUp()
+		guard = patch.dict(frappe.conf, {GUARD_KEY: "enforce"})
+		guard.start()
+		self.addCleanup(guard.stop)
+
+	def test_popup_leaves_out_what_the_helper_flags(self):
+		patches = [
+			patch(f"{MFG_OP}.frappe.get_doc", return_value=_make_mo()),
+			patch(f"{MFG_OP}.frappe.db.get_value", return_value="WH-Raw"),
+			patch(f"{MFG_OP}.frappe.db.get_single_value", return_value=3),
+			patch(f"{MFG_OP}.frappe.db.sql", return_value=[]),
+			patch(
+				"frappe.db.get_all",
+				side_effect=_make_get_all_dispatcher(
+					sre_rows=[_sre_dict()], mop_rows=[_mop_log_row(qty=7.0)]
+				),
+			),
+			patch(f"{MFG_OP}._sres_on_foreign_operations", return_value=self.VERDICT),
+			patch(f"{MFG_OP}.frappe.msgprint"),
+		]
+		for p in patches:
+			p.start()
+			self.addCleanup(p.stop)
+
+		result = get_make_receive_entry_rows("MOP-1")
+
+		self.assertEqual(result["rows"], [])
+		self.assertEqual(result["active_sre_count"], 0)
+		self.assertEqual(
+			[e["stock_reservation_entry"] for e in result["excluded"]], ["SRE-1"]
+		)
+
+	def test_validator_refuses_what_the_helper_flags(self):
+		mocks = _patch_create_mr_environment(
+			self,
+			frappe._dict(
+				{
+					"name": "SRE-1",
+					"docstatus": 1,
+					"item_code": "M-X",
+					"warehouse": "WH-Src",
+					"reserved_qty": 5.0,
+					"delivered_qty": 0.0,
+					"stock_uom": "Gram",
+					"has_batch_no": 0,
+					"reservation_based_on": "Qty",
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-SIBLING",
+				}
+			),
+		)
+		with (
+			patch(f"{MFG_OP}._sres_on_foreign_operations", return_value=self.VERDICT),
+			self.assertRaises(MWOMOPLinkError),
+		):
+			create_mr_wo_stock_entry(
+				{
+					"manufacturing_operation": "MOP-1",
+					"receive_items": [
+						{"stock_reservation_entry": "SRE-1", "qty": 1.0, "idx": 1}
+					],
+				},
+				request_id="shared-rule",
+			)
+		mocks["new_doc"].assert_not_called()
+
+
+class _StopBeforeStockEntry(Exception):
+	"""Raised in place of building the receive Stock Entry: every check before it has passed."""
+
+
+class TestMakeReceiveLeavesAnotherWorkOrdersReservationAlone(IntegrationTestCase):
+	"""Real rows, real queries: the reservation a sibling's receive consumed.
+
+	The incident shape, on a disposable world written with ``db_insert`` (no hooks, no
+	manufacturing chain): two halves of one piece, THIS work order and its SIBLING. A
+	mis-paired Employee IR receive left a reservation keyed to THIS work order that reserves
+	the SIBLING's operation, and stamped the sibling operation's ledger with THIS work order.
+	Make Receive Entry picked reservations and balances by work order alone, so it offered --
+	and consumed -- the sibling's metal on this half.
+
+	Each test runs in its own savepoint, rolled back afterwards; nothing commits.
+	"""
+
+	SAVEPOINT = "mre_foreign_operation_test"
+
+	@classmethod
+	def setUpClass(cls):
+		# No base setUpClass: nothing here needs test records, and it would COMMIT whatever an
+		# earlier class left open. The per-test savepoint is all the isolation required.
+		pass
+
+	def setUp(self):
+		super().setUp()
+		frappe.db.savepoint(self.SAVEPOINT)
+		self.addCleanup(frappe.db.rollback, save_point=self.SAVEPOINT)
+		patchers = {
+			# The inventory workflow runs this module after the MOP Settings tests, which can
+			# leak a real EOD lock. Nothing below may depend on it.
+			"eod_lock": patch(EOD_LOCK, return_value=False),
+			# Pin the default (enforce) so a developer site in warn mode cannot flip the result.
+			"guard": patch.dict(frappe.conf, {GUARD_KEY: "enforce"}),
+			"msgprint": patch("frappe.msgprint"),
+			# Error Log is MyISAM and outlives the rollback: never write to it for real.
+			"log_error": patch("frappe.log_error"),
+		}
+		self.mocks = {}
+		for key, patcher in patchers.items():
+			self.mocks[key] = patcher.start()
+			self.addCleanup(patcher.stop)
+		self._build_world()
+
+	# -- world --------------------------------------------------------------------------
+
+	def _insert(self, doctype, **values):
+		doc = frappe.get_doc({"doctype": doctype, **values})
+		doc.db_insert()
+		return doc.name
+
+	def _build_world(self):
+		p = self.prefix = f"TMRE-{random_string(6).lower()}"
+		self.mwo = f"{p}-MWO-THIS"
+		self.sibling = f"{p}-MWO-SIBLING"
+		self.item = f"M-{p}"
+		department = f"{p}-DEPT"
+		# The department's Raw Material warehouse: the receive target both endpoints resolve.
+		self._insert(
+			"Warehouse",
+			name=f"{p}-WH-RM",
+			warehouse_name=f"{p}-WH-RM",
+			warehouse_type="Raw Material",
+			department=department,
+		)
+		self.mop = self._insert(
+			"Manufacturing Operation",
+			name=f"{p}-MOP-THIS",
+			manufacturing_work_order=self.mwo,
+			department=department,
+			status="WIP",
+		)
+		self.sibling_mop = self._insert(
+			"Manufacturing Operation",
+			name=f"{p}-MOP-SIBLING",
+			manufacturing_work_order=self.sibling,
+			department=department,
+			status="WIP",
+		)
+		self.own_sre = self._sre("OWN", self.mop, 4.0)
+		# Keyed to THIS work order, reserving the SIBLING's operation.
+		self.foreign_sre = self._sre("FOREIGN", self.sibling_mop, 16.0)
+		self._ledger("OWN", self.mop, 4.0, "2026-01-01 10:00:00")
+		# The sibling's operation, stamped with THIS work order -- and later, so a reader that
+		# trusts the stamp takes it as the work order's current balance.
+		self._ledger("FOREIGN", self.sibling_mop, 16.0, "2026-01-01 10:05:00")
+
+	def _sre(self, suffix, mop, reserved_qty):
+		return self._insert(
+			"Stock Reservation Entry",
+			name=f"{self.prefix}-SRE-{suffix}",
+			docstatus=1,
+			status="Reserved",
+			item_code=self.item,
+			warehouse=f"{self.prefix}-WH-WIP-{suffix}",
+			reserved_qty=reserved_qty,
+			delivered_qty=0,
+			stock_uom="Gram",
+			voucher_type="Sales Order",
+			voucher_no=f"{self.prefix}-SO",
+			voucher_detail_no=f"{self.prefix}-SOI",
+			has_serial_no=0,
+			has_batch_no=0,
+			reservation_based_on="Qty",
+			manufacturing_work_order=self.mwo,
+			manufacturing_operation=mop,
+		)
+
+	def _ledger(self, suffix, mop, qty, creation, item_code=None, pcs_change=0):
+		return self._insert(
+			"MOP Log",
+			name=f"{self.prefix}-LOG-{suffix}",
+			item_code=item_code or self.item,
+			qty_change=qty,
+			qty_after_transaction=qty,
+			qty_after_transaction_item_based=qty,
+			qty_after_transaction_batch_based=qty,
+			pcs_change=pcs_change,
+			pcs_after_transaction_batch_based=pcs_change,
+			manufacturing_operation=mop,
+			manufacturing_work_order=self.mwo,
+			voucher_type="Stock Entry",
+			voucher_no=f"{self.prefix}-SE",
+			is_cancelled=0,
+			creation=creation,
+			modified=creation,
+		)
+
+	def _receive(self, sre, qty=1.0, creator=create_mr_wo_stock_entry):
+		return creator(
+			{
+				"manufacturing_operation": self.mop,
+				"receive_items": [
+					{"stock_reservation_entry": sre, "qty": qty, "idx": 1}
+				],
+			},
+			request_id=f"{self.prefix}-RID",
+		)
+
+	# -- tests --------------------------------------------------------------------------
+
+	def test_balance_counts_only_this_work_orders_operations(self):
+		"""Latest per (item, batch) across THIS work order's operations only.
+
+		All three rows carry THIS work order's stamp and share one key. The newest sits on an
+		operation that no longer exists, the next on the sibling's operation; only the oldest
+		is this work order's own balance.
+		"""
+		self._ledger("ORPHAN", f"{self.prefix}-MOP-GONE", 3.0, "2026-01-01 10:10:00")
+
+		rows = get_mwo_balance_rows(self.mwo)
+
+		self.assertEqual([r.name for r in rows], [f"{self.prefix}-LOG-OWN"])
+		self.assertEqual(rows[0].qty_after_transaction_batch_based, 4.0)
+
+	def test_transfer_breakdown_ignores_the_siblings_operation(self):
+		stone = f"D-{self.prefix}"
+		self._ledger("T-OWN", self.mop, 0.2, "2026-01-01 11:00:00", stone, pcs_change=8)
+		self._ledger(
+			"T-FOREIGN",
+			self.sibling_mop,
+			0.6,
+			"2026-01-01 11:05:00",
+			stone,
+			pcs_change=24,
+		)
+
+		out = get_mop_transfer_pcs_rows(self.mwo, keys={(stone, None)})
+
+		self.assertEqual(
+			[t["name"] for t in out[(stone, None)]], [f"{self.prefix}-LOG-T-OWN"]
+		)
+
+	def test_popup_leaves_the_siblings_reservation_out(self):
+		result = get_make_receive_entry_rows(self.mop)
+
+		self.assertEqual(
+			[r["stock_reservation_entry"] for r in result["rows"]], [self.own_sre]
+		)
+		self.assertEqual(result["active_sre_count"], 1)
+		self.assertEqual(
+			result["excluded"],
+			[
+				{
+					"stock_reservation_entry": self.foreign_sre,
+					"item_code": self.item,
+					"warehouse": f"{self.prefix}-WH-WIP-FOREIGN",
+					"manufacturing_operation": self.sibling_mop,
+					"operation_work_order": self.sibling,
+					"reason": "operation_of_another_work_order",
+				}
+			],
+		)
+		# The dialog knows nothing of "excluded", so the operator is told in a message.
+		self.mocks["msgprint"].assert_called_once()
+		message = self.mocks["msgprint"].call_args.args[0]
+		self.assertIn(self.foreign_sre, message)
+		self.assertIn(self.sibling, message)
+		# And the balance offered is this work order's own 4, not the sibling's 16 that
+		# carries this work order's stamp.
+		self.assertAlmostEqual(result["rows"][0]["mop_available_qty"], 4.0)
+		self.assertAlmostEqual(result["rows"][0]["available_to_receive_qty"], 4.0)
+
+	def test_validator_refuses_the_siblings_reservation(self):
+		with self.assertRaises(MWOMOPLinkError) as raised:
+			self._receive(self.foreign_sre)
+
+		self.assertIn(self.sibling_mop, str(raised.exception))
+		self.assertIn(self.sibling, str(raised.exception))
+		self.assertFalse(
+			frappe.db.exists("Stock Entry", {"custom_request_id": f"{self.prefix}-RID"})
+		)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Stock Reservation Entry", self.foreign_sre, "docstatus"
+			),
+			1,
+		)
+
+	def test_validator_lets_this_work_orders_own_reservation_through(self):
+		"""No false positive: the own reservation clears every check and reaches the entry."""
+		with (
+			patch(f"{MFG_OP}.frappe.new_doc", side_effect=_StopBeforeStockEntry),
+			self.assertRaises(_StopBeforeStockEntry),
+		):
+			self._receive(self.own_sre)
+		self.mocks["log_error"].assert_not_called()
+
+	def test_unused_loose_twin_applies_the_same_rule(self):
+		"""Receive Unused/Loose Material reuses both endpoints, so it inherits the rule."""
+		rows = get_make_scrap_entry_rows(self.mop)["rows"]
+		self.assertEqual([r["stock_reservation_entry"] for r in rows], [self.own_sre])
+
+		with self.assertRaises(MWOMOPLinkError):
+			self._receive(self.foreign_sre, creator=create_scrap_wo_stock_entry)
+
+	def test_warn_mode_lists_and_lets_it_through_alike(self):
+		"""The kill switch moves BOTH sides together: offered by the popup, accepted by the
+		validator with an Error Log entry instead of a refusal."""
+		with patch.dict(frappe.conf, {GUARD_KEY: "warn"}):
+			result = get_make_receive_entry_rows(self.mop)
+			self.assertEqual(
+				sorted(r["stock_reservation_entry"] for r in result["rows"]),
+				sorted([self.own_sre, self.foreign_sre]),
+			)
+			self.assertEqual(result["excluded"], [])
+			self.mocks["msgprint"].assert_not_called()
+
+			with (
+				patch(f"{MFG_OP}.frappe.new_doc", side_effect=_StopBeforeStockEntry),
+				self.assertRaises(_StopBeforeStockEntry),
+			):
+				self._receive(self.foreign_sre)
+
+		self.mocks["log_error"].assert_called_once()
+		self.assertEqual(
+			self.mocks["log_error"].call_args.kwargs["reference_name"], self.foreign_sre
+		)
+		self.assertIn(self.sibling, self.mocks["log_error"].call_args.kwargs["message"])

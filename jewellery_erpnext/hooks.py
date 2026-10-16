@@ -214,6 +214,11 @@ doc_events = {
 			# the Stock Entry itself, never on the dozen cascades that mint one from
 			# another doctype's lifecycle -- see the module docstring.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.validate_stock_entry_type_permission",
+			# Every operation on the entry belongs to the work order it is booked to (rows, header,
+			# and on an entry that reserves for a work order, the header's). At `validate`, so it
+			# sees the header operation set_manufacturing_refs fills in before_validate and the rows
+			# update_batches rebuilds. See doc_events/mwo_mop_link.py.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_mwo_mop_consistency",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [

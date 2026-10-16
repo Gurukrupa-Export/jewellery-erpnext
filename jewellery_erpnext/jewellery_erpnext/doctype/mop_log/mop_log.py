@@ -2,11 +2,13 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
 from frappe.query_builder import DocType
 from frappe.query_builder.functions import Max
 from frappe.utils import cint, cstr, flt, get_datetime
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import owner_of, same
 from jewellery_erpnext.utils import (
 	carat_to_gram,
 	clamp_negative_balance,
@@ -38,9 +40,19 @@ current_balance_fields = select_fields + [
 	"manufacturing_operation",
 ]
 
+# Error Log title for a writer that stamped a MOP Log row with a work order other than the one
+# owning its operation. Fixed, so the entries can be filtered and counted.
+FOREIGN_STAMP_LOG_TITLE = "MOP Log stamp re-derived from its operation"
+# frappe.flags key de-duplicating that note per voucher within one request / job.
+_FOREIGN_STAMP_FLAG = "mop_log_foreign_stamp_vouchers"
+
 
 class MOPLog(Document):
 	def validate(self):
+		# Before the early return below: the stamp labels the OPERATION, whatever item family the
+		# row moves, so every row gets it -- not only the ones that touch a weight bucket.
+		self.set_work_order_from_operation()
+
 		first_char = self.item_code[0] if self.item_code else None
 		prefix = FIELD_MAP.get(first_char)
 		if not (prefix and self.manufacturing_operation):
@@ -73,6 +85,77 @@ class MOPLog(Document):
 		recalculate_manufacturing_operation_weights(
 			self.manufacturing_operation, pending=self, prefixes=(prefix,)
 		)
+
+	def set_work_order_from_operation(self):
+		"""Stamp the work order that OWNS this row's operation, whatever the writer passed.
+
+		Every writer fills ``manufacturing_work_order`` from somewhere else -- the Stock Entry
+		header, the Employee / Department IR row, the source row of a carry-forward -- and none
+		checked it against the operation. When an Employee IR row paired an operation with a
+		sibling's work order, those copies filed the operation's ledger under the sibling, and
+		every reader keyed by work order (Make Receive Entry, the EOD reservation map, loss
+		attribution) followed the wrong MWO. ``validate`` runs for every ``.save()`` /
+		``.insert()`` writer, so deriving the stamp here covers them all at one point.
+
+		The owner is read WITHOUT a lock: ``Manufacturing Operation.manufacturing_work_order`` is
+		set when the operation is created and never rewritten, so there is nothing to serialise,
+		and the row lock in ``validate`` must stay where the canonical lock order puts it. (An
+		operation created by another transaction after this one's snapshot reads as missing; the
+		row then keeps the writer's stamp, exactly as before.)
+
+		A row whose operation no longer exists, or carries no work order, is left as written:
+		there is nothing to derive from. A writer that passed a DIFFERENT non-empty stamp is noted
+		once per voucher (:func:`_note_foreign_stamp`) and never refused -- legacy rows already
+		carry foreign stamps that other writers clone forward verbatim, and refusing them would
+		block the receive that carries them instead of repairing anything.
+		"""
+		mop = cstr(self.manufacturing_operation).strip()
+		if not mop:
+			return
+		owner = owner_of(mop)
+		if not owner or self.manufacturing_work_order == owner:
+			return
+		stamp = cstr(self.manufacturing_work_order).strip()
+		if stamp and not same(stamp, owner):
+			_note_foreign_stamp(self, stamp, owner)
+		self.manufacturing_work_order = owner
+
+
+def _note_foreign_stamp(log, stamp, owner):
+	"""One Error Log per voucher for a writer that stamped a MOP Log row with another work order.
+
+	A mismatched voucher writes many rows -- one per item and batch, plus the clones -- so the
+	note is de-duplicated on ``(voucher_type, voucher_no)`` through ``frappe.flags``, which Frappe
+	resets for every request and background job. Advisory only: it must never fail the ledger
+	write that triggered it.
+	"""
+	seen = frappe.flags.setdefault(_FOREIGN_STAMP_FLAG, set())
+	key = (cstr(log.voucher_type), cstr(log.voucher_no))
+	if key in seen:
+		return
+	seen.add(key)
+	try:
+		frappe.log_error(
+			title=FOREIGN_STAMP_LOG_TITLE,
+			message=_(
+				"A MOP Log row for operation {0} arrived stamped with work order {1}, but the "
+				"operation belongs to work order {2}, so the row was stamped {2}. Voucher: {3} {4}. "
+				"Later rows of this voucher are re-stamped without another entry. The writer copied "
+				"the work order from a record that pairs this operation with the wrong work order: "
+				"check that record."
+			).format(
+				log.manufacturing_operation,
+				stamp,
+				owner,
+				log.voucher_type,
+				log.voucher_no,
+			),
+			reference_doctype=log.voucher_type or None,
+			reference_name=log.voucher_no or None,
+		)
+	except Exception:
+		# The stamp is already corrected; losing the note is never worth losing the write.
+		pass
 
 
 def update_wt_detail(manufacturing_operation):
@@ -537,50 +620,89 @@ def get_current_mop_balance_rows(
 	return list(reversed(list(latest_by_key.values())))
 
 
+def get_operation_owners(operations):
+	"""``{operation: owning work order}`` for the named Manufacturing Operations, in one query.
+
+	The same primary-key lookup as ``mwo_mop_link.mop_owners``, issued through
+	``frappe.db.get_all`` like every other read in this module, and keyed by the spelling the
+	caller passed (names compare case-insensitively, as MariaDB does). An operation that does not
+	exist, or carries no work order, is absent from the result: each caller decides what "no
+	owner" means for it. A returned row that is not one of the requested operations is ignored --
+	the Make Receive Entry unit tests answer every ``frappe.db.get_all`` from one patched list.
+	"""
+	requested = {cstr(op).strip() for op in operations or () if cstr(op).strip()}
+	if not requested:
+		return {}
+	by_fold = {}
+	for row in frappe.db.get_all(
+		"Manufacturing Operation",
+		filters={"name": ["in", sorted(requested)]},
+		fields=["name", "manufacturing_work_order"],
+	):
+		if (
+			isinstance(row, dict)
+			and row.get("name")
+			and row.get("manufacturing_work_order")
+		):
+			by_fold[cstr(row["name"]).casefold()] = row["manufacturing_work_order"]
+	return {op: by_fold[op.casefold()] for op in requested if op.casefold() in by_fold}
+
+
+def _rows_on_own_operations(rows, manufacturing_work_order):
+	"""Keep the MOP Log rows whose operation belongs to ``manufacturing_work_order``.
+
+	The rows were selected by their stamp, and the stamp is only a label the writers copied
+	(see :meth:`MOPLog.set_work_order_from_operation`). A row on another work order's operation,
+	or on an operation that no longer exists (the July purge orphans), is not this work order's
+	balance and is dropped. A row with no operation at all -- none exist on live data -- has
+	nothing to judge it by and is kept, as before. One owner lookup for all the rows.
+	"""
+	owners = get_operation_owners(row.get("manufacturing_operation") for row in rows)
+	kept = []
+	for row in rows:
+		mop = cstr(row.get("manufacturing_operation")).strip()
+		if not mop or same(owners.get(mop), manufacturing_work_order):
+			kept.append(row)
+	return kept
+
+
 def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=None):
-	"""Return the latest non-cancelled MOP Log row per item/batch for a whole MWO.
+	"""Return the latest non-cancelled MOP Log row per item/batch across the work order's OWN
+	operations.
 
-	:func:`get_current_mop_balance_rows` answers "what did operation X last
-	record?". This answers "what does this Manufacturing Work Order hold right
-	now?" — and for availability checks the second question is the correct one.
+	:func:`get_current_mop_balance_rows` answers "what did operation X last record?". This
+	answers "what does this Manufacturing Work Order hold right now?" -- the question the Make
+	Receive Entry popup and its validator both ask, which is why they share this one reader.
 
-	The distinction is forced by how the number is written.
-	:func:`create_mop_log_for_stock_transfer_to_mo` computes
-	``qty_after_transaction_batch_based`` as an MWO-wide running sum
-	(``WHERE manufacturing_work_order = %s AND is_cancelled = 0``; the per-MOP
-	narrowing right below it is commented out) and only then stamps the row with
-	a single operation. **A per-MOP balance does not exist in this field.** A
-	MOP-scoped read returns the MWO-wide total frozen at whenever THAT operation
-	last wrote, and goes stale the moment any other operation under the same MWO
-	posts a row — a Department/Employee IR handoff clone, a loss attribution, a
-	receive.
+	``qty_after_transaction_batch_based`` is a PER-OPERATION running balance (see
+	:func:`get_mop_opening_balances`; rows written before the 2026-08-24 fix still carry the old
+	MWO-wide running sum, which reads the same way here). A work order's operations form one
+	``previous_mop`` chain and every handoff zeroes the source operation and carries the balance
+	forward, so for each ``(item_code, batch_no)`` the latest row across the chain IS the work
+	order's current balance -- including a loss booked at any of its operations. Reading the
+	operation a reservation names does not work: ``Stock Reservation Entry.manufacturing_operation``
+	is stamped once, when the reservation is made, and is not moved on handoff, so it points at
+	the zeroed source and used to block receives the operator could legitimately make.
 
-	That staleness is not hypothetical: on handoff the source operation is
-	explicitly zeroed and the destination carries the balance forward, while
-	``Stock Reservation Entry.manufacturing_operation`` keeps pointing at the
-	operation the reservation was created against. Reading the SRE's stamp
-	therefore returns the zeroed row and blocks a receive the operator can
-	legitimately make.
-
-	Reading the latest row MWO-wide is the only scope invariant to which
-	operation the reader happens to be standing on, and it always reflects every
-	non-cancelled delta — including a loss booked at a sibling operation, which
-	an opened-MOP-scoped read would miss.
-
-	Operations under one MWO form a linear chain (``previous_mop``), so "latest
-	across the MWO" is a well-defined current state and not a merge of
-	concurrent branches.
-
-	Index-served by ``mop_mwo_idx`` (manufacturing_work_order, is_cancelled,
-	item_code, batch_no) from ``add_make_receive_entry_indexes``.
+	Rows are SELECTED by their stamp, so the query stays on the work-order indexes
+	(``mop_mwo_idx`` where ``add_make_receive_entry_indexes`` created it, ``mop_mwo_creation_idx``
+	otherwise), and then KEPT only when their operation belongs to this work order
+	(:func:`_rows_on_own_operations`). The stamp is a label copied by the writers: an Employee IR
+	row that paired an operation with a sibling's work order stamped that operation's ledger with
+	the sibling's MWO, and this reader then offered the sibling's metal on the wrong half. The
+	ownership filter runs BEFORE the latest-per-key pick, so a foreign row can neither be counted
+	nor hide an older row of the work order's own.
 
 	Dedup rule, ordering and return shape are deliberately identical to
-	:func:`get_current_mop_balance_rows` so the two stay drop-in
-	interchangeable. ``creation desc`` is kept bare on purpose — MOP Log has no
-	``autoname``, so ``name`` is a hash and would be a false tiebreak.
+	:func:`get_current_mop_balance_rows` so the two stay drop-in interchangeable. ``creation
+	desc`` is kept bare on purpose -- MOP Log has no ``autoname``, so ``name`` is a hash and would
+	be a false tiebreak.
 	"""
 	fields = list(
-		dict.fromkeys((include_fields or current_balance_fields) + ["name", "creation"])
+		dict.fromkeys(
+			(include_fields or current_balance_fields)
+			+ ["name", "creation", "manufacturing_operation"]
+		)
 	)
 	filters = {
 		"manufacturing_work_order": manufacturing_work_order,
@@ -599,6 +721,7 @@ def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=Non
 	)
 	if not mop_logs:
 		return []
+	mop_logs = _rows_on_own_operations(mop_logs, manufacturing_work_order)
 
 	latest_by_key = {}
 	for log in mop_logs:
@@ -629,6 +752,11 @@ def get_mop_transfer_pcs_rows(manufacturing_work_order, keys=None):
 	its operations, so this recovers the original 24/8 style breakdown regardless
 	of which operation opens the popup.
 
+	Like :func:`get_mwo_balance_rows`, rows are selected by stamp and kept only when their
+	operation belongs to the work order (:func:`_rows_on_own_operations`): a transfer row on
+	another work order's operation is that work order's per-line breakdown, and counting it here
+	would split this work order's PCS across a reservation it does not have.
+
 	Returns ``{(item_code, batch_no): [{"qty_change", "pcs_change", "name"}, ...]}``
 	ordered oldest-first within each key. Rows missing ``pcs_change``/``qty_change``
 	(e.g. unit-test fixtures that mock unrelated docs through the same patched
@@ -654,9 +782,12 @@ def get_mop_transfer_pcs_rows(manufacturing_work_order, keys=None):
 			"pcs_change",
 			"name",
 			"creation",
+			"manufacturing_operation",
 		],
 		order_by="creation asc",
 	)
+	if rows:
+		rows = _rows_on_own_operations(rows, manufacturing_work_order)
 	transfer_by_key: dict[tuple, list] = {}
 	for row in rows:
 		# Defensive: the unit tests patch frappe.db.get_all globally and feed
@@ -712,8 +843,9 @@ def get_available_qty_pcs_for_mop_item(
 	Callers that must agree with each other about availability — the Make
 	Receive Entry popup and its server validator — instead build an MWO-scoped
 	map with :func:`get_mwo_balance_rows` and pass it as
-	``mop_log_balance_map``, because the underlying balance is an MWO-wide
-	running sum with no per-operation meaning.
+	``mop_log_balance_map``, because the reservation they check names the
+	operation it was created against, not the one the work order has handed
+	its balance on to.
 	"""
 	is_pcs_item = bool(item_code) and item_code[0] in ("D", "G")
 

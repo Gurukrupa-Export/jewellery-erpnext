@@ -12,7 +12,7 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 from frappe import _, scrub
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Sum
-from frappe.utils import cint, flt
+from frappe.utils import cint, cstr, flt
 
 # from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 # 	create_repack_for_subcontracting,
@@ -22,6 +22,14 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	validate_loss_ownership_carried,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	bold,
+	mop_owners,
+	no_owner_problem,
+	report,
+	row_problem,
+	same,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
@@ -956,6 +964,115 @@ def _throw_warehouse_mismatch(row, label, expected, actual):
 	)
 
 
+# Multi-work-order by design: one Process Loss entry books the loss of every operation on an Employee IR
+# in a single Repack, and its header work order is merely the FIRST loss row's
+# (loss_stock_entry._build_combined_loss_se). The header says nothing about the other rows, so they are
+# compared only with their own work order. It reserves nothing, so the reservation rule never applies.
+_MULTI_WORK_ORDER_STOCK_ENTRY_TYPES = frozenset({"Process Loss"})
+
+
+def validate_mwo_mop_consistency(self, method=None):
+	"""Refuse an entry that pairs a Manufacturing Operation with a work order that does not own it.
+
+	Three rules, one query for every operation on the entry (see ``doc_events/mwo_mop_link`` for why the
+	operation, never the work order, is the anchor):
+
+	1. Every row with an operation: the operation belongs to the row's ``custom_manufacturing_work_order``,
+	   or to the header work order when the row carries none (except on a multi-work-order type).
+	2. The header operation belongs to the header work order.
+	3. An entry that reserves for a work order on submit (``creates_mwo_reservation``): every row's
+	   operation belongs to the HEADER work order -- so it exists, and has a work order.
+	   ``stock_reservation_entry_for_mwo`` keys every reservation, Sales Order line and MOP Log row of the
+	   entry off the header, so a row of another work order is reserved under the wrong key -- the
+	   reservation Make Receive Entry later hands to the wrong work order. ``Stock Entry
+	   Detail.manufacturing_operation`` is Small Text on production, so no link validation ever checked
+	   that the operation exists.
+
+	A blank work order on either side is not checked (the reservation path refuses a reserving entry
+	without a header work order on its own), and an operation with no owner -- missing, or saved without
+	a work order -- is left alone unless the entry reserves. Checked against the production data: the
+	only stored entries these rules refuse are the few already known to be wrong; Process Loss entries
+	pass with rows of many work orders.
+
+	A ``validate`` hook, so it runs on save, on submit and in the Submission Queue worker, after
+	``before_validate`` (``set_manufacturing_refs`` fills the header operation there, ``update_batches``
+	rebuilds the rows). Warn mode (``mwo_mop_link_guard``) logs instead of raising.
+	"""
+	header_mwo = cstr(self.get("manufacturing_work_order")).strip()
+	header_mop = cstr(self.get("manufacturing_operation")).strip()
+	rows = [
+		row
+		for row in self.get("items") or ()
+		if cstr(row.get("manufacturing_operation")).strip()
+	]
+	if not rows and not (header_mop and header_mwo):
+		return
+
+	owners = _owners_by_casefold(
+		[header_mop, *(row.get("manufacturing_operation") for row in rows)]
+	)
+
+	header_problems = []
+	if header_mop and header_mwo:
+		owner = owners.get(header_mop.casefold())
+		if owner and not same(owner, header_mwo):
+			header_problems.append(
+				_(
+					"Operation {0} belongs to work order {1}, not {2}, the work order of this Stock Entry."
+				).format(bold(header_mop), bold(owner), bold(header_mwo))
+			)
+
+	# A multi-work-order entry's rows are never compared with its header, by either rule.
+	multi_mwo = self.get("stock_entry_type") in _MULTI_WORK_ORDER_STOCK_ENTRY_TYPES
+	reserves = bool(rows) and not multi_mwo and creates_mwo_reservation(self)
+	fallback_mwo = "" if multi_mwo else header_mwo
+	row_problems = []
+	off_header = False
+	for row in rows:
+		idx = row.get("idx") or "?"
+		mop = cstr(row.get("manufacturing_operation")).strip()
+		owner = owners.get(mop.casefold())
+		if not owner:
+			if reserves:
+				# ``owners`` holds every EXISTING operation, with or without a work order, so the
+				# message can tell a wrong name from an operation saved without a work order.
+				row_problems.append(
+					no_owner_problem(mop, mop.casefold() in owners, idx=idx)
+				)
+			continue
+
+		expected = (
+			cstr(row.get("custom_manufacturing_work_order")).strip() or fallback_mwo
+		)
+		if expected and not same(owner, expected):
+			row_problems.append(row_problem(idx, mop, owner, expected))
+		elif reserves and header_mwo and not same(owner, header_mwo):
+			row_problems.append(row_problem(idx, mop, owner, header_mwo))
+			off_header = True
+
+	if off_header:
+		# Said once, ahead of the rows: those rows are consistent with their own work order and are
+		# refused only because this entry reserves everything under the header's.
+		row_problems.insert(
+			0,
+			_(
+				"This {0} entry reserves its stock for work order {1}, so every operation on it must "
+				"belong to that work order."
+			).format(bold(self.get("stock_entry_type")), bold(header_mwo)),
+		)
+
+	report(header_problems + row_problems, doc=self)
+
+
+def _owners_by_casefold(mops):
+	"""``mop_owners`` keyed case-insensitively.
+
+	MariaDB matches names case-insensitively, so ``mop_owners`` can answer for a value whose case differs
+	from the stored name; Small Text row values are never normalised by link validation.
+	"""
+	return {cstr(mop).casefold(): owner for mop, owner in mop_owners(mops).items()}
+
+
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
@@ -1066,6 +1183,17 @@ def before_submit(self, method):
 
 def onsubmit(self, method):
 	validate_items(self)
+	if creates_mwo_reservation(self):
+		stock_reservation_entry_for_mwo(self)
+		sync_mop_log_for_stock_entry(self)
+
+
+def creates_mwo_reservation(self):
+	"""True when this entry's ``on_submit`` reserves its rows for a work order.
+
+	The one gate both ``onsubmit`` and ``validate_mwo_mop_consistency`` read, so the "every operation
+	belongs to the header work order" rule applies to exactly the entries that reserve under the header.
+	"""
 	# Hard skip reservation logic for Product Certification Receive
 	# (Fire Assy Service / XRF Services), regardless of reservation settings.
 	pc_name = getattr(self, "product_certification", None)
@@ -1085,20 +1213,20 @@ def onsubmit(self, method):
 				"XRF Services",
 			]
 		):
-			return
+			return False
 
 	types_for_reservation = frappe.db.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},
 		pluck="stock_entry_type_to_reservation",
 	)
-	if self.stock_entry_type in types_for_reservation:
-		if self.stock_entry_type == "Repack" and (
-			not (self.manufacturing_order and self.manufacturing_work_order)
-		):
-			return
-		stock_reservation_entry_for_mwo(self)
-		sync_mop_log_for_stock_entry(self)
+	if self.stock_entry_type not in types_for_reservation:
+		return False
+	if self.stock_entry_type == "Repack" and (
+		not (self.manufacturing_order and self.manufacturing_work_order)
+	):
+		return False
+	return True
 
 
 def sync_mop_log_for_stock_entry(self, is_cancelled=False):
@@ -1157,9 +1285,10 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 
 def stock_reservation_entry_for_mwo(self):
 	# EIR injection: main_slip_inject.py stamps employee_ir on every auto-created
-	# SE header.  These SEs MUST always reserve — they are legitimate MWO-linked
-	# movements whose stock must be protected.  Bypassing the config gate here
-	# ensures a missing "Repack" row in MOP Settings cannot silently skip reservation.
+	# SE header. Such an entry lands metal beyond the Material Requests, so below it
+	# lifts the Sales Order voucher-quantity cap instead of being capped by it. It does
+	# NOT bypass the reservation gate: creates_mwo_reservation applies the MOP Settings
+	# list to these entries like to any other.
 	_eir_ref = getattr(self, "employee_ir", None)
 	is_eir_injection = isinstance(_eir_ref, str) and bool(_eir_ref.strip())
 
@@ -1169,31 +1298,41 @@ def stock_reservation_entry_for_mwo(self):
 				"Parent Manufacturing Order and Manufacturing Work Order is required to create Stock Reservation Entry"
 			)
 		)
-	sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
-		"Parent Manufacturing Order",
-		self.manufacturing_order,
-		["sales_order", "sales_order_item", "manufacturer"],
-	)
-	voucher_qty_row = frappe.db.sql(
-		"""
-        SELECT sum(custom_total_quantity) FROM `tabMaterial Request`
-        WHERE manufacturing_order=%s AND docstatus!=2
-        """,
-		(self.manufacturing_order,),
-	)
-	base_mr_voucher_qty = None
-	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
-		base_mr_voucher_qty = flt(voucher_qty_row[0][0])
-		addition_maximum_item__tolerance_percentage = frappe.db.get_value(
-			"Manufacturing Setting",
-			self.manufacturer or manufacturer,
-			"addition_maximum_item__tolerance_percentage",
+
+	# Every reservation is keyed to the work order that OWNS its row's operation, never to the header
+	# blindly (doc_events/mwo_mop_link.py): Make Receive Entry picks reservations by work order alone, so a
+	# row of a sibling work order reserved under the header's key is later received into the wrong one.
+	# On a consistent entry every owner IS the header work order and nothing below changes. A row whose
+	# operation belongs elsewhere is refused here, before anything is locked or reserved; in warn mode it
+	# is logged and its reservation keyed to the owner and the owner's Sales Order line.
+	operation_owners = {}
+	if self.stock_entry_type != "Material Receive (WORK ORDER)":
+		reserve_rows = [r for r in self.items if r.get("t_warehouse")]
+		operation_owners = _owners_by_casefold(
+			r.get("manufacturing_operation") for r in reserve_rows
 		)
-		if addition_maximum_item__tolerance_percentage:
-			base_mr_voucher_qty = base_mr_voucher_qty + (
-				base_mr_voucher_qty
-				* (flt(addition_maximum_item__tolerance_percentage) / 100)
-			)
+		problems = []
+		for r in reserve_rows:
+			mop = cstr(r.get("manufacturing_operation")).strip()
+			owner = operation_owners.get(mop.casefold())
+			if (
+				owner
+				and not same(owner, self.manufacturing_work_order)
+				and self.stock_entry_type not in _MULTI_WORK_ORDER_STOCK_ENTRY_TYPES
+			):
+				problems.append(
+					row_problem(
+						r.get("idx") or "?", mop, owner, self.manufacturing_work_order
+					)
+				)
+		report(problems, doc=self)
+
+	sales_order, sales_order_item, base_mr_voucher_qty = _mwo_reservation_so_line(
+		self, self.manufacturing_order
+	)
+	so_lines = {
+		self.manufacturing_order: (sales_order, sales_order_item, base_mr_voucher_qty)
+	}
 
 	# RULE B (canonical lock order): pre-lock every inbound Bin this reservation will
 	# touch, in sorted (item_code, warehouse) order, so concurrent Stock Entry submits
@@ -1252,6 +1391,26 @@ def stock_reservation_entry_for_mwo(self):
 				)
 			)
 
+		# The work order this row is reserved for is its operation's owner, and the Sales Order line is
+		# that work order's PMO's. On a consistent entry that is the header's and costs no extra read.
+		row_mwo = (
+			operation_owners.get(
+				cstr(row.get("manufacturing_operation")).strip().casefold()
+			)
+			or self.manufacturing_work_order
+		)
+		row_pmo = self.manufacturing_order
+		if not same(row_mwo, self.manufacturing_work_order):
+			row_pmo = (
+				frappe.get_cached_value(
+					"Manufacturing Work Order", row_mwo, "manufacturing_order"
+				)
+				or self.manufacturing_order
+			)
+		if row_pmo not in so_lines:
+			so_lines[row_pmo] = _mwo_reservation_so_line(self, row_pmo)
+		sales_order, sales_order_item, base_mr_voucher_qty = so_lines[row_pmo]
+
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
 			row.item_code, "Sales Order", sales_order, sales_order_item
 		)
@@ -1276,9 +1435,7 @@ def stock_reservation_entry_for_mwo(self):
 		new_stock_reservation_entries_mwo.stock_uom = row.uom
 
 		new_stock_reservation_entries_mwo.warehouse = row.t_warehouse
-		new_stock_reservation_entries_mwo.manufacturing_work_order = (
-			self.manufacturing_work_order
-		)
+		new_stock_reservation_entries_mwo.manufacturing_work_order = row_mwo
 		new_stock_reservation_entries_mwo.manufacturing_operation = (
 			row.manufacturing_operation
 		)
@@ -1303,6 +1460,41 @@ def stock_reservation_entry_for_mwo(self):
 		new_stock_reservation_entries_mwo.insert(ignore_links=1)
 		new_stock_reservation_entries_mwo.submit()
 		create_mop_log(self, row, is_synced=True)
+
+
+def _mwo_reservation_so_line(self, pmo):
+	"""``(sales_order, sales_order_item, base_mr_voucher_qty)`` for reservations under ``pmo``.
+
+	The Sales Order line is the PMO's, and the voucher quantity that caps reservations on that line is the
+	PMO's Material Request total plus the manufacturer's tolerance. Both are read from the same PMO, so a
+	reservation keyed to another work order's PMO (warn mode only) is capped by that line, not the header's.
+	"""
+	sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
+		"Parent Manufacturing Order",
+		pmo,
+		["sales_order", "sales_order_item", "manufacturer"],
+	)
+	voucher_qty_row = frappe.db.sql(
+		"""
+        SELECT sum(custom_total_quantity) FROM `tabMaterial Request`
+        WHERE manufacturing_order=%s AND docstatus!=2
+        """,
+		(pmo,),
+	)
+	base_mr_voucher_qty = None
+	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
+		base_mr_voucher_qty = flt(voucher_qty_row[0][0])
+		addition_maximum_item__tolerance_percentage = frappe.db.get_value(
+			"Manufacturing Setting",
+			self.manufacturer or manufacturer,
+			"addition_maximum_item__tolerance_percentage",
+		)
+		if addition_maximum_item__tolerance_percentage:
+			base_mr_voucher_qty = base_mr_voucher_qty + (
+				base_mr_voucher_qty
+				* (flt(addition_maximum_item__tolerance_percentage) / 100)
+			)
+	return sales_order, sales_order_item, base_mr_voucher_qty
 
 
 def validate_items(self):

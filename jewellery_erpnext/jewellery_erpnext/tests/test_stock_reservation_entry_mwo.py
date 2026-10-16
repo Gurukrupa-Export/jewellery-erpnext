@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Nirali and contributors
 # See license.txt
 
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -12,16 +13,31 @@ from frappe.tests import IntegrationTestCase
 from jewellery_erpnext.jewellery_erpnext.customization.stock_reservation_entry.stock_reservation_entry import (
 	CustomStockReservationEntry,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events import mwo_mop_link
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import MWOMOPLinkError
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	onsubmit,
 	stock_reservation_entry_for_mwo,
 )
+
+_SE_EVENTS = "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry"
+_SRE_MODULE = "jewellery_erpnext.jewellery_erpnext.customization.stock_reservation_entry.stock_reservation_entry"
 
 
 class TestStockReservationEntryForMWO(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+	def setUp(self):
+		super().setUp()
+		# Each reservation is keyed to the owner of its row's operation, found with one
+		# ``mop_owners`` query. The operations named below exist nowhere, and an operation without
+		# an owner keeps the header work order -- the behaviour these tests were written against.
+		# TestReservationKeyedToOperationOwner covers the owner keying itself.
+		patcher = patch(f"{_SE_EVENTS}.mop_owners", return_value={})
+		patcher.start()
+		self.addCleanup(patcher.stop)
 
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.new_doc")
@@ -1236,6 +1252,181 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		mock_sync.assert_not_called()
 
 
+class TestReservationKeyedToOperationOwner(IntegrationTestCase):
+	"""Each reservation is keyed to the work order that OWNS its row's operation, and to that work
+	order's Sales Order line -- never to the header blindly.
+
+	Make Receive Entry lists reservations by work order alone, so a row of a sibling work order
+	reserved under the header's key is later received into the wrong work order. Synthetic names:
+	MWO-A (the header) and MWO-B are siblings of PMO-1, which has one Sales Order line; MWO-C belongs
+	to PMO-2.
+	"""
+
+	PMO_LINES = {
+		"PMO-1": ("SO-TEST-1", "SOI-1", "MNF-TEST"),
+		"PMO-2": ("SO-TEST-2", "SOI-2", "MNF-TEST"),
+	}
+	PMO_OF = {"MWO-A": "PMO-1", "MWO-B": "PMO-1", "MWO-C": "PMO-2"}
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		super().setUp()
+		self.reservations = []
+		self.so_line_reads = []
+
+		def _new_doc(doctype):
+			sre = MagicMock()
+			self.reservations.append(sre)
+			return sre
+
+		def _cached(doctype, name, fields):
+			if doctype == "Item":
+				return (1, 0)
+			if (
+				doctype == "Manufacturing Work Order"
+				and fields == "manufacturing_order"
+			):
+				return self.PMO_OF[name]
+			raise AssertionError((doctype, name, fields))
+
+		def _so_line(doc, pmo):
+			# No Material Request total (None): the voucher qty takes its fallback, already
+			# reserved + this reservation. The PMO arithmetic itself is pinned by the
+			# test_mr_voucher_qty_* cases above.
+			self.so_line_reads.append(pmo)
+			sales_order, sales_order_item, _manufacturer = self.PMO_LINES[pmo]
+			return sales_order, sales_order_item, None
+
+		self.cached = MagicMock(side_effect=_cached)
+		self.lock_bins = MagicMock()
+		for patcher in (
+			patch(f"{_SE_EVENTS}.create_mop_log"),
+			patch(f"{_SE_EVENTS}.lock_bins_for_rows", self.lock_bins),
+			patch(f"{_SE_EVENTS}.frappe.new_doc", side_effect=_new_doc),
+			patch(f"{_SE_EVENTS}.frappe.get_cached_value", self.cached),
+			patch(f"{_SE_EVENTS}._mwo_reservation_so_line", side_effect=_so_line),
+			patch(f"{_SE_EVENTS}.get_available_qty_to_reserve", return_value=50.0),
+			patch(
+				f"{_SE_EVENTS}.get_sre_reserved_qty_for_voucher_detail_no",
+				return_value=0.0,
+			),
+		):
+			patcher.start()
+			self.addCleanup(patcher.stop)
+
+	@staticmethod
+	def _row(idx, mop):
+		row = MagicMock()
+		row.idx = idx
+		row.item_code = "M-ALLOY"
+		row.qty = 2.0
+		row.t_warehouse = "WH-DEPT"
+		row.s_warehouse = None
+		row.uom = "Gram"
+		row.batch_no = f"B-{idx}"
+		row.manufacturing_operation = mop
+		row.get = MagicMock(side_effect=lambda k, d=None: getattr(row, k, d))
+		return row
+
+	def _doc(self, mops, stock_entry_type="Material Transfer (WORK ORDER)"):
+		doc = MagicMock()
+		doc.stock_entry_type = stock_entry_type
+		doc.manufacturing_order = "PMO-1"
+		doc.manufacturing_work_order = "MWO-A"
+		doc.company = "Test Co"
+		doc.manufacturer = None
+		doc.employee_ir = None
+		doc.items = [self._row(idx, mop) for idx, mop in enumerate(mops, 1)]
+		return doc
+
+	def _reserve(self, doc, owners, enforce=True):
+		with (
+			patch(f"{_SE_EVENTS}.mop_owners", return_value=owners) as lookup,
+			patch.object(mwo_mop_link, "enforcing", return_value=enforce),
+		):
+			stock_reservation_entry_for_mwo(doc)
+		return lookup
+
+	def _warn(self):
+		"""Warn-mode side effects, silenced; returns the log_error mock."""
+		stack = ExitStack()
+		self.addCleanup(stack.close)
+		stack.enter_context(patch.object(mwo_mop_link.frappe, "msgprint"))
+		return stack.enter_context(patch.object(mwo_mop_link.frappe, "log_error"))
+
+	@staticmethod
+	def _keys(sre):
+		return (
+			sre.manufacturing_operation,
+			sre.manufacturing_work_order,
+			sre.voucher_no,
+			sre.voucher_detail_no,
+		)
+
+	def test_consistent_row_is_keyed_to_the_header_without_extra_reads(self):
+		self._reserve(self._doc(["MOP-A1"]), {"MOP-A1": "MWO-A"})
+		[sre] = self.reservations
+		self.assertEqual(self._keys(sre), ("MOP-A1", "MWO-A", "SO-TEST-1", "SOI-1"))
+		self.assertNotIn(
+			"Manufacturing Work Order", [c.args[0] for c in self.cached.call_args_list]
+		)
+		self.assertEqual(self.so_line_reads, ["PMO-1"])
+
+	def test_row_of_another_work_order_is_refused_before_anything_is_reserved(self):
+		doc = self._doc(["MOP-A1", "MOP-B1"])
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			self._reserve(doc, {"MOP-A1": "MWO-A", "MOP-B1": "MWO-B"})
+		self.assertIn(
+			mwo_mop_link.row_problem(2, "MOP-B1", "MWO-B", "MWO-A"), str(cm.exception)
+		)
+		self.assertEqual(self.reservations, [])
+		self.lock_bins.assert_not_called()
+
+	def test_warn_mode_keys_each_reservation_to_its_owner_and_sales_order_line(self):
+		"""An unrelated work order of another PMO: its own work order, Sales Order line and the
+		voucher qty of its own Material Requests -- never the header's."""
+		log_error = self._warn()
+		self._reserve(
+			self._doc(["MOP-A1", "MOP-C1"]),
+			{"MOP-A1": "MWO-A", "MOP-C1": "MWO-C"},
+			enforce=False,
+		)
+		log_error.assert_called_once()
+		self.assertEqual(
+			sorted(self._keys(sre) for sre in self.reservations),
+			[
+				("MOP-A1", "MWO-A", "SO-TEST-1", "SOI-1"),
+				("MOP-C1", "MWO-C", "SO-TEST-2", "SOI-2"),
+			],
+		)
+		self.assertEqual(sorted(self.so_line_reads), ["PMO-1", "PMO-2"])
+
+	def test_warn_mode_sibling_of_the_same_pmo_keeps_the_sales_order_line(self):
+		"""Siblings share their PMO's line: only the work order changes, and the line is read once."""
+		self._warn()
+		self._reserve(self._doc(["MOP-B1"]), {"MOP-B1": "MWO-B"}, enforce=False)
+		[sre] = self.reservations
+		self.assertEqual(self._keys(sre), ("MOP-B1", "MWO-B", "SO-TEST-1", "SOI-1"))
+		self.assertEqual(self.so_line_reads, ["PMO-1"])
+
+	def test_unknown_operation_keeps_the_header_work_order(self):
+		self._reserve(self._doc(["MOP-GONE"]), {})
+		self.assertEqual(self.reservations[0].manufacturing_work_order, "MWO-A")
+
+	def test_operation_name_matches_case_insensitively(self):
+		self._reserve(self._doc(["mop-a1"]), {"MOP-A1": "MWO-A"})
+		self.assertEqual(self.reservations[0].manufacturing_work_order, "MWO-A")
+
+	def test_material_receive_reserves_nothing_and_skips_the_owner_lookup(self):
+		doc = self._doc(["MOP-A1"], stock_entry_type="Material Receive (WORK ORDER)")
+		lookup = self._reserve(doc, {"MOP-A1": "MWO-B"})
+		lookup.assert_not_called()
+		self.assertEqual(self.reservations, [])
+
+
 def _bare_sre(**fields):
 	# Bypass Document.__init__ — we only exercise the override branch logic;
 	# no DB, no meta load, no controller hooks.
@@ -1350,3 +1541,63 @@ class TestCustomStockReservationEntry(IntegrationTestCase):
 			sre.auto_reserve_serial_and_batch("Voucher")
 
 		parent_mock.assert_called_once_with("Voucher")
+
+	# ---------------------------------------------------------------- validate (I3)
+	def _validate(self, sre, owner, enforce=True):
+		with (
+			patch.object(StockReservationEntry, "validate") as core_validate,
+			patch(f"{_SRE_MODULE}.owner_of", return_value=owner) as lookup,
+			patch.object(mwo_mop_link, "enforcing", return_value=enforce),
+		):
+			sre.validate()
+		return core_validate, lookup
+
+	def test_validate_refuses_a_reservation_keyed_to_a_sibling_work_order(self):
+		"""The reservation two Make Receive Entries consumed: work order A, operation of B."""
+		sre = _bare_sre(
+			manufacturing_work_order="MWO-A", manufacturing_operation="MOP-B1"
+		)
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			self._validate(sre, owner="MWO-B")
+		for name in ("MOP-B1", "MWO-B", "MWO-A"):
+			self.assertIn(name, str(cm.exception))
+
+	def test_validate_runs_core_validation_then_accepts_the_owner(self):
+		sre = _bare_sre(
+			manufacturing_work_order="MWO-A", manufacturing_operation="MOP-A1"
+		)
+		core_validate, lookup = self._validate(sre, owner="mwo-a")
+		core_validate.assert_called_once_with()
+		lookup.assert_called_once_with("MOP-A1")
+
+	def test_validate_ignores_reservations_without_both_manufacturing_fields(self):
+		"""Core ERPNext reservations (Sales Order, Pick List) carry neither field."""
+		for mwo, mop in ((None, None), ("MWO-A", None), (None, "MOP-B1"), ("", " ")):
+			sre = _bare_sre(manufacturing_work_order=mwo, manufacturing_operation=mop)
+			core_validate, lookup = self._validate(sre, owner="MWO-B")
+			core_validate.assert_called_once_with()
+			lookup.assert_not_called()
+
+	def test_validate_leaves_an_unresolvable_operation_alone(self):
+		"""Both fields are plain Data: an operation that cannot be found is the writer's concern."""
+		sre = _bare_sre(
+			manufacturing_work_order="MWO-A", manufacturing_operation="MOP-GONE"
+		)
+		self._validate(sre, owner=None)
+
+	def test_validate_warn_mode_logs_instead_of_raising(self):
+		sre = _bare_sre(
+			doctype="Stock Reservation Entry",
+			name="SRE-TEST-1",
+			manufacturing_work_order="MWO-A",
+			manufacturing_operation="MOP-B1",
+		)
+		with (
+			patch.object(mwo_mop_link.frappe, "log_error") as log_error,
+			patch.object(mwo_mop_link.frappe, "msgprint"),
+		):
+			self._validate(sre, owner="MWO-B", enforce=False)
+		log_error.assert_called_once()
+		self.assertEqual(
+			log_error.call_args.kwargs["reference_doctype"], "Stock Reservation Entry"
+		)
