@@ -433,8 +433,6 @@ class TestBookMetalLossCustomerFindingGate(IntegrationTestCase):
 				f"{EIR}.get_blocked_finding_batches",
 				return_value=blocked if blocked is not None else {},
 			),
-			patch(f"{EIR}.batch_priority_map", return_value={}),
-			patch(f"{EIR}.get_batch_sre_headroom", return_value={}),
 		]
 		for p in patches:
 			p.start()

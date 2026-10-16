@@ -58,9 +58,8 @@ DocType meta loading or poisoning the translation cache.
     batches from the proportional pool BEFORE ``total_qty`` is summed, so the survivors absorb
     the blocked row's share and the booked total still equals ``gross_wt - received_gross_wt``
     -- which is why the balance validators in ``validation_utils`` need no changes. This path
-    NEVER throws, not even when it empties the pool. Company metal absorbs what the customer's
-    finding may not, which is both the commercial answer and what ``tiered_allocate``'s
-    "overflow anchors on the FIRST funded tier" guarantee already delivers.
+    NEVER throws, not even when it empties the pool. The remaining rows absorb the finding's
+    share in proportion to their balances.
   * **Manual** (``manually_book_loss_details``) --
     ``validate_customer_goods_finding_loss_rows`` throws, and does so ONLY from ``on_submit``.
     Saving a draft must always succeed.
