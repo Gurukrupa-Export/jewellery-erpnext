@@ -1,35 +1,42 @@
 # Copyright (c) 2026, Nirali and contributors
 # For license information, please see license.txt
 
-"""Chain Subcontracting for Metal Conversions.
+"""Chain Manufacturing for Metal Conversions.
 
-A chain conversion sends the source metal to a subcontractor and takes the converted
-item back for another employee. It runs on the Gemstone Conversion resize workflow
+A chain conversion hands the source metal to ONE party -- an employee, or a subcontractor
+when Is Chain Subcontracting is ticked -- and takes the converted item back into the
+issuing department. It runs on the Gemstone Conversion resize workflow
 (``patches/add_metal_conversion_workflow.py``)::
 
     Draft --Issue--> Issue --Receive--> Receive --Submit--> Submitted
                      Issue --Cancel Issue--> Draft          (System Manager)
 
+The party's warehouse is the **work warehouse**: the To Employee's Manufacturing
+warehouse, or the supplier's Raw Material warehouse.
+
 **Issue** (a save, docstatus 0) -- ``run_issue`` from ``MetalConversions.validate``:
 
-* "Material Transfer (Chain SC)": the FIFO-allocated source batches, employee's
-  department RM warehouse -> supplier's RM warehouse;
-* a draft Purchase Order for the "Semi FG Subcontracting" service, left for the buying
-  team to price and submit.
+* "Material Transfer to Employee" or "Material Transfer to Subcontractor": the
+  FIFO-allocated source batches, department RM warehouse -> work warehouse;
+* subcontracted only: a draft Purchase Order for the "Semi FG Subcontracting" service,
+  left for the buying team to price and submit.
 
 **Receive** (the submit) -- ``run_receive`` from ``MetalConversions.on_submit``:
 
-* "Repack-Metal Conversion" inside the supplier's RM warehouse: Target Qty of the source
-  batches -> Target Qty of the Target Item, built with the regular conversion's lane
-  helpers so pricing and batch provenance work exactly as for any conversion;
+* "Repack-Metal Conversion" inside the work warehouse: Target Qty of the source batches ->
+  Target Qty of the Target Item, built with the regular conversion's lane helpers so
+  pricing and batch provenance work exactly as for any conversion;
 * "Process Loss" for Source Qty - Target Qty (skipped when zero): the remaining source
   batches -> the loss item in the issuing department's Scrap warehouse, through the
   melting-loss builder;
-* "Material Transfer (Chain SC)": the batch the Repack minted, supplier RM warehouse ->
-  the To Employee's department RM warehouse.
+* "Material Transfer": the batch the Repack minted, work warehouse -> the issuing
+  department's RM warehouse, as Gemstone Conversion returns a resized stone.
+
+The flow has no Stock Entry Type of its own: the two existing transfer types name who
+receives the metal, and the return is a plain transfer.
 
 **Cancel Issue** (a save back to Draft) -- ``run_cancel_issue``: an Issue that has not been
-received is undone -- its transfer cancelled, its draft PO deleted -- so a wrong supplier,
+received is undone -- its transfer cancelled, its draft PO deleted -- so a wrong party,
 quantity or batch can be corrected and issued again.
 
 The Repack consumes Target Qty of the source, not all of it: consuming Source Qty there
@@ -42,7 +49,7 @@ counter and then every Bin they touch is locked once, up front, in the canonical
 (``lock_order`` RULE A/B) -- each entry pinning only its own would take a later counter
 after earlier Bins.
 
-Chain Subcontracting draws Regular Stock only (``update_source_betch``): the Process Loss
+Chain Manufacturing draws Regular Stock only (``update_source_betch``): the Process Loss
 books its scrap as Regular Stock, so customer metal would change hands there.
 
 Every warehouse is resolved here, never picked by the user, and the allocation is frozen
@@ -64,7 +71,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 	get_batch_lane_map,
 )
 
-CHAIN_SC_SE_TYPE = "Material Transfer (Chain SC)"
+ISSUE_TO_EMPLOYEE_SE_TYPE = "Material Transfer to Employee"
+ISSUE_TO_SUPPLIER_SE_TYPE = "Material Transfer to Subcontractor"
+RETURN_SE_TYPE = "Material Transfer"
 CHAIN_SC_PO_ITEM = "Semi FG Subcontracting"
 CHAIN_SC_PURCHASE_TYPE = "Subcontracting"
 
@@ -73,6 +82,7 @@ ISSUE_STATE = "Issue"
 RECEIVE_STATE = "Receive"
 
 RAW_MATERIAL = "Raw Material"
+MANUFACTURING = "Manufacturing"
 REGULAR_STOCK = "Regular Stock"
 
 DEPARTMENT_FLAGS = ("custom_is_chain_manufacturing", "custom_is_chain_subcontracting")
@@ -87,6 +97,8 @@ FROZEN_AFTER_ISSUE = (
 	"source_qty",
 	"is_chain_manufacturing",
 	"is_chain_subcontracting",
+	"to_employee",
+	"to_warehouse",
 	"chain_supplier",
 	"chain_supplier_warehouse",
 	"chain_issue_stock_entry",
@@ -95,20 +107,26 @@ FROZEN_AFTER_ISSUE = (
 	"is_melting_loss",
 )
 
+# One party converts the metal: these are cleared for the mode not chosen.
+EMPLOYEE_FIELDS = ("to_employee", "to_department", "to_warehouse")
+SUPPLIER_FIELDS = ("chain_supplier", "chain_supplier_warehouse")
 # Cleared whenever a document is not a chain conversion.
-CHAIN_FIELDS = (
-	"to_employee",
-	"to_department",
-	"to_warehouse",
-	"chain_supplier",
-	"chain_supplier_warehouse",
-)
+CHAIN_FIELDS = EMPLOYEE_FIELDS + SUPPLIER_FIELDS
 
 
-def is_chain_sc(doc):
-	return doc.get("is_chain_manufacturing") == "Yes" and bool(
-		cint(doc.get("is_chain_subcontracting"))
-	)
+def is_chain(doc):
+	"""A Chain Manufacturing conversion, in either mode."""
+	return doc.get("is_chain_manufacturing") == "Yes"
+
+
+def is_subcontracted(doc):
+	"""A chain conversion converted by a supplier rather than an employee."""
+	return is_chain(doc) and bool(cint(doc.get("is_chain_subcontracting")))
+
+
+def work_warehouse(doc):
+	"""Where Issue sends the metal and Receive converts it."""
+	return doc.chain_supplier_warehouse if is_subcontracted(doc) else doc.to_warehouse
 
 
 def chain_issued(doc):
@@ -168,6 +186,25 @@ def get_supplier_rm_warehouse(supplier, company=None):
 	return frappe.db.get_value("Warehouse", filters, "name")
 
 
+def get_employee_warehouse(employee, company=None):
+	"""The employee's own Manufacturing warehouse (``Warehouse.employee``).
+
+	The warehouse Gemstone Conversion hands an unsubcontracted resize to
+	(``set_subcontractor_warehouse``).
+	"""
+	if not employee:
+		return None
+	filters = {
+		"disabled": 0,
+		"is_group": 0,
+		"employee": employee,
+		"warehouse_type": MANUFACTURING,
+	}
+	if company:
+		filters["company"] = company
+	return frappe.db.get_value("Warehouse", filters, "name")
+
+
 # ---------------------------------------------------------------------------
 # Save-time: field resolution and guards
 # ---------------------------------------------------------------------------
@@ -205,13 +242,18 @@ def validate_chain(doc):
 	doc.dept_is_chain_manufacturing = cint(manufacturing)
 	doc.dept_is_chain_subcontracting = cint(subcontracting)
 
-	if doc.get("is_chain_manufacturing") != "Yes":
+	if not is_chain(doc):
 		doc.is_chain_manufacturing = "No"
 		doc.is_chain_subcontracting = 0
 		for field in CHAIN_FIELDS:
 			doc.set(field, None)
 		doc.chain_process_loss_qty = 0
 		return
+
+	# One party converts the metal -- never both. After Issue the mode is frozen, so the
+	# other mode's fields are already empty and this changes nothing.
+	for field in EMPLOYEE_FIELDS if is_subcontracted(doc) else SUPPLIER_FIELDS:
+		doc.set(field, None)
 
 	if not issued:
 		_check_eligibility(doc, manufacturing, subcontracting)
@@ -231,8 +273,9 @@ def validate_chain(doc):
 			)
 		_clear_alloy(doc)
 		set_issue_warehouses(doc)
+		# After Issue the To Employee's warehouse holds the metal, so it is frozen.
+		set_to_warehouse(doc)
 
-	set_to_warehouse(doc)
 	doc.chain_process_loss_qty = (
 		flt(flt(doc.source_qty) - flt(doc.target_qty), _precision())
 		if flt(doc.target_qty)
@@ -248,24 +291,19 @@ def _check_eligibility(doc, manufacturing, subcontracting):
 				"Manufacturing to No, or tick Is Chain Manufacturing on the Department."
 			).format(frappe.bold(doc.department))
 		)
-	if not subcontracting:
+	if is_subcontracted(doc) and not subcontracting:
 		frappe.throw(
 			_(
-				"Department {0} is not set up for Chain Subcontracting, and Chain Manufacturing "
-				"is only available through a subcontractor. Set Is Chain Manufacturing to No."
+				"Department {0} is not set up for Chain Subcontracting. Untick Is Chain "
+				"Subcontracting to give the metal to an employee, or tick Is Chain "
+				"Subcontracting on the Department."
 			).format(frappe.bold(doc.department))
-		)
-	if not cint(doc.is_chain_subcontracting):
-		frappe.throw(
-			_(
-				"Tick Is Chain Subcontracting and select the Supplier, or set Is Chain "
-				"Manufacturing to No."
-			)
 		)
 
 
 def set_issue_warehouses(doc):
-	"""Department RM -> supplier RM: both resolved from their masters."""
+	"""The department RM warehouse, and the supplier's when subcontracted -- both from
+	their masters."""
 	department_wh = get_department_rm_warehouse(doc.department)
 	if doc.department and not department_wh:
 		frappe.throw(
@@ -293,25 +331,22 @@ def set_issue_warehouses(doc):
 
 
 def set_to_warehouse(doc):
-	"""To Employee -> their Department -> its RM warehouse, the final destination."""
+	"""To Employee -> their own Manufacturing warehouse, where Issue hands them the metal.
+
+	To Department is shown for reference only; the warehouse is the employee's.
+	"""
 	doc.to_department = None
 	doc.to_warehouse = None
 	if not doc.to_employee:
 		return
 	doc.to_department = frappe.db.get_value("Employee", doc.to_employee, "department")
-	if not doc.to_department:
-		frappe.throw(
-			_("Department is missing against To Employee {0}.").format(
-				frappe.bold(doc.to_employee)
-			)
-		)
-	doc.to_warehouse = get_department_rm_warehouse(doc.to_department)
+	doc.to_warehouse = get_employee_warehouse(doc.to_employee, doc.company)
 	if not doc.to_warehouse:
 		frappe.throw(
 			_(
-				"No Raw Material warehouse found for Department {0} of To Employee {1}. "
-				"Configure a Warehouse with Warehouse Type = Raw Material and Department = {0}."
-			).format(frappe.bold(doc.to_department), frappe.bold(doc.to_employee))
+				"No Manufacturing warehouse found for To Employee {0}. Configure a Warehouse "
+				"with Warehouse Type = Manufacturing and Employee = {0}."
+			).format(frappe.bold(doc.to_employee))
 		)
 
 
@@ -342,13 +377,22 @@ def _check_issue_frozen(doc):
 			changed.append(_(doc.meta.get_label(field)))
 
 	if _allocation_key(before) != _allocation_key(doc):
-		changed.append(_(doc.meta.get_label("source_batch_details")))
+		# Server-owned and read-only once issued, so a different table can only come from a
+		# client script -- the form's target_item handler used to empty it. Put back the
+		# rows the Issue entry moved rather than refuse a save the user did nothing wrong in.
+		doc.set(
+			"source_batch_details",
+			[
+				{"batch": row.get("batch"), "qty": row.get("qty")}
+				for row in before.get("source_batch_details") or []
+			],
+		)
 
 	if changed:
 		frappe.throw(
 			_(
-				"{0} cannot be changed after Issue: the metal has already been transferred to "
-				"the supplier in {1}."
+				"{0} cannot be changed after Issue: the metal has already been handed over "
+				"in {1}."
 			).format(
 				", ".join(changed), frappe.bold(before.get("chain_issue_stock_entry"))
 			),
@@ -377,7 +421,7 @@ def _clear_alloy(doc):
 
 def after_validate(doc):
 	"""Last step of ``validate``: show the allocated batch and run Issue when it is due."""
-	if not is_chain_sc(doc):
+	if not is_chain(doc):
 		return
 	if doc.get("workflow_state") == DRAFT_STATE and chain_issued(doc):
 		# Back to Draft with an Issue still linked: only the Cancel Issue transition
@@ -399,14 +443,15 @@ def after_validate(doc):
 def run_issue(doc):
 	validate_issue(doc)
 	doc.chain_issue_stock_entry = make_issue_stock_entry(doc)
-	doc.chain_purchase_order = make_subcontracting_po(doc)
+	if is_subcontracted(doc):
+		doc.chain_purchase_order = make_subcontracting_po(doc)
 
 
 def run_cancel_issue(doc):
 	"""Undo an Issue that has not been received (the Cancel Issue action).
 
 	The Issue transfer is cancelled through its controller, so ERPNext refuses when the
-	metal has already moved on from the supplier's warehouse; a draft PO is deleted. The
+	metal has already moved on from the work warehouse; a draft PO is deleted. The
 	document is a Draft again -- its allocation still holds, the metal being back in the
 	department -- to be corrected and issued afresh. A submitted PO belongs to the buying
 	team and stops it, as it stops a cancel after Receive.
@@ -436,62 +481,46 @@ def run_cancel_issue(doc):
 
 
 def validate_issue(doc):
-	"""Spec 11: everything the Issue transfer and the PO need, reported together."""
+	"""Spec 11: everything the Issue transfer (and, subcontracted, the PO) needs, reported
+	together."""
 	if doc.is_new():
 		frappe.throw(_("Save the conversion before issuing it."))
 
 	errors = []
 	manufacturing, subcontracting = get_department_chain_flags(doc.department)
 	precision = _precision()
+	subcontracted = is_subcontracted(doc)
 
 	if not doc.employee:
 		errors.append(_("Employee is not selected."))
 	if not doc.department:
 		errors.append(_("The Employee's Department could not be determined."))
-	elif not (manufacturing and subcontracting):
+	elif not manufacturing:
+		errors.append(
+			_("Department {0} is not eligible for Chain Manufacturing.").format(
+				frappe.bold(doc.department)
+			)
+		)
+	elif subcontracted and not subcontracting:
 		errors.append(
 			_("Department {0} is not eligible for Chain Subcontracting.").format(
 				frappe.bold(doc.department)
 			)
 		)
-	if doc.is_chain_manufacturing != "Yes":
+	if not is_chain(doc):
 		errors.append(_("Is Chain Manufacturing must be Yes."))
-	if not doc.to_employee:
-		errors.append(_("To Employee is not selected."))
-	elif not doc.to_department:
-		errors.append(_("The To Employee's Department could not be determined."))
-	if not doc.chain_supplier:
-		errors.append(_("Supplier is not selected."))
 	if not doc.source_item:
 		errors.append(_("Source Item is not selected."))
 	if flt(doc.source_qty, precision) <= 0:
 		errors.append(_("Source Qty must be greater than zero."))
 	if not doc.source_warehouse:
 		errors.append(_("The Employee's Department has no Raw Material warehouse."))
-	if not doc.chain_supplier_warehouse:
-		errors.append(_("The Supplier has no Raw Material warehouse."))
-	if not doc.to_warehouse:
-		errors.append(_("The To Employee's Department has no Raw Material warehouse."))
-	po_uom, whole_number = _po_item_uom()
-	if not po_uom:
-		errors.append(
-			_(
-				"Item {0}, which the Purchase Order is raised for, does not exist."
-			).format(frappe.bold(CHAIN_SC_PO_ITEM))
-		)
-	elif whole_number and not float(flt(doc.source_qty, precision)).is_integer():
-		# PurchaseOrder.validate refuses a fraction in a whole-number UOM -- after the
-		# Issue transfer was already booked, so the whole Issue would roll back there.
-		errors.append(
-			_(
-				"Item {0} is in {1}, a whole-number UOM, so Source Qty {2} cannot go on "
-				"its Purchase Order. Set the item's Stock UOM to Gram."
-			).format(
-				frappe.bold(CHAIN_SC_PO_ITEM),
-				frappe.bold(po_uom),
-				flt(doc.source_qty, precision),
-			)
-		)
+	if subcontracted:
+		errors.extend(_supplier_issue_errors(doc, precision))
+	elif not doc.to_employee:
+		errors.append(_("To Employee is not selected."))
+	elif not doc.to_warehouse:
+		errors.append(_("The To Employee has no Manufacturing warehouse."))
 
 	rows = _source_rows(doc)
 	if not rows:
@@ -537,17 +566,58 @@ def validate_issue(doc):
 		frappe.throw("<br>".join(errors), title=_("Cannot Issue"))
 
 
+def _supplier_issue_errors(doc, precision):
+	"""What a subcontracted Issue needs beyond the transfer: the supplier and its PO item."""
+	errors = []
+	if not doc.chain_supplier:
+		errors.append(_("Supplier is not selected."))
+	elif not doc.chain_supplier_warehouse:
+		errors.append(_("The Supplier has no Raw Material warehouse."))
+	po_uom, whole_number = _po_item_uom()
+	if not po_uom:
+		errors.append(
+			_(
+				"Item {0}, which the Purchase Order is raised for, does not exist."
+			).format(frappe.bold(CHAIN_SC_PO_ITEM))
+		)
+	elif whole_number and not float(flt(doc.source_qty, precision)).is_integer():
+		# PurchaseOrder.validate refuses a fraction in a whole-number UOM -- after the
+		# Issue transfer was already booked, so the whole Issue would roll back there.
+		errors.append(
+			_(
+				"Item {0} is in {1}, a whole-number UOM, so Source Qty {2} cannot go on "
+				"its Purchase Order. Set the item's Stock UOM to Gram."
+			).format(
+				frappe.bold(CHAIN_SC_PO_ITEM),
+				frappe.bold(po_uom),
+				flt(doc.source_qty, precision),
+			)
+		)
+	return errors
+
+
 def make_issue_stock_entry(doc):
-	"""Department RM -> supplier RM, one row per allocated batch."""
+	"""Department RM -> the work warehouse, one row per allocated batch.
+
+	The entry type and its header name who receives the metal.
+	"""
 	rows = _sorted_allocations(
 		doc.source_item, doc.source_warehouse, _source_allocations(doc)
 	)
+	if is_subcontracted(doc):
+		se_type = ISSUE_TO_SUPPLIER_SE_TYPE
+		header = {"subcontractor": doc.chain_supplier}
+	else:
+		se_type = ISSUE_TO_EMPLOYEE_SE_TYPE
+		header = {"to_employee": doc.to_employee}
 	return _make_transfer(
 		doc,
+		se_type=se_type,
+		header=header,
 		item_code=doc.source_item,
 		rows=rows,
 		from_wh=doc.source_warehouse,
-		to_wh=doc.chain_supplier_warehouse,
+		to_wh=work_warehouse(doc),
 	)
 
 
@@ -629,12 +699,12 @@ def validate_receive(doc):
 	(spec 13) and spec 16 lists no PO check. So Receive neither waits for the PO or its
 	invoice nor adds the job-work charge to the received item -- unlike Gemstone
 	Conversion's subcontracted Resize (``get_subcontracting_pi_amount``). Decision recorded
-	on PR #1433.
+	on PR #1433. An employee conversion has no PO at all.
 	"""
 	if doc.get("workflow_state") != RECEIVE_STATE:
 		frappe.throw(
 			_(
-				"A Chain Subcontracting conversion is submitted by its Receive action, after "
+				"A Chain Manufacturing conversion is submitted by its Receive action, after "
 				"Issue."
 			),
 			title=_("Cannot Submit"),
@@ -670,27 +740,31 @@ def validate_receive(doc):
 		)
 	else:
 		errors.extend(_fine_metal_errors(doc, source_qty, target_qty, precision))
-	if not doc.chain_supplier_warehouse:
-		errors.append(_("The Supplier has no Raw Material warehouse."))
-	if not doc.to_employee:
-		errors.append(_("To Employee is not selected."))
-	if not doc.to_warehouse:
-		errors.append(_("The To Employee's Department has no Raw Material warehouse."))
-
-	if doc.chain_supplier_warehouse:
-		for row in _source_rows(doc):
-			available = flt(
-				get_batch_qty(
-					batch_no=row.batch, warehouse=doc.chain_supplier_warehouse
-				)
+	work_wh = work_warehouse(doc)
+	if not work_wh:
+		errors.append(
+			_("The Supplier has no Raw Material warehouse.")
+			if is_subcontracted(doc)
+			else _("The To Employee has no Manufacturing warehouse.")
+		)
+	if not doc.source_warehouse:
+		errors.append(
+			_(
+				"The Employee's Department has no Raw Material warehouse to receive the "
+				"converted item into."
 			)
+		)
+
+	if work_wh:
+		for row in _source_rows(doc):
+			available = flt(get_batch_qty(batch_no=row.batch, warehouse=work_wh))
 			if flt(row.qty, precision) - available > _qty_unit(precision):
 				errors.append(
 					_("Batch {0} has only {1} of {2} in {3}; {4} was issued.").format(
 						frappe.bold(row.batch),
 						flt(available, precision),
 						doc.source_item,
-						doc.chain_supplier_warehouse,
+						work_wh,
 						flt(row.qty, precision),
 					)
 				)
@@ -752,7 +826,7 @@ def _metal_purity(item_code):
 
 
 def run_receive(doc):
-	"""Repack -> Process Loss (when there is one) -> transfer to the To Employee."""
+	"""Repack -> Process Loss (when there is one) -> return to the issuing department."""
 	precision = _precision()
 	target_qty = flt(doc.target_qty, precision)
 	loss_qty = flt(flt(doc.source_qty, precision) - target_qty, precision)
@@ -780,7 +854,7 @@ def run_receive(doc):
 			doc,
 			rows=loss_rows,
 			loss_qty=loss_qty,
-			source_wh=doc.chain_supplier_warehouse,
+			source_wh=work_warehouse(doc),
 		)
 		doc.db_set("chain_loss_stock_entry", loss)
 
@@ -792,10 +866,10 @@ def _lock_receive(doc, loss_qty):
 	"""Every counter, then every Bin, the Receive cascade will touch -- once, up front.
 
 	Receive mints up to three Stock Entry types. Pinned one entry at a time, the Process
-	Loss and Chain SC counters were taken after the Repack's Bins: with per-type counters
-	(``shard_stock_entry_naming_by_type``), a Receive holding a supplier Bin and waiting for
-	the Chain SC counter could cycle with an Issue holding that counter and waiting for the
-	Bin. ``preallocate_series_for_docs`` and ``lock_bins`` both sort what they are given.
+	Loss and return counters were taken after the Repack's Bins: with per-type counters
+	(``shard_stock_entry_naming_by_type``), a Receive holding a work-warehouse Bin and
+	waiting for a counter could cycle with a transfer holding that counter and waiting for
+	the Bin. ``preallocate_series_for_docs`` and ``lock_bins`` both sort what they are given.
 	"""
 	from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
 		CONVERSION_SE_TYPE,
@@ -806,12 +880,12 @@ def _lock_receive(doc, loss_qty):
 		series_stubs,
 	)
 
-	supplier_wh = doc.chain_supplier_warehouse
-	types = [CONVERSION_SE_TYPE, CHAIN_SC_SE_TYPE]
+	work_wh = work_warehouse(doc)
+	types = [CONVERSION_SE_TYPE, RETURN_SE_TYPE]
 	pairs = [
-		(doc.source_item, supplier_wh),
-		(doc.target_item, supplier_wh),
-		(doc.target_item, doc.to_warehouse),
+		(doc.source_item, work_wh),
+		(doc.target_item, work_wh),
+		(doc.target_item, doc.source_warehouse),
 	]
 	if loss_qty > 0:
 		from jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion import (
@@ -830,7 +904,7 @@ def _lock_receive(doc, loss_qty):
 
 
 def make_repack_stock_entry(doc, rows, target_qty):
-	"""Source batches -> Target Item, both inside the supplier's RM warehouse.
+	"""Source batches -> Target Item, both inside the work warehouse.
 
 	Built from the regular conversion's lane helpers, so the entry is a
 	"Repack-Metal Conversion" like any other: lane-tagged rows, priced by the lane pricer.
@@ -848,7 +922,7 @@ def make_repack_stock_entry(doc, rows, target_qty):
 	)
 
 	precision = _precision()
-	supplier_wh = doc.chain_supplier_warehouse
+	work_wh = work_warehouse(doc)
 
 	lanes = build_lanes(rows, get_batch_lane_map([row["batch"] for row in rows]))
 	if not lanes:
@@ -860,7 +934,7 @@ def make_repack_stock_entry(doc, rows, target_qty):
 	_series_stub.company = doc.company
 	_series_stub.stock_entry_type = CONVERSION_SE_TYPE
 	preallocate_series_for_docs(_series_stub)
-	lock_bins([(doc.source_item, supplier_wh), (doc.target_item, supplier_wh)])
+	lock_bins([(doc.source_item, work_wh), (doc.target_item, work_wh)])
 
 	se = frappe.get_doc(_conversion_header(doc, lanes))
 	common = {
@@ -878,11 +952,11 @@ def make_repack_stock_entry(doc, rows, target_qty):
 				lane_tag(lane["inventory_type"], lane["customer"], lane.get("batch")),
 				common,
 				source_item=doc.source_item,
-				source_wh=supplier_wh,
+				source_wh=work_wh,
 				alloy_item=None,
 				alloy_rows=[],
 				target_item=doc.target_item,
-				target_wh=supplier_wh,
+				target_wh=work_wh,
 				precision=precision,
 			),
 			precision,
@@ -900,9 +974,11 @@ def make_repack_stock_entry(doc, rows, target_qty):
 
 
 def make_final_transfer(doc, repack, target_qty):
-	"""Supplier RM -> To Employee's department RM, carrying the batch the Repack minted."""
+	"""Work warehouse -> the issuing department's RM warehouse, carrying the batch the
+	Repack minted (Gemstone Conversion's ``make_target_item_transfer_stock_entry``)."""
 	precision = _precision()
-	rows = _produced_batches(repack, doc.target_item, doc.chain_supplier_warehouse)
+	work_wh = work_warehouse(doc)
+	rows = _produced_batches(repack, doc.target_item, work_wh)
 	if not rows:
 		rows = [{"batch": None, "qty": target_qty}]
 	booked = flt(sum(flt(row["qty"]) for row in rows), precision)
@@ -914,10 +990,11 @@ def make_final_transfer(doc, repack, target_qty):
 		)
 	return _make_transfer(
 		doc,
+		se_type=RETURN_SE_TYPE,
 		item_code=doc.target_item,
-		rows=_sorted_allocations(doc.target_item, doc.chain_supplier_warehouse, rows),
-		from_wh=doc.chain_supplier_warehouse,
-		to_wh=doc.to_warehouse,
+		rows=_sorted_allocations(doc.target_item, work_wh, rows),
+		from_wh=work_wh,
+		to_wh=doc.source_warehouse,
 	)
 
 
@@ -952,7 +1029,9 @@ def _produced_batches(stock_entry, item_code, warehouse):
 	return out
 
 
-def _make_transfer(doc, *, item_code, rows, from_wh, to_wh):
+def _make_transfer(doc, *, se_type, item_code, rows, from_wh, to_wh, header=None):
+	"""A Material Transfer of ``rows`` of one item, typed ``se_type``; ``header`` adds
+	fields such as who receives it (``to_employee`` / ``subcontractor``)."""
 	from jewellery_erpnext.jewellery_erpnext.lock_order import (
 		lock_bins,
 		preallocate_series_for_docs,
@@ -961,14 +1040,14 @@ def _make_transfer(doc, *, item_code, rows, from_wh, to_wh):
 	precision = _precision()
 	_series_stub = frappe.new_doc("Stock Entry")
 	_series_stub.company = doc.company
-	_series_stub.stock_entry_type = CHAIN_SC_SE_TYPE
+	_series_stub.stock_entry_type = se_type
 	preallocate_series_for_docs(_series_stub)
 	lock_bins([(item_code, from_wh), (item_code, to_wh)])
 
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",
-			"stock_entry_type": CHAIN_SC_SE_TYPE,
+			"stock_entry_type": se_type,
 			"purpose": "Material Transfer",
 			"company": doc.company,
 			"branch": doc.branch,
@@ -977,6 +1056,7 @@ def _make_transfer(doc, *, item_code, rows, from_wh, to_wh):
 			"custom_metal_conversion_reference": doc.name,
 			"inventory_type": REGULAR_STOCK,
 			"auto_created": 1,
+			**(header or {}),
 		}
 	)
 	for row in rows:
@@ -1055,9 +1135,9 @@ def _lock_chain_entries(doc):
 	"""Every Bin the cancel cascade will touch, sorted, before the first entry is cancelled.
 
 	Each entry's own cancel orders only its own Bins, so across the four the sequence was
-	unsorted: a Cancel holding the supplier Bin and reaching for the department Bin could
-	cycle with an Issue of the same item going the other way. Cancel mints no names, so
-	there is no counter to pin.
+	unsorted: a Cancel holding the work-warehouse Bin and reaching for the department Bin
+	could cycle with an Issue of the same item going the other way. Cancel mints no names,
+	so there is no counter to pin.
 	"""
 	from jewellery_erpnext.jewellery_erpnext.lock_order import lock_bins
 
@@ -1089,7 +1169,8 @@ def _cancel_stock_entry(name):
 
 
 def guard_trash(doc):
-	"""Refuse to delete a conversion while its Issue keeps metal at the supplier.
+	"""Refuse to delete a conversion while its Issue keeps metal with the employee or
+	supplier.
 
 	A cancelled conversion, and one whose Issue entry is no longer submitted, may go.
 	"""
@@ -1102,8 +1183,8 @@ def guard_trash(doc):
 		return
 	frappe.throw(
 		_(
-			"This conversion has issued metal to the supplier in {0}. Receive it, or ask a "
-			"System Manager to use Cancel Issue, before deleting it."
+			"This conversion has issued metal in {0}. Receive it, or ask a System Manager "
+			"to use Cancel Issue, before deleting it."
 		).format(frappe.bold(doc.chain_issue_stock_entry)),
 		title=_("Already Issued"),
 	)

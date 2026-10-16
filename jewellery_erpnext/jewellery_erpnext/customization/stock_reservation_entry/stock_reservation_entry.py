@@ -1,9 +1,48 @@
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	StockReservationEntry,
 )
+from frappe import _
+from frappe.utils import cstr
+
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	bold,
+	owner_of,
+	report,
+	same,
+)
 
 
 class CustomStockReservationEntry(StockReservationEntry):
+	def validate(self) -> None:
+		super().validate()
+		self.validate_work_order_owns_operation()
+
+	def validate_work_order_owns_operation(self) -> None:
+		"""A work-order reservation must be keyed to the work order that OWNS its operation.
+
+		Make Receive Entry lists reservations by ``manufacturing_work_order`` alone, so an entry keyed
+		(sibling work order, this operation) hands one work order's stock to the other -- which is how two
+		Make Receive Entries consumed a sibling's reservation (see ``doc_events/mwo_mop_link``). Core
+		ERPNext reservations carry neither field and are untouched, and an operation that cannot be
+		resolved is left alone (both fields are plain Data). Runs on insert, save and submit; warn mode
+		(``mwo_mop_link_guard``) logs instead of raising.
+		"""
+		mop = cstr(self.get("manufacturing_operation")).strip()
+		mwo = cstr(self.get("manufacturing_work_order")).strip()
+		if not (mop and mwo):
+			return
+		owner = owner_of(mop)
+		if owner and not same(owner, mwo):
+			report(
+				[
+					_(
+						"Operation {0} belongs to work order {1}, not {2}: a reservation must be keyed to "
+						"the work order that owns its operation."
+					).format(bold(mop), bold(owner), bold(mwo))
+				],
+				doc=self,
+			)
+
 	def auto_reserve_serial_and_batch(self, based_on: str | None = None) -> None:
 		# MWO + MOP flow pre-populates sb_entries with the exact operator-picked
 		# batch in stock_reservation_entry_for_mwo (doc_events/stock_entry.py).

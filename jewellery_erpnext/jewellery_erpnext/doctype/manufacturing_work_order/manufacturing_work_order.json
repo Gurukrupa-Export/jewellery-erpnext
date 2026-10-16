@@ -185,7 +185,8 @@
   {
    "fieldname": "start_datetime",
    "fieldtype": "Datetime",
-   "label": "Start Time"
+   "label": "Start Time",
+   "no_copy": 1
   },
   {
    "fetch_from": "manufacturing_order.qty",
@@ -576,6 +577,7 @@
    "fieldname": "manufacturing_operation",
    "fieldtype": "Link",
    "label": "Manufacturing Operation",
+   "no_copy": 1,
    "options": "Manufacturing Operation",
    "read_only": 1
   },
@@ -770,7 +772,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-10-12 18:00:00.000000",
+ "modified": "2026-10-13 18:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

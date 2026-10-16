@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.core.doctype.submission_queue.submission_queue import SubmissionQueue
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 from frappe.types.frappedict import _dict as FrappeDict
-from frappe.utils import add_to_date, now_datetime
+from frappe.utils import add_to_date, flt, now_datetime
 
 from jewellery_erpnext.jewellery_erpnext import lock_order
 from jewellery_erpnext.jewellery_erpnext.customization.submission_queue.submission_queue import (
@@ -19,8 +19,17 @@ from jewellery_erpnext.jewellery_erpnext.customization.submission_queue.submissi
 from jewellery_erpnext.jewellery_erpnext.doc_events import (
 	current_operation_guard as guard,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events import mwo_mop_link
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	CURRENT_OPERATION_GUARD_KEY,
+	GUARD_KEY,
+	MWOMOPLinkError,
+	refetch_from_work_order,
+	set_current_operation,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.test_department_ir import (
 	mo_creation,
+	other_work_order,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_employee_ir_receive_delay,
@@ -1051,6 +1060,10 @@ def _warm_frappe_caches():
 	frappe.format(now_datetime(), {"fieldtype": "Datetime"})
 	frappe.utils.flt(1.23456, 3)
 	frappe.utils.now()
+	# The controllers' work order / operation lookups (mwo_mop_link) read through frappe.get_all,
+	# which loads the meta through frappe.db.get_value on a cold cache.
+	frappe.get_meta("Manufacturing Operation")
+	frappe.get_meta("Manufacturing Work Order")
 
 
 def _rec(calls, label, result=None, raises=None):
@@ -5542,3 +5555,565 @@ class TestEODStaleCurrentOperationHold(IntegrationTestCase):
 		self.assertIs(result, _Stop)
 		find_last.assert_called_once()
 		self.assertEqual((failures, stats["failed_mwos"], items), ([], 0, []))
+
+
+# ----------------------------------------------------------------------------------------------
+# Work order <-> operation link integrity (doc_events/mwo_mop_link.py)
+#
+# On kggk_uat the current-operation guard already refuses an operation row whose operation belongs
+# to another work order (same message as mwo_mop_link) and already checks the Receive state, so the
+# guard's rules get one refusal on insert and one on submit here and no more. What this branch adds
+# on top: the read-only work order cell re-derived on every draft save (and a blank one filled), the
+# fields fetched FROM it refetched, the loss-row rule, and the current-operation pointer written on
+# the operation's OWNER.
+# ----------------------------------------------------------------------------------------------
+
+EIR_DEPARTMENT = "Waxing - T"
+EIR_OPERATION = "Wax Pull Out"
+EIR_EMPLOYEE = "HR-EMP-00001"
+# Warn-mode Error Log titles: mwo_mop_link.report's and the current-operation guard's, each
+# "<prefix> <doctype> <document name>". "current_operation_guard": "warn" switches both.
+LINK_LOG_PREFIXES = (
+	"MWO-MOP link guard (warn mode):",
+	"Current operation guard (warn mode):",
+)
+EIR_CHAIN_SAVEPOINT = "mwo_mop_link_eir_chain"
+EIR_TEST_SAVEPOINT = "mwo_mop_link_eir_test"
+
+
+def issued_operation_chain(holder):
+	"""The current operation of a fresh work order (``create_pmo`` first, see ``mo_creation``), moved
+	from Manufacturing Plan & Management to Waxing (a Department Issue and its Receive) and then
+	issued to ``EIR_EMPLOYEE`` at ``EIR_OPERATION``.
+
+	Returns ``frappe._dict(mwo, mop, other_mwo)``: ``mop`` is ``mwo``'s WIP operation in Waxing --
+	its current one -- and ``other_mwo`` a sibling work order of the same PMO: the shape of the
+	production defect, where a row paired an operation with its sibling's work order. Nothing here
+	commits.
+	"""
+	# A Receive may follow the Issue at once (TestEmployeeIR sets a 5-minute delay on this
+	# operation and leaves it behind).
+	frappe.db.set_value(
+		"Department Operation", EIR_OPERATION, "employee_ir_receive_delay", 0
+	)
+	mo = mo_creation()
+	dir_issue = dir_for_issue("Manufacturing Plan & Management - T", EIR_DEPARTMENT, mo)
+	dir_for_receive(dir_issue)
+	mop = frappe.db.get_value(
+		"Manufacturing Operation",
+		{"department_issue_id": dir_issue.name, "previous_mop": mo.name},
+		"name",
+	)
+
+	issue = frappe.new_doc("Employee IR")
+	issue.company = "Test_Company"
+	issue.type = "Issue"
+	issue.department = EIR_DEPARTMENT
+	issue.operation = EIR_OPERATION
+	issue.employee = EIR_EMPLOYEE
+	issue.scan_mwo = mo.manufacturing_work_order
+	scan_mwo_eir(issue)
+	issue.save()
+	issue.submit()
+
+	return frappe._dict(
+		mwo=mo.manufacturing_work_order,
+		mop=mop,
+		other_mwo=other_work_order(holder, mo),
+	)
+
+
+def _receive(chain, mwo):
+	"""An UNSAVED Employee IR Receive of the chain's operation, received at its full weight (no
+	loss, no gain), its row carrying work order ``mwo`` (``None`` for a blank cell).
+
+	``gross_wt`` is set the way the desk row carries it: an insert without link validation does
+	not fetch it, and validate_duplication_and_gr_wt compares it before refreshing it."""
+	gross_wt = flt(
+		frappe.db.get_value("Manufacturing Operation", chain.mop, "gross_wt")
+	)
+	doc = frappe.new_doc("Employee IR")
+	doc.company = "Test_Company"
+	doc.type = "Receive"
+	doc.department = EIR_DEPARTMENT
+	doc.operation = EIR_OPERATION
+	doc.employee = EIR_EMPLOYEE
+	doc.append(
+		"employee_ir_operations",
+		{
+			"manufacturing_operation": chain.mop,
+			"manufacturing_work_order": mwo,
+			"gross_wt": gross_wt,
+			"received_gross_wt": gross_wt,
+			"rpt_wt_issue": 0,
+		},
+	)
+	return doc
+
+
+def _eir_row_mwo(doc):
+	return frappe.db.get_value(
+		"Employee IR Operation",
+		doc.employee_ir_operations[0].name,
+		"manufacturing_work_order",
+	)
+
+
+def _pointer(mwo):
+	return frappe.db.get_value(
+		"Manufacturing Work Order", mwo, "manufacturing_operation"
+	)
+
+
+def _successor(mop, employee_ir):
+	return frappe.db.get_value(
+		"Manufacturing Operation",
+		{"previous_mop": mop, "employee_ir": employee_ir},
+		"name",
+	)
+
+
+def _link_logs():
+	"""The Error Log entries a mismatched row can leave: both guards' warn-mode notes and, when such
+	a row reaches the ledger, MOP Log's note that it re-derived the stamp."""
+	return set(
+		frappe.get_all(
+			"Error Log",
+			or_filters=[
+				*(["method", "like", f"{prefix}%"] for prefix in LINK_LOG_PREFIXES),
+				["method", "=", mop_log_module.FOREIGN_STAMP_LOG_TITLE],
+			],
+			pluck="name",
+		)
+	)
+
+
+def _log_texts(names):
+	if not names:
+		return []
+	return frappe.get_all(
+		"Error Log", filters={"name": ("in", sorted(names))}, pluck="error"
+	)
+
+
+def _drop_link_logs_since(before):
+	"""Error Log is MyISAM: rolling back leaves its rows behind, so a test deletes what it wrote."""
+	for name in _link_logs() - before:
+		frappe.db.delete("Error Log", {"name": name})
+
+
+class TestEmployeeIRWorkOrderOperationLink(IntegrationTestCase):
+	"""An Employee IR row must carry the work order that OWNS its operation, and the successor a
+	Receive mints is pointed to from that owner -- never from the row's work order.
+
+	One chain (see ``issued_operation_chain``) is built per class. IntegrationTestCase would
+	register a class rollback in setUpClass, but every class in this module skips that bootstrap
+	(it builds ERPNext masters these suites do not need) and ``bench run-tests`` commits whatever is
+	left when the run ends. ``create_pmo`` itself COMMITS -- gke_customization's Timesheet and Order
+	hooks call frappe.db.commit() while the Sales Order behind the PMO is built -- so the PMO
+	persists, like every create_pmo fixture in these modules, and the class SAVEPOINT is taken right
+	after it: the rest of the chain is rolled back by the class cleanup, and every test runs inside a
+	SAVEPOINT of its own. Nothing on the Employee IR / Department IR paths commits, so both survive
+	until they are rolled back.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		cls.warehouse = frappe.get_value(
+			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
+		)
+		# An EOD lock leaked by another suite on a shared site would refuse every save here.
+		eod = patch(f"{_EOD_LOCK_MODULE}.is_eod_sync_locked", return_value=False)
+		eod.start()
+		cls.addClassCleanup(eod.stop)
+		create_pmo(cls)
+		frappe.db.savepoint(EIR_CHAIN_SAVEPOINT)
+		cls.addClassCleanup(frappe.db.rollback, save_point=EIR_CHAIN_SAVEPOINT)
+		cls.chain = issued_operation_chain(cls)
+
+	def setUp(self):
+		super().setUp()
+		frappe.db.savepoint(EIR_TEST_SAVEPOINT)
+		self.addCleanup(frappe.db.rollback, save_point=EIR_TEST_SAVEPOINT)
+		self.addCleanup(frappe.clear_messages)
+
+	# -- the row rule ---------------------------------------------------------------------------
+
+	def test_row_with_another_work_order_is_refused_on_insert(self):
+		"""Without link validation -- an import or API write that skips fetch_from -- the row keeps
+		the sibling's work order, and on this branch the current-operation guard refuses it."""
+		doc = _receive(self.chain, self.chain.other_mwo)
+		with self.assertRaises(guard.CurrentOperationError) as cm:
+			doc.insert(ignore_links=True)
+		message = str(cm.exception)
+		self.assertIn("belongs to work order", message)
+		self.assertIn(self.chain.mwo, message)
+		self.assertIn(self.chain.other_mwo, message)
+
+	def test_draft_save_takes_the_work_order_from_the_operation(self):
+		"""The row's work order is a read-only fetch_from WITHOUT fetch_if_empty, so every draft save
+		re-derives it from the operation: a foreign value posted with the row does not survive. Nor
+		does the finding flag fetched from it: Frappe fetches it from the POSTED work order before the
+		operation's fetch replaces that work order, so before_validate reads it again from the owner
+		(here the sibling is made a finding work order, the owner is not)."""
+		owner_flag = frappe.db.get_value(
+			"Manufacturing Work Order", self.chain.mwo, "is_finding_mwo"
+		)
+		self.assertFalse(owner_flag)
+		frappe.db.set_value(
+			"Manufacturing Work Order", self.chain.other_mwo, "is_finding_mwo", 1
+		)
+		frappe.db.value_cache.clear()
+		doc = _receive(self.chain, self.chain.other_mwo)
+		doc.insert()
+		self.assertEqual(_eir_row_mwo(doc), self.chain.mwo)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Employee IR Operation",
+				doc.employee_ir_operations[0].name,
+				"is_finding_mwo",
+			),
+			0,
+		)
+
+	def test_row_tampered_after_save_is_refused_on_submit(self):
+		"""fetch_from is not re-applied on the submit transition, so a row re-pointed after its last
+		save reaches the guard as it is -- and is refused before any side effect."""
+		doc = _receive(self.chain, self.chain.mwo)
+		doc.insert()
+		frappe.db.set_value(
+			"Employee IR Operation",
+			doc.employee_ir_operations[0].name,
+			"manufacturing_work_order",
+			self.chain.other_mwo,
+		)
+		with self.assertRaises(guard.CurrentOperationError) as cm:
+			frappe.get_doc("Employee IR", doc.name).submit()
+		self.assertIn("belongs to work order", str(cm.exception))
+		self.assertIn(self.chain.other_mwo, str(cm.exception))
+		self.assertEqual(
+			frappe.db.get_value("Manufacturing Operation", self.chain.mop, "status"),
+			"WIP",
+		)
+		self.assertFalse(_successor(self.chain.mop, doc.name))
+
+	def test_client_copy_with_another_work_order_is_refused_on_submit(self):
+		"""Desk -- and the Submission Queue worker after it -- submits the CLIENT's copy of the
+		document. A cell re-pointed in the browser never reached the database and is refused all the
+		same."""
+		doc = _receive(self.chain, self.chain.mwo)
+		doc.insert()
+		payload = frappe.get_doc("Employee IR", doc.name).as_dict()
+		payload["employee_ir_operations"][0][
+			"manufacturing_work_order"
+		] = self.chain.other_mwo
+		with self.assertRaises(guard.CurrentOperationError):
+			frappe.get_doc(payload).submit()
+		self.assertEqual(_eir_row_mwo(doc), self.chain.mwo)
+
+	def test_blank_work_order_is_filled_from_the_operation(self):
+		"""A row that arrives with only its operation gets the operation's own work order. Inserted
+		without link validation, so it is the controller -- not fetch_from -- that fills it (the
+		guard judges such a row by its operation's work order but does not write it)."""
+		doc = _receive(self.chain, None)
+		doc.insert(ignore_links=True)
+		self.assertEqual(_eir_row_mwo(doc), self.chain.mwo)
+
+	def test_manual_loss_row_with_another_work_order_is_refused(self):
+		"""A loss row reaches the operation's ledger only through the operation row with the SAME
+		pair (update_new_mop_wtg), so a manual loss row naming a sibling's work order would post its
+		loss entry and never reach the ledger. The guard does not read the loss tables; this rule
+		does."""
+		doc = _receive(self.chain, self.chain.mwo)
+		doc.append(
+			"manually_book_loss_details",
+			{
+				"manufacturing_operation": self.chain.mop,
+				"manufacturing_work_order": self.chain.other_mwo,
+			},
+		)
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			doc.insert(ignore_links=True)
+		message = str(cm.exception)
+		self.assertIn("Manually Book Loss Details", message)
+		self.assertIn(self.chain.mwo, message)
+		self.assertIn(self.chain.other_mwo, message)
+
+	# -- the current-operation pointer ----------------------------------------------------------
+
+	def test_receive_points_the_operation_owner_at_the_successor(self):
+		doc = _receive(self.chain, self.chain.mwo)
+		doc.insert()
+		with patch(
+			f"{_EIR_MODULE}.set_current_operation", wraps=set_current_operation
+		) as pointer_write:
+			frappe.get_doc("Employee IR", doc.name).submit()
+
+		successor = _successor(self.chain.mop, doc.name)
+		self.assertTrue(successor)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Manufacturing Operation", successor, "manufacturing_work_order"
+			),
+			self.chain.mwo,
+		)
+		self.assertEqual(_pointer(self.chain.mwo), successor)
+		pointer_write.assert_called_once()
+		self.assertEqual(pointer_write.call_args.args[0], successor)
+		self.assertEqual(
+			pointer_write.call_args.kwargs.get("expected_mwo"), self.chain.mwo
+		)
+
+	def test_receive_cancel_points_the_owner_back_at_the_received_operation(self):
+		"""kggk_uat keeps the successor as Revert history instead of deleting it; the pointer goes
+		back to the received operation, on that operation's owner. ``cancel_loss_stock_entries`` is
+		stubbed: this receive booked no loss, and its SRE restore reads a column a site may lack (see
+		the Employee Receive cancels in tests/test_current_operation_guard.py)."""
+		doc = _receive(self.chain, self.chain.mwo)
+		doc.insert()
+		frappe.get_doc("Employee IR", doc.name).submit()
+		successor = _successor(self.chain.mop, doc.name)
+		self.assertEqual(_pointer(self.chain.mwo), successor)
+
+		with (
+			patch(f"{_EIR_MODULE}.cancel_loss_stock_entries"),
+			patch(
+				f"{_EIR_MODULE}.set_current_operation", wraps=set_current_operation
+			) as pointer_write,
+		):
+			frappe.get_doc("Employee IR", doc.name).cancel()
+
+		self.assertEqual(_pointer(self.chain.mwo), self.chain.mop)
+		pointer_write.assert_called_once()
+		self.assertEqual(pointer_write.call_args.args[0], self.chain.mop)
+		self.assertEqual(
+			pointer_write.call_args.kwargs.get("expected_mwo"), self.chain.mwo
+		)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Manufacturing Operation",
+				successor,
+				["department_ir_status", "status"],
+			),
+			("Revert", "Not Started"),
+		)
+
+	def test_warn_mode_receive_still_points_the_owner_not_the_rows_work_order(self):
+		"""The production defect end to end: a Receive whose row carries a sibling's work order. The
+		kill switch ("current_operation_guard": "warn", which relaxes mwo_mop_link too on this branch)
+		lets it through, logged, yet the successor is pointed to from the operation's OWNER and the
+		sibling's pointer is left alone -- the old code moved the sibling's pointer and left the owner
+		on its Finished operation."""
+		doc = _receive(self.chain, self.chain.mwo)
+		doc.insert()
+		frappe.db.set_value(
+			"Employee IR Operation",
+			doc.employee_ir_operations[0].name,
+			"manufacturing_work_order",
+			self.chain.other_mwo,
+		)
+		sibling_pointer = _pointer(self.chain.other_mwo)
+		before = _link_logs()
+		self.addCleanup(_drop_link_logs_since, before)
+
+		with patch.dict(frappe.local.conf, {CURRENT_OPERATION_GUARD_KEY: "warn"}):
+			frappe.get_doc("Employee IR", doc.name).submit()
+
+		successor = _successor(self.chain.mop, doc.name)
+		self.assertTrue(successor)
+		self.assertEqual(_pointer(self.chain.mwo), successor)
+		self.assertEqual(_pointer(self.chain.other_mwo), sibling_pointer)
+		self.assertTrue(
+			any(
+				"refusing to move the current operation" in text
+				for text in _log_texts(_link_logs() - before)
+			)
+		)
+
+
+def _enforcing():
+	"""Neither kill switch in warn mode, whatever the site's config says."""
+	return patch.dict(
+		frappe.local.conf,
+		{GUARD_KEY: "enforce", CURRENT_OPERATION_GUARD_KEY: "enforce"},
+	)
+
+
+class TestLossRowsNameTheOperationsOwnWorkOrder(UnitTestCase):
+	"""EmployeeIR.validate_loss_work_orders: both loss tables are held to the operation rows' rule,
+	each problem named with its table. The owner lookup is stubbed; no database."""
+
+	OWNERS = "jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link.mop_owners"
+
+	@staticmethod
+	def _row(idx, mop, mwo):
+		return FrappeDict(
+			idx=idx, manufacturing_operation=mop, manufacturing_work_order=mwo
+		)
+
+	def test_rows_of_another_work_order_are_refused_per_table(self):
+		doc = FrappeDict(
+			manually_book_loss_details=[self._row(1, "MOP-A", "MWO-B")],
+			employee_loss_details=[
+				self._row(1, "MOP-A", "MWO-A"),
+				# Matched case-insensitively, as MariaDB matches the operation.
+				self._row(2, "mop-a", "MWO-C"),
+			],
+		)
+		with _enforcing(), patch(self.OWNERS, return_value={"MOP-A": "MWO-A"}):
+			with self.assertRaises(MWOMOPLinkError) as cm:
+				EmployeeIR.validate_loss_work_orders(doc)
+		message = str(cm.exception)
+		self.assertIn("Manually Book Loss Details: Row 1:", message)
+		self.assertIn("Employee Loss Details: Row 2:", message)
+		self.assertIn("MWO-B", message)
+		self.assertIn("MWO-C", message)
+		self.assertNotIn("Employee Loss Details: Row 1:", message)
+
+	def test_consistent_and_blank_rows_pass_untouched(self):
+		"""A blank work order is not filled here: the manual table requires one, and the automatic
+		table is always written with one."""
+		blank = self._row(2, "MOP-A", None)
+		doc = FrappeDict(
+			manually_book_loss_details=[self._row(1, "MOP-A", "mwo-a"), blank],
+			employee_loss_details=[],
+		)
+		with _enforcing(), patch(self.OWNERS, return_value={"MOP-A": "MWO-A"}):
+			EmployeeIR.validate_loss_work_orders(doc)
+		self.assertIsNone(blank.manufacturing_work_order)
+
+	def test_the_current_operation_guards_warn_switch_relaxes_it_too(self):
+		"""On this branch one switch relaxes every work order / operation check: with
+		"current_operation_guard": "warn" the loss-row rule logs instead of refusing."""
+		doc = FrappeDict(
+			doctype="Employee IR",
+			name="EIR-T-0001",
+			manually_book_loss_details=[self._row(1, "MOP-A", "MWO-B")],
+			employee_loss_details=[],
+		)
+		with (
+			patch.dict(
+				frappe.local.conf,
+				{GUARD_KEY: "enforce", CURRENT_OPERATION_GUARD_KEY: "warn"},
+			),
+			patch(self.OWNERS, return_value={"MOP-A": "MWO-A"}),
+			patch.object(mwo_mop_link.frappe, "log_error") as log_error,
+			patch.object(mwo_mop_link.frappe, "msgprint"),
+		):
+			EmployeeIR.validate_loss_work_orders(doc)
+		log_error.assert_called_once()
+		self.assertIn(
+			"Manually Book Loss Details: Row 1:", log_error.call_args.kwargs["message"]
+		)
+
+
+class TestSetCurrentOperationWithoutAnOwner(UnitTestCase):
+	"""mwo_mop_link.set_current_operation for an operation with no owner -- missing, or saved without a
+	work order. It goes through ``report`` like every other check, so the kill switch covers it, and
+	the message says which of the two it is. The database seams are stubbed."""
+
+	@staticmethod
+	def _call(owner=None, exists=True, warn=False, expected_mwo="MWO-ROW"):
+		# Warn through the current-operation guard's switch: on this branch it relaxes this too.
+		conf = {
+			GUARD_KEY: "enforce",
+			CURRENT_OPERATION_GUARD_KEY: "warn" if warn else "enforce",
+		}
+		with (
+			patch.dict(frappe.local.conf, conf),
+			patch.object(mwo_mop_link, "owner_of", return_value=owner),
+			patch.object(mwo_mop_link.frappe.db, "exists", return_value=exists),
+			patch.object(mwo_mop_link.frappe.db, "set_value") as set_value,
+			patch.object(mwo_mop_link.frappe, "log_error") as log_error,
+			patch.object(mwo_mop_link.frappe, "msgprint"),
+		):
+			result = set_current_operation(
+				"MOP-NEW",
+				expected_mwo=expected_mwo,
+				doc=FrappeDict(doctype="Employee IR"),
+			)
+		return result, set_value, log_error
+
+	def test_an_operation_without_a_work_order_is_refused_and_named_as_such(self):
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			self._call(exists=True)
+		self.assertIn("has no work order", str(cm.exception))
+		self.assertIn("MOP-NEW", str(cm.exception))
+
+	def test_a_missing_operation_is_refused_and_named_as_such(self):
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			self._call(exists=False)
+		self.assertIn("does not exist", str(cm.exception))
+
+	def test_warn_mode_logs_and_points_the_callers_work_order_as_before(self):
+		result, set_value, log_error = self._call(warn=True)
+		self.assertEqual(result, "MWO-ROW")
+		set_value.assert_called_once_with(
+			"Manufacturing Work Order", "MWO-ROW", "manufacturing_operation", "MOP-NEW"
+		)
+		log_error.assert_called_once()
+		self.assertIn("has no work order", log_error.call_args.kwargs["message"])
+
+	def test_warn_mode_without_a_callers_work_order_writes_nothing(self):
+		result, set_value, log_error = self._call(warn=True, expected_mwo=None)
+		self.assertIsNone(result)
+		set_value.assert_not_called()
+		log_error.assert_called_once()
+
+	def test_an_owned_operation_still_points_its_owner(self):
+		result, set_value, log_error = self._call(
+			owner="MWO-OWNER", expected_mwo="mwo-owner"
+		)
+		self.assertEqual(result, "MWO-OWNER")
+		set_value.assert_called_once_with(
+			"Manufacturing Work Order",
+			"MWO-OWNER",
+			"manufacturing_operation",
+			"MOP-NEW",
+		)
+		log_error.assert_not_called()
+
+
+class TestRefetchFromWorkOrder(UnitTestCase):
+	"""mwo_mop_link.refetch_from_work_order re-reads the fields an IR row fetches FROM its work order,
+	once the row's work order is final. One query; rows without a work order, or with one that does
+	not exist, are left alone; names match case-insensitively."""
+
+	def test_fields_follow_the_rows_final_work_order(self):
+		owner = FrappeDict(idx=1, manufacturing_work_order="MWO-A", is_finding_mwo=1)
+		other_case = FrappeDict(
+			idx=2, manufacturing_work_order="mwo-b", is_finding_mwo=0
+		)
+		blank = FrappeDict(idx=3, manufacturing_work_order=None, is_finding_mwo=1)
+		unknown = FrappeDict(
+			idx=4, manufacturing_work_order="MWO-GONE", is_finding_mwo=1
+		)
+		answer = [
+			FrappeDict(name="MWO-A", is_finding_mwo=0),
+			FrappeDict(name="MWO-B", is_finding_mwo=1),
+		]
+		with patch.object(
+			mwo_mop_link.frappe, "get_all", return_value=answer
+		) as get_all:
+			refetch_from_work_order(
+				[owner, other_case, blank, unknown],
+				{"is_finding_mwo": "is_finding_mwo"},
+			)
+		get_all.assert_called_once()
+		self.assertEqual(
+			sorted(get_all.call_args.kwargs["filters"]["name"][1]),
+			["MWO-A", "MWO-GONE", "mwo-b"],
+		)
+		self.assertEqual(
+			[row.is_finding_mwo for row in (owner, other_case, blank, unknown)],
+			[0, 1, 1, 1],
+		)
+
+	def test_no_row_with_a_work_order_runs_no_query(self):
+		with patch.object(mwo_mop_link.frappe, "get_all") as get_all:
+			refetch_from_work_order(
+				[FrappeDict(manufacturing_work_order="")],
+				{"is_finding_mwo": "is_finding_mwo"},
+			)
+		get_all.assert_not_called()

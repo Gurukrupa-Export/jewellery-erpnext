@@ -35,6 +35,12 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	PROCESS_LOSS_SE_TYPE,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	check_rows,
+	refetch_from_work_order,
+	report,
+	set_current_operation,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
 	get_blocked_finding_batches,
 	is_customer_goods_finding_blocked,
@@ -234,8 +240,21 @@ class EmployeeIR(Document):
 		# already took its Tree / Series / Bin pre-locks -- in check_if_latest, or in
 		# before_insert for a REST insert-and-submit -- so the guard may take its block now.)
 		current_operation_guard.on_before_validate(self)
+		# A row that arrived with only its operation gets that operation's own work order (an
+		# insert without link validation skips fetch_from), on every path the guard covers and
+		# before anything below or in validate reads a row's work order. A row naming ANOTHER
+		# work order is the guard's to judge -- refused above, or logged in its warn mode -- so
+		# check_rows' messages are not reported a second time. See doc_events/mwo_mop_link.py.
+		check_rows(self.employee_ir_operations)
 		if self.docstatus != 0:
 			return
+		# The row's work order has just been re-fetched from its operation, but is_finding_mwo was
+		# fetched BEFORE that, from the work order the client posted (Frappe validates the row's
+		# links in field order). Read it again from the final work order before validate_mwo
+		# relies on it below.
+		refetch_from_work_order(
+			self.employee_ir_operations, {"is_finding_mwo": "is_finding_mwo"}
+		)
 		warehouse = frappe.db.get_value(
 			"Warehouse",
 			{
@@ -264,6 +283,9 @@ class EmployeeIR(Document):
 		# self.update_main_slip()
 		round_employee_ir_weights_to_precision(self)
 		self.validate_process_loss()
+		# After validate_process_loss, which rebuilds the automatic loss table of a draft from
+		# the operation rows.
+		self.validate_loss_work_orders()
 		validate_manually_book_loss_details(self)
 		validate_loss_rows_against_gate(self)
 		# NOTE: no material-gate check here, deliberately. The blanket
@@ -291,6 +313,26 @@ class EmployeeIR(Document):
 		validate_finding_repack(self)
 		self.validate_fg_bom_fields()
 		self.set_repeat_receive_flag()
+
+	def validate_loss_work_orders(self):
+		"""Loss rows pair an operation with a work order too, and must name the operation's OWN one.
+
+		update_new_mop_wtg applies a loss row only to the operation row with the same (operation,
+		work order) pair, so a loss row naming another work order -- typed into the manual table,
+		or posted by a client -- would still post its Process Loss entry yet never reach the
+		operation's ledger. A blank work order is left as it is: book_metal_loss always sets one
+		and the manual table requires it. The current-operation guard checks only the operation
+		rows, so this is the one check on the loss tables. See doc_events/mwo_mop_link.py.
+		"""
+		problems = []
+		for label, table in (
+			(_("Manually Book Loss Details"), self.manually_book_loss_details),
+			(_("Employee Loss Details"), self.employee_loss_details),
+		):
+			problems += [
+				f"{label}: {problem}" for problem in check_rows(table, fill_blank=False)
+			]
+		report(problems, doc=self)
 
 	def set_repeat_receive_flag(self):
 		"""Stamp ``is_repeat_receive`` and clear a Worker Performance that no longer applies.
@@ -588,11 +630,13 @@ class EmployeeIR(Document):
 					gross_wt=row.gross_wt,
 				)
 
-				frappe.db.set_value(
-					"Manufacturing Work Order",
-					row.manufacturing_work_order,
-					"manufacturing_operation",
+				# The successor is a copy of the row's operation, so it belongs to THAT operation's
+				# work order: point the owner at it. Writing row.manufacturing_work_order moved a
+				# sibling's pointer and left the real owner stuck on its Finished operation.
+				set_current_operation(
 					new_operation.name,
+					expected_mwo=row.manufacturing_work_order,
+					doc=self,
 				)
 				time_log_args.append(
 					(row.manufacturing_operation, {**res, "complete_time": curr_time})
@@ -683,11 +727,12 @@ class EmployeeIR(Document):
 				):
 					frappe.get_doc("Stock Reservation Entry", sre).cancel()
 
-				frappe.db.set_value(
-					"Manufacturing Work Order",
-					row.manufacturing_work_order,
-					"manufacturing_operation",
+				# Back to the row's operation, on the work order that owns it (see the submit
+				# branch above); the successor kept below as Revert history has the same owner.
+				set_current_operation(
 					row.manufacturing_operation,
+					expected_mwo=row.manufacturing_work_order,
+					doc=self,
 				)
 				# The next operation this IR created is left in place on cancel, not deleted: once
 				# later IRs have worked it, logs, stock entries and the following operation point at
@@ -2137,11 +2182,11 @@ def get_fg_bom_fields(operations):
 def _resolve_work_orders(operations):
 	"""Work order names for ``employee_ir_operations`` rows, in one round trip.
 
-	``manufacturing_work_order`` is ``fetch_from`` + ``fetch_if_empty`` on the child
-	row, so a freshly scanned or mapped row can reach us carrying only its
-	Manufacturing Operation. Rows like that are resolved through their MOP rather
-	than skipped -- dropping them would silently hide the field on exactly the
-	entries a shop-floor user creates by scanning.
+	``manufacturing_work_order`` is a read-only ``fetch_from`` of the operation on the
+	child row, filled in by the server on save, so a freshly scanned or mapped row can
+	reach us carrying only its Manufacturing Operation. Rows like that are resolved
+	through their MOP rather than skipped -- dropping them would silently hide the
+	field on exactly the entries a shop-floor user creates by scanning.
 	"""
 	mwos = set()
 	missing_mops = set()

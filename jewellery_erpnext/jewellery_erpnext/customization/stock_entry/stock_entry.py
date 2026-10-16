@@ -4,7 +4,7 @@ import json
 import frappe
 from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 # from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
 # 	BatchValuationLedger,
@@ -39,6 +39,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation impo
 	release_derived_outputs,
 	settle_derived_outputs,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import owner_of, same
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
 	custom_get_scrap_items_from_job_card,
@@ -60,6 +61,10 @@ def set_manufacturing_refs(self):
 	moving pointer (Employee IR / Department IR re-point it as work advances), so
 	overwriting would silently rewrite a deliberately older operation.
 
+	The operation is filled only from a pointer the work order can vouch for -- see
+	``_own_current_operation``. Otherwise it stays blank for the user to pick, rather
+	than booking the entry to another work order's operation.
+
 	All three are Custom Fields, so read them through getattr -- a doc built without
 	them must be a no-op here, never an AttributeError that aborts the whole save.
 	"""
@@ -75,14 +80,29 @@ def set_manufacturing_refs(self):
 	mwo = frappe.db.get_value(
 		"Manufacturing Work Order",
 		mwo_name,
-		["manufacturing_order", "manufacturing_operation"],
+		["manufacturing_order", "manufacturing_operation", "docstatus"],
 		as_dict=True,
 	)
 	if not mwo:
 		return
 
 	self.manufacturing_order = pmo or mwo.manufacturing_order
-	self.manufacturing_operation = mop or mwo.manufacturing_operation
+	self.manufacturing_operation = mop or _own_current_operation(mwo_name, mwo)
+
+
+def _own_current_operation(mwo_name, mwo):
+	"""The work order's pointer, but only when it is submitted and the pointer is one of its OWN operations.
+
+	A draft work order has no pointer of its own yet -- its ``on_submit`` stamps it -- but a split child
+	copies its parent's, which names the parent's operation. A submitted work order can also be left
+	pointing at a sibling's operation by a receive whose row paired the two wrongly. Copying either into
+	the header books this entry to an operation of another work order (``validate_mwo_mop_consistency``
+	refuses exactly that), so a pointer that fails either test is treated as no pointer at all.
+	"""
+	pointer = mwo.manufacturing_operation
+	if not pointer or cint(mwo.docstatus) != 1:
+		return None
+	return pointer if same(owner_of(pointer), mwo_name) else None
 
 
 def normalize_add_to_transit(self):
