@@ -45,6 +45,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_repack import (
 	_create_finding_batch,
+	finding_pairs,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_costing import (
 	apply_worker_cost_to_batch,
@@ -60,9 +61,16 @@ QTY_PRECISION = 3
 def create_without_so_finding_repack(eir, row, injected_se_names):
 	"""Repack the metal this Receive row brought in into the work order's finding item.
 
-	Returns the Repack's name, or None when the row is not a Without-SO work order or brought
-	in no metal."""
+	Returns the Repack's name, or None when the row is not a Without-SO work order, carries no
+	finding details, or brought in no metal.
+
+	Only a row whose finding details are filled (a Finding Item with its Finding Wt, see
+	``finding_pairs``) is repacked: a Receive without them just brings the metal back, and no
+	Repack is made."""
 	if not injected_se_names or not is_without_so_mwo(row.manufacturing_work_order):
+		return None
+
+	if not finding_pairs(row):
 		return None
 
 	existing = _existing_repack(eir.name, row.manufacturing_operation)
