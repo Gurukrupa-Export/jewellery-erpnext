@@ -3552,9 +3552,6 @@ class TestMopCarriesTheTree(IntegrationTestCase):
 		self.assertEqual(self.mop_writes, [])
 
 	def _cancel(self, mop_tree, tree_name="TREE-0001"):
-		from jewellery_erpnext.jewellery_erpnext.doc_events import (
-			current_operation_guard,
-		)
 		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events import (
 			tree_stock_entry,
 		)
@@ -3597,9 +3594,6 @@ class TestMopCarriesTheTree(IntegrationTestCase):
 			patch.object(tree_casting.frappe.db, "sql"),
 			patch.object(tree_casting.frappe, "delete_doc"),
 			patch.object(tree_stock_entry, "cancel_tree_stock_entries"),
-			patch.object(
-				current_operation_guard, "_draft_index_name", return_value=None
-			),
 		):
 			tree_casting.unlink_tree_on_issue_cancel(eir)
 
