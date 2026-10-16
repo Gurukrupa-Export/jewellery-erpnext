@@ -30,6 +30,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 	create_po,
 	earring_units,
 	process_fire_assy_xrf_submit,
+	stamp_rows_from_batches,
 	update_bom_details,
 	validate_po_configuration,
 )
@@ -1707,9 +1708,9 @@ def _issue_rows_by_batch(base_row, warehouse, qty, taken, posting_date=None, pos
 
 	Same batches, same quantities, same FIFO order as the picker was already choosing; they
 	are just resolved here, up front, so each one gets its own visible row. ``inventory_type``
-	is deliberately left as the caller set it: the receipt side reads its own value from the
-	exploded rows, so stamping per-batch ownership here alone would put the two sides of one
-	certification into disagreement.
+	is not set here: ``create_stock_entry`` books every row under its batch's owner once the
+	table is built (``stamp_rows_from_batches``), and the receipt side does the same for the
+	batches it draws back, so both sides of one certification agree.
 
 	``taken`` is shared across the document so two rows of the same item cannot both spend
 	the same batch. Returns ``[base_row]`` unchanged for a serialised or non-batched item, or
@@ -1941,7 +1942,9 @@ def create_stock_entry(doc):
 						"t_warehouse": supplier_wh
 						if doc.type == "Issue"
 						else s_warehouse,
-						"Inventory_type": "Regular Stock",
+						# No inventory_type: the piece's lane comes from its serial's last receipt
+						# (serial_ownership.stamp_serial_row_ownership). The "Inventory_type" key
+						# that sat here was capitalised, so it never reached the row anyway.
 						"reference_doctype": "Serial No",
 						"reference_docname": row.serial_no,
 						"serial_and_batch_bundle": None,
@@ -1969,6 +1972,9 @@ def create_stock_entry(doc):
 			frappe.throw(_("No item found for Repack"))
 		se_doc.flags.throw_batch_error = True
 		se_doc.inventory_type = "Regular Stock"
+		# This entry is auto_created, so update_batches never copies a batch's owner onto its
+		# row: a customer's batch would otherwise be issued as "Regular Stock".
+		stamp_rows_from_batches(se_doc.items)
 		se_doc.save()
 		se_doc.submit()
 		frappe.msgprint(_("Stock Entry created"))
@@ -2399,7 +2405,6 @@ def get_stock_item_against_mwo(
 				"qty": qty,
 				"s_warehouse": item_s_warehouse,
 				"t_warehouse": t_warehouse,
-				"Inventory_type": "Regular Stock",
 				"reference_doctype": "Manufacturing Work Order"
 				if row.manufacturing_work_order
 				else "Parent Manufacturing Order",
@@ -2539,7 +2544,6 @@ def get_stock_item_against_mwo(
 				"qty": qty,
 				"s_warehouse": item.t_warehouse,  # Issue's target becomes Receive's source
 				"t_warehouse": s_warehouse,  # Department warehouse as target for receive
-				"Inventory_type": "Regular Stock",
 				# Mirror the Issue line's own reference so the next partial receipt can
 				# match its outstanding on the same key. Falls back to the exploded row
 				# for legacy Issue entries that carry no reference.
