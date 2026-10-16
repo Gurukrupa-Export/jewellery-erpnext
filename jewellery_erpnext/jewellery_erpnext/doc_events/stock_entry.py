@@ -1367,6 +1367,12 @@ def creates_mwo_reservation(self):
 		):
 			return False
 
+	# A producer that writes its own reservation and MOP Log rows (the Without-SO finding
+	# repack) opts out here: the generic bridge would log its consumed rows as positive.
+	flags = getattr(self, "flags", None)
+	if isinstance(flags, dict) and flags.get("skip_mwo_reservation"):
+		return False
+
 	types_for_reservation = frappe.db.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},
@@ -1451,6 +1457,45 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 		if (row.name, row.manufacturing_operation) in existing_mop_logs:
 			continue
 		create_mop_log(self, row, is_synced=True)
+
+
+def reservation_voucher(mwo, sales_order, sales_order_item):
+	"""``(voucher_type, voucher_no, voucher_detail_no)`` a Stock Reservation Entry for this
+	Manufacturing Work Order is anchored to, given its Parent Manufacturing Order's Sales
+	Order line.
+
+	The Sales Order line, as always. A Finding Manufacturing - Without SO work order has no
+	Sales Order, so it is anchored to the work order itself: ``Manufacturing Work Order`` is
+	an allowed SRE voucher type (the ``voucher_type`` options Property Setter in
+	``custom/stock_reservation_entry.json``), and ERPNext enforces a reservation by item /
+	warehouse / batch whatever its voucher type, so the stock is protected the same way.
+	Every app reader of these reservations filters by ``manufacturing_work_order`` /
+	``manufacturing_operation``, not by voucher.
+
+	Any other work order without a Sales Order keeps the old ``("Sales Order", None, None)``,
+	so its callers throw or skip exactly as before. The flag is only read when there is no
+	Sales Order, so a Sales Order work order costs no extra query.
+	"""
+	if not sales_order and frappe.db.get_value(
+		"Manufacturing Work Order", mwo, "is_without_so"
+	):
+		return "Manufacturing Work Order", mwo, mwo
+	return "Sales Order", sales_order, sales_order_item
+
+
+def get_mwo_reservation_voucher(mwo):
+	"""``reservation_voucher`` for a work order, reading its Sales Order line itself.
+	``(None, None, None)`` when it has neither a Sales Order nor the Without-SO flag."""
+	pmo = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_order")
+	sales_order, sales_order_item = (
+		frappe.db.get_value(
+			"Parent Manufacturing Order", pmo, ["sales_order", "sales_order_item"]
+		)
+		if pmo
+		else None
+	) or (None, None)
+	voucher = reservation_voucher(mwo, sales_order, sales_order_item)
+	return voucher if voucher[1] else (None, None, None)
 
 
 def stock_reservation_entry_for_mwo(self):
@@ -1580,9 +1625,13 @@ def stock_reservation_entry_for_mwo(self):
 		if row_pmo not in so_lines:
 			so_lines[row_pmo] = _mwo_reservation_so_line(self, row_pmo)
 		sales_order, sales_order_item, base_mr_voucher_qty = so_lines[row_pmo]
+		# The Sales Order line, or for a Without-SO work order the work order itself.
+		voucher_type, voucher_no, voucher_detail_no = reservation_voucher(
+			row_mwo, sales_order, sales_order_item
+		)
 
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			row.item_code, "Sales Order", sales_order, sales_order_item
+			row.item_code, voucher_type, voucher_no, voucher_detail_no
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
@@ -1596,8 +1645,8 @@ def stock_reservation_entry_for_mwo(self):
 			effective_voucher_qty = flt(total_so_reserved) + qty_to_be_reserved
 
 		new_stock_reservation_entries_mwo = frappe.new_doc("Stock Reservation Entry")
-		new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
-		new_stock_reservation_entries_mwo.voucher_no = sales_order
+		new_stock_reservation_entries_mwo.voucher_type = voucher_type
+		new_stock_reservation_entries_mwo.voucher_no = voucher_no
 		new_stock_reservation_entries_mwo.item_code = row.item_code
 		new_stock_reservation_entries_mwo.voucher_qty = effective_voucher_qty
 		new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
@@ -1609,7 +1658,7 @@ def stock_reservation_entry_for_mwo(self):
 		new_stock_reservation_entries_mwo.manufacturing_operation = (
 			row.manufacturing_operation
 		)
-		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
+		new_stock_reservation_entries_mwo.voucher_detail_no = voucher_detail_no
 		new_stock_reservation_entries_mwo.available_qty = max(
 			available_qty_to_reserve, qty_to_be_reserved
 		)

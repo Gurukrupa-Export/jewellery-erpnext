@@ -114,6 +114,37 @@
    "module": "Customer Subcontracting",
    "options": "Batch Component",
    "description": "C09. What this batch is actually MADE OF, with each component's owner recorded as at the moment of mixing. Distinct from Batch MultiSelect above, which records which batches were consumed -- see the Batch Component docstring for the six measured differences."
+  },
+  {
+   "depends_on": "eval:doc.custom_worker_cost",
+   "dt": "Batch",
+   "fieldname": "custom_batch_worker_cost_section",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_alloy_rate",
+   "label": "Batch Worker Cost",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Cost incurred based on employee working time.",
+   "dt": "Batch",
+   "fieldname": "custom_worker_cost",
+   "fieldtype": "Currency",
+   "insert_after": "custom_batch_worker_cost_section",
+   "label": "Worker Cost",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "description": "Batch Rate + Worker Cost.",
+   "dt": "Batch",
+   "fieldname": "custom_total_cost",
+   "fieldtype": "Currency",
+   "insert_after": "custom_worker_cost",
+   "label": "Total Cost",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
   }
  ]
 }

@@ -15,7 +15,9 @@ frappe.ui.form.on("Manufacturing Plan", {
 						let item_codes = r.message || [];
 						if (!item_codes.length) {
 							frappe.msgprint(
-								__("All items in this Manufacturing Plan already have a CAD Manufacturing Work Order.")
+								__(
+									"All items in this Manufacturing Plan already have a CAD Manufacturing Work Order."
+								)
 							);
 							return;
 						}
@@ -36,6 +38,7 @@ frappe.ui.form.on("Manufacturing Plan", {
 	setup(frm) {
 		var parent_fields = [["diamond_quality", "Diamond Quality"]];
 		set_item_attribute_filters_on_fields_in_child_doctype(frm, parent_fields);
+		set_finding_detail_filters(frm);
 	},
 	get_sales_order(frm) {
 		map_current_doc({
@@ -219,7 +222,6 @@ function show_cad_reason_dialog(frm, item_codes) {
 	);
 }
 
-
 var map_current_doc = function (opts) {
 	function _map(frm) {
 		if ($.isArray(frm.doc.items) && frm.doc.items.length > 0) {
@@ -343,6 +345,39 @@ var map_current_doc = function (opts) {
 		_map();
 	}
 };
+
+// Finding Details columns that are attributes of the F template. Each one's dropdown only
+// offers values that exist on an F item together with the row's other picks.
+const FINDING_ATTRIBUTE_FIELDS = [
+	"finding_category",
+	"finding_type",
+	"metal_type",
+	"metal_touch",
+	"metal_purity",
+	"metal_colour",
+	"finding_size",
+];
+
+function set_finding_detail_filters(frm) {
+	FINDING_ATTRIBUTE_FIELDS.forEach((fieldname) => {
+		frm.set_query(fieldname, "finding_details", (doc, cdt, cdn) => {
+			const row = locals[cdt][cdn];
+			const selected = {};
+			FINDING_ATTRIBUTE_FIELDS.forEach((other) => {
+				if (other !== fieldname && row[other]) selected[other] = row[other];
+			});
+			return {
+				query: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.finding_attribute_query",
+				filters: { fieldname, selected },
+			};
+		});
+	});
+	// Not an F attribute, so it is not narrowed by the row.
+	frm.set_query("setting_type", "finding_details", () => ({
+		query: "jewellery_erpnext.query.item_attribute_query",
+		filters: { item_attribute: "Setting Type" },
+	}));
+}
 
 function set_item_attribute_filters_on_fields_in_child_doctype(frm, fields) {
 	fields.map(function (field) {

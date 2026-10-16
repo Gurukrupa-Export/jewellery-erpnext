@@ -33,7 +33,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
+	create_finding_without_so_mwo,
 	create_stock_entry,
+	delete_without_so_drafts,
+	validate_without_so_source_submitted,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	update_parent_details,
@@ -296,6 +299,10 @@ class ParentManufacturingOrder(Document):
 		# frappe runs validate + before_submit on submit and skips before_save, so the grade has
 		# to be resolved here too: without it a PMO that reached submit without a stored grade
 		# silently skips the tracking BOM update below.
+		if self.is_without_so:
+			validate_without_so_source_submitted(
+				"Manufacturing Plan", self.manufacturing_plan, _("Manufacturing Plan")
+			)
 		self._set_diamond_grade()
 		if self.diamond_grade and self.custom_tracking_bom:
 			frappe.db.sql(
@@ -473,6 +480,12 @@ class ParentManufacturingOrder(Document):
 		validate_mfg_date(self)
 
 	def on_submit(self):
+		if self.is_without_so:
+			# No Sales Order, customer or Tracking BOM stands behind this PMO, so the tolerance
+			# tables, the Tracking BOM submit and the Material Requests below -- all read off
+			# those -- have nothing to work on. Its single MWO makes the finding item itself.
+			create_finding_without_so_mwo(self)
+			return
 		if not self.order_form_type or self.order_form_type == "Order":
 			# One update_after_submit cycle for all three tolerance tables instead of one
 			# per populator, and none at all for a customer with no tolerance master --
@@ -493,6 +506,11 @@ class ParentManufacturingOrder(Document):
 		# gemstone_details_set_mandatory_field(self)
 
 	def on_cancel(self):
+		if self.is_without_so:
+			delete_without_so_drafts(
+				"Manufacturing Work Order", {"manufacturing_order": self.name}
+			)
+			return
 		update_existing(
 			"Manufacturing Plan Table",
 			self.rowname,
@@ -939,6 +957,44 @@ def make_manufacturing_order(
 		doc.rowname = row.name
 		doc.insert(ignore_mandatory=True)
 		row.manufacturing_bom = so_det.get("master_bom")
+
+
+def make_finding_without_so_order(source_doc, row, mp_context=None):
+	"""Create one Draft Parent Manufacturing Order from a Without-SO plan's Finding Details row.
+
+	There is no Sales Order line or Manufacturing Work Order behind the row, so everything the
+	other two paths read off those comes from the row itself. ``row.item_code`` is the finding
+	variant the plan resolved from the row's attributes on validate. Setting Type goes to
+	``finding_setting_type`` because ``setting_type`` is fetched from the item, and finding
+	items carry none.
+	"""
+	mp_context = mp_context or {}
+	manufacturer = mp_context.get("manufacturer") or frappe.defaults.get_user_default(
+		"manufacturer"
+	)
+
+	doc = frappe.new_doc("Parent Manufacturing Order")
+	doc.company = source_doc.company
+	doc.branch = source_doc.branch
+	if manufacturer:
+		doc.manufacturer = manufacturer
+	doc.department = mp_context.get("finding_default_department")
+	doc.type = "Finding Manufacturing"
+	doc.is_without_so = 1
+	doc.item_code = row.item_code
+	doc.metal_type = row.metal_type
+	doc.metal_touch = row.metal_touch
+	doc.metal_purity = row.metal_purity
+	doc.metal_colour = row.metal_colour
+	doc.finding_category = row.finding_category
+	doc.finding_type = row.finding_type
+	doc.finding_setting_type = row.setting_type
+	doc.finding_size = row.finding_size
+	doc.manufacturing_plan = source_doc.name
+	doc.qty = 1
+	doc.rowname = row.name
+	doc.insert()
+	return doc
 
 
 def create_manufacturing_work_order(self):

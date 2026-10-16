@@ -18,6 +18,7 @@
   "branch",
   "abbr",
   "is_finding_mwo",
+  "is_without_so",
   "final_transfer_entry",
   "finding_transfer_entry",
   "section_break_fsrwq",
@@ -675,6 +676,15 @@
    "fieldname": "is_finding_mwo",
    "fieldtype": "Check",
    "label": "Is Finding MWO"
+  },
+  {
+   "default": "0",
+   "description": "Raised from a Manufacturing Plan in Finding Manufacturing - Without SO mode.",
+   "fieldname": "is_without_so",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Without SO",
+   "read_only": 1
   },
   {
    "fieldname": "final_transfer_entry",
