@@ -57,6 +57,12 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, nowtime, today
 
+from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+	batch_is_eligible,
+	get_batch_ownership_map,
+	hybrid_requirement,
+	throw_no_customer_batch,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
 	capped_auto_batch_nos,
 )
@@ -160,6 +166,14 @@ def _expand_source_rows_for_fifo(se, row, mode=None):
 			batches = reservable
 
 	pool = [b for b in batches if flt(b.qty) > 0]
+	# A Hybrid order's listed finding draws only its customer's batch (hybrid_findings): the
+	# ownership ranking below prefers customer stock but never matches the customer.
+	hybrid = hybrid_requirement(se, row)
+	if hybrid:
+		owners = get_batch_ownership_map([b.batch_no for b in pool])
+		pool = [b for b in pool if batch_is_eligible(owners.get(b.batch_no), hybrid)]
+		if not pool and round(need, 6) > 0:
+			throw_no_customer_batch(hybrid, item_code, s_wh, need)
 	if not pool:
 		if round(need, 6) > 0:
 			_throw_insufficient(item_code, need, s_wh, 0.0)
@@ -177,6 +191,8 @@ def _expand_source_rows_for_fifo(se, row, mode=None):
 		[(b.batch_no, flt(b.qty)) for b in pool], need, _fifo_precision()
 	)
 	if round(shortfall, 6) > 0:
+		if hybrid:
+			throw_no_customer_batch(hybrid, item_code, s_wh, need, available)
 		_throw_insufficient(item_code, need, s_wh, available)
 	if not allocation:
 		return []

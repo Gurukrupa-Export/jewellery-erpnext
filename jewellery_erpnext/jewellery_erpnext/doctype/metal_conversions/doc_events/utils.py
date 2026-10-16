@@ -174,6 +174,10 @@ def update_source_betch(self):
 	# remainder is untouched. Conversion mode allocates source_qty.
 	is_melting_loss = bool(self.get("is_melting_loss"))
 	required_qty = flt(self.loss_qty) if is_melting_loss else flt(self.source_qty)
+	# Chain Manufacturing -- to an employee or a supplier -- books its Process Loss through
+	# the same Regular-Stock scrap row as melting loss (chain_subcontracting.run_receive),
+	# so it draws company stock alone too.
+	is_chain = self.get("is_chain_manufacturing") == "Yes"
 
 	lane_map = get_batch_lane_map([i.batch_no for i in batch_data])
 
@@ -202,7 +206,7 @@ def update_source_betch(self):
 			continue
 
 		inventory_type, _customer = lane_map.get(i.batch_no, ("Regular Stock", None))
-		if is_melting_loss and inventory_type != "Regular Stock":
+		if (is_melting_loss or is_chain) and inventory_type != "Regular Stock":
 			continue
 
 		if total_qty != required_qty:
@@ -222,6 +226,13 @@ def update_source_betch(self):
 			break  # Stop if we have filled the required quantity
 
 	if total_qty != required_qty:
+		if is_chain:
+			frappe.throw(
+				_(
+					"Chain Manufacturing uses Regular Stock only. The Regular Stock of {0} "
+					"available in {1} is {2}."
+				).format(self.source_item, self.source_warehouse, total_qty)
+			)
 		frappe.throw(
 			_(
 				"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
