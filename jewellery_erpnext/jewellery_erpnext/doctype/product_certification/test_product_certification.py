@@ -1173,12 +1173,38 @@ class TestFireAssyIssueWeight(IntegrationTestCase):
 		weights = [r.gross_weight for r in doc.exploded_product_details]
 		self.assertEqual(weights, [2.0, 0.0, 0.0, 5.0, 0.0, 0.0])
 
+	def test_each_row_of_one_tree_issues_its_own_weight(self):
+		"""Two rows off one tree, 5 g each: each main row carries 5, not one row 10."""
+		doc = self._doc(
+			"Fire Assy Service",
+			[
+				("TEST-ITEM-001", 5.0, None, "TREE-A"),
+				("TEST-ITEM-001", 5.0, None, "TREE-A"),
+			],
+			[],
+		)
+		doc._assign_exploded_row_keys()
+		with (
+			patch.object(pc, "get_item_loss_item", return_value="LOSS-ITEM-001"),
+			patch.object(frappe.db, "get_value", return_value="PURE-ITEM-001"),
+		):
+			doc.manufacturer = "Test_Manufacturer"
+			doc.get_exploded_table()
+		doc.set_fire_assy_issue_weight()
+
+		mains = [
+			r.gross_weight
+			for r in doc.exploded_product_details
+			if r.item_code == "TEST-ITEM-001"
+		]
+		self.assertEqual(mains, [5.0, 5.0])
+
 	def test_same_slip_rows_are_summed_onto_one_main_row(self):
 		"""Two lines for one tree issue their combined weight — no double count.
 
-		The grid no longer produces this shape (validate_duplicate_product_rows rejects a
-		second row for the same tree), but the summing still has to hold for documents
-		created before that guard existed.
+		Legacy shape only: rows carrying no exploded_row_key (documents written before every
+		row got its own set) still group on (main_slip, tree_no, sample_name). Keyed rows are
+		covered by test_each_row_of_one_tree_issues_its_own_weight.
 		"""
 		doc = self._doc(
 			"Fire Assy Service",
@@ -3210,10 +3236,11 @@ class TestExplodedRowPerProductRow(IntegrationTestCase):
 
 
 class TestFireAssyExplodedGroups(IntegrationTestCase):
-	"""One receive / pure / loss trio per (main_slip, tree_no, sample_name) group.
+	"""One receive / pure / loss trio per Product Details row.
 
-	A tree legitimately goes for assay as several samples. Before sample_name joined the
-	grouping key they shared one trio and their weights were summed onto a single main row.
+	A tree legitimately goes for assay as several samples. Each row now gets its own trio
+	through its exploded_row_key; documents written before the key keep their old
+	(main_slip, tree_no, sample_name) grouping until a row claims the set.
 	"""
 
 	@classmethod
@@ -3234,6 +3261,8 @@ class TestFireAssyExplodedGroups(IntegrationTestCase):
 		return doc
 
 	def _explode(self, doc):
+		# Same order as validate: keys first, then the table.
+		doc._assign_exploded_row_keys()
 		with (
 			patch.object(pc, "get_item_loss_item", return_value="ML22"),
 			patch.object(frappe.db, "get_value", return_value="M24"),
@@ -3260,15 +3289,78 @@ class TestFireAssyExplodedGroups(IntegrationTestCase):
 		self.assertEqual(len(rows), 6)
 		self.assertEqual([r.sample_name for r in rows], ["S1"] * 3 + ["S2"] * 3)
 
-	def test_same_tree_without_sample_names_still_shares_one_trio(self):
-		"""The documented pre-existing behaviour, and every document written so far."""
+	def test_same_tree_without_sample_names_gets_one_trio_per_row(self):
+		"""Scanning one tree twice gives two Product Details rows and two trios, even before
+		any sample name is typed (CRT-2026-00072 merged them into one)."""
 		doc = self._doc(
 			[
 				{"item_code": "M22", "tree_no": "TREE-A"},
 				{"item_code": "M22", "tree_no": "TREE-A"},
 			]
 		)
-		self.assertEqual(len(self._explode(doc)), 3)
+		rows = self._explode(doc)
+		self.assertEqual(len(rows), 6)
+		keys = [pd.exploded_row_key for pd in doc.product_details]
+		self.assertEqual([r.docname for r in rows], [keys[0]] * 3 + [keys[1]] * 3)
+
+	def test_naming_samples_after_the_first_save_keeps_each_trio(self):
+		"""Used to orphan the shared trio and throw "Orphaned Exploded Row"."""
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A"},
+				{"item_code": "M22", "tree_no": "TREE-A"},
+			]
+		)
+		rows = self._explode(doc)
+		rows[0].gross_weight = 5.0
+		rows[3].gross_weight = 5.0
+		doc.product_details[0].sample_name = "S1"
+		doc.product_details[1].sample_name = "S2"
+
+		rows = self._explode(doc)
+		self.assertEqual(len(rows), 6)
+		self.assertEqual([r.sample_name for r in rows], ["S1"] * 3 + ["S2"] * 3)
+		self.assertEqual([rows[0].gross_weight, rows[3].gross_weight], [5.0, 5.0])
+
+	def test_keys_are_kept_across_saves(self):
+		doc = self._doc([{"item_code": "M22", "tree_no": "TREE-A"}])
+		self._explode(doc)
+		key = doc.product_details[0].exploded_row_key
+		self._explode(doc)
+		self.assertEqual(doc.product_details[0].exploded_row_key, key)
+		self.assertEqual(len(doc.exploded_product_details), 3)
+
+	def test_a_copied_row_key_is_replaced(self):
+		"""The grid's duplicate-row action copies hidden fields too; the copy needs its own."""
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A", "exploded_row_key": "K1"},
+				{"item_code": "M22", "tree_no": "TREE-A", "exploded_row_key": "K1"},
+			]
+		)
+		self._explode(doc)
+		first, second = doc.product_details
+		self.assertEqual(first.exploded_row_key, "K1")
+		self.assertNotEqual(second.exploded_row_key, "K1")
+		self.assertEqual(len(doc.exploded_product_details), 6)
+
+	def test_a_legacy_merged_draft_is_split_and_the_first_row_keeps_the_old_trio(self):
+		doc = self._doc(
+			[
+				{"item_code": "M22", "tree_no": "TREE-A"},
+				{"item_code": "M22", "tree_no": "TREE-A"},
+			],
+			exploded=[
+				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 10.0},
+				{"item_code": "M24", "tree_no": "TREE-A"},
+				{"item_code": "ML22", "tree_no": "TREE-A"},
+			],
+		)
+		rows = self._explode(doc)
+		self.assertEqual(len(rows), 6)
+		first_key = doc.product_details[0].exploded_row_key
+		self.assertEqual([r.docname for r in rows[:3]], [first_key] * 3)
+		self.assertEqual(rows[0].gross_weight, 10.0)
 
 	def test_xrf_still_emits_main_and_loss_only(self):
 		doc = self._doc(
