@@ -1305,6 +1305,8 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 			auto_created=0, name=None, items=list(items), source_warehouse=None
 		)
 		fifo_calls = []
+		# The ``cache`` dict each allocator call received, in call order.
+		self.fifo_caches = []
 
 		def _bulk_map(doctype, names, fields):
 			if doctype == "Item":
@@ -1313,12 +1315,15 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 				return {n: frappe._dict(dept_map.get(n, {})) for n in names}
 			return {n: frappe._dict(batch_map.get(n, {})) for n in names}
 
-		def _fifo(se, row, consumed, item_map=None):
+		def _fifo(se, row, consumed, item_map=None, cache=None):
 			# ``item_map`` is the prefetched Item map update_batches hands over so the
 			# allocator can resolve ``variant_of`` without the fetched custom_variant_of,
 			# which is still empty in before_validate. Recorded so the assertion below can
 			# pin that it is actually passed.
+			# ``cache`` is the per-call memo for the Main Slip / PMO / Manufacturer reads;
+			# recorded so its sharing and lifetime can be pinned too.
 			fifo_calls.append((row, dict(consumed), item_map))
+			self.fifo_caches.append(cache)
 			return list(fifo_result or [])
 
 		def _get_all(doctype, *args, **kwargs):
@@ -1407,6 +1412,24 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 		self.assertEqual(appended, [])
 		throw.assert_not_called()
 
+	def test_fifo_cache_shared_within_one_call_and_fresh_per_call(self):
+		"""Every row of one update_batches call shares one metadata memo; the next call
+		starts a new one, so nothing read on an earlier save can go stale."""
+		item = "M-G-18KT"
+		item_map = {item: {"variant_of": "M", "has_batch_no": 1}}
+		rows = [
+			self._row(item_code=item, s_warehouse="WH-1"),
+			self._row(item_code=item, s_warehouse="WH-2"),
+		]
+		self._run(rows, item_map)
+		first_call = self.fifo_caches
+		self.assertEqual(len(first_call), 2)
+		self.assertIsInstance(first_call[0], dict)
+		self.assertIs(first_call[0], first_call[1])
+
+		self._run([self._row(item_code=item, s_warehouse="WH-1")], item_map)
+		self.assertIsNot(self.fifo_caches[0], first_call[0])
+
 	def test_target_only_batch_row_cloned(self):
 		item = "M-G-18KT"
 		row = self._row(item_code=item, t_warehouse="WH-T")
@@ -1476,6 +1499,15 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 
 # --------------------------------------------- CustomStockEntry.validate_with_material_request
 class TestCustomStockEntryValidateWithMaterialRequest(_StockEntryTestCase):
+	def setUp(self):
+		super().setUp()
+		# The MR Items are prefetched through bulk_map. Empty by default, so every row takes
+		# the per-row frappe.db.get_value fallback the cases below stub -- and the bulk read
+		# never reaches frappe.get_all / DocType metadata under those global stubs.
+		patcher = patch.object(cse_mod, "bulk_map", return_value={})
+		self.bulk_map = patcher.start()
+		self.addCleanup(patcher.stop)
+
 	def _cse(
 		self,
 		purpose="Material Transfer",
@@ -1592,6 +1624,57 @@ class TestCustomStockEntryValidateWithMaterialRequest(_StockEntryTestCase):
 		), patch.object(cse_mod.frappe, "throw") as throw:
 			cse.validate_with_material_request()
 		throw.assert_not_called()
+
+	def test_bulk_hit_skips_per_row_lookup(self):
+		"""A prefetched MR Item of the row's own request is used as-is: no per-row query."""
+		self.bulk_map.return_value = {
+			"MRI-1": frappe._dict(
+				name="MRI-1",
+				parent="MR-1",
+				item_code="M-G-18KT",
+				custom_alternative_item=None,
+				warehouse="WH-1",
+				idx=1,
+			)
+		}
+		cse = self._cse(items=[self._mr_item_row()])
+		with patch.object(cse_mod.frappe, "get_value", return_value=None), patch.object(
+			cse_mod.frappe.db, "get_value"
+		) as db_get_value, patch.object(cse_mod.frappe, "throw") as throw:
+			cse.validate_with_material_request()
+		throw.assert_not_called()
+		db_get_value.assert_not_called()
+		self.assertEqual(self.bulk_map.call_args[0][0], "Material Request Item")
+		self.assertEqual(self.bulk_map.call_args[0][1], ["MRI-1"])
+
+	def test_bulk_hit_from_another_request_falls_back(self):
+		"""An MR Item that belongs to a different request is not trusted from the bulk read:
+		the row is checked with the original name + parent lookup, as before."""
+		self.bulk_map.return_value = {
+			"MRI-1": frappe._dict(
+				name="MRI-1",
+				parent="MR-OTHER",
+				item_code="M-OTHER",
+				custom_alternative_item=None,
+				warehouse="WH-1",
+				idx=1,
+			)
+		}
+		cse = self._cse(items=[self._mr_item_row()])
+		with patch.object(cse_mod.frappe, "get_value", return_value=None), patch.object(
+			cse_mod.frappe.db,
+			"get_value",
+			return_value=frappe._dict(
+				item_code="M-G-18KT",
+				custom_alternative_item=None,
+				warehouse="WH-1",
+				idx=1,
+			),
+		) as db_get_value, patch.object(cse_mod.frappe, "throw") as throw:
+			cse.validate_with_material_request()
+		throw.assert_not_called()
+		filters = db_get_value.call_args[0][1]
+		self.assertEqual(filters, {"name": "MRI-1", "parent": "MR-1"})
 
 
 # --------------------------------------------------- customization before_validate chain
