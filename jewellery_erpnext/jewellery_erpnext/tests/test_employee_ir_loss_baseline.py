@@ -1937,6 +1937,7 @@ def _doc(**fields):
 		"msl_warehouse": "EMP-0001 RM - GK",
 		"scrap_warehouse": "Casting Scrap - GK",
 		"stock_entry": None,
+		"subcontracting": "No",
 		"items": [_se_row("M-G-18KT-75.4-Y", 5.0)],
 	}
 	defaults.update(fields)
@@ -1980,6 +1981,89 @@ class TestResolvers(IntegrationTestCase):
 		with self.assertRaises(ValidationError):
 			ele._resolve_msl_warehouse(_doc(employee=None))
 
+	def test_raw_material_and_non_raw_resolve_identically(self):
+		"""The behavioural claim of the routing change, not just that it runs.
+
+		Before, ``is_raw_material`` short-circuited to the employee's or
+		subcontractor's Raw Material warehouse and returned ``row.item_code``
+		unchanged. All four (is_raw_material, subcontracting) combinations must now
+		converge on the department Scrap warehouse AND on the manufacturer's loss
+		variant -- so the assertion that matters is that the raw-material answer is
+		no longer the ORIGINAL item.
+		"""
+		answers = set()
+		for is_raw, sub in [(0, "No"), (1, "No"), (0, "Yes"), (1, "Yes")]:
+			eir = _doc(
+				is_raw_material=is_raw, subcontracting=sub, subcontractor="Sub-1"
+			)
+			row = SimpleNamespace(
+				item_code="ORIGINAL-ITEM",
+				variant_of="VARIANT",
+				idx=1,
+				loss_type="Loss",
+				manufacturing_work_order="MWO-1",
+			)
+
+			with patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+				return_value="Scrap - GK",
+			), patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+				return_value="LOSS-ITEM-1",
+			), patch(
+				"frappe.db.get_value",
+				side_effect=TestLossManufacturerFallback._get_value(),
+			):
+				answers.add(
+					(
+						loss_stock_entry._resolve_t_warehouse(eir),
+						loss_stock_entry._resolve_loss_item(
+							eir, row, "employee_loss_details"
+						),
+					)
+				)
+
+		# One answer for all four inputs: the branch really is gone.
+		self.assertEqual(answers, {("Scrap - GK", "LOSS-ITEM-1")})
+		# And it is the loss variant, not the item that was consumed.
+		self.assertNotEqual(answers.pop()[1], "ORIGINAL-ITEM")
+
+	def test_scrap_warehouse_resolves_the_single_enabled_warehouse(self):
+		with patch(
+			"frappe.db.get_all",
+			return_value=[frappe._dict({"name": "Casting Scrap - GK"})],
+		):
+			self.assertEqual(
+				loss_stock_entry._resolve_scrap_warehouse(_doc()), "Casting Scrap - GK"
+			)
+
+	def test_scrap_warehouse_missing_throws(self):
+		"""F3's first precondition: zero enabled Scrap warehouses blocks the submit."""
+		with patch("frappe.db.get_all", return_value=[]):
+			with self.assertRaises(ValidationError):
+				loss_stock_entry._resolve_scrap_warehouse(_doc())
+
+	def test_scrap_warehouse_ambiguous_throws_and_names_both(self):
+		"""F3's second precondition: two is as fatal as none, and easier to miss."""
+		with patch(
+			"frappe.db.get_all",
+			return_value=[
+				frappe._dict({"name": "Casting Scrap - GK"}),
+				frappe._dict({"name": "Casting Scrap 2 - GK"}),
+			],
+		):
+			with self.assertRaises(ValidationError) as ctx:
+				loss_stock_entry._resolve_scrap_warehouse(_doc())
+		message = str(ctx.exception)
+		self.assertIn("Casting Scrap - GK", message)
+		self.assertIn("Casting Scrap 2 - GK", message)
+
+	def test_scrap_warehouse_without_department_throws(self):
+		with patch("frappe.db.get_all") as mock_get_all:
+			with self.assertRaises(ValidationError):
+				loss_stock_entry._resolve_scrap_warehouse(_doc(department=None))
+		mock_get_all.assert_not_called()
+
 	def test_scrap_warehouse(self):
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse",
@@ -2017,6 +2101,209 @@ class TestResolvers(IntegrationTestCase):
 			self.assertEqual(
 				ele._resolve_loss_item(_doc(), "M-G-18KT-75.4-Y"), "ML-G-18KT-75.4-Y"
 			)
+
+
+class TestProcessLossStockEntryFinalRows(IntegrationTestCase):
+	def test_produce_row_uses_correct_item_and_warehouse(self):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		# Internal Employee route
+		eir_internal = _doc(subcontracting="No")
+		row_internal = SimpleNamespace(
+			item_code="ORIGINAL-ITEM",
+			variant_of="VARIANT",
+			idx=1,
+			loss_type="Loss",
+			batch_no="B1",
+			manufacturing_work_order="MWO-1",
+			proportionally_loss=5.0,
+		)
+
+		# Subcontractor route
+		eir_sub = _doc(subcontracting="Yes", subcontractor="Sub-1")
+		row_sub = SimpleNamespace(
+			item_code="ORIGINAL-ITEM",
+			variant_of="VARIANT",
+			idx=1,
+			loss_type="Loss",
+			batch_no="B1",
+			manufacturing_work_order="MWO-1",
+			proportionally_loss=5.0,
+		)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+			return_value="Scrap - GK",
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+			return_value="LOSS-ITEM-1",
+		), patch("frappe.db.get_value", return_value="Some Value"), patch(
+			"frappe.get_precision", return_value=3
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry.batch_owner_no_wastage",
+			return_value=False,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._find_sre",
+			return_value=(
+				SimpleNamespace(
+					warehouse="Source WH - GK", name="SRE-1", get=lambda x: None
+				),
+				[],
+			),
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._sre_remaining",
+			return_value=10.0,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_batch_inventory",
+			return_value=("Internal", None),
+		):
+			res_internal = loss_stock_entry._prepare_loss_row(
+				eir_internal, row_internal, "employee_loss_details"
+			)
+			self.assertEqual(res_internal["loss_item"], "LOSS-ITEM-1")
+			self.assertEqual(res_internal["t_warehouse"], "Scrap - GK")
+			self.assertEqual(res_internal["s_warehouse"], "Source WH - GK")
+
+			res_sub = loss_stock_entry._prepare_loss_row(
+				eir_sub, row_sub, "employee_loss_details"
+			)
+			self.assertEqual(res_sub["loss_item"], "LOSS-ITEM-1")
+			self.assertEqual(res_sub["t_warehouse"], "Scrap - GK")
+			self.assertEqual(res_sub["s_warehouse"], "Source WH - GK")
+
+
+class TestLossManufacturerFallback(IntegrationTestCase):
+	"""``_resolve_manufacturer``: EIR -> row's MWO -> Department, then throw.
+
+	``Employee IR.manufacturer`` is optional. Routing raw-material loss to the
+	Scrap warehouse made the Variant Loss Table lookup (which is keyed by
+	Manufacturer) reachable for receives that previously posted without ever
+	reading the field, so a blank one must still resolve.
+	"""
+
+	@staticmethod
+	def _get_value(mwo_manufacturer=None, department_manufacturer=None):
+		"""Stub ``frappe.db.get_value`` for only the doctypes under test."""
+
+		def side_effect(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Manufacturing Work Order":
+				return mwo_manufacturer
+			if doctype == "Department":
+				return department_manufacturer
+			if doctype == "Variant Loss Table":
+				return "LOSS-VARIANT-TEMPLATE"
+			if doctype == "Item":
+				# ``ensure_loss_item_stockable`` reads the resolved loss item's flags
+				# at the point of use. Answer with flags already correct so it is a
+				# pass-through and never repairs.
+				return {"is_stock_item": 1, "has_variants": 0, "disabled": 0}
+			raise AssertionError(f"unexpected get_value on {doctype}")
+
+		return side_effect
+
+	@staticmethod
+	def _row(**fields):
+		defaults = {
+			"item_code": "ORIGINAL-ITEM",
+			"variant_of": "VARIANT",
+			"idx": 1,
+			"loss_type": "Loss",
+			"manufacturing_work_order": "MWO-1",
+		}
+		defaults.update(fields)
+		return SimpleNamespace(**defaults)
+
+	def test_eir_manufacturer_wins(self):
+		with patch(
+			"frappe.db.get_value", side_effect=self._get_value("MWO-MFR")
+		) as mock_get:
+			self.assertEqual(
+				loss_stock_entry._resolve_manufacturer(
+					_doc(manufacturer="Shubh"), self._row(), "employee_loss_details"
+				),
+				"Shubh",
+			)
+		mock_get.assert_not_called()
+
+	def test_falls_back_to_row_mwo(self):
+		with patch(
+			"frappe.db.get_value",
+			side_effect=self._get_value(mwo_manufacturer="MWO-MFR"),
+		):
+			self.assertEqual(
+				loss_stock_entry._resolve_manufacturer(
+					_doc(manufacturer=None), self._row(), "employee_loss_details"
+				),
+				"MWO-MFR",
+			)
+
+	def test_falls_back_to_department_when_mwo_has_none(self):
+		with patch(
+			"frappe.db.get_value",
+			side_effect=self._get_value(department_manufacturer="DEPT-MFR"),
+		):
+			self.assertEqual(
+				loss_stock_entry._resolve_manufacturer(
+					_doc(manufacturer=None), self._row(), "employee_loss_details"
+				),
+				"DEPT-MFR",
+			)
+
+	def test_falls_back_to_department_when_row_has_no_mwo(self):
+		with patch(
+			"frappe.db.get_value",
+			side_effect=self._get_value(department_manufacturer="DEPT-MFR"),
+		):
+			self.assertEqual(
+				loss_stock_entry._resolve_manufacturer(
+					_doc(manufacturer=None),
+					self._row(manufacturing_work_order=None),
+					"employee_loss_details",
+				),
+				"DEPT-MFR",
+			)
+
+	def test_throws_when_nothing_resolves(self):
+		with patch("frappe.db.get_value", side_effect=self._get_value()):
+			with self.assertRaises(ValidationError):
+				loss_stock_entry._resolve_manufacturer(
+					_doc(manufacturer=None), self._row(), "employee_loss_details"
+				)
+
+	def test_loss_item_resolves_with_blank_eir_manufacturer(self):
+		"""The F2 regression: a blank manufacturer must stay postable."""
+		with patch(
+			"frappe.db.get_value",
+			side_effect=self._get_value(mwo_manufacturer="MWO-MFR"),
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+			return_value="LOSS-ITEM-1",
+		) as mock_loss_item:
+			self.assertEqual(
+				loss_stock_entry._resolve_loss_item(
+					_doc(manufacturer=None), self._row(), "employee_loss_details"
+				),
+				"LOSS-ITEM-1",
+			)
+		mock_loss_item.assert_called_once_with("GK", "ORIGINAL-ITEM", "VARIANT", "Loss")
+
+	def test_loss_item_throws_when_no_variant_loss_mapping(self):
+		def no_mapping(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Variant Loss Table":
+				return None
+			if doctype == "Item":
+				return {"is_stock_item": 1, "has_variants": 0, "disabled": 0}
+			return "MWO-MFR" if doctype == "Manufacturing Work Order" else None
+
+		with patch("frappe.db.get_value", side_effect=no_mapping):
+			with self.assertRaises(ValidationError):
+				loss_stock_entry._resolve_loss_item(
+					_doc(manufacturer=None), self._row(), "employee_loss_details"
+				)
 
 
 class TestFifoBatches(IntegrationTestCase):
