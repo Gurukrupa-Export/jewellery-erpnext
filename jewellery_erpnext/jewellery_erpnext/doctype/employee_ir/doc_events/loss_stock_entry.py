@@ -864,8 +864,14 @@ def _resolve_loss_item(eir, row, table_name):
 		get_item_loss_item,
 	)
 
+	# The manufacturer-scoped template, not a second unscoped lookup: two manufacturers can map
+	# the same variant + loss type to different loss variants.
 	loss_item = get_item_loss_item(
-		eir.company, row.item_code, row.variant_of, loss_type
+		eir.company,
+		row.item_code,
+		row.variant_of,
+		loss_type,
+		loss_variant=loss_variant_template,
 	)
 	if not loss_item:
 		frappe.throw(

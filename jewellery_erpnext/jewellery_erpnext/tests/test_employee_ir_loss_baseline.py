@@ -2289,7 +2289,39 @@ class TestLossManufacturerFallback(IntegrationTestCase):
 				),
 				"LOSS-ITEM-1",
 			)
-		mock_loss_item.assert_called_once_with("GK", "ORIGINAL-ITEM", "VARIANT", "Loss")
+		mock_loss_item.assert_called_once_with(
+			"GK",
+			"ORIGINAL-ITEM",
+			"VARIANT",
+			"Loss",
+			loss_variant="LOSS-VARIANT-TEMPLATE",
+		)
+
+	def test_loss_item_uses_the_template_of_the_resolved_manufacturer(self):
+		"""Two manufacturers map one variant + loss type to different loss variants: each must
+		resolve its own, never whichever row an unscoped lookup meets first."""
+		templates = {"MFR-A": "LOSS-TEMPLATE-A", "MFR-B": "LOSS-TEMPLATE-B"}
+
+		def get_value(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Variant Loss Table":
+				return templates[filters["parent"]]
+			return TestLossManufacturerFallback._get_value()(
+				doctype, filters, fieldname
+			)
+
+		for manufacturer, expected in templates.items():
+			with self.subTest(manufacturer=manufacturer), patch(
+				"frappe.db.get_value", side_effect=get_value
+			), patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+				return_value="LOSS-ITEM-1",
+			) as mock_loss_item:
+				loss_stock_entry._resolve_loss_item(
+					_doc(manufacturer=manufacturer),
+					self._row(),
+					"employee_loss_details",
+				)
+			self.assertEqual(mock_loss_item.call_args.kwargs["loss_variant"], expected)
 
 	def test_loss_item_throws_when_no_variant_loss_mapping(self):
 		def no_mapping(doctype, filters=None, fieldname="name", *args, **kwargs):
