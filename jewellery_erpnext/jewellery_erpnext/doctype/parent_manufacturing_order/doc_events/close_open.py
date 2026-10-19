@@ -114,7 +114,9 @@ def close_related_mwos(pmo_name):
 		"Manufacturing Work Order",
 		filters={
 			"manufacturing_order": pmo_name,
-			"docstatus": 1,
+			# Draft work orders count too: left alone they could still be submitted under
+			# a closed PMO.
+			"docstatus": ["<", 2],
 			"status": ["not in", UNTOUCHED_MWO_STATUSES],
 		},
 		fields=["name", "status"],
@@ -133,7 +135,7 @@ def reopen_related_mwos(pmo_name):
 		"Manufacturing Work Order",
 		filters={
 			"manufacturing_order": pmo_name,
-			"docstatus": 1,
+			"docstatus": ["<", 2],
 			"status": "Closed",
 			"status_before_close": ["is", "set"],
 		},
