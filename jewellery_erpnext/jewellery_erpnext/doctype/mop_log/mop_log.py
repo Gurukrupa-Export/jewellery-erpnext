@@ -1191,7 +1191,7 @@ def get_employee_ir_loss_map(eir_doc):
 
 
 def create_mop_log_for_employee_ir_receive(
-	doc, row, from_warehouse, to_warehouse, stock_entry_name=[]
+	doc, row, from_warehouse, to_warehouse, stock_entry_name=None
 ):
 	"""Audit-only MOP Log clones on the SOURCE MOP for Employee IR Receive.
 

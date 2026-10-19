@@ -17,6 +17,7 @@ from unittest.mock import patch
 import frappe
 from frappe import ValidationError
 from frappe.tests import IntegrationTestCase
+from frappe.utils import get_first_day, getdate, today
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import (
 	warehouse,
@@ -644,19 +645,20 @@ class TestRecalculateScoping(IntegrationTestCase):
 			return_value=SimpleNamespace(
 				employee="EMP", warehouse_type="Manufacturing"
 			),
-		), patch.object(wt, "get_warehouse_item_tracking") as g, patch(
-			"frappe.get_doc"
-		) as gd:
+		), patch.object(wt, "get_warehouse_item_tracking") as g, patch.object(
+			wt, "_msl_tracking_views"
+		) as views, patch("frappe.get_doc") as gd:
 			self.assertEqual(wt.recalculate_msl_tracking("WH"), 0)
 			g.assert_not_called()
+			views.assert_not_called()
 			gd.assert_not_called()
 
 	def test_writes_rm_warehouse(self):
 		"""Month movement over a cumulative opening/closing balance.
 
-		The grid makes two calls to the same helper: one scoped to the current
-		month for issue/receive/loss, one unscoped for the cumulative pending. The
-		row must reconcile as opening + (issue - receive - loss) = pending.
+		One ledger scan returns both views: the current month's issue/receive/loss
+		and the cumulative pending. The row must reconcile as
+		opening + (issue - receive - loss) = pending.
 		"""
 		fake = _FakeWH()
 		month = [
@@ -681,13 +683,12 @@ class TestRecalculateScoping(IntegrationTestCase):
 			"frappe.db.get_value",
 			return_value=SimpleNamespace(employee="EMP", warehouse_type="Raw Material"),
 		), patch("frappe.get_precision", return_value=3), patch.object(
-			wt, "get_warehouse_item_tracking", side_effect=[month, cumulative]
-		) as g, patch("frappe.get_doc", return_value=fake):
+			wt, "_msl_tracking_views", return_value=(month, cumulative)
+		) as views, patch("frappe.get_doc", return_value=fake):
 			n = wt.recalculate_msl_tracking("WH")
 
-		# First call is month-scoped, second is cumulative (no from_date).
-		self.assertIn("from_date", g.call_args_list[0][0][0])
-		self.assertNotIn("from_date", g.call_args_list[1][0][0])
+		# One scan, scoped by warehouse, with the current month's first day as the cut.
+		views.assert_called_once_with("WH", get_first_day(getdate(today())))
 
 		self.assertEqual(n, 1)
 		self.assertEqual(len(fake.rows), 1)
@@ -705,6 +706,104 @@ class TestRecalculateScoping(IntegrationTestCase):
 		)
 		self.assertTrue(fake.flags.ignore_msl_guards)
 		self.assertTrue(fake.saved)
+
+
+class TestMslTrackingViews(IntegrationTestCase):
+	"""``_msl_tracking_views``: both views of ``recalculate_msl_tracking`` from one ledger scan.
+
+	Each view must hold exactly what ``get_warehouse_item_tracking`` returned for it: an item
+	stays only when one of the view's own RAW sums is non-zero (the old query's HAVING, applied
+	before rounding), and the figures are rounded and reconciled the same way.
+	"""
+
+	def setUp(self):
+		self._patches = [
+			patch.object(wt, "flt", _det_flt),
+			patch("frappe.get_precision", return_value=3),
+		]
+		for p in self._patches:
+			p.start()
+
+	def tearDown(self):
+		for p in self._patches:
+			p.stop()
+
+	def _run(self, raw):
+		with patch("frappe.db.escape", side_effect=lambda v: "'%s'" % v), patch(
+			"frappe.db.sql", return_value=raw
+		) as sql:
+			month, cumulative = wt._msl_tracking_views("WH", "2026-10-01")
+		return month, cumulative, sql
+
+	@staticmethod
+	def _raw(**overrides):
+		row = {
+			"item_code": "M-G",
+			"issue_qty": 10.0,
+			"receive_qty": 3.0,
+			"loss_qty": 1.0,
+			"month_issue_qty": 4.0,
+			"month_receive_qty": 3.0,
+			"month_loss_qty": 1.0,
+		}
+		row.update(overrides)
+		return row
+
+	def test_one_query_for_both_views(self):
+		month, cumulative, sql = self._run([self._raw()])
+		sql.assert_called_once()
+		self.assertEqual(
+			sql.call_args[0][1], {"warehouse": "WH", "from_date": "2026-10-01"}
+		)
+		self.assertEqual(
+			month,
+			[
+				{
+					"item_code": "M-G",
+					"issue_qty": 4.0,
+					"receive_qty": 3.0,
+					"loss_qty": 1.0,
+					"pending_qty": 0.0,
+				}
+			],
+		)
+		self.assertEqual(cumulative[0]["pending_qty"], 6.0)
+		self.assertEqual(cumulative[0]["issue_qty"], 10.0)
+
+	def test_item_without_movement_this_month_is_cumulative_only(self):
+		month, cumulative, _sql = self._run(
+			[self._raw(month_issue_qty=0.0, month_receive_qty=0.0, month_loss_qty=0.0)]
+		)
+		self.assertEqual(month, [])
+		self.assertEqual([r["item_code"] for r in cumulative], ["M-G"])
+
+	def test_raw_sum_below_precision_is_kept_like_having(self):
+		# HAVING compared the unrounded sums, so a residue that rounds to 0.000 still kept
+		# the item in the old view.
+		month, cumulative, _sql = self._run(
+			[
+				self._raw(
+					issue_qty=0.0001,
+					receive_qty=0.0,
+					loss_qty=0.0,
+					month_issue_qty=0.0001,
+					month_receive_qty=0.0,
+					month_loss_qty=0.0,
+				)
+			]
+		)
+		self.assertEqual(len(month), 1)
+		self.assertEqual(len(cumulative), 1)
+		self.assertEqual(cumulative[0]["issue_qty"], 0.0)
+
+	def test_month_cut_is_a_named_placeholder_only(self):
+		_month, _cumulative, sql = self._run([self._raw()])
+		query = sql.call_args[0][0]
+		self.assertEqual(query.count("%(from_date)s"), 3)
+		self.assertIn("sle.warehouse = %(warehouse)s", query)
+		for fragment in query.split("%(")[1:]:
+			# every surviving % must be a named parameter placeholder
+			self.assertIn(")s", fragment)
 
 
 # ---------------------------------------------------------------------------
