@@ -384,3 +384,19 @@ class TestPlanSubmitQueuesKggkSync(UnitTestCase):
 
 		on_submit.assert_called_once_with(plan, "on_submit")
 		self.assertEqual(result, "queued")
+
+	def test_delegate_lets_the_submit_through_when_gke_has_no_kggk_sync(self):
+		"""kggk_prod's gke_customization (KGGK's sites, the CI bench) has no kggk_sync module."""
+		with patch("importlib.util.find_spec", return_value=None):
+			result = frappe.get_attr(self.DELEGATE)(frappe._dict(), "on_submit")
+
+		self.assertIsNone(result)
+
+	def test_delegate_lets_the_submit_through_without_gke_customization(self):
+		with patch(
+			"importlib.util.find_spec",
+			side_effect=ModuleNotFoundError("No module named 'gke_customization'"),
+		):
+			result = frappe.get_attr(self.DELEGATE)(frappe._dict(), "on_submit")
+
+		self.assertIsNone(result)

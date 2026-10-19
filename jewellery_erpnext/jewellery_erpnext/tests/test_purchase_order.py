@@ -24,6 +24,7 @@ class DummyPO:
 		self.ref_customer = kwargs.get("ref_customer", "Customer X")
 		self._is_new = kwargs.get("is_new", False)
 		self.calculate_taxes_and_totals = MagicMock()
+		self.set_total_in_words = MagicMock()
 
 		for k, v in kwargs.items():
 			if k != "is_new":
@@ -39,6 +40,16 @@ class DummyPO:
 
 	def is_new(self):
 		return self._is_new
+
+
+PO_EVENTS = "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order"
+
+
+class DummyPOItem(frappe._dict):
+	"""A Purchase Order Item row: update_rate rounds the rate to the field's precision."""
+
+	def precision(self, fieldname):
+		return 2
 
 
 class DummyQuotation:
@@ -149,13 +160,12 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		self.assertEqual(po.items[0].sgst_rate, 1.5)
 		self.assertEqual(po.items[0].igst_rate, 0.0)
 
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_value"
-	)
-	def test_update_rate(self, mock_get_value):
+	@patch(f"{PO_EVENTS}._quotation_rates", return_value={})
+	@patch(f"{PO_EVENTS}._get_bom_state")
+	def test_update_rate(self, mock_get_value, _quotation_rates):
 		po = DummyPO(
 			purchase_type="FG Purchase",
-			items=[frappe._dict(manufacturing_bom="BOM-1", metal_amount=1000)],
+			items=[DummyPOItem(manufacturing_bom="BOM-1", metal_amount=1000)],
 		)
 		mock_get_value.return_value = frappe._dict(
 			making_fg_purchase=100,
@@ -166,11 +176,15 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			freight_amount=15,
 			hallmarking_amount=20,
 			custom_duty_amount=0,
+			bom_type="Manufacturing Process",
+			docstatus=0,
 		)
 		po_events.update_rate(po)
 		item = po.items[0]
 		self.assertEqual(item.making_amount, 100)
-		self.assertEqual(item.rate, 1000 + 100 + 50 + 200 + 10 + 5 + 15 + 20 + 0)
+		# FG Purchase amounts only: the BOM's metal and finding values are selling figures.
+		self.assertEqual(item.rate, 100 + 200 + 10 + 5 + 15 + 20 + 0)
+		po.calculate_taxes_and_totals.assert_called_once()
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
@@ -598,10 +612,29 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		po_events.on_cancel(frappe._dict())
 		self.assertTrue(True)
 
-	def test_update_rate_is_new(self):
-		po = DummyPO(purchase_type="FG Purchase", is_new=True)
+	@patch(f"{PO_EVENTS}._quotation_rates", return_value={})
+	@patch(f"{PO_EVENTS}._get_bom_state")
+	def test_update_rate_is_new(self, mock_get_value, _quotation_rates):
+		# The order a Manufacturing Plan raises is created by one save, so new orders are rated too.
+		po = DummyPO(
+			purchase_type="FG Purchase",
+			is_new=True,
+			items=[DummyPOItem(manufacturing_bom="BOM-1")],
+		)
+		mock_get_value.return_value = frappe._dict(
+			making_fg_purchase=100,
+			finding_bom_amount=50,
+			diamond_fg_purchase=200,
+			gemstone_fg_purchase=10,
+			certification_amount=5,
+			freight_amount=15,
+			hallmarking_amount=20,
+			custom_duty_amount=0,
+			bom_type="Manufacturing Process",
+			docstatus=0,
+		)
 		po_events.update_rate(po)
-		self.assertTrue(True)
+		self.assertEqual(po.items[0].rate, 350)
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_value"
@@ -687,15 +720,16 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		po_events.set_gst_details(po)
 		self.assertEqual(po.items[0].cgst_rate, 0.0)
 
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_value"
-	)
-	def test_update_rate_multiple_items_same_bom(self, mock_get_value):
+	@patch(f"{PO_EVENTS}._quotation_rates", return_value={})
+	@patch(f"{PO_EVENTS}._get_bom_state")
+	def test_update_rate_multiple_items_same_bom(
+		self, mock_get_value, _quotation_rates
+	):
 		po = DummyPO(
 			purchase_type="FG Purchase",
 			items=[
-				frappe._dict(manufacturing_bom="BOM-1", metal_amount=1000),
-				frappe._dict(manufacturing_bom="BOM-1", metal_amount=2000),
+				DummyPOItem(manufacturing_bom="BOM-1", metal_amount=1000),
+				DummyPOItem(manufacturing_bom="BOM-1", metal_amount=2000),
 			],
 		)
 		mock_get_value.return_value = frappe._dict(
@@ -707,11 +741,13 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			freight_amount=15,
 			hallmarking_amount=20,
 			custom_duty_amount=0,
+			bom_type="Manufacturing Process",
+			docstatus=0,
 		)
 		po_events.update_rate(po)
 		mock_get_value.assert_called_once()
-		self.assertEqual(po.items[0].rate, 1000 + 400)
-		self.assertEqual(po.items[1].rate, 2000 + 400)
+		self.assertEqual(po.items[0].rate, 350)
+		self.assertEqual(po.items[1].rate, 350)
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
