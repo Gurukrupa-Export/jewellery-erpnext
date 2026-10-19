@@ -1727,9 +1727,10 @@ def record_fulfilment(doc, method=None):
 				customer = owners[serial_no]
 				if not customer:
 					continue
-				if flt(row.get("qty")) < 0 and not _serial_delivery_recorded(
-					doc, serial_no, customer
-				):
+				original = None
+				if flt(row.get("qty")) < 0:
+					original = _serial_delivery_recorded(doc, serial_no, customer)
+				if flt(row.get("qty")) < 0 and not original:
 					# Delivered before serial-only pieces were recorded: the delivery released
 					# nothing, so a return must restore nothing.
 					frappe.log_error(
@@ -1744,6 +1745,8 @@ def record_fulfilment(doc, method=None):
 				share = _serial_customer_share(
 					doc, serial_no, customer, abs(qty), valued=nominal
 				)
+				if original and nominal:
+					_pin_to_original_value(share, original, abs(qty))
 				written.extend(
 					_post_fulfilment_events(
 						doc,
@@ -1787,8 +1790,8 @@ def record_fulfilment(doc, method=None):
 
 
 def _serial_delivery_recorded(doc, serial_no, customer):
-	"""Whether a Delivery event was written for ``serial_no`` -- by the document this one returns
-	against when it names one, else by any delivery of the serial."""
+	"""The Delivery event written for ``serial_no`` -- by the document this one returns against
+	when it names one, else by any delivery of the serial -- or ``None`` when none was written."""
 	filters = {
 		"serial_no": serial_no,
 		"customer": customer,
@@ -1798,7 +1801,35 @@ def _serial_delivery_recorded(doc, serial_no, customer):
 	if against:
 		filters["reference_doctype"] = doc.doctype
 		filters["reference_docname"] = against
-	return bool(frappe.db.exists(LEDGER_DOCTYPE, filters))
+	events = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters=filters,
+		fields=["name", "cg_gross_qty_delta", "cg_carrying_value_delta"],
+		order_by="creation desc",
+		limit=1,
+	)
+	return events[0] if events else None
+
+
+def _pin_to_original_value(share, original, returned_qty):
+	"""Make a serial return restore what its delivery actually released.
+
+	``_serial_customer_share`` prices at today's booked receipt rate, which moves when the same
+	source batch receives more metal at another rate. The original event holds the value that
+	was released, so the return credits that, in proportion to the quantity returned. An
+	original that was never valued stays unvalued rather than being priced now.
+	"""
+	if share is None:
+		return
+	delivered = abs(flt(original.get("cg_gross_qty_delta")))
+	released = original.get("cg_carrying_value_delta")
+	if released is None or not delivered:
+		share.value = None
+		share.reason = "the original delivery recorded no value"
+		return
+	fraction = min(flt(returned_qty) / delivered, 1.0)
+	share.value = flt(abs(flt(released)) * fraction, 2)
+	share.reason = None
 
 
 def _post_fulfilment_events(

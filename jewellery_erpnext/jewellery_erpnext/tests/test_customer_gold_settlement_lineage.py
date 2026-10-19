@@ -611,8 +611,8 @@ class TestSerialOnlyDelivery(_LineageCase):
 		self.owners = {}
 		#: serial -> (components, pieces produced)
 		self.productions = {}
-		#: serials whose delivery wrote a custody event
-		self.delivered = set()
+		#: serial -> the Delivery event it wrote (absent: none was written)
+		self.delivered = {}
 		self.owner_lookup = MagicMock(side_effect=lambda s, w=None: self.owners.get(s))
 
 		def write_event(**kwargs):
@@ -635,7 +635,7 @@ class TestSerialOnlyDelivery(_LineageCase):
 			patch.object(
 				cgf,
 				"_serial_delivery_recorded",
-				side_effect=lambda doc, s, customer: s in self.delivered,
+				side_effect=lambda doc, s, customer: self.delivered.get(s),
 			),
 			patch.object(
 				cgc,
@@ -756,7 +756,10 @@ class TestSerialOnlyDelivery(_LineageCase):
 	def test_a_return_restores_the_same_value(self):
 		self.owners["SER-1"] = CUSTOMER
 		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
-		self.delivered.add("SER-1")
+		self.delivered["SER-1"] = frappe._dict(
+			cg_gross_qty_delta=-1,
+			cg_carrying_value_delta=-round(CUSTOMER_IN_PIECE * RATE_A, 2),
+		)
 
 		(event,) = self._deliver(["SER-1"], -1, is_return=1)
 
@@ -766,6 +769,36 @@ class TestSerialOnlyDelivery(_LineageCase):
 			round(CUSTOMER_IN_PIECE * RATE_A, 2),
 			places=2,
 		)
+
+	def test_a_return_credits_the_delivered_value_not_todays_receipt_rate(self):
+		"""Review Q2: the source batch took more metal at another rate between delivery and
+		return, so the booked rate moved. The return must still restore what left."""
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+		self.delivered["SER-1"] = frappe._dict(
+			cg_gross_qty_delta=-1,
+			cg_carrying_value_delta=-round(CUSTOMER_IN_PIECE * RATE_A, 2),
+		)
+		self.booked[(CUSTOMER, "RCPT-A")] = RATE_A * 1.5
+
+		(event,) = self._deliver(["SER-1"], -1, is_return=1)
+
+		self.assertAlmostEqual(
+			event.cg_carrying_value_delta,
+			round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			places=2,
+		)
+
+	def test_a_return_of_an_unvalued_delivery_stays_unvalued(self):
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+		self.delivered["SER-1"] = frappe._dict(
+			cg_gross_qty_delta=-1, cg_carrying_value_delta=None
+		)
+
+		(event,) = self._deliver(["SER-1"], -1, is_return=1)
+
+		self.assertIsNone(event.cg_carrying_value_delta)
 
 	def test_a_serial_owned_by_another_customer_is_blocked(self):
 		self.owners["SER-1"] = OTHER
