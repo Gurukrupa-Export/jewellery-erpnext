@@ -20,7 +20,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	set_fg_bom_weights,
 	set_gross_wt,
 	set_jwelex_tag_no,
-	# validate_inventory_dimention,
 	validate_warehouse,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.transit import (
@@ -32,6 +31,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.entered_metal_rate 
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.loss_valuation import (
 	set_process_loss_produce_rates,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	normalize_ownership,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
@@ -185,8 +187,30 @@ def before_validate(self, method):
 
 
 def on_submit(self, method):
+	# Deliberately empty. This used to call validate_inventory_dimention, which now runs on
+	# ``validate`` via hooks.py -- early enough to tell the user before any stock moves.
 	pass
-	# validate_inventory_dimention(self)
+
+
+def lane_from_batch(row, batch):
+	"""``(inventory_type, customer)`` for a row that draws ``batch`` (F5).
+
+	The batch is the physical truth, so its lane wins over whatever the row was built with.
+	The rebuild used to keep the row's lane and take only the batch's customer, which is how
+	KLHGX62F1119's company diamond -- a Regular Stock batch, no customer -- travelled as
+	"Customer Goods, no customer" through MAT-STE-18637/38/39.
+
+	A batch that records no lane of its own keeps the old behaviour: the row's lane, the
+	batch's customer.
+	"""
+	if batch.get("custom_inventory_type"):
+		return normalize_ownership(
+			batch.get("custom_inventory_type"),
+			batch.get("custom_customer"),
+			batch_no=row.get("batch_no"),
+			item_code=row.get("item_code"),
+		)
+	return row.get("inventory_type"), batch.get("custom_customer")
 
 
 class CustomStockEntry(StockEntry):
@@ -258,7 +282,14 @@ class CustomStockEntry(StockEntry):
 							temp_row = copy.deepcopy(row)
 							rows_to_append += [temp_row]
 						else:
-							rows_to_append += get_fifo_batches(self, row, consumed)
+							# ``item_map`` is handed over so the allocator can read this row's
+							# ``variant_of`` from the Item master: the fetched
+							# ``custom_variant_of`` is still empty here on a server-built
+							# entry's first save, and without the letter the Customer Goods
+							# lane never applies. Already prefetched above, so this is free.
+							rows_to_append += get_fifo_batches(
+								self, row, consumed, item_map=item_map
+							)
 					elif row.t_warehouse:
 						rows_to_append += [row.__dict__]
 				else:
@@ -308,10 +339,9 @@ class CustomStockEntry(StockEntry):
 					if isinstance(item, dict):
 						item = frappe._dict(item)
 					if item.batch_no:
-						binfo = batch_map.get(item.batch_no) or {}
-						if not item.inventory_type:
-							item.inventory_type = binfo.get("custom_inventory_type")
-						item.customer = binfo.get("custom_customer")
+						item.inventory_type, item.customer = lane_from_batch(
+							item, batch_map.get(item.batch_no) or {}
+						)
 					if (item_map.get(item.item_code) or {}).get("variant_of") == "D":
 						attribute = grade_map.get(item.item_code)
 						diamond_sieve_size = sieve_map.get(item.item_code)

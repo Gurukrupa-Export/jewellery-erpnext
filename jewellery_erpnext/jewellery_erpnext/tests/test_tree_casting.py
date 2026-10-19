@@ -2043,6 +2043,68 @@ class TestLossItemResolution(IntegrationTestCase):
 # Submit-to-lock (manual finalize)
 # ---------------------------------------------------------------------------
 class TestSubmitAndLock(IntegrationTestCase):
+	def setUp(self):
+		super().setUp()
+		# submit_tree looks up the Manufacturing Operations stamped with the tree; default
+		# to none so these tests stay DB-free. Tests that need some set return_value.
+		patcher = patch.object(frappe, "get_all", return_value=[])
+		self.get_all = patcher.start()
+		self.addCleanup(patcher.stop)
+
+	def test_submit_tree_blocks_while_a_mop_is_not_finished(self):
+		tree = self._received_tree()
+		self.get_all.return_value = [
+			frappe._dict(name="MOP-0001", status="WIP"),
+			frappe._dict(name="MOP-0002", status="Not Started"),
+		]
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(tse, "receive_material") as mock_recv,
+			self.assertRaises(ValidationError) as ctx,
+		):
+			tree.submit_tree()
+		message = str(ctx.exception)
+		self.assertIn("MOP-0001 (WIP)", message)
+		self.assertIn("MOP-0002 (Not Started)", message)
+		# Nothing is written off or locked when the gate refuses.
+		mock_recv.assert_not_called()
+		self.assertNotEqual(tree.status, "Submitted")
+		tree.save.assert_not_called()
+
+	def test_submit_tree_only_looks_at_unfinished_mops_of_this_tree(self):
+		tree = self._received_tree()
+		with patch.object(frappe, "has_permission", return_value=True):
+			tree.submit_tree()
+		args, kwargs = self.get_all.call_args
+		self.assertEqual(args[0], "Manufacturing Operation")
+		self.assertEqual(
+			kwargs["filters"],
+			{"tree_number": tree.name, "status": ["!=", "Finished"]},
+		)
+
+	def test_submit_tree_waits_for_the_mop_before_writing_off_loss(self):
+		# A partially received tree would book its leftover as loss; with an unfinished MOP
+		# that must not happen.
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": 10.0,
+					"receive_qty": 3.0,
+					"loss_qty": 0.0,
+					"pending_qty": 7.0,
+				}
+			]
+		)
+		self.get_all.return_value = [frappe._dict(name="MOP-0001", status="WIP")]
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(tse, "receive_material") as mock_recv,
+			self.assertRaises(ValidationError),
+		):
+			tree.submit_tree()
+		mock_recv.assert_not_called()
+
 	def _received_tree(self):
 		# Fully reconciled: issue 10 = receive 8 + loss 2, pending 0 -> _tree_status == "Received".
 		return _new_tree(
@@ -3398,3 +3460,269 @@ class TestScrubDraftTreeStamps(IntegrationTestCase):
 	def test_a_non_casting_cancel_scrubs_nothing(self):
 		self._cancel([("MWO-A", None, None)], casting=False)
 		self.sql.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Manufacturing Operation carries the casting tree
+# ---------------------------------------------------------------------------
+class _MopRow(_EIROpRow):
+	"""An Employee IR Operation row that also names its Manufacturing Operation."""
+
+
+class TestMopCarriesTheTree(IntegrationTestCase):
+	"""The casting Issue stamps ``Manufacturing Operation.tree_number``; cancelling clears it.
+
+	Submit Tree reads that stamp to tell whether the casting work behind a tree is Finished.
+	The stamp is scoped to the tree being deleted, like the row and work order clears.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _issue(self, operations, casting=True):
+		mwos = {
+			f"MWO-{op}": _MWODoc(
+				name=f"MWO-{op}",
+				metal_type="Gold",
+				metal_touch="22KT",
+				metal_purity="91.9",
+				metal_colour="Yellow",
+				metal_weight=1.0,
+				gross_wt=0.0,
+			)
+			for op in operations
+		}
+		eir = _EIRDoc(
+			name="EIR-1",
+			company="C",
+			manufacturer="M",
+			department="Waxing",
+			operation="Casting",
+			employee="E",
+			employee_ir_operations=[
+				_MopRow(
+					manufacturing_work_order=f"MWO-{op}",
+					manufacturing_operation=f"MOP-{op}",
+				)
+				for op in operations
+			],
+		)
+		fake_tree = _FakeTreeDoc()
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			if doctype == "Department Operation":
+				return 1 if casting else 0
+			return None
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(
+				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
+			),
+			patch.object(tree_casting.frappe, "new_doc", return_value=fake_tree),
+			patch.object(
+				tree_casting, "get_item_from_attribute", return_value="M-G-22KT-91.9-Y"
+			),
+			patch.object(tree_casting.frappe.db, "set_value") as set_value,
+		):
+			tree_casting.create_tree_on_issue(eir)
+
+		self.mop_writes = [
+			c
+			for c in set_value.call_args_list
+			if c.args[0] == "Manufacturing Operation"
+		]
+		return fake_tree
+
+	def test_every_casting_mop_is_stamped_with_the_new_tree(self):
+		tree = self._issue(["A", "B"])
+		self.assertEqual(
+			sorted((c.args[1], c.args[2], c.args[3]) for c in self.mop_writes),
+			[
+				("MOP-A", "tree_number", tree.name),
+				("MOP-B", "tree_number", tree.name),
+			],
+		)
+
+	def test_a_non_casting_issue_stamps_no_mop(self):
+		self._issue(["A"], casting=False)
+		self.assertEqual(self.mop_writes, [])
+
+	def _cancel(self, mop_tree, tree_name="TREE-0001"):
+		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events import (
+			tree_stock_entry,
+		)
+
+		eir = _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			tree_number=tree_name,
+			employee_ir_operations=[
+				_MopRow(
+					manufacturing_work_order="MWO-A",
+					manufacturing_operation="MOP-A",
+					tree_number=tree_name,
+				)
+			],
+		)
+		tree = SimpleNamespace(
+			name=tree_name,
+			status="Issued",
+			material_details=[SimpleNamespace(receive_qty=0.0, loss_qty=0.0)],
+		)
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			if doctype == "Department Operation":
+				return 1
+			if doctype == "Tree Number":
+				return tree_name
+			if doctype == "Manufacturing Operation":
+				return mop_tree
+			if doctype == "Manufacturing Work Order":
+				return tree_name
+			return None
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
+			patch.object(tree_casting.frappe.db, "set_value") as set_value,
+			patch.object(tree_casting.frappe.db, "sql"),
+			patch.object(tree_casting.frappe, "delete_doc"),
+			patch.object(tree_stock_entry, "cancel_tree_stock_entries"),
+		):
+			tree_casting.unlink_tree_on_issue_cancel(eir)
+
+		return [
+			c for c in set_value.call_args_list if c.args[0] == "Manufacturing Operation"
+		]
+
+	def test_cancel_clears_the_mop_stamp(self):
+		writes = self._cancel(mop_tree="TREE-0001")
+		self.assertEqual(
+			[(c.args[1], c.args[2], c.args[3]) for c in writes],
+			[("MOP-A", "tree_number", None)],
+		)
+
+	def test_cancel_leaves_a_mop_re_stamped_onto_a_newer_tree(self):
+		self.assertEqual(self._cancel(mop_tree="TREE-0002"), [])
+
+
+# ---------------------------------------------------------------------------
+# Department Operation "Allow loss on Tree number"
+# ---------------------------------------------------------------------------
+class TestTreeLossCap(IntegrationTestCase):
+	"""Loss on a tree cannot pass Department Operation.allow_loss_on_tree_number (grams).
+
+	The cap covers the whole tree -- loss already booked on every row plus this call's -- and
+	0 / blank means no limit. Submit Tree's write-off goes through receive_material, so it is
+	held to the same cap.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		super().setUp()
+		patcher = patch.object(frappe, "get_all", return_value=[])
+		patcher.start()
+		self.addCleanup(patcher.stop)
+
+	def _tree(self, booked_loss=0.0, issue=10.0, receive=0.0):
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": issue,
+					"receive_qty": receive,
+					"loss_qty": booked_loss,
+					"pending_qty": issue - receive - booked_loss,
+				}
+			]
+		)
+		tree.operation = "Casting"
+		return tree
+
+	def _cap(self, allowed):
+		return patch.object(tse, "_tree_loss_allowed", return_value=float(allowed or 0))
+
+	def _receive(self, tree, allowed, receive=0.0, loss=0.0):
+		with self._cap(allowed):
+			return _run(
+				tse.receive_material,
+				tree,
+				[{"item_code": "GOLD-18KT", "receive_qty": receive, "loss_qty": loss}],
+			)
+
+	def test_loss_above_the_cap_is_refused(self):
+		with self.assertRaises(ValidationError) as ctx:
+			self._receive(self._tree(), allowed=5.0, loss=6.0)
+		self.assertIn("5", str(ctx.exception))
+
+	def test_loss_already_booked_counts_toward_the_cap(self):
+		with self.assertRaises(ValidationError):
+			self._receive(self._tree(booked_loss=3.0), allowed=5.0, loss=3.0)
+
+	def test_loss_exactly_at_the_cap_is_allowed(self):
+		fakes = self._receive(self._tree(booked_loss=2.0), allowed=5.0, loss=3.0)
+		self.assertEqual(len(fakes), 1)
+
+	def test_no_cap_means_no_limit(self):
+		for allowed in (0, 0.0, None):
+			fakes = self._receive(self._tree(), allowed=allowed, loss=9.0)
+			self.assertEqual(len(fakes), 1)
+
+	def test_a_receive_without_loss_is_never_capped(self):
+		fakes = self._receive(self._tree(booked_loss=5.0), allowed=5.0, receive=4.0)
+		self.assertEqual(len(fakes), 1)
+
+	def test_a_tree_with_no_operation_has_no_cap(self):
+		tree = self._tree()
+		tree.operation = None
+		with patch.object(tse.frappe.db, "get_value") as get_value:
+			self.assertEqual(tse._tree_loss_allowed(tree), 0.0)
+		get_value.assert_not_called()
+
+	def test_the_cap_is_read_from_the_trees_operation(self):
+		with patch.object(
+			tse.frappe.db, "get_value", return_value=4.5
+		) as get_value:
+			self.assertEqual(tse._tree_loss_allowed(self._tree()), 4.5)
+		get_value.assert_called_once_with(
+			"Department Operation", "Casting", "allow_loss_on_tree_number"
+		)
+
+	def test_nothing_is_posted_when_the_cap_refuses(self):
+		tree = self._tree()
+		with (
+			patch.object(tse.frappe, "new_doc") as new_doc,
+			patch.object(tse.frappe, "has_permission", return_value=True),
+			self._cap(1.0),
+			self.assertRaises(ValidationError),
+		):
+			tse.receive_material(
+				tree, [{"item_code": "GOLD-18KT", "receive_qty": 0.0, "loss_qty": 2.0}]
+			)
+		new_doc.assert_not_called()
+
+	def test_submit_tree_write_off_is_held_to_the_cap(self):
+		# Partially received: 7 g pending would be written off as loss, past a 5 g cap.
+		tree = self._tree(issue=10.0, receive=3.0)
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			self._cap(5.0),
+			self.assertRaises(ValidationError),
+		):
+			_run(tree.submit_tree)
+		self.assertNotEqual(tree.status, "Submitted")
+
+	def test_submit_tree_write_off_within_the_cap_locks_the_tree(self):
+		tree = self._tree(issue=10.0, receive=3.0)
+		with patch.object(frappe, "has_permission", return_value=True), self._cap(7.0):
+			_run(tree.submit_tree)
+		self.assertEqual(tree.status, "Submitted")
