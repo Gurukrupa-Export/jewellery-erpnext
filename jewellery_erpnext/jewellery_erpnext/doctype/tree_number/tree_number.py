@@ -120,6 +120,25 @@ class TreeNumber(Document):
 				).format(self.name)
 			)
 
+		# The casting work behind the tree has to be done before the tree is locked.
+		unfinished = frappe.get_all(
+			"Manufacturing Operation",
+			filters={"tree_number": self.name, "status": ["!=", "Finished"]},
+			fields=["name", "status"],
+			order_by="name asc",
+		)
+		if unfinished:
+			frappe.throw(
+				_(
+					"Tree {0} cannot be submitted until its Manufacturing Operation(s) are "
+					"Finished: {1}."
+				).format(
+					self.name,
+					", ".join(f"{op.name} ({op.status})" for op in unfinished),
+				),
+				title=_("Manufacturing Operation Not Finished"),
+			)
+
 		eps = tree_balance.pending_eps()
 
 		# Re-derive pending from the quantities before judging it. The stored column cannot be
