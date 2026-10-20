@@ -1745,8 +1745,8 @@ def record_fulfilment(doc, method=None):
 				share = _serial_customer_share(
 					doc, serial_no, customer, abs(qty), valued=nominal
 				)
-				if original and nominal:
-					_pin_to_original_value(share, original, abs(qty))
+				if original:
+					share = _pin_to_original_value(share, original, abs(qty), nominal)
 				written.extend(
 					_post_fulfilment_events(
 						doc,
@@ -1791,7 +1791,11 @@ def record_fulfilment(doc, method=None):
 
 def _serial_delivery_recorded(doc, serial_no, customer):
 	"""The Delivery event written for ``serial_no`` -- by the document this one returns against
-	when it names one, else by any delivery of the serial -- or ``None`` when none was written."""
+	when it names one, else by any delivery of the serial -- or ``None`` when none was written.
+
+	A delivery that was cancelled already has its Reversal, so it released nothing that a return
+	could restore; only an effective delivery counts.
+	"""
 	filters = {
 		"serial_no": serial_no,
 		"customer": customer,
@@ -1804,32 +1808,66 @@ def _serial_delivery_recorded(doc, serial_no, customer):
 	events = frappe.get_all(
 		LEDGER_DOCTYPE,
 		filters=filters,
-		fields=["name", "cg_gross_qty_delta", "cg_carrying_value_delta"],
+		fields=[
+			"name",
+			"cg_gross_qty_delta",
+			"cg_carrying_value_delta",
+			"cg_fine_gold_delta",
+			"cg_fine_measurement_status",
+		],
 		order_by="creation desc",
-		limit=1,
 	)
-	return events[0] if events else None
+	if not events:
+		return None
+	reversed_ = set(
+		frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={
+				"cg_event_kind": EVENT_REVERSAL,
+				"cg_reversal_of": ["in", [e.name for e in events]],
+			},
+			pluck="cg_reversal_of",
+		)
+	)
+	return next((e for e in events if e.name not in reversed_), None)
 
 
-def _pin_to_original_value(share, original, returned_qty):
-	"""Make a serial return restore what its delivery actually released.
+def _pin_to_original_value(share, original, returned_qty, nominal):
+	"""Make a serial return restore what its delivery actually released, and return the share.
 
-	``_serial_customer_share`` prices at today's booked receipt rate, which moves when the same
-	source batch receives more metal at another rate. The original event holds the value that
-	was released, so the return credits that, in proportion to the quantity returned. An
-	original that was never valued stays unvalued rather than being priced now.
+	``_serial_customer_share`` reads today's composition and booked receipt rate, both of which
+	can move between delivery and return -- the same source batch receiving more metal at another
+	rate is enough. The original event holds what was released, so the return restores that, in
+	proportion to the quantity returned: the value under Nominal and the fine gold under either
+	policy. When today's composition cannot be rebuilt at all, the original event alone is the
+	share, so a delivery that debited the liability is never returned unvalued.
 	"""
 	if share is None:
-		return
+		share = frappe._dict(fine=None, value=None, reason=None, parts=[])
 	delivered = abs(flt(original.get("cg_gross_qty_delta")))
+	fraction = min(flt(returned_qty) / delivered, 1.0) if delivered else 0.0
+
+	fine = original.get("cg_fine_gold_delta")
+	if (
+		delivered
+		and fine is not None
+		and (original.get("cg_fine_measurement_status") == STATUS_KNOWN)
+	):
+		share.fine = flt(abs(flt(fine)) * fraction, QTY_PRECISION)
+	else:
+		# The delivery measured no fine gold; the return restates the same basis, not today's.
+		share.fine = None
+
+	if not nominal:
+		return share
 	released = original.get("cg_carrying_value_delta")
 	if released is None or not delivered:
 		share.value = None
 		share.reason = "the original delivery recorded no value"
-		return
-	fraction = min(flt(returned_qty) / delivered, 1.0)
+		return share
 	share.value = flt(abs(flt(released)) * fraction, 2)
 	share.reason = None
+	return share
 
 
 def _post_fulfilment_events(

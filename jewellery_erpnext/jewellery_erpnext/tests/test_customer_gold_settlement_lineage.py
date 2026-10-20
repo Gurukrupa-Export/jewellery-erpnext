@@ -789,6 +789,52 @@ class TestSerialOnlyDelivery(_LineageCase):
 			places=2,
 		)
 
+	def test_a_return_restores_the_delivered_fine_gold_not_todays_composition(self):
+		"""Review F1 (a392ee7a): the source batch was topped up between delivery and return, so
+		today's composition says less of the customer's gold is in the piece. The return must
+		restore the fine gold that left, as it does the value."""
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (
+			[_component(2.0, GOLD_24, customer=CUSTOMER, source_batch="RCPT-A")],
+			1.0,
+		)
+		self.delivered["SER-1"] = frappe._dict(
+			cg_gross_qty_delta=-1,
+			cg_carrying_value_delta=-round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			cg_fine_gold_delta=-4.986,
+			cg_fine_measurement_status=cgf.STATUS_KNOWN,
+		)
+
+		(event,) = self._deliver(["SER-1"], -1, is_return=1)
+
+		self.assertAlmostEqual(event.cg_fine_gold_delta, 4.986, places=3)
+		self.assertAlmostEqual(
+			event.cg_carrying_value_delta,
+			round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			places=2,
+		)
+
+	def test_a_return_whose_composition_is_gone_restores_the_original_event(self):
+		"""Review F1 (a392ee7a): the production record cannot be rebuilt today, but the delivery
+		debited the liability. The return restores the original event rather than nothing."""
+		self.owners["SER-1"] = CUSTOMER
+		self.delivered["SER-1"] = frappe._dict(
+			cg_gross_qty_delta=-1,
+			cg_carrying_value_delta=-round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			cg_fine_gold_delta=-4.986,
+			cg_fine_measurement_status=cgf.STATUS_KNOWN,
+		)
+
+		(event,) = self._deliver(["SER-1"], -1, is_return=1)
+
+		self.assertAlmostEqual(event.cg_fine_gold_delta, 4.986, places=3)
+		self.assertAlmostEqual(
+			event.cg_carrying_value_delta,
+			round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			places=2,
+		)
+		self.log_error.assert_not_called()
+
 	def test_a_return_of_an_unvalued_delivery_stays_unvalued(self):
 		self.owners["SER-1"] = CUSTOMER
 		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
@@ -832,6 +878,44 @@ class TestSerialOnlyDelivery(_LineageCase):
 
 		self.owner_lookup.assert_called_once()
 		self.assertEqual(len(self.events), 1)
+
+
+class TestSerialDeliveryRecorded(unittest.TestCase):
+	"""Review F2 (a392ee7a): a standalone return pairs with an effective delivery, never with one
+	that was cancelled and already reversed."""
+
+	def setUp(self):
+		#: Delivery events, newest first, as the ledger query orders them.
+		self.deliveries = []
+		#: Delivery event names that have a Reversal.
+		self.reversed = set()
+
+		def get_all(doctype, filters=None, **kwargs):
+			if filters.get("cg_event_kind") == cgf.EVENT_REVERSAL:
+				names = filters["cg_reversal_of"][1]
+				return [n for n in names if n in self.reversed]
+			return list(self.deliveries)
+
+		p = patch(f"{cgf.__name__}.frappe.get_all", side_effect=get_all)
+		p.start()
+		self.addCleanup(p.stop)
+
+	def _recorded(self):
+		doc = frappe._dict(doctype="Delivery Note", name="DN-RET", return_against=None)
+		return cgf._serial_delivery_recorded(doc, "SER-1", CUSTOMER)
+
+	def test_a_reversed_delivery_is_skipped_for_the_effective_one(self):
+		self.deliveries = [frappe._dict(name="EV-NEW"), frappe._dict(name="EV-OLD")]
+		self.reversed = {"EV-NEW"}
+		self.assertEqual(self._recorded().name, "EV-OLD")
+
+	def test_only_reversed_deliveries_mean_none_was_recorded(self):
+		self.deliveries = [frappe._dict(name="EV-1")]
+		self.reversed = {"EV-1"}
+		self.assertIsNone(self._recorded())
+
+	def test_no_delivery_means_none_was_recorded(self):
+		self.assertIsNone(self._recorded())
 
 
 class TestSerialOwnerSource(unittest.TestCase):
