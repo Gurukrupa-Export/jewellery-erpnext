@@ -1,7 +1,7 @@
 # Copyright (c) 2026, Nirali and contributors
 # See license.txt
 
-"""Cancel / submit guards and Receive-cancel batch restamp for Finding Manufacturing - Without SO."""
+"""Plan checks, cancel / submit guards and Receive-cancel batch restamp for Finding Manufacturing - Without SO."""
 
 from unittest.mock import MagicMock, call, patch
 
@@ -154,6 +154,61 @@ class TestRestampOnReceiveCancel(IntegrationTestCase):
 		mock_apply.assert_called_once_with("B-A", 100.0)
 
 
+class TestPlanItemChecks(IntegrationTestCase):
+	"""The empty-table check moved from the Server Script into before_insert, and the
+	Without-SO mode needs at least one Finding Details row on the server too."""
+
+	def _plan(self, mode, table=None, findings=None):
+		return frappe._dict(
+			select_manufacture_order=mode,
+			manufacturing_plan_table=table or [],
+			finding_details=findings or [],
+		)
+
+	def test_without_so_insert_skips_item_table_check(self):
+		ManufacturingPlan.before_insert(self._plan(FINDING_WITHOUT_SO))
+
+	def test_other_mode_empty_table_blocks_insert(self):
+		with self.assertRaises(frappe.ValidationError):
+			ManufacturingPlan.before_insert(self._plan("Manufacturing"))
+
+	def test_other_mode_with_rows_passes_insert(self):
+		ManufacturingPlan.before_insert(self._plan("Manufacturing", table=[{"idx": 1}]))
+
+	def test_without_so_with_no_finding_rows_blocks(self):
+		with self.assertRaises(frappe.ValidationError):
+			ManufacturingPlan.validate_finding_details(self._plan(FINDING_WITHOUT_SO))
+
+	def test_other_mode_ignores_empty_finding_rows(self):
+		ManufacturingPlan.validate_finding_details(self._plan("Manufacturing"))
+
+
+class TestDisableGetItemTableScript(IntegrationTestCase):
+	PATCH = "jewellery_erpnext.patches.disable_mp_get_item_table_server_script"
+
+	def _run(self, exists, disabled):
+		from jewellery_erpnext.patches.disable_mp_get_item_table_server_script import (
+			execute,
+		)
+
+		script = MagicMock(disabled=disabled)
+		with (
+			patch(f"{self.PATCH}.frappe.db.exists", return_value=exists),
+			patch(f"{self.PATCH}.frappe.get_doc", return_value=script),
+		):
+			execute()
+		return script
+
+	def test_enabled_script_is_disabled(self):
+		script = self._run(exists=True, disabled=0)
+		self.assertEqual(script.disabled, 1)
+		script.save.assert_called_once()
+
+	def test_already_disabled_is_left_alone(self):
+		self._run(exists=True, disabled=1).save.assert_not_called()
+
+	def test_missing_script_is_skipped(self):
+		self._run(exists=False, disabled=0).save.assert_not_called()
 class TestWithoutSoRepackNeedsFindingDetails(IntegrationTestCase):
 	"""A Receive row is repacked into the finding only when its finding details are filled."""
 

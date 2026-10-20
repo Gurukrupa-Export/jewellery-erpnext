@@ -3294,6 +3294,15 @@ def create_test_data():
 
 			_ensure_batch_worker_cost_fields()
 
+			# The "GK Manufacturing Plan (Get Item Table)" Server Script comes from the
+			# git_action_v16 fixtures enabled, and would refuse every Finding Manufacturing -
+			# Without SO plan; its check now lives in ManufacturingPlan.before_insert.
+			from jewellery_erpnext.patches.disable_mp_get_item_table_server_script import (
+				execute as _disable_mp_get_item_table_script,
+			)
+
+			_disable_mp_get_item_table_script()
+
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:
 			# it must be provisioned here for test_site, else get_or_create_zero_tax_template
