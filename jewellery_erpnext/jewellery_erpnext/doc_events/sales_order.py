@@ -3195,12 +3195,11 @@ def create_sales_order_bom(self, row, diamond_grade_data):
 
 
 def validate_snc(self):
-	for row in self.items:
-		if row.serial_no:
-			if self.docstatus == 2:
-				frappe.db.set_value("Serial No", row.serial_no, "status", "Active")
-			else:
-				frappe.db.set_value("Serial No", row.serial_no, "status", "Reserved")
+	serial_nos = [row.serial_no for row in self.items if row.serial_no]
+	if not serial_nos:
+		return
+	status = "Active" if self.docstatus == 2 else "Reserved"
+	frappe.db.set_value("Serial No", {"name": ["in", serial_nos]}, "status", status)
 
 
 def submit_bom(self):
