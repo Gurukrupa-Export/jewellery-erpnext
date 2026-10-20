@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import re
+from collections import namedtuple
 
 import frappe
 from erpnext.controllers.queries import get_batch_no
@@ -30,6 +31,20 @@ SIEVE_ATTRIBUTE = "Diamond Sieve Size"
 # third segment, a stray letter) fails to match instead of being silently mangled the way
 # revise_diamond_price_list.py's ``value[1:].split("-")`` is.
 SIEVE_BOUNDS_PATTERN = re.compile(r"^\+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$")
+
+# "+00-0", "+000-00", "+0000-000" ... are NAMES, not measurements -- more zeros means a smaller
+# stone, and the live values are ordered by ``diameter`` (1.0mm down to 0.6mm), not by their text.
+# The numeric band rule cannot be applied to them for two independent reasons: every one of them
+# has UP/DOWN unset, AND SIEVE_BOUNDS_PATTERN reduces all of them to (0.0, 0.0), so no UP/DOWN
+# setting could ever tell "+0000-000" from "+000-00". They get their own rule instead.
+# "+0-2" is deliberately NOT matched -- its "2" makes it an ordinary numeric value.
+ZERO_SIEVE_PATTERN = re.compile(r"^\+0+-0+$")
+
+# What _resolve_sieve hands back. ``low``/``high`` are the parsed value, ``down``/``up`` the
+# Attribute Value band. ``has_band`` is False only for a zero-series value whose UP/DOWN were left
+# at 0 -- such a value imposes no constraint of its own, but its ``low``/``high`` are still kept so
+# the OTHER side's band can test it.
+Sieve = namedtuple("Sieve", "value low high down up is_zero has_band")
 
 
 class DiamondConversion(Document):
@@ -209,6 +224,11 @@ def _parse_sieve_bounds(attribute_value):
 	return flt(match.group(1), 3), flt(match.group(2), 3)
 
 
+def _is_zero_sieve(attribute_value):
+	"""True for the zero series -- ``+00-0``, ``+0000-000``, and so on. See ZERO_SIEVE_PATTERN."""
+	return bool(ZERO_SIEVE_PATTERN.match((attribute_value or "").strip()))
+
+
 def _get_sieve_values(item_codes):
 	"""``{item_code: attribute_value}`` for the ``Diamond Sieve Size`` attribute.
 
@@ -309,12 +329,19 @@ def _resolve_sieve(row, label, sieve_values, dimension_map):
 			)
 		)
 
+	is_zero = _is_zero_sieve(attr_value)
 	down, up = flt(dimension.weight, 3), flt(dimension.height, 3)
 	# "Unset" is BOTH endpoints at zero, not a falsy test on either. The columns are Float NOT
 	# NULL DEFAULT 0, so None never occurs and a falsy test cannot tell "never filled in" from
 	# "legitimately zero" -- which would make "+0-2", whose natural DOWN is 0, permanently
 	# unusable.
 	if not down and not up:
+		# A zero-series name with no band imposes no constraint of its own -- "+000-00" may become
+		# any other zero size. It still carries low/high, so the other side's band can test it.
+		# For an ordinary size an empty band is a master-data gap, and still an error.
+		if is_zero:
+			return Sieve(attr_value, bounds[0], bounds[1], None, None, True, False)
+
 		frappe.throw(
 			_(
 				"Row #{0}: Attribute Value {1} has no UP/DOWN set, so the allowed sieve band "
@@ -331,7 +358,7 @@ def _resolve_sieve(row, label, sieve_values, dimension_map):
 			)
 		)
 
-	return attr_value, bounds[0], bounds[1], down, up
+	return Sieve(attr_value, bounds[0], bounds[1], down, up, is_zero, True)
 
 
 def validate_sieve_size_band(self):
@@ -376,17 +403,33 @@ def validate_sieve_size_band(self):
 	# The row is carried alongside so the reverse throw can name the source item and the row the
 	# user has to change, rather than the target row that happened to trigger the comparison.
 	source_entries = [
-		(row, *_resolve_sieve(row, _("Source"), sieve_values, dimension_map))
+		(row, _resolve_sieve(row, _("Source"), sieve_values, dimension_map))
 		for row in source_rows.values()
 	]
 
 	for target_row in self.sc_target_table:
-		t_value, t_low, t_high, t_down, t_up = _resolve_sieve(
-			target_row, _("Target"), sieve_values, dimension_map
-		)
+		target = _resolve_sieve(target_row, _("Target"), sieve_values, dimension_map)
 
-		for s_row, s_value, s_low, s_high, s_down, s_up in source_entries:
-			if t_low < s_down or t_high > s_up:
+		for s_row, source in source_entries:
+			# Two zero-series names can both be unbanded, in which case neither band check below
+			# runs and nothing else would catch converting an item into itself.
+			if (
+				source.is_zero
+				and target.is_zero
+				and s_row.item_code == target_row.item_code
+			):
+				frappe.throw(
+					_(
+						"Row #{0}: Source and target are both item {1}, so there is nothing to "
+						"convert. Pick a different target sieve size."
+					).format(target_row.idx, frappe.bold(target_row.item_code))
+				)
+
+			# Each direction is gated on the band that side actually provides. An unbanded
+			# zero-series name constrains nothing, but still has to satisfy the other side's band.
+			if source.has_band and (
+				target.low < source.down or target.high > source.up
+			):
 				frappe.throw(
 					_(
 						"Row #{0}: Target item {1} has sieve range {2} to {3}, which is outside "
@@ -394,15 +437,17 @@ def validate_sieve_size_band(self):
 					).format(
 						target_row.idx,
 						frappe.bold(target_row.item_code),
-						frappe.bold(t_low),
-						frappe.bold(t_high),
-						frappe.bold(s_down),
-						frappe.bold(s_up),
-						frappe.bold(s_value),
+						frappe.bold(target.low),
+						frappe.bold(target.high),
+						frappe.bold(source.down),
+						frappe.bold(source.up),
+						frappe.bold(source.value),
 					)
 				)
 
-			if s_low < t_down or s_high > t_up:
+			if target.has_band and (
+				source.low < target.down or source.high > target.up
+			):
 				frappe.throw(
 					_(
 						"Row #{0}: Source item {1} has sieve range {2} to {3}, which is outside "
@@ -410,11 +455,11 @@ def validate_sieve_size_band(self):
 					).format(
 						s_row.idx,
 						frappe.bold(s_row.item_code),
-						frappe.bold(s_low),
-						frappe.bold(s_high),
-						frappe.bold(t_down),
-						frappe.bold(t_up),
-						frappe.bold(t_value),
+						frappe.bold(source.low),
+						frappe.bold(source.high),
+						frappe.bold(target.down),
+						frappe.bold(target.up),
+						frappe.bold(target.value),
 					)
 				)
 

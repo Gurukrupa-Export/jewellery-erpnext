@@ -156,6 +156,168 @@ class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):
 
 		mock_get_all.assert_not_called()
 
+	# -- the zero series -----------------------------------------------------------------
+	#
+	# "+00-0", "+000-00", "+0000-000" ... are names, not measurements. They all have UP/DOWN
+	# unset AND all parse to (0.0, 0.0), so the numeric band rule cannot apply to them at all.
+
+	@patch("frappe.db.get_all")
+	def test_zero_series_to_zero_series_passes(self, mock_get_all):
+		"""The reported case: D-NT-RO-4-+0000-000 -> D-NT-RO-4-+000-00, both UP/DOWN 0/0."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+0000-000")],
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+0000-000": "+0000-000", "D-NT-RO-4-+000-00": "+000-00"},
+			[_attribute_value("+0000-000"), _attribute_value("+000-00")],
+		)
+
+		validate_sieve_size_band(doc)
+
+	@patch("frappe.db.get_all")
+	def test_zero_series_to_itself_throws(self, mock_get_all):
+		"""Any zero size may become any other, so self-conversion is all that is left to reject."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+000-00": "+000-00"}, [_attribute_value("+000-00")]
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("nothing to convert", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_two_items_sharing_one_zero_size_pass(self, mock_get_all):
+		"""Different items, same zero size -- a grade change, which validate_purity governs."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+			[_row(idx=1, item_code="D-NT-RO-5-+000-00")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+000-00": "+000-00", "D-NT-RO-5-+000-00": "+000-00"},
+			[_attribute_value("+000-00")],
+		)
+
+		validate_sieve_size_band(doc)
+
+	@patch("frappe.db.get_all")
+	def test_banded_zero_series_to_numeric_passes(self, mock_get_all):
+		"""A zero size WITH a band is an ordinary size: +00-0 (0..1) -> +0-1 (0..1.5).
+
+		Live values. Forward: the target's 0..1 fits the source band 0..1. Reverse: the source's
+		0..0 fits the target band 0..1.5.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+00-0")],
+			[_row(idx=1, item_code="D-NT-RO-4-+0-1")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+00-0": "+00-0", "D-NT-RO-4-+0-1": "+0-1"},
+			[
+				_attribute_value("+00-0", height=1.0, weight=0.0),
+				_attribute_value("+0-1", height=1.5, weight=0.0),
+			],
+		)
+
+		validate_sieve_size_band(doc)
+
+	@patch("frappe.db.get_all")
+	def test_banded_zero_series_band_is_enforced(self, mock_get_all):
+		"""The band on a zero size is READ, not skipped: +1-1.5's 1.5 overflows +00-0's UP of 1."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+00-0")],
+			[_row(idx=1, item_code="D-NT-RO-4-+1-1.5")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+00-0": "+00-0", "D-NT-RO-4-+1-1.5": "+1-1.5"},
+			[
+				_attribute_value("+00-0", height=1.0, weight=0.0),
+				_attribute_value("+1-1.5", height=2.5, weight=1.0),
+			],
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("outside the allowed band", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_unbanded_zero_still_obeys_the_other_side_band(self, mock_get_all):
+		"""An unbanded zero constrains nothing, but must still satisfy the other side's band.
+
+		+0000-000 parses to 0..0, which is nowhere near +7-7.5's band of 7.5..9.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-ZERO")], [_row(idx=1, item_code="D-NUM")]
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-ZERO": "+0000-000", "D-NUM": "+7-7.5"},
+			[
+				_attribute_value("+0000-000"),
+				_attribute_value("+7-7.5", height=9.0, weight=7.5),
+			],
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("outside the allowed band", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_non_zero_value_without_a_band_still_throws(self, mock_get_all):
+		"""The exemption is for zero-series names only -- an ordinary size still needs UP/DOWN."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NUM-A")], [_row(idx=1, item_code="D-NUM-B")]
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NUM-A": "+3-3.5", "D-NUM-B": "+7-7.5"},
+			[
+				_attribute_value("+3-3.5"),  # no band
+				_attribute_value("+7-7.5", height=9.0, weight=7.5),
+			],
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("UP/DOWN", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_zero_series_still_requires_its_attribute_value(self, mock_get_all):
+		"""The exemption skips the BAND assertions only -- the other guards still run."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+00-0")],
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+00-0": "+00-0", "D-NT-RO-4-+000-00": "+000-00"},
+			[_attribute_value("+000-00")],  # "+00-0" has no record
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("does not exist", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_plus_zero_dash_two_is_not_zero_series(self, mock_get_all):
+		"""Guards ZERO_SIEVE_PATTERN against over-matching: "+0-2"'s "2" keeps it numeric."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-RANGEISH")], [_row(idx=1, item_code="D-NUM")]
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-RANGEISH": "+0-2", "D-NUM": "+3-3.5"},
+			[
+				_attribute_value("+0-2", height=2.5, weight=0.0),
+				_attribute_value("+3-3.5", height=4.0, weight=2.5),
+			],
+		)
+
+		# Numeric path: target 3..3.5 overflows the source band 0..2.5 -> the ordinary band throw.
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("outside the allowed band", str(caught.exception))
+
 	# -- band rejections -----------------------------------------------------------------
 
 	@patch("frappe.db.get_all")
