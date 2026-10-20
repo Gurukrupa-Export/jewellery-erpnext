@@ -249,6 +249,117 @@ def _batch_owner(batch_no):
 	return batch.custom_customer or None
 
 
+def _serial_owner(serial_no, warehouse=None):
+	"""Owner of a SERIAL-ONLY piece, or ``None`` when it is not customer-owned.
+
+	With no batch there is no ``Batch.custom_customer`` to read, so the owner is taken from the
+	inventory dimensions of the Stock Ledger Entry that last brought the serial into
+	``warehouse`` -- the same ownership erpnext's dimension check enforces when the serial is
+	moved out. Only inward entries count, so the delivery's own outward entry never answers for
+	itself. Filtering on the warehouse is what lets the read use Serial and Batch Entry's
+	``(warehouse, serial_no, posting_datetime)`` index; without it the join scanned the whole
+	Stock Ledger for every serial.
+
+	When that entry carries no inventory type (dimension columns missing or never stamped), the
+	finished row of the entry that produced the serial answers instead. An explicit non-customer
+	inventory type is an answer, not a gap, and is never overridden.
+	"""
+	if not serial_no:
+		return None
+
+	holding = _serial_holding(serial_no, warehouse) if warehouse else None
+	if holding and holding[0]:
+		inventory_type, customer = holding
+	else:
+		inventory_type, customer = _produced_ownership(serial_no)
+
+	if inventory_type != CUSTOMER_GOODS:
+		return None
+	return customer or None
+
+
+#: The ownership columns a serial-only piece is read from. ``inventory_type`` ships with the
+#: apps; ``customer`` is created by the site's Customer Inventory Dimension, so a site without
+#: that dimension (a fresh CI site) has no such column on any of these tables.
+OWNERSHIP_COLUMNS = ("inventory_type", "customer")
+
+
+def _has_ownership_columns(doctype):
+	return all(frappe.db.has_column(doctype, column) for column in OWNERSHIP_COLUMNS)
+
+
+def _serial_holding(serial_no, warehouse):
+	"""``(inventory_type, customer)`` of the latest inward ledger entry of ``serial_no`` into
+	``warehouse``, or ``None`` -- also when the ledger carries no ownership columns, so the
+	caller falls back instead of failing on an unknown column."""
+	if not _has_ownership_columns("Stock Ledger Entry"):
+		return None
+
+	sbe = frappe.qb.DocType("Serial and Batch Entry")
+	sle = frappe.qb.DocType("Stock Ledger Entry")
+	rows = (
+		frappe.qb.from_(sbe)
+		.join(sle)
+		.on(sle.serial_and_batch_bundle == sbe.parent)
+		.select(sle.inventory_type, sle.customer)
+		.where(
+			(sbe.warehouse == warehouse)
+			& (sbe.serial_no == serial_no)
+			& (sle.is_cancelled == 0)
+			& (sle.actual_qty > 0)
+		)
+		.orderby(sbe.posting_datetime, order=frappe.qb.desc)
+		.limit(1)
+	).run()
+	return tuple(rows[0]) if rows else None
+
+
+def _produced_ownership(serial_no):
+	"""``(inventory_type, customer)`` stamped on the finished row that produced ``serial_no``."""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
+		serial_production,
+	)
+
+	production = serial_production(serial_no)
+	if not production or not _has_ownership_columns("Stock Entry Detail"):
+		return None, None
+	row = frappe.db.get_value(
+		"Stock Entry Detail",
+		production.finished_row,
+		["inventory_type", "customer"],
+		as_dict=True,
+	)
+	return (row.inventory_type, row.customer) if row else (None, None)
+
+
+def _row_serial_owners(doc, row):
+	"""``{serial: owner}`` for a batch-less row, read once per document.
+
+	The entitlement check (``before_submit``) and the event writer (``on_submit``) both need
+	the owners of the same serials; they share one Document object, so the answer is kept on
+	its flags rather than read twice.
+	"""
+	flags = getattr(doc, "flags", None)
+	cache = None
+	if flags is not None:
+		cache = flags.get("cg_serial_owners")
+		if cache is None:
+			cache = flags.cg_serial_owners = {}
+
+	owners = {}
+	for serial_no in _row_serials(row):
+		if not serial_no:
+			continue
+		key = (serial_no, row.get("warehouse"))
+		if cache is not None and key in cache:
+			owners[serial_no] = cache[key]
+			continue
+		owners[serial_no] = _serial_owner(serial_no, row.get("warehouse"))
+		if cache is not None:
+			cache[key] = owners[serial_no]
+	return owners
+
+
 def _row_batches(row):
 	"""Every batch this row actually moves, from the bundle first and the field second.
 
@@ -394,14 +505,53 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 		_recorded_components,
 		attribution_basis,
 	)
-	from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
-		get_booked_rate,
-	)
 
 	if not batch_no or not customer:
 		return None
 
 	components = _recorded_components(batch_no)
+	return _share_of_components(
+		doc,
+		components,
+		customer,
+		moved_qty,
+		valued,
+		lambda: attribution_basis(batch_no, components),
+	)
+
+
+def _serial_customer_share(doc, serial_no, customer, moved_qty, valued):
+	"""``_customer_share`` for a SERIAL-ONLY piece, which has no batch to hold its components.
+
+	The composition is rebuilt from the entry that produced the serial
+	(``resolve_serial_components``) and priced by exactly the same rules, so a serial-only
+	piece releases what a batch-tracked piece made from the same inputs would. The basis is the
+	pieces that entry produced. ``None`` -- settle nothing -- when no producing entry is found or
+	the customer has nothing in it; never a fallback to the piece's stock value.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
+		resolve_serial_components,
+	)
+
+	if not serial_no or not customer:
+		return None
+
+	components, produced = resolve_serial_components(serial_no)
+	return _share_of_components(
+		doc, components, customer, moved_qty, valued, lambda: produced
+	)
+
+
+def _share_of_components(doc, components, customer, moved_qty, valued, basis_of):
+	"""The customer's gold in ``moved_qty`` of something made of ``components``.
+
+	``basis_of`` returns the quantity the components describe; it is only called once the
+	customer is known to own gold in them, so a raw batch costs no extra read.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+		get_booked_rate,
+	)
+
 	customers = [
 		component
 		for component in components
@@ -429,7 +579,7 @@ def _customer_share(doc, batch_no, customer, moved_qty, valued):
 
 	# The basis covers EVERY component, not just this customer's: company alloy and stones are
 	# part of what the batch is made of.
-	basis = attribution_basis(batch_no, components)
+	basis = basis_of()
 	if not basis:
 		share.reason = "no quantity is recorded for what the batch was made of"
 		return share
@@ -529,12 +679,13 @@ def _is_receipt_batch(company, customer, batch_no):
 	)
 
 
-def _log_unsettled(doc, row, batch_no, reason):
+def _log_unsettled(doc, row, batch_no, reason, serial_no=None):
 	"""Leave the liability open, visibly, rather than settle a number nobody can defend."""
+	held = f"batch {batch_no}" if batch_no else f"serial {serial_no}"
 	frappe.log_error(
 		title="Customer Gold: delivery not settled",
 		message=(
-			f"{doc.doctype} {doc.name} row {row.name} delivers batch {batch_no}, which holds "
+			f"{doc.doctype} {doc.name} row {row.name} delivers {held}, which holds "
 			f"customer gold, but its booked value could not be established: {reason}. No "
 			f"liability was released for this row; it remains open until this is resolved."
 		),
@@ -699,8 +850,14 @@ def validate_customer_gold_entitlement(doc, method=None):
 	document_customer = doc.get("customer")
 
 	for row in doc.get("items") or []:
-		for batch_no in _row_batches(row):
-			owner = _batch_owner(batch_no)
+		batches = _row_batches(row)
+		# A serial-only piece has no batch to name its owner; its serials answer instead.
+		owners = (
+			[_batch_owner(batch_no) for batch_no in batches]
+			if batches
+			else list(_row_serial_owners(doc, row).values())
+		)
+		for owner in owners:
 			if not owner or owner == document_customer:
 				continue
 
@@ -1560,127 +1717,306 @@ def record_fulfilment(doc, method=None):
 			)
 			continue
 
-		batch_no = batches[0] if batches else None
+		if not batches:
+			# A serial-only piece: no batch to name its owner or hold its components, so each
+			# serial is resolved on its own -- two serials on one row may come from different
+			# productions, even different owners.
+			owners = _row_serial_owners(doc, row)
+			serials = list(owners)
+			for serial_no in serials:
+				customer = owners[serial_no]
+				if not customer:
+					continue
+				original = None
+				if flt(row.get("qty")) < 0:
+					original = _serial_delivery_recorded(doc, serial_no, customer)
+				if flt(row.get("qty")) < 0 and not original:
+					# Delivered before serial-only pieces were recorded: the delivery released
+					# nothing, so a return must restore nothing.
+					frappe.log_error(
+						title="Customer Gold: serial-only return not restored",
+						message=(
+							f"{doc.doctype} {doc.name} row {row.name} returns serial {serial_no}, "
+							f"whose delivery wrote no custody event. Nothing was restored."
+						),
+					)
+					continue
+				qty = flt(row.get("qty")) / len(serials)
+				share = _serial_customer_share(
+					doc, serial_no, customer, abs(qty), valued=nominal
+				)
+				if original:
+					share = _pin_to_original_value(share, original, abs(qty), nominal)
+				written.extend(
+					_post_fulfilment_events(
+						doc,
+						row,
+						kind,
+						is_return,
+						nominal,
+						customer,
+						None,
+						[serial_no],
+						qty,
+						share,
+					)
+				)
+			continue
+
+		batch_no = batches[0]
 		customer = _batch_owner(batch_no)
 		if not customer:
 			continue
 
-		serials = _row_serials(row)
-		# THE SIGN IS ERPNEXT'S, AND IT IS APPLIED EXACTLY ONCE.
-		#
-		# This used to read ``per_serial if is_return else -per_serial``, which double-negated
-		# every return. erpnext builds a return row with an ALREADY NEGATIVE qty
-		# (``sales_and_purchase_return.py:540``) and enforces it
-		# (``:236`` throws "must be negative in return document"). It then negates once more when
-		# it posts the SLE (``selling_controller.py:707``: ``"actual_qty": -1 * flt(item_row.qty)``),
-		# with no ``is_return`` branch anywhere in that path.
-		#
-		# So mirroring erpnext means negating unconditionally: a delivery row (+qty) becomes a
-		# negative custody delta, a return row (-qty) becomes a positive one. Branching on
-		# ``is_return`` applied the sign twice and made a return REDUCE the customer's position
-		# again. It also put ``cg_gross_qty_delta`` and ``cg_carrying_value_delta`` into direct
-		# contradiction, since ``stock_value_difference`` is positive on a return.
-		per_serial = flt(row.get("qty")) / len(serials)
-		signed = -per_serial
-
-		# Money is recorded ONLY under Nominal. Under Zero Value the stock genuinely carries
-		# no value, so a 0.0 here would assert a measurement that was never taken; NULL says
-		# "not valued", which is the truth and is what makes the memorandum record complete
-		# under either answer to D01.
-		# A batch holding recorded customer components settles the customer's share of it and
-		# nothing else -- never the finished item's stock value, not even as a fallback. Only a
-		# raw batch (no components) settles from the stock ledger, which is the case that
-		# reading was written for. See _customer_share.
-		#
-		# Same sign convention for value and fine gold as for the quantity delta: they LEAVE on a
-		# delivery and come BACK on a return. erpnext builds a return row with an already
-		# negative qty, so the sign is read off the row rather than branched on is_return.
-		direction = -1 if flt(row.get("qty")) >= 0 else 1
 		share = _customer_share(
 			doc, batch_no, customer, abs(flt(row.get("qty"))), valued=nominal
 		)
-		carrying_value = None
-		if nominal:
-			if share is None and _is_receipt_batch(doc.company, customer, batch_no):
-				carrying_value = _row_carrying_value(doc, row)
-			elif share is None:
-				# A customer-owned batch with no component of this customer's and no receipt of
-				# its own -- a piece whose provenance was never written. Its stock value holds
-				# company alloy, stones and making too; releasing it could exceed what the
-				# customer is owed.
-				_log_unsettled(
-					doc,
-					row,
-					batch_no,
-					"it records no component of this customer's and is not their received batch",
-				)
-			elif share.value is None:
-				_log_unsettled(doc, row, batch_no, share.reason)
-			else:
-				carrying_value = direction * abs(share.value)
-		value_per_serial = (
-			flt(carrying_value) / len(serials) if carrying_value is not None else None
+		written.extend(
+			_post_fulfilment_events(
+				doc,
+				row,
+				kind,
+				is_return,
+				nominal,
+				customer,
+				batch_no,
+				_row_serials(row),
+				flt(row.get("qty")),
+				share,
+			)
 		)
 
-		# Fine gold follows the same rule. A finished piece has no purity of its own, so reading
-		# it off the delivered item recorded 0.000 fine grams, Unknown, for every piece shipped,
-		# and the customer's fine position never came down. The customer's components say how
-		# much of their gold left.
-		if share is not None and share.fine is not None:
-			basis = fine_basis(direction * abs(share.fine) / len(serials), doc.company)
+	settle_customer_gold_liability(doc, written)
+
+
+def _serial_delivery_recorded(doc, serial_no, customer):
+	"""The Delivery event written for ``serial_no`` -- by the document this one returns against
+	when it names one, else by any delivery of the serial -- or ``None`` when none was written.
+
+	Only a delivery still to be restored counts. A cancelled delivery already has its Reversal,
+	and one followed by an effective Delivery Return of the same serial already came back; a
+	return paired with either would credit gold a second time.
+	"""
+	filters = {
+		"serial_no": serial_no,
+		"customer": customer,
+		"cg_event_kind": EVENT_DELIVERY,
+	}
+	against = doc.get("return_against")
+	if against:
+		filters["reference_doctype"] = doc.doctype
+		filters["reference_docname"] = against
+	events = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters=filters,
+		fields=[
+			"name",
+			"creation",
+			"cg_gross_qty_delta",
+			"cg_carrying_value_delta",
+			"cg_fine_gold_delta",
+			"cg_fine_measurement_status",
+		],
+		order_by="creation desc",
+	)
+	if not events:
+		return None
+	returns = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters={
+			"serial_no": serial_no,
+			"customer": customer,
+			"cg_event_kind": EVENT_DELIVERY_RETURN,
+		},
+		fields=["name", "creation"],
+	)
+	reversed_ = set(
+		frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={
+				"cg_event_kind": EVENT_REVERSAL,
+				"cg_reversal_of": ["in", [e.name for e in events + returns]],
+			},
+			pluck="cg_reversal_of",
+		)
+	)
+	restored_until = max(
+		(r.creation for r in returns if r.name not in reversed_), default=None
+	)
+	return next(
+		(
+			e
+			for e in events
+			if e.name not in reversed_
+			and (restored_until is None or e.creation > restored_until)
+		),
+		None,
+	)
+
+
+def _pin_to_original_value(share, original, returned_qty, nominal):
+	"""Make a serial return restore what its delivery actually released, and return the share.
+
+	``_serial_customer_share`` reads today's composition and booked receipt rate, both of which
+	can move between delivery and return -- the same source batch receiving more metal at another
+	rate is enough. The original event holds what was released, so the return restores that, in
+	proportion to the quantity returned: the value under Nominal and the fine gold under either
+	policy. When today's composition cannot be rebuilt at all, the original event alone is the
+	share, so a delivery that debited the liability is never returned unvalued.
+	"""
+	if share is None:
+		share = frappe._dict(fine=None, value=None, reason=None, parts=[])
+	# The allocations to mirror are this event's, also when the return names no document.
+	share.original_event = original.get("name")
+	delivered = abs(flt(original.get("cg_gross_qty_delta")))
+	fraction = min(flt(returned_qty) / delivered, 1.0) if delivered else 0.0
+
+	fine = original.get("cg_fine_gold_delta")
+	if (
+		delivered
+		and fine is not None
+		and (original.get("cg_fine_measurement_status") == STATUS_KNOWN)
+	):
+		share.fine = flt(abs(flt(fine)) * fraction, QTY_PRECISION)
+	else:
+		# The delivery measured no fine gold; the return restates the same basis, not today's.
+		share.fine = None
+
+	if not nominal:
+		return share
+	released = original.get("cg_carrying_value_delta")
+	if released is None or not delivered:
+		share.value = None
+		share.reason = "the original delivery recorded no value"
+		return share
+	share.value = flt(abs(flt(released)) * fraction, 2)
+	share.reason = None
+	return share
+
+
+def _post_fulfilment_events(
+	doc, row, kind, is_return, nominal, customer, batch_no, serials, qty, share
+):
+	"""Write one Delivery / Delivery Return event per serial for ``qty`` of ``row``.
+
+	``share`` is the customer's gold in ``qty`` (``_customer_share`` for a batch,
+	``_serial_customer_share`` for a serial-only piece), or ``None`` when no component of the
+	customer's is recorded. Returns the event names written.
+	"""
+	written = []
+	# THE SIGN IS ERPNEXT'S, AND IT IS APPLIED EXACTLY ONCE.
+	#
+	# This used to read ``per_serial if is_return else -per_serial``, which double-negated
+	# every return. erpnext builds a return row with an ALREADY NEGATIVE qty
+	# (``sales_and_purchase_return.py:540``) and enforces it
+	# (``:236`` throws "must be negative in return document"). It then negates once more when
+	# it posts the SLE (``selling_controller.py:707``: ``"actual_qty": -1 * flt(item_row.qty)``),
+	# with no ``is_return`` branch anywhere in that path.
+	#
+	# So mirroring erpnext means negating unconditionally: a delivery row (+qty) becomes a
+	# negative custody delta, a return row (-qty) becomes a positive one. Branching on
+	# ``is_return`` applied the sign twice and made a return REDUCE the customer's position
+	# again. It also put ``cg_gross_qty_delta`` and ``cg_carrying_value_delta`` into direct
+	# contradiction, since ``stock_value_difference`` is positive on a return.
+	per_serial = flt(qty) / len(serials)
+	signed = -per_serial
+
+	# Money is recorded ONLY under Nominal. Under Zero Value the stock genuinely carries
+	# no value, so a 0.0 here would assert a measurement that was never taken; NULL says
+	# "not valued", which is the truth and is what makes the memorandum record complete
+	# under either answer to D01.
+	# A batch holding recorded customer components settles the customer's share of it and
+	# nothing else -- never the finished item's stock value, not even as a fallback. Only a
+	# raw batch (no components) settles from the stock ledger, which is the case that
+	# reading was written for. See _customer_share.
+	#
+	# Same sign convention for value and fine gold as for the quantity delta: they LEAVE on a
+	# delivery and come BACK on a return. erpnext builds a return row with an already
+	# negative qty, so the sign is read off the row rather than branched on is_return.
+	direction = -1 if flt(qty) >= 0 else 1
+	carrying_value = None
+	if nominal:
+		if share is None and _is_receipt_batch(doc.company, customer, batch_no):
+			carrying_value = _row_carrying_value(doc, row)
+		elif share is None:
+			# A customer-owned batch with no component of this customer's and no receipt of
+			# its own -- a piece whose provenance was never written. Its stock value holds
+			# company alloy, stones and making too; releasing it could exceed what the
+			# customer is owed.
+			_log_unsettled(
+				doc,
+				row,
+				batch_no,
+				"it records no component of this customer's and is not their received batch",
+				serial_no=serials[0],
+			)
+		elif share.value is None:
+			_log_unsettled(doc, row, batch_no, share.reason, serial_no=serials[0])
 		else:
-			basis = quantity_basis(row.get("item_code"), signed, doc.company)
+			carrying_value = direction * abs(share.value)
+	value_per_serial = (
+		flt(carrying_value) / len(serials) if carrying_value is not None else None
+	)
 
-		currency = (
-			frappe.get_cached_value("Company", doc.company, "default_currency")
-			if nominal
-			else None
+	# Fine gold follows the same rule. A finished piece has no purity of its own, so reading
+	# it off the delivered item recorded 0.000 fine grams, Unknown, for every piece shipped,
+	# and the customer's fine position never came down. The customer's components say how
+	# much of their gold left.
+	if share is not None and share.fine is not None:
+		basis = fine_basis(direction * abs(share.fine) / len(serials), doc.company)
+	else:
+		basis = quantity_basis(row.get("item_code"), signed, doc.company)
+
+	currency = (
+		frappe.get_cached_value("Company", doc.company, "default_currency")
+		if nominal
+		else None
+	)
+	for serial_no in serials:
+		event_name = _write_event(
+			cg_event_key=build_event_key(
+				doc.company, doc.doctype, row.name, serial_no, kind
+			),
+			cg_event_kind=kind,
+			cg_stage=STAGE_FG if is_return else STAGE_CLOSED,
+			company=doc.company,
+			customer=customer,
+			reference_doctype=doc.doctype,
+			reference_docname=doc.name,
+			cg_source_row=row.name,
+			item_code=row.get("item_code"),
+			batch_no=batch_no,
+			serial_no=serial_no,
+			stock_uom=row.get("stock_uom") or row.get("uom"),
+			cg_gross_qty_delta=signed,
+			**basis,
+			cg_carrying_value_delta=value_per_serial,
+			# Currency is stamped whenever the policy is Nominal, even if the row turned
+			# out to carry no SLE: it records which policy was in force when the event was
+			# written, which is what makes a later reconciliation possible.
+			cg_currency=currency,
 		)
-		for serial_no in serials:
-			event_name = _write_event(
-				cg_event_key=build_event_key(
-					doc.company, doc.doctype, row.name, serial_no, kind
-				),
-				cg_event_kind=kind,
-				cg_stage=STAGE_FG if is_return else STAGE_CLOSED,
+		written.append(event_name)
+		_allocate_fulfilment(
+			doc,
+			row,
+			frappe._dict(
+				name=event_name,
 				company=doc.company,
 				customer=customer,
 				reference_doctype=doc.doctype,
 				reference_docname=doc.name,
-				cg_source_row=row.name,
-				item_code=row.get("item_code"),
-				batch_no=batch_no,
-				serial_no=serial_no,
-				stock_uom=row.get("stock_uom") or row.get("uom"),
-				cg_gross_qty_delta=signed,
-				**basis,
-				cg_carrying_value_delta=value_per_serial,
-				# Currency is stamped whenever the policy is Nominal, even if the row turned
-				# out to carry no SLE: it records which policy was in force when the event was
-				# written, which is what makes a later reconciliation possible.
-				cg_currency=currency,
-			)
-			written.append(event_name)
-			_allocate_fulfilment(
-				doc,
-				row,
-				frappe._dict(
-					name=event_name,
-					company=doc.company,
-					customer=customer,
-					reference_doctype=doc.doctype,
-					reference_docname=doc.name,
-				),
-				batch_no,
-				serial_no,
-				share,
-				per_serial,
-				value_per_serial,
-				len(serials),
-				currency,
-			)
+			),
+			batch_no,
+			serial_no,
+			share,
+			per_serial,
+			value_per_serial,
+			len(serials),
+			currency,
+		)
 
-	settle_customer_gold_liability(doc, written)
+	return written
 
 
 def _allocate_fulfilment(
@@ -1726,7 +2062,14 @@ def _allocate_fulfilment(
 	disposition = DISPOSITION_DELIVERY_RETURN if restoring else DISPOSITION_FG_DELIVERY
 
 	if restoring and _restore_original_allocations(
-		doc, row, event, serial_no, abs(per_serial), total_amount, valued_currency
+		doc,
+		row,
+		event,
+		serial_no,
+		abs(per_serial),
+		total_amount,
+		valued_currency,
+		original_event=(share or {}).get("original_event"),
 	):
 		return
 
@@ -1763,10 +2106,22 @@ def _allocate_fulfilment(
 
 
 def _restore_original_allocations(
-	doc, row, event, serial_no, returned_qty, total_amount, currency
+	doc,
+	row,
+	event,
+	serial_no,
+	returned_qty,
+	total_amount,
+	currency,
+	original_event=None,
 ):
 	"""Mirror the original delivery's allocations for this serial. False when there are none
-	(a legacy delivery), so the caller falls back to deriving them."""
+	(a legacy delivery), so the caller falls back to deriving them.
+
+	``original_event`` is the Delivery event a serial-only return already paired with; it names
+	the original even when the return names no ``return_against``, so a standalone return
+	reopens the receipts its delivery closed rather than today's.
+	"""
 	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
 		ALLOCATION_DOCTYPE,
 		DISPOSITION_DELIVERY_RETURN,
@@ -1775,19 +2130,21 @@ def _restore_original_allocations(
 	)
 
 	against = doc.get("return_against")
-	if not against:
+	if original_event:
+		filters = {"name": original_event}
+	elif against:
+		filters = {
+			"reference_doctype": doc.doctype,
+			"reference_docname": against,
+			"cg_event_kind": EVENT_DELIVERY,
+		}
+		if serial_no:
+			filters["serial_no"] = serial_no
+		detail = row.get("dn_detail") or row.get("sales_invoice_item")
+		if detail:
+			filters["cg_source_row"] = detail
+	else:
 		return False
-
-	filters = {
-		"reference_doctype": doc.doctype,
-		"reference_docname": against,
-		"cg_event_kind": EVENT_DELIVERY,
-	}
-	if serial_no:
-		filters["serial_no"] = serial_no
-	detail = row.get("dn_detail") or row.get("sales_invoice_item")
-	if detail:
-		filters["cg_source_row"] = detail
 	originals = frappe.get_all(
 		LEDGER_DOCTYPE, filters=filters, fields=["name", "cg_gross_qty_delta"]
 	)
