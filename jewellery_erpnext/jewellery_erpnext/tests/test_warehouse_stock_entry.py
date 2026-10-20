@@ -17,7 +17,7 @@ from unittest.mock import patch
 import frappe
 from frappe import ValidationError
 from frappe.tests import IntegrationTestCase
-from frappe.utils import get_first_day, getdate, today
+from frappe.utils import add_days, flt, get_first_day, getdate, today
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import (
 	warehouse,
@@ -804,6 +804,130 @@ class TestMslTrackingViews(IntegrationTestCase):
 		for fragment in query.split("%(")[1:]:
 			# every surviving % must be a named parameter placeholder
 			self.assertIn(")s", fragment)
+
+
+class TestMslTrackingViewsAgainstLedger(IntegrationTestCase):
+	"""``_msl_tracking_views`` on a real ledger returns what the two
+	``get_warehouse_item_tracking`` calls it replaced return.
+
+	The rows are ``db_insert``-ed (no hooks, no validation) inside the class transaction, which
+	``IntegrationTestCase`` rolls back at class cleanup.
+	"""
+
+	FIELDS = ("item_code", "issue_qty", "receive_qty", "loss_qty", "pending_qty")
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls.seeded = frappe.db.has_column("Warehouse", "employee")
+		if not cls.seeded:
+			return
+
+		h = frappe.generate_hash(length=8)
+		cls.wh = f"_T MSL Ledger {h}"
+		other_wh = f"_T MSL Ledger Other {h}"
+		for name in (cls.wh, other_wh):
+			cls._insert(
+				"Warehouse",
+				name=name,
+				warehouse_name=name,
+				employee=f"_T-EMP-{h}",
+				warehouse_type="Raw Material",
+			)
+		loss_se, move_se = f"_T-SE-LOSS-{h}", f"_T-SE-MOVE-{h}"
+		cls._insert("Stock Entry", name=loss_se, stock_entry_type="Process Loss")
+		cls._insert("Stock Entry", name=move_se, stock_entry_type="Material Transfer")
+
+		cls.month_start = get_first_day(getdate(today()))
+		this_month, last_month = cls.month_start, add_days(cls.month_start, -1)
+		cls.items = {k: f"_T-{k}-{h}" for k in "ABCD"}
+		a, b, c, d = (cls.items[k] for k in "ABCD")
+		se, sr = "Stock Entry", "Stock Reconciliation"
+		# (warehouse, item, qty, posting_date, voucher_type, voucher_no, is_cancelled)
+		ledger = [
+			(cls.wh, a, 10, last_month, se, move_se, 0),
+			(cls.wh, a, 4, this_month, se, move_se, 0),
+			# outward: a Receive, or a Loss on the Process Loss entry
+			(cls.wh, a, -3, this_month, se, move_se, 0),
+			(cls.wh, a, -1, this_month, se, loss_se, 0),
+			# ignored: cancelled, and another warehouse
+			(cls.wh, a, 100, this_month, se, move_se, 1),
+			(other_wh, a, 50, this_month, se, move_se, 0),
+			# moved last month only
+			(cls.wh, b, 5, last_month, se, move_se, 0),
+			(cls.wh, b, -2, last_month, se, loss_se, 0),
+			# rounds to 0, still listed
+			(cls.wh, c, 0.0004, this_month, se, move_se, 0),
+			# outward on a voucher that is not a Stock Entry: a Receive
+			(cls.wh, d, 2, last_month, se, move_se, 0),
+			(cls.wh, d, -2, this_month, sr, f"_T-SR-{h}", 0),
+		]
+		for i, (wh, item, qty, posting_date, vtype, vno, cancelled) in enumerate(
+			ledger
+		):
+			cls._insert(
+				"Stock Ledger Entry",
+				name=f"_T-SLE-{h}-{i}",
+				warehouse=wh,
+				item_code=item,
+				actual_qty=qty,
+				posting_date=posting_date,
+				voucher_type=vtype,
+				voucher_no=vno,
+				is_cancelled=cancelled,
+			)
+
+	@staticmethod
+	def _insert(doctype, **values):
+		doc = frappe.new_doc(doctype)
+		doc.update(values)
+		doc.db_insert()
+
+	def setUp(self):
+		if not self.seeded:
+			self.skipTest("tabWarehouse has no employee column")
+
+	def _project(self, rows):
+		return sorted(
+			({f: r[f] for f in self.FIELDS} for r in rows), key=lambda r: r["item_code"]
+		)
+
+	def test_views_match_the_two_tracking_queries(self):
+		month, cumulative = wt._msl_tracking_views(self.wh, self.month_start)
+
+		self.assertEqual(
+			self._project(month),
+			self._project(
+				wt.get_warehouse_item_tracking(
+					{"warehouse": self.wh, "from_date": self.month_start}
+				)
+			),
+		)
+		self.assertEqual(
+			self._project(cumulative),
+			self._project(wt.get_warehouse_item_tracking({"warehouse": self.wh})),
+		)
+
+	def test_views_by_hand(self):
+		month, cumulative = wt._msl_tracking_views(self.wh, self.month_start)
+		month = {r["item_code"]: r for r in month}
+		cumulative = {r["item_code"]: r for r in cumulative}
+		a, b, c, d = (self.items[k] for k in "ABCD")
+
+		self.assertEqual(set(month), {a, c, d})  # B did not move this month
+		self.assertEqual(set(cumulative), {a, b, c, d})
+		self.assertEqual(
+			[cumulative[a][f] for f in self.FIELDS[1:]], [14.0, 3.0, 1.0, 10.0]
+		)
+		self.assertEqual([month[a][f] for f in self.FIELDS[1:]], [4.0, 3.0, 1.0, 0.0])
+		self.assertEqual(
+			[cumulative[b][f] for f in self.FIELDS[1:]], [5.0, 0.0, 2.0, 3.0]
+		)
+		self.assertEqual(month[d]["receive_qty"], 2.0)
+		self.assertEqual(month[d]["pending_qty"], -2.0)
+		self.assertEqual(
+			cumulative[c]["issue_qty"], flt(0.0004, wt._tracking_precision())
+		)
 
 
 # ---------------------------------------------------------------------------
