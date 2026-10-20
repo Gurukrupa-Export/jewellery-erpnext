@@ -262,7 +262,7 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None, prefixes
 		FROM `tabMOP Log`
 		WHERE manufacturing_operation = %s
 		  AND is_cancelled = 0
-		ORDER BY creation ASC
+		ORDER BY creation ASC, name ASC
 		""",
 		(mop_name,),
 		as_dict=True,
@@ -642,11 +642,13 @@ def get_current_mop_balance_rows(
 		if not item_codes:
 			return []
 		filters["item_code"] = ["in", item_codes]
+	# ``name`` settles a ``creation`` tie the way the old scan of the ``creation`` index did;
+	# ``mop_balance_idx`` serves this read now and leaves tie order to the filesort.
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
 		filters=filters,
 		fields=fields,
-		order_by="creation desc",
+		order_by="creation desc, name desc",
 	)
 	if not mop_logs:
 		return []
@@ -969,7 +971,7 @@ def create_mop_log_for_department_ir(
 				"voucher_no": self.receive_against,
 			},
 			fields=select_fields + ["creation"],
-			order_by="creation asc",
+			order_by="creation asc, name asc",
 		)
 
 	else:
@@ -1191,7 +1193,7 @@ def get_employee_ir_loss_map(eir_doc):
 
 
 def create_mop_log_for_employee_ir_receive(
-	doc, row, from_warehouse, to_warehouse, stock_entry_name=[]
+	doc, row, from_warehouse, to_warehouse, stock_entry_name=None
 ):
 	"""Audit-only MOP Log clones on the SOURCE MOP for Employee IR Receive.
 
@@ -1225,7 +1227,7 @@ def create_mop_log_for_employee_ir_receive(
 				"voucher_no": issue_voucher,
 			},
 			select_fields,
-			order_by="creation asc",
+			order_by="creation asc, name asc",
 		)
 		or []
 	)
@@ -1240,7 +1242,7 @@ def create_mop_log_for_employee_ir_receive(
 					"voucher_no": ["in", stock_entry_name],
 				},
 				select_fields,
-				order_by="creation asc",
+				order_by="creation asc, name asc",
 			)
 			or []
 		)
@@ -1268,7 +1270,7 @@ def create_mop_log_for_employee_ir_receive(
 				],
 			},
 			select_fields,
-			order_by="creation asc",
+			order_by="creation asc, name asc",
 		)
 		or []
 	)
@@ -1293,7 +1295,7 @@ def create_mop_log_for_employee_ir_receive(
 				],
 			},
 			select_fields,
-			order_by="creation asc",
+			order_by="creation asc, name asc",
 		)
 		or []
 	)
@@ -1429,7 +1431,7 @@ def create_mop_log_for_employee_ir_loss(
 				"pcs_after_transaction_batch_based",
 				"flow_index",
 			],
-			order_by="creation desc",
+			order_by="creation desc, name desc",
 			as_dict=True,
 		)
 		or {}

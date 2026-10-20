@@ -9,6 +9,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_repack import (
+	create_without_so_finding_repack,
 	restamp_without_so_batches_on_receive_cancel,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan import (
@@ -208,3 +209,56 @@ class TestDisableGetItemTableScript(IntegrationTestCase):
 
 	def test_missing_script_is_skipped(self):
 		self._run(exists=False, disabled=0).save.assert_not_called()
+class TestWithoutSoRepackNeedsFindingDetails(IntegrationTestCase):
+	"""A Receive row is repacked into the finding only when its finding details are filled."""
+
+	def _row(self, **findings):
+		return frappe._dict(
+			idx=1,
+			manufacturing_work_order="MWO-NOSO",
+			manufacturing_operation="MOP-1",
+			**findings,
+		)
+
+	@patch(f"{REPACK}._received_metal_rows")
+	@patch(f"{REPACK}._existing_repack")
+	@patch(f"{REPACK}.is_without_so_mwo", return_value=True)
+	def test_no_finding_details_makes_no_repack(
+		self, _without_so, existing, metal_rows
+	):
+		row = self._row(
+			finding_item1=None, finding_wt1=0, finding_item2=None, finding_wt2=0
+		)
+
+		self.assertIsNone(
+			create_without_so_finding_repack(frappe._dict(name="EIR-1"), row, ["STE-1"])
+		)
+		existing.assert_not_called()
+		metal_rows.assert_not_called()
+
+	@patch(f"{REPACK}._received_metal_rows")
+	@patch(f"{REPACK}._existing_repack")
+	@patch(f"{REPACK}.is_without_so_mwo", return_value=True)
+	def test_half_filled_slot_is_not_finding_details(
+		self, _without_so, existing, metal_rows
+	):
+		"""An item without its weight is not a finding (validate_finding_repack rejects it)."""
+		row = self._row(finding_item1="F-ITEM", finding_wt1=0)
+
+		self.assertIsNone(
+			create_without_so_finding_repack(frappe._dict(name="EIR-1"), row, ["STE-1"])
+		)
+		metal_rows.assert_not_called()
+
+	@patch(f"{REPACK}._existing_repack", return_value="STE-REPACK")
+	@patch(f"{REPACK}.is_without_so_mwo", return_value=True)
+	def test_finding_details_go_on_to_the_repack(self, _without_so, existing):
+		row = self._row(finding_item2="F-ITEM", finding_wt2=1.25)
+
+		self.assertEqual(
+			create_without_so_finding_repack(
+				frappe._dict(name="EIR-1"), row, ["STE-1"]
+			),
+			"STE-REPACK",
+		)
+		existing.assert_called_once_with("EIR-1", "MOP-1")

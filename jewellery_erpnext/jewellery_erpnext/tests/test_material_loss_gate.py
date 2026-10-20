@@ -193,8 +193,6 @@ class TestBookMetalLossMaterialGate(IntegrationTestCase):
 				return_value=blocked if blocked is not None else set(),
 			),
 			patch(f"{EIR}.get_variant_of_map", return_value=VARIANTS),
-			patch(f"{EIR}.batch_priority_map", return_value={}),
-			patch(f"{EIR}.get_batch_sre_headroom", return_value={}),
 		]
 		for p in patches:
 			p.start()

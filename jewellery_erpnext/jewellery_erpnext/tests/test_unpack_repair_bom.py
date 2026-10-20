@@ -13,12 +13,30 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
 	ManufacturingWorkOrder,
 )
 
 MOD = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order"
+
+
+def _pinned_rounding():
+	"""Pin the rounding method for the duration of an unpack.
+
+	Each target row's qty is ``flt(..., 3)``, and a precision makes flt call rounded() ->
+	frappe.get_system_settings("rounding_method"). A process that has not loaded System
+	Settings yet -- CI boots every module in a fresh one -- resolves it through
+	frappe.client_cache -> frappe.get_doc, which _unpack has replaced with new_se, and
+	frappe.db, which is a MagicMock there. The lookup raises, flt swallows it and returns
+	0.0, so every unpacked qty is 0 and the rates are never scaled. A dev session whose
+	cache is already warm hides all of it.
+
+	"Banker's Rounding" is what the production site uses; no value in this suite sits on a
+	tie, so every valid method gives the same answers.
+	"""
+	return patch.object(frappe, "get_system_settings", return_value="Banker's Rounding")
 
 
 def _resolve(pmo_value, ro_bom, requested_fields=None):
@@ -194,7 +212,11 @@ def _unpack(
 	Returns (se, components_bom, master_bom_writes).
 	"""
 	seen = {}
-	mop = {"status": "Not Started", "employee": None, "department": "Dept"} if mop is None else mop
+	mop = (
+		{"status": "Not Started", "employee": None, "department": "Dept"}
+		if mop is None
+		else mop
+	)
 	if warehouses is None:
 		warehouses = {("department", "Dept"): "MFG-WH - X"}
 	fake = SimpleNamespace(
@@ -219,11 +241,11 @@ def _unpack(
 	fake._resolve_unpack_target_warehouse = (
 		lambda: ManufacturingWorkOrder._resolve_unpack_target_warehouse(fake)
 	)
-	fake._unpack_component_rates = lambda items: ManufacturingWorkOrder._unpack_component_rates(
-		fake, items
+	fake._unpack_component_rates = (
+		lambda items: ManufacturingWorkOrder._unpack_component_rates(fake, items)
 	)
-	fake._rate_unpacked_components = lambda se: ManufacturingWorkOrder._rate_unpacked_components(
-		fake, se
+	fake._rate_unpacked_components = (
+		lambda se: ManufacturingWorkOrder._rate_unpacked_components(fake, se)
 	)
 	fake.db_set = lambda *a, **k: None
 
@@ -277,13 +299,16 @@ def _unpack(
 			f"{MOD}._resolve_unpack_inventory",
 			return_value=("Regular Stock", None, "CUST-1"),
 		),
+		_pinned_rounding(),
 	):
+		# Fail here, naming the cause, rather than as a misleading 0.0 != 2.0 below.
+		assert (
+			flt(1.0, 3) == 1.0
+		), "flt is not rounding under _unpack's mocks (see _pinned_rounding)"
 		ManufacturingWorkOrder.create_unpack_serial_no_stock_entry(fake)
 
 	master_writes = [
-		c.args
-		for c in mock_db.set_value.call_args_list
-		if c.args[2] == "master_bom"
+		c.args for c in mock_db.set_value.call_args_list if c.args[2] == "master_bom"
 	]
 	return created[0], seen.get("bom"), master_writes
 
@@ -302,7 +327,8 @@ class TestUnpackUsesTheSerialsOwnBom(IntegrationTestCase):
 		# master_bom drives repair pricing/quotation; only the unpacked components changed.
 		_se, _bom, writes = _unpack()
 		self.assertEqual(
-			writes, [("Parent Manufacturing Order", "PMO-1", "master_bom", "BOM-DESIGN")]
+			writes,
+			[("Parent Manufacturing Order", "PMO-1", "master_bom", "BOM-DESIGN")],
 		)
 
 	def test_a_serial_without_a_bom_stops_the_unpack_and_builds_nothing(self):
@@ -321,7 +347,9 @@ class TestUnpackUsesTheSerialsOwnBom(IntegrationTestCase):
 		mock_db.get_value.side_effect = gv
 		fake = SimpleNamespace(serial_no="SN-1")
 		with patch(f"{MOD}.frappe.db", mock_db):
-			self.assertEqual(ManufacturingWorkOrder._resolve_serial_bom(fake), "BOM-SERIAL")
+			self.assertEqual(
+				ManufacturingWorkOrder._resolve_serial_bom(fake), "BOM-SERIAL"
+			)
 		self.assertEqual(asked, [("Serial No", "SN-1", "custom_bom_no")])
 
 
@@ -423,7 +451,9 @@ class TestUnpackPieceCounts(IntegrationTestCase):
 				{"item_code": "DIA-B", "qty": 0.676, "pcs": 20},
 			]
 		)
-		self.assertEqual({r.item_code: r.pcs for r in _targets(se)}, {"DIA-A": 35, "DIA-B": 20})
+		self.assertEqual(
+			{r.item_code: r.pcs for r in _targets(se)}, {"DIA-A": 35, "DIA-B": 20}
+		)
 
 	def test_pieces_scale_with_the_work_order_quantity(self):
 		# The BOM describes ONE piece; the entry books qty * BOM, like the carats.
@@ -434,5 +464,7 @@ class TestUnpackPieceCounts(IntegrationTestCase):
 		self.assertEqual(_targets(se)[0].qty, 2.0)
 
 	def test_a_row_without_pieces_keeps_the_fields_default(self):
-		se, _bom, _w = _unpack(components=[{"item_code": "METAL", "qty": 6.0, "pcs": 0}])
+		se, _bom, _w = _unpack(
+			components=[{"item_code": "METAL", "qty": 6.0, "pcs": 0}]
+		)
 		self.assertNotIn("pcs", _targets(se)[0])

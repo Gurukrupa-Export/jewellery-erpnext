@@ -24,10 +24,7 @@ from frappe.utils import (
 )
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
-	batch_priority_map,
 	describe_customer_loss_posted,
-	is_customer_rank,
-	loss_rank,
 	tiered_allocate,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
@@ -68,7 +65,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_uti
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
 	cancel_loss_stock_entries,
 	create_loss_stock_entries,
-	get_batch_sre_headroom,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	cancel_injections_for_eir,
@@ -943,11 +939,6 @@ class EmployeeIR(Document):
 		# the truthy string "[]", silently no-opping the gate for that request.
 		self.flags.blocked_loss_variants = get_blocked_loss_variants(self.operation)
 
-		# Recomputed from scratch on every validate, so the spill collected by the
-		# previous run must not leak into this one.
-		self.flags.customer_loss_spill = []
-		self.flags.loss_overflow = []
-
 		rows_to_append = []
 		for child in self.employee_ir_operations:
 			if child.received_gross_wt and self.type == "Receive":
@@ -976,9 +967,8 @@ class EmployeeIR(Document):
 			# customer's batch so it never becomes a customer-owned scrap batch. The
 			# operator must receive the full weight (received == issued) for the
 			# operation holding this customer's material; the unused metal returns as
-			# raw material. Such batches rank LAST in the loss waterfall, so reaching
-			# one means nothing else on the operation had any capacity left — the
-			# throw is the correct outcome, not an accident of proportional spreading.
+			# raw material. book_metal_loss splits loss flat across every item, so any
+			# loss on an operation carrying such a batch reaches it and stops here.
 			if row.get("batch_no") in no_wastage_batches:
 				frappe.throw(
 					_(
@@ -1160,26 +1150,6 @@ class EmployeeIR(Document):
 				}
 			data = list(sum_qty.values())
 
-			# Ownership tier + reservation headroom for every batch in the balance,
-			# resolved in two round-trips for the whole operation rather than per row.
-			ownership = batch_priority_map(
-				[e["batch_no"] for e in data], with_no_wastage=True
-			)
-			headroom = get_batch_sre_headroom(mwo, [e["batch_no"] for e in data])
-			for entry in data:
-				meta = ownership.get(entry["batch_no"])
-				entry["_inventory_type"] = meta.get("inventory_type") if meta else None
-				entry["_customer"] = meta.get("customer") if meta else None
-				entry["_no_wastage"] = bool(meta.get("no_wastage")) if meta else False
-				# Capacity drives the tier cap and the within-tier proportion; `qty`
-				# stays the true MOP balance so received_gross_weight is unaffected.
-				# They differ only when a reservation is smaller than the balance,
-				# i.e. exactly the case that would otherwise trip _validate_sre_qty.
-				cap = headroom.get((entry["item_code"], entry["batch_no"]))
-				entry["_capacity"] = (
-					min(flt(entry["qty"]), flt(cap)) if cap else flt(entry["qty"])
-				)
-
 			# -------------------------------------------------------------------------
 			# Prepare data and calculation proportionally devide each row based on each qty.
 			# Normalised by item-code prefix, not by row.stock_uom: stock_uom is a
@@ -1205,21 +1175,18 @@ class EmployeeIR(Document):
 			if loss < 0:
 				ms_consum = abs(round(loss, 2))
 
-			# Ownership waterfall. Loss lands on Regular Stock first, then Pure
-			# Metal, and reaches a customer's gold only when nothing else on the
-			# operation has capacity left. Within a tier the split is proportional
-			# by balance, so an operation whose batches are all one tier — every
-			# site with no customer-owned metal — books exactly what the previous
-			# flat split booked, row for row. tiered_allocate also owns the
-			# precision-3 reconciliation: it guarantees the booked total equals
-			# flt(loss, 3) exactly, which validate_loss_tables_required asserts
-			# against the gross_wt - received_gross_wt baseline (within 0.0005).
+			# Flat split, no ownership priority: every row loses the same share of its
+			# MOP balance whatever its inventory type -- Regular Stock, Pure Metal and
+			# Customer Goods alike. One tier is the legacy proportional split row for
+			# row, and tiered_allocate owns the precision-3 reconciliation: the booked
+			# total equals flt(loss, 3) exactly, which validate_loss_tables_required
+			# asserts against the gross_wt - received_gross_wt baseline (within 0.0005).
 			if total_qty != 0 and loss > 0:
-				allocations, alloc_info = tiered_allocate(
+				allocations, _alloc_info = tiered_allocate(
 					data,
 					loss,
-					rank_of=lambda e: loss_rank(e["_inventory_type"], e["_no_wastage"]),
-					qty_of=lambda e: flt(e["_capacity"]),
+					rank_of=lambda e: 0,
+					qty_of=lambda e: flt(e["qty"]),
 					precision=3,
 					key_of=lambda e: (e["item_code"], e["batch_no"]),
 				)
@@ -1232,16 +1199,6 @@ class EmployeeIR(Document):
 						flt(entry["qty"] - booked, 3) if booked else 0
 					)
 					entry["main_slip_consumption"] = 0
-					if booked and is_customer_rank(
-						loss_rank(entry["_inventory_type"], entry["_no_wastage"])
-					):
-						doc._collect_customer_loss_spill(entry, booked)
-				if alloc_info.overflow:
-					# Loss exceeded every batch's capacity on this operation. The
-					# excess is anchored on the FIRST funded tier (company metal) by
-					# tiered_allocate — never on the customer — so nothing here has
-					# to redistribute it.
-					doc._collect_loss_overflow(mwo, opt, alloc_info.overflow)
 			elif total_qty != 0 and ms_consum:
 				# Gain: nothing is lost, the operation drew extra from the Main Slip.
 				for entry in data:
@@ -1249,42 +1206,8 @@ class EmployeeIR(Document):
 					entry["proportionally_loss"] = 0
 					entry["received_gross_weight"] = 0
 					entry["main_slip_consumption"] = ms_consum_book
-
-			for entry in data:
-				for helper_key in (
-					"_inventory_type",
-					"_customer",
-					"_no_wastage",
-					"_capacity",
-				):
-					entry.pop(helper_key, None)
 			# -------------------------------------------------------------------------
 		return data
-
-	def _collect_customer_loss_spill(self, entry, qty):
-		"""Record that customer-owned metal absorbed loss.
-
-		Nothing shows this to the operator: a draft save stays silent, and after a
-		successful submit ``_announce_customer_loss_posted`` notes the posted rows on
-		the timeline. The call in ``book_metal_loss`` is kept, like
-		``_collect_loss_overflow``'s, because the loss-waterfall tests observe the
-		allocation by overriding these two hooks.
-		"""
-		spill = self.flags.setdefault("customer_loss_spill", [])
-		spill.append(
-			{
-				"customer": entry.get("_customer"),
-				"item_code": entry.get("item_code"),
-				"batch_no": entry.get("batch_no"),
-				"qty": flt(qty, 3),
-			}
-		)
-
-	def _collect_loss_overflow(self, mwo, opt, qty):
-		"""Record loss that exceeded every batch's capacity on an operation."""
-		self.flags.setdefault("loss_overflow", []).append(
-			{"mwo": mwo, "operation": opt, "qty": flt(qty, 3)}
-		)
 
 	def _announce_customer_loss_posted(self):
 		"""After a successful Receive submit, record which customer metal the loss was posted on.
