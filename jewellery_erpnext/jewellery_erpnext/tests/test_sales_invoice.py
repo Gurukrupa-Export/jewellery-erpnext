@@ -499,6 +499,101 @@ class TestSalesInvoiceBeforeValidate(_SIBase):
 		mocks.update_income_account.assert_called_once_with(si)
 
 
+def _metal_row(metal_type="Gold", metal_touch="22KT", quantity=2):
+	return SimpleNamespace(
+		metal_type=metal_type,
+		metal_touch=metal_touch,
+		quantity=quantity,
+		wastage_rate=0,
+	)
+
+
+class TestCustomerMetalPurity(_SIBase):
+	"""Metal Criteria lookup that replaced the f-string SQL in before_validate."""
+
+	def test_map_reads_only_customer_rows(self):
+		with patch(f"{SI}.frappe.get_all", return_value=[]) as mock_get_all:
+			si_events._get_customer_metal_purity_map("CUST-1")
+		mock_get_all.assert_called_once_with(
+			"Metal Criteria",
+			filters={"parent": "CUST-1", "parenttype": "Customer"},
+			fields=["metal_type", "metal_touch", "metal_purity"],
+		)
+
+	def test_map_quoted_customer_name_does_not_break_query(self):
+		# Unpatched: the name reaches the DB as a bound parameter, so a quote is
+		# just data. The old f-string query failed on it with a SQL syntax error.
+		self.assertEqual(
+			si_events._get_customer_metal_purity_map("D'Souza' OR '1'='1"), {}
+		)
+
+	def test_lookup_returns_purity_for_type_and_touch(self):
+		purity_map = {("Gold", "22KT"): "91.6", ("Gold", "18KT"): "75"}
+		self.assertEqual(
+			si_events._customer_metal_purity(purity_map, "CUST-1", _metal_row()),
+			"91.6",
+		)
+
+	def test_lookup_missing_criteria_throws(self):
+		with self.assertRaises(frappe.ValidationError):
+			si_events._customer_metal_purity({}, "CUST-1", _metal_row())
+
+	def test_before_validate_prices_metal_and_finding_rows(self):
+		metal = _metal_row(metal_touch="22KT", quantity=2)
+		finding = _metal_row(metal_touch="18KT", quantity=1)
+		bom = _bom(
+			metal_detail=[metal],
+			finding_detail=[finding],
+			total_wastage_amount=0,
+			save=MagicMock(),
+		)
+		si = DummySalesInvoice(
+			gold_rate=1000.0,
+			items=[
+				StubItemRow(item_code="RING-1", bom="BOM-1"),
+				StubItemRow(item_code="RING-2", bom="BOM-2"),
+			],
+		)
+		criteria = [
+			frappe._dict(metal_type="Gold", metal_touch="22KT", metal_purity="91.6"),
+			frappe._dict(metal_type="Gold", metal_touch="18KT", metal_purity="75"),
+		]
+		mocks = _run_with_patches(
+			si,
+			si_events.before_validate,
+			*_std_before_validate_patches(get_value={"return_value": None}),
+			patch(f"{SI}.frappe.get_doc", return_value=bom),
+			patch(f"{SI}.frappe.get_all", return_value=criteria),
+			patch(f"{SI}.frappe.db.get_single_value", return_value=3),
+			patch(f"{SI}.update_making_charges"),
+		)
+		# rate = purity * gold_rate_with_gst / (100 + gold_gst_rate)
+		gold_rate_with_gst = round(1000.0 * 1.03, 3)
+		self.assertEqual(metal.customer_metal_purity, "91.6")
+		self.assertEqual(metal.rate, round(91.6 * gold_rate_with_gst / 103, 2))
+		self.assertEqual(finding.customer_metal_purity, "75")
+		self.assertEqual(finding.rate, round(75 * gold_rate_with_gst / 103, 2))
+		# One criteria read per invoice, however many items and BOM rows.
+		mocks.get_all.assert_called_once()
+
+	def test_before_validate_missing_criteria_blocks_save(self):
+		bom = _bom(metal_detail=[_metal_row()], save=MagicMock())
+		si = DummySalesInvoice(
+			gold_rate=1000.0, items=[StubItemRow(item_code="RING-1", bom="BOM-1")]
+		)
+		with self.assertRaises(frappe.ValidationError):
+			_run_with_patches(
+				si,
+				si_events.before_validate,
+				*_std_before_validate_patches(get_value={"return_value": None}),
+				patch(f"{SI}.frappe.get_doc", return_value=bom),
+				patch(f"{SI}.frappe.get_all", return_value=[]),
+				patch(f"{SI}.frappe.db.get_single_value", return_value=3),
+				patch(f"{SI}.update_making_charges"),
+			)
+		bom.save.assert_not_called()
+
+
 class TestSalesInvoiceValidate(_SIBase):
 	def _assert_bom_header_sums(self, si):
 		self.assertEqual(si.custom_diamond_pcs, 2)
