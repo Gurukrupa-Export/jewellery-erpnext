@@ -644,21 +644,46 @@ def set_specifications_for_modified_bom(self, fields_list):
 	self.modified_specifications = modified_specifications
 
 
+# @frappe.whitelist()
+# def check_diamond_sieve_size_tolerance_value_exist(filters):
+# 	result = frappe.get_all(
+# 		"Attribute Value Diamond Sieve Size",
+# 		fields=[
+# 			"diamond_quality",
+# 			"diamond_shape",
+# 			"from_weight",
+# 			"to_weight",
+# 			"for_universal_value",
+# 		],
+# 		filters=filters,
+# 	)
+# 	return result
+
+
 @frappe.whitelist()
 def check_diamond_sieve_size_tolerance_value_exist(filters):
-	result = frappe.get_all(
-		"Attribute Value Diamond Sieve Size",
-		fields=[
-			"diamond_quality",
-			"diamond_shape",
-			"from_weight",
-			"to_weight",
-			"for_universal_value",
-		],
-		filters=filters,
-	)
-	return result
+    if isinstance(filters, str):
+        filters = frappe.parse_json(filters)
 
+    result = frappe.get_all(
+        "Attribute Value Diamond Sieve Size",
+        filters=filters,
+        fields=[
+            "name",
+            "parent",
+            "diamond_shape",
+            "diamond_quality",
+            "from_weight",
+            "to_weight",
+            "for_universal_value",
+        ],
+    )
+
+    return {
+        "site": frappe.local.site,
+        "filters_received": filters,
+        "result": result,
+    }
 
 @frappe.whitelist()
 def get_weight_in_cts_from_attribute_value(filters):
