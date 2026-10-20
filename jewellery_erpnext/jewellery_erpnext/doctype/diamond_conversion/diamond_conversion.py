@@ -411,18 +411,41 @@ def validate_sieve_size_band(self):
 		target = _resolve_sieve(target_row, _("Target"), sieve_values, dimension_map)
 
 		for s_row, source in source_entries:
-			# Two zero-series names can both be unbanded, in which case neither band check below
-			# runs and nothing else would catch converting an item into itself.
-			if (
-				source.is_zero
-				and target.is_zero
-				and s_row.item_code == target_row.item_code
-			):
+			# Converting an item into itself is a no-op repack at any size. Two unbanded
+			# zero-series names skip both band checks below, so nothing else would catch it.
+			if s_row.item_code == target_row.item_code:
 				frappe.throw(
 					_(
 						"Row #{0}: Source and target are both item {1}, so there is nothing to "
 						"convert. Pick a different target sieve size."
 					).format(target_row.idx, frappe.bold(target_row.item_code))
+				)
+
+			# An unbanded zero-series name carries no band of its own, so the only thing that
+			# could constrain it is the other side's. Against a numeric size whose DOWN is 0
+			# that constrains nothing, which is wider than "any zero item" -- so keep the
+			# pairing inside the series until the value is given a real band. A BANDED zero is
+			# an ordinary size and is deliberately not caught here.
+			if (source.is_zero and not source.has_band and not target.is_zero) or (
+				target.is_zero and not target.has_band and not source.is_zero
+			):
+				zero_row, zero, other_row = (
+					(s_row, source, target_row)
+					if source.is_zero and not source.has_band
+					else (target_row, target, s_row)
+				)
+				frappe.throw(
+					_(
+						"Row #{0}: Item {1} uses zero-series sieve size {2}, which has no "
+						"UP/DOWN set, so it can only be converted to another zero-series size. "
+						"Either choose a zero-series counterpart for {3}, or set UP and DOWN on "
+						"Attribute Value {2}."
+					).format(
+						zero_row.idx,
+						frappe.bold(zero_row.item_code),
+						frappe.bold(zero.value),
+						frappe.bold(other_row.item_code),
+					)
 				)
 
 			# Each direction is gated on the band that side actually provides. An unbanded
