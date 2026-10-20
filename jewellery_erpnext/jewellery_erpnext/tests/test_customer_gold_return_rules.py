@@ -269,9 +269,12 @@ class TestSettlementReconciliation(unittest.TestCase):
 			side_effect=_owning(
 				{cga.ALLOCATION_DOCTYPE}, lambda *a, **k: rows, _REAL_GET_ALL
 			),
-		), patch.object(cga.frappe.db, "set_value") as set_value:
+		), patch.object(cga.frappe.db, "set_value") as set_value, patch.object(
+			cga.frappe, "log_error"
+		) as log_error:
 			cga.reconcile_to_settlement(["EV-1", "EV-2"], {"CUST": 7164.83})
 		set_value.assert_called_once()
+		log_error.assert_not_called()
 		name, field, value = set_value.call_args.args[1:4]
 		self.assertEqual(field, "amount")
 		self.assertAlmostEqual(value, 3582.41, places=2)
@@ -290,9 +293,14 @@ class TestSettlementReconciliation(unittest.TestCase):
 			side_effect=_owning(
 				{cga.ALLOCATION_DOCTYPE}, lambda *a, **k: rows, _REAL_GET_ALL
 			),
-		), patch.object(cga.frappe.db, "set_value") as set_value:
+		), patch.object(cga.frappe.db, "set_value") as set_value, patch.object(
+			cga.frappe, "log_error"
+		) as log_error:
 			cga.reconcile_to_settlement(["EV-1"], {"CUST": 150.00})
 		set_value.assert_not_called()
+		# Review A2 (8d3267e2): left alone, but never silently -- the gap is logged.
+		log_error.assert_called_once()
+		self.assertIn("50.0", log_error.call_args.kwargs["message"])
 
 
 class TestCreateIssueMapsOnlyWhatIsOwed(unittest.TestCase):

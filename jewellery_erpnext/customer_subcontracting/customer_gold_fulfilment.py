@@ -1793,8 +1793,9 @@ def _serial_delivery_recorded(doc, serial_no, customer):
 	"""The Delivery event written for ``serial_no`` -- by the document this one returns against
 	when it names one, else by any delivery of the serial -- or ``None`` when none was written.
 
-	A delivery that was cancelled already has its Reversal, so it released nothing that a return
-	could restore; only an effective delivery counts.
+	Only a delivery still to be restored counts. A cancelled delivery already has its Reversal,
+	and one followed by an effective Delivery Return of the same serial already came back; a
+	return paired with either would credit gold a second time.
 	"""
 	filters = {
 		"serial_no": serial_no,
@@ -1810,6 +1811,7 @@ def _serial_delivery_recorded(doc, serial_no, customer):
 		filters=filters,
 		fields=[
 			"name",
+			"creation",
 			"cg_gross_qty_delta",
 			"cg_carrying_value_delta",
 			"cg_fine_gold_delta",
@@ -1819,17 +1821,37 @@ def _serial_delivery_recorded(doc, serial_no, customer):
 	)
 	if not events:
 		return None
+	returns = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters={
+			"serial_no": serial_no,
+			"customer": customer,
+			"cg_event_kind": EVENT_DELIVERY_RETURN,
+		},
+		fields=["name", "creation"],
+	)
 	reversed_ = set(
 		frappe.get_all(
 			LEDGER_DOCTYPE,
 			filters={
 				"cg_event_kind": EVENT_REVERSAL,
-				"cg_reversal_of": ["in", [e.name for e in events]],
+				"cg_reversal_of": ["in", [e.name for e in events + returns]],
 			},
 			pluck="cg_reversal_of",
 		)
 	)
-	return next((e for e in events if e.name not in reversed_), None)
+	restored_until = max(
+		(r.creation for r in returns if r.name not in reversed_), default=None
+	)
+	return next(
+		(
+			e
+			for e in events
+			if e.name not in reversed_
+			and (restored_until is None or e.creation > restored_until)
+		),
+		None,
+	)
 
 
 def _pin_to_original_value(share, original, returned_qty, nominal):
@@ -1844,6 +1866,8 @@ def _pin_to_original_value(share, original, returned_qty, nominal):
 	"""
 	if share is None:
 		share = frappe._dict(fine=None, value=None, reason=None, parts=[])
+	# The allocations to mirror are this event's, also when the return names no document.
+	share.original_event = original.get("name")
 	delivered = abs(flt(original.get("cg_gross_qty_delta")))
 	fraction = min(flt(returned_qty) / delivered, 1.0) if delivered else 0.0
 
@@ -2038,7 +2062,14 @@ def _allocate_fulfilment(
 	disposition = DISPOSITION_DELIVERY_RETURN if restoring else DISPOSITION_FG_DELIVERY
 
 	if restoring and _restore_original_allocations(
-		doc, row, event, serial_no, abs(per_serial), total_amount, valued_currency
+		doc,
+		row,
+		event,
+		serial_no,
+		abs(per_serial),
+		total_amount,
+		valued_currency,
+		original_event=(share or {}).get("original_event"),
 	):
 		return
 
@@ -2075,10 +2106,22 @@ def _allocate_fulfilment(
 
 
 def _restore_original_allocations(
-	doc, row, event, serial_no, returned_qty, total_amount, currency
+	doc,
+	row,
+	event,
+	serial_no,
+	returned_qty,
+	total_amount,
+	currency,
+	original_event=None,
 ):
 	"""Mirror the original delivery's allocations for this serial. False when there are none
-	(a legacy delivery), so the caller falls back to deriving them."""
+	(a legacy delivery), so the caller falls back to deriving them.
+
+	``original_event`` is the Delivery event a serial-only return already paired with; it names
+	the original even when the return names no ``return_against``, so a standalone return
+	reopens the receipts its delivery closed rather than today's.
+	"""
 	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
 		ALLOCATION_DOCTYPE,
 		DISPOSITION_DELIVERY_RETURN,
@@ -2087,19 +2130,21 @@ def _restore_original_allocations(
 	)
 
 	against = doc.get("return_against")
-	if not against:
+	if original_event:
+		filters = {"name": original_event}
+	elif against:
+		filters = {
+			"reference_doctype": doc.doctype,
+			"reference_docname": against,
+			"cg_event_kind": EVENT_DELIVERY,
+		}
+		if serial_no:
+			filters["serial_no"] = serial_no
+		detail = row.get("dn_detail") or row.get("sales_invoice_item")
+		if detail:
+			filters["cg_source_row"] = detail
+	else:
 		return False
-
-	filters = {
-		"reference_doctype": doc.doctype,
-		"reference_docname": against,
-		"cg_event_kind": EVENT_DELIVERY,
-	}
-	if serial_no:
-		filters["serial_no"] = serial_no
-	detail = row.get("dn_detail") or row.get("sales_invoice_item")
-	if detail:
-		filters["cg_source_row"] = detail
 	originals = frappe.get_all(
 		LEDGER_DOCTYPE, filters=filters, fields=["name", "cg_gross_qty_delta"]
 	)

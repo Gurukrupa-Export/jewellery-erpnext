@@ -835,6 +835,26 @@ class TestSerialOnlyDelivery(_LineageCase):
 		)
 		self.log_error.assert_not_called()
 
+	def test_a_standalone_return_mirrors_the_allocations_of_the_delivery_it_paired_with(
+		self,
+	):
+		"""Review A1 (8d3267e2): with no ``return_against`` the return still names its original
+		event, so the receipts it reopens are the ones that delivery closed, not today's."""
+		self.owners["SER-1"] = CUSTOMER
+		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
+		self.delivered["SER-1"] = frappe._dict(
+			name="EV-DELIVERY",
+			cg_gross_qty_delta=-1,
+			cg_carrying_value_delta=-round(CUSTOMER_IN_PIECE * RATE_A, 2),
+			cg_fine_gold_delta=-4.986,
+			cg_fine_measurement_status=cgf.STATUS_KNOWN,
+		)
+
+		self._deliver(["SER-1"], -1, is_return=1)
+
+		share = cgf._allocate_fulfilment.call_args.args[5]
+		self.assertEqual(share.original_event, "EV-DELIVERY")
+
 	def test_a_return_of_an_unvalued_delivery_stays_unvalued(self):
 		self.owners["SER-1"] = CUSTOMER
 		self.productions["SER-1"] = (self.PIECE_COMPONENTS, 1.0)
@@ -881,19 +901,25 @@ class TestSerialOnlyDelivery(_LineageCase):
 
 
 class TestSerialDeliveryRecorded(unittest.TestCase):
-	"""Review F2 (a392ee7a): a standalone return pairs with an effective delivery, never with one
-	that was cancelled and already reversed."""
+	"""Review F2 (a392ee7a) and V2 (8d3267e2): a standalone return pairs with a delivery still to
+	be restored -- never one that was cancelled and reversed, nor one an earlier return already
+	brought back."""
 
 	def setUp(self):
 		#: Delivery events, newest first, as the ledger query orders them.
 		self.deliveries = []
-		#: Delivery event names that have a Reversal.
+		#: Delivery Return events of the serial.
+		self.returns = []
+		#: Event names that have a Reversal.
 		self.reversed = set()
 
 		def get_all(doctype, filters=None, **kwargs):
-			if filters.get("cg_event_kind") == cgf.EVENT_REVERSAL:
+			kind = filters.get("cg_event_kind")
+			if kind == cgf.EVENT_REVERSAL:
 				names = filters["cg_reversal_of"][1]
 				return [n for n in names if n in self.reversed]
+			if kind == cgf.EVENT_DELIVERY_RETURN:
+				return list(self.returns)
 			return list(self.deliveries)
 
 		p = patch(f"{cgf.__name__}.frappe.get_all", side_effect=get_all)
@@ -904,18 +930,173 @@ class TestSerialDeliveryRecorded(unittest.TestCase):
 		doc = frappe._dict(doctype="Delivery Note", name="DN-RET", return_against=None)
 		return cgf._serial_delivery_recorded(doc, "SER-1", CUSTOMER)
 
+	@staticmethod
+	def _event(name, creation):
+		return frappe._dict(name=name, creation=creation)
+
 	def test_a_reversed_delivery_is_skipped_for_the_effective_one(self):
-		self.deliveries = [frappe._dict(name="EV-NEW"), frappe._dict(name="EV-OLD")]
+		self.deliveries = [self._event("EV-NEW", 2), self._event("EV-OLD", 1)]
 		self.reversed = {"EV-NEW"}
 		self.assertEqual(self._recorded().name, "EV-OLD")
 
 	def test_only_reversed_deliveries_mean_none_was_recorded(self):
-		self.deliveries = [frappe._dict(name="EV-1")]
+		self.deliveries = [self._event("EV-1", 1)]
 		self.reversed = {"EV-1"}
 		self.assertIsNone(self._recorded())
 
 	def test_no_delivery_means_none_was_recorded(self):
 		self.assertIsNone(self._recorded())
+
+	def test_a_delivery_an_earlier_return_restored_is_not_restored_again(self):
+		self.deliveries = [self._event("EV-1", 1)]
+		self.returns = [self._event("RET-1", 2)]
+		self.assertIsNone(self._recorded())
+
+	def test_a_redelivery_after_a_return_is_the_one_restored(self):
+		self.deliveries = [self._event("EV-2", 3), self._event("EV-1", 1)]
+		self.returns = [self._event("RET-1", 2)]
+		self.assertEqual(self._recorded().name, "EV-2")
+
+	def test_a_cancelled_return_restored_nothing(self):
+		self.deliveries = [self._event("EV-1", 1)]
+		self.returns = [self._event("RET-1", 2)]
+		self.reversed = {"RET-1"}
+		self.assertEqual(self._recorded().name, "EV-1")
+
+
+class TestStandaloneReturnAllocations(unittest.TestCase):
+	"""Review A1 (8d3267e2): a return that names no ``return_against`` mirrors the allocations of
+	the Delivery event it paired with, instead of deriving them from today's composition."""
+
+	def test_the_paired_event_is_mirrored_without_return_against(self):
+		from jewellery_erpnext.customer_subcontracting import (
+			customer_gold_allocations as cga,
+		)
+
+		queries = []
+
+		def get_all(doctype, filters=None, **kwargs):
+			queries.append((doctype, filters))
+			if doctype == cga.ALLOCATION_DOCTYPE:
+				return [
+					frappe._dict(
+						name="AL-1",
+						receipt_event="RCV-1",
+						gross_qty=CUSTOMER_IN_PIECE,
+						amount=100.0,
+						basis="Component",
+					)
+				]
+			if filters == {"name": "EV-DELIVERY"}:
+				return [frappe._dict(name="EV-DELIVERY", cg_gross_qty_delta=-1)]
+			if filters == {"name": ["in", ["RCV-1"]]}:
+				return [frappe._dict(name="RCV-1")]
+			raise AssertionError(f"unexpected read: {doctype} {filters}")
+
+		doc = frappe._dict(doctype="Delivery Note", name="DN-RET", return_against=None)
+		row = frappe._dict(name="ROW-1")
+		with (
+			patch(f"{cgf.__name__}.frappe.get_all", side_effect=get_all),
+			patch.object(cga, "allocate_event") as allocate,
+		):
+			restored = cgf._restore_original_allocations(
+				doc,
+				row,
+				frappe._dict(name="EV-RET"),
+				"SER-1",
+				1.0,
+				-100.0,
+				"INR",
+				original_event="EV-DELIVERY",
+			)
+
+		self.assertTrue(restored)
+		self.assertEqual(queries[0], (cgf.LEDGER_DOCTYPE, {"name": "EV-DELIVERY"}))
+		((receipt, qty, amount),) = allocate.call_args.args[1]
+		self.assertEqual(receipt.name, "RCV-1")
+		self.assertAlmostEqual(qty, -CUSTOMER_IN_PIECE, places=3)
+		self.assertAlmostEqual(amount, -100.0, places=2)
+
+	def test_no_paired_event_and_no_return_against_derives_as_before(self):
+		doc = frappe._dict(doctype="Delivery Note", name="DN-RET", return_against=None)
+		with patch(f"{cgf.__name__}.frappe.get_all") as get_all:
+			self.assertFalse(
+				cgf._restore_original_allocations(
+					doc, frappe._dict(name="ROW-1"), None, "SER-1", 1.0, None, None
+				)
+			)
+		get_all.assert_not_called()
+
+
+class TestSerialDeliveryRecordedOnTheDatabase(IntegrationTestCase):
+	"""Review F3 (8d3267e2): the return-pairing lookup against real ledger rows.
+
+	The mocked cases above fix the rule; these prove the SQL behind it -- the reversal and
+	restored-by-return exclusions -- on the real schema. Rows are inserted raw and rolled back,
+	so no policy, document or Journal Entry is needed and the shared CI site is left as found.
+	"""
+
+	SERIAL = "CG-LINEAGE-DB-SERIAL"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		self.addCleanup(frappe.db.rollback)
+		self.doc = frappe._dict(
+			doctype="Delivery Note", name="DN-RET", return_against=None
+		)
+
+	def _event(self, name, kind, minute, reversal_of=None):
+		frappe.get_doc(
+			{
+				"doctype": cgf.LEDGER_DOCTYPE,
+				"name": name,
+				"cg_event_key": f"{name}-KEY",
+				"cg_event_kind": kind,
+				"company": COMPANY,
+				"customer": CUSTOMER,
+				"reference_doctype": "Delivery Note",
+				"reference_docname": f"DN-{name}",
+				"serial_no": self.SERIAL,
+				"cg_gross_qty_delta": 1 if kind == cgf.EVENT_DELIVERY_RETURN else -1,
+				"cg_reversal_of": reversal_of,
+				"creation": f"2026-01-01 10:{minute:02d}:00",
+				"modified": f"2026-01-01 10:{minute:02d}:00",
+			}
+		).db_insert()
+
+	def _recorded(self):
+		found = cgf._serial_delivery_recorded(self.doc, self.SERIAL, CUSTOMER)
+		return found.name if found else None
+
+	def test_the_effective_delivery_is_found(self):
+		self._event("CGT-DEL-1", cgf.EVENT_DELIVERY, 1)
+		self.assertEqual(self._recorded(), "CGT-DEL-1")
+
+	def test_a_reversed_delivery_is_not_paired(self):
+		self._event("CGT-DEL-1", cgf.EVENT_DELIVERY, 1)
+		self._event("CGT-DEL-2", cgf.EVENT_DELIVERY, 2)
+		self._event("CGT-REV-2", cgf.EVENT_REVERSAL, 3, reversal_of="CGT-DEL-2")
+		self.assertEqual(self._recorded(), "CGT-DEL-1")
+
+	def test_a_delivery_already_returned_is_not_paired_again(self):
+		self._event("CGT-DEL-1", cgf.EVENT_DELIVERY, 1)
+		self._event("CGT-RET-1", cgf.EVENT_DELIVERY_RETURN, 2)
+		self.assertIsNone(self._recorded())
+
+	def test_a_redelivery_after_a_return_is_paired(self):
+		self._event("CGT-DEL-1", cgf.EVENT_DELIVERY, 1)
+		self._event("CGT-RET-1", cgf.EVENT_DELIVERY_RETURN, 2)
+		self._event("CGT-DEL-2", cgf.EVENT_DELIVERY, 3)
+		self.assertEqual(self._recorded(), "CGT-DEL-2")
+
+	def test_a_cancelled_return_leaves_its_delivery_to_restore(self):
+		self._event("CGT-DEL-1", cgf.EVENT_DELIVERY, 1)
+		self._event("CGT-RET-1", cgf.EVENT_DELIVERY_RETURN, 2)
+		self._event("CGT-REV-R1", cgf.EVENT_REVERSAL, 3, reversal_of="CGT-RET-1")
+		self.assertEqual(self._recorded(), "CGT-DEL-1")
 
 
 class TestSerialOwnerSource(unittest.TestCase):
@@ -1070,8 +1251,13 @@ class TestSerialLookupsRunOnTheDatabase(IntegrationTestCase):
 		)
 		if not serial:
 			self.skipTest("no serial created by a Stock Entry on this site")
-		cgf._serial_owner(serial.name, serial.warehouse)
-		cgc.resolve_serial_components(serial.name)
+		owner = cgf._serial_owner(serial.name, serial.warehouse)
+		self.assertTrue(owner is None or isinstance(owner, str))
+		components, produced = cgc.resolve_serial_components(serial.name)
+		self.assertIsInstance(components, list)
+		self.assertGreaterEqual(produced, 0.0)
+		if components:
+			self.assertGreater(produced, 0.0)
 
 	def test_a_site_without_the_customer_dimension_reads_no_owner(self):
 		"""CI's site has no Customer Inventory Dimension, so ``customer`` exists on neither the
