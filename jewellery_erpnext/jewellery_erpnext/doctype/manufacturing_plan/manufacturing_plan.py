@@ -205,6 +205,12 @@ class ManufacturingPlan(Document):
 		match no ``F`` variant should fail while the plan is still a draft, naming the row.
 		``F`` variants carry exactly the seven attributes the row asks for, so the match is
 		unique."""
+		# mandatory_depends_on is enforced only in the browser, so the server checks it here.
+		if (
+			self.select_manufacture_order == FINDING_WITHOUT_SO
+			and not self.finding_details
+		):
+			frappe.throw(_("Add at least one row in Finding Details"))
 		for row in self.finding_details:
 			if cint(row.qty) < 1:
 				frappe.throw(
