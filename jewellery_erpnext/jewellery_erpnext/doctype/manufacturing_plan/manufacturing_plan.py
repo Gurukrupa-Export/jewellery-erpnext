@@ -61,6 +61,14 @@ def is_subcontracting_selected(value):
 
 
 class ManufacturingPlan(Document):
+	def before_insert(self):
+		# A Without-SO plan has no Manufacturing Plan Table; its rows are in Finding Details.
+		if (
+			self.select_manufacture_order != FINDING_WITHOUT_SO
+			and not self.manufacturing_plan_table
+		):
+			frappe.throw(_("Select atleast one Item"))
+
 	def on_cancel(self):
 		if self.select_manufacture_order == FINDING_WITHOUT_SO:
 			delete_without_so_drafts(
