@@ -363,20 +363,21 @@ class EmployeeIR(Document):
 		if not (to_warehouse and from_warehouse):
 			frappe.throw(_("To Warehouse or From Warehouse not available"))
 		for row in self.employee_ir_operations:
-			values.update(
-				{
-					"operation": operation,
-					"rpt_wt_issue": row.rpt_wt_issue,
-					"start_time": start_time,
-				}
-			)
-			mops_to_update[row.manufacturing_operation] = values
+			# A fresh dict per row: one shared dict, mutated in the loop, left every operation
+			# of a multi-row Issue holding the LAST row's rpt_wt_issue.
+			row_values = {
+				**values,
+				"operation": operation,
+				"rpt_wt_issue": row.rpt_wt_issue,
+				"start_time": start_time,
+			}
+			mops_to_update[row.manufacturing_operation] = row_values
 			if not cancel:
 				# stock_entry_data.append(
 				# 	(row.manufacturing_work_order, row.manufacturing_operation)
 				# )
 				# mop_data[row.manufacturing_work_order] = row.manufacturing_operation
-				time_log_args.append((row.manufacturing_operation, values))
+				time_log_args.append((row.manufacturing_operation, row_values))
 				creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse)
 
 		if mops_to_update:
