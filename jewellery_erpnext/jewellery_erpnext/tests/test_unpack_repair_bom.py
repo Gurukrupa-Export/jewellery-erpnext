@@ -186,6 +186,8 @@ def _unpack(
 	last_purchase_rate=0,
 	source_rate=1000.0,
 	qty=1,
+	has_batch=False,
+	inventory=("Regular Stock", None),
 ):
 	"""Run create_unpack_serial_no_stock_entry with every read mocked.
 
@@ -247,7 +249,7 @@ def _unpack(
 		if doctype == "Item":
 			if fieldname == "last_purchase_rate":
 				return last_purchase_rate
-			return (0, None)
+			return (1, None) if has_batch else (0, None)
 		if doctype == "Warehouse":
 			for key in ("department", "employee"):
 				if name.get(key) is not None:
@@ -270,16 +272,27 @@ def _unpack(
 		created.append(se)
 		return se
 
+	batches = []
+
+	def new_doc(doctype):
+		batch = SimpleNamespace(
+			name=f"BATCH-{len(batches) + 1}",
+			flags=SimpleNamespace(),
+			custom_customer=None,
+			custom_customer_voucher_type=None,
+		)
+		batch.save = lambda: None
+		batches.append(batch)
+		return batch
+
 	with (
 		patch(f"{MOD}.frappe.db", mock_db),
 		# flt(x, precision) reads the rounding method through frappe.db; with the db mocked
 		# that depends on whatever the settings cache held, so pin it.
 		patch(f"{MOD}.frappe.get_system_settings", return_value=None),
 		patch(f"{MOD}.frappe.get_doc", side_effect=new_se),
-		patch(
-			f"{MOD}._resolve_unpack_inventory",
-			return_value=("Regular Stock", None, "CUST-1"),
-		),
+		patch(f"{MOD}.frappe.new_doc", side_effect=new_doc),
+		patch(f"{MOD}._resolve_unpack_inventory", return_value=inventory),
 	):
 		ManufacturingWorkOrder.create_unpack_serial_no_stock_entry(fake)
 
@@ -288,6 +301,7 @@ def _unpack(
 		for c in mock_db.set_value.call_args_list
 		if c.args[2] == "master_bom"
 	]
+	created[0].batches = batches
 	return created[0], seen.get("bom"), master_writes
 
 
@@ -439,3 +453,128 @@ class TestUnpackPieceCounts(IntegrationTestCase):
 	def test_a_row_without_pieces_keeps_the_fields_default(self):
 		se, _bom, _w = _unpack(components=[{"item_code": "METAL", "qty": 6.0, "pcs": 0}])
 		self.assertNotIn("pcs", _targets(se)[0])
+
+
+class TestUnpackedMaterialIsRegularStock(IntegrationTestCase):
+	"""The unpacked components are booked as Regular Stock: target rows, their new batches
+	and the entry header. The serial itself is still consumed under its real owner."""
+
+	CUSTOMER_SERIAL = ("Customer Goods", "CUST-1")
+
+	def test_target_rows_are_regular_stock_with_no_customer(self):
+		se, _bom, _w = _unpack(inventory=self.CUSTOMER_SERIAL)
+		for row in _targets(se):
+			self.assertEqual(row.inventory_type, "Regular Stock")
+			self.assertIsNone(row.customer)
+
+	def test_new_batches_are_regular_stock_with_no_customer(self):
+		se, _bom, _w = _unpack(has_batch=True, inventory=self.CUSTOMER_SERIAL)
+		self.assertTrue(se.batches)
+		for batch in se.batches:
+			self.assertEqual(batch.custom_inventory_type, "Regular Stock")
+			self.assertIsNone(batch.custom_customer)
+		self.assertEqual(
+			[r.batch_no for r in _targets(se)], [b.name for b in se.batches]
+		)
+
+	def test_the_entry_header_is_regular_stock(self):
+		se, _bom, _w = _unpack(inventory=self.CUSTOMER_SERIAL)
+		self.assertEqual(se.doc["inventory_type"], "Regular Stock")
+
+	def test_the_serial_is_still_consumed_under_its_own_owner(self):
+		se, _bom, _w = _unpack(inventory=self.CUSTOMER_SERIAL)
+		source = [r for r in se.items if r.get("s_warehouse")]
+		self.assertEqual(
+			[(r.inventory_type, r.customer) for r in source], [("Customer Goods", "CUST-1")]
+		)
+
+	def test_new_batches_stay_marked_as_repair_material(self):
+		"""SNC settlement skips "Customer Repair" batches; without the mark a customer-gold
+		repair would settle the unpacked metal as borrowed (None != the order's customer)."""
+		se, _bom, _w = _unpack(has_batch=True, inventory=self.CUSTOMER_SERIAL)
+		self.assertEqual(
+			{b.custom_customer_voucher_type for b in se.batches}, {"Customer Repair"}
+		)
+
+	def test_a_regular_stock_serial_needs_no_customer(self):
+		se, _bom, _w = _unpack(inventory=("Regular Stock", None))
+		self.assertTrue(se.submitted)
+
+	def test_a_customer_goods_serial_with_no_customer_is_refused(self):
+		"""Its source row could not match the ledger: normalisation would book it as
+		Regular Stock. The removed customer guard used to stop this case."""
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			_unpack(inventory=("Customer Goods", None))
+		self.assertIn("SN-1", str(ctx.exception))
+
+
+class TestResolveUnpackInventory(IntegrationTestCase):
+	"""``_resolve_unpack_inventory`` returns only the serial's own owner now."""
+
+	def _resolve(self, batch_no, batch_info):
+		def gv(doctype, name, fieldname=None, as_dict=False):
+			if doctype == "Serial No":
+				return batch_no
+			if doctype == "Batch":
+				return frappe._dict(batch_info) if batch_info else None
+			raise AssertionError(f"unexpected get_value for {doctype}")
+
+		mock_db = MagicMock()
+		mock_db.get_value.side_effect = gv
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
+			manufacturing_work_order as mwo_mod,
+		)
+
+		with patch(f"{MOD}.frappe.db", mock_db):
+			return mwo_mod._resolve_unpack_inventory("SN-1")
+
+	def test_customer_goods_batch_gives_its_owner(self):
+		self.assertEqual(
+			self._resolve(
+				"B1", {"custom_inventory_type": "Customer Goods", "custom_customer": "C1"}
+			),
+			("Customer Goods", "C1"),
+		)
+
+	def test_no_batch_is_regular_stock(self):
+		self.assertEqual(self._resolve(None, None), ("Regular Stock", None))
+
+	def test_regular_batch_has_no_customer(self):
+		self.assertEqual(
+			self._resolve(
+				"B1", {"custom_inventory_type": "Regular Stock", "custom_customer": "C1"}
+			),
+			("Regular Stock", None),
+		)
+
+
+class TestUnpackedBatchesGetTheirRate(IntegrationTestCase):
+	"""Each minted batch is linked to the Stock Entry row that receives it, so the Batch Rate is
+	stamped from that row when ERPNext re-saves the batch on submit (it stayed 0 before)."""
+
+	def test_each_batch_is_linked_to_its_row_and_entry(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
+			manufacturing_work_order as mwo_mod,
+		)
+
+		se = SimpleNamespace(
+			name="STE-1",
+			items=[
+				frappe._dict(name="ROW-SRC", s_warehouse="RM", batch_no=None),
+				frappe._dict(name="ROW-1", t_warehouse="WO", batch_no="B1"),
+				frappe._dict(name="ROW-2", t_warehouse="WO", batch_no=None),
+			],
+		)
+		mock_db = MagicMock()
+		with patch(f"{MOD}.frappe.db", mock_db):
+			mwo_mod._link_batches_to_rows(se)
+		mock_db.set_value.assert_called_once_with(
+			"Batch",
+			"B1",
+			{
+				"reference_doctype": "Stock Entry",
+				"reference_name": "STE-1",
+				"custom_voucher_detail_no": "ROW-1",
+			},
+			update_modified=False,
+		)
