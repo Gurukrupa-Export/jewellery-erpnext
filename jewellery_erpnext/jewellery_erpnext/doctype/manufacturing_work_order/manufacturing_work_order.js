@@ -218,6 +218,70 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		});
 	},
 	split_work_order: function (frm) {
+		// Stock the work order's Material Requests already moved has to be reversed first:
+		// list it and offer to cancel it, rather than let the split fail with that list.
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_split_blocking_stock_entries",
+			args: { docname: frm.doc.name },
+			freeze: true,
+			callback: function (r) {
+				const blockers = r.message || {};
+				if ((blockers.entries || []).length) {
+					frm.events.confirm_split_cancel(frm, blockers);
+				} else {
+					frm.events.show_split_dialog(frm);
+				}
+			},
+		});
+	},
+	confirm_split_cancel: function (frm, blockers) {
+		const entries = blockers.entries
+			.map(
+				(se) =>
+					`<li>${frappe.utils.get_form_link(
+						"Stock Entry",
+						se.name,
+						true
+					)} — ${frappe.utils.escape_html(
+						se.stock_entry_type || ""
+					)}, ${frappe.datetime.str_to_user(se.posting_date)}</li>`
+			)
+			.join("");
+		const requests = blockers.material_requests
+			.map((mr) => frappe.utils.get_form_link("Material Request", mr, true))
+			.join(", ");
+		let html = `<p>${__(
+			"Material Request {0} has already moved stock. To split {1}, these Stock Entries will be cancelled, latest first:",
+			[requests, `<b>${frappe.utils.escape_html(frm.doc.name)}</b>`]
+		)}</p><ol>${entries}</ol>`;
+		if ((blockers.stopped || []).length) {
+			html += `<p>${__("Material Request {0} is Stopped and will be re-opened.", [
+				blockers.stopped.join(", "),
+			])}</p>`;
+		}
+		const dialog = new frappe.ui.Dialog({
+			title: __("Cancel Stock Entries to Split"),
+			fields: [{ fieldtype: "HTML", fieldname: "entries_html", options: html }],
+			primary_action_label: __("Cancel Stock Entries"),
+			primary_action: function () {
+				dialog.disable_primary_action();
+				frappe.call({
+					method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.cancel_split_blocking_stock_entries",
+					args: { docname: frm.doc.name },
+					freeze: true,
+					callback: function () {
+						dialog.hide();
+						frm.reload_doc();
+					},
+					always: function () {
+						dialog.enable_primary_action();
+					},
+				});
+			},
+		});
+		dialog.show();
+	},
+	show_split_dialog: function (frm) {
 		const dialog = new frappe.ui.Dialog({
 			title: __("Update"),
 			fields: [

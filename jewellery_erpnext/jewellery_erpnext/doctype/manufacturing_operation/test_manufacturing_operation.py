@@ -5,6 +5,9 @@ import frappe
 from frappe.model.workflow import apply_workflow
 from frappe.tests import IntegrationTestCase
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.material_request import (
+	_create_transfer_se,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
 	DepartmentIR,
 )
@@ -901,6 +904,11 @@ def mop_log_creation(mr_name, mo):
 	apply_workflow(mr, "Send for Reservation")
 	apply_workflow(mr, "Reserve Material")
 	apply_workflow(mr, "Transfer Material")
+	# on_submit only queues the "Material Transfer From Reserve" entry, to run after a commit
+	# a test never makes. Create it the way the worker would: Transfer to MOP is refused until
+	# it exists (doc_events.material_request.validate_transfer_se_created). The job's own
+	# wrapper is not used -- its failure path rolls back and commits.
+	_create_transfer_se(mr.name)
 	mr.reload()
 	mr.custom_manufacturing_operation = mo.name
 	mr.save()

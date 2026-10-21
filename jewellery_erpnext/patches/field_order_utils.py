@@ -32,6 +32,42 @@ def custom_field_name(doctype, fieldname):
 	)
 
 
+def ensure_field_order_setter(doctype):
+	"""Return the ``field_order`` Property Setter as ``{name, value}``, seeding one first if
+	the doctype has none.
+
+	The seed is the current effective order (``Meta.sort_fields`` output), so creating it
+	changes nothing on screen. It is what lets a patch move a STANDARD field: standard fields
+	have no Custom Field row, so ``insert_after`` cannot reposition them — only a
+	``field_order`` entry can.
+	"""
+	filters = {
+		"doc_type": doctype,
+		"property": "field_order",
+		"doctype_or_field": "DocType",
+	}
+	ps = frappe.db.get_value(
+		"Property Setter", filters, ["name", "value"], as_dict=True
+	)
+	if ps:
+		return ps
+
+	order = [df.fieldname for df in frappe.get_meta(doctype, cached=False).fields]
+	# Same shape Customize Form writes (CustomizeForm.set_property_setter_for_field_order).
+	frappe.make_property_setter(
+		{
+			"doctype": doctype,
+			"doctype_or_field": "DocType",
+			"property": "field_order",
+			"value": json.dumps(order),
+		},
+		is_system_generated=False,
+	)
+	return frappe.db.get_value(
+		"Property Setter", filters, ["name", "value"], as_dict=True
+	)
+
+
 def rewrite_field_order(doctype, block):
 	"""Splice ``block`` (an ordered list of fieldnames) into the ``field_order`` Property
 	Setter, keeping every other field where it is.
