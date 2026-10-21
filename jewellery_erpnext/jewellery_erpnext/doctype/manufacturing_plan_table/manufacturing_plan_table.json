@@ -11,6 +11,7 @@
   "item_code",
   "manufacturing_bom",
   "bom",
+  "copy_bom",
   "mould_id",
   "delivery_date",
   "estimated_delivery_date",
@@ -177,6 +178,13 @@
    "read_only": 1
   },
   {
+   "fieldname": "copy_bom",
+   "fieldtype": "Link",
+   "label": "Copy BOM",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
    "depends_on": "eval: doc.subcontracting",
    "fieldname": "subcontracting_qty",
    "fieldtype": "Int",
@@ -327,7 +335,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-12-18 10:46:14.713829",
+ "modified": "2026-10-13 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan Table",

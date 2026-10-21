@@ -3049,6 +3049,18 @@ def create_test_data():
 
 			_seed_stock_entry_types()
 
+			from jewellery_erpnext.patches.add_metal_conversion_chain_sc import (
+				execute as _add_metal_conversion_chain_sc,
+			)
+
+			_add_metal_conversion_chain_sc()
+
+			from jewellery_erpnext.patches.add_metal_conversion_workflow import (
+				execute as _add_metal_conversion_workflow,
+			)
+
+			_add_metal_conversion_workflow()
+
 			from jewellery_erpnext.patches.add_stock_entry_type_allowed_roles import (
 				execute as _ensure_stock_entry_type_allowed_roles_field,
 			)
@@ -3117,6 +3129,15 @@ def create_test_data():
 			)
 
 			_ensure_design_type_fields()
+
+			# Purchase Order.custom_order_type / custom_sales_type / custom_flow_type /
+			# custom_design_type are patch-only for the same reason; make_subcontracting_order
+			# stamps them from the Manufacturing Plan on submit.
+			from jewellery_erpnext.patches.add_purchase_order_order_dimension_fields import (
+				execute as _ensure_purchase_order_order_dimension_fields,
+			)
+
+			_ensure_purchase_order_order_dimension_fields()
 
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
@@ -3195,6 +3216,15 @@ def create_test_data():
 			)
 
 			_ensure_stock_entry_jwelex_tag_field()
+
+			# Stock Entry.ref_customer / Batch.custom_ref_customer (customer-batch-only
+			# Hybrid findings). Patch-only like the fields above, so provision them here
+			# for test_site too, else batch_rename / hybrid_findings read a missing column.
+			from jewellery_erpnext.patches.add_ref_customer_fields import (
+				execute as _ensure_ref_customer_fields,
+			)
+
+			_ensure_ref_customer_fields()
 
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (

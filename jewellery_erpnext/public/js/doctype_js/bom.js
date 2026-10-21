@@ -38,30 +38,82 @@ frappe.ui.form.on("BOM Metal Detail", {
 	},
 });
 frappe.ui.form.on("BOM Diamond Detail", {
-	diamond_sieve_size: function (frm, cdt, cdn) {
-		let d = locals[cdt][cdn];
-		frappe.db.get_value("Attribute Value", d.diamond_sieve_size, "weight_in_cts").then((r) => {
-			frappe.model.set_value(d.doctype, d.name, "weight_per_pcs", r.message.weight_in_cts);
-		});
-		let filter_value = {
-			parent: d.diamond_sieve_size,
-			diamond_shape: d.stone_shape,
-		};
-		frappe.call({
-			method: "jewellery_erpnext.jewellery_erpnext.doc_events.bom.check_diamond_sieve_size_tolerance_value_exist",
-			args: {
-				filters: filter_value,
-			},
-			callback: function (r) {
-				if (r.message.length == 0 && d.stone_shape == "Round") {
-					frappe.msgprint(
-						__("Please Insert Diamond Sieve Size Tolerance at Attribute Value")
-					);
-					frappe.validated = false;
-				}
-			},
-		});
-	},
+	// diamond_sieve_size: function (frm, cdt, cdn) {
+	// 	let d = locals[cdt][cdn];
+	// 	frappe.db.get_value("Attribute Value", d.diamond_sieve_size, "weight_in_cts").then((r) => {
+	// 		frappe.model.set_value(d.doctype, d.name, "weight_per_pcs", r.message.weight_in_cts);
+	// 	});
+	// 	let filter_value = {
+	// 		parent: d.diamond_sieve_size,
+	// 		diamond_shape: d.stone_shape,
+	// 	};
+	// 	frappe.call({
+	// 		method: "jewellery_erpnext.jewellery_erpnext.doc_events.bom.check_diamond_sieve_size_tolerance_value_exist",
+	// 		args: {
+	// 			filters: filter_value,
+	// 		},
+	// 		callback: function (r) {
+	// 			if (r.message.length == 0 && d.stone_shape == "Round") {
+	// 				frappe.msgprint(
+	// 					__("Please Insert Diamond Sieve Size Tolerance at Attribute Value")
+	// 				);
+	// 				frappe.validated = false;
+	// 			}
+	// 		},
+	// 	});
+	// },
+	 diamond_sieve_size: function (frm, cdt, cdn) {
+        let d = locals[cdt][cdn];
+
+        // Fetch weight in carats from Attribute Value
+        if (d.diamond_sieve_size) {
+            frappe.db.get_value(
+                "Attribute Value",
+                d.diamond_sieve_size,
+                "weight_in_cts"
+            ).then((r) => {
+                if (r.message) {
+                    frappe.model.set_value(
+                        cdt,
+                        cdn,
+                        "weight_per_pcs",
+                        r.message.weight_in_cts || 0
+                    );
+                }
+            });
+        }
+
+        // Check diamond sieve size tolerance
+        let filter_value = {
+            parent: d.diamond_sieve_size,
+            diamond_shape: d.stone_shape,
+        };
+
+        frappe.call({
+            method: "jewellery_erpnext.jewellery_erpnext.doc_events.bom.check_diamond_sieve_size_tolerance_value_exist",
+            args: {
+                filters: filter_value,
+            },
+            callback: function (r) {
+                if (r.exc || !r.message) {
+                    return;
+                }
+
+                let records = r.message.result || [];
+
+                if (
+                    records.length === 0 &&
+                    d.stone_shape === "Round"
+                ) {
+                    frappe.msgprint(
+                        __(
+                            "Please Insert Diamond Sieve Size Tolerance at Attribute Value"
+                        )
+                    );
+                }
+            },
+        });
+    },
 	pcs: function (frm, cdt, cdn) {
 		let d = locals[cdt][cdn];
 		if (d.quantity == 0.0) {

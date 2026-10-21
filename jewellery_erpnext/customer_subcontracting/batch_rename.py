@@ -5,6 +5,9 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+	get_batch_ref_customer_map,
+)
 from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
 	execute as get_report_data,
 )
@@ -76,6 +79,9 @@ def create_parent_batches(doc, method=None):
 			batch.custom_customer = doc._customer or customer
 			batch.custom_inventory_type = "Customer Goods"
 			batch.custom_customer_voucher_type = "Customer Subcontracting"
+			# The end customer the goods were received for (hybrid_findings). Header only, and
+			# getattr for the same reason as ``_customer``: Purchase Receipt has no such field.
+			batch.custom_ref_customer = getattr(doc, "ref_customer", None)
 			batch.custom_metal_rate = _source_row_rate(doc, row)
 			batch.insert(ignore_permissions=True)
 		finally:
@@ -169,6 +175,25 @@ def _lane_parent_batches(doc):
 	return parents
 
 
+def _lane_source_batches(doc):
+	"""``{lane key: every source batch of that lane}`` -- what a child's Ref Customer is read from."""
+	sources = {}
+	for row in doc.items:
+		if row.s_warehouse and row.batch_no:
+			sources.setdefault(_row_lane_key(row), set()).add(row.batch_no)
+	return sources
+
+
+def _common_ref_customer(lineage, ref_customers):
+	"""The Ref Customer all of ``lineage`` agrees on, else ``None``.
+
+	A conversion that mixes two end customers' material -- or tagged with untagged -- must not
+	pose as one customer's: ``hybrid_findings`` would then issue it to that customer's order.
+	"""
+	values = {ref_customers.get(batch) for batch in lineage or ()}
+	return values.pop() if len(values) == 1 else None
+
+
 def create_child_batches(doc, method=None):
 	if doc.doctype != "Stock Entry":
 		return
@@ -198,6 +223,13 @@ def create_child_batches(doc, method=None):
 	if not parents:
 		return
 
+	lane_sources = _lane_source_batches(doc)
+	# A child keeps the Ref Customer of the batches it was made from (hybrid_findings), read in
+	# one query for the whole voucher.
+	ref_customers = get_batch_ref_customer_map(
+		[batch for lineage in lane_sources.values() for batch in lineage]
+	)
+
 	for row in doc.items:
 		if row.s_warehouse or row.batch_no:
 			continue
@@ -209,6 +241,7 @@ def create_child_batches(doc, method=None):
 
 		if single_lane:
 			parent_batch = next(iter(parents.values()))
+			lineage = next(iter(lane_sources.values()))
 			customer = getattr(row, "customer", None) or header_customer
 		else:
 			# Mixed ownership: only customer-owned produce rows get a customer child
@@ -221,6 +254,7 @@ def create_child_batches(doc, method=None):
 			parent_batch = parents.get(lane_key)
 			if not parent_batch:
 				continue
+			lineage = lane_sources.get(lane_key)
 
 			customer = lane_key[1] or header_customer
 
@@ -296,6 +330,7 @@ def create_child_batches(doc, method=None):
 			batch.custom_customer = customer or header_customer
 			batch.custom_inventory_type = "Customer Goods"
 			batch.custom_customer_voucher_type = "Customer Subcontracting"
+			batch.custom_ref_customer = _common_ref_customer(lineage, ref_customers)
 			batch.custom_metal_rate = _source_row_rate(doc, row)
 			batch.insert(ignore_permissions=True)
 		finally:
