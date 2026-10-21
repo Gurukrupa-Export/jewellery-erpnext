@@ -22,6 +22,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_ev
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 	validate_not_eod_sync_locked,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+	is_pmo_closed,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	validate_without_so_source_submitted,
 )
@@ -104,6 +107,15 @@ class ManufacturingWorkOrder(Document):
 		self.db_set({"manufacturing_operation": None, "status": "Cancelled"})
 
 	def before_submit(self):
+		# Closing a PMO closes its draft work orders too; on_submit would set one back to Not
+		# Started under the still Closed PMO.
+		if is_pmo_closed(self.manufacturing_order):
+			frappe.throw(
+				_(
+					"Parent Manufacturing Order {0} is Closed. Reopen it before submitting this work order."
+				).format(frappe.bold(self.manufacturing_order)),
+				title=_("Work Order Closed"),
+			)
 		self.validate_photoshop_images()
 		if self.is_without_so:
 			validate_without_so_source_submitted(

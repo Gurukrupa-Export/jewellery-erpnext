@@ -665,7 +665,8 @@ class TestLockRowsByName(IntegrationTestCase):
 			set(lock_order.MANUFACTURING_OPERATION_LOCK_FIELDS),
 		)
 		self.assertLessEqual(
-			{"name", "docstatus", "manufacturing_operation"},
+			# status: a PMO Close committed while the attempt waited (Closed work order)
+			{"name", "docstatus", "status", "manufacturing_operation"},
 			set(lock_order.WORK_ORDER_LOCK_FIELDS),
 		)
 

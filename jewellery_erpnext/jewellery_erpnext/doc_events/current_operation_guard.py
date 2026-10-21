@@ -167,6 +167,9 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr, escape_html, get_datetime
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	CLOSED_MWO_STATUS,
+)
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	lock_manufacturing_operations,
 	lock_work_orders,
@@ -1245,6 +1248,18 @@ def _row_problems(doc, prof, phase, mop_rows, mwo_rows, family):
 				(
 					CurrentOperationError,
 					_("Row {0}: work order {1} is not submitted.").format(idx, _b(mwo)),
+				)
+			)
+			continue
+		# From the locked row: a PMO Close committed while this attempt waited for the work
+		# order is invisible to mwo_closed_guard's plain read (this transaction's snapshot).
+		if cstr(w.status) == CLOSED_MWO_STATUS:
+			problems.append(
+				(
+					CurrentOperationError,
+					_(
+						"Row {0}: work order {1} is Closed. Reopen its Parent Manufacturing Order to work on it again."
+					).format(idx, _b(mwo)),
 				)
 			)
 			continue

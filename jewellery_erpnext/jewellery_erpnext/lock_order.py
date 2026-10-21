@@ -228,6 +228,7 @@ MANUFACTURING_OPERATION_LOCK_FIELDS = (
 WORK_ORDER_LOCK_FIELDS = (
 	"name",
 	"docstatus",
+	"status",
 	"company",
 	"manufacturing_operation",
 	"department",

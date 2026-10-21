@@ -26,10 +26,12 @@ def closed_mwo_operations(operations):
 def block_closed_mwo_operations(doc, table):
 	"""Refuse a Department IR / Employee IR that works on a Closed work order's operations.
 
-	Only drafts are checked, on save and submit. Cancelling a document that was submitted
-	before the work order was closed is left alone, as is anything already posted.
+	Only drafts are checked, on save and submit. Frappe sets docstatus to 1 before validate on
+	every submit path, so a submit arrives here as docstatus 1; validate never runs on cancel.
+	Cancelling a document that was submitted before the work order was closed is left alone,
+	as is anything already posted.
 	"""
-	if doc.docstatus != 0:
+	if doc.docstatus == 2:
 		return
 	rows = doc.get(table) or []
 	closed = closed_mwo_operations(r.get("manufacturing_operation") for r in rows)
