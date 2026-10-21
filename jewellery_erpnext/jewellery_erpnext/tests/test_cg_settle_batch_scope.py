@@ -58,6 +58,10 @@ ITEM_22KT = "M-G-22KT-91.75-Y"
 CUSTOMER_03997 = "GJCU0009"
 R02 = "GJCU0009-2F10-M-G-24KT-99.9-Y-02"
 R02_A = "GJCU0009-2F10-M-G-22KT-91.75-Y-02-A"
+#: MR-03999: KACU0040's 10 g of 24KT (-03), half of it converted to 5.45 g of 22KT (-03-A),
+#: both still in Waxing RM -- no single holding covers the 10 g.
+R03 = "KACU0040-2F10-M-G-24KT-99.9-Y-03"
+R03_A = "KACU0040-2F10-M-G-22KT-91.75-Y-03-A"
 #: The receipt that minted -02.
 RECEIPT = "KGJPL-SE-CGR-26-00007"
 #: The company-gold order -02-A was issued to (MAT-STE-57625), and its operation.
@@ -83,13 +87,21 @@ BATCHES = {
 	B01: _customer_batch(CUSTOMER),
 	B02: _customer_batch(CUSTOMER),
 	R02: _customer_batch(CUSTOMER_03997),
+	R03: _customer_batch(CUSTOMER),
 }
 
 #: Stock Entry Type of each entry a batch above was minted by.
 ENTRY_TYPES = {RECEIPT: "Customer Goods Received"}
 
 #: What each batch is, and each warehouse's type, for the lineage holdings.
-BATCH_ITEMS = {B01: ITEM, B02: ITEM, R02: ITEM, R02_A: ITEM_22KT}
+BATCH_ITEMS = {
+	B01: ITEM,
+	B02: ITEM,
+	R02: ITEM,
+	R02_A: ITEM_22KT,
+	R03: ITEM,
+	R03_A: ITEM_22KT,
+}
 WAREHOUSE_TYPES = {
 	CENTRAL: "Raw Material",
 	PROCUREMENT: "Raw Material",
@@ -239,6 +251,12 @@ def _world(
 		),
 		pull=MagicMock(side_effect=pull),
 		events=events,
+		# get_batch_qty nets reservations; by default nothing is reserved.
+		batch_qty=MagicMock(
+			side_effect=lambda batch_no=None,
+			warehouse=None,
+			item_code=None: ledger.get((batch_no, warehouse), 0)
+		),
 	)
 	with ExitStack() as stack:
 		stack.enter_context(
@@ -274,6 +292,7 @@ def _world(
 			patch(f"{_C}._fetch_work_order_holdings", mocks.work_orders)
 		)
 		stack.enter_context(patch(f"{_C}._pull_from_work_order", mocks.pull))
+		stack.enter_context(patch(f"{_C}.get_batch_qty", mocks.batch_qty))
 		for name in ("preallocate_series_for_docs", "lock_bins", "series_stubs"):
 			stack.enter_context(patch(f"{_LOCK}.{name}"))
 		# flt(x, precision) reads the rounding method from System Settings and returns 0.0 if
@@ -601,13 +620,20 @@ class TestTheRefusalSaysWhereTheMetalIs(_Base):
 		)
 		self.assertNotIn("Outside Raw Material warehouses", text)
 
-	def test_enough_on_the_ledger_but_not_for_the_finder_blames_reservations(self):
-		# All 5.45 g are free in Waxing RM -- 5.0 g of 24KT, more than the 3.5 g needed --
-		# yet the finder found nothing: reserved, or taken by an earlier row.
-		text = self._refusal({(R02_A, WAXING): 5.45})
+	def test_enough_on_the_ledger_but_reserved_blames_reservations(self):
+		# All 5.45 g are on the ledger in Waxing RM -- 5.0 g of 24KT, more than the 3.5 g
+		# needed -- but Stock Reservation Entries hold all of it (get_batch_qty is 0).
+		mr = _mr([_row_03997()], name="KGJPL-MR-MT-26-03997")
+		with _world(
+			{(R02_A, WAXING): 5.45}, lineage={R02, R02_A}, mr=mr
+		) as w, self.assertRaises(frappe.ValidationError) as raised:
+			w.batch_qty.side_effect = lambda **kwargs: 0
+			cg_settle.settle_material_request(mr.name)
 
+		text = _text(str(raised.exception))
 		self.assertIn("part of it is reserved", text)
 		self.assertNotIn("at most", text)
+		w.execute.assert_not_called()
 
 	def test_a_spent_batch_says_nothing_is_left(self):
 		text = self._refusal({})
@@ -661,9 +687,9 @@ class TestHoldingsAreSortedBySettlesRules(_Base):
 		# Only the 22KT in Waxing RM counts: 3.09 x 0.9175 = 2.835075, rounded down.
 		self.assertEqual(summary.coverable, 2.835)
 
-	def test_in_the_source_one_purity_adds_up_across_batches(self):
-		# Convert-in-place gathers one purity over several batches: 2 x 1.5 g of 18KT is
-		# 2.25 g, more than the single 2 g batch of 22KT elsewhere (1.835 g).
+	def test_every_usable_holding_adds_up(self):
+		# Settle combines holdings (_plan_parts): 2 x 1.5 g of 18KT in the source warehouse
+		# (2.25 g) and 2 g of 22KT elsewhere (1.835 g) together cover 4.085 g.
 		item_18kt = "M-G-18KT-75.0-Y"
 		summary = self._summary(
 			[
@@ -673,7 +699,7 @@ class TestHoldingsAreSortedBySettlesRules(_Base):
 			]
 		)
 
-		self.assertEqual(summary.coverable, 2.25)
+		self.assertEqual(summary.coverable, 4.085)
 
 	def test_only_purities_settle_converts_count(self):
 		self.assertTrue(cg_settle._converts_into(ITEM_22KT, ITEM))
@@ -777,6 +803,147 @@ class TestCustomerGoodsFlagIsCheckedFirst(_Base):
 		)
 
 		self.assertIn(f"into a new customer batch of {ITEM}", text)
+
+
+class TestCoveringARowFromSeveralHoldings(_Base):
+	"""MR-03999: 10 g of -03 asked from Central RM; -03 holds 5.0 g and its conversion -03-A
+	5.45 g (5.0 g of 24KT), both in Waxing RM. Together they are exactly the 10 g."""
+
+	LEDGER = {(R03, WAXING): 5.0, (R03_A, WAXING): 5.45}
+
+	@staticmethod
+	def _row(**fields):
+		values = {
+			"qty": 10.0,
+			"custom_pure_qty": 10.0,
+			"batch_no": R03,
+			"customer": CUSTOMER,
+		}
+		values.update(fields)
+		return _row(**values)
+
+	def _plan(self, ledger, rows=None, batch_qty=None):
+		with _world(dict(ledger), lineage={R03, R03_A}) as w:
+			if batch_qty:
+				w.batch_qty.side_effect = batch_qty
+			return w, cg_settle._build_plan(_mr(rows or [self._row()]))
+
+	def test_mr_03999_takes_the_batch_and_its_conversion_together(self):
+		mr = _mr([self._row()], name="KGJPL-MR-MT-26-03999")
+		with _world(dict(self.LEDGER), lineage={R03, R03_A}, mr=mr) as w:
+			result = cg_settle.settle_material_request(mr.name)
+
+		parts = w.execute.call_args.args[1]
+		self.assertEqual(
+			[
+				(
+					p["level"],
+					p["src"]["batch_no"],
+					p["src"]["warehouse"],
+					p["src"]["qty"],
+				)
+				for p in parts
+			],
+			[
+				(cg_settle.LEVEL_SAME_PURITY, R03, WAXING, 5.0),
+				(cg_settle.LEVEL_CONVERT, R03_A, WAXING, 5.45),
+			],
+		)
+		# Each part brings 5.0 g of the request's item, into the request's batch, and has
+		# its own balancing Regular Stock.
+		self.assertEqual([p["shortfall"] for p in parts], [5.0, 5.0])
+		self.assertTrue(all(p["mr_batch"] == R03 for p in parts))
+		self.assertTrue(all(p["regular"] for p in parts))
+		self.assertEqual(result["settled"], [1])
+
+	def test_a_single_holding_that_covers_is_still_used_alone(self):
+		w, plan = self._plan({(R03, WAXING): 10.0})
+
+		# The finder (scripted to find nothing here) is asked first; the one holding that
+		# covers becomes one part.
+		self.assertEqual(len(plan), 1)
+		self.assertEqual(plan[0]["level"], cg_settle.LEVEL_SAME_PURITY)
+		self.assertEqual(plan[0]["src"]["qty"], 10.0)
+
+	def test_converting_in_the_source_warehouse_comes_first_then_same_purity(self):
+		ledger = dict(self.LEDGER, **{})
+		ledger[
+			(R03_A, CENTRAL)
+		] = 2.0  # 1.835 g of 24KT, converted in Central RM itself
+		_w, plan = self._plan(ledger)
+
+		self.assertEqual(
+			[(p["level"], p["src"]["warehouse"], p["shortfall"]) for p in plan],
+			[
+				(cg_settle.LEVEL_CONVERT_IN_PLACE, CENTRAL, 1.835),
+				(cg_settle.LEVEL_SAME_PURITY, WAXING, 5.0),
+				(cg_settle.LEVEL_CONVERT, WAXING, 3.165),
+			],
+		)
+		self.assertEqual(plan[0]["src"]["rows"], [{"batch_no": R03_A, "qty": 2.0}])
+		# 3.165 g of 24KT needs 3.45 g of the 5.45 g of 22KT.
+		self.assertEqual(plan[2]["src"]["qty"], 3.45)
+
+	def test_no_part_beyond_what_the_row_needs(self):
+		_w, plan = self._plan(
+			{(R03, WAXING): 8.0, (R03_A, WAXING): 5.45}, rows=[self._row(qty=6.0)]
+		)
+
+		self.assertEqual(
+			[(p["level"], p["shortfall"]) for p in plan],
+			[(cg_settle.LEVEL_SAME_PURITY, 6.0)],
+		)
+
+	def test_reserved_metal_is_left_and_a_short_total_is_refused(self):
+		# 2 g of -03 is reserved: 3 g + 5 g of conversion is 8 g, short of 10.
+		def batch_qty(batch_no=None, warehouse=None, item_code=None):
+			reserved = 2.0 if batch_no == R03 else 0.0
+			return self.LEDGER.get((batch_no, warehouse), 0) - reserved
+
+		mr = _mr([self._row()], name="KGJPL-MR-MT-26-03999")
+		with _world(dict(self.LEDGER), lineage={R03, R03_A}, mr=mr) as w:
+			w.batch_qty.side_effect = batch_qty
+			with self.assertRaises(frappe.ValidationError) as raised:
+				cg_settle.settle_material_request(mr.name)
+
+		self.assertIn("part of it is reserved", _text(str(raised.exception)))
+		w.execute.assert_not_called()
+
+	def test_parts_claim_nothing_when_they_cannot_cover(self):
+		allocated = {}
+		with _world(dict(self.LEDGER), lineage={R03, R03_A}):
+			holdings = [
+				frappe._dict(
+					batch_no=batch,
+					item_code=BATCH_ITEMS[batch],
+					warehouse=warehouse,
+					warehouse_type="Raw Material",
+					qty=qty,
+				)
+				for (batch, warehouse), qty in self.LEDGER.items()
+			]
+			parts = cg_settle._plan_parts(
+				self._row(qty=12.0, custom_pure_qty=12.0),
+				{"row": 1, "item": ITEM, "mr_batch": R03},
+				ITEM,
+				12.0,
+				CENTRAL,
+				[WAXING],
+				"KG GK Jewellers Private Limited",
+				allocated,
+				holdings,
+			)
+
+		self.assertIsNone(parts)
+		self.assertEqual(allocated, {})
+
+	def test_a_conversion_never_consumes_more_than_is_free(self):
+		for thousandths in range(1000, 3000):
+			free = thousandths / 1000
+			take, need = cg_settle._conversion_take(free, 10.0, 91.75, 1.0)
+			self.assertLessEqual(need, free, msg=free)
+			# What it makes needs no more than it consumes, by pure weight.
+			self.assertLessEqual(take, need * 0.9175 + 0.0005, msg=free)
 
 
 class TestTakingTheBatchBackFromAWorkOrder(_Base):
