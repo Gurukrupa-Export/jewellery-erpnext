@@ -83,6 +83,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	recalculate_sync_log_totals,
 	sync_mop_logs,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
+	MOPSettings,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler import (
 	check_and_enqueue_eod_sync,
 )
@@ -521,6 +524,56 @@ class TestMOPSettingsPermissions(IntegrationTestCase):
 		with patch.object(frappe, "msgprint"):
 			doc.sync_mop_log()
 		mock_enq.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Saving with a purged Last EOD Error Log
+# ---------------------------------------------------------------------------
+
+
+def _bare_settings(**fields):
+	# Same pattern as ``_bare_sre`` in test_stock_reservation_entry_mwo.py: no DB, no meta
+	# load, only the override's own logic.
+	doc = MOPSettings.__new__(MOPSettings)
+	for k, v in fields.items():
+		setattr(doc, k, v)
+	return doc
+
+
+class TestPurgedEodErrorLog(IntegrationTestCase):
+	"""Log Settings purges Error Logs (14 days on kggk-prod) while the EOD job's pointer to its
+	last one stays; Frappe's link check then refused every save of MOP Settings."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _validate_links(self, error_log, exists):
+		doc = _bare_settings(eod_sync_last_error_log=error_log)
+		with (
+			patch(
+				f"{_SETTINGS_MOD}.frappe.db.exists",
+				side_effect=lambda doctype, name: exists,
+			) as db_exists,
+			patch("frappe.model.document.Document._validate_links") as frappe_check,
+		):
+			doc._validate_links()
+		frappe_check.assert_called_once_with()
+		return doc, db_exists
+
+	def test_a_purged_error_log_is_dropped_before_the_link_check(self):
+		doc, db_exists = self._validate_links("bscacqcs8e", exists=False)
+		db_exists.assert_called_once_with("Error Log", "bscacqcs8e")
+		self.assertIsNone(doc.eod_sync_last_error_log)
+
+	def test_an_existing_error_log_is_kept(self):
+		doc, db_exists = self._validate_links("bscacqcs8e", exists=True)
+		db_exists.assert_called_once_with("Error Log", "bscacqcs8e")
+		self.assertEqual(doc.eod_sync_last_error_log, "bscacqcs8e")
+
+	def test_no_pointer_reads_nothing(self):
+		_doc, db_exists = self._validate_links(None, exists=False)
+		db_exists.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
