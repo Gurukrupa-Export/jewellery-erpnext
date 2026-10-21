@@ -657,15 +657,25 @@ def update_stock_entry_dimensions(
 		}
 	)
 	stock_entries = frappe.db.get_all("Stock Entry", filters=filters, pluck="name")
+	_link_stock_entries_to_operation(doc, stock_entries, manufacturing_operation)
+
+
+def _link_stock_entries_to_operation(doc, stock_entries, manufacturing_operation):
+	"""Stamp the operation on every given Stock Entry and its rows, and the IR on the
+	header, with one read and two UPDATEs instead of three queries per Stock Entry."""
+	if not stock_entries:
+		return
 	values = {"manufacturing_operation": manufacturing_operation}
-	for stock_entry in stock_entries:
-		rows = frappe.db.get_all(
-			"Stock Entry Detail", {"parent": stock_entry}, pluck="name"
-		)
+	rows = frappe.get_all(
+		"Stock Entry Detail", {"parent": ["in", stock_entries]}, pluck="name"
+	)
+	if rows:
 		set_values_in_bulk("Stock Entry Detail", rows, values)
-		values[scrub(doc.doctype)] = doc.name
-		frappe.db.set_value("Stock Entry", stock_entry, values)
-		del values[scrub(doc.doctype)]
+	frappe.db.set_value(
+		"Stock Entry",
+		{"name": ["in", stock_entries]},
+		{**values, scrub(doc.doctype): doc.name},
+	)
 
 
 def batch_update_stock_entry_dimensions(
@@ -760,15 +770,7 @@ def fetch_and_update(doc, row, manufacturing_operation):
 	if not stock_entries:
 		return False
 	else:
-		values = {"manufacturing_operation": manufacturing_operation}
-		for stock_entry in stock_entries:
-			rows = frappe.get_all(
-				"Stock Entry Detail", {"parent": stock_entry}, pluck="name"
-			)
-			set_values_in_bulk("Stock Entry Detail", rows, values)
-			values[scrub(doc.doctype)] = doc.name
-			frappe.db.set_value("Stock Entry", stock_entry, values)
-			del values[scrub(doc.doctype)]
+		_link_stock_entries_to_operation(doc, stock_entries, manufacturing_operation)
 
 
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
