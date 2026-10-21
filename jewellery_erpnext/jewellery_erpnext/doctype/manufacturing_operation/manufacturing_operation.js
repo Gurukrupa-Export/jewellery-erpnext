@@ -46,7 +46,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 			}).addClass("btn-primary");
 		}
 		// if (in_list(["Not Started", "WIP"], frm.doc.status)) {
-		if (["Not Started", "WIP"].includes(frm.doc.status)) {
+		if (["Not Started", "WIP"].includes(frm.doc.status) && frappe.user.has_role("System Manager")) {
 			frm.add_custom_button(__("Swap Metal"), () => {
 				let source_warehouse = "";
 				if (frm.doc.mop_balance_table && frm.doc.mop_balance_table.length > 0) {
@@ -68,7 +68,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 		}
 		if (!frm.doc.__islocal) {
 			// if (!in_list(["Finished", "On Hold"], frm.doc.status)) {
-			if (!["Finished", "On Hold"].includes(frm.doc.status)) {
+			if (!["Finished", "On Hold"].includes(frm.doc.status) && frappe.user.has_role("System Manager")) {
 				frm.add_custom_button(__("On Hold"), () => {
 					frm.set_value("status", "On Hold");
 					frm.save();
@@ -126,27 +126,29 @@ frappe.ui.form.on("Manufacturing Operation", {
 		frm.trigger("make_dashboard");
 
 		if (!frm.doc.started_time && !frm.doc.current_time) {
-			frm.add_custom_button(__("Start Job"), () => {
-				if ((frm.doc.employee && !frm.doc.employee.length) || !frm.doc.employee) {
-					// console.log('if HERE')
-					frappe.prompt(
-						{
-							fieldtype: "Link",
-							label: __("Select Employees"),
-							options: "Employee",
-							fieldname: "employees",
-						},
-						(d) => {
-							// console.log(d.employees[0]['employee'])
-							frm.events.start_job(frm, "WIP", d.employees);
-						},
-						__("Assign Job to Employee")
-					);
-				} else {
-					// console.log('else HERE')
-					frm.events.start_job(frm, "WIP", frm.doc.employee);
-				}
-			}).addClass("btn-primary");
+			if (frappe.user.has_role("System Manager")) {
+				frm.add_custom_button(__("Start Job"), () => {
+					if ((frm.doc.employee && !frm.doc.employee.length) || !frm.doc.employee) {
+						// console.log('if HERE')
+						frappe.prompt(
+							{
+								fieldtype: "Link",
+								label: __("Select Employees"),
+								options: "Employee",
+								fieldname: "employees",
+							},
+							(d) => {
+								// console.log(d.employees[0]['employee'])
+								frm.events.start_job(frm, "WIP", d.employees);
+							},
+							__("Assign Job to Employee")
+						);
+					} else {
+						// console.log('else HERE')
+						frm.events.start_job(frm, "WIP", frm.doc.employee);
+					}
+				}).addClass("btn-primary");
+			}
 		}
 		// else if (frm.doc.status == "QC Pending"){
 		// 	frm.add_custom_button(__("Resume Job"), () => {
