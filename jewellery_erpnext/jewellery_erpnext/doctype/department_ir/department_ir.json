@@ -34,6 +34,7 @@
   "scan_mwo",
   "section_break_5huxg",
   "department_ir_operation",
+  "parent_manufacturing_order_count",
   "summary",
   "mop_data",
   "se_data"
@@ -88,6 +89,13 @@
    "fieldtype": "Table",
    "label": "Department IR Operations",
    "options": "Department IR Operation"
+  },
+  {
+   "fieldname": "parent_manufacturing_order_count",
+   "fieldtype": "Int",
+   "label": "Parent Manufacturing Order Count",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "default": "Now",
@@ -224,7 +232,7 @@
    "link_fieldname": "department_ir"
   }
  ],
- "modified": "2025-06-03 13:13:50.119567",
+ "modified": "2026-10-21 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department IR",
