@@ -641,16 +641,9 @@ class ManufacturingWorkOrder(Document):
 
 		target_wh = self._resolve_unpack_target_warehouse()
 
-		source_inventory_type, source_customer, customer = _resolve_unpack_inventory(
+		source_inventory_type, source_customer, _customer = _resolve_unpack_inventory(
 			self.serial_no, self.manufacturing_order
 		)
-		if not customer:
-			frappe.throw(
-				_(
-					"Cannot unpack as Customer Goods: no customer found on the serial's "
-					"batch or on Parent Manufacturing Order {0}."
-				).format(self.manufacturing_order)
-			)
 
 		# Unpack the FULL item, not the reduced repair new_bom: resolve every
 		# component (metal + each diamond group + findings) from the serial's own BOM's
@@ -680,7 +673,8 @@ class ManufacturingWorkOrder(Document):
 				"stock_entry_type": "Repair Unpack",
 				"purpose": "Repack",
 				"company": self.company,
-				"inventory_type": "Customer Goods",
+				# The unpacked materials are booked as Regular Stock (target rows below).
+				"inventory_type": "Regular Stock",
 				"auto_created": 1,
 				"branch": self.branch,
 				# Header MWO/PMO/operation are required by the MOP-Log + reservation
@@ -716,7 +710,7 @@ class ManufacturingWorkOrder(Document):
 			item_code = comp["item_code"]
 			qty = flt((self.qty * comp["qty"]) / design_qty, 3)
 
-			# Only batch-tracked items get a (Customer Goods) child batch; setting a
+			# Only batch-tracked items get a (Regular Stock) child batch; setting a
 			# batch on a non-batch item would fail SE validation at submit.
 			has_batch, batch_number_series = frappe.db.get_value(
 				"Item", item_code, ["has_batch_no", "batch_number_series"]
@@ -729,14 +723,9 @@ class ManufacturingWorkOrder(Document):
 					batch_doc.batch_id = make_autoname(
 						batch_number_series, doc=batch_doc
 					)
-				batch_doc.custom_inventory_type = "Customer Goods"
-				batch_doc.custom_customer = customer
-				# Unpacked raw material is the customer's repair stock -- tag the voucher type
-				# so it is correctly identified as Customer Repair downstream (the SE-level
-				# customer_voucher_type cannot be used here: it would trip
-				# inventory_utils.validate_customer_voucher's "Customer Repair" branch, which
-				# forbids batch-tracked rows).
-				batch_doc.custom_customer_voucher_type = "Customer Repair"
+				# Unpacked raw material is booked as Regular Stock: no customer on the
+				# batch, matching the Regular Stock target row it is received on.
+				batch_doc.custom_inventory_type = "Regular Stock"
 				batch_doc.flags.ignore_permissions = True
 				batch_doc.save()
 				batch_no = batch_doc.name
@@ -744,8 +733,8 @@ class ManufacturingWorkOrder(Document):
 			row = {
 				"item_code": item_code,
 				"qty": qty,
-				"inventory_type": "Customer Goods",
-				"customer": customer,
+				"inventory_type": "Regular Stock",
+				"customer": None,
 				"t_warehouse": target_wh,
 				"department": self.department,
 				"use_serial_batch_fields": 1,
@@ -954,10 +943,10 @@ def _resolve_unpack_inventory(serial_no, pmo):
 	`inventory_type` is a ledger-enforced Inventory Dimension, so the SOURCE row
 	must consume the serial under its ACTUAL inventory type (else the outward SLE
 	goes negative for the wrong dimension). The unpacked TARGET rows are booked as
-	Customer Goods per spec.
+	Regular Stock, so they no longer use the customer returned here.
 
 	Returns (source_inventory_type, source_customer, customer) where `customer` is
-	the owner assigned to the Customer-Goods target rows.
+	the serial's or PMO's customer.
 	"""
 	source_inventory_type = "Regular Stock"
 	source_customer = None
