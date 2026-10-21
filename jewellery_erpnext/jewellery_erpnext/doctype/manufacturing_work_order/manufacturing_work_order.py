@@ -776,6 +776,7 @@ class ManufacturingWorkOrder(Document):
 		se.save()
 		self._rate_unpacked_components(se)
 		se.save()
+		_link_batches_to_rows(se)
 		se.submit()
 		return se.name
 
@@ -953,6 +954,30 @@ class ManufacturingWorkOrder(Document):
 	@frappe.whitelist()
 	def create_mfg_entry(self):
 		create_se_entry(self)
+
+
+def _link_batches_to_rows(se):
+	"""Tie each batch the unpack minted to the Stock Entry row that receives it.
+
+	The batches are created before the entry exists, so they never got a reference to it.
+	The Batch Rate is stamped from the creating row
+	(``batch/doc_events/utils.update_inventory_dimentions``, found through
+	``reference_doctype`` + ``custom_voucher_detail_no``) when ERPNext re-saves the batch on
+	submit -- and ERPNext fills ``reference_doctype`` only after that re-save. Without the
+	link every unpacked batch kept a Batch Rate of 0.
+	"""
+	for row in se.items:
+		if row.get("t_warehouse") and row.get("batch_no") and row.get("name"):
+			frappe.db.set_value(
+				"Batch",
+				row.batch_no,
+				{
+					"reference_doctype": "Stock Entry",
+					"reference_name": se.name,
+					"custom_voucher_detail_no": row.name,
+				},
+				update_modified=False,
+			)
 
 
 def _resolve_unpack_inventory(serial_no):

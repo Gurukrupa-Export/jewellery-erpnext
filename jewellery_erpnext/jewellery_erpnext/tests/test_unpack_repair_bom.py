@@ -546,3 +546,35 @@ class TestResolveUnpackInventory(IntegrationTestCase):
 			),
 			("Regular Stock", None),
 		)
+
+
+class TestUnpackedBatchesGetTheirRate(IntegrationTestCase):
+	"""Each minted batch is linked to the Stock Entry row that receives it, so the Batch Rate is
+	stamped from that row when ERPNext re-saves the batch on submit (it stayed 0 before)."""
+
+	def test_each_batch_is_linked_to_its_row_and_entry(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
+			manufacturing_work_order as mwo_mod,
+		)
+
+		se = SimpleNamespace(
+			name="STE-1",
+			items=[
+				frappe._dict(name="ROW-SRC", s_warehouse="RM", batch_no=None),
+				frappe._dict(name="ROW-1", t_warehouse="WO", batch_no="B1"),
+				frappe._dict(name="ROW-2", t_warehouse="WO", batch_no=None),
+			],
+		)
+		mock_db = MagicMock()
+		with patch(f"{MOD}.frappe.db", mock_db):
+			mwo_mod._link_batches_to_rows(se)
+		mock_db.set_value.assert_called_once_with(
+			"Batch",
+			"B1",
+			{
+				"reference_doctype": "Stock Entry",
+				"reference_name": "STE-1",
+				"custom_voucher_detail_no": "ROW-1",
+			},
+			update_modified=False,
+		)
