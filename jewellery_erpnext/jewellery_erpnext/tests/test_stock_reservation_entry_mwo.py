@@ -1723,6 +1723,27 @@ class TestWorkOrderReservationIsRowOfVoucher(IntegrationTestCase):
 	else keeps ERPNext's rule. CI broke on every PR with "Item D-NT-RO-6B-+9-9.5 is not a
 	row of Sales Order SAL-ORD-2026-00001" when version-16 picked this check up.
 	"""
+def _sales_order_lines(*lines):
+	"""``frappe.db.exists`` that knows these ``(line, sales order)`` Sales Order Item rows and
+	forwards every other call unchanged."""
+	real = frappe.db.exists
+
+	def fake(doctype, filters=None, *args, **kwargs):
+		if doctype == "Sales Order Item":
+			return (
+				filters["name"]
+				if (filters["name"], filters["parent"]) in lines
+				else None
+			)
+		return real(doctype, filters, *args, **kwargs)
+
+	return fake
+
+
+class TestWorkOrderReservationIsARowOfItsSalesOrder(IntegrationTestCase):
+	"""ERPNext's version-16 hotfix refuses a Sales Order reservation whose item is not a row of
+	the Sales Order. A work-order reservation holds raw materials against the line of the piece
+	they are made into, so it only has to name a line of that Sales Order."""
 
 	@classmethod
 	def setUpClass(cls):
@@ -1767,3 +1788,55 @@ class TestWorkOrderReservationIsRowOfVoucher(IntegrationTestCase):
 			self.assertFalse(sre.is_row_of_voucher())
 		core.assert_called_once()
 		self.assertIs(getattr(StockReservationEntry, "is_row_of_voucher", None), parent)
+	def _work_order_sre(self, line="SOI-1"):
+		return _bare_sre(
+			manufacturing_work_order="MWO-1",
+			manufacturing_operation="MOP-1",
+			item_code="D-RAW-1",
+			voucher_type="Sales Order",
+			voucher_no="SO-1",
+			voucher_detail_no=line,
+		)
+
+	def test_a_line_of_its_sales_order_is_enough_for_a_raw_material(self):
+		with (
+			patch.object(
+				StockReservationEntry, "is_row_of_voucher", create=True
+			) as erpnext_check,
+			patch.object(
+				frappe.db, "exists", side_effect=_sales_order_lines(("SOI-1", "SO-1"))
+			),
+		):
+			self.assertTrue(self._work_order_sre().is_row_of_voucher())
+		erpnext_check.assert_not_called()
+
+	def test_a_line_of_another_sales_order_or_no_line_is_refused(self):
+		for line in ("SOI-OTHER", None):
+			with self.subTest(line=line):
+				with patch.object(
+					frappe.db,
+					"exists",
+					side_effect=_sales_order_lines(("SOI-1", "SO-1")),
+				):
+					self.assertFalse(
+						self._work_order_sre(line=line).is_row_of_voucher()
+					)
+
+	def test_every_other_reservation_keeps_erpnexts_check(self):
+		sre = _bare_sre(
+			manufacturing_work_order=None,
+			item_code="RING-1",
+			voucher_type="Sales Order",
+			voucher_no="SO-1",
+			voucher_detail_no="SOI-1",
+		)
+		for verdict in (True, False):
+			with self.subTest(verdict=verdict):
+				with patch.object(
+					StockReservationEntry,
+					"is_row_of_voucher",
+					create=True,
+					return_value=verdict,
+				) as erpnext_check:
+					self.assertIs(sre.is_row_of_voucher(), verdict)
+				erpnext_check.assert_called_once_with()

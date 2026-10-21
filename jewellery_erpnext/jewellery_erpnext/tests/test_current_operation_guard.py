@@ -3285,11 +3285,16 @@ class TestClosedWorkOrder(_GuardHarness):
 
 		message = self.assertGuard(CurrentOperationError, fx.submit_ir, draft)
 		self.assertIn("is on Hold", message)
+		self.assertEqual(fx.operation(mop).status, "Not Started")
+
+		# A work order of its own: an outstanding Issue draft would add the (more severe)
+		# OutstandingDraftError of the draft rule to the refusal.
+		other, _other_mop = fx.make_work_order(w, "MM")
+		self.close(other, "Hold")
 		message = self.assertGuard(
-			CurrentOperationError, fx.insert_ir, fx.employee_ir(w, "Issue", [mwo])
+			CurrentOperationError, fx.insert_ir, fx.employee_ir(w, "Issue", [other])
 		)
 		self.assertIn("is on Hold", message)
-		self.assertEqual(fx.operation(mop).status, "Not Started")
 
 	def test_nothing_done_on_a_closed_or_held_work_order_is_cancelled(self):
 		for status, text, employee in (
@@ -3302,7 +3307,13 @@ class TestClosedWorkOrder(_GuardHarness):
 				issue = fx.issue(w, mwo, employee=employee)
 				self.close(mwo, status)
 
+				# As TestCancelGuards._cancel_refused: Frappe writes docstatus 2 before the
+				# guard raises, and the refusal rolls the whole request back.
+				before = fx.snapshot(mwo)
+				frappe.db.savepoint("cog_closed_cancel")
 				message = self.assertGuard(HistoryRewriteError, fx.reload(issue).cancel)
+				self.assertEqual(fx.snapshot(mwo), before)
+				frappe.db.rollback(save_point="cog_closed_cancel")
 
 				self.assertIn(text, message)
 				self.assertEqual(self.docstatus("Employee IR", issue.name), 1)
