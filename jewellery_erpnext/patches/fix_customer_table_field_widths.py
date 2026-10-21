@@ -1,260 +1,172 @@
+import json
+
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 from frappe.custom.doctype.property_setter.property_setter import make_property_setter
 
+DOCTYPE = "Customer"
+
+# Each table gets a Section Break of its own so it renders full width, in this order.
+TABLE_SECTIONS = [
+	(
+		"custom_section_order_type_criteria_tab",
+		"Order Type Criteria Section",
+		["custom_order_type_criteria"],
+	),
+	("custom_section_sales_type_tab", "Sales Type Section", ["sales_type"]),
+	("custom_section_metal_criteria_tab", "Metal Criteria Section", ["metal_criteria"]),
+	(
+		"custom_section_diamond_price_list_tab",
+		"Diamond Price List Section",
+		["custom_diamond_price_list_table"],
+	),
+	(
+		"custom_section_item_categories_tab",
+		"Item Categories Section",
+		[
+			"custom_allowed_item_category_for_invoice",
+			"custom_item_categories",
+			"custom_approval_warehouse",
+		],
+	),
+]
+
+# Certification Charges block, placed right after the tables.
+CERTIFICATION_FIELDS = [
+	"custom_section_break_xxrxq",
+	"custom_ignore_po_creation_for_certification",
+	"custom_separate_hallmarking_invoice",
+	"custom_block_refining",
+	"custom_no_wastage",
+	"custom_column_break_certification",
+	"custom_fetch_certification_charge_from_price_list",
+	"custom_making_rates_based_on_custom_code",
+	"custom_allow_regular_goods_instead_of_customer_goods",
+]
+
+# The tables block goes after the first of these that exists.
+BLOCK_ANCHORS = [
+	"custom_gemstone_price_list_type",
+	"diamond_price_list",
+	"supplier_numbers",
+]
+
+# Breaks that used to wrap the tables, sent back next to their own fields.
+STRAY_BREAKS = {
+	"section_break_yfp4k": "brand",
+	"column_break_6v9nw": "compute_making_charges_on",
+}
+
+REPS_FIELDS = ["custom_section_customer_reps_tab", "custom_customer_representatives"]
+
 
 def execute():
-	doctype = "Customer"
+	"""
+	Layout is written as a "field_order" Property Setter rather than through insert_after:
+	- a Section Break with the same insert_after as its table is pushed to the end of the
+	  anchor's section by Meta.sort_fields, so the table renders above its own header;
+	- gke_customization's Custom Field fixtures are imported with force=True on every
+	  migrate and reset the tables' insert_after anyway.
+	"""
+	create_breaks()
 
-	layout = [
-		(
-			"custom_section_order_type_criteria_tab",
-			"Order Type Criteria Section",
-			"custom_order_type_criteria",
-		),
-		(
-			"custom_section_sales_type_tab",
-			"Sales Type Section",
-			"sales_type",
-		),
-		(
-			"custom_section_metal_criteria_tab",
-			"Metal Criteria Section",
-			"metal_criteria",
-		),
-		(
-			"custom_section_diamond_price_list_tab",
-			"Diamond Price List Section",
-			"custom_diamond_price_list_table",
-		),
-		(
-			"custom_section_item_categories_tab",
-			"Item Categories Section",
-			"custom_item_categories",
-		),
-	]
+	frappe.clear_cache(doctype=DOCTYPE)
+	meta = frappe.get_meta(DOCTYPE, cached=False)
+	# Start from the order currently rendered so every field is listed and untouched ones stay put
+	field_order = [df.fieldname for df in meta.fields]
+	fieldtypes = {df.fieldname: df.fieldtype for df in meta.fields}
 
-	previous_field = "supplier_numbers"
+	block = []
+	for section_fieldname, _label, fieldnames in TABLE_SECTIONS:
+		block += [section_fieldname, *fieldnames]
+	block += CERTIFICATION_FIELDS
 
-	for section_fieldname, section_label, table_fieldname in layout:
-		# 1. Create/update the Section Break
-		create_custom_fields(
-			{
-				doctype: [
-					{
-						"fieldname": section_fieldname,
-						"label": section_label,
-						"fieldtype": "Section Break",
-					}
-				]
-			},
-			update=True,
+	remove_fields(field_order, block)
+	anchor = next((f for f in BLOCK_ANCHORS if f in field_order), None)
+	if anchor:
+		insert_after(field_order, anchor, [f for f in block if f in fieldtypes])
+
+	for fieldname, target in STRAY_BREAKS.items():
+		if fieldname in field_order and target in field_order:
+			remove_fields(field_order, [fieldname])
+			insert_after(field_order, target, [fieldname])
+
+	remove_fields(field_order, REPS_FIELDS)
+	if "primary_address" in field_order:
+		insert_after(
+			field_order,
+			last_field_of_section(field_order, fieldtypes, "primary_address"),
+			[f for f in REPS_FIELDS if f in fieldtypes],
 		)
 
-		# 2. To bypass Frappe's field chronological sorting bug, we must update
-		# tabCustom Field directly. Property Setters DO NOT re-order Custom Fields!
-		frappe.db.set_value(
-			"Custom Field",
-			{"dt": doctype, "fieldname": section_fieldname},
-			"insert_after",
-			previous_field,
-		)
-
-		if frappe.db.exists(
-			"Custom Field", {"dt": doctype, "fieldname": table_fieldname}
-		):
-			frappe.db.set_value(
-				"Custom Field",
-				{"dt": doctype, "fieldname": table_fieldname},
-				"insert_after",
-				previous_field,
-			)
-
-			# Clean up old property setters that might interfere
-			frappe.db.delete(
-				"Property Setter",
-				{
-					"doc_type": doctype,
-					"field_name": table_fieldname,
-					"property": "insert_after",
-				},
-			)
-
-		# Force table width to 100% via Property Setter (this is a display property, so it works)
-		make_property_setter(doctype, table_fieldname, "width", "100%", "Data")
-
-		# 3. Untangle fields directly in tabCustom Field to prevent drag-along columns
-		if table_fieldname == "sales_type":
-			frappe.db.set_value(
-				"Custom Field",
-				{"dt": doctype, "fieldname": "column_break_6v9nw"},
-				"insert_after",
-				"compute_making_charges_on",
-			)
-		elif table_fieldname == "custom_order_type_criteria":
-			# Move the offending "No Label" section break far away so it doesn't wrap sales_type
-			frappe.db.set_value(
-				"Custom Field",
-				{"dt": doctype, "fieldname": "section_break_yfp4k"},
-				"insert_after",
-				"brand",
-			)
-		elif table_fieldname == "metal_criteria":
-			frappe.db.set_value(
-				"Custom Field",
-				{"dt": doctype, "fieldname": "diamond_quality"},
-				"insert_after",
-				"custom_gemstone_price_list_type",
-			)
-
-		# Next section comes after current table
-		previous_field = table_fieldname
-
-	# ------------------------------------------------------------
-	# Customer Representatives & Certification Column Break
-	# ------------------------------------------------------------
-	create_custom_fields(
-		{
-			doctype: [
-				{
-					"fieldname": "custom_section_customer_reps_tab",
-					"label": "Customer Representatives Section",
-					"fieldtype": "Section Break",
-				},
-				{
-					"fieldname": "custom_column_break_certification",
-					"fieldtype": "Column Break",
-				},
-			]
-		},
-		update=True,
+	make_property_setter(
+		DOCTYPE, None, "field_order", json.dumps(field_order), "Data", for_doctype=True
 	)
 
-	frappe.db.set_value(
-		"Custom Field",
-		{"dt": doctype, "fieldname": "custom_section_customer_reps_tab"},
-		"insert_after",
-		"primary_address",
-	)
-	frappe.db.set_value(
-		"Custom Field",
-		{"dt": doctype, "fieldname": "custom_customer_representatives"},
-		"insert_after",
-		"custom_section_customer_reps_tab",
-	)
-
+	# Left behind by the previous version of this patch; width has no effect on form layout
 	frappe.db.delete(
 		"Property Setter",
 		{
-			"doc_type": doctype,
-			"field_name": "custom_customer_representatives",
-			"property": "insert_after",
+			"doc_type": DOCTYPE,
+			"property": "width",
+			"value": "100%",
+			"field_name": [
+				"in",
+				[f for _s, _l, fields in TABLE_SECTIONS for f in fields] + REPS_FIELDS,
+			],
 		},
 	)
-	make_property_setter(
-		doctype, "custom_customer_representatives", "width", "100%", "Data"
-	)
 
-	# ------------------------------------------------------------
-	# ULTIMATE FIX: Override the "field_order" Property Setter
-	# ------------------------------------------------------------
-	# If the user ever dragged/dropped fields in "Customize Form", Frappe created a
-	# "field_order" Property Setter. This hardcoded JSON list OVERRIDES ALL insert_after logic.
-	import json
+	frappe.clear_cache(doctype=DOCTYPE)
 
-	field_order_str = frappe.db.get_value(
-		"Property Setter", {"doc_type": doctype, "property": "field_order"}, "value"
-	)
-	if field_order_str:
-		field_order = json.loads(field_order_str)
 
-		# Remove all our fields from their broken positions
-		fields_to_reorder = [
-			"custom_section_order_type_criteria_tab",
-			"custom_order_type_criteria",
-			"custom_section_sales_type_tab",
-			"sales_type",
-			"custom_section_metal_criteria_tab",
-			"metal_criteria",
-			"custom_section_diamond_price_list_tab",
-			"custom_diamond_price_list_table",
-			"custom_section_item_categories_tab",
-			"custom_allowed_item_category_for_invoice",
-			"custom_item_categories",
-			"section_break_yfp4k",
-			"column_break_6v9nw",
-			"connections_tab",
-		]
-		for f in fields_to_reorder:
-			if f in field_order:
-				field_order.remove(f)
-
-		# Find a safe anchor point (custom_gemstone_price_list_type)
-		anchor_idx = -1
-		if "custom_gemstone_price_list_type" in field_order:
-			anchor_idx = field_order.index("custom_gemstone_price_list_type")
-		elif "diamond_quality" in field_order:
-			# Inject custom_gemstone_price_list_type right before diamond_quality if it's missing
-			idx = field_order.index("diamond_quality")
-			field_order.insert(idx, "custom_gemstone_price_list_type")
-			anchor_idx = idx
-		elif "supplier_numbers" in field_order:
-			anchor_idx = field_order.index("supplier_numbers")
-
-		if anchor_idx != -1:
-			perfect_sequence = [
-				"custom_section_order_type_criteria_tab",
-				"custom_order_type_criteria",
-				"custom_section_sales_type_tab",
-				"sales_type",
-				"custom_section_metal_criteria_tab",
-				"metal_criteria",
-				"custom_section_diamond_price_list_tab",
-				"custom_diamond_price_list_table",
-				"custom_section_item_categories_tab",
-				"custom_allowed_item_category_for_invoice",
-				"custom_item_categories",
-			]
-
-			# The Certification Charges block (custom_section_break_xxrxq)
-			certification_fields = [
-				"custom_section_break_xxrxq",
-				"custom_ignore_po_creation_for_certification",
-				"custom_separate_hallmarking_invoice",
-				"custom_block_refining",
-				"custom_no_wastage",
-				"custom_column_break_certification",
-				"custom_fetch_certification_charge_from_price_list",
-				"custom_making_rates_based_on_custom_code",
-				"custom_allow_regular_goods_instead_of_customer_goods",
-			]
-
-			for cf in certification_fields:
-				if cf in field_order:
-					field_order.remove(cf)
-				perfect_sequence.append(cf)
-
-			for i, f in enumerate(perfect_sequence):
-				field_order.insert(anchor_idx + 1 + i, f)
-
-		# Bury the dragged-along column/section breaks safely away from our tables
-		if "compute_making_charges_on" in field_order:
-			field_order.insert(
-				field_order.index("compute_making_charges_on") + 1, "column_break_6v9nw"
-			)
-		if "brand" in field_order:
-			field_order.insert(field_order.index("brand") + 1, "section_break_yfp4k")
-
-		# Save the master layout back
-		frappe.db.set_value(
-			"Property Setter",
-			{"doc_type": doctype, "property": "field_order"},
-			"value",
-			json.dumps(field_order),
+def create_breaks():
+	fields = []
+	previous_field = BLOCK_ANCHORS[0]
+	for section_fieldname, label, fieldnames in TABLE_SECTIONS:
+		fields.append(
+			{
+				"fieldname": section_fieldname,
+				"label": label,
+				"fieldtype": "Section Break",
+				"insert_after": previous_field,
+			}
 		)
+		previous_field = fieldnames[-1]
 
-	# Reset idx for all Customer custom fields to 0
-	frappe.db.sql("UPDATE `tabCustom Field` SET idx = 0 WHERE dt = %s", (doctype,))
-	frappe.db.commit()
+	fields += [
+		{
+			"fieldname": "custom_section_customer_reps_tab",
+			"label": "Customer Representatives Section",
+			"fieldtype": "Section Break",
+			"insert_after": "primary_address",
+		},
+		{
+			"fieldname": "custom_column_break_certification",
+			"fieldtype": "Column Break",
+			"insert_after": "custom_no_wastage",
+		},
+	]
 
-	frappe.clear_cache(doctype=doctype)
+	create_custom_fields({DOCTYPE: fields}, update=True)
+
+
+def remove_fields(field_order, fieldnames):
+	for fieldname in fieldnames:
+		if fieldname in field_order:
+			field_order.remove(fieldname)
+
+
+def insert_after(field_order, anchor, fieldnames):
+	idx = field_order.index(anchor) + 1
+	field_order[idx:idx] = fieldnames
+
+
+def last_field_of_section(field_order, fieldtypes, fieldname):
+	idx = field_order.index(fieldname)
+	while idx + 1 < len(field_order) and fieldtypes[field_order[idx + 1]] not in (
+		"Section Break",
+		"Tab Break",
+	):
+		idx += 1
+	return field_order[idx]
