@@ -1713,3 +1713,57 @@ class TestSREProvenance(IntegrationTestCase):
 				inspect.getsource(fn),
 				"%s must route its provenance through %s" % (fn.__name__, helper),
 			)
+
+
+class TestWorkOrderReservationIsRowOfVoucher(IntegrationTestCase):
+	"""ERPNext 16.52 requires a Sales Order reservation's item to be the line's own item.
+
+	A work-order reservation reserves raw material for the line's finished piece, so it is
+	accepted when it names a real line of the Sales Order -- whatever the item. Everything
+	else keeps ERPNext's rule. CI broke on every PR with "Item D-NT-RO-6B-+9-9.5 is not a
+	row of Sales Order SAL-ORD-2026-00001" when version-16 picked this check up.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _sre(self, **fields):
+		base = {
+			"voucher_type": "Sales Order",
+			"voucher_no": "SO-1",
+			"voucher_detail_no": "SOI-1",
+			"item_code": "D-NT-RO-6B-+9-9.5",
+			"manufacturing_work_order": "MWO-1",
+		}
+		base.update(fields)
+		return _bare_sre(**base)
+
+	def test_a_raw_material_reserved_for_a_real_line_is_accepted(self):
+		sre = self._sre()
+		with patch(f"{_SRE_MODULE}.frappe.db.exists", return_value="SOI-1") as exists:
+			self.assertTrue(sre.is_row_of_voucher())
+		exists.assert_called_once_with(
+			"Sales Order Item", {"name": "SOI-1", "parent": "SO-1"}
+		)
+
+	def test_a_line_that_is_not_on_the_sales_order_is_refused(self):
+		sre = self._sre()
+		with patch(f"{_SRE_MODULE}.frappe.db.exists", return_value=None):
+			self.assertFalse(sre.is_row_of_voucher())
+
+	def test_no_line_is_refused_without_a_lookup(self):
+		sre = self._sre(voucher_detail_no=None)
+		with patch(f"{_SRE_MODULE}.frappe.db.exists") as exists:
+			self.assertFalse(sre.is_row_of_voucher())
+		exists.assert_not_called()
+
+	def test_a_plain_sales_order_reservation_keeps_erpnexts_rule(self):
+		sre = self._sre(manufacturing_work_order=None)
+		parent = getattr(StockReservationEntry, "is_row_of_voucher", None)
+		with patch.object(
+			StockReservationEntry, "is_row_of_voucher", create=True, return_value=False
+		) as core:
+			self.assertFalse(sre.is_row_of_voucher())
+		core.assert_called_once()
+		self.assertIs(getattr(StockReservationEntry, "is_row_of_voucher", None), parent)
