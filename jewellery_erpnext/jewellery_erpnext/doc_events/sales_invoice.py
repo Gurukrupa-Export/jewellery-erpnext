@@ -76,6 +76,32 @@ def _cached_run(cache, query):
 	return cache[key]
 
 
+def _get_customer_metal_purity_map(customer):
+	"""(metal_type, metal_touch) -> metal_purity from the Customer's Metal Criteria,
+	read once per invoice. Metal Criteria is also a child of Manufacturer, so the
+	parenttype filter keeps a same-named Manufacturer's rows out.
+	"""
+	return {
+		(mc.metal_type, mc.metal_touch): mc.metal_purity
+		for mc in frappe.get_all(
+			"Metal Criteria",
+			filters={"parent": customer, "parenttype": "Customer"},
+			fields=["metal_type", "metal_touch", "metal_purity"],
+		)
+	}
+
+
+def _customer_metal_purity(purity_map, customer, row):
+	purity = purity_map.get((row.metal_type, row.metal_touch))
+	if not purity:
+		frappe.throw(
+			_(
+				"Metal Criteria missing for Customer {0}: Metal Type {1}, Metal Touch {2}"
+			).format(customer, row.metal_type, row.metal_touch)
+		)
+	return purity
+
+
 def before_validate(self, method):
 	if self.is_return:
 		for row in self.get("invoice_item") or []:
@@ -122,6 +148,7 @@ def before_validate(self, method):
 			self.company == "KG GK Jewellers Private Limited"
 			or customer_group == "Internal"
 		):
+			metal_purity_map = _get_customer_metal_purity_map(self.customer)
 			for row_s in self.items:
 				if row_s.bom:
 					bom_doc = frappe.get_doc("BOM", row_s.bom)
@@ -150,10 +177,9 @@ def before_validate(self, method):
 							row.wastage_amount = 0
 							continue
 
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
+						customer_metal_purity = _customer_metal_purity(
+							metal_purity_map, self.customer, row
+						)
 						row.customer_metal_purity = customer_metal_purity
 						rate = (
 							float(row.customer_metal_purity) * self.gold_rate_with_gst
@@ -186,10 +212,9 @@ def before_validate(self, method):
 							row.wastage_amount = 0
 							continue
 
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
+						customer_metal_purity = _customer_metal_purity(
+							metal_purity_map, self.customer, row
+						)
 						row.customer_metal_purity = customer_metal_purity
 						rate = (
 							float(row.customer_metal_purity) * self.gold_rate_with_gst
