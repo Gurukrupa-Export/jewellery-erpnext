@@ -94,6 +94,10 @@ class TestSyncMouldId(IntegrationTestCase):
 			flags=SimpleNamespace(ignore_validations=False),
 		)
 		fake.is_new = lambda: True
+		# validate also enforces the diamond grade policy above the early return; these tests
+		# isolate the Mould List ID assignment, and the fake is called unbound so the stub has
+		# to sit on the fake rather than on the class.
+		fake._validate_diamond_grade_policy = lambda: None
 		with patch.object(
 			pmo_mod, "get_current_mould_id", return_value="M-GEPL-NE-00001"
 		):
@@ -107,6 +111,7 @@ class TestSyncMouldId(IntegrationTestCase):
 			flags=SimpleNamespace(ignore_validations=True),
 		)
 		fake.is_new = lambda: False
+		fake._validate_diamond_grade_policy = lambda: None
 		with patch.object(
 			pmo_mod, "get_current_mould_id", return_value="M-GEPL-NE-00001"
 		):

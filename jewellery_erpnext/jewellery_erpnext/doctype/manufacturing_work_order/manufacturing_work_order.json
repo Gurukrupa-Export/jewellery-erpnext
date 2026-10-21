@@ -18,6 +18,7 @@
   "branch",
   "abbr",
   "is_finding_mwo",
+  "is_without_so",
   "final_transfer_entry",
   "finding_transfer_entry",
   "section_break_fsrwq",
@@ -62,6 +63,7 @@
   "order_type",
   "sales_type",
   "flow_type",
+  "design_type",
   "status",
   "split_from",
   "column_break_p1ihu",
@@ -82,6 +84,10 @@
   "est_delivery_days",
   "est_mfg_end_due_days",
   "mwo_details_section",
+  "photoshop_images_section",
+  "finish_front_view",
+  "column_break_photoshop",
+  "finish_left_view",
   "weight_details_section",
   "gross_wt",
   "net_wt",
@@ -179,7 +185,8 @@
   {
    "fieldname": "start_datetime",
    "fieldtype": "Datetime",
-   "label": "Start Time"
+   "label": "Start Time",
+   "no_copy": 1
   },
   {
    "fetch_from": "manufacturing_order.qty",
@@ -274,6 +281,14 @@
    "fieldname": "flow_type",
    "fieldtype": "Data",
    "label": "Flow Type",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_order.design_type",
+   "fieldname": "design_type",
+   "fieldtype": "Link",
+   "label": "Design Type",
+   "options": "Attribute Value",
    "read_only": 1
   },
   {
@@ -510,6 +525,28 @@
    "label": "MWO Details"
   },
   {
+   "depends_on": "eval:doc.for_fg",
+   "fieldname": "photoshop_images_section",
+   "fieldtype": "Section Break",
+   "label": "Photoshop Images"
+  },
+  {
+   "fieldname": "finish_front_view",
+   "fieldtype": "Attach Image",
+   "label": "Finish Front View",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "column_break_photoshop",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "finish_left_view",
+   "fieldtype": "Attach Image",
+   "label": "Finish Left View",
+   "no_copy": 1
+  },
+  {
    "fieldname": "stock_entry_details",
    "fieldtype": "HTML",
    "hidden": 1,
@@ -540,6 +577,7 @@
    "fieldname": "manufacturing_operation",
    "fieldtype": "Link",
    "label": "Manufacturing Operation",
+   "no_copy": 1,
    "options": "Manufacturing Operation",
    "read_only": 1
   },
@@ -640,6 +678,15 @@
    "label": "Is Finding MWO"
   },
   {
+   "default": "0",
+   "description": "Raised from a Manufacturing Plan in Finding Manufacturing - Without SO mode.",
+   "fieldname": "is_without_so",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Without SO",
+   "read_only": 1
+  },
+  {
    "fieldname": "final_transfer_entry",
    "fieldtype": "Link",
    "label": "Final Transfer Entry",
@@ -725,7 +772,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-07-03 16:00:00.000000",
+ "modified": "2026-10-13 18:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

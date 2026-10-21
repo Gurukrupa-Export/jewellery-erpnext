@@ -293,7 +293,9 @@ def _refresh_msl_tracking(warehouse):
 	"""Recompute the warehouse's maintained tracking table after a loss booking
 	(req #8: "Loss quantity is updated in warehouse tracking records. Pending
 	quantity is recalculated automatically"). A tracking-refresh failure must not
-	roll back the loss booking, so failures are logged, not raised.
+	roll back the loss booking, so failures are logged, not raised -- except a
+	deadlock (1213, or 1020 under snapshot isolation): InnoDB has already rolled the
+	whole transaction back by then, so it is re-raised.
 	"""
 	if not warehouse:
 		return
@@ -303,6 +305,10 @@ def _refresh_msl_tracking(warehouse):
 
 	try:
 		recalculate_msl_tracking(warehouse)
+	except frappe.QueryDeadlockError:
+		# The booking is already rolled back; logging and carrying on would commit the rest
+		# of the request in a fresh transaction, reporting success for nothing.
+		raise
 	except Exception:
 		frappe.log_error(
 			title="Employee Loss Entry: MSL tracking refresh failed",

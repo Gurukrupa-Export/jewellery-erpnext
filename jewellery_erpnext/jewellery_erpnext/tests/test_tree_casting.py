@@ -66,12 +66,59 @@ def _md(issue, receive, loss):
 	return row
 
 
+class _EIROpRow(SimpleNamespace):
+	"""Employee IR Operation row that behaves like a real child Document.
+
+	Two things a bare SimpleNamespace does not give us, both of which the casting
+	code uses on real child rows:
+
+	  * ``db_set`` -- ``create_tree_on_issue`` writes the tree back onto the row that
+	    way (the document is already submitted by then). Recorded here so the
+	    issue-stamp tests can assert on it.
+	  * ``get`` -- ``unlink_tree_on_issue_cancel`` reads the row with ``row.get(...)``,
+	    the same accessor ``frappe.model.document.Document`` provides. Omitting it made
+	    the fake diverge from the thing it stands in for, and the tests failed on the
+	    FAKE rather than on the code under test.
+	"""
+
+	def __init__(self, **kwargs):
+		kwargs.setdefault("tree_number", None)
+		super().__init__(**kwargs)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+	def db_set(self, fieldname, value, **kwargs):
+		setattr(self, fieldname, value)
+
+
+class _EIRDoc(SimpleNamespace):
+	"""Employee IR parent that behaves like a real Document.
+
+	Same reasoning as ``_EIROpRow``, one level up. The casting code stamps the resolved
+	tree onto the EIR HEADER as well as onto its rows, and reaches for ``get``/``db_set``
+	to do it -- both of which ``frappe.model.document.Document`` provides and a bare
+	SimpleNamespace does not. Leaving them off made the fake diverge from the thing it
+	stands in for, so the tests blew up on the FAKE instead of exercising the code.
+	"""
+
+	def __init__(self, **kwargs):
+		kwargs.setdefault("tree_number", None)
+		super().__init__(**kwargs)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+	def db_set(self, fieldname, value, **kwargs):
+		setattr(self, fieldname, value)
+
+
 def _eir(rows, op="Casting WO", typ="Issue"):
-	return SimpleNamespace(
+	return _EIRDoc(
 		operation=op,
 		type=typ,
 		employee_ir_operations=[
-			SimpleNamespace(manufacturing_work_order=name) for name in rows
+			_EIROpRow(manufacturing_work_order=name) for name in rows
 		],
 	)
 
@@ -393,14 +440,14 @@ class TestCastingIssueQtySeed(IntegrationTestCase):
 			metal_weight=7.657,
 			gross_wt=0.0,  # casting issue: no metal on the operation yet
 		)
-		eir = SimpleNamespace(
+		eir = _EIRDoc(
 			name="EIR-1",
 			company="C",
 			manufacturer="M",
 			department="Waxing",
 			operation="Casting",
 			employee="E",
-			employee_ir_operations=[SimpleNamespace(manufacturing_work_order="MWO-A")],
+			employee_ir_operations=[_EIROpRow(manufacturing_work_order="MWO-A")],
 		)
 		fake_tree = _FakeTreeDoc()
 
@@ -432,6 +479,299 @@ class TestCastingIssueQtySeed(IntegrationTestCase):
 		self.assertEqual(md.pending_qty, 0)
 
 
+class TestIssueStampsTreeOnEirRows(IntegrationTestCase):
+	"""The Issue that creates a casting tree stamps it onto its OWN operation rows.
+
+	Before this, ``create_tree_on_issue`` wrote the tree only onto the work orders, so a
+	casting Issue Employee IR showed an empty Tree Number column while the Receive that
+	closed the loop showed a filled one. Both ends now carry it.
+
+	The stamp is scoped to casting operations by ``is_casting_eir``
+	(``Department Operation.tree_no_reqd``), never by the operation's name.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _issue(self, work_orders, casting=True):
+		"""Run create_tree_on_issue over `work_orders`; return the EIR and the fake tree."""
+		mwos = {
+			name: _MWODoc(
+				name=name,
+				metal_type="Gold",
+				metal_touch="22KT",
+				metal_purity="91.9",
+				metal_colour="Yellow",
+				metal_weight=1.0,
+				gross_wt=0.0,
+			)
+			for name in work_orders
+		}
+		eir = _EIRDoc(
+			name="EIR-1",
+			company="C",
+			manufacturer="M",
+			department="Waxing",
+			operation="Casting",
+			employee="E",
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order=n) for n in work_orders
+			],
+		)
+		fake_tree = _FakeTreeDoc()
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			if doctype == "Department Operation":
+				return 1 if casting else 0
+			return None
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(
+				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
+			),
+			patch.object(tree_casting.frappe, "new_doc", return_value=fake_tree),
+			patch.object(
+				tree_casting, "get_item_from_attribute", return_value="M-G-22KT-91.9-Y"
+			),
+			patch.object(tree_casting.frappe.db, "set_value"),
+		):
+			tree_casting.create_tree_on_issue(eir)
+
+		return eir, fake_tree
+
+	def test_every_row_carries_the_new_tree(self):
+		eir, tree = self._issue(["MWO-A", "MWO-B"])
+		for row in eir.employee_ir_operations:
+			self.assertEqual(row.tree_number, tree.name)
+
+	def test_the_row_stamp_matches_the_work_order_stamp(self):
+		# One tree per casting Issue: the row and its work order can never disagree.
+		eir, tree = self._issue(["MWO-A"])
+		self.assertEqual(eir.employee_ir_operations[0].tree_number, "TREE-TEST-0001")
+		self.assertEqual(tree.name, "TREE-TEST-0001")
+
+	def test_a_non_casting_issue_stamps_nothing(self):
+		eir, _tree = self._issue(["MWO-A"], casting=False)
+		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
+
+	def test_the_header_carries_the_new_tree(self):
+		# An Issue builds exactly one tree, so the header can always be filled -- unlike a
+		# Receive, which may draw from several and has to leave it blank.
+		eir, tree = self._issue(["MWO-A", "MWO-B"])
+		self.assertEqual(eir.tree_number, tree.name)
+
+	def test_a_non_casting_issue_leaves_the_header_blank(self):
+		eir, _tree = self._issue(["MWO-A"], casting=False)
+		self.assertIsNone(eir.tree_number)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestUnlinkTreeOnIssueCancel(IntegrationTestCase):
+	"""Cancelling a casting Issue force-deletes the tree, so every stamp must come off.
+
+	A row left pointing at a deleted Tree Number is a dangling link -- the whole reason
+	the clear is not optional. It is scoped to the tree being deleted: on a re-issue a row
+	may already have been re-stamped onto a newer tree, and that one must survive.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _cancel(
+		self,
+		rows,
+		tree_name="TREE-0001",
+		casting=True,
+		header_tree="TREE-0001",
+		draft_index=None,
+		answer=None,
+	):
+		"""rows: [(mwo, row_tree_number, live_mwo_tree_number)].
+
+		``header_tree`` defaults to the tree being deleted because that is what
+		``create_tree_on_issue`` would have stamped on the way out. ``draft_index`` is what
+		the guard reports as the Employee IR Operation ``manufacturing_work_order`` index
+		(``None``: not created yet); ``answer(query)`` returns rows for the faked SQL.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doc_events import (
+			current_operation_guard,
+		)
+
+		eir = _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			tree_number=header_tree,
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order=mwo, tree_number=row_tree)
+				for mwo, row_tree, _live in rows
+			],
+		)
+		live = {mwo: live_tree for mwo, _row_tree, live_tree in rows}
+		tree = SimpleNamespace(
+			name=tree_name,
+			status="Issued",
+			material_details=[
+				SimpleNamespace(receive_qty=0.0, loss_qty=0.0),
+			],
+		)
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			if doctype == "Department Operation":
+				return 1 if casting else 0
+			if doctype == "Tree Number":
+				return tree_name
+			if doctype == "Manufacturing Work Order":
+				return live.get(name)
+			return None
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events import (
+			tree_stock_entry,
+		)
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
+			patch.object(tree_casting.frappe.db, "set_value"),
+			# The draft scrub runs raw UPDATEs across other documents; capture them rather
+			# than letting the suite touch real rows, and so TestScrubDraftTreeStamps below
+			# can assert on what they said.
+			patch.object(tree_casting.frappe.db, "sql") as sql,
+			patch.object(tree_casting.frappe, "delete_doc") as delete_doc,
+			patch.object(tree_stock_entry, "cancel_tree_stock_entries"),
+			patch.object(
+				current_operation_guard, "_draft_index_name", return_value=draft_index
+			),
+		):
+			order = []
+
+			def fake_sql(query, *a, **k):
+				order.append("sql")
+				return answer(query) if answer else None
+
+			sql.side_effect = fake_sql
+			delete_doc.side_effect = lambda *a, **k: order.append("delete_doc")
+			tree_casting.unlink_tree_on_issue_cancel(eir)
+			self.sql = sql
+			self.delete_doc = delete_doc
+			self.order = order
+
+		return eir
+
+	def test_the_row_stamp_is_cleared(self):
+		eir = self._cancel([("MWO-A", "TREE-0001", "TREE-0001")])
+		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
+
+	def test_every_row_is_cleared(self):
+		eir = self._cancel(
+			[
+				("MWO-A", "TREE-0001", "TREE-0001"),
+				("MWO-B", "TREE-0001", "TREE-0001"),
+			]
+		)
+		for row in eir.employee_ir_operations:
+			self.assertIsNone(row.tree_number)
+
+	def test_a_row_re_stamped_onto_a_newer_tree_survives(self):
+		# The work order was re-issued onto TREE-0002 before this cancel ran; clearing
+		# it here would desync the live tree from its issue.
+		eir = self._cancel([("MWO-A", "TREE-0002", "TREE-0002")])
+		self.assertEqual(eir.employee_ir_operations[0].tree_number, "TREE-0002")
+
+	def test_a_non_casting_cancel_touches_nothing(self):
+		eir = self._cancel([("MWO-A", "TREE-0001", "TREE-0001")], casting=False)
+		self.assertEqual(eir.employee_ir_operations[0].tree_number, "TREE-0001")
+		self.assertEqual(eir.tree_number, "TREE-0001")
+
+	def test_the_header_stamp_is_cleared(self):
+		# The tree is force-deleted at the end of the cancel, so a header still pointing
+		# at it would be a dangling link -- the same reason the row stamps come off.
+		eir = self._cancel([("MWO-A", "TREE-0001", "TREE-0001")])
+		self.assertIsNone(eir.tree_number)
+
+	def test_a_header_re_stamped_onto_a_newer_tree_survives(self):
+		# Scoped to the tree being deleted, exactly as the row clear is: a re-issue may
+		# already have moved this EIR's header onto a tree that is still live.
+		eir = self._cancel(
+			[("MWO-A", "TREE-0002", "TREE-0002")], header_tree="TREE-0002"
+		)
+		self.assertEqual(eir.tree_number, "TREE-0002")
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestReceiveStampsTreeOnEirHeader(IntegrationTestCase):
+	"""``pin_tree_numbers_on_receive`` summarises the rows onto the header -- but only
+	when they agree.
+
+	One Link cannot hold two trees, and a receive legitimately spans several (the same
+	reason ``_stamp_loss_tree`` leaves the combined loss Stock Entry unstamped in that
+	case). Filling it with whichever tree sorted first would read as fact, so it stays
+	blank and the per-row column remains the answer.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _receive(self, row_trees):
+		"""Run pin_tree_numbers_on_receive over rows carrying `row_trees`.
+
+		A row that already has a tree short-circuits the resolve loop. A row that does NOT
+		falls through to ``_row_tree_and_item``, which loads the work order -- so the MWO
+		fetch is faked here rather than assumed away, and answers with a work order that is
+		on no tree either.
+		"""
+		eir = _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order="MWO-%d" % i, tree_number=tree)
+				for i, tree in enumerate(row_trees)
+			],
+		)
+		with patch.object(
+			tree_casting.frappe,
+			"get_cached_doc",
+			side_effect=lambda _dt, name: _MWODoc(name=name, tree_number=None),
+		):
+			tree_casting.pin_tree_numbers_on_receive(eir)
+		return eir
+
+	def test_one_tree_fills_the_header(self):
+		eir = self._receive(["TREE-0001", "TREE-0001"])
+		self.assertEqual(eir.tree_number, "TREE-0001")
+
+	def test_several_trees_leave_the_header_blank(self):
+		eir = self._receive(["TREE-0001", "TREE-0002"])
+		self.assertIsNone(eir.tree_number)
+
+	def test_the_rows_keep_their_trees_when_the_header_is_blank(self):
+		# The header abstaining must not cost the per-row answer -- that column is the
+		# whole fallback for a multi-tree receive.
+		eir = self._receive(["TREE-0001", "TREE-0002"])
+		self.assertEqual(
+			[row.tree_number for row in eir.employee_ir_operations],
+			["TREE-0001", "TREE-0002"],
+		)
+
+	def test_a_receive_on_no_tree_at_all_leaves_the_header_blank(self):
+		eir = self._receive([None, None])
+		self.assertIsNone(eir.tree_number)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
 def _mwo_doc(name, tree_number):
 	"""Fake MWO for the receive-aggregation path (needs attribute access for _metal_item and
 	.get('tree_number'))."""
@@ -452,7 +792,7 @@ def _recv_eir(rows, typ="Receive", loss_rows=None, is_raw_material=1):
 	def _op(r):
 		name, recv = r[0], r[1]
 		gross = r[2] if len(r) > 2 else recv
-		return SimpleNamespace(
+		return _EIROpRow(
 			manufacturing_work_order=name, received_gross_wt=recv, gross_wt=gross
 		)
 
@@ -482,12 +822,23 @@ def _ledger_tree(issue=0.0, receive=0.0, loss=0.0, item="M-G-18KT-75-Y"):
 				item_code=item,
 				issue_qty=issue,
 				receive_qty=receive,
+				# Provenance split of receive_qty + the informational gross weight.
+				wo_receive_qty=receive,
+				manual_receive_qty=0.0,
+				wo_received_gross_wt=0.0,
 				loss_qty=loss,
 				pending_qty=issue - receive - loss,
 			)
 		],
 	)
-	tree.save = lambda *a, **k: None
+
+	def _save(*a, **k):
+		# Mirror TreeNumber.calculate_material_pending: manual_receive_qty is derived on
+		# every save, never accumulated.
+		for md in tree.material_details:
+			md.manual_receive_qty = max(0.0, md.receive_qty - md.wo_receive_qty)
+
+	tree.save = _save
 	return tree
 
 
@@ -607,6 +958,9 @@ class TestUpdateTreeOnReceiveCancel(IntegrationTestCase):
 			patch.object(
 				tree_casting, "get_item_from_attribute", return_value=self.ITEM
 			),
+			# _credit_wo_received_gross reads child rows directly for any tree this
+			# receive only REPORTS against (no draw); keep it off the real DB.
+			patch.object(tree_casting.frappe, "get_all", return_value=[]),
 		):
 			tree_casting.update_tree_on_receive(eir, cancel=True)
 
@@ -660,7 +1014,7 @@ def _grp_eir(work_orders, typ="Issue"):
 		department="Casting Dept",
 		subcontracting="No",
 		employee_ir_operations=[
-			SimpleNamespace(manufacturing_work_order=name) for name in work_orders
+			_EIROpRow(manufacturing_work_order=name) for name in work_orders
 		],
 	)
 
@@ -933,7 +1287,7 @@ class TestCastingGroupStamp(IntegrationTestCase):
 	def _stamp(self, mwos):
 		"""Run create_tree_on_issue over `mwos` (dict name->_MWODoc); return {name: updates_dict}."""
 		fake_tree = _FakeTreeDoc()  # .name == "TREE-TEST-0001"
-		eir = SimpleNamespace(
+		eir = _EIRDoc(
 			name="EIR-1",
 			company="C",
 			manufacturer="M",
@@ -941,7 +1295,7 @@ class TestCastingGroupStamp(IntegrationTestCase):
 			operation="Casting",
 			employee="E",
 			employee_ir_operations=[
-				SimpleNamespace(manufacturing_work_order=n) for n in mwos
+				_EIROpRow(manufacturing_work_order=n) for n in mwos
 			],
 		)
 
@@ -1709,6 +2063,68 @@ class TestLossItemResolution(IntegrationTestCase):
 # Submit-to-lock (manual finalize)
 # ---------------------------------------------------------------------------
 class TestSubmitAndLock(IntegrationTestCase):
+	def setUp(self):
+		super().setUp()
+		# submit_tree looks up the Manufacturing Operations stamped with the tree; default
+		# to none so these tests stay DB-free. Tests that need some set return_value.
+		patcher = patch.object(frappe, "get_all", return_value=[])
+		self.get_all = patcher.start()
+		self.addCleanup(patcher.stop)
+
+	def test_submit_tree_blocks_while_a_mop_is_not_finished(self):
+		tree = self._received_tree()
+		self.get_all.return_value = [
+			frappe._dict(name="MOP-0001", status="WIP"),
+			frappe._dict(name="MOP-0002", status="Not Started"),
+		]
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(tse, "receive_material") as mock_recv,
+			self.assertRaises(ValidationError) as ctx,
+		):
+			tree.submit_tree()
+		message = str(ctx.exception)
+		self.assertIn("MOP-0001 (WIP)", message)
+		self.assertIn("MOP-0002 (Not Started)", message)
+		# Nothing is written off or locked when the gate refuses.
+		mock_recv.assert_not_called()
+		self.assertNotEqual(tree.status, "Submitted")
+		tree.save.assert_not_called()
+
+	def test_submit_tree_only_looks_at_unfinished_mops_of_this_tree(self):
+		tree = self._received_tree()
+		with patch.object(frappe, "has_permission", return_value=True):
+			tree.submit_tree()
+		args, kwargs = self.get_all.call_args
+		self.assertEqual(args[0], "Manufacturing Operation")
+		self.assertEqual(
+			kwargs["filters"],
+			{"tree_number": tree.name, "status": ["!=", "Finished"]},
+		)
+
+	def test_submit_tree_waits_for_the_mop_before_writing_off_loss(self):
+		# A partially received tree would book its leftover as loss; with an unfinished MOP
+		# that must not happen.
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": 10.0,
+					"receive_qty": 3.0,
+					"loss_qty": 0.0,
+					"pending_qty": 7.0,
+				}
+			]
+		)
+		self.get_all.return_value = [frappe._dict(name="MOP-0001", status="WIP")]
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(tse, "receive_material") as mock_recv,
+			self.assertRaises(ValidationError),
+		):
+			tree.submit_tree()
+		mock_recv.assert_not_called()
+
 	def _received_tree(self):
 		# Fully reconciled: issue 10 = receive 8 + loss 2, pending 0 -> _tree_status == "Received".
 		return _new_tree(
@@ -2481,6 +2897,14 @@ class TestReceiveTwoPassOwnership(IntegrationTestCase):
 		self.assertEqual(self._by_batch(se_recv), {"B-CUST": 1.0})
 		self.assertEqual(self._by_batch(se_loss), {"B-REG": 2.0, "B-CUST": 3.0})
 
+	def test_loss_on_customer_metal_raises_no_popup(self):
+		with patch.object(tse.frappe, "msgprint") as msgprint:
+			_se_recv, se_loss = self._receive(
+				1.0, 5.0, owed=[("B-CUST", 10.0), ("B-REG", 2.0)]
+			)
+		self.assertEqual(self._by_batch(se_loss), {"B-REG": 2.0, "B-CUST": 3.0})
+		msgprint.assert_not_called()
+
 	def test_legs_never_double_book_the_same_batch_qty(self):
 		se_recv, se_loss = self._receive(
 			7.0, 4.0, owed=[("B-CUST", 8.0), ("B-REG", 5.0)]
@@ -2701,3 +3125,701 @@ class TestCancelTreeStockEntriesOwnership(IntegrationTestCase):
 		with patch.object(tse.frappe.db, "get_all", return_value=[]) as ga:
 			tse.cancel_tree_stock_entries("TREE-2")
 		self.assertEqual(ga.call_args[0][1]["custom_tree_number"], "TREE-2")
+
+
+class TestSingleTreeOrNone(IntegrationTestCase):
+	"""``single_tree_or_none`` — one Link can only tell the truth when every row agrees.
+
+	Four call sites state this rule (the draft resolve, the submit pin, the combined loss SE
+	stamp and the client-side header); they share this one so they cannot drift.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_no_rows_is_no_tree(self):
+		self.assertIsNone(tree_casting.single_tree_or_none([]))
+
+	def test_one_tree_is_that_tree(self):
+		self.assertEqual(
+			tree_casting.single_tree_or_none(["TREE-1", "TREE-1"]), "TREE-1"
+		)
+
+	def test_blanks_do_not_count_as_a_second_tree(self):
+		self.assertEqual(
+			tree_casting.single_tree_or_none([None, "TREE-1", ""]), "TREE-1"
+		)
+
+	def test_two_trees_abstain(self):
+		self.assertIsNone(tree_casting.single_tree_or_none(["TREE-1", "TREE-2"]))
+
+
+class TestResolveReceiveTreeNumbers(IntegrationTestCase):
+	"""A casting Receive shows its tree while it is still a DRAFT.
+
+	Re-resolved from the work order on every save, never accumulated: nothing is pinned until
+	submit, so a value already on the row is only ever an EARLIER save's answer and keeping it
+	would let the receive draw from a tree the work order has since left.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _resolve(self, rows, typ="Receive", casting=True):
+		"""rows: [(mwo, row_tree_number, live_mwo_tree_number)]."""
+		eir = _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			type=typ,
+			tree_number="TREE-STALE",
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order=mwo, tree_number=row_tree)
+				for mwo, row_tree, _live in rows
+			],
+		)
+		live = [
+			[mwo, live_tree] for mwo, _row_tree, live_tree in rows if mwo is not None
+		]
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", return_value=1 if casting else 0
+			),
+			patch.object(tree_casting.frappe, "get_all", return_value=live) as ga,
+		):
+			tree_casting.resolve_receive_tree_numbers(eir)
+
+		self.get_all = ga
+		return eir
+
+	def test_each_row_takes_the_tree_from_its_work_order(self):
+		eir = self._resolve(
+			[("MWO-A", None, "TREE-0001"), ("MWO-B", None, "TREE-0002")]
+		)
+		self.assertEqual(
+			[row.tree_number for row in eir.employee_ir_operations],
+			["TREE-0001", "TREE-0002"],
+		)
+
+	def test_a_stale_row_value_is_overwritten(self):
+		"""The re-issue case: the work order has moved on and the row must follow it."""
+		eir = self._resolve([("MWO-A", "TREE-OLD", "TREE-NEW")])
+		self.assertEqual(eir.employee_ir_operations[0].tree_number, "TREE-NEW")
+
+	def test_a_work_order_on_no_tree_clears_the_row(self):
+		"""What the operator sees after the casting Issue was cancelled underneath them."""
+		eir = self._resolve([("MWO-A", "TREE-0001", None)])
+		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
+
+	def test_a_row_without_a_work_order_resolves_to_nothing(self):
+		eir = self._resolve([(None, "TREE-0001", None)])
+		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
+
+	def test_one_tree_fills_the_header(self):
+		eir = self._resolve(
+			[("MWO-A", None, "TREE-0001"), ("MWO-B", None, "TREE-0001")]
+		)
+		self.assertEqual(eir.tree_number, "TREE-0001")
+
+	def test_several_trees_leave_the_header_blank(self):
+		eir = self._resolve(
+			[("MWO-A", None, "TREE-0001"), ("MWO-B", None, "TREE-0002")]
+		)
+		self.assertIsNone(eir.tree_number)
+
+	def test_an_emptied_grid_returns_the_header_to_blank(self):
+		"""Unlike the submit pin, the draft path must be able to CLEAR the header: a draft
+		loses rows as well as gaining them."""
+		eir = self._resolve([])
+		self.assertIsNone(eir.tree_number)
+
+	def test_an_issue_is_untouched(self):
+		"""An Issue's tree does not exist until submit, and on a re-issue the work order still
+		points at the PREVIOUS one -- filling it here would show last round's tree."""
+		eir = self._resolve([("MWO-A", None, "TREE-0001")], typ="Issue")
+		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
+
+	def test_an_issue_does_not_read_the_work_orders(self):
+		self._resolve([("MWO-A", None, "TREE-0001")], typ="Issue")
+		self.get_all.assert_not_called()
+
+	def test_a_non_casting_receive_is_untouched(self):
+		eir = self._resolve([("MWO-A", None, "TREE-0001")], casting=False)
+		self.assertIsNone(eir.employee_ir_operations[0].tree_number)
+
+	def test_the_whole_grid_is_read_in_one_query(self):
+		"""This runs on every save of a document that routinely carries dozens of rows."""
+		self._resolve(
+			[
+				("MWO-A", None, "TREE-0001"),
+				("MWO-B", None, "TREE-0001"),
+				("MWO-C", None, "TREE-0002"),
+			]
+		)
+		self.assertEqual(self.get_all.call_count, 1)
+
+
+class TestValidateSingleCastingTree(IntegrationTestCase):
+	"""One Employee IR = one casting tree, enforced on the Receive side.
+
+	``employee_ir.js`` refuses the code at the scanner, but every other way a row can appear --
+	the Get Operations dialog, a grid bulk edit, Data Import, the REST API -- reaches the server
+	unguarded. This is the twin that actually enforces the rule, the same relationship the
+	duplicate-work-order check has with ``validation_utils.validate_duplication_and_gr_wt``.
+
+	Placed after TestResolveReceiveTreeNumbers because that function produces the row values
+	this one judges, and ``EmployeeIR.validate`` runs them in exactly that order.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _validate(self, row_trees, typ="Receive", casting=True, docstatus=0):
+		"""Run the guard over one row per entry in `row_trees`."""
+		eir = _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			type=typ,
+			docstatus=docstatus,
+			employee_ir_operations=[
+				_EIROpRow(manufacturing_work_order="MWO-%d" % i, tree_number=tree)
+				for i, tree in enumerate(row_trees)
+			],
+		)
+		with patch.object(
+			tree_casting.frappe.db, "get_value", return_value=1 if casting else 0
+		):
+			tree_casting.validate_single_casting_tree(eir)
+		return eir
+
+	def test_one_tree_passes(self):
+		self._validate(["TREE-0001", "TREE-0001"])  # no throw
+
+	def test_two_trees_on_one_receive_are_rejected(self):
+		with self.assertRaises(ValidationError):
+			self._validate(["TREE-0001", "TREE-0002"])
+
+	def test_the_message_names_both_work_orders_and_both_trees(self):
+		"""The text IS the user-visible contract -- it has to say which row to take off."""
+		with self.assertRaises(ValidationError) as cm:
+			self._validate(["TREE-0001", "TREE-0002"])
+		message = str(cm.exception)
+		for token in ("MWO-0", "MWO-1", "TREE-0001", "TREE-0002"):
+			self.assertIn(token, message)
+
+	def test_it_names_the_first_disagreement_not_the_last(self):
+		with self.assertRaises(ValidationError) as cm:
+			self._validate(["TREE-0001", "TREE-0001", "TREE-0002"])
+		message = str(cm.exception)
+		self.assertIn("MWO-2", message)
+		self.assertIn("MWO-0", message)
+
+	def test_rows_without_a_tree_are_not_a_second_tree(self):
+		"""Get Operations deliberately resolves no tree, so its rows arrive blank and stay
+		blank until the next save; throwing on those would block the repair."""
+		self._validate(["TREE-0001", None, "TREE-0001"])  # no throw
+
+	def test_a_receive_on_no_tree_at_all_passes(self):
+		"""Work orders from before the Tree Number feature, or whose Issue was cancelled
+		underneath the operator."""
+		self._validate([None, None])  # no throw
+
+	def test_an_issue_is_untouched(self):
+		"""``create_tree_on_issue`` mints ONE tree for the whole document at submit, so an
+		Issue is one-tree by construction; until then its rows still carry last round's."""
+		self._validate(["TREE-0001", "TREE-0002"], typ="Issue")  # no throw
+
+	def test_a_non_casting_receive_may_still_span_trees(self):
+		"""``row_tree_name`` falls back to ``MWO.tree_number``, which survives past casting, so
+		a finding repack legitimately draws from trees its own operation flag says nothing about
+		(``finding_repack.lock_finding_repack_trees``). Casting's rule must not leak onto it."""
+		self._validate(["TREE-0001", "TREE-0002"], casting=False)  # no throw
+
+	def test_the_guard_also_runs_on_the_submit_save(self):
+		"""NOT gated on docstatus, deliberately: ``before_validate`` returns early on
+		``docstatus != 0`` and ``submit()`` sets docstatus BEFORE saving, so a draft assembled
+		before this rule shipped must not walk past it by being submitted without an
+		intervening save."""
+		with self.assertRaises(ValidationError):
+			self._validate(["TREE-0001", "TREE-0002"], docstatus=1)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestDraftResolveMatchesTheSubmitPin(IntegrationTestCase):
+	"""The display fix must not move a gram.
+
+	Whatever the draft resolve writes is exactly what ``_row_tree_and_item`` would have answered
+	from the work order, so every submit-time consumer -- the pin, the draw, the cancel reversal
+	-- sees identical values whether or not validate ran.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _eir(self):
+		# is_raw_material / subcontracting are what open tree_draw_by_tree's guards: without
+		# the injection no metal leaves the MSL pool and the draw is empty for both arms of
+		# the comparison, which would make the test pass without proving anything.
+		return _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			type="Receive",
+			is_raw_material=1,
+			subcontracting="No",
+			employee_ir_operations=[
+				_EIROpRow(
+					manufacturing_work_order="MWO-A",
+					gross_wt=10.0,
+					received_gross_wt=12.0,
+				),
+				_EIROpRow(
+					manufacturing_work_order="MWO-B",
+					gross_wt=10.0,
+					received_gross_wt=11.0,
+				),
+			],
+		)
+
+	def _resolve(self, eir):
+		with (
+			patch.object(tree_casting.frappe.db, "get_value", return_value=1),
+			patch.object(
+				tree_casting.frappe,
+				"get_all",
+				return_value=[["MWO-A", "TREE-0001"], ["MWO-B", "TREE-0001"]],
+			),
+		):
+			tree_casting.resolve_receive_tree_numbers(eir)
+
+	def _draw(self, eir):
+		mwos = {
+			"MWO-A": _FakeMWO("MWO-A", tree_number="TREE-0001"),
+			"MWO-B": _FakeMWO("MWO-B", tree_number="TREE-0001"),
+		}
+		with (
+			patch.object(
+				tree_casting.frappe,
+				"get_cached_doc",
+				side_effect=lambda _dt, name: mwos[name],
+			),
+			patch.object(tree_casting, "_metal_item", return_value="GOLD-18KT"),
+			patch.object(tree_casting, "_se_precision", return_value=3),
+			patch.object(tree_casting, "_pending_eps", return_value=0.0005),
+		):
+			return tree_casting.tree_draw_by_tree(eir)
+
+	def test_the_submit_pin_writes_nothing_after_a_resolve(self):
+		eir = self._eir()
+		self._resolve(eir)
+		for row in eir.employee_ir_operations:
+			row.db_set = MagicMock()
+		eir.db_set = MagicMock()
+
+		tree_casting.pin_tree_numbers_on_receive(eir)
+
+		for row in eir.employee_ir_operations:
+			row.db_set.assert_not_called()
+
+	def test_the_header_pin_agrees_with_the_draft_header(self):
+		eir = self._eir()
+		self._resolve(eir)
+		self.assertEqual(eir.tree_number, "TREE-0001")
+
+	def test_the_draw_is_identical_with_and_without_the_resolve(self):
+		without = self._draw(self._eir())
+
+		resolved = self._eir()
+		self._resolve(resolved)
+		with_resolve = self._draw(resolved)
+
+		self.assertEqual(with_resolve, without)
+		self.assertEqual(with_resolve, {"TREE-0001": {"GOLD-18KT": 3.0}})
+
+
+class TestScrubDraftTreeStamps(IntegrationTestCase):
+	"""Cancelling a casting Issue must clear the tree off OTHER documents' drafts first.
+
+	A draft Receive resolves its tree on every save, and the cancel force-deletes the tree --
+	which bypasses frappe's own link check. ``_validate_links`` runs BEFORE ``validate``, so a
+	left-behind stamp could never be re-resolved away: the draft's next save would die on
+	"Could not find ... Tree Number", on a read_only field nobody can clear by hand.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _statements(self):
+		return [call.args[0] for call in self.sql.call_args_list]
+
+	_cancel = TestUnlinkTreeOnIssueCancel._cancel
+
+	def test_both_the_rows_and_the_headers_are_scrubbed(self):
+		self._cancel([("MWO-A", "TREE-0001", "TREE-0001")])
+		statements = self._statements()
+		self.assertEqual(len(statements), 2)
+		self.assertIn("tabEmployee IR Operation", statements[0])
+		# The header sweep touches the parent table ONLY -- the rows are the other statement's
+		# job, and one UPDATE cannot scope both to docstatus 0.
+		self.assertNotIn("Operation", statements[1])
+
+	def test_the_scrub_names_the_tree_being_deleted(self):
+		self._cancel([("MWO-A", "TREE-0001", "TREE-0001")])
+		for call in self.sql.call_args_list:
+			self.assertEqual(call.args[1], {"tree": "TREE-0001"})
+
+	def test_the_scrub_is_scoped_to_drafts(self):
+		"""A SUBMITTED receive's stamp is the pin its own cancel reverses against."""
+		self._cancel([("MWO-A", "TREE-0001", "TREE-0001")])
+		for statement in self._statements():
+			self.assertIn("docstatus = 0", statement)
+
+	def test_the_scrub_runs_before_the_tree_is_deleted(self):
+		"""Ordering is the whole point: once the tree is gone the drafts are unsaveable."""
+		self._cancel([("MWO-A", "TREE-0001", "TREE-0001")])
+		self.assertEqual(self.order, ["sql", "sql", "delete_doc"])
+
+	def test_a_non_casting_cancel_scrubs_nothing(self):
+		self._cancel([("MWO-A", None, None)], casting=False)
+		self.sql.assert_not_called()
+
+	INDEX = "manufacturing_work_order_index"
+
+	def test_a_locking_read_covers_the_issues_own_work_orders(self):
+		"""A draft stamped while this cancel waited on its block is newer than its snapshot:
+		only a locking read sees it, and only the Issue's work orders can carry this tree."""
+		self._cancel(
+			[("MWO-B", "TREE-0001", "TREE-0001"), ("MWO-A", "TREE-0001", "TREE-0001")],
+			draft_index=self.INDEX,
+		)
+		locking = [
+			call
+			for call in self.sql.call_args_list
+			if "LOCK IN SHARE MODE NOWAIT" in call.args[0]
+		]
+		self.assertEqual(len(locking), 1)
+		self.assertIn(f"FORCE INDEX (`{self.INDEX}`)", locking[0].args[0])
+		self.assertEqual(
+			locking[0].args[1], {"mwos": ["MWO-A", "MWO-B"], "tree": "TREE-0001"}
+		)
+
+	def test_rows_found_only_by_the_locking_read_are_cleared_with_their_header(self):
+		def answer(query):
+			if "LOCK IN SHARE MODE NOWAIT" in query:
+				return [("ROW-NEW", "EIR-NEW")]
+			return None
+
+		self._cancel(
+			[("MWO-A", "TREE-0001", "TREE-0001")], draft_index=self.INDEX, answer=answer
+		)
+		updates = [
+			call
+			for call in self.sql.call_args_list
+			if call.args[0].lstrip().startswith("UPDATE")
+		]
+		self.assertEqual(len(updates), 2)
+		self.assertEqual(updates[0].args[1]["names"], ["ROW-NEW"])
+		self.assertEqual(updates[1].args[1]["names"], ["EIR-NEW"])
+		for call in updates:
+			self.assertIn("docstatus = 0", call.args[0])
+
+	def test_a_row_being_written_right_now_is_busy_not_skipped(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+			WorkOrderBusyError,
+		)
+
+		def answer(query):
+			if "LOCK IN SHARE MODE NOWAIT" in query:
+				raise frappe.QueryTimeoutError("lock wait")
+			return None
+
+		with self.assertRaises(WorkOrderBusyError):
+			self._cancel(
+				[("MWO-A", "TREE-0001", "TREE-0001")],
+				draft_index=self.INDEX,
+				answer=answer,
+			)
+
+	def test_without_the_index_only_the_plain_reads_run(self):
+		self._cancel([("MWO-A", "TREE-0001", "TREE-0001")], draft_index=None)
+		self.assertFalse(
+			any("LOCK IN SHARE MODE" in statement for statement in self._statements())
+		)
+
+
+# ---------------------------------------------------------------------------
+# Manufacturing Operation carries the casting tree
+# ---------------------------------------------------------------------------
+class _MopRow(_EIROpRow):
+	"""An Employee IR Operation row that also names its Manufacturing Operation."""
+
+
+class TestMopCarriesTheTree(IntegrationTestCase):
+	"""The casting Issue stamps ``Manufacturing Operation.tree_number``; cancelling clears it.
+
+	Submit Tree reads that stamp to tell whether the casting work behind a tree is Finished.
+	The stamp is scoped to the tree being deleted, like the row and work order clears.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _issue(self, operations, casting=True):
+		mwos = {
+			f"MWO-{op}": _MWODoc(
+				name=f"MWO-{op}",
+				metal_type="Gold",
+				metal_touch="22KT",
+				metal_purity="91.9",
+				metal_colour="Yellow",
+				metal_weight=1.0,
+				gross_wt=0.0,
+			)
+			for op in operations
+		}
+		eir = _EIRDoc(
+			name="EIR-1",
+			company="C",
+			manufacturer="M",
+			department="Waxing",
+			operation="Casting",
+			employee="E",
+			employee_ir_operations=[
+				_MopRow(
+					manufacturing_work_order=f"MWO-{op}",
+					manufacturing_operation=f"MOP-{op}",
+				)
+				for op in operations
+			],
+		)
+		fake_tree = _FakeTreeDoc()
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			if doctype == "Department Operation":
+				return 1 if casting else 0
+			return None
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(
+				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
+			),
+			patch.object(tree_casting.frappe, "new_doc", return_value=fake_tree),
+			patch.object(
+				tree_casting, "get_item_from_attribute", return_value="M-G-22KT-91.9-Y"
+			),
+			patch.object(tree_casting.frappe.db, "set_value") as set_value,
+		):
+			tree_casting.create_tree_on_issue(eir)
+
+		self.mop_writes = [
+			c
+			for c in set_value.call_args_list
+			if c.args[0] == "Manufacturing Operation"
+		]
+		return fake_tree
+
+	def test_every_casting_mop_is_stamped_with_the_new_tree(self):
+		tree = self._issue(["A", "B"])
+		self.assertEqual(
+			sorted((c.args[1], c.args[2], c.args[3]) for c in self.mop_writes),
+			[
+				("MOP-A", "tree_number", tree.name),
+				("MOP-B", "tree_number", tree.name),
+			],
+		)
+
+	def test_a_non_casting_issue_stamps_no_mop(self):
+		self._issue(["A"], casting=False)
+		self.assertEqual(self.mop_writes, [])
+
+	def _cancel(self, mop_tree, tree_name="TREE-0001"):
+		from jewellery_erpnext.jewellery_erpnext.doc_events import (
+			current_operation_guard,
+		)
+		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events import (
+			tree_stock_entry,
+		)
+
+		eir = _EIRDoc(
+			name="EIR-1",
+			operation="Casting",
+			tree_number=tree_name,
+			employee_ir_operations=[
+				_MopRow(
+					manufacturing_work_order="MWO-A",
+					manufacturing_operation="MOP-A",
+					tree_number=tree_name,
+				)
+			],
+		)
+		tree = SimpleNamespace(
+			name=tree_name,
+			status="Issued",
+			material_details=[SimpleNamespace(receive_qty=0.0, loss_qty=0.0)],
+		)
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			if doctype == "Department Operation":
+				return 1
+			if doctype == "Tree Number":
+				return tree_name
+			if doctype == "Manufacturing Operation":
+				return mop_tree
+			if doctype == "Manufacturing Work Order":
+				return tree_name
+			return None
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
+			patch.object(tree_casting.frappe.db, "set_value") as set_value,
+			patch.object(tree_casting.frappe.db, "sql"),
+			patch.object(tree_casting.frappe, "delete_doc"),
+			patch.object(tree_stock_entry, "cancel_tree_stock_entries"),
+			patch.object(
+				current_operation_guard, "_draft_index_name", return_value=None
+			),
+		):
+			tree_casting.unlink_tree_on_issue_cancel(eir)
+
+		return [
+			c for c in set_value.call_args_list if c.args[0] == "Manufacturing Operation"
+		]
+
+	def test_cancel_clears_the_mop_stamp(self):
+		writes = self._cancel(mop_tree="TREE-0001")
+		self.assertEqual(
+			[(c.args[1], c.args[2], c.args[3]) for c in writes],
+			[("MOP-A", "tree_number", None)],
+		)
+
+	def test_cancel_leaves_a_mop_re_stamped_onto_a_newer_tree(self):
+		self.assertEqual(self._cancel(mop_tree="TREE-0002"), [])
+
+
+# ---------------------------------------------------------------------------
+# Department Operation "Allow loss on Tree number"
+# ---------------------------------------------------------------------------
+class TestTreeLossCap(IntegrationTestCase):
+	"""Loss on a tree cannot pass Department Operation.allow_loss_on_tree_number (grams).
+
+	The cap covers the whole tree -- loss already booked on every row plus this call's -- and
+	0 / blank means no limit. Submit Tree's write-off goes through receive_material, so it is
+	held to the same cap.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		super().setUp()
+		patcher = patch.object(frappe, "get_all", return_value=[])
+		patcher.start()
+		self.addCleanup(patcher.stop)
+
+	def _tree(self, booked_loss=0.0, issue=10.0, receive=0.0):
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": issue,
+					"receive_qty": receive,
+					"loss_qty": booked_loss,
+					"pending_qty": issue - receive - booked_loss,
+				}
+			]
+		)
+		tree.operation = "Casting"
+		return tree
+
+	def _cap(self, allowed):
+		return patch.object(tse, "_tree_loss_allowed", return_value=float(allowed or 0))
+
+	def _receive(self, tree, allowed, receive=0.0, loss=0.0):
+		with self._cap(allowed):
+			return _run(
+				tse.receive_material,
+				tree,
+				[{"item_code": "GOLD-18KT", "receive_qty": receive, "loss_qty": loss}],
+			)
+
+	def test_loss_above_the_cap_is_refused(self):
+		with self.assertRaises(ValidationError) as ctx:
+			self._receive(self._tree(), allowed=5.0, loss=6.0)
+		self.assertIn("5", str(ctx.exception))
+
+	def test_loss_already_booked_counts_toward_the_cap(self):
+		with self.assertRaises(ValidationError):
+			self._receive(self._tree(booked_loss=3.0), allowed=5.0, loss=3.0)
+
+	def test_loss_exactly_at_the_cap_is_allowed(self):
+		fakes = self._receive(self._tree(booked_loss=2.0), allowed=5.0, loss=3.0)
+		self.assertEqual(len(fakes), 1)
+
+	def test_no_cap_means_no_limit(self):
+		for allowed in (0, 0.0, None):
+			fakes = self._receive(self._tree(), allowed=allowed, loss=9.0)
+			self.assertEqual(len(fakes), 1)
+
+	def test_a_receive_without_loss_is_never_capped(self):
+		fakes = self._receive(self._tree(booked_loss=5.0), allowed=5.0, receive=4.0)
+		self.assertEqual(len(fakes), 1)
+
+	def test_a_tree_with_no_operation_has_no_cap(self):
+		tree = self._tree()
+		tree.operation = None
+		with patch.object(tse.frappe.db, "get_value") as get_value:
+			self.assertEqual(tse._tree_loss_allowed(tree), 0.0)
+		get_value.assert_not_called()
+
+	def test_the_cap_is_read_from_the_trees_operation(self):
+		with patch.object(
+			tse.frappe.db, "get_value", return_value=4.5
+		) as get_value:
+			self.assertEqual(tse._tree_loss_allowed(self._tree()), 4.5)
+		get_value.assert_called_once_with(
+			"Department Operation", "Casting", "allow_loss_on_tree_number"
+		)
+
+	def test_nothing_is_posted_when_the_cap_refuses(self):
+		tree = self._tree()
+		with (
+			patch.object(tse.frappe, "new_doc") as new_doc,
+			patch.object(tse.frappe, "has_permission", return_value=True),
+			self._cap(1.0),
+			self.assertRaises(ValidationError),
+		):
+			tse.receive_material(
+				tree, [{"item_code": "GOLD-18KT", "receive_qty": 0.0, "loss_qty": 2.0}]
+			)
+		new_doc.assert_not_called()
+
+	def test_submit_tree_write_off_is_held_to_the_cap(self):
+		# Partially received: 7 g pending would be written off as loss, past a 5 g cap.
+		tree = self._tree(issue=10.0, receive=3.0)
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			self._cap(5.0),
+			self.assertRaises(ValidationError),
+		):
+			_run(tree.submit_tree)
+		self.assertNotEqual(tree.status, "Submitted")
+
+	def test_submit_tree_write_off_within_the_cap_locks_the_tree(self):
+		tree = self._tree(issue=10.0, receive=3.0)
+		with patch.object(frappe, "has_permission", return_value=True), self._cap(7.0):
+			_run(tree.submit_tree)
+		self.assertEqual(tree.status, "Submitted")

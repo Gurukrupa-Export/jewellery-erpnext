@@ -12,6 +12,7 @@ from frappe.query_builder import Criterion, CustomFunction
 from frappe.query_builder.functions import IfNull, Max, Sum
 from frappe.utils import (
 	cint,
+	cstr,
 	flt,
 	get_datetime,
 	now,
@@ -20,6 +21,19 @@ from frappe.utils import (
 	time_diff_in_seconds,
 )
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOODS_FLAG_LABEL,
+	can_be_customer_goods,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
+	carry_rates_from_source_batches,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	bold,
+	enforcing,
+	report,
+	same,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_current_mop_balance_rows,
@@ -27,6 +41,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_last_mop_index,
 	get_mop_transfer_pcs_rows,
 	get_mwo_balance_rows,
+	get_operation_owners,
 )
 from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
 from jewellery_erpnext.utils import (
@@ -119,6 +134,15 @@ class ManufacturingOperation(Document):
 
 		if self.is_new():
 			return
+
+		# A desk / API save must not reopen an operation the work order has moved past: that
+		# recreates two "current" operations. Internal writers set flags.ignore_validation
+		# (returned above) or write with set_value, so they never reach this check.
+		from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+			validate_manual_reopen,
+		)
+
+		validate_manual_reopen(self)
 
 		self.set_start_finish_time()
 		# self.sync_weights_from_mop_log()
@@ -864,6 +888,96 @@ class ManufacturingOperation(Document):
 				)
 
 
+def resolve_target_item_code(doc):
+	"""Item this doc's FG BOM/operations are for: ``doc.new_item`` if set, else the
+	item on ``doc.design_id_bom``. Single source of truth so the Manufacturing
+	Operation scoping query (``to_prepare_data_for_make_mnf_stock_entry``) and the FG
+	BOM copy (``create_finished_goods_bom``) never disagree about which item they mean.
+	"""
+	if doc.get("new_item"):
+		return doc.new_item
+	if doc.get("design_id_bom"):
+		return frappe.db.get_value("BOM", doc.design_id_bom, "item")
+	return None
+
+
+def _resolve_operation_minutes(mop_name, header_minutes=0):
+	"""Real total_minutes for one Manufacturing Operation, tolerating a stale/zero
+	header value. total_minutes is denormalized from the Time Log child table and can
+	go stale/zero; refetch the header once, then fall back to summing the Time Log
+	rows directly, before giving up and returning 0.
+	"""
+	total_minutes = flt(header_minutes)
+	if total_minutes or not mop_name:
+		return total_minutes
+
+	total_minutes = flt(
+		frappe.db.get_value("Manufacturing Operation", mop_name, "total_minutes")
+	)
+	if total_minutes:
+		return total_minutes
+
+	time_log_sum = frappe.db.sql(
+		"""SELECT IFNULL(SUM(time_in_mins), 0)
+		FROM `tabManufacturing Operation Time Log`
+		WHERE parent = %s""",
+		(mop_name,),
+	)
+	return flt(time_log_sum[0][0]) if time_log_sum else 0
+
+
+def _finished_goods_ownership(row_data):
+	"""Who owns the finished piece, derived from the metal actually consumed.
+
+	WHY THE FINISHED ROW CANNOT JUST BE "Regular Stock"
+	----------------------------------------------------
+	It was, hardcoded, and that silently broke the whole customer-gold flow. A piece made
+	entirely from one customer's metal was minted as company stock, so
+	``customer_gold_fulfilment._batch_owner`` -- which reads ``Batch.custom_customer`` and
+	``custom_inventory_type``, not the batch NAME -- returned ``None`` for it. ``record_fulfilment``
+	then skipped the row, ``settle_customer_gold_liability`` received an empty list, and delivering
+	the finished jewellery released no liability at all.
+
+	The batch is *named* after the customer (``batch_rename.create_child_batches`` takes the name
+	from the row or header), which is exactly why the bug survived: the id looked right while the
+	ownership fields said company stock. The SOP's Examples C and D -- settle the booked customer
+	value on delivery -- could never close for anything that had been manufactured.
+
+	WHY A SINGLE OWNER ONLY
+	-----------------------
+	Returning a customer for a job that consumed TWO customers' metal would put a number in the
+	liability account that nobody computed. Apportioning a finished piece across owners is a
+	business rule (which customer's grams does the delivered piece discharge, and in what ratio)
+	that has not been specified, and ``Batch Component`` is where that answer belongs once it is.
+	Until then a mixed job stays company-owned and says so out loud, which is recoverable; a
+	guessed split posted to a liability account is not.
+
+	Returns ``(inventory_type, customer)`` ready to splat onto the finished row.
+	"""
+	owners = {
+		entry.get("customer")
+		for entry in row_data or []
+		if entry.get("inventory_type") == "Customer Goods" and entry.get("customer")
+	}
+
+	if len(owners) == 1:
+		return "Customer Goods", owners.pop()
+
+	if len(owners) > 1:
+		frappe.log_error(
+			title="Customer Gold: mixed-owner manufacture left as company stock",
+			message=(
+				f"A manufacture consumed metal owned by {len(owners)} different customers "
+				f"({', '.join(sorted(owners))}). The finished row is booked as Regular Stock "
+				f"because apportioning one finished piece across owners is not defined, so "
+				f"delivering it will release no customer gold liability. Split the job per "
+				f"customer, or specify the apportionment rule."
+			),
+		)
+
+	return "Regular Stock", None
+
+
 def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if mo_data is None:
 		mo_data = []
@@ -1092,6 +1206,8 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if fg_mop_logs:
 		fg_to_wh = fg_mop_logs[0].to_warehouse
 
+	fg_inventory_type, fg_customer = _finished_goods_ownership(row_data)
+
 	se.append(
 		"items",
 		{
@@ -1101,12 +1217,18 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"s_warehouse": None,
 			"department": doc.department,
 			"to_department": doc.department,
-			"inventory_type": "Regular Stock",
+			# Derived from the consumed rows, never hardcoded -- see
+			# _finished_goods_ownership for what the hardcoded "Regular Stock" broke.
+			"inventory_type": fg_inventory_type,
+			"customer": fg_customer,
 			"manufacturing_operation": op_name,
 			"use_serial_batch_fields": 1,
 			"serial_no": sr_no,
 			"is_finished_item": 1,
-			"custom_gross_wt": doc.total_weight,
+			# F22: ``gross_weight`` is the Stock Entry Detail field. The old key,
+			# ``custom_gross_wt``, is a Serial No field that Stock Entry Detail does not have,
+			# so every finished row on kg-gk (1,302 of 1,302) recorded 0 g.
+			"gross_weight": doc.total_weight,
 		},
 	)
 
@@ -1199,27 +1321,9 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 
 	for row in mo_data:
 		employee = row.get("employee")
-		total_minutes = row.get("total_minutes") or 0
-
-		if total_minutes == 0 and row.get("manufacturing_operation"):
-			# Header total_minutes may be stale/zero; sum actual time from time logs
-			total_minutes = (
-				frappe.db.get_value(
-					"Manufacturing Operation",
-					row.manufacturing_operation,
-					"total_minutes",
-				)
-				or 0
-			)
-			if total_minutes == 0:
-				# Fallback: sum time_in_mins from the child time log table
-				time_log_sum = frappe.db.sql(
-					"""SELECT IFNULL(SUM(time_in_mins), 0)
-					FROM `tabManufacturing Operation Time Log`
-					WHERE parent = %s""",
-					(row.manufacturing_operation,),
-				)
-				total_minutes = flt(time_log_sum[0][0]) if time_log_sum else 0
+		total_minutes = _resolve_operation_minutes(
+			row.get("manufacturing_operation"), row.get("total_minutes") or 0
+		)
 
 		ws = workstations.get(employee)
 		hour_rate = ws.hour_rate if ws else 0
@@ -1699,11 +1803,16 @@ def _snc_se_detail_maps(se_name):
 			MAX(inventory_type = 'Customer Goods') AS is_customer_goods
 		FROM `tabStock Entry Detail`
 		WHERE parent = %s
+			AND IFNULL(s_warehouse, '') != ''
+			AND is_finished_item = 0
 		GROUP BY item_code
 		""",
 		(se_name,),
 		as_dict=True,
 	)
+	# Consumed rows only (F27). A produced row -- the finished piece, or scrap booked back as
+	# the same metal item -- would otherwise be averaged into that item's consumed rate and
+	# could mark it Customer Goods on the strength of an output.
 	rate_map = {r.item_code: r.rate for r in se_rates}
 	inv_map = {
 		r.item_code: ("Customer Goods" if r.is_customer_goods else "Regular Stock")
@@ -1721,6 +1830,60 @@ def _stone_se_rate(consumed_rate, item_valuation_rate):
 	left blank. Returns 0.0 only when neither source has a value.
 	"""
 	return flt(consumed_rate) or flt(item_valuation_rate)
+
+
+def _keep_as_built_bom_off_default(bom):
+	"""An as-built FG BOM describes one piece; it must never become the item's default (F21).
+
+	``BOM.is_default`` is ``no_copy`` with a default of 1, so ``copy_doc`` handed every as-built
+	BOM ``is_default = 1``, and ERPNext's ``manage_default_bom`` then made it the item's default
+	and unchecked the design BOM. KLHGX62F1119's own BOM became ``EA02652-001``'s default, so any
+	flow resolving the item's default BOM got one piece's composition. With 0 here ERPNext still
+	defaults it when the item has no other submitted default, and not otherwise.
+	"""
+	bom.is_default = 0
+
+
+def _consumed_bom_items(data, fg_item):
+	"""Standard BOM Item rows for an as-built BOM: each consumed material once, summed.
+
+	Never the finished item itself, and never a sub-assembly link: ``do_not_explode`` makes
+	ERPNext blank ``bom_no`` instead of filling it from ``Item.default_bom`` (bom.py
+	set_bom_material_details / get_bom_material_detail), so neither validate_bom_no nor the
+	recursion check can see a BOM these rows never referred to.
+	"""
+	rows = {}
+	for d in data or []:
+		item_code = d.get("item_code")
+		qty = flt(d.get("qty"))
+		if not item_code or item_code == fg_item or qty <= 0:
+			continue
+		row = rows.setdefault(
+			item_code,
+			{
+				"item_code": item_code,
+				"qty": 0.0,
+				"uom": d.get("uom"),
+				"rate": 0,
+				"do_not_explode": 1,
+			},
+		)
+		row["qty"] += qty
+	return list(rows.values())
+
+
+def _detail_tables_rebuild_items(bom):
+	"""Whether doc_events/bom.py _set_bom_items_by_child_tables will re-add standard items."""
+	return any(
+		flt(row.get("quantity"))
+		for table in (
+			"metal_detail",
+			"diamond_detail",
+			"gemstone_detail",
+			"finding_detail",
+		)
+		for row in bom.get(table) or []
+	) or bool(bom.get("other_detail"))
 
 
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
@@ -1777,6 +1940,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	)
 	# frappe.throw(f"{gemstone_price_list}")
 
+	# resolve_target_item_code(self) mirrors this branching -- new_item wins, else
+	# design_id_bom's own item. Kept as its own lookup here (rather than a variable
+	# threaded through) because this block also needs the BOM-existence check/throw,
+	# which is specific to the "new_item" case and not part of "what item is this".
 	bom_doc = None
 	if self.get("new_item"):
 		if frappe.db.exists("BOM", {"is_default": 1, "item": self.new_item}):
@@ -1814,6 +1981,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom = frappe.copy_doc(bom_doc)
 	new_bom.gold_rate_with_gst = flt(gold_rate_with_gst)
 	new_bom.is_active = 1
+	_keep_as_built_bom_off_default(new_bom)
 	new_bom.custom_creation_doctype = self.doctype
 	new_bom.custom_creation_docname = self.name
 	new_bom.company = self.company
@@ -1844,6 +2012,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.gemstone_detail = []
 	new_bom.other_detail = []
 	new_bom.operations = []
+	# The design BOM's standard items are not this piece's materials: a design BOM made by
+	# the order form carries the finished item itself as its only row. Copied here, ERPNext
+	# fills that row's bom_no from Item.default_bom and then refuses the draft default ("BOM
+	# ... must be submitted", SNC 48ara8a7ti) or, with a submitted default, raises BOM
+	# recursion. The as-built BOM lists what was actually consumed.
+	new_bom.items = []
+	for row in _consumed_bom_items(data, new_bom.item):
+		new_bom.append("items", row)
+	if not new_bom.items:
+		frappe.throw(
+			_(
+				"{0} {1} consumed no materials to build the finished goods BOM from"
+			).format(_(self.doctype), self.name)
+		)
 
 	# Reset header totals to avoid stale data from copied template
 	for field in [
@@ -1908,7 +2090,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				continue
 
 			employee = mop_doc.employee
-			total_minutes = mop_doc.total_minutes or 0
+			# Same stale/zero-header fallback create_manufacturing_entry uses for its
+			# Additional Costs row -- without it, every row here fell back to the flat
+			# 0.01 literal below whenever the MOP's own total_minutes hadn't been kept
+			# up to date, showing the same wrong Operation Time for every row.
+			total_minutes = _resolve_operation_minutes(
+				row.manufacturing_operation, mop_doc.total_minutes or 0
+			)
 
 			ws = workstations.get(employee)
 			if ws:
@@ -3543,8 +3731,24 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			flt(row.se_rate) * flt(row.quantity)
 			for row in new_bom.get("other_detail", [])
 		)
+		# Total labour/operating cost for the job -- summed straight from the Operations
+		# table's own (real, persisted) operating_cost per row.
+		new_bom.custom_kg_cost_making_charge = sum(
+			flt(row.operating_cost) for row in new_bom.get("operations", [])
+		)
+		new_bom.custom_kg_cost_total_bom_amount = (
+			flt(new_bom.custom_kg_cost_finding_bom_amount)
+			+ flt(new_bom.custom_kg_cost_other_bom_amount)
+			+ flt(new_bom.custom_kg_cost_making_charge)
+		)
 
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
+	# doc_events/bom.py rebuilds the standard items from the detail tables on submit and
+	# APPENDS them without removing what is there; hand it an empty table, or every material
+	# would be listed twice. Kept only when there is nothing to rebuild from, so the BOM is
+	# never submitted without raw materials.
+	if _detail_tables_rebuild_items(new_bom):
+		new_bom.items = []
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
 	self.fg_bom = new_bom.name
@@ -3955,18 +4159,66 @@ def get_linked_stock_entries(mwo, department):
 	)
 
 
+def _sres_on_foreign_operations(sres, manufacturing_work_order):
+	"""The reservations in ``sres`` whose operation belongs to ANOTHER work order.
+
+	THE one rule Make Receive Entry applies on both sides: ``get_make_receive_entry_rows``
+	leaves these reservations out of the popup and ``create_mr_wo_stock_entry`` refuses them,
+	so the two cannot disagree -- they once did, about availability, when each resolved it its
+	own way. The Receive Unused/Loose Material twin reaches both through
+	``get_make_scrap_entry_rows`` and ``create_scrap_wo_stock_entry``. Both sides also read
+	the guard's kill switch the same way (``mwo_mop_link.enforcing``).
+
+	Why: an Employee IR row once paired an operation with a sibling's work order, so the Stock
+	Entry it injected -- and the reservation that entry created -- carried the sibling's MWO
+	next to the right operation. Make Receive Entry lists reservations by MWO only, and the
+	sibling consumed it: the cast metal came out of the wrong half and the ledgers of both
+	halves ended crossed. The operation is the anchor, so a reservation whose operation
+	another work order owns is that work order's material, whatever MWO it is keyed to.
+
+	Only a PROVEN foreign owner counts. A reservation that names an earlier operation of the
+	same work order is normal (the stamp is written once and not moved on handoff), and one
+	whose operation is blank, deleted or has no work order cannot be judged -- refusing it
+	would strand really reserved stock behind a missing label.
+
+	Returns ``{sre_name: (operation, owning work order)}`` from a single owner lookup.
+	"""
+	sres = list(sres or ())
+	owners = get_operation_owners(sre.get("manufacturing_operation") for sre in sres)
+	foreign = {}
+	for sre in sres:
+		mop = cstr(sre.get("manufacturing_operation")).strip()
+		owner = owners.get(mop) if mop else None
+		if owner and not same(owner, manufacturing_work_order):
+			foreign[sre.get("name")] = (mop, owner)
+	return foreign
+
+
+def _foreign_sre_message(sre_name, mop, owner, manufacturing_work_order):
+	return _(
+		"Stock Reservation Entry {0} is keyed to work order {1} but reserves the material of "
+		"operation {2}, which belongs to work order {3}. Receiving it here would consume the "
+		"other work order's reservation; ask Central to correct the reservation."
+	).format(bold(sre_name), bold(manufacturing_work_order), bold(mop), bold(owner))
+
+
 @frappe.whitelist()
 def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	"""Return rows for the Make Receive Entry dialog, sourced from active
 	Stock Reservation Entry rows linked to the MOP's Manufacturing Work Order.
 
-	Returns a dict ``{"rows": [...], "skipped": [...], "active_sre_count": N}``
-	so the JS dialog can distinguish:
+	Returns a dict ``{"rows": [...], "skipped": [...], "active_sre_count": N,
+	"excluded": [...]}`` so the JS dialog can distinguish:
 
 	  * No active SRE at all (active_sre_count == 0).
 	  * Active SRE but every row consumed by loss / no MOP balance left
 	    (rows == [], skipped non-empty with reason="mop_zero_balance").
 	  * Actionable rows present.
+
+	``excluded`` lists reservations keyed to this work order whose operation belongs to
+	another one (see ``_sres_on_foreign_operations``). They are left out before anything
+	else is derived from the list -- they count in neither ``active_sre_count`` nor any
+	balance -- and an orange message names them, since the dialog knows nothing of them.
 
 	Available qty is the SRE's own remaining (reserved_qty - delivered_qty);
 	we do NOT subtract previous Material Receive Stock Entries because partial
@@ -4030,6 +4282,40 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 			"manufacturing_operation",
 		],
 	)
+
+	# A reservation whose operation another work order owns is not this work order's to
+	# receive -- the same rule create_mr_wo_stock_entry refuses by, through the same helper.
+	# Dropped here, before any key, balance, PCS split or count is derived from the list. In
+	# the guard's warn mode it stays, and the validator logs it when it is received.
+	excluded = []
+	foreign_sres = _sres_on_foreign_operations(sres, mo.manufacturing_work_order)
+	if foreign_sres and enforcing():
+		excluded = [
+			{
+				"stock_reservation_entry": sre.name,
+				"item_code": sre.item_code,
+				"warehouse": sre.warehouse,
+				"manufacturing_operation": foreign_sres[sre.name][0],
+				"operation_work_order": foreign_sres[sre.name][1],
+				"reason": "operation_of_another_work_order",
+			}
+			for sre in sres
+			if sre.name in foreign_sres
+		]
+		sres = [sre for sre in sres if sre.name not in foreign_sres]
+		frappe.msgprint(
+			"<br>".join(
+				_foreign_sre_message(
+					row["stock_reservation_entry"],
+					row["manufacturing_operation"],
+					row["operation_work_order"],
+					mo.manufacturing_work_order,
+				)
+				for row in excluded
+			),
+			title=_("Reservation Of Another Work Order Left Out"),
+			indicator="orange",
+		)
 
 	# Batch the already-received aggregations: ONE SQL per metric covering
 	# every (item_code, s_warehouse) referenced by the SREs, instead of
@@ -4114,16 +4400,13 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 		else:
 			all_keys.add((s.item_code, None))
 
-	# ONE balance map for every line, MWO-scoped, keyed (item_code, batch_no).
-	# There is deliberately no manufacturing_operation component: the underlying
-	# ``qty_after_transaction_batch_based`` is an MWO-wide running sum stamped
-	# with whichever operation wrote it, so it carries no per-operation meaning
-	# (see ``get_mwo_balance_rows``). Reading it per-MOP returned a snapshot
-	# frozen at that operation's last write — which is how this popup came to
-	# show a balance its own server-side validator then rejected: on handoff the
-	# source operation is zeroed and the destination carries the balance
-	# forward, while the SRE keeps pointing at the operation it was created
-	# against. ``create_mr_wo_stock_entry`` MUST build this map the same way.
+	# ONE balance map for every line, MWO-scoped, keyed (item_code, batch_no): the
+	# latest row across the work order's own operations (see ``get_mwo_balance_rows``).
+	# There is deliberately no manufacturing_operation component: on handoff the source
+	# operation is zeroed and the destination carries the balance forward, while the SRE
+	# keeps pointing at the operation it was created against. Reading per-MOP is how this
+	# popup came to show a balance its own server-side validator then rejected.
+	# ``create_mr_wo_stock_entry`` MUST build this map the same way.
 	mop_log_balance_map: dict[tuple, dict] = {
 		(row.get("item_code"), row.get("batch_no")): row
 		for row in get_mwo_balance_rows(mo.manufacturing_work_order, keys=all_keys)
@@ -4429,6 +4712,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 		"rows": rows,
 		"skipped": skipped,
 		"active_sre_count": len(sres),
+		"excluded": excluded,
 	}
 
 
@@ -4598,6 +4882,8 @@ def create_mr_wo_stock_entry(
 	- After SE submit, cancels (full) or cancels+recreates (partial) each SRE.
 	- Relies on doc_events/stock_entry.sync_mop_log_for_stock_entry to bridge
 	  MOP Log rows (is_synced=1).
+	- A receive item may carry its own ``t_warehouse`` (Create SNC lands each borrowed
+	  row where its settlement draws from); otherwise it uses the call's target.
 	"""
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
@@ -4709,6 +4995,25 @@ def create_mr_wo_stock_entry(
 					"Row {0}: Stock Reservation Entry {1} does not belong to "
 					"this Manufacturing Work Order"
 				).format(row.get("idx") or "?", sre_name)
+			)
+		# Keyed to this work order is not enough: the popup's own rule, through the same
+		# helper, refuses a reservation whose operation another work order owns. The popup
+		# never offers one, so this catches a stale dialog or a direct call. Warn mode logs
+		# it and lets the receive through, exactly as the popup then lists it.
+		foreign_sre = _sres_on_foreign_operations([sre], mo.manufacturing_work_order)
+		if foreign_sre:
+			mop, owner = foreign_sre[sre.name]
+			report(
+				[
+					_("Row {0}: {1}").format(
+						row.get("idx") or "?",
+						_foreign_sre_message(
+							sre.name, mop, owner, mo.manufacturing_work_order
+						),
+					)
+				],
+				doc=frappe._dict(doctype="Stock Reservation Entry", name=sre.name),
+				title=_("Reservation Of Another Work Order"),
 			)
 
 		# Authoritative SRE-side remaining qty.
@@ -4886,6 +5191,7 @@ def create_mr_wo_stock_entry(
 				"pcs": req_pcs,
 				"batch_no": batch_no,
 				"s_warehouse": resolved_warehouse,
+				"t_warehouse": row.get("t_warehouse") or t_warehouse,
 				"inventory_type": row_inventory_type,
 				"customer": row_customer,
 			}
@@ -4916,6 +5222,9 @@ def create_mr_wo_stock_entry(
 	# receive would mislabel the entry (the per-row `s_warehouse` below is what
 	# actually drives the ledger either way).
 	source_warehouses = {vrow["s_warehouse"] for vrow in validated_rows}
+	# Same rule for targets: rows normally share the call's target, but a row may
+	# carry its own, and then the header is left blank.
+	target_warehouses = {vrow["t_warehouse"] for vrow in validated_rows}
 
 	# Build the Stock Entry. All preceding validations succeeded.
 	frappe.db.savepoint("make_receive_entry")
@@ -4928,20 +5237,30 @@ def create_mr_wo_stock_entry(
 				"manufacturing_order": mo.manufacturing_order,
 				"manufacturing_operation": mo.name,
 				"department": mo.department,
-				"to_warehouse": t_warehouse,
+				"to_warehouse": next(iter(target_warehouses))
+				if len(target_warehouses) == 1
+				else None,
 				"from_warehouse": next(iter(source_warehouses))
 				if len(source_warehouses) == 1
 				else None,
 			}
 		)
 
-		# Checked against every row's source, not just the header: a mixed
-		# receive leaves the header blank, and one bad row must still be caught.
-		if t_warehouse and t_warehouse in source_warehouses:
+		# Checked per row, not against the header: a mixed receive leaves the header
+		# blank, and one bad row must still be caught. Per row, like ERPNext's own
+		# check -- with per-row targets one row's target may be another row's source.
+		clashing = sorted(
+			{
+				vrow["t_warehouse"]
+				for vrow in validated_rows
+				if vrow["t_warehouse"] == vrow["s_warehouse"]
+			}
+		)
+		if clashing:
 			frappe.throw(
 				_(
 					"Source Warehouse and Target Warehouse cannot be the same ({0}). Please check the department's warehouse configuration."
-				).format(t_warehouse)
+				).format(", ".join(clashing))
 			)
 
 		if request_id:
@@ -4958,7 +5277,7 @@ def create_mr_wo_stock_entry(
 					"batch_no": vrow["batch_no"],
 					"manufacturing_operation": mo.name,
 					"s_warehouse": vrow["s_warehouse"],
-					"t_warehouse": t_warehouse,
+					"t_warehouse": vrow["t_warehouse"],
 					"inventory_type": vrow["inventory_type"],
 					"customer": vrow["customer"],
 				},
@@ -5604,9 +5923,20 @@ def _resolve_unused_loose_item(item_code):
 
 
 def _create_scrap_batch(
-	item_code, employee=None, company=None, inventory_type=None, customer=None
+	item_code,
+	employee=None,
+	company=None,
+	inventory_type=None,
+	customer=None,
+	sources=None,
 ):
 	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Unused/Loose Material'.
+
+	``sources`` is the ``[(batch_no, qty)]`` this material was repacked from; its Batch Rate /
+	Alloy Rate carry onto the new batch. Needed for the same reason the fields below are stamped
+	explicitly -- a hand-built batch has no ``custom_voucher_detail_no``, so the rate stamper in
+	``customization/batch/doc_events/utils`` can never resolve a source row for it. Without this
+	every Unused/Loose Material batch is created at rate 0.
 
 	``employee`` stamps Batch.custom_employee so it can be fetched employee-wise in
 	Unused/Loose Material Refining. The batch is created directly (before any Stock Entry
@@ -5640,6 +5970,7 @@ def _create_scrap_batch(
 	if not frappe.db.get_value("Item", item_code, "batch_number_series"):
 		ts = get_datetime().strftime("%y%m%d%H%M%S")
 		batch.batch_id = f"{item_code}-SCRAP-{ts}-{frappe.generate_hash(length=4)}"
+	carry_rates_from_source_batches(batch, sources)
 	batch.insert(ignore_permissions=True)
 	return batch.name
 
@@ -5670,15 +6001,17 @@ def _unused_row_ownership(row, target_item):
 	source = (inventory_type, customer)
 	if inventory_type not in ("Customer Goods", "Customer Stock"):
 		return source, source
-	if not frappe.db.get_value(
-		"Item", target_item, "custom_inventory_type_can_be_customer_goods"
-	):
+	if not can_be_customer_goods(target_item):
 		frappe.msgprint(
 			_(
 				"{0} cannot hold customer goods, so the unused/loose material received "
-				"from {1} is booked as Regular Stock. Enable <b>Inventory Type Can Be "
-				"Customer Goods</b> on {0} to retain the customer's ownership."
-			).format(frappe.bold(target_item), frappe.bold(row.item_code)),
+				"from {1} is booked as Regular Stock. Enable {2} on {0} to retain the "
+				"customer's ownership."
+			).format(
+				frappe.bold(target_item),
+				frappe.bold(row.item_code),
+				frappe.bold(_(CUSTOMER_GOODS_FLAG_LABEL)),
+			),
 			indicator="orange",
 			alert=True,
 		)
@@ -5767,6 +6100,7 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 			company=se.company,
 			inventory_type=out_type,
 			customer=out_customer,
+			sources=[(item.batch_no, item.qty)],
 		)
 		if not new_batch:
 			if target_item != item.item_code:
@@ -5893,6 +6227,15 @@ def update_new_mop_wtg(
 		return
 
 	# Build (item, batch) → loss bucket map filtered to this Receive row.
+	#
+	# Keyed on the Employee IR row's OWN labels (operation, work order), never on a MOP Log
+	# stamp: book_metal_loss copies both from the operation row into employee_loss_details,
+	# and manual loss rows are booked against an operation row's pair. Stamping the new rows
+	# with this operation's own work order (below) therefore does not change which loss is
+	# applied, and once the IR row's work order is checked against its operation the
+	# work-order half of the key is redundant. (A manual loss row pairing an operation with a
+	# DIFFERENT row's work order matches neither row and is not applied here, while its
+	# Process Loss entry still posts -- that pair has to be refused where the IR rows are.)
 	loss_map: dict = {}
 	if employee_ir_doc is not None and employee_ir_operation_row is not None:
 		full_loss_map = get_employee_ir_loss_map(employee_ir_doc) or {}
@@ -6102,7 +6445,11 @@ def update_new_mop_wtg(
 		)
 		mop_log.to_warehouse = to_warehouse if to_warehouse else log.to_warehouse
 		mop_log.manufacturing_operation = self.name
-		mop_log.manufacturing_work_order = log.manufacturing_work_order
+		# The NEW operation's own work order, never the source row's stamp: copying it
+		# carried a sibling's label from a mis-paired receive onto every successor, and the
+		# work order's own Make Receive / EOD readers then lost the balance to the sibling.
+		# MOPLog.validate derives the same owner; writing it here keeps the writer honest.
+		mop_log.manufacturing_work_order = self.manufacturing_work_order
 		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
 		mop_log.is_synced = 0
 		# flow_index = 0: baseline + loss are part of the new MOP's initial
@@ -6141,8 +6488,8 @@ def _report_inherited_negative_baselines(new_mop, negative_baselines):
 
 	* ``frappe.log_error`` -- the durable one. Employee IR submit can run through
 	  Frappe's Submission Queue, where a ``msgprint`` lands in the job log and
-	  never reaches the operator (same reason ``_warn_customer_loss_spill`` in
-	  employee_ir.py keeps a durable ``flags`` trace alongside its message).
+	  never reaches the operator (the same reason employee_ir.py's
+	  ``_announce_customer_loss_posted`` leaves a timeline comment).
 	* ``frappe.msgprint`` without ``alert=True`` -- a dialog the operator must
 	  dismiss, not a toast that vanishes during the submit's form reload.
 

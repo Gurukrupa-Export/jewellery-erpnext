@@ -80,8 +80,8 @@ class _StubEIR:
 		self.employee_loss_details = []
 		self.manually_book_loss_details = []
 		self.mop_loss_details_total = 0
-		# Every real Document carries `flags`; validate_process_loss resets the
-		# customer-loss spill collector on it before booking.
+		# Every real Document carries `flags`; validate_process_loss stashes the
+		# blocked loss variants on it before booking.
 		self.flags = frappe._dict()
 		self._bml_returns = book_metal_loss_returns or []
 
@@ -94,10 +94,6 @@ class _StubEIR:
 		# to a stub return so the baseline calculation under test runs in
 		# isolation from the proportional-distribution algorithm.
 		return self._bml_returns
-
-	def _warn_customer_loss_spill(self):
-		# Real method lives on EmployeeIR; the stub only needs it to be callable.
-		EmployeeIR._warn_customer_loss_spill(self)
 
 
 class TestMopLossDetailsTotalBaseline(IntegrationTestCase):
@@ -201,6 +197,99 @@ class TestMopLossDetailsTotalBaseline(IntegrationTestCase):
 		self.assertAlmostEqual(stub.mop_loss_details_total, 3.0, places=3)
 
 
+class TestDraftSaveCustomerLossIsSilent(IntegrationTestCase):
+	"""A draft save that books loss on customer-owned metal shows no dialog.
+
+	Runs the real validate_process_loss with only the loss engine stubbed. Both
+	triggers of the old save-time popup are present -- an automatic row and a
+	manually booked row, each on a customer batch -- and the loss must still be
+	booked.
+	"""
+
+	ROW = {
+		"item_code": "M-T",
+		"qty": 1.0,
+		"batch_no": "B-CUST",
+		"manufacturing_work_order": "MWO-T",
+		"manufacturing_operation": "MOP-T",
+		"proportionally_loss": 0.01,
+		"received_gross_weight": 0.99,
+		"customer": "CUST-T",
+	}
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _stub(self):
+		row = self.ROW
+
+		class SpillingStub(_StubEIR):
+			def __getattr__(self, name):
+				# Anything the stub lacks runs the real EmployeeIR code, so a helper
+				# put back on the save path is exercised here rather than skipped.
+				attr = getattr(EmployeeIR, name)
+				return attr.__get__(self) if hasattr(attr, "__get__") else attr
+
+			def book_metal_loss(self, *args, **kwargs):
+				# A flat-split share landing on the customer's batch.
+				return [dict(row)]
+
+		stub = SpillingStub(
+			[
+				frappe._dict(
+					{
+						"manufacturing_work_order": "MWO-T",
+						"manufacturing_operation": "MOP-T",
+						"gross_wt": 1.0,
+						"received_gross_wt": 0.99,
+					}
+				)
+			]
+		)
+		stub.manually_book_loss_details = [
+			frappe._dict(
+				{
+					"item_code": "M-T",
+					"batch_no": "B-CUST-M",
+					"proportionally_loss": 0.02,
+				}
+			)
+		]
+		return stub
+
+	def _validate(self, stub, no_wastage_batches=()):
+		with (
+			patch.object(employee_ir.frappe, "get_cached_value", return_value=None),
+			patch.object(employee_ir, "_bulk_variant_of", return_value={}),
+			patch.object(
+				employee_ir,
+				"_bulk_no_wastage_batches",
+				return_value=set(no_wastage_batches),
+			),
+			patch("frappe.msgprint") as msgprint,
+			patch("frappe.publish_realtime") as publish,
+		):
+			EmployeeIR.validate_process_loss(stub)
+		return msgprint, publish
+
+	def test_a_no_wastage_customer_batch_still_throws(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(self._stub(), no_wastage_batches={"B-CUST"})
+
+	def test_loss_on_customer_metal_is_booked_without_a_dialog(self):
+		stub = self._stub()
+		msgprint, publish = self._validate(stub)
+
+		# Nothing is shown on save.
+		msgprint.assert_not_called()
+		publish.assert_not_called()
+		# The loss is still booked on the customer's batch.
+		(booked,) = stub.employee_loss_details
+		self.assertEqual(booked.batch_no, "B-CUST")
+		self.assertEqual(booked.proportionally_loss, 0.01)
+
+
 class TestBookMetalLossPrecisionResidual(IntegrationTestCase):
 	"""Independently-rounded rows must reconcile to flt(loss, 3) exactly."""
 
@@ -254,19 +343,6 @@ class TestBookMetalLossPrecisionResidual(IntegrationTestCase):
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_item_from_attribute_full",
 				return_value=frappe._dict({"name": "M-G-22KT-91.9-Y"}),
-			),
-			# Pin ONE ownership tier and no reservation cap, so these examples keep
-			# asserting the flat proportional split. Without this they would still
-			# pass -- batch_priority_map tolerates the MOP Log stub rows above and
-			# returns {}, ranking everything as Regular Stock -- but only by
-			# accident, and get_batch_sre_headroom would hit the real database.
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.batch_priority_map",
-				return_value={},
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_batch_sre_headroom",
-				return_value={},
 			),
 		]
 		for p in patches:
@@ -790,19 +866,6 @@ class TestBookMetalLossSpecExamples(IntegrationTestCase):
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_item_from_attribute_full",
 				return_value=frappe._dict({"name": "M-G-22KT-91.9-Y"}),
-			),
-			# Pin ONE ownership tier and no reservation cap, so these examples keep
-			# asserting the flat proportional split. Without this they would still
-			# pass -- batch_priority_map tolerates the MOP Log stub rows above and
-			# returns {}, ranking everything as Regular Stock -- but only by
-			# accident, and get_batch_sre_headroom would hit the real database.
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.batch_priority_map",
-				return_value={},
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_batch_sre_headroom",
-				return_value={},
 			),
 		]
 		for p in patches:
@@ -1937,6 +2000,7 @@ def _doc(**fields):
 		"msl_warehouse": "EMP-0001 RM - GK",
 		"scrap_warehouse": "Casting Scrap - GK",
 		"stock_entry": None,
+		"subcontracting": "No",
 		"items": [_se_row("M-G-18KT-75.4-Y", 5.0)],
 	}
 	defaults.update(fields)
@@ -1980,6 +2044,82 @@ class TestResolvers(IntegrationTestCase):
 		with self.assertRaises(ValidationError):
 			ele._resolve_msl_warehouse(_doc(employee=None))
 
+	def test_process_loss_route_keeps_item_and_warehouse_consistent(self):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		combinations = [(0, "No"), (1, "No"), (0, "Yes"), (1, "Yes")]
+
+		for is_raw, sub in combinations:
+			eir = _doc(
+				is_raw_material=is_raw, subcontracting=sub, subcontractor="Sub-1"
+			)
+			row = SimpleNamespace(
+				item_code="ORIGINAL-ITEM", variant_of="VARIANT", idx=1, loss_type="Loss"
+			)
+
+			with patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+				return_value="Scrap - GK",
+			), patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+				return_value="LOSS-ITEM-1",
+			), patch("frappe.db.get_value", return_value="Some Value"):
+				t_warehouse = loss_stock_entry._resolve_t_warehouse(
+					eir, "employee_loss_details"
+				)
+				loss_item = loss_stock_entry._resolve_loss_item(
+					eir, row, "employee_loss_details"
+				)
+
+				self.assertEqual(t_warehouse, "Scrap - GK")
+				self.assertEqual(loss_item, "LOSS-ITEM-1")
+
+	def test_process_loss_resolves_under_the_manufacturers_own_template(self):
+		"""Two manufacturers map the same variant + loss type to different templates. The
+		Employee IR's own manufacturer's template must reach get_item_loss_item, whose own
+		Variant Loss Table lookup carries no manufacturer filter."""
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		mappings = {"MFR-A": "ML-A", "MFR-B": "ML-B"}
+		real_get_value = frappe.db.get_value
+
+		def get_value(doctype, filters=None, *args, **kwargs):
+			if doctype == "Variant Loss Table":
+				return mappings.get(filters.get("parent"))
+			return real_get_value(doctype, filters, *args, **kwargs)
+
+		eir = _doc(manufacturer="MFR-A")
+		row = SimpleNamespace(
+			item_code="M-G-22KT-91.9-Y", variant_of="M", idx=1, loss_type="Loss"
+		)
+		with (
+			patch("frappe.db.get_value", side_effect=get_value),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+				return_value="ML-A-G-22KT-91.9-Y",
+			) as mock_resolve,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.ensure_loss_item_stockable",
+				side_effect=lambda item: item,
+			),
+		):
+			loss_item = loss_stock_entry._resolve_loss_item(
+				eir, row, "employee_loss_details"
+			)
+
+		self.assertEqual(loss_item, "ML-A-G-22KT-91.9-Y")
+		mock_resolve.assert_called_once_with(
+			eir.company, "M-G-22KT-91.9-Y", "M", "Loss", loss_variant="ML-A"
+		)
+
 	def test_scrap_warehouse(self):
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse",
@@ -2017,6 +2157,79 @@ class TestResolvers(IntegrationTestCase):
 			self.assertEqual(
 				ele._resolve_loss_item(_doc(), "M-G-18KT-75.4-Y"), "ML-G-18KT-75.4-Y"
 			)
+
+
+class TestProcessLossStockEntryFinalRows(IntegrationTestCase):
+	def test_produce_row_uses_correct_item_and_warehouse(self):
+		from types import SimpleNamespace
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			loss_stock_entry,
+		)
+
+		# Internal Employee route
+		eir_internal = _doc(subcontracting="No")
+		row_internal = SimpleNamespace(
+			item_code="ORIGINAL-ITEM",
+			variant_of="VARIANT",
+			idx=1,
+			loss_type="Loss",
+			batch_no="B1",
+			manufacturing_work_order="MWO-1",
+			proportionally_loss=5.0,
+		)
+
+		# Subcontractor route
+		eir_sub = _doc(subcontracting="Yes", subcontractor="Sub-1")
+		row_sub = SimpleNamespace(
+			item_code="ORIGINAL-ITEM",
+			variant_of="VARIANT",
+			idx=1,
+			loss_type="Loss",
+			batch_no="B1",
+			manufacturing_work_order="MWO-1",
+			proportionally_loss=5.0,
+		)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_scrap_warehouse",
+			return_value="Scrap - GK",
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_item_loss_item",
+			return_value="LOSS-ITEM-1",
+		), patch("frappe.db.get_value", return_value="Some Value"), patch(
+			"frappe.get_precision", return_value=3
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry.batch_owner_no_wastage",
+			return_value=False,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._find_sre",
+			return_value=(
+				SimpleNamespace(
+					warehouse="Source WH - GK", name="SRE-1", get=lambda x: None
+				),
+				[],
+			),
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._sre_remaining",
+			return_value=10.0,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._resolve_batch_inventory",
+			return_value=("Internal", None),
+		):
+			res_internal = loss_stock_entry._prepare_loss_row(
+				eir_internal, row_internal, "employee_loss_details"
+			)
+			self.assertEqual(res_internal["loss_item"], "LOSS-ITEM-1")
+			self.assertEqual(res_internal["t_warehouse"], "Scrap - GK")
+			self.assertEqual(res_internal["s_warehouse"], "Source WH - GK")
+
+			res_sub = loss_stock_entry._prepare_loss_row(
+				eir_sub, row_sub, "employee_loss_details"
+			)
+			self.assertEqual(res_sub["loss_item"], "LOSS-ITEM-1")
+			self.assertEqual(res_sub["t_warehouse"], "Scrap - GK")
+			self.assertEqual(res_sub["s_warehouse"], "Source WH - GK")
 
 
 class TestFifoBatches(IntegrationTestCase):
@@ -2396,6 +2609,47 @@ class TestEmployeeIRMSLTracking(IntegrationTestCase):
 			log_error.call_args.kwargs.get("title"),
 			"Employee IR: MSL tracking refresh failed",
 		)
+
+	def test_a_deadlock_is_reraised_not_swallowed(self):
+		"""1213 (1020 under snapshot isolation) means InnoDB has already rolled the whole submit /
+		cancel back: logging and carrying on would commit the rest of the request in a fresh
+		transaction -- the Version row, a "Finished" queue row -- for a document that never
+		changed."""
+		with patch(_RESOLVE, return_value="MSL-WH"), patch(
+			_RECALC, side_effect=frappe.QueryDeadlockError("1213")
+		), patch("frappe.log_error") as log_error:
+			with self.assertRaises(frappe.QueryDeadlockError):
+				self._make_eir()._refresh_msl_tracking()
+		log_error.assert_not_called()
+
+	def test_the_sibling_refreshes_reraise_a_deadlock_and_log_the_rest(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events import warehouse_stock_entry
+
+		for label, call, target in (
+			(
+				"Employee Loss Entry",
+				lambda: ele._refresh_msl_tracking("MSL-WH"),
+				_RECALC,
+			),
+			(
+				"Warehouse Issue/Receive",
+				lambda: warehouse_stock_entry._refresh_tracking("MSL-WH"),
+				"jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_stock_entry."
+				"recalculate_msl_tracking",
+			),
+		):
+			with self.subTest(label):
+				with patch(
+					target, side_effect=frappe.QueryDeadlockError("1213")
+				), patch("frappe.log_error") as log_error:
+					with self.assertRaises(frappe.QueryDeadlockError):
+						call()
+				log_error.assert_not_called()
+				with patch(target, side_effect=RuntimeError("boom")), patch(
+					"frappe.log_error"
+				) as log_error:
+					call()  # an ordinary failure still never fails the posting
+				log_error.assert_called_once()
 
 
 def _eir_msi(**overrides):
@@ -3691,33 +3945,26 @@ class TestWLossStockEntryPrecision(IntegrationTestCase):
 _EIR_PATH = "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir"
 
 
-class TestBookMetalLossWaterfall(IntegrationTestCase):
-	"""Loss is booked Regular Stock -> Pure Metal -> Customer Goods.
+class TestBookMetalLossFlatSplit(IntegrationTestCase):
+	"""Loss is split flat across every item, whatever its inventory type.
 
-	The customer's gold absorbs wastage only when nothing else on the operation
-	has capacity left, and doing so warns rather than blocks.
+	Each row loses the same share of its own MOP balance: no Regular Stock ->
+	Pure Metal -> Customer Goods priority and no reservation cap.
 	"""
 
 	@classmethod
 	def setUpClass(cls):
 		pass
 
-	def _run(self, mop_log_rows, gwt, r_gwt, ownership=None, headroom=None):
+	def _run(self, mop_log_rows, gwt, r_gwt):
 		class DocStub:
+			# No spill / overflow collectors on purpose: the flat split must not call
+			# them, and an AttributeError here would say it still does.
 			def __init__(self):
 				self.manually_book_loss_details = []
 				self.operation = None
 				self.flags = frappe._dict()
-				self.spills = []
-				self.overflows = []
 
-			def _collect_customer_loss_spill(self, entry, qty):
-				self.spills.append((entry["batch_no"], flt(qty, 3)))
-
-			def _collect_loss_overflow(self, mwo, opt, qty):
-				self.overflows.append(flt(qty, 3))
-
-		doc = DocStub()
 		patches = [
 			patch(
 				f"{_EIR_PATH}.frappe.get_cached_value",
@@ -3735,22 +3982,22 @@ class TestBookMetalLossWaterfall(IntegrationTestCase):
 				f"{_EIR_PATH}.frappe.get_system_settings",
 				return_value="Banker's Rounding (legacy)",
 			),
-			patch(f"{_EIR_PATH}.frappe.db.get_all", return_value=mop_log_rows),
 			patch(
 				f"{_EIR_PATH}.get_item_from_attribute_full",
 				return_value=frappe._dict({"name": "M-G-22KT-91.9-Y"}),
 			),
-			patch(f"{_EIR_PATH}.batch_priority_map", return_value=ownership or {}),
-			patch(f"{_EIR_PATH}.get_batch_sre_headroom", return_value=headroom or {}),
 		]
 		for p in patches:
 			p.start()
 			self.addCleanup(p.stop)
+		get_all = patch(f"{_EIR_PATH}.frappe.db.get_all", return_value=mop_log_rows)
+		self.get_all = get_all.start()
+		self.addCleanup(get_all.stop)
 
 		result = EmployeeIR.book_metal_loss(
-			doc, mwo="MWO-1", opt="MOP-1", gwt=gwt, r_gwt=r_gwt
+			DocStub(), mwo="MWO-1", opt="MOP-1", gwt=gwt, r_gwt=r_gwt
 		)
-		return doc, {e["batch_no"]: e for e in result}
+		return {e["batch_no"]: e for e in result}
 
 	@staticmethod
 	def _rows(*specs):
@@ -3761,101 +4008,38 @@ class TestBookMetalLossWaterfall(IntegrationTestCase):
 			for b, q in specs
 		]
 
-	@staticmethod
-	def _own(**by_batch):
-		return {
-			b: frappe._dict(
-				inventory_type=inv,
-				customer=("CUST-1" if inv and inv.startswith("Customer") else None),
-				creation="2026-01-01",
-				no_wastage=False,
-			)
-			for b, inv in by_batch.items()
-		}
+	def test_customer_and_regular_share_the_loss_in_proportion(self):
+		# 10 g customer + 4 g regular, loss 3 g: each loses 3/14 of its balance.
+		by = self._run(self._rows(("BCG", 10.0), ("BRS", 4.0)), gwt=20.0, r_gwt=17.0)
+		self.assertAlmostEqual(by["BCG"]["proportionally_loss"], 2.143, places=3)
+		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 0.857, places=3)
 
-	def test_regular_absorbs_the_whole_loss_customer_untouched(self):
-		rows = self._rows(("BCG", 10.0), ("BRS", 4.0))
-		own = self._own(BCG="Customer Goods", BRS="Regular Stock")
-		doc, by = self._run(rows, gwt=20.0, r_gwt=17.0, ownership=own)
-		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 3.0, places=3)
-		self.assertAlmostEqual(by["BCG"]["proportionally_loss"], 0.0, places=3)
-		self.assertEqual(doc.spills, [])
+	def test_every_row_loses_the_same_percentage(self):
+		# Customer 10 g, regular 2 g, pure metal 3 g, loss 5 g: one third of each.
+		by = self._run(
+			self._rows(("BCG", 10.0), ("BRS", 2.0), ("BPM", 3.0)), gwt=20.0, r_gwt=15.0
+		)
+		self.assertAlmostEqual(by["BCG"]["proportionally_loss"], 3.333, places=3)
+		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 0.667, places=3)
+		self.assertAlmostEqual(by["BPM"]["proportionally_loss"], 1.0, places=3)
 
-	def test_spills_to_customer_only_after_regular_is_exhausted(self):
-		rows = self._rows(("BCG", 10.0), ("BRS", 4.0))
-		own = self._own(BCG="Customer Goods", BRS="Regular Stock")
-		doc, by = self._run(rows, gwt=20.0, r_gwt=14.0, ownership=own)
-		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 4.0, places=3)
-		self.assertAlmostEqual(by["BCG"]["proportionally_loss"], 2.0, places=3)
-		self.assertEqual(doc.spills, [("BCG", 2.0)])
-
-	def test_pure_metal_absorbs_before_customer(self):
-		rows = self._rows(("BCG", 10.0), ("BRS", 2.0), ("BPM", 3.0))
-		own = self._own(BCG="Customer Goods", BRS="Regular Stock", BPM="Pure Metal")
-		doc, by = self._run(rows, gwt=20.0, r_gwt=15.0, ownership=own)
-		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 2.0, places=3)
-		self.assertAlmostEqual(by["BPM"]["proportionally_loss"], 3.0, places=3)
-		self.assertAlmostEqual(by["BCG"]["proportionally_loss"], 0.0, places=3)
-		self.assertEqual(doc.spills, [])
+	def test_ownership_is_never_looked_up(self):
+		# The only read is the MOP balance itself; no Batch is queried for its
+		# inventory type, customer or reservation.
+		self._run(self._rows(("BCG", 10.0), ("BRS", 4.0)), gwt=20.0, r_gwt=17.0)
+		self.assertEqual([c.args[0] for c in self.get_all.call_args_list], ["MOP Log"])
 
 	def test_booked_total_always_equals_the_shortfall(self):
 		rows = self._rows(("BCG", 7.0), ("BRS", 3.0))
-		own = self._own(BCG="Customer Goods", BRS="Regular Stock")
 		for shortfall in (0.001, 1.0, 3.0, 4.567, 9.999):
-			_doc, by = self._run(rows, gwt=20.0, r_gwt=20.0 - shortfall, ownership=own)
+			by = self._run(rows, gwt=20.0, r_gwt=20.0 - shortfall)
 			booked = flt(sum(e["proportionally_loss"] for e in by.values()), 3)
 			self.assertEqual(booked, flt(shortfall, 3))
 
-	def test_overflow_lands_on_regular_not_on_the_customer(self):
-		# Loss exceeds every balance. The unattributable excess must go to company
-		# metal -- never inflate the customer's write-off beyond what they hold.
-		rows = self._rows(("BCG", 4.0), ("BRS", 2.0))
-		own = self._own(BCG="Customer Goods", BRS="Regular Stock")
-		doc, by = self._run(rows, gwt=20.0, r_gwt=10.0, ownership=own)
-		self.assertAlmostEqual(by["BCG"]["proportionally_loss"], 4.0, places=3)
-		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 6.0, places=3)
-		self.assertEqual(doc.overflows, [4.0])
-
-	def test_reservation_headroom_caps_a_tier_and_spills_the_excess(self):
-		# BRS holds 4 g but its largest single SRE has only 1 g remaining;
-		# _validate_sre_qty would throw on a 3 g row. The cap spills instead.
-		rows = self._rows(("BCG", 10.0), ("BRS", 4.0))
-		own = self._own(BCG="Customer Goods", BRS="Regular Stock")
-		headroom = {("M-G-22KT-91.9-Y", "BRS"): 1.0}
-		doc, by = self._run(
-			rows, gwt=20.0, r_gwt=17.0, ownership=own, headroom=headroom
-		)
-		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 1.0, places=3)
-		self.assertAlmostEqual(by["BCG"]["proportionally_loss"], 2.0, places=3)
-		self.assertEqual(doc.spills, [("BCG", 2.0)])
-
-	def test_no_wastage_batch_is_funded_last(self):
-		rows = self._rows(("BNW", 10.0), ("BRS", 4.0))
-		own = self._own(BNW="Customer Goods", BRS="Regular Stock")
-		own["BNW"].no_wastage = True
-		_doc, by = self._run(rows, gwt=20.0, r_gwt=17.0, ownership=own)
-		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 3.0, places=3)
-		self.assertAlmostEqual(by["BNW"]["proportionally_loss"], 0.0, places=3)
-
-	def test_unresolvable_batch_ranks_as_company_metal(self):
-		# MOP Log.batch_no has no referential integrity, so an unresolved batch is
-		# routine. It must absorb loss like Regular Stock, not sort behind the customer.
-		rows = self._rows(("BGHOST", 4.0), ("BCG", 10.0))
-		own = self._own(BCG="Customer Goods")
-		doc, by = self._run(rows, gwt=20.0, r_gwt=17.0, ownership=own)
-		self.assertAlmostEqual(by["BGHOST"]["proportionally_loss"], 3.0, places=3)
-		self.assertAlmostEqual(by["BCG"]["proportionally_loss"], 0.0, places=3)
-		self.assertEqual(doc.spills, [])
-
-	def test_received_gross_weight_uses_the_true_balance_not_the_cap(self):
-		rows = self._rows(("BRS", 4.0))
-		own = self._own(BRS="Regular Stock")
-		headroom = {("M-G-22KT-91.9-Y", "BRS"): 1.0}
-		_doc, by = self._run(
-			rows, gwt=20.0, r_gwt=19.0, ownership=own, headroom=headroom
-		)
-		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 1.0, places=3)
-		self.assertAlmostEqual(by["BRS"]["received_gross_weight"], 3.0, places=3)
+	def test_received_gross_weight_is_balance_less_loss(self):
+		by = self._run(self._rows(("BCG", 6.0), ("BRS", 4.0)), gwt=20.0, r_gwt=19.0)
+		self.assertAlmostEqual(by["BCG"]["received_gross_weight"], 5.4, places=3)
+		self.assertAlmostEqual(by["BRS"]["received_gross_weight"], 3.6, places=3)
 
 
 class TestMainSlipPoolSharedAcrossWorkOrders(IntegrationTestCase):
@@ -4269,8 +4453,16 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def _run(self, mop_log_rows, gwt, r_gwt, booking_map=None, category_map=None):
-		doc = _DocStub()
+	def _run(
+		self,
+		mop_log_rows,
+		gwt,
+		r_gwt,
+		booking_map=None,
+		category_map=None,
+		manual_rows=None,
+	):
+		doc = _DocStub(manual_rows=manual_rows)
 		patches = [
 			patch(f"{EIR}.frappe.db.get_all", return_value=mop_log_rows),
 			patch(
@@ -4281,6 +4473,11 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 				f"{EIR}.get_finding_category_map",
 				return_value=category_map if category_map is not None else {},
 			),
+			# _DocStub carries a real operation name, so without this the blanket
+			# per-material gate would issue a live Department Operation lookup.
+			# An empty set is its fail-open state: these cases exercise the
+			# finding-category gate only.
+			patch(f"{EIR}.get_blocked_loss_variants", return_value=set()),
 		]
 		for p in patches:
 			p.start()
@@ -4385,18 +4582,83 @@ class TestBookMetalLossFindingGate(IntegrationTestCase):
 		self.assertEqual(flt(by_item[CLASP]["proportionally_loss"], 3), 0.286)
 		self.assertEqual(flt(sum(e["proportionally_loss"] for e in result), 3), 1.000)
 
-	def test_all_eligible_rows_blocked_throws(self):
-		"""Nothing left to book against => a clear throw, not a silent empty table."""
+	def test_all_eligible_rows_blocked_books_nothing_without_throwing(self):
+		"""An emptied pool is not an error on the save path.
+
+		This used to throw here, testing the RAW gross_wt - received_gross_wt
+		before ``total_mannual_loss`` had been computed 57 lines further down. A
+		shortfall the operator had already hand-booked in carats therefore could
+		not suppress it and the document could not be saved at all. The
+		submit-time ``validate_loss_gates_left_nothing_to_book`` explains an empty
+		table instead, and stays silent once either loss table is populated.
+		"""
 		rows = [_row_loss(CHAIN, "B-F", 20.0)]
-		with self.assertRaises(ValidationError) as ctx:
-			self._run(
-				rows,
-				gwt=20.0,
-				r_gwt=19.0,
-				booking_map={"Chains": 0},
-				category_map={CHAIN: "Chains"},
+		result = self._run(
+			rows,
+			gwt=20.0,
+			r_gwt=19.0,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+		)
+		self.assertEqual(result, [])
+
+	def test_manual_booking_lets_a_fully_blocked_pool_save(self):
+		"""The regression: 0.010 ct covers a 0.002 g shortfall exactly.
+
+		Mirrors EMP-IR-Labh-2026-12933 -- every eligible row gated out, and the
+		operator has already booked the whole shortfall by hand against a diamond
+		the operation still allows. That must save.
+		"""
+		manual = [
+			frappe._dict(
+				{
+					"item_code": "D-NT-RO-4-+12.5-13",
+					"manufacturing_work_order": "MWO-1",
+					"stock_uom": "Carat",
+					"proportionally_loss": 0.010,
+				}
 			)
-		self.assertIn("Chains", str(ctx.exception))
+		]
+		rows = [_row_loss(CHAIN, "B-F", 20.0)]
+		result = self._run(
+			rows,
+			gwt=4.787,
+			r_gwt=4.785,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+			manual_rows=manual,
+		)
+		self.assertEqual(result, [])
+
+	def test_manual_carat_row_converts_without_stock_uom(self):
+		"""``total_mannual_loss`` keys on the item code, not the fetched UOM.
+
+		``stock_uom`` is a read_only ``fetch_from`` field that is not ``reqd``, so
+		a row written with ``flags.ignore_links`` or straight through
+		``frappe.db.set_value`` carries none. Counting that carat qty as grams
+		would be a silent 5x under-deduction.
+		"""
+		manual = [
+			frappe._dict(
+				{
+					"item_code": "D-NT-RO-4-+12.5-13",
+					"manufacturing_work_order": "MWO-1",
+					"stock_uom": None,
+					"proportionally_loss": 0.500,
+				}
+			)
+		]
+		rows = [_row_loss(METAL, "B-M", 20.0)]
+		# Shortfall 0.200 g. 0.500 ct = 0.100 g, so 0.100 g is left for the metal
+		# row. Read as 0.500 *grams* the residual would be negative and the metal
+		# would book nothing -- the two readings give different answers here, which
+		# is what makes this a real guard.
+		result = self._run(rows, gwt=10.302, r_gwt=10.102, manual_rows=manual)
+		self.assertEqual(
+			flt(sum(e["proportionally_loss"] for e in result), 3),
+			0.100,
+			"a blank stock_uom must not turn 0.500 ct into 0.500 g",
+		)
 
 	def test_gain_on_receive_does_not_throw_when_all_blocked(self):
 		"""r_gwt > gwt is not a shortfall, so there is nothing to attribute."""

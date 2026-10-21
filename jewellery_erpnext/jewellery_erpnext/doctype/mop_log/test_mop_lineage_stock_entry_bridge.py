@@ -112,6 +112,88 @@ class TestMopLogStockEntryWriter(UnitTestCase):
 		mock_log.save.assert_called_once()
 
 
+class TestStockEntryBridgeStampsOperationOwner(UnitTestCase):
+	"""The Stock Entry -> MOP Log bridge ends up stamping the operation's OWNER.
+
+	The bridge writes ``doc.manufacturing_work_order`` -- the Stock Entry header -- onto the
+	row. An Employee IR receive row that paired an operation with a sibling's work order
+	injected a Stock Entry whose header carried the sibling's MWO next to the right
+	operation, and the bridge filed that operation's ledger under the sibling. The row is
+	saved through ``MOPLog.validate``, which re-derives the stamp from the operation: that
+	is what these tests drive, with a real MOP Log document and the DB seams stubbed.
+	"""
+
+	MOP_LOG = "jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log"
+
+	def setUp(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+			_FOREIGN_STAMP_FLAG,
+		)
+
+		super().setUp()
+		frappe.flags.pop(_FOREIGN_STAMP_FLAG, None)
+		self.addCleanup(frappe.flags.pop, _FOREIGN_STAMP_FLAG, None)
+
+	def _bridge(self, header_mwo, owner):
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+			create_mop_log_for_stock_transfer_to_mo,
+		)
+
+		# A REAL MOP Log controller, built before any seam is patched; only its save is
+		# swapped for validate, so nothing reaches the database.
+		mop_log = frappe.get_doc({"doctype": "MOP Log"})
+		se = frappe._dict(
+			doctype="Stock Entry",
+			name="SE-BRIDGE-STAMP",
+			stock_entry_type="Material Transfer (WORK ORDER)",
+			manufacturing_work_order=header_mwo,
+		)
+		row = frappe._dict(
+			name="sed-1",
+			item_code="M-G-22KT-TEST",
+			pcs=0,
+			qty=1.0,
+			batch_no="B1",
+			s_warehouse="WH-A",
+			t_warehouse="WH-B",
+			manufacturing_operation="MOP-1",
+		)
+		opening = {
+			"qty_prefix": 0.0,
+			"qty_item": 0.0,
+			"qty_batch": 0.0,
+			"pcs_prefix": 0,
+			"pcs_item": 0,
+			"pcs_batch": 0,
+		}
+		with (
+			patch.object(mop_log, "save", side_effect=mop_log.validate),
+			patch(f"{self.MOP_LOG}.frappe.new_doc", return_value=mop_log),
+			patch(f"{self.MOP_LOG}.get_mop_opening_balances", return_value=opening),
+			patch(f"{self.MOP_LOG}.get_last_mop_index", return_value=None),
+			patch(f"{self.MOP_LOG}.owner_of", return_value=owner) as owner_of,
+			# validate's canonical MOP row lock and the header recompute it feeds.
+			patch(f"{self.MOP_LOG}.frappe.db.get_value"),
+			patch(f"{self.MOP_LOG}.recalculate_manufacturing_operation_weights"),
+			patch(f"{self.MOP_LOG}.frappe.log_error") as log_error,
+		):
+			create_mop_log_for_stock_transfer_to_mo(se, row, is_synced=True)
+		owner_of.assert_called_once_with("MOP-1")
+		return mop_log, log_error
+
+	def test_sibling_header_stamp_is_replaced_by_the_operation_owner(self):
+		mop_log, log_error = self._bridge("MWO-SIBLING", owner="MWO-OWNER")
+		self.assertEqual(mop_log.manufacturing_operation, "MOP-1")
+		self.assertEqual(mop_log.manufacturing_work_order, "MWO-OWNER")
+		self.assertEqual(mop_log.voucher_no, "SE-BRIDGE-STAMP")
+		log_error.assert_called_once()
+
+	def test_consistent_header_is_written_unchanged_and_silently(self):
+		mop_log, log_error = self._bridge("MWO-OWNER", owner="MWO-OWNER")
+		self.assertEqual(mop_log.manufacturing_work_order, "MWO-OWNER")
+		log_error.assert_not_called()
+
+
 class TestMopLineageAuditProofPack(UnitTestCase):
 	def test_get_sql_proof_templates_keys(self):
 		from jewellery_erpnext.mop_lineage_audit import get_sql_proof_templates
@@ -242,17 +324,37 @@ class TestStockEntryMopLogBridge(UnitTestCase):
 
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.sql")
 	def test_cancel_path_marks_logs_cancelled(self, mock_sql):
+		"""The voucher's rows are read first and flipped by primary key: a voucher-filtered
+		UPDATE has no index on production and would lock every MOP Log row of the site."""
 		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 			sync_mop_log_for_stock_entry,
 		)
 
+		mock_sql.side_effect = [(("LOG-2",), ("LOG-1",)), None]
 		se = self._se([self._row()])
 		sync_mop_log_for_stock_entry(se, is_cancelled=True)
-		mock_sql.assert_called_once()
-		sql, params = mock_sql.call_args[0]
-		self.assertIn("UPDATE `tabMOP Log`", sql)
-		self.assertIn("is_cancelled = 1", sql)
+		self.assertEqual(mock_sql.call_count, 2)
+		read, params = mock_sql.call_args_list[0][0]
+		self.assertTrue(read.strip().startswith("SELECT name FROM `tabMOP Log`"), read)
+		self.assertIn("voucher_no = %s", read)
 		self.assertEqual(params, ("SE-BRIDGE-001",))
+		update, params = mock_sql.call_args_list[1][0]
+		self.assertIn("UPDATE `tabMOP Log`", update)
+		self.assertIn("SET is_cancelled = 1", update)
+		self.assertIn("WHERE name IN %(names)s", update)
+		self.assertNotIn("voucher_no", update)
+		self.assertEqual(params, {"names": ["LOG-1", "LOG-2"]})
+
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.sql")
+	def test_cancel_of_a_voucher_without_logs_writes_nothing(self, mock_sql):
+		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+			sync_mop_log_for_stock_entry,
+		)
+
+		mock_sql.return_value = ()
+		sync_mop_log_for_stock_entry(self._se([self._row()]), is_cancelled=True)
+		mock_sql.assert_called_once()
+		self.assertNotIn("UPDATE", mock_sql.call_args[0][0])
 
 
 class TestEmployeeIrReceiveDiamondParity(UnitTestCase):

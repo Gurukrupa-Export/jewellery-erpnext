@@ -12,7 +12,7 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 from frappe import _, scrub
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Sum
-from frappe.utils import cint, flt
+from frappe.utils import cint, cstr, flt
 
 # from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 # 	create_repack_for_subcontracting,
@@ -22,6 +22,20 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	validate_loss_ownership_carried,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.serial_ownership import (
+	stamp_serial_row_ownership,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
+	should_allow_zero_valuation,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	bold,
+	mop_owners,
+	no_owner_problem,
+	report,
+	row_problem,
+	same,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
@@ -41,9 +55,135 @@ from jewellery_erpnext.utils import (
 
 MANUFACTURER = frappe.defaults.get_user_default("manufacturer")
 
+#: Stock Entry Types historically skipped by the ``custom_pure_qty`` computation below.
+#: The exclusion is why customer metal carries ``pure_qty = 0`` -- the rows were never
+#: reached, so the zeros are "never computed", not "computed as zero". Nothing is wrong with
+#: the inputs: the 24KT item carries its Metal Purity attribute and Manufacturing Setting
+#: resolves ``pure_gold_item``.
+_PURE_QTY_LEGACY_EXCLUDED_TYPES = (
+	"Customer Goods Transfer",
+	"Customer Goods Issue",
+	"Customer Goods Received",
+)
+
+
+def _pure_qty_excluded_types():
+	"""Which Stock Entry Types skip the ``custom_pure_qty`` computation.
+
+	When the Customer Gold flow is ON, the configured receipt type is removed from the
+	exclusion list so customer receipts finally get a real pure quantity -- the balance
+	calculation, PMO allocation and the per-serial split all read it, and a wrong zero would
+	propagate into every one of them.
+
+	Scoped deliberately: only the CONFIGURED receipt type is un-excluded, and only while the
+	flag is on. Transfer and Issue keep their historical behaviour, because this project has
+	not analysed them. Every site with the flag off -- which is every site today -- keeps
+	exactly its previous behaviour.
+	"""
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_customer_gold_settings,
+		is_customer_gold_enabled,
+	)
+
+	if not is_customer_gold_enabled():
+		return _PURE_QTY_LEGACY_EXCLUDED_TYPES
+
+	configured_type = get_customer_gold_settings().get(
+		"customer_goods_stock_entry_type"
+	)
+	if not configured_type:
+		return _PURE_QTY_LEGACY_EXCLUDED_TYPES
+
+	return tuple(t for t in _PURE_QTY_LEGACY_EXCLUDED_TYPES if t != configured_type)
+
+
+def set_target_inventory_dimensions(self, method=None):
+	"""Mirror every registered inventory dimension from a row's SOURCE field onto its TARGET field.
+
+	ERPNext reads the INWARD leg's dimension off ``to_<source_fieldname>`` and the OUTWARD
+	leg off ``<source_fieldname>`` -- erpnext/controllers/stock_controller.py:1186-1195,
+	where the inward branch ``continue``s and so skips every fallback. Nothing in this bench
+	has ever written ``to_inventory_type`` (0 of 992,836 Stock Entry Detail rows on ``gk``),
+	while the blanket default in ``before_validate`` below forces ``inventory_type`` to
+	"Regular Stock" on every row. So every inward Stock Entry SLE carried a NULL Inventory
+	Type and every outward twin carried "Regular Stock".
+
+	That was harmless until ``StockLedgerEntry.validate_serial_no_inventory_dimension``
+	(erpnext#58394, backported as #58419, landed here with erpnext 16.34.1) started
+	comparing an outward serialized SLE against that serial's LAST INWARD SLE, rejecting
+	the mismatch with ``Inventory Type: expected "Not Set", got "Regular Stock"``.
+
+	MUST run at ``validate``, not ``before_validate``:
+
+	* ``StockEntry.validate_warehouse()`` (erpnext stock_entry.py, called from
+	  ``validate()``) is what fills ``d.t_warehouse`` from the header and NULLs it on
+	  Material Issue and Manufacture-consume rows. A ``t_warehouse``-gated mirror running
+	  earlier is wrong in both directions.
+	* ``customer_gold_receipt.validate_customer_gold_receipt`` is the LAST
+	  ``before_validate`` hook (hooks.py) and unconditionally rewrites ``row.inventory_type``
+	  to "Customer Goods". Mirroring beside the blanket default would freeze "Regular Stock"
+	  into ``to_inventory_type`` and tag a customer's gold as company stock -- a worse
+	  instance of the bug this fixes.
+
+	The target NEVER diverges from the source, so this overwrites rather than falling back
+	with ``or``. The Batch minted by this same row reads ``inventory_type``, not
+	``to_inventory_type`` (customization/batch/doc_events/utils.py), so a divergent target
+	would tag the inward SLE with a lane the batch it holds does not have. Every builder in
+	this app expresses an ownership change as a separate consume row plus a separate produce
+	row (metal_conversions.py, melting_loss.py, swap_metal.py), never as one row with two
+	lanes -- there is no legitimate divergent value to preserve.
+
+	Driven off the registered dimension list rather than a hardcoded fieldname because
+	``Customer`` is a live second dimension on ``kg-gk`` and ``alfarsi`` (``gk`` has only
+	``Inventory Type``) and ``to_customer`` has exactly the same never-written defect. The
+	``has_field`` guard is load-bearing: ``to_customer`` exists on Stock Entry Detail only
+	via the gke_customization fixture.
+
+	NOTE: if the Inventory Dimension is ever set ``reqd = 1``,
+	``StockController.validate_inventory_dimension_mandatory`` runs from inside
+	``StockEntry.validate()`` -- i.e. BEFORE this hook -- and will demand
+	``to_inventory_type``. Move the call into a ``CustomStockEntry.validate_warehouse``
+	override (``super()`` first) at that point.
+	"""
+	from erpnext.stock.doctype.inventory_dimension.inventory_dimension import (
+		get_document_wise_inventory_dimensions,
+	)
+
+	if self.docstatus > 1:
+		return
+
+	# @request_cache'd upstream, so this is one query per request no matter how many
+	# Stock Entries a cascade saves.
+	dimensions = get_document_wise_inventory_dimensions("Stock Entry Detail")
+	if not dimensions:
+		return
+
+	meta = frappe.get_meta("Stock Entry Detail")
+	pairs = []
+	for dimension in dimensions:
+		source = dimension.get("source_fieldname")
+		# A dimension whose source already starts with "to_" is read for BOTH legs off the
+		# same field (stock_controller.py:1189-1190) -- nothing to mirror.
+		if not source or source.startswith("to_"):
+			continue
+
+		target = f"to_{source}"
+		if meta.has_field(source) and meta.has_field(target):
+			pairs.append((source, target))
+
+	if not pairs:
+		return
+
+	for row in self.items:
+		for source, target in pairs:
+			# ``or None`` matters: rows already hold "" as well as NULL, and the validator
+			# compares with ``!=``, so "" vs None would be a false mismatch.
+			row.set(target, (row.get(source) or None) if row.t_warehouse else None)
+
 
 def before_validate(self, method):
 	validate_ir(self)
+	validate_mop_is_current(self)
 	if self.docstatus == 0:
 		# FIFO batch allocation now runs automatically for every draft (incl.
 		# brand-new / unsaved docs) — this replaces the old "Get FIFO Batches"
@@ -64,10 +204,33 @@ def before_validate(self, method):
 	# item table so this is one query instead of O(rows). Its only reader sits behind
 	# ``not self.auto_created``, so skip the query entirely on auto-created SEs.
 	has_batch_map = {}
-	if not self.auto_created:
-		has_batch_map = bulk_map(
-			"Item", [row.item_code for row in self.items], ["has_batch_no"]
-		)
+	# One query, two purposes, and deliberately UNCONDITIONAL now.
+	#
+	# ``variant_of`` is needed on every save, including auto-created ones, because
+	# ``row.custom_variant_of`` cannot be trusted: it is a ``fetch_from`` field with
+	# ``allow_on_submit = 0``, and the framework's re-fetch
+	# (``base_document.py:1063``) is guarded by
+	# ``is_new() or not docstatus.is_submitted() or allow_on_submit``. ``_save`` runs
+	# ``set_docstatus()`` BEFORE ``_validate_links()``, so on the SUBMIT transition the
+	# child row is already docstatus 1 and the re-fetch is skipped -- while
+	# ``frappe/desk/form/save.py`` has accepted the caller's full payload. ``read_only``
+	# is a UI property only.
+	#
+	# Reproduced on a real document: forging ``custom_variant_of`` to another real
+	# template (``D``, ``F``, ``G`` and ``ML`` all exist in production) skipped the
+	# pure-quantity block entirely and a ``custom_pure_qty`` of 1 persisted on a 100 g
+	# receipt. Link validation does not help -- it checks the target exists, not that the
+	# value was re-derived.
+	item_map = bulk_map(
+		"Item", [row.item_code for row in self.items], ["has_batch_no", "variant_of"]
+	)
+	has_batch_map = item_map
+
+	# Same reason as has_batch_map above: this reads Subcontracting Settings, and the
+	# answer cannot change part-way through one document. Called from inside the loop it
+	# ran once per M/F row -- 26k times on a consolidated EOD entry -- for a value that is
+	# constant across the whole save.
+	pure_qty_excluded_types = _pure_qty_excluded_types()
 
 	for row in self.items:
 		if (
@@ -99,11 +262,13 @@ def before_validate(self, method):
 						row.manufacturing_operation
 					)
 				)
-		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in [
-			"Customer Goods Transfer",
-			"Customer Goods Issue",
-			"Customer Goods Received",
-		]:
+		# Re-derive from the Item rather than trusting the posted row -- see item_map above.
+		row.custom_variant_of = (item_map.get(row.item_code) or {}).get("variant_of")
+
+		if (
+			row.custom_variant_of in ["M", "F"]
+			and self.stock_entry_type not in pure_qty_excluded_types
+		):
 			if not pure_item_purity:
 				if self.stock_entry_type == "Material Transfer":
 					manufacturer = None
@@ -188,6 +353,9 @@ def before_validate(self, method):
 			item_purity = get_purity_percentage(row.item_code)
 
 			if not item_purity:
+				# Zero it rather than leaving whatever arrived: a client-supplied value
+				# must never survive just because purity could not be resolved.
+				row.custom_pure_qty = 0
 				continue
 
 			if pure_item_purity == item_purity:
@@ -207,6 +375,11 @@ def before_validate(self, method):
 	# Must run BEFORE the blanket default below, which is what erases the evidence.
 	validate_loss_ownership_carried(self)
 
+	# A serial row carries the lane its serial was last received in -- exactly what ERPNext's
+	# serial inventory-dimension check compares the outward SLE against. Before the blanket
+	# default, which would otherwise book a customer's finished piece as "Regular Stock".
+	stamp_serial_row_ownership(self)
+
 	# Ensure all items have a valid inventory_type to prevent None in Stock Ledger Entry
 	for row in self.items:
 		if not row.inventory_type:
@@ -222,9 +395,80 @@ def before_validate(self, method):
 		allow_zero_valuation(self)
 
 
-def validate_ir(self):
-	# 	validate_inventory_dimention(self)
+def validate_mop_is_current(self):
+	"""Reject rows booked against a Manufacturing Operation the piece has already left.
 
+	When an Employee / Department IR receives a MOP it marks it Finished, creates the
+	next MOP and repoints ``Manufacturing Work Order.manufacturing_operation`` at it,
+	carrying forward only the stock the old MOP held at that moment. Stock booked on the
+	old MOP afterwards is stranded there: the next MOP never sees it, but the FG MWO's
+	SNC initialisation sums qty_change across every MOP of the MWO and picks it up, so
+	the serial-number source table disagrees with the piece's net weight
+	(MAT-STE-48359: +0.02 g issued to MOP-2609-215WTE six seconds after its receive).
+
+	Runs from before_validate, which also fires on submit, so a draft saved before the
+	receive and submitted after it is caught. Scoped to user-created entries like the
+	In-Transit guard in before_validate: EOD sync, SNC and the other cascades set
+	auto_created.
+	"""
+	if self.auto_created:
+		return
+
+	mops = [
+		row.manufacturing_operation
+		for row in self.items
+		if row.get("manufacturing_operation")
+	]
+	if not mops:
+		return
+
+	mop_map = bulk_map(
+		"Manufacturing Operation", mops, ["status", "manufacturing_work_order"]
+	)
+	mwo_map = bulk_map(
+		"Manufacturing Work Order",
+		[mop.manufacturing_work_order for mop in mop_map.values()],
+		["manufacturing_operation"],
+	)
+
+	for row in self.items:
+		mop = mop_map.get(row.get("manufacturing_operation"))
+		if not mop:
+			continue
+
+		current = (mwo_map.get(mop.manufacturing_work_order) or {}).get(
+			"manufacturing_operation"
+		)
+		superseded = current and current != row.manufacturing_operation
+		if mop.status != "Finished" and not superseded:
+			continue
+
+		if superseded:
+			frappe.throw(
+				_(
+					"Row #{0}: Manufacturing Operation {1} is no longer active; Manufacturing Work Order {2} has moved on to {3}. Stock booked on {1} will not carry forward, so create this Stock Entry against {3} instead."
+				).format(
+					row.idx,
+					frappe.bold(row.manufacturing_operation),
+					frappe.bold(mop.manufacturing_work_order),
+					frappe.bold(current),
+				),
+				title=_("Manufacturing Operation Not Current"),
+			)
+
+		frappe.throw(
+			_(
+				"Row #{0}: Manufacturing Operation {1} is already Finished, so stock booked on it will not carry forward. Book it against the active operation of Manufacturing Work Order {2} instead."
+			).format(
+				row.idx,
+				frappe.bold(row.manufacturing_operation),
+				frappe.bold(mop.manufacturing_work_order),
+			),
+			title=_("Manufacturing Operation Not Current"),
+		)
+
+
+def validate_ir(self):
 	if self.auto_created == 0:
 		if self.stock_entry_type in [
 			"Material Receive (WORK ORDER)",
@@ -460,8 +704,8 @@ def validate_metal_properties(doc):
 		)
 
 	for row in doc.items:
-		# allow_zero_valuation Start
-		if row.inventory_type == "Customer Goods":
+		# allow_zero_valuation Start -- same rule as allow_zero_valuation(); see utils/zero_valuation
+		if should_allow_zero_valuation(row, doc):
 			row.allow_zero_valuation_rate = 1
 		# allow_zero_valuation End
 
@@ -872,9 +1116,167 @@ def _throw_warehouse_mismatch(row, label, expected, actual):
 	)
 
 
+# Multi-work-order by design: one Process Loss entry books the loss of every operation on an Employee IR
+# in a single Repack, and its header work order is merely the FIRST loss row's
+# (loss_stock_entry._build_combined_loss_se). The header says nothing about the other rows, so they are
+# compared only with their own work order. It reserves nothing, so the reservation rule never applies.
+_MULTI_WORK_ORDER_STOCK_ENTRY_TYPES = frozenset({"Process Loss"})
+
+
+def validate_mwo_mop_consistency(self, method=None):
+	"""Refuse an entry that pairs a Manufacturing Operation with a work order that does not own it.
+
+	Three rules, one query for every operation on the entry (see ``doc_events/mwo_mop_link`` for why the
+	operation, never the work order, is the anchor):
+
+	1. Every row with an operation: the operation belongs to the row's ``custom_manufacturing_work_order``,
+	   or to the header work order when the row carries none (except on a multi-work-order type).
+	2. The header operation belongs to the header work order.
+	3. An entry that reserves for a work order on submit (``creates_mwo_reservation``): every row's
+	   operation belongs to the HEADER work order -- so it exists, and has a work order.
+	   ``stock_reservation_entry_for_mwo`` keys every reservation, Sales Order line and MOP Log row of the
+	   entry off the header, so a row of another work order is reserved under the wrong key -- the
+	   reservation Make Receive Entry later hands to the wrong work order. ``Stock Entry
+	   Detail.manufacturing_operation`` is Small Text on production, so no link validation ever checked
+	   that the operation exists.
+
+	A blank work order on either side is not checked (the reservation path refuses a reserving entry
+	without a header work order on its own), and an operation with no owner -- missing, or saved without
+	a work order -- is left alone unless the entry reserves. Checked against the production data: the
+	only stored entries these rules refuse are the few already known to be wrong; Process Loss entries
+	pass with rows of many work orders.
+
+	A ``validate`` hook, so it runs on save, on submit and in the Submission Queue worker, after
+	``before_validate`` (``set_manufacturing_refs`` fills the header operation there, ``update_batches``
+	rebuilds the rows). Warn mode (``mwo_mop_link_guard``) logs instead of raising.
+	"""
+	header_mwo = cstr(self.get("manufacturing_work_order")).strip()
+	header_mop = cstr(self.get("manufacturing_operation")).strip()
+	rows = [
+		row
+		for row in self.get("items") or ()
+		if cstr(row.get("manufacturing_operation")).strip()
+	]
+	if not rows and not (header_mop and header_mwo):
+		return
+
+	owners = _owners_by_casefold(
+		[header_mop, *(row.get("manufacturing_operation") for row in rows)]
+	)
+
+	header_problems = []
+	if header_mop and header_mwo:
+		owner = owners.get(header_mop.casefold())
+		if owner and not same(owner, header_mwo):
+			header_problems.append(
+				_(
+					"Operation {0} belongs to work order {1}, not {2}, the work order of this Stock Entry."
+				).format(bold(header_mop), bold(owner), bold(header_mwo))
+			)
+
+	# A multi-work-order entry's rows are never compared with its header, by either rule.
+	multi_mwo = self.get("stock_entry_type") in _MULTI_WORK_ORDER_STOCK_ENTRY_TYPES
+	reserves = bool(rows) and not multi_mwo and creates_mwo_reservation(self)
+	fallback_mwo = "" if multi_mwo else header_mwo
+	row_problems = []
+	off_header = False
+	for row in rows:
+		idx = row.get("idx") or "?"
+		mop = cstr(row.get("manufacturing_operation")).strip()
+		owner = owners.get(mop.casefold())
+		if not owner:
+			if reserves:
+				# ``owners`` holds every EXISTING operation, with or without a work order, so the
+				# message can tell a wrong name from an operation saved without a work order.
+				row_problems.append(
+					no_owner_problem(mop, mop.casefold() in owners, idx=idx)
+				)
+			continue
+
+		expected = (
+			cstr(row.get("custom_manufacturing_work_order")).strip() or fallback_mwo
+		)
+		if expected and not same(owner, expected):
+			row_problems.append(row_problem(idx, mop, owner, expected))
+		elif reserves and header_mwo and not same(owner, header_mwo):
+			row_problems.append(row_problem(idx, mop, owner, header_mwo))
+			off_header = True
+
+	if off_header:
+		# Said once, ahead of the rows: those rows are consistent with their own work order and are
+		# refused only because this entry reserves everything under the header's.
+		row_problems.insert(
+			0,
+			_(
+				"This {0} entry reserves its stock for work order {1}, so every operation on it must "
+				"belong to that work order."
+			).format(bold(self.get("stock_entry_type")), bold(header_mwo)),
+		)
+
+	report(header_problems + row_problems, doc=self)
+
+
+def _owners_by_casefold(mops):
+	"""``mop_owners`` keyed case-insensitively.
+
+	MariaDB matches names case-insensitively, so ``mop_owners`` can answer for a value whose case differs
+	from the stored name; Small Text row values are never normalised by link validation.
+	"""
+	return {cstr(mop).casefold(): owner for mop, owner in mop_owners(mops).items()}
+
+
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
+	release_material_request_links(self)
+
+
+# The Material Request fields that record "this step was done by Stock Entry X". All but
+# custom_mop_se (Data) are Link fields, which is what makes the request a back-link.
+_MR_STEP_ENTRY_FIELDS = (
+	"custom_reserve_se",
+	"custom_transfer_se",
+	"custom_department_transfer_se",
+	"custom_mop_se",
+)
+
+
+def release_material_request_links(self):
+	"""Let this entry cancel without its Material Request, and take it off the request.
+
+	The request stamps its entries (_MR_STEP_ENTRY_FIELDS) while every entry's rows point
+	back through material_request, so frappe's back-link check made each wait for the other
+	to be cancelled first -- neither ever could, and the desk's "Cancel All" walked that loop
+	into the request and every sibling entry. The request is ignored here, not in
+	before_cancel: ERPNext's StockEntry.on_cancel assigns ignore_linked_doctypes outright,
+	and check_no_back_links_exist reads it only after every on_cancel hook has run.
+
+	A stamp naming this entry is cleared, since the step it records is undone. Only the
+	submitted requests on this entry's own rows are touched: a draft is no back-link, and a
+	request carrying a copied link (split work order, desk Duplicate) is not this entry's.
+	"""
+	self.ignore_linked_doctypes = (
+		*(self.get("ignore_linked_doctypes") or ()),
+		"Material Request",
+	)
+
+	requests = {row.material_request for row in self.items if row.material_request}
+	if not requests:
+		return
+
+	for mr in frappe.get_all(
+		"Material Request",
+		filters={"name": ["in", sorted(requests)], "docstatus": 1},
+		fields=["name", *_MR_STEP_ENTRY_FIELDS],
+	):
+		stamps = {f: None for f in _MR_STEP_ENTRY_FIELDS if mr.get(f) == self.name}
+		if not stamps:
+			continue
+		if "custom_transfer_se" in stamps:
+			stamps.update(custom_transfer_se_state=None, custom_transfer_se_error=None)
+		# Not a save: validate_department_transfer_frozen refuses any normal update that
+		# touches custom_department_transfer_se.
+		frappe.db.set_value("Material Request", mr.name, stamps, update_modified=False)
 
 
 def prelock_bins(self, method=None):
@@ -891,10 +1293,20 @@ def prelock_bins(self, method=None):
 	# enable per site with site_config "serialize_stock_submit_by_item": 1 and A/B measure.
 	if frappe.conf.get("serialize_stock_submit_by_item"):
 		lock_items([r.item_code for r in self.items])
-	# Canonical position 2: pin this SE's naming-series counter (tabSeries) FOR UPDATE
-	# *before* any Bin lock, so a transaction can never hold a Bin while waiting on the
-	# series row another transaction holds while waiting on that Bin. Re-entrant with the
-	# getseries() call already made at insert (same row, same txn) — purely additive.
+	# Canonical position 2: pin this SE's naming counter FOR UPDATE *before* any Bin lock,
+	# so a transaction can never hold a Bin while waiting on the counter row another
+	# transaction holds while waiting on that Bin.
+	#
+	# What this costs depends on whether naming is sharded, and the helper decides per doc:
+	#   * NOT sharded — the SE falls back to the single shared MAT-STE- tabSeries row, which
+	#     a nested SE minted by an on_submit cascade will also want. Pinned unconditionally,
+	#     exactly as before, so the cascade can never take it after its Bin locks.
+	#   * SHARDED — the SE names off its own per-(company x type) Document Naming Rule
+	#     counter. By this point the doc is always already named (frappe runs set_new_name()
+	#     inside insert() BEFORE run_before_save_methods(), and the update path never names),
+	#     so it will not increment that counter again and nothing is pinned.
+	# Pinning the shared row here for every submit is what made it the dominant 1213 source
+	# in the Sep-2026 production Error Log; sharding is what actually removes the contention.
 	preallocate_series_for_docs(self)
 	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 
@@ -923,6 +1335,17 @@ def before_submit(self, method):
 
 def onsubmit(self, method):
 	validate_items(self)
+	if creates_mwo_reservation(self):
+		stock_reservation_entry_for_mwo(self)
+		sync_mop_log_for_stock_entry(self)
+
+
+def creates_mwo_reservation(self):
+	"""True when this entry's ``on_submit`` reserves its rows for a work order.
+
+	The one gate both ``onsubmit`` and ``validate_mwo_mop_consistency`` read, so the "every operation
+	belongs to the header work order" rule applies to exactly the entries that reserve under the header.
+	"""
 	# Hard skip reservation logic for Product Certification Receive
 	# (Fire Assy Service / XRF Services), regardless of reservation settings.
 	pc_name = getattr(self, "product_certification", None)
@@ -942,20 +1365,26 @@ def onsubmit(self, method):
 				"XRF Services",
 			]
 		):
-			return
+			return False
+
+	# A producer that writes its own reservation and MOP Log rows (the Without-SO finding
+	# repack) opts out here: the generic bridge would log its consumed rows as positive.
+	flags = getattr(self, "flags", None)
+	if isinstance(flags, dict) and flags.get("skip_mwo_reservation"):
+		return False
 
 	types_for_reservation = frappe.db.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},
 		pluck="stock_entry_type_to_reservation",
 	)
-	if self.stock_entry_type in types_for_reservation:
-		if self.stock_entry_type == "Repack" and (
-			not (self.manufacturing_order and self.manufacturing_work_order)
-		):
-			return
-		stock_reservation_entry_for_mwo(self)
-		sync_mop_log_for_stock_entry(self)
+	if self.stock_entry_type not in types_for_reservation:
+		return False
+	if self.stock_entry_type == "Repack" and (
+		not (self.manufacturing_order and self.manufacturing_work_order)
+	):
+		return False
+	return True
 
 
 def sync_mop_log_for_stock_entry(self, is_cancelled=False):
@@ -969,16 +1398,34 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 	resubmit / replay do not create duplicates.
 	"""
 	if is_cancelled:
-		frappe.db.sql(
-			"""
-			UPDATE `tabMOP Log`
-			SET is_cancelled = 1
-			WHERE voucher_type = 'Stock Entry'
-			  AND voucher_no = %s
-			  AND is_cancelled = 0
-			""",
-			(self.name,),
-		)
+		# Read this voucher's rows first (plain read; they were all written by its own submit,
+		# and the cancel holds the Stock Entry) and flip them by primary key. A voucher-filtered
+		# UPDATE has no index to use on production: it scanned and locked every MOP Log row of
+		# the site until the cancel committed (lock_order RULE E) -- on every Stock Entry
+		# cancel, including those an Employee / Department IR cancel makes after its
+		# current-operation lock block.
+		names = [
+			r[0]
+			for r in frappe.db.sql(
+				"""
+				SELECT name FROM `tabMOP Log`
+				WHERE voucher_type = 'Stock Entry'
+				  AND voucher_no = %s
+				  AND is_cancelled = 0
+				""",
+				(self.name,),
+			)
+		]
+		if names:
+			frappe.db.sql(
+				"""
+				UPDATE `tabMOP Log`
+				SET is_cancelled = 1
+				WHERE name IN %(names)s
+				  AND is_cancelled = 0
+				""",
+				{"names": sorted(names)},
+			)
 		return
 
 	# Nothing to sync unless at least one row is MOP-bound; skip the snapshot query
@@ -1059,11 +1506,51 @@ def copy_sre_provenance(source, target):
 			setattr(target, field, value)
 
 
+def reservation_voucher(mwo, sales_order, sales_order_item):
+	"""``(voucher_type, voucher_no, voucher_detail_no)`` a Stock Reservation Entry for this
+	Manufacturing Work Order is anchored to, given its Parent Manufacturing Order's Sales
+	Order line.
+
+	The Sales Order line, as always. A Finding Manufacturing - Without SO work order has no
+	Sales Order, so it is anchored to the work order itself: ``Manufacturing Work Order`` is
+	an allowed SRE voucher type (the ``voucher_type`` options Property Setter in
+	``custom/stock_reservation_entry.json``), and ERPNext enforces a reservation by item /
+	warehouse / batch whatever its voucher type, so the stock is protected the same way.
+	Every app reader of these reservations filters by ``manufacturing_work_order`` /
+	``manufacturing_operation``, not by voucher.
+
+	Any other work order without a Sales Order keeps the old ``("Sales Order", None, None)``,
+	so its callers throw or skip exactly as before. The flag is only read when there is no
+	Sales Order, so a Sales Order work order costs no extra query.
+	"""
+	if not sales_order and frappe.db.get_value(
+		"Manufacturing Work Order", mwo, "is_without_so"
+	):
+		return "Manufacturing Work Order", mwo, mwo
+	return "Sales Order", sales_order, sales_order_item
+
+
+def get_mwo_reservation_voucher(mwo):
+	"""``reservation_voucher`` for a work order, reading its Sales Order line itself.
+	``(None, None, None)`` when it has neither a Sales Order nor the Without-SO flag."""
+	pmo = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_order")
+	sales_order, sales_order_item = (
+		frappe.db.get_value(
+			"Parent Manufacturing Order", pmo, ["sales_order", "sales_order_item"]
+		)
+		if pmo
+		else None
+	) or (None, None)
+	voucher = reservation_voucher(mwo, sales_order, sales_order_item)
+	return voucher if voucher[1] else (None, None, None)
+
+
 def stock_reservation_entry_for_mwo(self):
 	# EIR injection: main_slip_inject.py stamps employee_ir on every auto-created
-	# SE header.  These SEs MUST always reserve — they are legitimate MWO-linked
-	# movements whose stock must be protected.  Bypassing the config gate here
-	# ensures a missing "Repack" row in MOP Settings cannot silently skip reservation.
+	# SE header. Such an entry lands metal beyond the Material Requests, so below it
+	# lifts the Sales Order voucher-quantity cap instead of being capped by it. It does
+	# NOT bypass the reservation gate: creates_mwo_reservation applies the MOP Settings
+	# list to these entries like to any other.
 	_eir_ref = getattr(self, "employee_ir", None)
 	is_eir_injection = isinstance(_eir_ref, str) and bool(_eir_ref.strip())
 
@@ -1073,31 +1560,41 @@ def stock_reservation_entry_for_mwo(self):
 				"Parent Manufacturing Order and Manufacturing Work Order is required to create Stock Reservation Entry"
 			)
 		)
-	sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
-		"Parent Manufacturing Order",
-		self.manufacturing_order,
-		["sales_order", "sales_order_item", "manufacturer"],
-	)
-	voucher_qty_row = frappe.db.sql(
-		"""
-        SELECT sum(custom_total_quantity) FROM `tabMaterial Request`
-        WHERE manufacturing_order=%s AND docstatus!=2
-        """,
-		(self.manufacturing_order,),
-	)
-	base_mr_voucher_qty = None
-	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
-		base_mr_voucher_qty = flt(voucher_qty_row[0][0])
-		addition_maximum_item__tolerance_percentage = frappe.db.get_value(
-			"Manufacturing Setting",
-			self.manufacturer or manufacturer,
-			"addition_maximum_item__tolerance_percentage",
+
+	# Every reservation is keyed to the work order that OWNS its row's operation, never to the header
+	# blindly (doc_events/mwo_mop_link.py): Make Receive Entry picks reservations by work order alone, so a
+	# row of a sibling work order reserved under the header's key is later received into the wrong one.
+	# On a consistent entry every owner IS the header work order and nothing below changes. A row whose
+	# operation belongs elsewhere is refused here, before anything is locked or reserved; in warn mode it
+	# is logged and its reservation keyed to the owner and the owner's Sales Order line.
+	operation_owners = {}
+	if self.stock_entry_type != "Material Receive (WORK ORDER)":
+		reserve_rows = [r for r in self.items if r.get("t_warehouse")]
+		operation_owners = _owners_by_casefold(
+			r.get("manufacturing_operation") for r in reserve_rows
 		)
-		if addition_maximum_item__tolerance_percentage:
-			base_mr_voucher_qty = base_mr_voucher_qty + (
-				base_mr_voucher_qty
-				* (flt(addition_maximum_item__tolerance_percentage) / 100)
-			)
+		problems = []
+		for r in reserve_rows:
+			mop = cstr(r.get("manufacturing_operation")).strip()
+			owner = operation_owners.get(mop.casefold())
+			if (
+				owner
+				and not same(owner, self.manufacturing_work_order)
+				and self.stock_entry_type not in _MULTI_WORK_ORDER_STOCK_ENTRY_TYPES
+			):
+				problems.append(
+					row_problem(
+						r.get("idx") or "?", mop, owner, self.manufacturing_work_order
+					)
+				)
+		report(problems, doc=self)
+
+	sales_order, sales_order_item, base_mr_voucher_qty = _mwo_reservation_so_line(
+		self, self.manufacturing_order
+	)
+	so_lines = {
+		self.manufacturing_order: (sales_order, sales_order_item, base_mr_voucher_qty)
+	}
 
 	# RULE B (canonical lock order): pre-lock every inbound Bin this reservation will
 	# touch, in sorted (item_code, warehouse) order, so concurrent Stock Entry submits
@@ -1156,8 +1653,32 @@ def stock_reservation_entry_for_mwo(self):
 				)
 			)
 
+		# The work order this row is reserved for is its operation's owner, and the Sales Order line is
+		# that work order's PMO's. On a consistent entry that is the header's and costs no extra read.
+		row_mwo = (
+			operation_owners.get(
+				cstr(row.get("manufacturing_operation")).strip().casefold()
+			)
+			or self.manufacturing_work_order
+		)
+		row_pmo = self.manufacturing_order
+		if not same(row_mwo, self.manufacturing_work_order):
+			row_pmo = (
+				frappe.get_cached_value(
+					"Manufacturing Work Order", row_mwo, "manufacturing_order"
+				)
+				or self.manufacturing_order
+			)
+		if row_pmo not in so_lines:
+			so_lines[row_pmo] = _mwo_reservation_so_line(self, row_pmo)
+		sales_order, sales_order_item, base_mr_voucher_qty = so_lines[row_pmo]
+		# The Sales Order line, or for a Without-SO work order the work order itself.
+		voucher_type, voucher_no, voucher_detail_no = reservation_voucher(
+			row_mwo, sales_order, sales_order_item
+		)
+
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			row.item_code, "Sales Order", sales_order, sales_order_item
+			row.item_code, voucher_type, voucher_no, voucher_detail_no
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
@@ -1171,8 +1692,8 @@ def stock_reservation_entry_for_mwo(self):
 			effective_voucher_qty = flt(total_so_reserved) + qty_to_be_reserved
 
 		new_stock_reservation_entries_mwo = frappe.new_doc("Stock Reservation Entry")
-		new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
-		new_stock_reservation_entries_mwo.voucher_no = sales_order
+		new_stock_reservation_entries_mwo.voucher_type = voucher_type
+		new_stock_reservation_entries_mwo.voucher_no = voucher_no
 		new_stock_reservation_entries_mwo.item_code = row.item_code
 		new_stock_reservation_entries_mwo.voucher_qty = effective_voucher_qty
 		new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
@@ -1180,13 +1701,11 @@ def stock_reservation_entry_for_mwo(self):
 		new_stock_reservation_entries_mwo.stock_uom = row.uom
 
 		new_stock_reservation_entries_mwo.warehouse = row.t_warehouse
-		new_stock_reservation_entries_mwo.manufacturing_work_order = (
-			self.manufacturing_work_order
-		)
+		new_stock_reservation_entries_mwo.manufacturing_work_order = row_mwo
 		new_stock_reservation_entries_mwo.manufacturing_operation = (
 			row.manufacturing_operation
 		)
-		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
+		new_stock_reservation_entries_mwo.voucher_detail_no = voucher_detail_no
 		# The Stock Entry row this reservation was created from. ``voucher_*`` points at
 		# the Sales Order (that is what ERPNext reserves against), so without these three
 		# there is NO link back to the Stock Entry Detail — and that row is the only
@@ -1218,6 +1737,41 @@ def stock_reservation_entry_for_mwo(self):
 		create_mop_log(self, row, is_synced=True)
 
 
+def _mwo_reservation_so_line(self, pmo):
+	"""``(sales_order, sales_order_item, base_mr_voucher_qty)`` for reservations under ``pmo``.
+
+	The Sales Order line is the PMO's, and the voucher quantity that caps reservations on that line is the
+	PMO's Material Request total plus the manufacturer's tolerance. Both are read from the same PMO, so a
+	reservation keyed to another work order's PMO (warn mode only) is capped by that line, not the header's.
+	"""
+	sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
+		"Parent Manufacturing Order",
+		pmo,
+		["sales_order", "sales_order_item", "manufacturer"],
+	)
+	voucher_qty_row = frappe.db.sql(
+		"""
+        SELECT sum(custom_total_quantity) FROM `tabMaterial Request`
+        WHERE manufacturing_order=%s AND docstatus!=2
+        """,
+		(pmo,),
+	)
+	base_mr_voucher_qty = None
+	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
+		base_mr_voucher_qty = flt(voucher_qty_row[0][0])
+		addition_maximum_item__tolerance_percentage = frappe.db.get_value(
+			"Manufacturing Setting",
+			self.manufacturer or manufacturer,
+			"addition_maximum_item__tolerance_percentage",
+		)
+		if addition_maximum_item__tolerance_percentage:
+			base_mr_voucher_qty = base_mr_voucher_qty + (
+				base_mr_voucher_qty
+				* (flt(addition_maximum_item__tolerance_percentage) / 100)
+			)
+	return sales_order, sales_order_item, base_mr_voucher_qty
+
+
 def validate_items(self):
 	if self.stock_entry_type != "Broken / Loss":
 		return
@@ -1232,8 +1786,11 @@ def validate_items(self):
 
 
 def allow_zero_valuation(self):
+	# Customer-owned INPUT rows only: never a finished good or secondary row that ERPNext derives,
+	# which would be zeroed on the next validate pass (F3). The authoritative enforcement is in
+	# CustomStockEntry.set_basic_rate, because a repost never reaches this hook.
 	for row in self.items:
-		if row.inventory_type == "Customer Goods":
+		if should_allow_zero_valuation(row, self):
 			row.allow_zero_valuation_rate = 1
 
 
@@ -1521,11 +2078,153 @@ def get_warehouse_details(
 	return d_warehouse, e_warehouse
 
 
+def _customer_gold_issue_plan(source_name):
+	"""For a Customer Gold receipt: the return type to create and what each receipt row still
+	has to give back. ``(None, None)`` for any other Stock Entry.
+
+	The Issue used to be mapped with the full receipt quantity every time, so a receipt already
+	half returned offered its whole quantity again -- and nothing downstream checked it. The
+	return hook now enforces the limit; mapping only what is left keeps the form honest too.
+	A quantity chosen in the return preview arrives as ``frappe.flags.args.qty``.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		effective_receipt_events,
+		is_allocation_schema_ready,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_receipt import (
+		_receipt_settings,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+		receipt_remaining,
+	)
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_customer_gold_settings,
+		is_customer_gold_enabled,
+	)
+
+	source = frappe.db.get_value(
+		"Stock Entry",
+		source_name,
+		["name", "company", "stock_entry_type", "purpose", "docstatus"],
+		as_dict=True,
+	)
+	if not source:
+		return None, None
+	source.doctype = "Stock Entry"
+	if source.stock_entry_type != "Customer Goods Received" and not (
+		is_customer_gold_enabled() and _receipt_settings(source)
+	):
+		return None, None
+
+	return_type = (
+		get_customer_gold_settings().get("customer_gold_return_stock_entry_type")
+		or "Customer Goods Issue"
+	)
+	if not (is_customer_gold_enabled() and is_allocation_schema_ready()):
+		return return_type, None
+
+	events = effective_receipt_events({"reference_docname": source.name})
+	if not events:
+		return return_type, None
+	remaining = receipt_remaining(source.company, events[0].customer, events)
+	requested = flt((frappe.flags.args or {}).get("qty")) if frappe.flags.args else 0.0
+	requested_row = (
+		(frappe.flags.args or {}).get("receipt_row") if frappe.flags.args else None
+	)
+
+	left = {}
+	for event in events:
+		qty = max(flt(remaining.get(event.name)), 0.0)
+		if requested_row and requested_row != event.cg_source_row:
+			qty = 0.0
+		elif requested:
+			qty = min(qty, requested)
+		left[event.cg_source_row] = flt(qty, 3)
+	return return_type, left
+
+
+def _department_transfer_destination(source):
+	"""Where a Transfer to Department transit leg is received into, if ``source`` is one.
+
+	``make_department_transfer_stock_entry`` sends the material to the destination's
+	transit warehouse and stamps the entry on its request as
+	``custom_department_transfer_se``; the request's ``custom_destination_warehouse`` is
+	where it lands. The entry carries no ``custom_material_request_reference`` and its rows'
+	Material Request Item warehouse is the request's old ``set_warehouse``, so neither End
+	Transit mapper's own routing fits it.
+	"""
+	if source.get("stock_entry_type") != "Material Transfer (DEPARTMENT)":
+		return None
+
+	return frappe.db.get_value(
+		"Material Request",
+		{"custom_department_transfer_se": source.get("name"), "docstatus": 1},
+		"custom_destination_warehouse",
+	)
+
+
+def _department_destination_lookup():
+	"""``_department_transfer_destination`` memoised per mapping: one query, not one per row."""
+	destinations = {}
+
+	def lookup(source):
+		key = source.get("name")
+		if key not in destinations:
+			destinations[key] = _department_transfer_destination(source)
+		return destinations[key]
+
+	return lookup
+
+
+def _remaining_transit_qty(row, precision):
+	"""Stock-UOM quantity of a transit row not received yet.
+
+	ERPNext's own ``make_stock_in_entry`` rule. ``transferred_qty`` is kept in stock UOM
+	(``StockEntry.update_transferred_qty`` sums the receipts' ``transfer_qty``), so it is
+	taken off ``transfer_qty``, never off the row's transaction-UOM ``qty``. A row with
+	nothing left is not mapped again, and a later End Transit carries only the remainder.
+	"""
+	return flt(
+		flt(row.get("transfer_qty")) - flt(row.get("transferred_qty")), precision
+	)
+
+
+def _remaining_transit_row_qty(row, precision):
+	"""``_remaining_transit_qty`` in the row's own UOM, for the receipt's ``qty``."""
+	return _remaining_transit_qty(row, precision) / (
+		flt(row.get("conversion_factor")) or 1
+	)
+
+
+def _issue_row_qty(row, issue_left, precision):
+	"""Quantity a Create > Issue / End Transit maps for ``row``.
+
+	A Customer Gold receipt maps only what that receipt row still has to give back
+	(``_customer_gold_issue_plan``: the preview's row and quantity, capped at what remains).
+	Any other entry maps the part of a transit row not received yet.
+	"""
+	if issue_left is not None:
+		return flt(issue_left.get(row.get("name")), precision)
+	return _remaining_transit_row_qty(row, precision)
+
+
+def _issue_row_mapped(row, issue_left, precision):
+	"""Whether ``row`` is offered at all: a receipt row with nothing left to give back, or a
+	transit row already received in full, is not mapped again."""
+	if issue_left is not None:
+		return flt(issue_left.get(row.get("name"))) > 0
+	return _remaining_transit_qty(row, precision) > 0
+
+
 @frappe.whitelist()
 def make_stock_in_entry(source_name, target_doc=None):
+	issue_type, issue_left = _customer_gold_issue_plan(source_name)
+	department_destination = _department_destination_lookup()
+	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
+
 	def set_missing_values(source, target):
-		if target.stock_entry_type == "Customer Goods Received":
-			target.stock_entry_type = "Customer Goods Issue"
+		if issue_type or target.stock_entry_type == "Customer Goods Received":
+			target.stock_entry_type = issue_type or "Customer Goods Issue"
 			target.purpose = "Material Issue"
 			target.custom_cg_issue_against = source.name
 		elif target.stock_entry_type == "Customer Goods Issue":
@@ -1549,8 +2248,17 @@ def make_stock_in_entry(source_name, target_doc=None):
 					target_wh = wh.warehouse
 			target_doc.t_warehouse = target_wh
 
+		destination = department_destination(source_parent)
+		if destination:
+			target_doc.t_warehouse = destination
+
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = source_doc.qty
+		target_doc.qty = _issue_row_qty(source_doc, issue_left, qty_precision)
+		if issue_type:
+			# Issue exactly the receipt's batch: the outward bundle must be built from the mapped
+			# batch_no, never re-picked by FIFO from a shared custody warehouse.
+			target_doc.use_serial_batch_fields = 1
+			target_doc.serial_and_batch_bundle = None
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -1570,7 +2278,11 @@ def make_stock_in_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				# "condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				# A receipt row with nothing left to give back, or a transit row already
+				# received in full, is not offered again.
+				"condition": lambda doc: _issue_row_mapped(
+					doc, issue_left, qty_precision
+				),
 			},
 		},
 		target_doc,
@@ -1749,6 +2461,11 @@ def create_material_receipt_for_sales_person(source_name):
 
 	target_doc.stock_entry_type = "Material Receipt - Sales Person"
 	target_doc.docstatus = 0
+	# The clone above copies the issue's transit fields too. A return receipt is neither
+	# in transit nor the receipt leg of a transit entry, and ERPNext rejects Add to Transit
+	# into a non-Transit warehouse.
+	target_doc.add_to_transit = 0
+	target_doc.outgoing_stock_entry = None
 	target_doc.posting_date = frappe.utils.nowdate()
 	target_doc.posting_time = frappe.utils.nowtime()
 
@@ -1841,6 +2558,9 @@ def create_material_receipt_for_customer_approval(source_name, cust_name):
 
 	target_doc.update(frappe.get_doc("Stock Entry", source_name).as_dict())
 	target_doc.docstatus = 0
+	# Same as create_material_receipt_for_sales_person: never a transit entry or leg.
+	target_doc.add_to_transit = 0
+	target_doc.outgoing_stock_entry = None
 
 	target_doc.items = []
 	for item in frappe.get_all(
@@ -1873,6 +2593,9 @@ validates serial items entered are equal to quantity or not if not appropriate e
 
 @frappe.whitelist()
 def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
+	department_destination = _department_destination_lookup()
+	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
+
 	def set_missing_values(source, target):
 		target.stock_entry_type = source.stock_entry_type
 		target.set_missing_values()
@@ -1892,8 +2615,12 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 				)
 				target_doc.t_warehouse = warehouse
 
+		destination = department_destination(source_parent)
+		if destination:
+			target_doc.t_warehouse = destination
+
 		target_doc.s_warehouse = source_doc.t_warehouse
-		target_doc.qty = source_doc.qty - source_doc.transferred_qty
+		target_doc.qty = _remaining_transit_row_qty(source_doc, qty_precision)
 
 	doclist = get_mapped_doc(
 		"Stock Entry",
@@ -1913,7 +2640,7 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				"condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
+				"condition": lambda doc: _remaining_transit_qty(doc, qty_precision) > 0,
 			},
 		},
 		target_doc,
@@ -2051,6 +2778,18 @@ def consume_stock_reservation_entry(sre_doc, update_bin=True):
 
 	# Explicitly set status to "Delivered"
 	sre_doc.update_status(status="Delivered")
+
+	# F30: the order's reserved quantity is summed from its live reservations, so it has to be
+	# recomputed now -- ERPNext does this on submit and cancel, and consumption skipped it (946
+	# Sales Order rows on kg-gk still show stock reserved that was consumed long ago).
+	sre_doc.update_reserved_qty_in_voucher(update_modified=False)
+
+	# F29: give the customer's gold back to the free quantity, as a cancel would.
+	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+		release_consumed_allocation,
+	)
+
+	release_consumed_allocation(sre_doc)
 
 	# Refresh bin reserved stock so the physical stock becomes available
 	if update_bin:

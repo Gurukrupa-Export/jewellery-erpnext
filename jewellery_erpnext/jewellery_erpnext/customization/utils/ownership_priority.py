@@ -30,10 +30,14 @@ proportional split, so a site with no customer-owned batches sees no change.
 * The EOD sync (``mop_settings/mop_eod_sync.py``) is a pass-through: it moves the
   exact batch its MOP Log names, in full. A priority branch there would desync
   ``qty_after_transaction_batch_based``.
+* Employee IR process loss (``employee_ir.book_metal_loss``) splits loss flat
+  across every item, whatever its inventory type, by business decision
+  (2026-10-15). It calls ``tiered_allocate`` with a single tier for the precision
+  reconciliation only; ``LOSS_PRIORITY`` does not apply there.
 """
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import escape_html, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	CUSTOMER_INVENTORY_TYPES,
@@ -56,16 +60,15 @@ LOSS_PRIORITY = {
 }
 
 # Any loss allocation landing at or beyond this rank means a customer absorbed
-# wastage -- the trigger for the operator warning. NOT "the waterfall overflowed":
-# the ordinary business case (regular stock exhausted, remainder on customer gold)
-# leaves no overflow at all and must still warn.
+# wastage. NOT "the waterfall overflowed": the ordinary business case (regular
+# stock exhausted, remainder on customer gold) leaves no overflow at all.
 CUSTOMER_LOSS_RANK = 2
 
 # A `Customer.custom_no_wastage` batch sorts behind every ordinary customer, so the
 # loss waterfall reaches it only when nothing else on the operation has capacity.
 # That is exactly where validate_process_loss' existing hard throw is the right
 # answer -- the operator must return the full weight. Ranking it merely "last among
-# customers" would let a routine spill turn a warning into a blocked submit.
+# customers" would let a routine, allowed spill become a blocked submit.
 NO_WASTAGE_RANK = 8
 
 # Consume direction only: an inventory type we do not know about must never be
@@ -492,24 +495,48 @@ def stamp_produce_rows_from_consumes(se, precision=3, row_to_dict=None):
 	return True
 
 
-def describe_customer_spill(spill_rows, precision=3):
-	"""Human-readable ``customer / item / batch / qty`` lines for the spill warning.
+def describe_customer_loss_posted(rows, precision=3):
+	"""Lines for the note left after a submitted Process Loss wrote off customer metal.
 
-	``spill_rows`` is an iterable of dicts carrying ``customer``, ``item_code``,
-	``batch_no`` and ``qty``.
+	``rows`` carry ``customer``, ``source_item``, ``source_batch``, ``loss_item``,
+	``scrap_batch``, ``warehouse``, ``qty`` and ``stock_uom``. Each quantity keeps its own
+	UOM -- a customer diamond loss is in carats -- and the closing total is given per UOM,
+	so carats are never added to grams.
 	"""
+	precision = int(precision or 3)
 	lines = []
-	for row in spill_rows:
+	totals = {}
+	for row in rows:
 		get = row.get if hasattr(row, "get") else lambda k: getattr(row, k, None)
+		qty = flt(get("qty"), precision)
+		uom = get("stock_uom") or ""
+		totals[uom] = flt(totals.get(uom, 0) + qty, precision)
 		lines.append(
-			"{0} &mdash; {1} / {2}: {3}".format(
-				frappe.bold(get("customer") or _unknown()),
-				get("item_code") or "",
-				get("batch_no") or "",
-				flt(get("qty"), int(precision or 3)),
+			"{0} &mdash; {1} / {2} &rarr; {3} / {4} ({5}): {6} {7}".format(
+				frappe.bold(_escape(get("customer") or _unknown())),
+				_escape(get("source_item")),
+				_escape(get("source_batch")),
+				_escape(get("loss_item")),
+				_escape(get("scrap_batch")),
+				_escape(get("warehouse")),
+				qty,
+				_escape(uom),
+			).rstrip()
+		)
+	if totals:
+		lines.append(
+			frappe._("Total: {0}").format(
+				" + ".join(
+					f"{qty} {_escape(uom)}".rstrip() for uom, qty in totals.items()
+				)
 			)
 		)
 	return lines
+
+
+def _escape(value):
+	"""HTML-escape a code for a message; ``None`` becomes an empty string."""
+	return escape_html(str(value)) if value is not None else ""
 
 
 def _unknown():

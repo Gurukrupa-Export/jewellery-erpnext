@@ -7,8 +7,12 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
-from frappe.utils import flt, get_link_to_form
+from frappe.utils import cint, flt, get_link_to_form
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_GOODS_INVENTORY_TYPE,
+	pmo_expects_customer_goods,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
 from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
 	diamond_group_key,
@@ -21,16 +25,23 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
+	custom_override_grades,
+	customer_grades,
+	is_customer_diamond_flag,
 	resolve_diamond_grade,
+	sales_type_expects,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
+	create_finding_without_so_mwo,
 	create_stock_entry,
+	delete_without_so_drafts,
+	validate_without_so_source_submitted,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	update_parent_details,
 )
-from jewellery_erpnext.utils import update_existing
+from jewellery_erpnext.utils import get_serial_bom, update_existing
 
 _VARIANT_TO_ITEM_TYPE = {
 	"M": "metal_item",
@@ -288,6 +299,10 @@ class ParentManufacturingOrder(Document):
 		# frappe runs validate + before_submit on submit and skips before_save, so the grade has
 		# to be resolved here too: without it a PMO that reached submit without a stored grade
 		# silently skips the tracking BOM update below.
+		if self.is_without_so:
+			validate_without_so_source_submitted(
+				"Manufacturing Plan", self.manufacturing_plan, _("Manufacturing Plan")
+			)
 		self._set_diamond_grade()
 		if self.diamond_grade and self.custom_tracking_bom:
 			frappe.db.sql(
@@ -298,6 +313,78 @@ class ParentManufacturingOrder(Document):
 			""",
 				(self.diamond_grade, self.custom_tracking_bom),
 			)
+
+	# What the stored grade depends on. A save that touches none of these leaves a PMO created
+	# before the policy existed editable for unrelated reasons, rather than dead until someone
+	# reconciles its customer master.
+	GRADE_POLICY_FIELDS = (
+		"diamond_grade",
+		"use_custom_diamond_grade",
+		"sales_type",
+		"is_customer_diamond",
+		"diamond_quality",
+		"customer",
+		"ref_customer",
+	)
+
+	def _grade_policy_inputs_changed(self):
+		before = self.get_doc_before_save()
+		if not before:
+			# Insert: nothing to compare against, and a new PMO must be valid from the start.
+			return True
+
+		return any(
+			self.get(field) != before.get(field) for field in self.GRADE_POLICY_FIELDS
+		)
+
+	def _validate_diamond_grade_policy(self):
+		"""Enforce the grade rules on the document, not just in the dropdown.
+
+		The link query filters what the picker offers, which is UX: a REST write, an import, a
+		server script, or simply a value already sitting in the field when the user ticks
+		Use Custom Diamond Grade all reach save without passing through it. Since before_submit
+		copies this grade onto the tracking BOM and it also selects the diamond item variant, a
+		wrong value here is silent and durable -- so the rule has to live on the save path.
+		"""
+		if self.flags.ignore_validations or not self._grade_policy_inputs_changed():
+			return
+
+		expected = sales_type_expects(self.sales_type)
+		if expected is not None and expected != cint(self.is_customer_diamond):
+			# Sales Type is what sets customer_diamond on the quotation in the first place, so
+			# the two disagreeing is a contradiction rather than a preference -- and leaving it
+			# to the dropdown alone let automatic mode save a grade the override forbids.
+			frappe.throw(
+				_("A {0} order requires Is Customer Diamond to be {1}.").format(
+					frappe.bold(self.sales_type),
+					_("checked") if expected else _("unchecked"),
+				)
+			)
+
+		if not (self.use_custom_diamond_grade and self.diamond_grade):
+			return
+
+		customer = self.ref_customer or self.customer
+		allowed = custom_override_grades(
+			customer_grades(customer, self.diamond_quality),
+			self.sales_type,
+			self.is_customer_diamond,
+		)
+		if self.diamond_grade in allowed:
+			return
+
+		if not allowed:
+			frappe.throw(
+				_(
+					"{0} has no Diamond Grade for quality {1} that this order can use."
+				).format(frappe.bold(customer), frappe.bold(self.diamond_quality))
+			)
+
+		frappe.throw(
+			_(
+				"Diamond Grade {0} is not allowed for this order. Choose one of: {1}."
+			).format(frappe.bold(self.diamond_grade), ", ".join(allowed))
+		)
 
 	def _set_diamond_grade(self):
 		if self.use_custom_diamond_grade:
@@ -333,14 +420,21 @@ class ParentManufacturingOrder(Document):
 					self.custom_tracking_bom,
 					{"reference_doctype": self.doctype, "reference_docname": self.name},
 				)
-		if self.serial_no:
-			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
+		# The serial's BOM is the BOM of THAT serial -- the one tagged to it (as kggk_prod
+		# always did) -- not whatever the quotation / plan row carried, which for a repair
+		# is usually the item's design BOM. The row's value is kept only when the serial
+		# has no BOM of its own.
+		if serial_bom := get_serial_bom(self.serial_no):
+			if serial_bom != self.serial_id_bom:
 				self.db_set("serial_id_bom", serial_bom)
 
 	def validate(self):
 		# Kept ABOVE the is_new/ignore_validations early-return so the Mould List ID
 		# is populated on insert (independent re-derivation from this PMO's own item_code).
 		self.mould_id = get_current_mould_id(self.item_code)
+		# Also above it: the grade a PMO carries has to be legitimate from the moment it is
+		# created, and validate is the only hook frappe runs on both save and submit.
+		self._validate_diamond_grade_policy()
 		if self.is_new() or self.flags.ignore_validations:
 			return
 		self.metal_details()
@@ -386,6 +480,12 @@ class ParentManufacturingOrder(Document):
 		validate_mfg_date(self)
 
 	def on_submit(self):
+		if self.is_without_so:
+			# No Sales Order, customer or Tracking BOM stands behind this PMO, so the tolerance
+			# tables, the Tracking BOM submit and the Material Requests below -- all read off
+			# those -- have nothing to work on. Its single MWO makes the finding item itself.
+			create_finding_without_so_mwo(self)
+			return
 		if not self.order_form_type or self.order_form_type == "Order":
 			# One update_after_submit cycle for all three tolerance tables instead of one
 			# per populator, and none at all for a customer with no tolerance master --
@@ -406,6 +506,11 @@ class ParentManufacturingOrder(Document):
 		# gemstone_details_set_mandatory_field(self)
 
 	def on_cancel(self):
+		if self.is_without_so:
+			delete_without_so_drafts(
+				"Manufacturing Work Order", {"manufacturing_order": self.name}
+			)
+			return
 		update_existing(
 			"Manufacturing Plan Table",
 			self.rowname,
@@ -624,14 +729,50 @@ class ParentManufacturingOrder(Document):
 			mr_doc.schedule_date = frappe.utils.nowdate()
 			mr_doc.manufacturing_order = self.name
 			mr_doc.custom_manufacturer = self.manufacturer
-			if (
-				self.customer_gold == "Yes"
-				and self.customer_diamond == "Yes"
-				and self.customer_stone == "Yes"
-				and self.customer_good == "Yes"
-			):
-				mr_doc._customer = self.customer
-				mr_doc.inventory_type = "Customer Goods"
+
+			# OWNERSHIP IS DECIDED PER MATERIAL TYPE, NOT ALL-OR-NOTHING.
+			#
+			# This used to require customer_gold AND customer_diamond AND customer_stone AND
+			# customer_good to all read "Yes", so an order where the customer supplied only the
+			# diamonds -- the ordinary case for a customer-diamond order -- got no ownership stamp
+			# at all and its stones were requested as company stock. Each request carries exactly
+			# one material type, so the flag for THAT type is the one that decides it:
+			# ``_ITEM_TYPE_PREFIX`` already maps the bucket to the same M/F/D/G/O letter
+			# ``VARIANT_CUSTOMER_FLAG`` is keyed on.
+			#
+			# Read off the ``is_customer_*`` checkboxes rather than the Yes/No Data strings beside
+			# them: the checkboxes are the normalised form (``is_customer_diamond_flag`` handles
+			# "yes" as well as "Yes") and they are what every other reader in the app uses --
+			# ``se_utils.get_fifo_batches`` and ``validate_customer_diamond_grade`` among them.
+			customer_owned = pmo_expects_customer_goods(self, prefix)
+
+			# A BOM row ticked ``is_customer_item`` is the customer's even when the order-level
+			# flag is clear, which is how ownership was expressed before the PMO flags existed.
+			# ``cint`` rather than ``== 1``: the BOM stores a Check, but the bucket dicts these
+			# rows are built from also carry the string "0" for other_item.
+			def _row_is_customer_owned(bom_row):
+				return customer_owned or bool(cint(bom_row.get("is_customer_item")))
+
+			# Customer Goods with no customer is worse than no stamp: ``normalize_ownership``
+			# rule 3 silently downgrades it back to Regular Stock, which is how a customer's
+			# stones end up booked as the company's. Refuse to write the half-stamp instead.
+			if not self.customer and any(_row_is_customer_owned(i) for i in val):
+				frappe.throw(
+					_(
+						"{0} requests customer-supplied {1}, but the order has no Customer. "
+						"Material booked as Customer Goods without an owner is booked as the "
+						"company's, so the request cannot be raised."
+					).format(frappe.bold(self.name), item_type.replace("_", " "))
+				)
+
+			if customer_owned:
+				# ``customer``, NOT ``_customer``. Material Request HAS a real ``customer``
+				# field; the leading underscore made this a throwaway Python attribute that
+				# ``get_valid_dict`` dropped, so the header has never once been stamped. Same
+				# bug class as the ``custom_inventory_type`` -> ``inventory_type`` fix on the
+				# rows below, which sat one line away and was found first.
+				mr_doc.customer = self.customer
+				mr_doc.inventory_type = CUSTOMER_GOODS_INVENTORY_TYPE
 			mr_doc.custom_department = frappe.db.get_value(
 				"Warehouse", val[0]["from_warehouse"], "department"
 			)
@@ -652,8 +793,37 @@ class ParentManufacturingOrder(Document):
 							"custom_is_customer_item": i.get("is_customer_item", 0),
 							"custom_sub_setting_type": i.get("sub_setting_type"),
 							"pcs": i.get("pcs"),
-							"custom_inventory_type": "Customer Stock"
-							if i.get("is_customer_item") == 1
+							# ``inventory_type``, NOT ``custom_inventory_type``. Material
+							# Request Item has no field by the latter name -- verified in
+							# tabCustom Field on kg-gk as well as the test site -- and
+							# ``get_valid_dict`` drops unknown child keys without a word, so
+							# this ownership stamp has never once reached the database.
+							# ``custom_is_customer_item`` above IS a real field and did land,
+							# which is why the row looked half-tagged rather than untagged.
+							# "Customer Goods", NOT "Customer Stock". ``inventory_type`` is a
+							# LINK to Inventory Type, so the value has to exist as a record or
+							# the insert hard-throws LinkValidationError. Only kg-gk, alfarsi
+							# and gk were checked, and all three hold exactly two records:
+							# "Customer Goods" and "Regular Stock". "Customer Stock" exists
+							# only on a disposable test site whose fixtures create it.
+							#
+							# This never mattered while the key was ``custom_inventory_type``:
+							# get_valid_dict dropped it before any link check ran. Landing the
+							# stamp makes the value real, so it has to be a real one -- and
+							# "Customer Goods" is what the header stamp above writes on the
+							# parent Material Request, so the header and its rows agree.
+							"inventory_type": CUSTOMER_GOODS_INVENTORY_TYPE
+							if _row_is_customer_owned(i)
+							else None,
+							# The owner has to travel WITH the type. ``inventory_type`` alone is a
+							# half-stamp: the reserve Stock Entry copies both fields off this row
+							# (``doc_events/material_request.create_stock_entry``), and
+							# ``normalize_ownership`` rule 3 turns "Customer Goods, owner unknown"
+							# straight back into Regular Stock -- the customer's stones booked as
+							# the company's. The blank-customer guard above is what lets this be
+							# unconditional.
+							"customer": self.customer
+							if _row_is_customer_owned(i)
 							else None,
 							"description": i["item_code"]
 							if item_type == "gemstone_item"
@@ -727,10 +897,16 @@ def make_manufacturing_order(
 		doc.metal_colour = so_det.get("metal_colour")
 		doc.customer_sample = row.customer_sample
 		doc.customer_voucher_no = row.customer_voucher_no
-		doc.is_customer_gold = 1 if row.customer_gold == "Yes" else 0
-		doc.is_customer_diamond = 1 if row.customer_diamond == "Yes" else 0
-		doc.is_customer_gemstone = 1 if row.customer_stone == "Yes" else 0
-		doc.is_customer_material = 1 if row.customer_good == "Yes" else 0
+		# All four read the Yes/No text through the SAME case-insensitive helper. Only
+		# is_customer_diamond did, so a plan row saved as "yes" set the diamond flag and
+		# silently cleared the other three -- and a cleared is_customer_gemstone is an order
+		# whose customer's stones get requested as company stock.
+		doc.is_customer_gold = is_customer_diamond_flag(row.customer_gold)
+		# Shared with Manufacturing Plan's own reading of the same string, so the grade the plan
+		# computes for a row and the one this PMO resolves on save agree on the flag.
+		doc.is_customer_diamond = is_customer_diamond_flag(row.customer_diamond)
+		doc.is_customer_gemstone = is_customer_diamond_flag(row.customer_stone)
+		doc.is_customer_material = is_customer_diamond_flag(row.customer_good)
 		doc.customer_weight = row.customer_weight
 		doc.repair_type = row.repair_type
 		doc.product_type = row.product_type
@@ -741,6 +917,18 @@ def make_manufacturing_order(
 		doc.rowname = row.name
 		doc.master_bom = master_bom
 		doc.diamond_grade = so_det.get("diamond_grade")
+		# Repair lineage, carried explicitly off the plan row.
+		#
+		# Both fields used to arrive only by side-channel: serial_no via the
+		# ``sales_order_item.serial_no`` fetch_from, and serial_id_bom via after_insert
+		# re-deriving it from BOM.tag_no. The plan row already holds both (queried in
+		# get_items_for_production and stored on Manufacturing Plan Table), so the values
+		# were being thrown away and then guessed at again -- and the guess fails whenever
+		# no BOM is tagged to the serial, leaving a Repair PMO (and every MWO under it)
+		# with no serial and no serial BOM, which is what hides Unpack Serial No.
+		# Assigning them here makes the row the single source of truth.
+		doc.serial_no = row.serial_no
+		doc.serial_id_bom = row.serial_id_bom
 		doc.insert(ignore_mandatory=True)
 
 	elif row.mwo:
@@ -769,6 +957,44 @@ def make_manufacturing_order(
 		doc.rowname = row.name
 		doc.insert(ignore_mandatory=True)
 		row.manufacturing_bom = so_det.get("master_bom")
+
+
+def make_finding_without_so_order(source_doc, row, mp_context=None):
+	"""Create one Draft Parent Manufacturing Order from a Without-SO plan's Finding Details row.
+
+	There is no Sales Order line or Manufacturing Work Order behind the row, so everything the
+	other two paths read off those comes from the row itself. ``row.item_code`` is the finding
+	variant the plan resolved from the row's attributes on validate. Setting Type goes to
+	``finding_setting_type`` because ``setting_type`` is fetched from the item, and finding
+	items carry none.
+	"""
+	mp_context = mp_context or {}
+	manufacturer = mp_context.get("manufacturer") or frappe.defaults.get_user_default(
+		"manufacturer"
+	)
+
+	doc = frappe.new_doc("Parent Manufacturing Order")
+	doc.company = source_doc.company
+	doc.branch = source_doc.branch
+	if manufacturer:
+		doc.manufacturer = manufacturer
+	doc.department = mp_context.get("finding_default_department")
+	doc.type = "Finding Manufacturing"
+	doc.is_without_so = 1
+	doc.item_code = row.item_code
+	doc.metal_type = row.metal_type
+	doc.metal_touch = row.metal_touch
+	doc.metal_purity = row.metal_purity
+	doc.metal_colour = row.metal_colour
+	doc.finding_category = row.finding_category
+	doc.finding_type = row.finding_type
+	doc.finding_setting_type = row.setting_type
+	doc.finding_size = row.finding_size
+	doc.manufacturing_plan = source_doc.name
+	doc.qty = 1
+	doc.rowname = row.name
+	doc.insert()
+	return doc
 
 
 def create_manufacturing_work_order(self):

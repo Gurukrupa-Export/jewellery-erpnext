@@ -26,7 +26,9 @@
   "pending_weight",
   "main_slip",
   "loss_item",
-  "issue_row"
+  "issue_row",
+  "exploded_row_key",
+  "ref_customer"
  ],
  "fields": [
   {
@@ -132,6 +134,14 @@
    "search_index": 1
   },
   {
+   "description": "Ties this row to its own Exploded Product Details rows (their Reference Docname). Set automatically.",
+   "fieldname": "exploded_row_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Exploded Row Key",
+   "read_only": 1
+  },
+  {
    "depends_on": "eval: [\"Fire Assy Service\", \"XRF Services\"].includes(parent.service_type);",
    "fieldname": "main_slip",
    "fieldtype": "Link",
@@ -167,17 +177,24 @@
    "fieldname": "jewelex_batch_no",
    "fieldtype": "Data",
    "label": "Jewelex Batch No"
+  },
+  {
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "label": "Ref Customer",
+   "options": "Customer"
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-09-08 10:00:00.000000",
- "modified_by": "Administrator",
+ "modified": "2026-10-16 10:00:00.000000",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Product Details",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

@@ -1,11 +1,14 @@
 import json
+from contextlib import contextmanager
 
 import frappe
 from frappe import _
 from frappe.model.mapper import get_mapped_doc
-from frappe.utils import flt, nowdate
+from frappe.utils import flt, nowdate, strip_html_tags
+from frappe.utils.background_jobs import is_job_enqueued
 
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
+	get_submitted_from_reserve_se,
 	make_department_mop_stock_entry,
 	make_department_transfer_stock_entry,
 	make_mop_stock_entry,
@@ -131,6 +134,84 @@ def before_validate(self, method):
 			)
 
 
+# Fields worth guarding once a request has left Draft: what a user could change to alter
+# what's actually being requested. Deliberately NOT a blanket diff against every field --
+# set_reservation_warehouse legitimately back-fills a still-blank row.warehouse on any save
+# (see its docstring), and update_pure_qty recomputes custom_total_quantity / per-row pure
+# qty on every save regardless of workflow state; workflow transitions themselves legitimately
+# set custom_manufacturing_operation / custom_reserve_se / custom_mop_se /
+# custom_department_transfer_se as each one runs. None of that should trip this guard --
+# warehouse is deliberately excluded from the item fields for the same reason.
+GUARDED_MR_HEADER_FIELDS = ("company", "material_request_type")
+GUARDED_MR_ITEM_FIELDS = ("item_code", "qty", "pcs")
+
+
+def guard_non_system_manager_field_edits(self, method=None):
+	"""Server-side backstop for the System-Manager-only edit restriction.
+
+	``Workflow.allow_edit`` (set by the ``lock_material_request_edit_to_system_manager``
+	patch) only disables the desk form's inputs client-side -- it has no effect on a direct
+	API/RPC save, so without this a non-System-Manager user could still change these fields on
+	a non-Draft request by calling the save endpoint directly instead of using the form.
+
+	Keyed on the state *before* this save (``get_doc_before_save``), not the current one: the
+	save that moves a request out of Draft is itself the legitimate transition and must not be
+	blocked by the restriction it is about to put in place.
+
+	``getattr`` throughout, not ``self.get``/``row.get``: mirrors ``_current_material_warehouse``
+	below -- the tests drive this path with lightweight mocks (``SimpleNamespace`` and similar)
+	that carry no ``.get()``, so ``getattr`` is the one accessor that works uniformly for a real
+	Document (in production, including ``get_doc_before_save``'s result) and for a test mock.
+	"""
+	if self.is_new():
+		return
+
+	before = (
+		self.get_doc_before_save() if hasattr(self, "get_doc_before_save") else None
+	)
+	if not before:
+		return
+
+	prior_state = getattr(before, "workflow_state", None)
+	if not prior_state or prior_state == "Draft":
+		return
+
+	if "System Manager" in frappe.get_roles():
+		return
+
+	changed = []
+	for fieldname in GUARDED_MR_HEADER_FIELDS:
+		if getattr(self, fieldname, None) != getattr(before, fieldname, None):
+			changed.append(fieldname)
+
+	before_items = {
+		getattr(row, "name", None): row for row in getattr(before, "items", None) or []
+	}
+	current_names = set()
+	for row in self.items:
+		row_name = getattr(row, "name", None)
+		current_names.add(row_name)
+		prior_row = before_items.get(row_name)
+		if prior_row is None:
+			changed.append(f"Row #{getattr(row, 'idx', '?')}: new item")
+			continue
+		for fieldname in GUARDED_MR_ITEM_FIELDS:
+			if getattr(row, fieldname, None) != getattr(prior_row, fieldname, None):
+				changed.append(f"Row #{getattr(row, 'idx', '?')}: {fieldname}")
+
+	for name in before_items:
+		if name not in current_names:
+			changed.append(f"Row {name}: deleted")
+
+	if changed:
+		frappe.throw(
+			_(
+				"Only System Manager can edit {0} once a Material Request has left Draft."
+			).format(", ".join(changed)),
+			frappe.PermissionError,
+		)
+
+
 def _current_material_warehouse(self):
 	"""Where this request's material physically sits right now.
 
@@ -147,6 +228,129 @@ def _current_material_warehouse(self):
 		return getattr(self, "custom_destination_warehouse", None)
 
 	return self.items[0].warehouse if self.items else None
+
+
+# The states where the operation can still be changed AND the material is still in the
+# warehouse this rule compares against. Both have a Transfer to MOP ahead of them.
+#
+# "Material Transferred to MOP" is deliberately absent. By then make_mop_stock_entry has run
+# and the material has left that warehouse, so re-asserting the rule on every later Update
+# would leave the document unsaveable with no way out -- the same trap
+# _workflow_action_just_applied was written for. custom_manufacturing_operation is read_only
+# in that state anyway, so there would be nothing for the operator to change. The transition
+# *into* the state is still guarded, from the dispatch below.
+MOP_DEPARTMENT_STATES = ("Material Transferred", "Material Transferred to Department")
+
+# Distinguishes "the caller has already read the department" from "the department is
+# genuinely empty", which None alone cannot express. A plain ``mop_department=None`` default
+# would silently re-read on the transition path, which has already paid for that query, and
+# would turn a real blank into a second lookup.
+_UNREAD = object()
+
+
+def _mop_department_check_applies(self):
+	"""Whether this save is one the operation/department rule can be asserted on.
+
+	``getattr`` throughout, mirroring ``_current_material_warehouse`` above: the tests drive
+	this path with ``SimpleNamespace`` documents that carry no ``.get()``.
+	"""
+	# Everything downstream -- the workflow conditions, the Stock Entry makers, the operation
+	# itself -- is Manufacture-only. Also what keeps a Material Transfer request that happens
+	# to carry an operation out of this.
+	if getattr(self, "material_request_type", None) != "Manufacture":
+		return False
+
+	# The department route HIDES custom_manufacturing_operation (depends_on, set by
+	# add_mr_department_transfer_fields) but leaves whatever value the field already held on
+	# the document. Keying the rule on that stale value would block the Transfer to Department
+	# action itself -- and for the wrong reason, since the material has not moved yet, which
+	# is precisely what that action is for. Phrased as "not the department route", matching
+	# every workflow condition here, so a NULL still resolves to Transfer to MOP behaviour.
+	if getattr(self, "custom_operation_type", None) == "Transfer to Department":
+		return False
+
+	if getattr(self, "workflow_state", None) not in MOP_DEPARTMENT_STATES:
+		return False
+
+	# Nothing selected is not this rule's business: the field being mandatory in these states
+	# is mandatory_depends_on's job, and the transition below has its own throw for it.
+	return bool(getattr(self, "custom_manufacturing_operation", None))
+
+
+def validate_mop_department(self, mop_department=_UNREAD):
+	"""The selected operation must sit in the department the material is actually in.
+
+	One implementation, two callers, both in ``before_update_after_submit``: the save-time
+	gate at the top of it, and the "Transfer to MOP" dispatch further down, which passes the
+	department it has already read.
+
+	Which warehouse "actually in" means is ``_current_material_warehouse``'s call -- normally
+	the Request Items' warehouse, the destination warehouse once a Transfer to Department has
+	happened. That second branch is the "check the destination department" half of the rule.
+
+	Deliberately NOT ``custom_department``: that is a write-once stamp of the *source*
+	(bagging) department and is never equal to the operation's, so keying on it would let
+	every wrong-department operation through.
+
+	Two messages, because the remedy differs by route. Classic: the material is still in the
+	Request Items' warehouse and can be moved, so "move it". After a Transfer to Department:
+	the operator has already chosen where the material lives and a Stock Entry has put it
+	there, so "change the operation".
+	"""
+	mop = getattr(self, "custom_manufacturing_operation", None)
+	if not mop:
+		return
+
+	if mop_department is _UNREAD:
+		mop_department = frappe.db.get_value(
+			"Manufacturing Operation", mop, "department"
+		)
+
+	transferred_to_department = bool(
+		getattr(self, "custom_department_transfer_se", None)
+	)
+	current_warehouse = _current_material_warehouse(self)
+
+	if not current_warehouse:
+		frappe.throw(
+			_("Destination Warehouse is missing from this Material Request.")
+			if transferred_to_department
+			else _("Warehouse is missing from Request Items.")
+		)
+
+	row_department = frappe.db.get_value("Warehouse", current_warehouse, "department")
+
+	# None == None stays a match. Both sides blank is a data-setup gap, not an operator
+	# mistake, and there is nothing on this form to fix it with; a one-sided blank still
+	# throws, naming the missing side "(not set)".
+	if mop_department == row_department:
+		return
+
+	if transferred_to_department:
+		frappe.throw(
+			_(
+				"Manufacturing Operation {0} belongs to department {1}, but this "
+				"Material Request's material was transferred to {2} in department "
+				"{3}. Select a Manufacturing Operation in {3}."
+			).format(
+				mop,
+				mop_department or _("(not set)"),
+				current_warehouse,
+				row_department or _("(not set)"),
+			)
+		)
+
+	frappe.throw(
+		_(
+			"Material is in department {0}, but Manufacturing Operation {1} "
+			"belongs to department {2}. Transfer the material to {2} before "
+			"using Transfer to MOP."
+		).format(
+			row_department or _("(not set)"),
+			mop,
+			mop_department or _("(not set)"),
+		)
+	)
 
 
 def _workflow_action_just_applied(self):
@@ -170,6 +374,174 @@ def _workflow_action_just_applied(self):
 	return not before or before.get("workflow_state") != self.workflow_state
 
 
+# Where a Transfer to Department sent the material, and the entry that sent it. End Transit
+# (doc_events.stock_entry._department_transfer_destination) and Transfer to MOP read the
+# destination off the request when they run, so once the entry exists these must not move.
+DEPARTMENT_TRANSFER_FROZEN_FIELDS = (
+	"custom_destination_department",
+	"custom_destination_warehouse",
+	"custom_department_transfer_se",
+)
+
+
+def _department_transfer_frozen_labels():
+	# Built per call, with literal strings, so each is translated in the user's language
+	# and picked up by the translation extractor.
+	return {
+		"custom_destination_department": _("Destination Department"),
+		"custom_destination_warehouse": _("Destination Warehouse"),
+		"custom_department_transfer_se": _("Department Transfer SE"),
+	}
+
+
+def validate_department_transfer_frozen(self):
+	"""Refuse to change a request's destination once its Transfer to Department exists.
+
+	All three fields are allow_on_submit. The form locks the destination through
+	``read_only_depends_on``, but that is client-side only: an Update from the API or a
+	``set_value`` would still reach the database, and End Transit would then land stock
+	that is already in transit somewhere else. The entry's own link is frozen too, or
+	clearing it in one save would unlock the destination for the next.
+
+	Keyed on the previous version, like ``_workflow_action_just_applied``: the save that
+	creates the entry starts without it (the maker stamps it with ``db_set``), so choosing
+	the destination and running the transfer is unaffected.
+	"""
+	before = (
+		self.get_doc_before_save() if hasattr(self, "get_doc_before_save") else None
+	)
+	transfer_se = before.get("custom_department_transfer_se") if before else None
+	if not transfer_se:
+		return
+
+	changed = [
+		fieldname
+		for fieldname in DEPARTMENT_TRANSFER_FROZEN_FIELDS
+		if (getattr(self, fieldname, None) or None) != (before.get(fieldname) or None)
+	]
+	if changed:
+		labels = _department_transfer_frozen_labels()
+		frappe.throw(
+			_(
+				"{0} cannot be changed: Stock Entry {1} has already sent this request's "
+				"material to {2}."
+			).format(
+				", ".join(labels[fieldname] for fieldname in changed),
+				frappe.bold(transfer_se),
+				frappe.bold(before.get("custom_destination_warehouse")),
+			),
+			title=_("Department Transfer Already Made"),
+		)
+
+
+def _entry_belongs_to(stock_entry, mr_name):
+	"""Whether ``stock_entry`` is a submitted Stock Entry booked against ``mr_name``.
+
+	Read from the entry's own rows, never from the Material Request's ``custom_*_se`` link
+	alone: ``copy_doc`` (split work orders) and desk Duplicate carry those links over
+	verbatim, so a link can point at another request's entry. On the prod copy of
+	2026-10-01, 25 split requests showed "Done" against their original's transfer.
+	"""
+	if not stock_entry or not mr_name:
+		return False
+
+	return bool(
+		frappe.db.sql(
+			"""
+			SELECT 1 FROM `tabStock Entry` se
+			JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+			WHERE se.name = %s AND se.docstatus = 1 AND sed.material_request = %s
+			LIMIT 1
+			""",
+			(stock_entry, mr_name),
+		)
+	)
+
+
+# The states an action moves INTO that ship the material on out of set_warehouse -- the
+# warehouse only the deferred "Material Transfer From Reserve" entry fills.
+TRANSFER_SE_DEPENDENT_STATES = (
+	"Material Transferred to Department",
+	"Material Transferred to MOP",
+)
+
+
+def validate_transfer_se_created(self):
+	"""Refuse to move material the deferred transfer never delivered.
+
+	"Transfer Material" submits the request and only *queues* the "Material Transfer From
+	Reserve" Stock Entry (``on_submit`` -> ``materialize_transfer_se``). Until that job has
+	created it the material is still in the department's Reserve warehouse, so a Transfer to
+	Department sourced from set_warehouse dies on negative stock, and a Transfer to MOP takes
+	the stock straight out of Reserve. The job does fail -- 1205 on the shared MAT-STE-
+	naming row, 17 requests on the prod copy of 2026-10-01 -- and nothing else looked at the
+	state. Both routes are held here, at the transition; ``validate_from_reserve_done`` in
+	the department maker stays as its own precondition.
+
+	``getattr`` throughout, mirroring ``_current_material_warehouse``: the tests drive this
+	path with ``SimpleNamespace`` documents.
+	"""
+	if not getattr(self, "custom_reserve_se", None):
+		# on_submit queues nothing without a reserve entry, so there is no transfer to wait for.
+		return
+
+	name = getattr(self, "name", None)
+
+	# After a Transfer to Department the next step reads custom_destination_warehouse, which
+	# the deferred transfer never fed -- and that transition was itself held to this check.
+	# Only this request's own entry counts: a split request carries its original's link.
+	if _entry_belongs_to(getattr(self, "custom_department_transfer_se", None), name):
+		return
+
+	transfer_se = getattr(self, "custom_transfer_se", None)
+	if transfer_se and get_submitted_from_reserve_se(name, transfer_se):
+		return
+
+	title = _("Material Transfer From Reserve Missing")
+
+	if transfer_se:
+		owner = frappe.db.get_value(
+			"Stock Entry Detail", {"parent": transfer_se}, "material_request"
+		)
+		if owner and owner != name:
+			frappe.throw(
+				_(
+					"Transfer Stock Entry {0} belongs to Material Request {1}, not this one -- "
+					"it was copied here with the request. This request's own material was never "
+					"transferred from the Reserve warehouse, so it cannot be moved on."
+				).format(transfer_se, owner),
+				title=title,
+			)
+
+		frappe.throw(
+			_(
+				"Transfer Stock Entry {0} is not submitted, so this request's material is still "
+				"in the Reserve warehouse."
+			).format(transfer_se),
+			title=title,
+		)
+
+	if getattr(self, "custom_transfer_se_state", None) == "Failed":
+		error = strip_html_tags(getattr(self, "custom_transfer_se_error", None) or "")
+		frappe.throw(
+			_(
+				"The Material Transfer From Reserve Stock Entry for this Material Request failed, "
+				"so the material is still in the Reserve warehouse. Fix the cause and use "
+				"<b>Retry Transfer From Reserve</b>.<br><br>Error: {0}"
+			).format(error or _("(not recorded)")),
+			title=title,
+		)
+
+	frappe.throw(
+		_(
+			"The Material Transfer From Reserve Stock Entry for this Material Request has not "
+			"been created yet. Reload in a minute; if it is still missing, use "
+			"<b>Retry Transfer From Reserve</b>."
+		),
+		title=title,
+	)
+
+
 def before_update_after_submit(self, method):
 	"""Dispatch the workflow's final step, whichever route ``custom_operation_type`` chose.
 
@@ -177,9 +549,36 @@ def before_update_after_submit(self, method):
 	but they are not exclusive over the document's life: "Material Transferred to Department"
 	also offers Transfer to MOP, so a request can pass through both branches in turn.
 
-	Everything here belongs to the workflow action, so nothing runs on a plain Update.
+	Everything below the sync call belongs to the workflow action, so it doesn't run on a
+	plain Update. The sync itself deliberately runs on every save, workflow action or not: once
+	the request is submitted, ``before_validate`` never fires again (Frappe only runs it for the
+	"save"/"submit" actions, not "update_after_submit"), so this is the only hook left that can
+	keep custom_manufacturing_operation tracking the MWO's current operation as the job moves
+	departments -- including a plain Update where the user is just looking at the form before
+	deciding to click "Transfer to MOP".
 	"""
-	if not _workflow_action_just_applied(self):
+	# Every update-after-submit save, workflow action or not: the lock has to hold against
+	# a plain Update and the API as much as the form.
+	validate_department_transfer_frozen(self)
+
+	action_applied = _workflow_action_just_applied(self)
+
+	# Ahead of the department gate: while the transfer is missing the material is still in
+	# the Reserve warehouse, and a department mismatch computed against a warehouse it never
+	# reached is the wrong thing to tell the operator. Transitions only -- a plain Update has
+	# to stay possible, it is how the destination and operation get filled in.
+	if action_applied and self.workflow_state in TRANSFER_SE_DEPENDENT_STATES:
+		validate_transfer_se_created(self)
+
+	# This hook rather than before_validate, which is where an "on save" check would
+	# normally go. frappe runs before_validate only for _action "save"/"submit", never
+	# "update_after_submit" (model/document.py run_before_save_methods) -- and every
+	# request carrying an operation is already submitted, so a check there would fire on
+	# none of them.
+	if _mop_department_check_applies(self):
+		validate_mop_department(self)
+
+	if not action_applied:
 		return
 
 	if self.workflow_state == "Material Transferred to Department":
@@ -195,7 +594,7 @@ def before_update_after_submit(self, method):
 	mop_fields = frappe.db.get_value(
 		"Manufacturing Operation",
 		self.custom_manufacturing_operation,
-		["status", "department", "previous_mop"],
+		["status", "department"],
 		as_dict=True,
 	)
 
@@ -209,72 +608,15 @@ def before_update_after_submit(self, method):
 	if mop_fields.status == "Finished":
 		frappe.throw(_("Cannot select an operation that is already Finished."))
 
-	# Gate BOTH branches on the department the material actually sits in matching the
-	# operation's -- see ``_current_material_warehouse`` for which warehouse that is.
-	# Deliberately NOT ``custom_department``: that is a write-once stamp of the *source*
-	# (bagging) department and is never equal to the operation's department, so keying the
-	# guard on it -- or leaving it, as before, only on the no-``custom_department`` branch --
-	# lets every wrong-department operation through.
+	# Same rule and same function as the save-time gate at the top of this hook. The
+	# department is passed in rather than re-read: it came back with ``status`` above.
 	#
-	# The same rule, but the exemption and the remedy differ by route:
-	#
-	# * Classic path -- the material is still in the Request Items' warehouse and can be
-	#   moved, so a mismatch means "move the material first". Enforced only once the
-	#   operation has been walked into a department by a Department IR: the MWO's first
-	#   operation is minted in Manufacturing Setting's ``default_department``
-	#   (manufacturing_work_order.create_manufacturing_operation) and acts as a gathering
-	#   point for material staged across several departments, so it can never match and must
-	#   not be blocked. department_ir.create_operation_for_next_dept_new stamps
-	#   ``previous_mop`` on every Department-IR-created operation, so its absence marks a
-	#   never-moved one.
-	#
-	# * Department route -- the operator has already chosen where this material lives and a
-	#   Stock Entry has put it there. NOTHING is exempt, gathering point included, and the
-	#   remedy is the other way round: pick an operation in that department.
-	transferred_to_department = bool(
-		getattr(self, "custom_department_transfer_se", None)
-	)
-
-	if transferred_to_department or mop_fields.previous_mop:
-		current_warehouse = _current_material_warehouse(self)
-
-		if not current_warehouse:
-			frappe.throw(
-				_("Destination Warehouse is missing from this Material Request.")
-				if transferred_to_department
-				else _("Warehouse is missing from Request Items.")
-			)
-
-		row_department = frappe.db.get_value(
-			"Warehouse", current_warehouse, "department"
-		)
-
-		if mop_fields.department != row_department:
-			if transferred_to_department:
-				frappe.throw(
-					_(
-						"Manufacturing Operation {0} belongs to department {1}, but this "
-						"Material Request's material was transferred to {2} in department "
-						"{3}. Select a Manufacturing Operation in {3}."
-					).format(
-						self.custom_manufacturing_operation,
-						mop_fields.department or _("(not set)"),
-						current_warehouse,
-						row_department or _("(not set)"),
-					)
-				)
-
-			frappe.throw(
-				_(
-					"Material is in department {0}, but Manufacturing Operation {1} "
-					"belongs to department {2}. Transfer the material to {2} before "
-					"using Transfer to MOP."
-				).format(
-					row_department or _("(not set)"),
-					self.custom_manufacturing_operation,
-					mop_fields.department or _("(not set)"),
-				)
-			)
+	# There is no exemption. The MWO's first operation is minted in Manufacturing Setting's
+	# ``default_department`` (manufacturing_work_order.create_manufacturing_operation) and
+	# used to be let through unchecked as a "gathering point" for material staged across
+	# several departments, keyed on its missing ``previous_mop``. That is the hole
+	# wrong-department operations went through, so it is gone.
+	validate_mop_department(self, mop_fields.department)
 
 	if self.custom_department:
 		make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
@@ -384,14 +726,113 @@ def on_submit(self, method=None):
 		return
 
 	self.db_set("custom_transfer_se_state", "Pending", update_modified=False)
+	_enqueue_transfer_se(self.name)
+
+
+def _transfer_se_job_id(mr_name):
+	return f"mr_transfer_se::{mr_name}"
+
+
+def _enqueue_transfer_se(mr_name):
 	frappe.enqueue(
 		materialize_transfer_se,
 		queue="long",
 		enqueue_after_commit=True,
-		job_id=f"mr_transfer_se::{self.name}",
+		job_id=_transfer_se_job_id(mr_name),
 		deduplicate=True,
-		mr_name=self.name,
+		mr_name=mr_name,
 	)
+
+
+@frappe.whitelist()
+def retry_transfer_se(mr_name):
+	"""Re-queue the deferred "Material Transfer From Reserve" Stock Entry for one request.
+
+	The way out of ``validate_transfer_se_created`` for a request whose job failed or never
+	finished. Only in "Material Transferred": past that state the next step has already been
+	booked from somewhere else, and a late transfer would put a second copy of the material
+	into set_warehouse -- those requests are what ``patches/repair_missing_mr_transfer_se``
+	is for.
+	"""
+	mr = frappe.get_doc("Material Request", mr_name)
+	mr.check_permission("write")
+
+	if mr.docstatus != 1 or not mr.custom_reserve_se:
+		frappe.throw(
+			_(
+				"Only a submitted Material Request with a Reserve Stock Entry has a transfer "
+				"to retry."
+			)
+		)
+
+	if mr.custom_transfer_se:
+		frappe.throw(
+			_(
+				"Transfer Stock Entry {0} is already linked to this Material Request."
+			).format(mr.custom_transfer_se)
+		)
+
+	if mr.workflow_state != "Material Transferred":
+		frappe.throw(
+			_(
+				"The transfer can only be retried in the Material Transferred state. This "
+				"request is in {0}."
+			).format(mr.workflow_state)
+		)
+
+	# Checked here rather than left to the job, so the operator is told now instead of
+	# finding the request back in Failed.
+	if not _entry_belongs_to(mr.custom_reserve_se, mr.name):
+		frappe.throw(_reserve_se_not_owned_message(mr.custom_reserve_se, mr.name))
+
+	if is_job_enqueued(_transfer_se_job_id(mr.name)):
+		frappe.throw(
+			_("The transfer is already queued or running. Reload in a minute.")
+		)
+
+	mr.db_set(
+		{"custom_transfer_se_state": "Pending", "custom_transfer_se_error": None},
+		update_modified=False,
+	)
+	_enqueue_transfer_se(mr.name)
+
+
+def _reserve_se_not_owned_message(reserve_se, mr_name):
+	return _(
+		"Reserve Stock Entry {0} is not a submitted entry of Material Request {1} -- it was "
+		"copied from another request. Transferring it would move that request's material "
+		"again."
+	).format(reserve_se, mr_name)
+
+
+# The deferred transfer's one contended lock is the shared MAT-STE- naming row, which every
+# Stock Entry submit pins until COMMIT (doc_events.stock_entry.prelock_bins). One slow submit
+# holds it for minutes -- 3+ min on 2026-09-21 and 2026-09-29, when InnoDB's default 50 s x 3
+# attempts failed 8 requests each time. A background job can afford to keep its place in that
+# queue; giving up is what strands the material in Reserve. 3 x 300 s stays inside the long
+# queue's 1500 s job timeout.
+TRANSFER_SE_LOCK_WAIT_SECONDS = 300
+
+
+@contextmanager
+def _innodb_lock_wait(seconds):
+	"""Raise this connection's ``innodb_lock_wait_timeout`` for the block, then put it back.
+
+	``SET SESSION`` survives a rollback and a worker's connection can outlive the job (see
+	``db_isolation``), so the previous value is restored explicitly -- best-effort, so a
+	broken connection never masks the error that broke it.
+	"""
+	previous = frappe.db.sql("SELECT @@SESSION.innodb_lock_wait_timeout")[0][0]
+	frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", (seconds,))
+	try:
+		yield
+	finally:
+		try:
+			frappe.db.sql("SET SESSION innodb_lock_wait_timeout = %s", (previous,))
+		except Exception:
+			frappe.logger("jewellery_erpnext").debug(
+				"restoring innodb_lock_wait_timeout failed", exc_info=True
+			)
 
 
 def materialize_transfer_se(mr_name):
@@ -399,9 +840,11 @@ def materialize_transfer_se(mr_name):
 
 	Deferred from ``MR.on_submit`` so the submit transaction stays short. Safe to
 	re-run: guards on ``custom_transfer_se`` and on an already-existing transfer SE,
-	serialises per-MR, and retries only transient 1205/1213. A genuine failure is
-	recorded on the MR (state=Failed + error) and logged to Error Log for manual
-	re-trigger. If this runs during the EOD sync window, the Stock Entry's EOD-lock
+	serialises per-MR, and retries only transient 1205/1213 -- each attempt waiting up to
+	TRANSFER_SE_LOCK_WAIT_SECONDS for a lock instead of InnoDB's 50 s default. A genuine
+	failure is recorded on the MR (state=Failed + error) and logged to Error Log; the
+	request is then held by ``validate_transfer_se_created`` until ``retry_transfer_se``
+	re-queues it. If this runs during the EOD sync window, the Stock Entry's EOD-lock
 	validator blocks the submit and it is recorded as Failed (re-submit after EOD).
 	"""
 	from jewellery_erpnext.jewellery_erpnext.bounded_retry import run_with_retry
@@ -411,7 +854,10 @@ def materialize_transfer_se(mr_name):
 	)
 
 	try:
-		with conflict_lock("mr_transfer_se", mr_name, timeout=30):
+		with (
+			conflict_lock("mr_transfer_se", mr_name, timeout=30),
+			_innodb_lock_wait(TRANSFER_SE_LOCK_WAIT_SECONDS),
+		):
 			run_with_retry(_create_transfer_se, mr_name)
 	except LockTimeoutError:
 		# deduplicate normally prevents a second concurrent job; if one slips through,
@@ -442,25 +888,29 @@ def _create_transfer_se(mr_name):
 		return
 
 	# Belt-and-suspenders idempotency: a submitted transfer SE already linked to this MR.
-	existing = frappe.db.sql(
-		"""
-		SELECT se.name FROM `tabStock Entry` se
-		JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-		WHERE se.stock_entry_type = 'Material Transfer From Reserve'
-		  AND se.docstatus = 1 AND sed.material_request = %s
-		LIMIT 1
-		""",
-		(mr_name,),
-	)
+	existing = get_submitted_from_reserve_se(mr_name)
 	if existing:
-		mr.db_set("custom_transfer_se", existing[0][0], update_modified=False)
+		mr.db_set("custom_transfer_se", existing, update_modified=False)
 		mr.db_set("custom_transfer_se_state", "Done", update_modified=False)
 		return
+
+	# A copied request (split work order, desk Duplicate) can carry another request's reserve
+	# entry, and copying that would move the other request's material a second time --
+	# KGJPL-MR-MT-26-03295 tried exactly that. Recorded as Failed like any other error, which
+	# validate_transfer_se_created then holds the request on.
+	if not _entry_belongs_to(mr.custom_reserve_se, mr_name):
+		frappe.throw(_reserve_se_not_owned_message(mr.custom_reserve_se, mr_name))
 
 	se_doc = frappe.get_doc("Stock Entry", mr.custom_reserve_se)
 	new_se_doc = frappe.copy_doc(se_doc)
 
 	new_se_doc.stock_entry_type = "Material Transfer From Reserve"
+	# copy_doc keeps no_copy fields, so a reserve SE saved with add_to_transit = 1 (every
+	# one created before create_stock_entry started clearing it) would carry it here, and a
+	# 1 is never fetched away. ERPNext rejects Add to Transit into the Reserve/RM targets
+	# below. Clearing it lets the type's 0 come back; the flag holds it regardless of type.
+	new_se_doc.add_to_transit = 0
+	new_se_doc.flags.no_transit = True
 
 	mr_item_to_alternative = {}
 	for item_row in mr.items:
@@ -579,16 +1029,33 @@ def make_stock_entry(source_name, target_doc=None):
 
 		target.set_job_card_data()
 
-		# Map item batches using O(N) lookup instead of O(N^2)
+		# Keyed on the source row's name, not (item_code, idx). The child map's
+		# ``condition`` below drops source rows whose ordered_qty has caught up with
+		# stock_qty, which renumbers target idx -- so an (item_code, idx) key stops
+		# lining up as soon as one row is filtered. That used to be mostly harmless
+		# (the key missed and .get returned None), but an FG serial transfer now
+		# carries one row per serial and every one of them shares an item_code, so a
+		# stale key would start *hitting the wrong row* and cross-assign serials.
+		# ``material_request_item`` is the source row name, mapped by field_map below.
 		batch_map = {
-			(i.item_code, i.idx): {"batch": i.batch_no, "serial": i.serial_no}
-			for i in source.items
+			i.name: {"batch": i.batch_no, "serial": i.serial_no} for i in source.items
 		}
 		for itm in target.items:
-			mapped_data = batch_map.get((itm.item_code, itm.idx))
+			mapped_data = batch_map.get(itm.material_request_item)
 			if mapped_data:
 				itm.batch_no = mapped_data["batch"]
 				itm.serial_no = mapped_data["serial"]
+
+				# Stock Entry Detail hides serial_no/batch_no behind
+				# ``depends_on: use_serial_batch_fields === 1`` and the flag defaults
+				# to 0. Material Request Item has no such field for the mapper to
+				# copy, so without this the serial is present in the data but its
+				# column is invisible on the draft -- which defeats the point of
+				# transferring per-serial rows. ERPNext forces the same flag at
+				# submit (stock_controller.set_use_serial_batch_fields), so this only
+				# brings the draft in line with what submit will do anyway.
+				if mapped_data["serial"] or mapped_data["batch"]:
+					itm.use_serial_batch_fields = 1
 
 		if source.job_card:
 			job_card_details = frappe.get_value(
@@ -750,7 +1217,14 @@ def create_stock_entry(self, method):
 
 	se_doc.stock_entry_type = stock_entry_type
 	se_doc.purpose = "Material Transfer"
-	se_doc.add_to_transit = True
+	# Every row lands in the department's Reserve warehouse, never a Transit one, and
+	# ERPNext rejects add_to_transit on a non-Transit target. Nothing reads this entry as
+	# an outgoing transit leg either: the follow-up transfers copy it and re-route rows.
+	# The 0 alone does not survive a Transfer Type whose Stock Entry Type carries
+	# add_to_transit (the fetch treats 0 as empty); the flag holds it through
+	# normalize_add_to_transit.
+	se_doc.add_to_transit = 0
+	se_doc.flags.no_transit = True
 
 	# Rows nearly always share a handful of source warehouses, so each distinct one is
 	# resolved once rather than costing two queries on every row. The two lookups are
@@ -843,6 +1317,15 @@ def create_stock_entry(self, method):
 				"sub_setting_type": row.custom_sub_setting_type,
 				"use_serial_batch_fields": True,
 				"custom_parent_manufacturing_order": self.manufacturing_order,
+				# Carried explicitly, not left to the ``fetch_from: item_code.variant_of``
+				# on Stock Entry Detail. That fetch runs in ``validate``, but this entry's
+				# batches are allocated one step earlier in ``before_validate``
+				# (``update_batches`` -> ``get_fifo_batches``), which needs the letter to
+				# decide whether the row draws the CUSTOMER's stones. Without it every
+				# customer-diamond / customer-gemstone reserve silently took company stock.
+				# ``get_fifo_batches`` also falls back to the Item master, so this is the
+				# belt to that braces -- it additionally makes the stored row self-describing.
+				"custom_variant_of": row.custom_variant_of,
 			},
 		)
 
@@ -926,4 +1409,83 @@ def get_item_details(args, for_update=False):
 			"sample_quantity": item.sample_quantity,
 			"expense_account": item.expense_account,
 		}
+	)
+
+
+#: May submit a customer-diamond order's Material Request for a grade other than the one ordered.
+#: Created by ``patches.add_mr_diamond_substitution_fields``.
+DIAMOND_SUBSTITUTION_APPROVER_ROLE = "Diamond Substitution Approver"
+
+
+def validate_customer_diamond_grade(doc, method=None):
+	"""``before_submit``: a customer-diamond order gets the grade it ordered, or an approved substitute (F11).
+
+	KLHGX62F1119's PMO is a customer-diamond order for grade MH12A. Its diamond Material Request
+	was edited to the company's 6B before submit -- the customer was charged for a company stone
+	at a mark-up -- and nothing recorded who allowed it. On kg-gk 3 submitted Material Requests on
+	customer-diamond orders carry a grade other than the order's.
+
+	A diamond row whose Diamond Grade differs from ``Parent Manufacturing Order.diamond_grade``
+	is refused unless a Diamond Substitution Approver records a reason, and the approver is
+	stamped on the request. Ownership of the stone that is then issued is a separate question,
+	answered by its batch (F5).
+	"""
+	pmo = doc.get("manufacturing_order")
+	if not pmo:
+		return
+
+	order = frappe.db.get_value(
+		"Parent Manufacturing Order",
+		pmo,
+		["is_customer_diamond", "diamond_grade"],
+		as_dict=True,
+	)
+	doc.custom_diamond_substitution_by = None
+	if not order or not order.is_customer_diamond or not order.diamond_grade:
+		return
+
+	item_codes = {row.item_code for row in doc.get("items") or [] if row.item_code}
+	grades = (
+		{
+			attr.parent: attr.attribute_value
+			for attr in frappe.get_all(
+				"Item Variant Attribute",
+				filters={
+					"parent": ["in", list(item_codes)],
+					"attribute": "Diamond Grade",
+				},
+				fields=["parent", "attribute_value"],
+			)
+		}
+		if item_codes
+		else {}
+	)
+
+	substituted = [
+		(row.idx, row.item_code, grades[row.item_code])
+		for row in doc.get("items") or []
+		if grades.get(row.item_code) and grades[row.item_code] != order.diamond_grade
+	]
+	if not substituted:
+		return
+
+	reason = (doc.get("custom_diamond_substitution_reason") or "").strip()
+	if reason and DIAMOND_SUBSTITUTION_APPROVER_ROLE in frappe.get_roles():
+		doc.custom_diamond_substitution_by = frappe.session.user
+		return
+
+	frappe.throw(
+		_(
+			"{0} is a customer-diamond order for grade {1}, but this request asks for {2}. A {3} "
+			"may submit it after entering a Diamond Substitution Reason."
+		).format(
+			frappe.bold(pmo),
+			frappe.bold(order.diamond_grade),
+			", ".join(
+				_("row {0}: {1} ({2})").format(idx, item, grade)
+				for idx, item, grade in substituted
+			),
+			frappe.bold(DIAMOND_SUBSTITUTION_APPROVER_ROLE),
+		),
+		title=_("Customer Diamond Substituted"),
 	)

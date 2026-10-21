@@ -54,20 +54,53 @@ frappe.ui.form.on("Manufacturing Work Order", {
 			});
 		}
 		// Single unpack button, Repair work orders only: unpacks the repaired serial
-		// into the linked Repair Order's BOM raw materials as Customer Goods. PMO type
-		// is not on the form, so resolve it before adding the button.
-		if (frm.doc.docstatus == 1 && frm.doc.serial_no) {
-			frappe.db
-				.get_value("Parent Manufacturing Order", frm.doc.manufacturing_order, "type")
-				.then((r) => {
-					if (r.message && r.message.type === "Repair") {
-						frm.add_custom_button(__("Unpack Raw Material"), function () {
+		// into the linked Repair Order's BOM raw materials as Customer Goods.
+		//
+		// Eligibility is decided server-side (get_unpack_eligibility) because none of what
+		// it depends on -- the PMO's type, whether an unpack Stock Entry already exists --
+		// lives on this form. The server re-validates all of it before posting anything,
+		// so this call only decides what is shown, never what is allowed.
+		if (frm.doc.docstatus == 1) {
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_unpack_eligibility",
+				args: { mwo: frm.doc.name },
+				callback: (r) => {
+					if (!r.message) return;
+					if (r.message.eligible) {
+						frm.add_custom_button(__("Unpack Serial No"), function () {
 							frm.trigger("unpack_raw_material");
 						});
+					} else if (r.message.already_unpacked) {
+						// Button stays hidden, but the entry that consumed the serial is one click away.
+						frm.add_custom_button(__("Repair Unpack Entry"), function () {
+							frappe.set_route("Form", "Stock Entry", r.message.stock_entry);
+						});
 					}
-				});
+				},
+			});
 		}
-		if (frm.doc.docstatus == 1 && frm.doc.is_finding_mwo == 1) {
+		if (frm.doc.docstatus == 1 && frm.doc.is_without_so == 1) {
+			// Finding Manufacturing - Without SO: one button sends what is left on the current
+			// operation to the department Raw Material warehouse. Finish PMO / Transfer Finding
+			// belong to findings made for a parent piece, which these orders do not have.
+			frm.add_custom_button(__("Finish Operation"), function () {
+				frappe.confirm(
+					__(
+						"Transfer the remaining material to the department Raw Material warehouse and finish the current operation?"
+					),
+					() =>
+						frappe.call({
+							method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.without_so_finish.finish_without_so_operation",
+							args: { mwo: frm.doc.name },
+							freeze: true,
+							freeze_message: __("Finishing operation..."),
+							callback: (r) => {
+								if (!r.exc) frm.reload_doc();
+							},
+						})
+				);
+			});
+		} else if (frm.doc.docstatus == 1 && frm.doc.is_finding_mwo == 1) {
 			if (!frm.doc.final_transfer_entry) {
 				frm.add_custom_button(__("Finish PMO"), function () {
 					frm.trigger("transfer_to_raw");
@@ -99,59 +132,34 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		// 	});
 		// }
 
-		// Show "Upload Missing Images" on Draft FG MWOs: either the mandatory
-		// Front/Left pair is missing (blocking) or optional slots are still open.
-		if (frm.doc.docstatus == 0 && frm.doc.item_code && !frm.doc.__islocal && frm.doc.for_fg) {
-			frappe.call({
-				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
-				args: {
-					item_code: frm.doc.item_code,
-					master_bom: frm.doc.master_bom || "",
-				},
-				callback: function (r) {
-					if (!r.message || !r.message.check_required) return;
-					const blocking = Object.keys(r.message.missing || {}).length;
-					const optional = (r.message.optional_item || []).length;
-					if (blocking || optional) {
-						frm.add_custom_button(
-							__("Upload Missing Images"),
-							function () {
-								open_upload_images_dialog(frm);
-							},
-							__("Actions")
-						);
-					}
-				},
-			});
-		}
+		// Photoshop images live on THIS work order (never on the Item or the BOM).
+		// Hide the section outright when the Design Code Item is not flagged, and
+		// offer "Upload Missing Images" while either slot is still empty.
+		toggle_photoshop_section(frm);
 
 		set_html(frm);
 	},
 	before_submit: function (frm) {
-		// Client-side intercept: on FG work orders whose Item is flagged
-		// 'Is Photoshop Images', the Finish Front View AND Left View images are
-		// mandatory on the Item (and mirrored onto the Master BOM). Catch it here
-		// so the user gets the upload dialog instead of a bare server throw.
+		// Client-side intercept: on FG work orders whose Design Code Item is
+		// flagged 'Is Photoshop Images', the Finish Front View AND Left View
+		// images are mandatory ON THIS WORK ORDER. Catch it here so the user gets
+		// the upload dialog instead of a bare server throw.
 		if (!frm.doc.item_code || !frm.doc.for_fg) return;
 
 		frappe.call({
 			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
 			args: {
-				item_code: frm.doc.item_code,
-				master_bom: frm.doc.master_bom || "",
+				manufacturing_work_order: frm.doc.name,
 			},
 			async: false,
 			callback: function (r) {
 				if (!r.message || !r.message.check_required) return;
 
-				const missing = r.message.missing || {};
-				if (!Object.keys(missing).length) return;
+				const missing = r.message.missing || [];
+				if (!missing.length) return;
 
-				const item_fields_map = r.message.item_image_fields || {};
-				const bom_fields_map = r.message.bom_image_fields || {};
-				const labels = (missing.item || [])
-					.map((f) => __(item_fields_map[f] || f))
-					.concat((missing.bom || []).map((f) => __(bom_fields_map[f] || f)));
+				const image_fields = r.message.image_fields || {};
+				const labels = missing.map((f) => __(image_fields[f] || f));
 
 				frappe.validated = false;
 				frappe.msgprint({
@@ -159,9 +167,10 @@ frappe.ui.form.on("Manufacturing Work Order", {
 					indicator: "orange",
 					message: __(
 						"MWO cannot be submitted. Finish <b>Front View</b> and <b>Left View</b> " +
-							"images are mandatory on the Finished Item and its Master BOM.<br>" +
+							"images are mandatory on this work order.<br>" +
 							"Missing: <b>{0}</b><br>" +
-							"Click <b>Upload Missing Images</b> to upload them now.",
+							"Attach them in the <b>Photoshop Images</b> section, or click " +
+							"<b>Upload Missing Images</b> to upload them now.",
 						[labels.join(", ")]
 					),
 				});
@@ -235,13 +244,79 @@ frappe.ui.form.on("Manufacturing Work Order", {
 			freeze_message: __("Unpacking...."),
 			callback: (r) => {
 				if (!r.exc) {
-					frappe.msgprint(__("Serial No unpacked into raw materials."));
+					frappe.msgprint(__("Serial No unpacked into raw materials via {0}.", [r.message]));
+					// Refresh re-runs the eligibility call, which now reports
+					// already_unpacked and swaps the button for a link to the entry.
 					frm.refresh();
 				}
 			},
 		});
 	},
 	split_work_order: function (frm) {
+		// Stock the work order's Material Requests already moved has to be reversed first:
+		// list it and offer to cancel it, rather than let the split fail with that list.
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_split_blocking_stock_entries",
+			args: { docname: frm.doc.name },
+			freeze: true,
+			callback: function (r) {
+				const blockers = r.message || {};
+				if ((blockers.entries || []).length) {
+					frm.events.confirm_split_cancel(frm, blockers);
+				} else {
+					frm.events.show_split_dialog(frm);
+				}
+			},
+		});
+	},
+	confirm_split_cancel: function (frm, blockers) {
+		const entries = blockers.entries
+			.map(
+				(se) =>
+					`<li>${frappe.utils.get_form_link(
+						"Stock Entry",
+						se.name,
+						true
+					)} — ${frappe.utils.escape_html(
+						se.stock_entry_type || ""
+					)}, ${frappe.datetime.str_to_user(se.posting_date)}</li>`
+			)
+			.join("");
+		const requests = blockers.material_requests
+			.map((mr) => frappe.utils.get_form_link("Material Request", mr, true))
+			.join(", ");
+		let html = `<p>${__(
+			"Material Request {0} has already moved stock. To split {1}, these Stock Entries will be cancelled, latest first:",
+			[requests, `<b>${frappe.utils.escape_html(frm.doc.name)}</b>`]
+		)}</p><ol>${entries}</ol>`;
+		if ((blockers.stopped || []).length) {
+			html += `<p>${__("Material Request {0} is Stopped and will be re-opened.", [
+				blockers.stopped.join(", "),
+			])}</p>`;
+		}
+		const dialog = new frappe.ui.Dialog({
+			title: __("Cancel Stock Entries to Split"),
+			fields: [{ fieldtype: "HTML", fieldname: "entries_html", options: html }],
+			primary_action_label: __("Cancel Stock Entries"),
+			primary_action: function () {
+				dialog.disable_primary_action();
+				frappe.call({
+					method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.cancel_split_blocking_stock_entries",
+					args: { docname: frm.doc.name },
+					freeze: true,
+					callback: function () {
+						dialog.hide();
+						frm.reload_doc();
+					},
+					always: function () {
+						dialog.enable_primary_action();
+					},
+				});
+			},
+		});
+		dialog.show();
+	},
+	show_split_dialog: function (frm) {
 		const dialog = new frappe.ui.Dialog({
 			title: __("Update"),
 			fields: [
@@ -303,81 +378,74 @@ frappe.ui.form.on("Manufacturing Work Order", {
 
 // -------- Upload Missing Images Dialog --------
 
+const PHOTOSHOP_IMAGE_SECTION = ["photoshop_images_section", "finish_front_view", "finish_left_view"];
+
+// Show the Photoshop Images section (and the upload shortcut) only for FG work
+// orders whose Design Code Item is flagged. The section is visible by default in
+// the doctype, so a failed call leaves the fields reachable rather than stranded.
+function toggle_photoshop_section(frm) {
+	if (frm.doc.__islocal || !frm.doc.item_code || !frm.doc.for_fg) return;
+
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
+		args: {
+			manufacturing_work_order: frm.doc.name,
+		},
+		callback: function (r) {
+			if (!r.message) return;
+
+			const required = !!r.message.check_required;
+			frm.toggle_display(PHOTOSHOP_IMAGE_SECTION, required);
+			if (!required) return;
+
+			if (frm.doc.docstatus == 0 && (r.message.missing || []).length) {
+				frm.add_custom_button(
+					__("Upload Missing Images"),
+					function () {
+						open_upload_images_dialog(frm);
+					},
+					__("Actions")
+				);
+			}
+		},
+	});
+}
+
 function open_upload_images_dialog(frm) {
 	frappe.call({
 		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
 		args: {
-			item_code: frm.doc.item_code,
-			master_bom: frm.doc.master_bom || "",
+			manufacturing_work_order: frm.doc.name,
 		},
 		callback: function (r) {
 			if (!r.message || !r.message.check_required) {
-				frappe.msgprint(__("Photoshop images are not required for this Item."));
+				frappe.msgprint(__("Photoshop images are not required for this work order."));
 				return;
 			}
 
-			const missing = r.message.missing || {};
-			const item_fields_map = r.message.item_image_fields || {};
-			const bom_fields_map = r.message.bom_image_fields || {};
-			const required_item = missing.item || [];
-			const optional_item = r.message.optional_item || [];
+			const image_fields = r.message.image_fields || {};
+			const missing = r.message.missing || [];
 
-			// Only Finished Item slots are offered — the Item is the master and its
-			// images are mirrored onto the Master BOM (on upload and on submit).
-			// So a surviving BOM gap means no Master BOM is linked: no upload here
-			// can fix that, say so instead of showing a useless dialog.
-			if (!required_item.length && (missing.bom || []).length) {
-				frappe.msgprint({
-					title: __("Master BOM Not Linked"),
-					indicator: "orange",
-					message: __(
-						"Finished Item {0} already carries the mandatory finish images, but the " +
-							"Master BOM is missing {1}. Set the <b>Design Code BOM</b> on this work " +
-							"order, then submit again.",
-						[
-							frm.doc.item_code,
-							(missing.bom || []).map((f) => __(bom_fields_map[f] || f)).join(", "),
-						]
-					),
-				});
-				return;
-			}
-
-			if (!required_item.length && !optional_item.length) {
+			if (!missing.length) {
 				frappe.msgprint(__("All images are already uploaded."));
 				return;
 			}
 
-			let dialog_fields = [];
-
-			if (required_item.length) {
-				dialog_fields.push({
+			// Only the two mandatory slots exist, and they are stored on this work
+			// order alone - nothing is written to the Item or the Master BOM.
+			let dialog_fields = [
+				{
 					fieldtype: "Section Break",
-					label: __("Mandatory Finish Images ({0})", [frm.doc.item_code]),
-				});
-				for (const fieldname of required_item) {
-					dialog_fields.push({
-						fieldname: "item__" + fieldname,
-						fieldtype: "Attach Image",
-						label: __(item_fields_map[fieldname] || fieldname),
-						reqd: 1,
-					});
-				}
-			}
-
-			if (optional_item.length) {
+					label: __("Mandatory Finish Images ({0})", [frm.doc.name]),
+				},
+			];
+			for (const fieldname of missing) {
 				dialog_fields.push({
-					fieldtype: "Section Break",
-					label: __("Other Finish Images (Optional)"),
-					collapsible: 1,
+					fieldname: fieldname,
+					fieldtype: "Attach Image",
+					label: __(image_fields[fieldname] || fieldname),
+					reqd: 1,
 				});
-				for (const fieldname of optional_item) {
-					dialog_fields.push({
-						fieldname: "item__" + fieldname,
-						fieldtype: "Attach Image",
-						label: __(item_fields_map[fieldname] || fieldname),
-					});
-				}
 			}
 
 			const dlg = new frappe.ui.Dialog({
@@ -391,14 +459,12 @@ function open_upload_images_dialog(frm) {
 					const values = dlg.get_values();
 					if (!values) return;
 
-					let item_images = {};
-					for (const [key, val] of Object.entries(values)) {
-						if (key.startsWith("item__") && val) {
-							item_images[key.replace("item__", "")] = val;
-						}
+					let images = {};
+					for (const fieldname of missing) {
+						if (values[fieldname]) images[fieldname] = values[fieldname];
 					}
 
-					if (!Object.keys(item_images).length) {
+					if (!Object.keys(images).length) {
 						frappe.msgprint(__("Please upload at least one image."));
 						return;
 					}
@@ -406,18 +472,15 @@ function open_upload_images_dialog(frm) {
 					frappe.call({
 						method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.update_photoshop_images",
 						args: {
-							item_code: frm.doc.item_code,
-							master_bom: frm.doc.master_bom || "",
-							item_images: JSON.stringify(item_images),
+							manufacturing_work_order: frm.doc.name,
+							images: JSON.stringify(images),
 						},
 						freeze: true,
 						freeze_message: __("Saving images..."),
 						callback: function (res) {
 							if (res.message && res.message.success) {
 								frappe.show_alert({
-									message: __(
-										"Images updated on Item Master and mirrored onto the Master BOM."
-									),
+									message: __("Images saved on this work order."),
 									indicator: "green",
 								});
 								dlg.hide();

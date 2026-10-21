@@ -207,6 +207,16 @@
         "label": "Customer PO",
         "module": "Jewellery Erpnext",
         "read_only": 1
+    },
+    {
+        "dt": "Purchase Order",
+        "fieldname": "custom_metal_conversion",
+        "fieldtype": "Link",
+        "label": "Metal Conversion",
+        "module": "Jewellery Erpnext",
+        "no_copy": 1,
+        "options": "Metal Conversions",
+        "read_only": 1
     }
     ]
    }

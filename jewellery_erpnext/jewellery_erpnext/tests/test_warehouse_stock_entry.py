@@ -17,6 +17,7 @@ from unittest.mock import patch
 import frappe
 from frappe import ValidationError
 from frappe.tests import IntegrationTestCase
+from frappe.utils import add_days, flt, get_first_day, getdate, today
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import (
 	warehouse,
@@ -644,19 +645,20 @@ class TestRecalculateScoping(IntegrationTestCase):
 			return_value=SimpleNamespace(
 				employee="EMP", warehouse_type="Manufacturing"
 			),
-		), patch.object(wt, "get_warehouse_item_tracking") as g, patch(
-			"frappe.get_doc"
-		) as gd:
+		), patch.object(wt, "get_warehouse_item_tracking") as g, patch.object(
+			wt, "_msl_tracking_views"
+		) as views, patch("frappe.get_doc") as gd:
 			self.assertEqual(wt.recalculate_msl_tracking("WH"), 0)
 			g.assert_not_called()
+			views.assert_not_called()
 			gd.assert_not_called()
 
 	def test_writes_rm_warehouse(self):
 		"""Month movement over a cumulative opening/closing balance.
 
-		The grid makes two calls to the same helper: one scoped to the current
-		month for issue/receive/loss, one unscoped for the cumulative pending. The
-		row must reconcile as opening + (issue - receive - loss) = pending.
+		One ledger scan returns both views: the current month's issue/receive/loss
+		and the cumulative pending. The row must reconcile as
+		opening + (issue - receive - loss) = pending.
 		"""
 		fake = _FakeWH()
 		month = [
@@ -681,13 +683,12 @@ class TestRecalculateScoping(IntegrationTestCase):
 			"frappe.db.get_value",
 			return_value=SimpleNamespace(employee="EMP", warehouse_type="Raw Material"),
 		), patch("frappe.get_precision", return_value=3), patch.object(
-			wt, "get_warehouse_item_tracking", side_effect=[month, cumulative]
-		) as g, patch("frappe.get_doc", return_value=fake):
+			wt, "_msl_tracking_views", return_value=(month, cumulative)
+		) as views, patch("frappe.get_doc", return_value=fake):
 			n = wt.recalculate_msl_tracking("WH")
 
-		# First call is month-scoped, second is cumulative (no from_date).
-		self.assertIn("from_date", g.call_args_list[0][0][0])
-		self.assertNotIn("from_date", g.call_args_list[1][0][0])
+		# One scan, scoped by warehouse, with the current month's first day as the cut.
+		views.assert_called_once_with("WH", get_first_day(getdate(today())))
 
 		self.assertEqual(n, 1)
 		self.assertEqual(len(fake.rows), 1)
@@ -705,6 +706,228 @@ class TestRecalculateScoping(IntegrationTestCase):
 		)
 		self.assertTrue(fake.flags.ignore_msl_guards)
 		self.assertTrue(fake.saved)
+
+
+class TestMslTrackingViews(IntegrationTestCase):
+	"""``_msl_tracking_views``: both views of ``recalculate_msl_tracking`` from one ledger scan.
+
+	Each view must hold exactly what ``get_warehouse_item_tracking`` returned for it: an item
+	stays only when one of the view's own RAW sums is non-zero (the old query's HAVING, applied
+	before rounding), and the figures are rounded and reconciled the same way.
+	"""
+
+	def setUp(self):
+		self._patches = [
+			patch.object(wt, "flt", _det_flt),
+			patch("frappe.get_precision", return_value=3),
+		]
+		for p in self._patches:
+			p.start()
+
+	def tearDown(self):
+		for p in self._patches:
+			p.stop()
+
+	def _run(self, raw):
+		with patch("frappe.db.escape", side_effect=lambda v: "'%s'" % v), patch(
+			"frappe.db.sql", return_value=raw
+		) as sql:
+			month, cumulative = wt._msl_tracking_views("WH", "2026-10-01")
+		return month, cumulative, sql
+
+	@staticmethod
+	def _raw(**overrides):
+		row = {
+			"item_code": "M-G",
+			"issue_qty": 10.0,
+			"receive_qty": 3.0,
+			"loss_qty": 1.0,
+			"month_issue_qty": 4.0,
+			"month_receive_qty": 3.0,
+			"month_loss_qty": 1.0,
+		}
+		row.update(overrides)
+		return row
+
+	def test_one_query_for_both_views(self):
+		month, cumulative, sql = self._run([self._raw()])
+		sql.assert_called_once()
+		self.assertEqual(
+			sql.call_args[0][1], {"warehouse": "WH", "from_date": "2026-10-01"}
+		)
+		self.assertEqual(
+			month,
+			[
+				{
+					"item_code": "M-G",
+					"issue_qty": 4.0,
+					"receive_qty": 3.0,
+					"loss_qty": 1.0,
+					"pending_qty": 0.0,
+				}
+			],
+		)
+		self.assertEqual(cumulative[0]["pending_qty"], 6.0)
+		self.assertEqual(cumulative[0]["issue_qty"], 10.0)
+
+	def test_item_without_movement_this_month_is_cumulative_only(self):
+		month, cumulative, _sql = self._run(
+			[self._raw(month_issue_qty=0.0, month_receive_qty=0.0, month_loss_qty=0.0)]
+		)
+		self.assertEqual(month, [])
+		self.assertEqual([r["item_code"] for r in cumulative], ["M-G"])
+
+	def test_raw_sum_below_precision_is_kept_like_having(self):
+		# HAVING compared the unrounded sums, so a residue that rounds to 0.000 still kept
+		# the item in the old view.
+		month, cumulative, _sql = self._run(
+			[
+				self._raw(
+					issue_qty=0.0001,
+					receive_qty=0.0,
+					loss_qty=0.0,
+					month_issue_qty=0.0001,
+					month_receive_qty=0.0,
+					month_loss_qty=0.0,
+				)
+			]
+		)
+		self.assertEqual(len(month), 1)
+		self.assertEqual(len(cumulative), 1)
+		self.assertEqual(cumulative[0]["issue_qty"], 0.0)
+
+	def test_month_cut_is_a_named_placeholder_only(self):
+		_month, _cumulative, sql = self._run([self._raw()])
+		query = sql.call_args[0][0]
+		self.assertEqual(query.count("%(from_date)s"), 3)
+		self.assertIn("sle.warehouse = %(warehouse)s", query)
+		for fragment in query.split("%(")[1:]:
+			# every surviving % must be a named parameter placeholder
+			self.assertIn(")s", fragment)
+
+
+class TestMslTrackingViewsAgainstLedger(IntegrationTestCase):
+	"""``_msl_tracking_views`` on a real ledger returns what the two
+	``get_warehouse_item_tracking`` calls it replaced return.
+
+	The rows are ``db_insert``-ed (no hooks, no validation) inside the class transaction, which
+	``IntegrationTestCase`` rolls back at class cleanup.
+	"""
+
+	FIELDS = ("item_code", "issue_qty", "receive_qty", "loss_qty", "pending_qty")
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls.seeded = frappe.db.has_column("Warehouse", "employee")
+		if not cls.seeded:
+			return
+
+		h = frappe.generate_hash(length=8)
+		cls.wh = f"_T MSL Ledger {h}"
+		other_wh = f"_T MSL Ledger Other {h}"
+		for name in (cls.wh, other_wh):
+			cls._insert(
+				"Warehouse",
+				name=name,
+				warehouse_name=name,
+				employee=f"_T-EMP-{h}",
+				warehouse_type="Raw Material",
+			)
+		loss_se, move_se = f"_T-SE-LOSS-{h}", f"_T-SE-MOVE-{h}"
+		cls._insert("Stock Entry", name=loss_se, stock_entry_type="Process Loss")
+		cls._insert("Stock Entry", name=move_se, stock_entry_type="Material Transfer")
+
+		cls.month_start = get_first_day(getdate(today()))
+		this_month, last_month = cls.month_start, add_days(cls.month_start, -1)
+		cls.items = {k: f"_T-{k}-{h}" for k in "ABCD"}
+		a, b, c, d = (cls.items[k] for k in "ABCD")
+		se, sr = "Stock Entry", "Stock Reconciliation"
+		# (warehouse, item, qty, posting_date, voucher_type, voucher_no, is_cancelled)
+		ledger = [
+			(cls.wh, a, 10, last_month, se, move_se, 0),
+			(cls.wh, a, 4, this_month, se, move_se, 0),
+			# outward: a Receive, or a Loss on the Process Loss entry
+			(cls.wh, a, -3, this_month, se, move_se, 0),
+			(cls.wh, a, -1, this_month, se, loss_se, 0),
+			# ignored: cancelled, and another warehouse
+			(cls.wh, a, 100, this_month, se, move_se, 1),
+			(other_wh, a, 50, this_month, se, move_se, 0),
+			# moved last month only
+			(cls.wh, b, 5, last_month, se, move_se, 0),
+			(cls.wh, b, -2, last_month, se, loss_se, 0),
+			# rounds to 0, still listed
+			(cls.wh, c, 0.0004, this_month, se, move_se, 0),
+			# outward on a voucher that is not a Stock Entry: a Receive
+			(cls.wh, d, 2, last_month, se, move_se, 0),
+			(cls.wh, d, -2, this_month, sr, f"_T-SR-{h}", 0),
+		]
+		for i, (wh, item, qty, posting_date, vtype, vno, cancelled) in enumerate(
+			ledger
+		):
+			cls._insert(
+				"Stock Ledger Entry",
+				name=f"_T-SLE-{h}-{i}",
+				warehouse=wh,
+				item_code=item,
+				actual_qty=qty,
+				posting_date=posting_date,
+				voucher_type=vtype,
+				voucher_no=vno,
+				is_cancelled=cancelled,
+			)
+
+	@staticmethod
+	def _insert(doctype, **values):
+		doc = frappe.new_doc(doctype)
+		doc.update(values)
+		doc.db_insert()
+
+	def setUp(self):
+		if not self.seeded:
+			self.skipTest("tabWarehouse has no employee column")
+
+	def _project(self, rows):
+		return sorted(
+			({f: r[f] for f in self.FIELDS} for r in rows), key=lambda r: r["item_code"]
+		)
+
+	def test_views_match_the_two_tracking_queries(self):
+		month, cumulative = wt._msl_tracking_views(self.wh, self.month_start)
+
+		self.assertEqual(
+			self._project(month),
+			self._project(
+				wt.get_warehouse_item_tracking(
+					{"warehouse": self.wh, "from_date": self.month_start}
+				)
+			),
+		)
+		self.assertEqual(
+			self._project(cumulative),
+			self._project(wt.get_warehouse_item_tracking({"warehouse": self.wh})),
+		)
+
+	def test_views_by_hand(self):
+		month, cumulative = wt._msl_tracking_views(self.wh, self.month_start)
+		month = {r["item_code"]: r for r in month}
+		cumulative = {r["item_code"]: r for r in cumulative}
+		a, b, c, d = (self.items[k] for k in "ABCD")
+
+		self.assertEqual(set(month), {a, c, d})  # B did not move this month
+		self.assertEqual(set(cumulative), {a, b, c, d})
+		self.assertEqual(
+			[cumulative[a][f] for f in self.FIELDS[1:]], [14.0, 3.0, 1.0, 10.0]
+		)
+		self.assertEqual([month[a][f] for f in self.FIELDS[1:]], [4.0, 3.0, 1.0, 0.0])
+		self.assertEqual(
+			[cumulative[b][f] for f in self.FIELDS[1:]], [5.0, 0.0, 2.0, 3.0]
+		)
+		self.assertEqual(month[d]["receive_qty"], 2.0)
+		self.assertEqual(month[d]["pending_qty"], -2.0)
+		self.assertEqual(
+			cumulative[c]["issue_qty"], flt(0.0004, wt._tracking_precision())
+		)
 
 
 # ---------------------------------------------------------------------------
@@ -962,7 +1185,7 @@ class TestCustomerLossGuard(IntegrationTestCase):
 				ranks,
 			)
 
-	def test_ordinary_customer_warns_once_and_does_not_throw(self):
+	def test_ordinary_customer_is_allowed_silently(self):
 		ranks = {
 			"B-CG": frappe._dict(
 				inventory_type="Customer Goods", customer="C1", no_wastage=False
@@ -988,7 +1211,7 @@ class TestCustomerLossGuard(IntegrationTestCase):
 			],
 			ranks,
 		)
-		mp.assert_called_once()
+		mp.assert_not_called()
 
 	def test_company_metal_is_silent(self):
 		ranks = {

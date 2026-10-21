@@ -4,10 +4,11 @@
 """A rate typed on a Customer Goods row must reach the Batch that row mints.
 
 ERPNext's ``set_basic_rate`` clears ``basic_rate`` on every allow-zero-valuation
-row, so ``Customer Goods Received`` batches were minted with no Batch Rate and
-every Repack-Metal Conversion downstream blended 0 from them. The capture/restore
-pair parks the entered rate on ``custom_metal_rate``, which both batch-stamping
-readers already prefer over ``basic_rate``.
+row, so ``Customer Goods Received`` batches were minted with no Batch Rate. The
+capture/restore pair parks the entered rate on ``custom_metal_rate``, which both
+batch-stamping readers prefer over ``valuation_rate`` and ``basic_rate``. (A
+Repack-Metal Conversion downstream no longer blends from it: since F26 its target
+keeps its own ledger rate.)
 
 DB-free per the suite convention: ``setUpClass`` is neutralized and the logic runs
 against ``SimpleNamespace`` rows.
@@ -32,6 +33,7 @@ class _Row(SimpleNamespace):
 def _row(**fields):
 	defaults = {
 		"item_code": "M-G-24KT-99.9-Y",
+		"custom_variant_of": "M",
 		"qty": 10.0,
 		"transfer_qty": 10.0,
 		"s_warehouse": None,
@@ -99,7 +101,18 @@ class TestEnteredMetalRateSurvives(IntegrationTestCase):
 		_run(_se([row]))
 
 		self.assertEqual(row.custom_metal_rate, 7308.625798077)
-		# The ledger stays untouched: the customer's metal is not company value.
+		# THIS IS THE **ZERO VALUE** PATH, NOT A STATEMENT OF POLICY.
+		#
+		# D01 was resolved to Nominal on 2026-09-15, and DECISIONS.md:65 named this assertion
+		# as the D01-dependent one. It survives the decision unchanged, because the fixture
+		# builds its row with ``allow_zero_valuation_rate=1`` -- which is exactly what
+		# ``apply_valuation_policy`` stamps under ``Zero Value``, still the default on every
+		# site. Under ``Nominal`` that function stamps the opposite pair
+		# (``set_basic_rate_manually=1``, ``allow_zero_valuation_rate=0``) and the row never
+		# reaches this branch.
+		#
+		# So the case is retained as the Zero Value contract. The Nominal contract gets its own
+		# cases beside it, as DECISIONS.md requires -- never edits to this one.
 		self.assertEqual(row.basic_rate, 0.0)
 		self.assertEqual(row.basic_amount, 0.0)
 

@@ -1,5 +1,41 @@
 import frappe
-from frappe.utils import flt
+from frappe.utils import cint, flt
+
+from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+	stamp_produce_rows_from_consumes,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	DEFAULT_INVENTORY_TYPE,
+	normalize_ownership,
+)
+
+_EARRING_CATEGORY = "Earrings"
+_EARRING_UNITS = 2
+
+
+def earring_units(row):
+	"""How many billable pieces one Exploded Product Details row stands for.
+
+	An earring pair is one row but two pieces, so it takes two shares of the entered total and
+	counts twice on the service Purchase Order -- the same convention
+	``doc_events/sales_order.py`` uses to bill hallmarking per piece, where an
+	``item_category == "Earrings"`` BOM counts twice. Every other row is worth one.
+
+	Read off the exploded row's own ``category``, which fetches from ``item_code.item_category``
+	(and, on the Hall Marking branch, is copied down from the Product Details row by
+	``get_exploded_table``). Applies to all four service types. Fire Assy and XRF are inert in
+	practice rather than by rule: their rows carry the *metal* item, whose category is never
+	"Earrings".
+
+	Lives here, not beside its caller in ``product_certification.py``, because that module
+	imports ``create_po`` from this one -- so this is the only direction the dependency can run.
+	"""
+	return _EARRING_UNITS if row.get("category") == _EARRING_CATEGORY else 1
+
+
+def billable_units(rows):
+	"""Total pieces across an Exploded Product Details table."""
+	return sum(earring_units(row) for row in rows)
 
 
 def get_item_for_certification(department, service_type):
@@ -139,7 +175,15 @@ def create_po(self):
 		return
 
 	total_gross_wt = sum(row.gross_weight for row in self.exploded_product_details)
-	total_qty = len(self.exploded_product_details)
+	# Pieces, not rows: an Earrings row is one row and two pieces, and every certification
+	# service is billed per piece -- the same count distribute_amount splits the amount by.
+	# It used to be len(), which under-billed the supplier by one unit for every pair.
+	# Fire Assy / XRF are billed per sample sent, i.e. per Product Details row: their exploded
+	# table also carries the pure / loss rows appended per sample, which are not billable.
+	if self.service_type in ("Fire Assy Service", "XRF Services"):
+		total_qty = len(self.product_details)
+	else:
+		total_qty = billable_units(self.exploded_product_details)
 	po_doc = frappe.new_doc("Purchase Order")
 
 	po_doc.product_certification = self.name
@@ -311,6 +355,22 @@ def _get_issue_stock_entry_details(issue_stock_entry):
 	    2. Serial and Batch Bundle entries linked to the row
 	    3. Stock Ledger Entry posted by the Issue SE (Frappe v16 may move batch data into
 	       the SLE/bundle and clear the row-level fields)
+
+	``item_defaults[item]["batches"]`` carries the FULL issued allocation as an ordered
+	``[(batch_no, qty)]`` list, so the receipt can draw each batch down by what was actually
+	issued from it. ``batch_no`` remains the first of those batches, for the callers that
+	still read a single value.
+
+	Why a list: an issue that drew one item from several batches leaves the Stock Entry
+	Detail ``batch_no`` BLANK and records the split only in the row's bundle, because
+	``CustomStockEntry.update_batches`` is gated on ``not auto_created`` and these entries
+	are auto-created -- so the row reaches the ledger batchless and ERPNext's own SLE-time
+	auto-picker writes back a multi-batch bundle and nothing else. Keeping only the first
+	of those batches charged the whole receipt to it and pushed it negative.
+
+	Priorities 1 and 2 fill ``batches``; priority 3 does not. An SLE fallback would have to
+	guess which ledger leg to read, and its callers are the ones that already cope with a
+	bare ``batch_no``.
 	"""
 	rows = frappe.db.get_all(
 		"Stock Entry Detail",
@@ -335,7 +395,7 @@ def _get_issue_stock_entry_details(issue_stock_entry):
 		for entry in frappe.db.get_all(
 			"Serial and Batch Entry",
 			filters={"parent": ("in", list(bundles))},
-			fields=["parent", "batch_no", "serial_no"],
+			fields=["parent", "batch_no", "serial_no", "qty"],
 			order_by="parent asc, idx asc",
 		):
 			bundle_entries.setdefault(entry.parent, []).append(entry)
@@ -349,20 +409,29 @@ def _get_issue_stock_entry_details(issue_stock_entry):
 		batch_no = r.get("batch_no")
 		serial_no = r.get("serial_no")
 		bundle = r.get("serial_and_batch_bundle")
+		# This row's share of the issue, batch by batch, in the order it was drawn.
+		row_batches = []
+
+		if batch_no:
+			row_batches.append((batch_no, abs(flt(r.get("qty")))))
 
 		if bundle and (not batch_no or not serial_no):
 			entries = bundle_entries.get(bundle, [])
 			if not batch_no:
+				# Bundle entries arrive ordered by idx (see the query above), which is the
+				# order the batches were drawn. Outward entries store qty negative, so take
+				# the magnitude.
 				for be in entries:
 					if be.get("batch_no"):
-						batch_no = be.batch_no
-						break
+						row_batches.append((be.batch_no, abs(flt(be.get("qty")))))
+				if row_batches:
+					batch_no = row_batches[0][0]
 			if not serial_no:
 				serials = [be.serial_no for be in entries if be.get("serial_no")]
 				if serials:
 					serial_no = "\n".join(serials)
 
-		resolved.append((r, batch_no, serial_no))
+		resolved.append((r, batch_no, serial_no, row_batches))
 		if item_code and not batch_no:
 			needs_sle_batch.add(item_code)
 
@@ -388,7 +457,7 @@ def _get_issue_stock_entry_details(issue_stock_entry):
 	item_wh_multi = set()
 	item_defaults = {}
 
-	for r, batch_no, serial_no in resolved:
+	for r, batch_no, serial_no, row_batches in resolved:
 		item_code = r.get("item_code")
 
 		if item_code and r.get("t_warehouse"):
@@ -408,8 +477,13 @@ def _get_issue_stock_entry_details(issue_stock_entry):
 				"s_warehouse": r.get("t_warehouse"),
 				"batch_no": batch_no,
 				"serial_no": serial_no,
+				# Every row of this item appends to the same list, so an issue split into
+				# one Stock Entry Detail row per batch reads back as one allocation.
+				"batches": list(row_batches),
 			}
 			continue
+
+		item_defaults[item_code]["batches"].extend(row_batches)
 
 		# Fill missing values from subsequent rows if first row lacked them.
 		if not item_defaults[item_code].get("batch_no") and batch_no:
@@ -423,6 +497,141 @@ def _get_issue_stock_entry_details(issue_stock_entry):
 		item_wh.pop(item_code, None)
 
 	return item_wh, item_defaults
+
+
+def _receipt_precision():
+	return frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+
+
+def _issued_batch_pool(issue_item_defaults, item_code):
+	"""What the Issue drew for ``item_code``, batch by batch, in the order it drew it.
+
+	ONE entry per batch. An Issue that draws the same batch on two rows lists it twice, while
+	``allocate_in_order`` keeps what it has taken per batch: each listing then had the batch's
+	whole usage subtracted from it. MAT-STE-24378 issued 2.569 + 3.258 of one batch, and once
+	the first receipt row took 2.355 the next row saw 0.214 + 0.689 free instead of 3.472, so
+	CRT-2026-00115 threw "short by 2.247" on a receipt that matched the Issue exactly.
+	"""
+	entry = issue_item_defaults.get(item_code) or {}
+	pool = {}
+	for batch_no, qty in entry.get("batches") or []:
+		if batch_no and flt(qty) > 0:
+			pool[batch_no] = flt(pool.get(batch_no)) + flt(qty)
+	return list(pool.items())
+
+
+def _split_row_by_issued_batches(row, issue_item_defaults, taken, precision):
+	"""Fan ONE consuming row out into one row per issued batch.
+
+	The receipt draws back what the Issue sent, so it has to draw it from the same batches in
+	the same proportions. Stamping a single batch on the whole quantity is what pushed
+	KG2F081-MGL229175Y0-P29A8 to -0.379: it held 0.081 of the 0.600 issued and was charged
+	all 0.591 consumed.
+
+	``taken`` is shared across every call so the two Stock Entries built below cannot both
+	spend the same batch. Pass the rows in submit order -- Material Receipt first, Repack
+	second -- so the allocation matches the order the ledger sees them.
+
+	Returns ``[row]`` untouched when the Issue recorded no usable allocation. That is the
+	whole no-bundle case, and it belongs to the caller's existing ``sle_batch_cache`` /
+	``make_batch`` fallbacks, which still run on the row's own ``batch_no``.
+	"""
+	pool = _issued_batch_pool(issue_item_defaults, row.get("item_code"))
+	need = flt(row.get("qty"), precision)
+	if not pool or need <= 0:
+		return [row]
+
+	from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+		allocate_in_order,
+	)
+
+	allocation, shortfall = allocate_in_order(pool, need, precision, taken=taken)
+	if shortfall > 0:
+		# A shortfall means every free gram was taken, so what was left is need - shortfall.
+		# Quote that, not the Issue's total: "needs 3.15 but the Issue only sent 5.827" read
+		# as a contradiction once earlier rows of the receipt had drawn on the same batches.
+		sent = flt(sum(qty for _b, qty in pool), precision)
+		frappe.throw(
+			frappe._(
+				"{0} needs {1} from {2}, but only {3} of the {4} the Issue sent across its "
+				"batches is left after the earlier rows of this receipt (short by {5}). Check "
+				"the Issue Stock Entry's batches against the weights on this receipt."
+			).format(
+				frappe.bold(row.get("item_code")),
+				need,
+				frappe.bold(
+					row.get("s_warehouse") or frappe._("the supplier warehouse")
+				),
+				flt(need - shortfall, precision),
+				sent,
+				flt(shortfall, precision),
+			),
+			title=frappe._("Issued Batches Cannot Cover This Receipt"),
+		)
+
+	out = []
+	for batch_no, qty in allocation:
+		line = dict(row)
+		line["batch_no"] = batch_no
+		line["qty"] = qty
+		line["gross_weight"] = qty
+		out.append(line)
+	return out
+
+
+def stamp_rows_from_batches(rows):
+	"""Book each consuming row under the owner of the batch it draws.
+
+	Every Product Certification entry is ``auto_created``, which skips
+	``CustomStockEntry.update_batches`` -- the one place that copies a batch's owner onto its
+	row. Without this a row drawing a customer's batch reached the blanket default in
+	``doc_events/stock_entry.before_validate`` and went to the ledger as "Regular Stock".
+
+	Only a row whose owner is still the framework's (blank, or "Regular Stock" with no customer)
+	is stamped; one that names an owner keeps it. One Batch read for all rows, then the shared
+	``normalize_ownership`` rules -- the same idiom as ``mop_eod_sync._stamp_eod_row_ownership``.
+	Works on plain dicts (rows before ``append``) and on child documents alike.
+	"""
+	targets = [
+		row
+		for row in rows
+		if row.get("s_warehouse") and row.get("batch_no") and _owner_unset(row)
+	]
+	if not targets:
+		return
+
+	owners = _batch_owners({row.get("batch_no") for row in targets})
+	for row in targets:
+		batch_type, batch_customer = owners.get(row.get("batch_no")) or (None, None)
+		inventory_type, customer = normalize_ownership(
+			batch_type,
+			batch_customer,
+			batch_no=row.get("batch_no"),
+			item_code=row.get("item_code"),
+		)
+		row.update({"inventory_type": inventory_type, "customer": customer})
+
+
+def _batch_owners(batch_nos):
+	"""``{batch_no: (custom_inventory_type, custom_customer)}`` in one query.
+
+	A plain query-builder read: an internal lookup inside the stock-entry builders needs neither
+	the Batch meta nor the permission layer that ``frappe.get_all`` brings with it.
+	"""
+	batch = frappe.qb.DocType("Batch")
+	rows = (
+		frappe.qb.from_(batch)
+		.select(batch.name, batch.custom_inventory_type, batch.custom_customer)
+		.where(batch.name.isin(sorted(batch_nos)))
+	).run(as_dict=True)
+	return {row.name: (row.custom_inventory_type, row.custom_customer) for row in rows}
+
+
+def _owner_unset(row):
+	inventory_type = row.get("inventory_type")
+	return not inventory_type or (
+		inventory_type == DEFAULT_INVENTORY_TYPE and not row.get("customer")
+	)
 
 
 def create_material_receipt_for_certification(self):
@@ -556,11 +765,29 @@ def create_material_receipt_for_certification(self):
 			row.item_code,
 			["has_batch_no", "has_serial_no", "create_new_batch"],
 		)
-		batch_no = item_defaults.get("batch_no")
+
+		# A Repack PRODUCE row of an item that mints its own batches gets its batch minted from
+		# the row on submit, never one chosen here. That minting is what links the batch to its
+		# row (``custom_voucher_detail_no``), and only through that link does
+		# ``update_inventory_dimentions`` stamp the batch's inventory type, customer and Batch
+		# Rate -- a customer's output is minted as a child batch by
+		# ``batch_rename.create_child_batches`` with the same three. The old ``make_batch`` below
+		# ran before this Stock Entry existed, so every batch it made sat with no owner and a
+		# rate of 0 (KGGK-SE-RP-26-00501). The issued-batch and "latest batch in the supplier
+		# warehouse" fallbacks were worse for a produce row: they added the output to somebody
+		# else's batch.
+		is_produce_row = not (is_main_item and not is_loss_row)
+		mints_own_batch = bool(
+			is_produce_row
+			and cint(has_batch_no)
+			and cint(create_new_batch)
+			and not cint(has_serial_no)
+		)
+		batch_no = None if mints_own_batch else item_defaults.get("batch_no")
 		serial_no = item_defaults.get("serial_no")
 
 		# Batch fallback via SLE
-		if has_batch_no and not batch_no:
+		if has_batch_no and not batch_no and not mints_own_batch:
 			sle_key = (row.item_code, s_wh)
 			if sle_key not in sle_batch_cache:
 				sle_batch_cache[sle_key] = frappe.db.get_value(
@@ -607,7 +834,7 @@ def create_material_receipt_for_certification(self):
 					serial_no = "\n".join(available_serials)
 
 		# Auto-create batch for non-main items if needed
-		if has_batch_no and not batch_no and not serial_no:
+		if has_batch_no and not batch_no and not serial_no and not mints_own_batch:
 			if create_new_batch:
 				from erpnext.stock.doctype.batch.batch import make_batch
 
@@ -623,7 +850,6 @@ def create_material_receipt_for_certification(self):
 			"is_scrap_item": 1 if is_loss_row else 0,
 			"use_serial_batch_fields": True,
 			"serial_and_batch_bundle": None,
-			"Inventory_type": row.get("inventory_type") or "Regular Stock",
 			"gross_weight": produce_qty,
 		}
 
@@ -671,7 +897,6 @@ def create_material_receipt_for_certification(self):
 					"is_scrap_item": 0,
 					"use_serial_batch_fields": True,
 					"serial_and_batch_bundle": None,
-					"Inventory_type": row.get("inventory_type") or "Regular Stock",
 					"gross_weight": consume_qty,
 				}
 			)
@@ -683,6 +908,36 @@ def create_material_receipt_for_certification(self):
 
 	if not main_rows and not repack_rows:
 		frappe.throw(frappe._("No receipt items found with Gross Weight."))
+
+	# ── Draw each consuming row from the batches the Issue actually sent ──
+	# One ``taken`` ledger across both Stock Entries: they consume the same item out of the
+	# same supplier warehouse, so allocating them independently would spend a batch twice.
+	# Order matters and mirrors the submits below -- Material Receipt, then Repack.
+	_precision = _receipt_precision()
+	_taken = {}
+
+	main_rows = [
+		line
+		for rd in main_rows
+		for line in _split_row_by_issued_batches(
+			rd, issue_item_defaults, _taken, _precision
+		)
+	]
+
+	# Only the CONSUME leg of each repack pair is split. The produce legs mint new batches on
+	# receipt and have nothing to draw down. Splitting in place keeps each consume row's
+	# fan-out contiguous and immediately before its produce row, which is the row shape
+	# ``loss_valuation.iter_loss_runs`` and ``_apply_fifo_to_repack_stock_entry`` read runs
+	# from -- N consumes followed by one produce is a run; scattering them is not.
+	repack_rows = [
+		line
+		for rd in repack_rows
+		for line in (
+			_split_row_by_issued_batches(rd, issue_item_defaults, _taken, _precision)
+			if rd.get("s_warehouse") and not rd.get("t_warehouse")
+			else [rd]
+		)
+	]
 
 	def bypass_validate_warehouse(*args, **kwargs):
 		pass
@@ -722,6 +977,8 @@ def create_material_receipt_for_certification(self):
 		se_receipt.inventory_type = "Regular Stock"
 		for rd in main_rows:
 			se_receipt.append("items", rd)
+		# The issued batches come back under their own owner -- the Issue booked them the same way.
+		stamp_rows_from_batches(se_receipt.items)
 		se_receipt.validate_warehouse = bypass_validate_warehouse
 		se_receipt.flags.ignore_permissions = True
 		se_receipt.save(ignore_permissions=True)
@@ -737,6 +994,10 @@ def create_material_receipt_for_certification(self):
 		se_repack.inventory_type = "Regular Stock"
 		for rd in repack_rows:
 			se_repack.append("items", rd)
+		# Consume rows under their batch's owner first, then each produce row under its consume
+		# run's -- the order matters, the second reads the first.
+		stamp_rows_from_batches(se_repack.items)
+		stamp_produce_rows_from_consumes(se_repack)
 		se_repack.validate_warehouse = bypass_validate_warehouse
 		se_repack.validate_finished_goods = bypass_validate_warehouse
 		se_repack.validate_repack_entry = bypass_validate_warehouse

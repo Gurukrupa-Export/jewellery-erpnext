@@ -63,9 +63,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority 
 	allocate_in_order,
 	batch_priority_map,
 	batch_sort_key,
-	describe_customer_spill,
-	is_customer_rank,
-	loss_rank,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
@@ -701,39 +698,6 @@ def _allocate_tree_legs(se, tree, item_code, msl_wh, recv, loss):
 	return recv_alloc, loss_alloc, ranks
 
 
-def _warn_tree_customer_loss(customer_loss, prec):
-	"""ONE orange warning when a tree write-off lands on customer-owned metal.
-
-	Mirrors the Employee IR spill warning: the loss pass only reaches a customer
-	batch once the company's are exhausted, which is allowed but must be visible.
-	Never throws -- the single hard stop is the no-wastage check at the call site.
-	"""
-	if not customer_loss:
-		return
-	merged = {}
-	for row in customer_loss:
-		key = (row["customer"], row["item_code"], row["batch_no"])
-		merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), prec)
-	total = flt(sum(merged.values()), prec)
-	lines = describe_customer_spill(
-		[
-			{"customer": c, "item_code": i, "batch_no": b, "qty": q}
-			for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
-		],
-		precision=prec,
-	)
-	frappe.msgprint(
-		_(
-			"Company metal on this tree could not absorb the whole loss, so {0} g was "
-			"written off against customer-owned material:"
-		).format(frappe.bold(total))
-		+ "<br><br>"
-		+ "<br>".join(lines),
-		title=_("Customer Material Absorbed Loss"),
-		indicator="orange",
-	)
-
-
 def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 	"""Fail fast once even same-ownership-tier metal cannot cover the need.
 
@@ -770,6 +734,9 @@ def _ledger_row(tree, item_code):
 			"item_code": item_code,
 			"issue_qty": 0,
 			"receive_qty": 0,
+			"wo_receive_qty": 0,
+			"manual_receive_qty": 0,
+			"wo_received_gross_wt": 0,
 			"loss_qty": 0,
 			"pending_qty": 0,
 		},
@@ -867,6 +834,41 @@ def issue_material(tree, item_code, qty, source_warehouse=None):
 	return se.name
 
 
+def _tree_loss_allowed(tree):
+	"""Grams of loss the tree's operation allows on a Tree Number (0 = no limit)."""
+	if not tree.get("operation"):
+		return 0.0
+	return flt(
+		frappe.db.get_value(
+			"Department Operation", tree.operation, "allow_loss_on_tree_number"
+		)
+	)
+
+
+def _validate_tree_loss_allowed(tree, plan, eps):
+	"""Refuse a loss that takes the tree past its operation's "Allow loss on Tree number".
+
+	The cap (grams) is Department Operation.allow_loss_on_tree_number and covers the whole
+	tree: the loss already booked on every material row plus the loss in this call. Blank or
+	0 means the operation sets no limit. Submit Tree's write-off of the leftover pending goes
+	through receive_material, so it is held to the same cap.
+	"""
+	allowed = _tree_loss_allowed(tree)
+	if allowed <= 0:
+		return
+
+	booked = sum(flt(md.loss_qty) for md in tree.material_details)
+	new_loss = sum(flt(p["loss"]) for p in plan)
+	if booked + new_loss - allowed > eps:
+		frappe.throw(
+			_(
+				"Tree {0}: loss of {1} g with {2} g already booked exceeds the {3} g allowed on a "
+				"Tree Number for operation {4}."
+			).format(tree.name, new_loss, booked, allowed, tree.operation),
+			title=_("Loss Above Allowed On Tree Number"),
+		)
+
+
 def receive_material(tree, rows):
 	"""Receive / book loss for a tree (`rows` = [{item_code, receive_qty, loss_qty}]).
 
@@ -919,6 +921,8 @@ def receive_material(tree, rows):
 
 	if not plan:
 		frappe.throw(_("Enter a Receive Qty or Loss Qty on at least one item."))
+
+	_validate_tree_loss_allowed(tree, plan, eps)
 
 	msl_wh = tree.get("msl_warehouse") or _resolve_msl_warehouse(tree)
 	has_recv = any(flt(p["recv"], prec) > 0 for p in plan)
@@ -975,7 +979,6 @@ def receive_material(tree, rows):
 	# batch qty twice — but each leg is ordered for its OWN rule: the customer's
 	# metal is handed back first, the company's is written off first. Every row
 	# carries its batch's ownership (inventory_type / customer) across with it.
-	customer_loss = []
 	for p in plan:
 		rem_recv = flt(p["recv"], prec)
 		rem_loss = flt(p["loss"], prec)
@@ -1024,15 +1027,6 @@ def receive_material(tree, rows):
 				batch_no=batch_no,
 				item_code=p["item"],
 			)
-			if is_customer_rank(loss_rank(inv)):
-				customer_loss.append(
-					{
-						"customer": cust,
-						"item_code": p["item"],
-						"batch_no": batch_no,
-						"qty": qty,
-					}
-				)
 			_append_repack_loss_pair(
 				se_loss,
 				p["item"],
@@ -1044,8 +1038,6 @@ def receive_material(tree, rows):
 				inventory_type=inv,
 				customer=cust,
 			)
-
-	_warn_tree_customer_loss(customer_loss, prec)
 
 	# Post the transfer FIRST so both legs' consumption lands in a stable order (all Bins stay
 	# locked across both submits). The FIFO helper is a structural no-op now that every source row
@@ -1064,6 +1056,12 @@ def receive_material(tree, rows):
 	for p in plan:
 		md = p["md"]
 		md.receive_qty = flt(md.receive_qty) + p["recv"]
+		# manual_receive_qty is NOT written here. It is the button's share of
+		# receive_qty, and TreeNumber.validate derives it as receive_qty minus the
+		# Employee IR half on the save below -- one writer, so the two halves cannot
+		# drift apart. Accumulating the raw p["recv"] here (un-rounded, while the
+		# Employee IR path re-rounds receive_qty to the ledger precision) is exactly
+		# what used to strand a rounding residue on every interleaved write.
 		md.loss_qty = flt(md.loss_qty) + p["loss"]
 		_recompute_pending(md)
 	if not tree.get("msl_warehouse"):

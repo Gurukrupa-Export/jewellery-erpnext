@@ -14,19 +14,40 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import (
 from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_mould_id_map,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
+	GRADE_FIELDS,
+	is_customer_diamond_flag,
+	pick_diamond_grade,
+	resolve_diamond_grade,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
+	delete_without_so_drafts,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
+	resolve_parent_chains,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
+	_resolve_existing_variant_item_code,
 	create_mwo,
+	make_finding_without_so_order,
 	make_manufacturing_order,
 )
+from jewellery_erpnext.utils import get_repair_order_design_bom
 
 # Sales Order fieldname -> Manufacturing Plan fieldname. The names differ because the Sales Order
-# side is a mix of a standard field (order_type), an old unprefixed custom field (sales_type) and a
-# new prefixed one (custom_flow_type), while the plan is app-owned and uses the bare names.
+# side is a mix of a standard field (order_type), an old unprefixed custom field (sales_type) and
+# newer prefixed ones (custom_flow_type, custom_design_type), while the plan is app-owned and uses
+# the bare names.
 ORDER_DIMENSION_MAP = {
 	"order_type": "order_type",
 	"sales_type": "sales_type",
 	"custom_flow_type": "flow_type",
+	"custom_design_type": "design_type",
 }
+
+# Plan mode that raises finding orders straight from the plan, with no Sales Order, Repair
+# Order or existing Manufacturing Work Order behind them.
+FINDING_WITHOUT_SO = "Finding Manufacturing - Without SO"
 
 
 def is_subcontracting_selected(value):
@@ -40,7 +61,20 @@ def is_subcontracting_selected(value):
 
 
 class ManufacturingPlan(Document):
+	def before_insert(self):
+		# A Without-SO plan has no Manufacturing Plan Table; its rows are in Finding Details.
+		if (
+			self.select_manufacture_order != FINDING_WITHOUT_SO
+			and not self.manufacturing_plan_table
+		):
+			frappe.throw(_("Select atleast one Item"))
+
 	def on_cancel(self):
+		if self.select_manufacture_order == FINDING_WITHOUT_SO:
+			delete_without_so_drafts(
+				"Parent Manufacturing Order", {"manufacturing_plan": self.name}
+			)
+			return
 		frappe.db.sql(
 			"""
             UPDATE `tabSales Order Item` soi
@@ -65,6 +99,10 @@ class ManufacturingPlan(Document):
 		)
 
 	def on_submit(self):
+		if self.select_manufacture_order == FINDING_WITHOUT_SO:
+			self.create_finding_without_so_orders()
+			return
+
 		is_subcontracting = False
 		# customer_diamond_data removed for memory efficiency
 		frappe.db.sql(
@@ -134,19 +172,88 @@ class ManufacturingPlan(Document):
 			create_subcontracting_order(self)
 
 	def validate(self):
+		self.clear_references_for_finding_without_so()
+		self.validate_finding_details()
 		self.validate_qty_with_bom_creation()
 		self.refresh_mould_ids()
 		self.set_order_dimensions()
+		if self.select_manufacture_order == FINDING_WITHOUT_SO:
+			self.total_planned_qty = sum(cint(row.qty) for row in self.finding_details)
+
+	def clear_references_for_finding_without_so(self):
+		"""A Without-SO plan carries no Sales Order / Repair Order / MWO rows and is never
+		subcontracted. The form hides those fields in this mode, but rows fetched before the
+		mode was switched would still be saved, and on submit they would raise ordinary
+		Sales Order PMOs -- so drop them here. The reverse holds for every other mode: Finding
+		Details rows left over from a switched mode are dropped."""
+		if self.select_manufacture_order != FINDING_WITHOUT_SO:
+			self.finding_details = []
+			return
+		self.manufacturing_plan_table = []
+		self.setting_type = None
+		self.is_subcontracting = "No"
+		self.supplier = None
+		self.estimated_date = None
+		self.purchase_type = None
+
+	def validate_finding_details(self):
+		"""Each Finding Details row raises one Parent Manufacturing Order per unit of Qty, so
+		Qty must be a whole number of at least 1.
+
+		Each row is also resolved to its finding variant here, on save, rather than on submit:
+		every PMO needs an item_code (it is part of the PMO name), and a row whose attributes
+		match no ``F`` variant should fail while the plan is still a draft, naming the row.
+		``F`` variants carry exactly the seven attributes the row asks for, so the match is
+		unique."""
+		# mandatory_depends_on is enforced only in the browser, so the server checks it here.
+		if (
+			self.select_manufacture_order == FINDING_WITHOUT_SO
+			and not self.finding_details
+		):
+			frappe.throw(_("Add at least one row in Finding Details"))
+		for row in self.finding_details:
+			if cint(row.qty) < 1:
+				frappe.throw(
+					_("Finding Details Row #{0}: Qty must be at least 1").format(
+						row.idx
+					)
+				)
+			row.item_code = _resolve_existing_variant_item_code(
+				{**row.as_dict(), "item": "F", "item_variant": None, "item_code": None},
+				_("Finding Details"),
+			)
+
+	def create_finding_without_so_orders(self):
+		"""Raise one Draft Parent Manufacturing Order per unit of Qty on every Finding Details
+		row. They are left in Draft for the user to review and submit one by one; the
+		Manufacturing Work Order comes from that submit, not from this one."""
+		mp_context = get_mp_context()
+		validate_finding_without_so_context(mp_context)
+		created = 0
+		for row in self.finding_details:
+			for _i in range(cint(row.qty)):
+				make_finding_without_so_order(self, row, mp_context)
+				created += 1
+
+		frappe.msgprint(
+			_("{0} Parent Manufacturing Order(s) created in Draft").format(created)
+		)
 
 	def set_order_dimensions(self):
-		"""Stamp Order Type / Sales Type / Flow Type from the plan's source Sales Orders.
+		"""Stamp Order Type / Sales Type / Flow Type / Design Type from the source Sales Orders.
 
-		These three ride from the Purchase Order down the whole chain, and every hop below the
+		These four ride from the Purchase Order down the whole chain, and every hop below the
 		plan reads them off a single document: PMO fetches from its one Sales Order, MWO from its
 		PMO, SNC from its PMO, Serial No is stamped from the SNC. The plan is the only place in
-		that chain that can span several Sales Orders at once, so it is the only place the three
+		that chain that can span several Sales Orders at once, so it is the only place the four
 		can disagree -- and a plan that mixes them would fan out into PMOs the operator never
 		chose. So a mismatch is a planning error and throws rather than being silently blanked.
+
+		Design Type is held to the same strict rule as the other three, unlike the v15 lineage
+		which exempts it via SOFT_ORDER_DIMENSIONS. That exemption exists because a plan there can
+		legitimately span several designs; on this site it cannot -- all 340 Manufacturing Plans
+		draw from exactly one Sales Order, so a single plan never has two design types to
+		reconcile.
 
 		Runs on every validate, i.e. on save AND on submit, so a plan whose rows were re-fetched
 		or hand-edited is re-checked and re-stamped. That is cheap because every fetch wipes the
@@ -258,7 +365,19 @@ class ManufacturingPlan(Document):
 		so_data_map = fetch_doc_map(
 			"Sales Order Item",
 			so_items,
-			["name", "metal_type", "metal_touch", "metal_colour", "diamond_grade"],
+			[
+				"name",
+				"metal_type",
+				"metal_touch",
+				"metal_colour",
+				"diamond_grade",
+				# The Repair Order link travels on the Sales Order Item, not on the plan row
+				# (Manufacturing Plan Table has order_form_type but no order_form_id), so it is
+				# cached here to resolve the repair design BOM at PMO-creation time without a
+				# per-row query. See create_manufacturing_order().
+				"order_form_type",
+				"order_form_id",
+			],
 		)
 
 		mwo_data_map = fetch_doc_map(
@@ -277,6 +396,36 @@ class ManufacturingPlan(Document):
 		bom_data_map = fetch_doc_map(
 			"BOM", bom_names, ["name", "metal_type_", "metal_colour", "metal_touch"]
 		)
+
+		# Ref Customer per plan row, from the very walk the PMO runs on save -- not a second
+		# reading of it. The climb is not obvious (a line's Purchase Order leads back to the
+		# PREVIOUS plan's row, and it is THAT row's quotation which records the customer), and
+		# the copy this replaced climbed from the current line instead, using the walk's bottom
+		# rung as if it were its top. That is what let a plan grade a row against one customer
+		# and the PMO it created against another.
+		#
+		# One batch of queries for the whole table, so this keeps clear of the per-row cost the
+		# maps above exist to avoid. The `or row.customer` tail mirrors _set_diamond_grade:
+		# the walk itself never falls back to the ordering customer, the grade lookup does.
+		#
+		# Must stay ABOVE the two customer-keyed fetches below: the ref customers it finds are
+		# added to customer_names so their Customer Diamond Grade rows come back in the same query.
+		parent_chains = resolve_parent_chains(so_items)
+
+		ref_customer_map = {}
+		for row in self.manufacturing_plan_table:
+			if not row.docname:
+				continue
+
+			chain = parent_chains.get(row.docname)
+			ref_customer = (chain.ref_customer if chain else None) or row.customer
+			if not ref_customer:
+				continue
+
+			ref_customer_map[row.docname] = ref_customer
+			customer_names.add(ref_customer)
+			if row.diamond_quality:
+				customer_diamond_keys.add((ref_customer, row.diamond_quality))
 
 		customer_data_map = fetch_doc_map(
 			"Customer", customer_names, ["name", "is_internal_customer"]
@@ -311,15 +460,6 @@ class ManufacturingPlan(Document):
 		)
 		attribute_value_set = {d.name for d in attr_values}
 
-		manufacturer = frappe.defaults.get_user_default("manufacturer")
-		finding_default_department = None
-		if manufacturer:
-			finding_default_department = frappe.db.get_value(
-				"Manufacturing Setting",
-				{"manufacturer": manufacturer},
-				"default_department",
-			)
-
 		return {
 			"so_data": so_data_map,
 			"mwo_data": mwo_data_map,
@@ -328,10 +468,8 @@ class ManufacturingPlan(Document):
 			"item_data": item_data_map,
 			"customer_diamond_grade": customer_diamond_grade_map,
 			"attribute_value_set": attribute_value_set,
-			"mp_context": {
-				"manufacturer": manufacturer,
-				"finding_default_department": finding_default_department,
-			},
+			"ref_customer": ref_customer_map,
+			"mp_context": get_mp_context(),
 		}
 
 	@frappe.whitelist()
@@ -586,6 +724,113 @@ def map_docs(method, source_names, target_doc, args=None):
 	return target_doc
 
 
+# Finding Details fieldname -> the ``F`` template's variant attribute it holds.
+FINDING_ATTRIBUTE_FIELDS = {
+	"finding_category": "Finding Category",
+	"finding_type": "Finding Sub-Category",
+	"metal_type": "Metal Type",
+	"metal_touch": "Metal Touch",
+	"metal_purity": "Metal Purity",
+	"metal_colour": "Metal Colour",
+	"finding_size": "Finding Size",
+}
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def finding_attribute_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Link query for one Finding Details attribute: only the values that occur on an enabled
+	``F`` variant also carrying every attribute already picked on the row.
+
+	The plain attribute query offers every value of the attribute, so a row could be built
+	from values that each exist but never together on one item -- and only fail on save,
+	when no variant matches. Narrowing here keeps each pick on a combination that exists.
+
+	``filters`` carries ``fieldname`` (the column being searched) and ``selected``
+	({fieldname: value} for the row's other filled attributes)."""
+	if isinstance(filters, str):
+		filters = json.loads(filters)
+	filters = filters or {}
+
+	attribute = FINDING_ATTRIBUTE_FIELDS.get(filters.get("fieldname"))
+	if not attribute:
+		return []
+
+	selected = filters.get("selected") or {}
+	if isinstance(selected, str):
+		selected = json.loads(selected)
+
+	conditions = []
+	values = {
+		"attribute": attribute,
+		"txt": f"%{txt}%",
+		"start": cint(start),
+		"page_len": cint(page_len),
+	}
+	for i, (fieldname, value) in enumerate(selected.items()):
+		other = FINDING_ATTRIBUTE_FIELDS.get(fieldname)
+		if not other or other == attribute or not value:
+			continue
+		conditions.append(
+			f"""AND EXISTS (
+				SELECT 1 FROM `tabItem Variant Attribute` o{i}
+				WHERE o{i}.parent = v.parent
+					AND o{i}.attribute = %(attr_{i})s
+					AND o{i}.attribute_value = %(val_{i})s
+			)"""
+		)
+		values[f"attr_{i}"] = other
+		values[f"val_{i}"] = value
+
+	return frappe.db.sql(
+		f"""
+		SELECT DISTINCT v.attribute_value
+		FROM `tabItem Variant Attribute` v
+		INNER JOIN `tabItem` i ON i.name = v.parent
+		WHERE i.variant_of = 'F'
+			AND i.disabled = 0
+			AND v.attribute = %(attribute)s
+			AND v.attribute_value LIKE %(txt)s
+			{" ".join(conditions)}
+		ORDER BY v.attribute_value
+		LIMIT %(start)s, %(page_len)s
+		""",
+		values,
+	)
+
+
+def validate_finding_without_so_context(mp_context):
+	"""A Without-SO plan raises PMOs that need a manufacturer and its default department to
+	make their work order, so stop the submit before any PMO is made without them."""
+	if not mp_context.get("manufacturer"):
+		frappe.throw(
+			_("Set a default Manufacturer for your user before submitting this plan.")
+		)
+	if not mp_context.get("finding_default_department"):
+		frappe.throw(
+			_(
+				"Set Default Department in Manufacturing Setting for Manufacturer {0}."
+			).format(frappe.bold(mp_context.get("manufacturer")))
+		)
+
+
+def get_mp_context():
+	"""The user's manufacturer and its default department, read once per plan submit and
+	shared by every PMO the plan raises."""
+	manufacturer = frappe.defaults.get_user_default("manufacturer")
+	finding_default_department = None
+	if manufacturer:
+		finding_default_department = frappe.db.get_value(
+			"Manufacturing Setting",
+			{"manufacturer": manufacturer},
+			"default_department",
+		)
+	return {
+		"manufacturer": manufacturer,
+		"finding_default_department": finding_default_department,
+	}
+
+
 def fetch_doc_map(doctype, names, fields, key_field="name"):
 	if not names:
 		return {}
@@ -597,6 +842,37 @@ def fetch_doc_map(doctype, names, fields, key_field="name"):
 	)
 
 	return {d[key_field]: d for d in data}
+
+
+def _resolve_repair_master_bom(row, so_det):
+	"""Pick the BOM a Repair PMO must be created against.
+
+	``master_bom`` on a repair means "the composition this repair is manufactured and
+	unpacked against". That is the Repair Order's design BOM -- the same BOM
+	``ManufacturingWorkOrder._resolve_repair_order_bom`` reaches for when Unpack Serial
+	No runs. Resolving it HERE is what lets the PMO and its MWOs show the correct repair
+	BOM the moment they are created, instead of the unpack button having to back-fill it
+	on first click (by which time the operator has already seen a blank BOM).
+
+	Order of preference:
+
+	1. ``Repair Order.bom`` -- authoritative whenever the row was raised from a Repair
+	   Order (``order_form_type == "Repair Order"``).
+	2. ``row.serial_id_bom`` -- the historical serial BOM. Header-``order_type`` repairs
+	   carry no Repair Order link at all, and this is what they have always used; keeping
+	   it second means their behaviour is untouched.
+	3. ``row.bom`` -- the BOM get_items_for_production already resolved for the row
+	   (Copy BOM, else serial_id_bom). Previously a repair row that had a Copy BOM but no
+	   serial_id_bom produced master_bom=None, i.e. a PMO -- and every MWO under it --
+	   with no BOM at all. This last fallback closes that hole.
+	"""
+	return (
+		get_repair_order_design_bom(
+			so_det.get("order_form_type"), so_det.get("order_form_id")
+		)
+		or row.serial_id_bom
+		or row.bom
+	)
 
 
 def create_manufacturing_order(doc, row, cache_data=None):
@@ -616,6 +892,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	item_data_map = cache_data.get("item_data", {})
 	attribute_value_set = cache_data.get("attribute_value_set", set())
 	customer_diamond_grade_map = cache_data.get("customer_diamond_grade", {})
+	ref_customer_map = cache_data.get("ref_customer", {})
 
 	so_det = {}
 	# Use plain dict copy instead of frappe._dict for memory/speed
@@ -633,6 +910,8 @@ def create_manufacturing_order(doc, row, cache_data=None):
 		fields = ["metal_type", "metal_touch", "metal_colour"]
 		if row.mwo:
 			fields.append("master_bom")
+		else:
+			fields += ["order_form_type", "order_form_id"]
 
 		fetched_val = frappe.get_value(doc_type, docname, fields, as_dict=1)
 		if fetched_val:
@@ -642,7 +921,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	if doc.select_manufacture_order == "Manufacturing":
 		master_bom = row.manufacturing_bom
 	elif doc.select_manufacture_order == "Repair":
-		master_bom = row.serial_id_bom
+		master_bom = _resolve_repair_master_bom(row, so_det)
 
 	if master_bom:
 		# caching check
@@ -676,46 +955,31 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	)
 
 	if row.diamond_quality and not is_internal_customer:
-		key = (row.customer, row.diamond_quality)
-		diamond_grade = None
+		# Same rule, same customer and same reading of the Yes/No flag as the PMO applies in
+		# before_save. This used to be a second implementation that graded against row.customer
+		# and fell back to diamond_grade_1, so a plan could throw on a row the PMO would have
+		# resolved -- or hand it a grade the PMO then quietly replaced.
+		effective_customer = ref_customer_map.get(row.docname) or row.customer
+		is_customer_diamond = is_customer_diamond_flag(row.customer_diamond)
+		grade_row = customer_diamond_grade_map.get(
+			(effective_customer, row.diamond_quality)
+		)
 
-		diamond_grade_data = customer_diamond_grade_map.get(key)
-		if diamond_grade_data:
-			grades_to_check = [
-				diamond_grade_data.get("diamond_grade_1"),
-				diamond_grade_data.get("diamond_grade_2"),
-				diamond_grade_data.get("diamond_grade_3"),
-				diamond_grade_data.get("diamond_grade_4"),
-			]
-
-			from frappe import cstr
-
-			customer_diamond = cstr(row.customer_diamond).strip().lower()
-
-			if customer_diamond == "yes":
-				for grade in grades_to_check:
-					if grade and grade in attribute_value_set:
-						diamond_grade = grade
-						break
-			else:
-				for grade in grades_to_check:
-					if grade and grade not in attribute_value_set:
-						diamond_grade = grade
-						break
-
-		if not diamond_grade:
-			if diamond_grade_data:
-				for grade in grades_to_check:
-					if grade:
-						diamond_grade = grade
-						break
-			if not diamond_grade:
-				# Minimal fallback
-				diamond_grade = frappe.db.get_value(
-					"Customer Diamond Grade",
-					{"parent": row.customer, "diamond_quality": row.diamond_quality},
-					"diamond_grade_1",
-				)
+		if grade_row:
+			grades = [grade_row.get(f) for f in GRADE_FIELDS]
+			# attribute_value_set is the prefetched set of Attribute Values flagged
+			# is_customer_diamond_quality, so passing it keeps this per-row and query-free.
+			diamond_grade = pick_diamond_grade(
+				grades,
+				is_customer_diamond,
+				flags={g: g in attribute_value_set for g in grades if g},
+			)
+		else:
+			# Same fallback shape as the maps above: the caller may not have passed cache_data,
+			# and the ref customer resolved here may not have been in the prefetch either.
+			diamond_grade = resolve_diamond_grade(
+				effective_customer, row.diamond_quality, is_customer_diamond
+			)
 
 		so_det["diamond_grade"] = diamond_grade
 
@@ -727,8 +991,12 @@ def create_manufacturing_order(doc, row, cache_data=None):
 			has_batch_no = frappe.db.get_value("Item", row.item_code, "has_batch_no")
 
 		if not so_det.get("diamond_grade") and not has_batch_no:
+			# Names the customer actually consulted -- with a Ref Customer in play that is not
+			# row.customer, and pointing at the ordering customer sends people to the wrong master.
 			frappe.throw(
-				_("Diamond Grade is not mentioned in customer {0}").format(row.customer)
+				_("Diamond Grade is not mentioned in customer {0}").format(
+					effective_customer
+				)
 			)
 
 	mp_context = cache_data.get("mp_context") if cache_data else None

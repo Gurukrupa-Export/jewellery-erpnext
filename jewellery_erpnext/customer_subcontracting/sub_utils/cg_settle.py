@@ -14,6 +14,14 @@ exactly the way the ``Create SNC`` flow settles borrowed gold:
     one (customer gold) and, mirrored with regular gold, keep every purity/warehouse
     physically balanced, then the Case 2 transfer + reverse.
 
+Batch scope. When the Material Request row names a batch -- the incoming batch of the
+receipt being returned -- Settle works on that batch alone. "Already there" counts only
+that batch in ``set_from_warehouse`` (the request's transfer is batch-strict), and the
+shortfall is sourced only from the batch itself or metal produced from it
+(``customer_gold_trace.discover_scope``). Another receipt's batch of the same customer
+never counts and is never used. A row without a batch keeps the customer-wide behaviour.
+The request's own target warehouse is never a source.
+
 Scope is deliberately narrow (confirmed with the user): Settle ONLY tops up
 ``set_from_warehouse``. It does not submit the Material Request and does not create the
 In-Transit / End-Transit entries — the user drives those with the existing buttons.
@@ -121,14 +129,20 @@ def _build_plan(mr):
 	# earmarked for that row, so it must not count as free for a later row).
 	allocated = {}
 	consumed_target = {}
+	# {batch_no: lineage} -- rows naming the same batch share one discover_scope walk.
+	lineage_cache = {}
 
 	plan = []
 	for row in mr.items:
-		plan.append(_plan_row(row, mr, company, all_rm, allocated, consumed_target))
+		plan.append(
+			_plan_row(
+				row, mr, company, all_rm, allocated, consumed_target, lineage_cache
+			)
+		)
 	return plan
 
 
-def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
+def _plan_row(row, mr, company, all_rm, allocated, consumed_target, lineage_cache):
 	target = row.get("from_warehouse") or mr.get("set_from_warehouse")
 	if not target:
 		frappe.throw(
@@ -147,8 +161,21 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
 
 	item = row.item_code
 	required = flt(row.qty, 3)
+	mr_batch = row.get("batch_no")
+	# The request's own destination is never a source: metal pulled from there into the
+	# source warehouse would only be moved straight back by the request's transfer, leaving
+	# the balancing regular gold displaced.
+	dest = row.get("warehouse") or mr.get("set_warehouse")
 
-	have = _owner_qty_in_warehouse(customer, item, target, consumed_target)
+	if mr_batch:
+		# Batch scope: the request's transfer moves THIS batch, so only this batch counts
+		# as already there, and only this batch's own metal may make up the shortfall.
+		_validate_row_batch(row, mr_batch, item, customer)
+		lineage = _batch_lineage(mr_batch, customer, lineage_cache)
+		have = _batch_qty_in_warehouse(mr_batch, item, target, consumed_target)
+	else:
+		lineage = None
+		have = _owner_qty_in_warehouse(customer, item, target, consumed_target)
 	shortfall = flt(required - have, 3)
 
 	base = {
@@ -162,28 +189,30 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
 		# MR -> Stock Entry mapper copies this onto the transfer row), so the sourced
 		# material must land in THIS batch, not a fresh child batch. None => let the
 		# child-batch minter name it (fallback).
-		"mr_batch": row.get("batch_no"),
+		"mr_batch": mr_batch,
 	}
 
 	if shortfall <= TOLERANCE:
 		# Case 1 — enough of the customer's material already in the target warehouse.
-		_claim_target(consumed_target, customer, item, target, min(required, have))
+		_claim_have(
+			consumed_target, customer, item, target, mr_batch, min(required, have)
+		)
 		return dict(base, level=LEVEL_AVAILABLE)
 
 	# Whatever the target already holds is earmarked for this row.
-	_claim_target(consumed_target, customer, item, target, have)
+	_claim_have(consumed_target, customer, item, target, mr_batch, have)
 
-	others = [w for w in all_rm if w != target]
+	others = [w for w in all_rm if w not in (target, dest)]
 	pure_short = _pure_weight(row, item, shortfall, required)
 
 	# Convert-in-place — the customer's OWN convertible purity is already sitting IN the
 	# target warehouse (the common return case: their 24KT was converted to 18KT for
-	# manufacturing and never left Central). Convert it back in place: one repack, no
-	# borrowing, no regular-gold balancing. Preferred over borrowing from elsewhere.
-	# Aggregates across the customer's batches, since the converted metal is usually
-	# spread over several.
+	# manufacturing and never left Central). Convert it back in place, with no borrowing
+	# from another warehouse; a regular-gold mirror repack (below) keeps each purity
+	# physically balanced. Preferred over borrowing from elsewhere. Aggregates across
+	# batches, since the converted metal is usually spread over several.
 	in_target = _gather_convertible(
-		customer, item, pure_short, target, company, allocated
+		customer, item, pure_short, target, company, allocated, batch_nos=lineage
 	)
 	if in_target:
 		# The customer conversion is systematic only (no physical melt), so mirror it with
@@ -206,6 +235,7 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
 		company=company,
 		warehouses=others,
 		allocated=allocated,
+		batch_nos=lineage,
 	)
 	if src:
 		reg = _reserve_regular(item, shortfall, company, target, allocated, row.idx)
@@ -220,6 +250,7 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
 		company=company,
 		warehouses=others,
 		allocated=allocated,
+		batch_nos=lineage,
 	)
 	if conv:
 		# Regular gold of the REQUIRED purity in the target, to mirror the conversion so
@@ -229,6 +260,8 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
 			base, level=LEVEL_CONVERT, src=conv, regular=reg, pure_short=pure_short
 		)
 
+	if mr_batch:
+		_throw_batch_unavailable(row, mr_batch, item, shortfall, target, dest)
 	frappe.throw(
 		_(
 			"Row {0}: need {1} of {2} for customer {3}, but it is not available in the "
@@ -286,7 +319,120 @@ def _claim_target(consumed_target, customer, item, warehouse, qty):
 	consumed_target[key] = flt(consumed_target.get(key, 0), 3) + flt(qty, 3)
 
 
-def _gather_convertible(customer, item, pure_needed, warehouse, company, allocated):
+def _claim_have(consumed_target, customer, item, warehouse, batch_no, qty):
+	"""Earmark ``qty`` of the target's existing stock for this row.
+
+	A batch row claims its batch AND the customer-wide pool, so a later row without a
+	batch -- which counts every batch of the customer -- cannot count the same grams."""
+	_claim_target(consumed_target, customer, item, warehouse, qty)
+	if batch_no and qty > 0:
+		key = ("batch", batch_no, warehouse)
+		consumed_target[key] = flt(consumed_target.get(key, 0), 3) + flt(qty, 3)
+
+
+def _validate_row_batch(row, batch_no, item, customer):
+	"""The row's batch must be ``customer``'s enabled batch of ``item``: Settle tops up
+	exactly that batch, so a wrong one would land the customer's metal under it."""
+	batch = frappe.db.get_value(
+		"Batch", batch_no, ["item", "custom_customer", "disabled"], as_dict=True
+	)
+	if not batch or batch.disabled:
+		frappe.throw(
+			_("Row {0}: batch {1} does not exist or is disabled.").format(
+				row.idx, frappe.bold(batch_no)
+			)
+		)
+	if batch.item != item:
+		frappe.throw(
+			_("Row {0}: batch {1} is not a batch of {2}.").format(
+				row.idx, frappe.bold(batch_no), frappe.bold(item)
+			)
+		)
+	if batch.custom_customer != customer:
+		frappe.throw(
+			_(
+				"Row {0}: batch {1} is not held for customer {2}, so Settle cannot top it up."
+			).format(row.idx, frappe.bold(batch_no), frappe.bold(customer))
+		)
+
+
+def _batch_qty_in_warehouse(batch_no, item, warehouse, consumed_target):
+	"""Consumable qty of ``batch_no`` in ``warehouse`` -- the balance the request's
+	batch-strict transfer is checked against -- net of earlier rows' claims on it."""
+	total = flt(
+		_consumable_batch_qty_map([batch_no], item, [warehouse]).get(
+			(batch_no, warehouse), 0
+		),
+		3,
+	)
+	claimed = flt(consumed_target.get(("batch", batch_no, warehouse), 0), 3)
+	return max(flt(total - claimed, 3), 0.0)
+
+
+def _batch_lineage(batch_no, customer, cache):
+	"""``batch_no`` plus every batch produced from it (any depth, same ownership lane),
+	limited to ``customer``'s enabled batches: the only metal that may settle this batch.
+
+	Same lineage rule the receipt-linked return applies (``_validate_descendant``). It
+	reads the stock ledger only, so it does not depend on the Customer Gold flow being on.
+	"""
+	if batch_no in cache:
+		return cache[batch_no]
+
+	from jewellery_erpnext.customer_subcontracting.customer_gold_trace import (
+		discover_scope,
+	)
+
+	scope = discover_scope({batch_no})
+	lineage = set(
+		frappe.get_all(
+			"Batch",
+			filters={
+				"name": ["in", list(scope)],
+				"custom_customer": customer,
+				"disabled": 0,
+			},
+			pluck="name",
+		)
+	)
+	# Already validated as this customer's enabled batch.
+	lineage.add(batch_no)
+	cache[batch_no] = lineage
+	return lineage
+
+
+def _throw_batch_unavailable(row, batch_no, item, shortfall, target, dest):
+	"""Nothing in the batch's own lineage covers the shortfall. When the batch already sits
+	in the request's destination, say so: then there is nothing to transfer."""
+	message = _(
+		"Row {0}: batch {1} needs {2} more of {3} in {4}, but neither the batch nor metal "
+		"made from it is free in another Raw Material warehouse. Settle uses only this "
+		"batch's own metal; the customer's other batches are left alone."
+	).format(
+		row.idx,
+		frappe.bold(batch_no),
+		shortfall,
+		frappe.bold(item),
+		frappe.bold(target),
+	)
+	if dest and dest != target:
+		at_dest = flt(
+			_consumable_batch_qty_map([batch_no], item, [dest]).get(
+				(batch_no, dest), 0
+			),
+			3,
+		)
+		if at_dest > TOLERANCE:
+			message += " " + _(
+				"{0} of it is already in {1}, this request's target warehouse, so it does "
+				"not need to be transferred."
+			).format(at_dest, frappe.bold(dest))
+	frappe.throw(message, title=_("Batch Not Available"))
+
+
+def _gather_convertible(
+	customer, item, pure_needed, warehouse, company, allocated, batch_nos=None
+):
 	"""Gather enough of the customer's convertible purity in ONE warehouse to cover
 	``pure_needed`` (pure weight), possibly across SEVERAL batches.
 
@@ -296,6 +442,7 @@ def _gather_convertible(customer, item, pure_needed, warehouse, company, allocat
 	``{"item_code", "purity", "warehouse", "rows": [{"batch_no", "qty"}]}`` (source qty in
 	candidate-item units) and reserves each consumed batch in ``allocated``; ``None`` if no
 	single candidate purity can cover it. Higher purities are tried first (PURITY_PRIORITY).
+	``batch_nos`` (a Material Request batch's lineage) restricts the candidate batches.
 	"""
 	pure_needed = flt(pure_needed, 3)
 	if pure_needed <= TOLERANCE:
@@ -310,7 +457,13 @@ def _gather_convertible(customer, item, pure_needed, warehouse, company, allocat
 			if not cand_purity:
 				continue
 			rows, acc_pure = _accumulate_batches(
-				customer, candidate, cand_purity, pure_needed, warehouse, allocated
+				customer,
+				candidate,
+				cand_purity,
+				pure_needed,
+				warehouse,
+				allocated,
+				batch_nos=batch_nos,
 			)
 			if acc_pure >= pure_needed - TOLERANCE and rows:
 				for r in rows:
@@ -326,13 +479,19 @@ def _gather_convertible(customer, item, pure_needed, warehouse, company, allocat
 
 
 def _accumulate_batches(
-	customer, candidate, cand_purity, pure_needed, warehouse, allocated
+	customer, candidate, cand_purity, pure_needed, warehouse, allocated, batch_nos=None
 ):
 	"""Take the customer's ``candidate`` batches in ``warehouse`` (oldest first) until the
-	pure requirement is met. Returns (rows, accumulated_pure) without reserving."""
+	pure requirement is met. Returns (rows, accumulated_pure) without reserving.
+	``batch_nos``, when given, limits the candidates to those batches."""
+	filters = {"item": candidate, "custom_customer": customer, "disabled": 0}
+	if batch_nos is not None:
+		if not batch_nos:
+			return [], 0.0
+		filters["name"] = ["in", list(batch_nos)]
 	batches = frappe.get_all(
 		"Batch",
-		filters={"item": candidate, "custom_customer": customer, "disabled": 0},
+		filters=filters,
 		order_by="creation asc",
 		pluck="name",
 	)
@@ -634,7 +793,16 @@ def _convert_multi(
 	See ``_convert`` for the ``target_batch`` semantics. Multiple source rows let a
 	conversion draw the requirement from several batches when it is spread across them.
 	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
+		lane_tag,
+	)
+
 	inv = CUSTOMER_GOODS if customer else REGULAR_STOCK
+	# The ownership lane, stamped exactly as Metal Conversions stamps it. Without it the
+	# customer-gold dispatcher could not tell this Repack was a conversion, wrote no Conversion
+	# events, and a receipt batch refilled here read as holding nothing returnable. Every row of
+	# one Settle conversion is one owner, so provenance scoping is unchanged.
+	lane = lane_tag(inv, customer)
 	se = _new_se(mr, REPACK_SE_TYPE, "Repack", warehouse, warehouse, customer)
 	for sr in source_rows:
 		_append_item(
@@ -646,6 +814,7 @@ def _convert_multi(
 				"s_warehouse": warehouse,
 				"inventory_type": inv,
 				"customer": customer,
+				"custom_conversion_lane": lane,
 			},
 		)
 	produced_row = {
@@ -654,6 +823,7 @@ def _convert_multi(
 		"t_warehouse": warehouse,
 		"inventory_type": inv,
 		"customer": customer,
+		"custom_conversion_lane": lane,
 	}
 	if target_batch:
 		produced_row["batch_no"] = target_batch

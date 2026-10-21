@@ -1,26 +1,35 @@
 # Copyright (c) 2026, Nirali and contributors
 # For license information, please see license.txt
 
-"""Guard: "Transfer to MOP" requires the material to already sit in the selected
-Manufacturing Operation's department.
+"""Guard: the selected Manufacturing Operation must sit in the department the material is
+actually in.
 
-The check lives in ``material_request.before_update_after_submit`` and compares the
-department of the warehouse the material actually sits in against
-``Manufacturing Operation.department``. That is normally the Request Items' warehouse, but
-a completed Transfer to Department has moved the material on to
-``custom_destination_warehouse`` -- see ``_current_material_warehouse``.
+The rule is one function, ``material_request.validate_mop_department``, with two callers --
+both inside ``before_update_after_submit``:
 
-It deliberately does NOT key on ``Material Request.custom_department`` -- that field
-is a write-once stamp of the *source* (bagging) department and never equals the
-operation's department.
+* the save-time gate at the top of that hook, which runs on a plain Update in
+  ``Material Transferred`` / ``Material Transferred to Department``;
+* the "Transfer to MOP" dispatch further down, which passes the department it has already
+  read alongside ``status``.
 
-On the classic path it applies only to an operation that has been walked into a department
-by a Department IR (``previous_mop`` set). The MWO's first operation is a gathering point
-in the default department and is exempt.
+Not ``before_validate``, where an "on save" check would normally go: frappe runs that only
+for ``_action`` "save"/"submit", never "update_after_submit", and every request carrying an
+operation is already submitted.
 
-That exemption does NOT survive a Transfer to Department: once the operator has staged the
-material into a named department every operation is checked, gathering point included, and
-the message tells them to change the operation rather than move the material again.
+"Actually in" is ``_current_material_warehouse``'s call -- normally the Request Items'
+warehouse, ``custom_destination_warehouse`` once a Transfer to Department has moved the
+material on. That second branch is the "check the destination department" half of the rule.
+
+It deliberately does NOT key on ``Material Request.custom_department`` -- that field is a
+write-once stamp of the *source* (bagging) department and never equals the operation's.
+
+There is no exemption. The MWO's first operation is minted in the default department and
+used to be waved through unchecked as a "gathering point", keyed on its missing
+``previous_mop``; that is the hole wrong-department operations went through and it is gone.
+
+``Material Transferred to MOP`` is outside the save-time gate's state whitelist: by then the
+Stock Entry has moved the material out of the warehouse being compared, and the field is
+read-only there, so re-asserting the rule would leave the document unsaveable.
 """
 
 from types import SimpleNamespace
@@ -43,16 +52,25 @@ def _mr(
 	workflow_state="Material Transferred to MOP",
 	transfer_se=None,
 	destination_warehouse=None,
+	material_request_type="Manufacture",
+	custom_operation_type="Transfer to MOP",
 ):
 	"""A Material Request as before_update_after_submit reads it.
 
 	``transfer_se`` / ``destination_warehouse`` describe a request that has already been
 	through Transfer to Department: the material has moved on, so the guard must read the
 	destination rather than the Request Items' (now stale) warehouse.
+
+	``material_request_type`` / ``custom_operation_type`` carry the defaults the save-time
+	gate keys on. They are defaults rather than per-test arguments because a document
+	missing them would silently skip that gate, and every test here would pass for the
+	wrong reason.
 	"""
 	return SimpleNamespace(
 		name="MR-001",
 		workflow_state=workflow_state,
+		material_request_type=material_request_type,
+		custom_operation_type=custom_operation_type,
 		custom_manufacturing_operation=mop,
 		custom_department=custom_department,
 		custom_department_transfer_se=transfer_se,
@@ -61,16 +79,37 @@ def _mr(
 	)
 
 
-def _mop_row(department, status="Not Started", previous_mop="MOP-PREV-001"):
-	"""A Manufacturing Operation row as before_update_after_submit reads it.
+def _mop_row(department, status="Not Started"):
+	"""A Manufacturing Operation row as the Transfer to MOP dispatch reads it."""
+	return frappe._dict(status=status, department=department)
 
-	``previous_mop`` defaults to set, i.e. an operation a Department IR has already
-	walked into ``department`` -- the case the guard applies to.
+
+def _get_value_stub(mop_row, warehouse_dept):
+	"""``frappe.db.get_value`` for both call shapes the rule uses.
+
+	The dispatch asks for a list of Manufacturing Operation fields ``as_dict``; the
+	save-time path asks for the single ``department`` string. ``warehouse_dept`` is either
+	one department for every warehouse, or a ``{warehouse: department}`` map when a test
+	needs to prove *which* warehouse was consulted.
 	"""
-	return frappe._dict(status=status, department=department, previous_mop=previous_mop)
+
+	def _gv(doctype, name, fieldname=None, **kwargs):
+		if doctype == "Manufacturing Operation":
+			if isinstance(fieldname, str):
+				return mop_row.get(fieldname) if mop_row else None
+			return mop_row
+		if doctype == "Warehouse":
+			if isinstance(warehouse_dept, dict):
+				return warehouse_dept.get(name)
+			return warehouse_dept
+		return None
+
+	return _gv
 
 
 class TestTransferToMopDepartmentGuard(IntegrationTestCase):
+	"""The transition path: the save that applies "Transfer to MOP"."""
+
 	@classmethod
 	def setUpClass(cls):
 		pass
@@ -78,24 +117,11 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 	def _run(self, doc, mop_row, warehouse_dept=None):
 		"""Run before_update_after_submit with both Stock Entry makers stubbed.
 
-		``warehouse_dept`` is either one department for every warehouse, or a
-		``{warehouse: department}`` map when a test needs to prove *which* warehouse the
-		guard consulted.
-
 		Returns (department_maker_mock, plain_maker_mock) so callers can assert that
 		nothing was created on the throwing paths.
 		"""
-
-		def _gv(doctype, name, fieldname=None, **kwargs):
-			if doctype == "Manufacturing Operation":
-				return mop_row
-			if doctype == "Warehouse":
-				if isinstance(warehouse_dept, dict):
-					return warehouse_dept.get(name)
-				return warehouse_dept
-			return None
-
-		with patch(f"{_MR}.frappe.db.get_value", side_effect=_gv), patch.object(
+		stub = _get_value_stub(mop_row, warehouse_dept)
+		with patch(f"{_MR}.frappe.db.get_value", side_effect=stub), patch.object(
 			mr_mod, "make_department_mop_stock_entry"
 		) as dept_se, patch.object(mr_mod, "make_mop_stock_entry") as plain_se:
 			try:
@@ -111,7 +137,7 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 			self._run(doc, mop_row, warehouse_dept)
 		return str(ctx.exception), self._dept_se, self._plain_se
 
-	# --- the new guard ---------------------------------------------------
+	# --- the guard -------------------------------------------------------
 
 	def test_mismatch_throws_and_names_all_three(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
@@ -181,45 +207,29 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 		self.assertIn("Warehouse is missing", msg)
 		dept_se.assert_not_called()
 
-	# --- the never-moved gathering-point exemption -----------------------
+	# --- the gathering-point exemption is gone ---------------------------
 
-	def test_never_moved_mop_is_exempt_from_the_department_check(self):
-		"""The MWO's first operation is minted in the default department and
-		gathers material staged across several departments, so a mismatch there is
-		normal. This is the shape create_pmo builds in the DB-backed fixtures."""
+	def test_gathering_point_mop_is_no_longer_exempt(self):
+		"""The MWO's first operation used to be waved through unchecked.
+
+		It is minted in Manufacturing Setting's default_department and was exempted as a
+		gathering point for material staged across several departments, keyed on its
+		missing ``previous_mop``. That is the hole this closes, so the same shape now
+		throws like any other mismatch.
+		"""
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = _mop_row("Manufacturing Plan & Management - GEPL", previous_mop=None)
-		dept_se, plain_se = self._run(doc, row, "Diamond Setting - GEPL")
-		dept_se.assert_called_once_with(doc, mop=_MOP)
+		row = _mop_row("Manufacturing Plan & Management - GEPL")
+		msg, dept_se, plain_se = self._run_expecting_throw(
+			doc, row, "Diamond Setting - GEPL"
+		)
+		self.assertIn("Diamond Setting - GEPL", msg)
+		self.assertIn("Manufacturing Plan & Management - GEPL", msg)
+		dept_se.assert_not_called()
 		plain_se.assert_not_called()
 
-	def test_never_moved_mop_exempt_on_plain_branch_too(self):
-		doc = _mr(custom_department=None)
-		row = _mop_row("Manufacturing Plan & Management - GEPL", previous_mop=None)
-		dept_se, plain_se = self._run(doc, row, "Diamond Setting - GEPL")
-		plain_se.assert_called_once_with(doc, mop=_MOP)
-		dept_se.assert_not_called()
-
-	def test_never_moved_mop_skips_the_warehouse_lookup_entirely(self):
-		"""No items at all is fine on the exempt path -- the guard never looks."""
-		doc = _mr(custom_department="Diamond Bagging - GEPL", warehouse=None)
-		row = _mop_row("Manufacturing Plan & Management - GEPL", previous_mop=None)
-		dept_se, _p = self._run(doc, row, None)
-		dept_se.assert_called_once_with(doc, mop=_MOP)
-
-	def test_blank_previous_mop_is_treated_as_never_moved(self):
+	def test_finished_check_takes_priority_over_the_department_check(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = _mop_row("Pre Polish - GEPL", previous_mop="")
-		dept_se, _p = self._run(doc, row, "Diamond Setting - GEPL")
-		dept_se.assert_called_once_with(doc, mop=_MOP)
-
-	def test_finished_check_still_applies_to_a_never_moved_mop(self):
-		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = _mop_row(
-			"Manufacturing Plan & Management - GEPL",
-			status="Finished",
-			previous_mop=None,
-		)
+		row = _mop_row("Manufacturing Plan & Management - GEPL", status="Finished")
 		msg, _d, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
 		self.assertIn("Finished", msg)
 
@@ -305,20 +315,15 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 		self.assertIn("WH-Dest", msg)
 		self.assertNotIn("Transfer the material", msg)
 
-	# --- the gathering-point exemption does not survive a transfer -------
-
-	def test_never_moved_mop_is_validated_after_a_department_transfer(self):
-		"""Exempt on the classic path, NOT once the operator has staged the material.
-
-		This is the case that used to pass with no department check at all.
-		"""
+	def test_default_department_mop_is_validated_after_a_department_transfer(self):
+		"""This is the case that used to pass with no department check at all."""
 		doc = _mr(
 			custom_department="Diamond Bagging - GEPL",
 			warehouse="WH-Bagging",
 			transfer_se="SE-DEPT-1",
 			destination_warehouse="WH-Dest",
 		)
-		row = _mop_row("Manufacturing Plan & Management - GEPL", previous_mop=None)
+		row = _mop_row("Manufacturing Plan & Management - GEPL")
 		warehouses = {
 			"WH-Bagging": "Diamond Bagging - GEPL",
 			"WH-Dest": "Diamond Setting - GEPL",
@@ -329,23 +334,6 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 		self.assertIn("Diamond Setting - GEPL", msg)
 		dept_se.assert_not_called()
 		plain_se.assert_not_called()
-
-	def test_never_moved_mop_in_the_destination_department_still_passes(self):
-		doc = _mr(
-			custom_department="Diamond Bagging - GEPL",
-			warehouse="WH-Bagging",
-			transfer_se="SE-DEPT-1",
-			destination_warehouse="WH-Dest",
-		)
-		row = _mop_row("Diamond Setting - GEPL", previous_mop=None)
-		warehouses = {
-			"WH-Bagging": "Diamond Bagging - GEPL",
-			"WH-Dest": "Diamond Setting - GEPL",
-		}
-
-		dept_se, _p = self._run(doc, row, warehouses)
-
-		dept_se.assert_called_once_with(doc, mop=_MOP)
 
 	def test_request_item_warehouse_still_used_without_a_transfer(self):
 		"""Regression: nothing changes for a request that never took the department route."""
@@ -383,15 +371,217 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 		msg, _d, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
 		self.assertIn("select a Manufacturing Operation", msg)
 
-	def test_other_workflow_state_is_noop(self):
+	def test_unrelated_workflow_state_is_a_noop(self):
+		"""A state outside both the dispatch and the save-time whitelist does nothing."""
 		doc = _mr(
 			custom_department="Diamond Bagging - GEPL",
-			workflow_state="Material Transferred",
+			workflow_state="Material Reserved",
 		)
 		row = _mop_row("Pre Polish - GEPL")
 		dept_se, plain_se = self._run(doc, row, "Diamond Setting - GEPL")
 		dept_se.assert_not_called()
 		plain_se.assert_not_called()
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestMopDepartmentCheckOnSave(IntegrationTestCase):
+	"""The save-time gate: a plain Update, with no workflow transition in play.
+
+	Every document here carries a ``get_doc_before_save`` returning the *same*
+	``workflow_state``, so ``_workflow_action_just_applied`` is False and the dispatch below
+	it returns early. Anything that throws can therefore only be the new gate.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _saved(self, **kwargs):
+		doc = _mr(**kwargs)
+		doc.get_doc_before_save = lambda: frappe._dict(
+			workflow_state=doc.workflow_state
+		)
+		return doc
+
+	def _run(self, doc, mop_department, warehouse_dept=None):
+		stub = _get_value_stub(_mop_row(mop_department), warehouse_dept)
+		with patch(f"{_MR}.frappe.db.get_value", side_effect=stub), patch.object(
+			mr_mod, "make_department_mop_stock_entry"
+		) as dept_se, patch.object(mr_mod, "make_mop_stock_entry") as plain_se:
+			try:
+				mr_mod.before_update_after_submit(doc, None)
+			finally:
+				self._dept_se = dept_se
+				self._plain_se = plain_se
+		return dept_se, plain_se
+
+	def _run_expecting_throw(self, doc, mop_department, warehouse_dept=None):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._run(doc, mop_department, warehouse_dept)
+		return str(ctx.exception), self._dept_se, self._plain_se
+
+	def test_plain_update_in_material_transferred_throws_on_a_mismatch(self):
+		doc = self._saved(workflow_state="Material Transferred")
+		msg, dept_se, plain_se = self._run_expecting_throw(
+			doc, "Pre Polish - GEPL", "Diamond Setting - GEPL"
+		)
+		self.assertIn("Diamond Setting - GEPL", msg)
+		self.assertIn("Pre Polish - GEPL", msg)
+		dept_se.assert_not_called()
+		plain_se.assert_not_called()
+
+	def test_plain_update_in_material_transferred_passes_when_departments_agree(self):
+		doc = self._saved(workflow_state="Material Transferred")
+		dept_se, plain_se = self._run(
+			doc, "Diamond Setting - GEPL", "Diamond Setting - GEPL"
+		)
+		# The gate validates; the dispatch below is still skipped, so no Stock Entry.
+		dept_se.assert_not_called()
+		plain_se.assert_not_called()
+
+	def test_plain_update_uses_the_destination_warehouse_in_the_department_state(self):
+		doc = self._saved(
+			workflow_state="Material Transferred to Department",
+			warehouse="WH-Bagging",
+			transfer_se="SE-DEPT-1",
+			destination_warehouse="WH-Dest",
+		)
+		warehouses = {
+			"WH-Bagging": "Pre Polish - GEPL",  # would have passed on the stale reading
+			"WH-Dest": "Diamond Setting - GEPL",
+		}
+		msg, _d, _p = self._run_expecting_throw(doc, "Pre Polish - GEPL", warehouses)
+		self.assertIn("Select a Manufacturing Operation in Diamond Setting - GEPL", msg)
+		self.assertIn("WH-Dest", msg)
+
+	def test_the_check_runs_above_the_transition_gate(self):
+		"""The whole point of the gate's position.
+
+		``_workflow_action_just_applied`` is False here, so if the check sat below it this
+		save would pass silently -- which is the bug being fixed.
+		"""
+		doc = self._saved(workflow_state="Material Transferred")
+		self.assertFalse(mr_mod._workflow_action_just_applied(doc))
+		self._run_expecting_throw(doc, "Pre Polish - GEPL", "Diamond Setting - GEPL")
+
+	def test_reserved_state_is_not_checked(self):
+		"""Pre-transfer states are outside the whitelist: the material is not placed yet."""
+		doc = self._saved(workflow_state="Material Reserved")
+		self._run(doc, "Pre Polish - GEPL", "Diamond Setting - GEPL")
+
+	def test_draft_state_is_not_checked(self):
+		"""Models the split-MR flow, which copies a request into Draft with an operation
+		already stamped from the Manufacturing Work Order."""
+		doc = self._saved(workflow_state="Draft")
+		self._run(doc, "Pre Polish - GEPL", "Diamond Setting - GEPL")
+
+	def test_non_manufacture_request_is_not_checked(self):
+		doc = self._saved(
+			workflow_state="Material Transferred",
+			material_request_type="Material Transfer",
+		)
+		self._run(doc, "Pre Polish - GEPL", "Diamond Setting - GEPL")
+
+	def test_department_route_is_not_checked_in_material_transferred(self):
+		"""The route hides custom_manufacturing_operation but keeps its value.
+
+		Checking that stale value would block the Transfer to Department action -- the very
+		remedy the classic message recommends.
+		"""
+		doc = self._saved(
+			workflow_state="Material Transferred",
+			custom_operation_type="Transfer to Department",
+		)
+		self._run(doc, "Pre Polish - GEPL", "Diamond Setting - GEPL")
+
+	def test_department_route_transition_save_is_not_checked(self):
+		"""The save that lands in the department state, before any Stock Entry exists."""
+		doc = self._saved(
+			workflow_state="Material Transferred to Department",
+			custom_operation_type="Transfer to Department",
+			warehouse="WH-Bagging",
+			transfer_se=None,
+		)
+		self._run(doc, "Pre Polish - GEPL", {"WH-Bagging": "Diamond Setting - GEPL"})
+
+	def test_mop_state_is_not_rechecked_on_a_plain_update(self):
+		"""By then the material has left the warehouse being compared, and the field is
+		read-only -- so the operator would have no way past the check."""
+		doc = self._saved(workflow_state="Material Transferred to MOP")
+		dept_se, plain_se = self._run(
+			doc, "Pre Polish - GEPL", "Diamond Setting - GEPL"
+		)
+		dept_se.assert_not_called()
+		plain_se.assert_not_called()
+
+	def test_no_operation_selected_is_not_checked_on_save(self):
+		doc = self._saved(workflow_state="Material Transferred", mop=None)
+		self._run(doc, "Pre Polish - GEPL", "Diamond Setting - GEPL")
+
+	def test_save_path_uses_the_transition_message(self):
+		"""One function, one wording -- the operator sees the same text either way."""
+		doc = self._saved(workflow_state="Material Transferred")
+		msg, _d, _p = self._run_expecting_throw(
+			doc, "Pre Polish - GEPL", "Diamond Setting - GEPL"
+		)
+		self.assertIn("Transfer the material to", msg)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestValidateMopDepartment(IntegrationTestCase):
+	"""The shared function on its own, including the _UNREAD sentinel's reason to exist."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_supplied_department_is_not_re_read(self):
+		doc = _mr(workflow_state="Material Transferred")
+		with patch(
+			f"{_MR}.frappe.db.get_value",
+			side_effect=_get_value_stub(None, "Diamond Setting - GEPL"),
+		) as gv:
+			mr_mod.validate_mop_department(doc, "Diamond Setting - GEPL")
+
+		self.assertEqual(
+			[call.args[0] for call in gv.call_args_list],
+			["Warehouse"],
+			"the caller had already read the department; it must not be read again",
+		)
+
+	def test_department_is_read_when_not_supplied(self):
+		doc = _mr(workflow_state="Material Transferred")
+		with patch(
+			f"{_MR}.frappe.db.get_value",
+			side_effect=_get_value_stub(
+				_mop_row("Diamond Setting - GEPL"), "Diamond Setting - GEPL"
+			),
+		) as gv:
+			mr_mod.validate_mop_department(doc)
+
+		self.assertEqual(
+			[call.args[0] for call in gv.call_args_list],
+			["Manufacturing Operation", "Warehouse"],
+		)
+
+	def test_explicit_none_department_is_not_treated_as_unread(self):
+		"""The bug a plain ``mop_department=None`` default would cause: a genuinely blank
+		department would be re-read instead of reported."""
+		doc = _mr(workflow_state="Material Transferred")
+		with patch(
+			f"{_MR}.frappe.db.get_value",
+			side_effect=_get_value_stub(
+				_mop_row("Diamond Setting - GEPL"), "Diamond Setting - GEPL"
+			),
+		), self.assertRaises(frappe.ValidationError) as ctx:
+			mr_mod.validate_mop_department(doc, None)
+
+		self.assertIn("(not set)", str(ctx.exception))
+		self.assertIn("Diamond Setting - GEPL", str(ctx.exception))
 
 	def tearDown(self):
 		return super().tearDown()

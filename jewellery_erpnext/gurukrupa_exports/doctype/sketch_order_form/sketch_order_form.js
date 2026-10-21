@@ -229,7 +229,7 @@ frappe.ui.form.on("Sketch Order Form Detail", {
 				"metal_colour",
 				"custom_metal_target",
 				"diamond_target",
-				"gemstone_type1",
+				"gemstone_type",
 				"gemstone_size",
 				"qty",
 				"product_size",
@@ -250,7 +250,7 @@ frappe.ui.form.on("Sketch Order Form Detail", {
 					d.metal_target = value.metal_target;
 				}
 				d.diamond_target = value.diamond_target;
-				d.gemstone_type1 = value.gemstone_type1;
+				d.gemstone_type1 = value.gemstone_type;
 				d.gemstone_size = value.gemstone_size;
 				d.qty = value.qty;
 				d.product_size = value.product_size;

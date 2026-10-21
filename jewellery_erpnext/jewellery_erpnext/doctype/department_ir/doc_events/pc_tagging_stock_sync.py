@@ -370,31 +370,18 @@ def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates):
 def _resolve_voucher_fields_from_mwo(mwo):
 	"""Return (voucher_type, voucher_no, voucher_detail_no) for a new SRE.
 
-	The project convention (confirmed in stock_entry.py:stock_reservation_entry_for_mwo)
-	is to link SREs to the Sales Order via the Parent Manufacturing Order:
-	  voucher_type = "Sales Order"
-	  voucher_no   = Parent Manufacturing Order → sales_order
-	  voucher_detail_no = Parent Manufacturing Order → sales_order_item
+	Same anchor every MWO reservation uses (stock_entry.get_mwo_reservation_voucher): the
+	Parent Manufacturing Order's Sales Order line, or the work order itself for a Finding
+	Manufacturing - Without SO order.
 
 	Falls back to None values when the chain cannot be resolved so the caller
 	can decide whether to throw or skip.
 	"""
-	manufacturing_order = frappe.db.get_value(
-		"Manufacturing Work Order", mwo, "manufacturing_order"
+	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+		get_mwo_reservation_voucher,
 	)
-	if not manufacturing_order:
-		return None, None, None
 
-	result = frappe.db.get_value(
-		"Parent Manufacturing Order",
-		manufacturing_order,
-		["sales_order", "sales_order_item"],
-		as_dict=True,
-	)
-	if not result:
-		return None, None, None
-
-	return "Sales Order", result.get("sales_order"), result.get("sales_order_item")
+	return get_mwo_reservation_voucher(mwo)
 
 
 def _build_sre_from_context(
@@ -804,6 +791,11 @@ def _process_row(dept_ir_doc, row, scenario):
 	_safe_set(se, "manufacturer", dept_ir_doc.manufacturer)
 	_safe_set(se, "manufacturing_work_order", mwo)
 
+	# Resolve every source batch's ownership up front, in one query.
+	_ownership = _pc_tagging_batch_ownership(
+		[ln.get("batch_no") for ln in transfer_lines]
+	)
+
 	for line in transfer_lines:
 		item_row = {
 			"item_code": line["item_code"],
@@ -819,7 +811,7 @@ def _process_row(dept_ir_doc, row, scenario):
 			item_row["batch_no"] = line["batch_no"]
 		if line["pcs"]:
 			item_row["pcs"] = line["pcs"]  # Bug 3: field is "pcs" not "custom_pcs"
-		se.append("items", item_row)
+		se.append("items", _stamp_pc_tagging_row_ownership(item_row, _ownership))
 
 	se.save()
 	se.submit()
@@ -1013,3 +1005,48 @@ def _handle_cancel_row(dept_ir_doc, row, scenario):
 		)
 		new_sre.insert(ignore_links=1)
 		new_sre.submit()
+
+
+def _pc_tagging_batch_ownership(batch_nos):
+	"""``{batch_no: (custom_inventory_type, custom_customer)}`` in ONE query."""
+	batch_nos = sorted({b for b in batch_nos if b})
+	if not batch_nos:
+		return {}
+
+	rows = frappe.get_all(
+		"Batch",
+		filters={"name": ("in", batch_nos)},
+		fields=["name", "custom_inventory_type", "custom_customer"],
+	)
+	return {r.name: (r.custom_inventory_type, r.custom_customer) for r in rows}
+
+
+def _stamp_pc_tagging_row_ownership(row, ownership):
+	"""Carry the SOURCE batch's ownership onto a PC -> Tagging transfer row.
+
+	Without this the row reaches ``doc_events/stock_entry.py``'s blanket "default blank
+	inventory_type to Regular Stock", which silently books a customer's metal as company
+	stock -- and this builder sets ``auto_created = 1``, which short-circuits
+	``CustomStockEntry.update_batches``' ownership backfill, so nothing else fills it in.
+	``validate_loss_ownership_carried`` does not cover this either: it only fires for
+	Process Loss and Repack, and this is a Material Transfer to Department.
+
+	Same normalisation as every other builder (``customization/utils/row_ownership``) and
+	the same shape as ``mop_eod_sync._stamp_eod_row_ownership``, so a customer type with no
+	customer is downgraded rather than minting a row that trips the Customer Goods guard.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+		normalize_ownership,
+	)
+
+	batch_inv, batch_customer = ownership.get(row.get("batch_no")) or (None, None)
+	inventory_type, customer = normalize_ownership(
+		batch_inv,
+		batch_customer,
+		batch_no=row.get("batch_no"),
+		item_code=row.get("item_code"),
+	)
+	row["inventory_type"] = inventory_type
+	if customer:
+		row["customer"] = customer
+	return row

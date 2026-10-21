@@ -70,6 +70,18 @@
   },
   {
    "dt": "Batch",
+   "fieldname": "custom_ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "custom_customer",
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "dt": "Batch",
    "fieldname": "custom_origin_entries",
    "fieldtype": "Table",
    "insert_after": "custom_section_break_jhbup",
@@ -92,6 +104,47 @@
    "fieldtype": "Section Break",
    "insert_after": "produced_qty",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_batch_components",
+   "fieldtype": "Table",
+   "insert_after": "custom_origin_entries",
+   "label": "Batch Components",
+   "module": "Customer Subcontracting",
+   "options": "Batch Component",
+   "description": "C09. What this batch is actually MADE OF, with each component's owner recorded as at the moment of mixing. Distinct from Batch MultiSelect above, which records which batches were consumed -- see the Batch Component docstring for the six measured differences."
+  },
+  {
+   "depends_on": "eval:doc.custom_worker_cost",
+   "dt": "Batch",
+   "fieldname": "custom_batch_worker_cost_section",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_alloy_rate",
+   "label": "Batch Worker Cost",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Cost incurred based on employee working time.",
+   "dt": "Batch",
+   "fieldname": "custom_worker_cost",
+   "fieldtype": "Currency",
+   "insert_after": "custom_batch_worker_cost_section",
+   "label": "Worker Cost",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "description": "Batch Rate + Worker Cost.",
+   "dt": "Batch",
+   "fieldname": "custom_total_cost",
+   "fieldtype": "Currency",
+   "insert_after": "custom_worker_cost",
+   "label": "Total Cost",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
   }
  ]
 }

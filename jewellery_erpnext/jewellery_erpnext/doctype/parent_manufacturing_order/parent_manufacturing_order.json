@@ -92,6 +92,7 @@
   "order_type",
   "sales_type",
   "flow_type",
+  "design_type",
   "po_no",
   "child_po",
   "project",
@@ -101,6 +102,13 @@
   "service_type",
   "jewelex_order_no",
   "jewelex_batch_no",
+  "finding_details_section",
+  "finding_category",
+  "finding_type",
+  "column_break_fdpmo",
+  "finding_setting_type",
+  "finding_size",
+  "is_without_so",
   "parent_details_section",
   "parent_quotation",
   "parent_sales_order",
@@ -267,6 +275,14 @@
    "fieldname": "flow_type",
    "fieldtype": "Data",
    "label": "Flow Type",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order.custom_design_type",
+   "fieldname": "design_type",
+   "fieldtype": "Link",
+   "label": "Design Type",
+   "options": "Attribute Value",
    "read_only": 1
   },
   {
@@ -863,6 +879,53 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.finding_category",
+   "fieldname": "finding_details_section",
+   "fieldtype": "Section Break",
+   "label": "Finding Details"
+  },
+  {
+   "fieldname": "finding_category",
+   "fieldtype": "Link",
+   "label": "Finding Category",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finding_type",
+   "fieldtype": "Link",
+   "label": "Finding Sub Category",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_fdpmo",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "finding_setting_type",
+   "fieldtype": "Link",
+   "label": "Setting Type",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finding_size",
+   "fieldtype": "Link",
+   "label": "Finding Size",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Raised from a Manufacturing Plan in Finding Manufacturing - Without SO mode.",
+   "fieldname": "is_without_so",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Without SO",
+   "read_only": 1
+  },
+  {
    "fieldname": "parent_details_section",
    "fieldtype": "Section Break",
    "label": "Parent Details"
@@ -942,7 +1005,7 @@
    "link_fieldname": "manufacturing_order"
   }
  ],
- "modified": "2026-08-13 10:07:44.936967",
+ "modified": "2026-10-12 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Parent Manufacturing Order",

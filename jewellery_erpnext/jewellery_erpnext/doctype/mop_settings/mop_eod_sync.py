@@ -923,6 +923,59 @@ def _plan_mwo_group(
 					)
 		return None
 
+	# Hold an MWO whose unsynced logs sit on an OPEN operation that is not its current one.
+	# _find_last_operation picks the operation owning the newest unsynced log and never looks at
+	# the work order's pointer, so a stale transaction (an Employee Issue draft submitted after
+	# the work order moved on) would otherwise take over the plan and move stale balances.
+	pointer, stale_ops = _open_non_pointer_operations(mwo, mop_data_list)
+	if stale_ops:
+		stale_names = [md["mop_name"] for md in stale_ops]
+		failures.append(
+			{
+				"step": "ambiguous_current_operation",
+				"mwo": mwo,
+				"company": company,
+				"last_mop": pointer,
+				"affected_mops": all_mop_names,
+				"error_message": (
+					f"Open operation(s) {', '.join(stale_names)} are not work order {mwo}'s current "
+					f"operation {pointer}; the MWO is held (no transfer, logs stay unsynced) until the "
+					"stale transaction is repaired."
+				),
+				"suggested_fix": (
+					"Run jewellery_erpnext.mop_lineage_audit.audit_current_operation_conflicts and the "
+					"reviewed repair, then a selective EOD for this MWO."
+				),
+			}
+		)
+		stats["failed_mwos"] += 1
+		if sync_log_name:
+			for md in stale_ops:
+				for log in md.get("logs") or []:
+					_insert_sync_log_item(
+						sync_log_name,
+						{
+							"manufacturing_work_order": mwo,
+							"manufacturing_operation": md["mop_name"],
+							"company": company,
+							"item_code": log.item_code,
+							"batch_no": log.batch_no,
+							"qty": flt(log.qty_after_transaction_batch_based, 3),
+							"status": "Failed",
+							"sync_stage": "Collect MOP Log",
+							"error_type": "Validation Failed",
+							"error_message": (
+								f"Operation {md['mop_name']} is open but is not the current "
+								f"operation {pointer} of {mwo}."
+							),
+							"suggested_fix": (
+								"Repair the stale transaction (current-operation audit), then run a "
+								"selective EOD."
+							),
+						},
+					)
+		return None
+
 	last_mop_data = _find_last_operation(mop_data_list)
 	if not last_mop_data:
 		_mark_all_mwo_mop_logs_synced([mwo], selective=selective)
@@ -2874,6 +2927,9 @@ def _group_logs_by_company_and_mwo(logs):
 				"manufacturing_order",
 				"department",
 				"loss_wt",
+				# read by _open_non_pointer_operations (stale current-operation hold)
+				"status",
+				"department_ir_status",
 			],
 			limit_page_length=0,
 		):
@@ -3054,6 +3110,49 @@ def _apply_mwo_filter_rows(logs, filter_rows):
 			excluded.append(log)
 
 	return included, excluded
+
+
+def _open_non_pointer_operations(mwo, mop_data_list):
+	"""``(pointer, [mop_data])`` for gathered operations that are OPEN but not the work order's
+	current operation (``Manufacturing Work Order.manufacturing_operation``).
+
+	Only those MWOs are held: logs on a FINISHED predecessor are normal (an Employee IR Receive
+	writes audit copies on its source operation) and keep today's behaviour. On the kggk-prod
+	copy of 2026-10-05 this matched 2 of the 571 MWOs with unsynced logs -- exactly the two whose
+	finished operations a stale Employee Issue had reopened.
+
+	Returns ``(None, [])`` whenever the answer cannot be established (no such MWO, not submitted,
+	no pointer, an operation without a known status), so edge states and DB-free planner tests
+	keep the existing behaviour.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+		is_open_operation,
+	)
+
+	if not mwo or not mop_data_list:
+		return None, []
+	mwo_row = frappe.db.get_value(
+		"Manufacturing Work Order",
+		mwo,
+		["docstatus", "manufacturing_operation"],
+		as_dict=True,
+	)
+	if not mwo_row or cint(mwo_row.get("docstatus")) != 1:
+		return None, []
+	pointer = mwo_row.get("manufacturing_operation")
+	if not pointer or not isinstance(pointer, str):
+		return None, []
+	stale = []
+	for md in mop_data_list:
+		mop_doc = md.get("mop_doc") or {}
+		status = mop_doc.get("status") if hasattr(mop_doc, "get") else None
+		if not isinstance(status, str) or not status:
+			return None, []
+		if md.get("mop_name") != pointer and is_open_operation(
+			status, mop_doc.get("department_ir_status")
+		):
+			stale.append(md)
+	return pointer, stale
 
 
 def _find_last_operation(mop_data_list):
@@ -3428,11 +3527,32 @@ def _resolve_mwo_so_anchor(mwo, mwo_cache=None):
 			mo,
 			["sales_order", "sales_order_item", "manufacturer"],
 		) or (None, None, None)
-	resolved = None
+	# The reservation voucher: the Sales Order line, or -- for a Finding Manufacturing -
+	# Without SO order, which has none -- the work order itself, as
+	# doc_events/stock_entry.get_mwo_reservation_voucher anchors it. The sales_order keys
+	# stay None for such an order, so the Customer Goods ownership check keeps refusing to
+	# heal against a missing Sales Order.
+	voucher_type = voucher_no = voucher_detail_no = None
 	if sales_order:
+		voucher_type, voucher_no, voucher_detail_no = (
+			"Sales Order",
+			sales_order,
+			sales_order_item,
+		)
+	elif mo and frappe.db.get_value("Manufacturing Work Order", mwo, "is_without_so"):
+		voucher_type, voucher_no, voucher_detail_no = (
+			"Manufacturing Work Order",
+			mwo,
+			mwo,
+		)
+	resolved = None
+	if voucher_no:
 		resolved = {
 			"sales_order": sales_order,
 			"sales_order_item": sales_order_item,
+			"voucher_type": voucher_type,
+			"voucher_no": voucher_no,
+			"voucher_detail_no": voucher_detail_no,
 			"base_mr_voucher_qty": _eod_base_mr_voucher_qty(mo, mfr or mo_manufacturer),
 		}
 	if mwo_cache is not None:
@@ -3455,7 +3575,8 @@ def _build_and_submit_mwo_sre(
 	stock_uom,
 	from_voucher=None,
 ):
-	"""Construct + submit ONE Sales-Order-anchored MWO Stock Reservation Entry at
+	"""Construct + submit ONE MWO Stock Reservation Entry (anchored to the Sales Order, or to
+	the work order for a Without-SO order) at
 	``warehouse`` and return its name.
 
 	Extracted verbatim from ``_reserve_sres_from_eod_se_rows`` (the SO demand-cap lift plus
@@ -3473,11 +3594,15 @@ def _build_and_submit_mwo_sre(
 	# intentionally over-reserved across components, so size voucher_qty to cover the
 	# current reservation. The source SRE was already cancelled, so it is excluded from
 	# this global sum.
+	# A dict without the voucher keys is a Sales Order anchor (the shape before Without-SO
+	# orders were anchored to their work order).
+	voucher_type = resolved.get("voucher_type") or "Sales Order"
+	voucher_no = resolved.get("voucher_no") or resolved.get("sales_order")
+	voucher_detail_no = resolved.get("voucher_detail_no") or resolved.get(
+		"sales_order_item"
+	)
 	total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-		item_code,
-		"Sales Order",
-		resolved["sales_order"],
-		resolved["sales_order_item"],
+		item_code, voucher_type, voucher_no, voucher_detail_no
 	)
 	floor = flt(total_so_reserved) + reserved_qty
 	base_mr_voucher_qty = resolved["base_mr_voucher_qty"]
@@ -3487,9 +3612,9 @@ def _build_and_submit_mwo_sre(
 		effective_voucher_qty = floor
 
 	new_sre = frappe.new_doc("Stock Reservation Entry")
-	new_sre.voucher_type = "Sales Order"
-	new_sre.voucher_no = resolved["sales_order"]
-	new_sre.voucher_detail_no = resolved["sales_order_item"]
+	new_sre.voucher_type = voucher_type
+	new_sre.voucher_no = voucher_no
+	new_sre.voucher_detail_no = voucher_detail_no
 	new_sre.voucher_qty = effective_voucher_qty
 	new_sre.item_code = item_code
 	new_sre.warehouse = warehouse

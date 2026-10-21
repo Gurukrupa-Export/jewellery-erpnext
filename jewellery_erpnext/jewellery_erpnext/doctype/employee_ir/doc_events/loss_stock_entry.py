@@ -3,9 +3,8 @@
 On Receive submit: for each row in employee_loss_details and
 manually_book_loss_details with proportionally_loss > 0, creates a
 "Process Loss" (Repack purpose) Stock Entry that moves the loss quantity
-from the SRE source warehouse to either:
-  - Scrap warehouse by department  (is_raw_material = 0)
-  - Employee / Subcontractor Raw Material warehouse  (is_raw_material = 1)
+from the SRE source warehouse to the Department Scrap warehouse, and maps the
+item to its corresponding loss variant (e.g., M -> ML, F -> FL).
 
 Before the SE is submitted, each matching Stock Reservation Entry that still holds a
 reservation is cancelled and recreated with reduced reserved_qty, so the loss quantity
@@ -23,7 +22,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, nowtime, today
+from frappe.utils import flt, nowtime, today
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	resolve_batch_ownership,
@@ -501,57 +500,6 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
 	return rows
 
 
-def get_batch_sre_headroom(mwo, batch_nos):
-	"""``{(item_code, batch_no): largest single remaining SRE}`` for ``mwo``.
-
-	The most loss ``_validate_sre_qty`` will let a single row book against a batch.
-	That guard deliberately does NOT aggregate across the batch's SREs -- it throws
-	when the row's qty exceeds the largest *one* of them -- so this is the real
-	per-row ceiling, and the loss waterfall needs it up front.
-
-	Why it matters: the old flat split spread loss thinly over every batch, so a
-	row's share was almost always well under its reservation. The waterfall
-	concentrates the whole loss on the Regular Stock tier, which can push one row
-	past a reservation that is legitimately split across several operation-tagged
-	SREs (see ``_find_sre``). Capping the tier's capacity here makes the excess
-	spill to the next tier instead of failing an Employee IR that submits today.
-
-	One round-trip for the whole document. A batch with no batch-level SRE (the
-	Qty-based fallback) is absent from the result, and the caller then applies no
-	cap -- preserving today's behaviour rather than guessing.
-	"""
-	batch_nos = sorted({b for b in (batch_nos or []) if b})
-	if not mwo or not batch_nos:
-		return {}
-
-	rows = frappe.db.sql(
-		"""
-        SELECT
-            sre.item_code AS item_code,
-            sbe.batch_no AS batch_no,
-            MAX(
-                sre.reserved_qty
-                - IFNULL(sre.delivered_qty, 0)
-                - IFNULL(sre.transferred_qty, 0)
-                - IFNULL(sre.consumed_qty, 0)
-            ) AS headroom
-        FROM `tabStock Reservation Entry` sre
-        INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
-        WHERE sre.manufacturing_work_order = %(mwo)s
-          AND sre.docstatus = 1
-          AND sbe.batch_no IN %(batches)s
-        GROUP BY sre.item_code, sbe.batch_no
-        """,
-		{"mwo": mwo, "batches": batch_nos},
-		as_dict=True,
-	)
-	return {
-		(r["item_code"], r["batch_no"]): flt(r["headroom"], 3)
-		for r in rows
-		if flt(r["headroom"]) > TOLERANCE
-	}
-
-
 def _find_sre(eir, row, mwo, table_name, qty):
 	"""Return ``(sre_doc, candidates)`` for this loss row.
 
@@ -737,60 +685,8 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 
 
 def _resolve_t_warehouse(eir, table_name):
-	"""Resolve target warehouse based on is_raw_material."""
-	if cint(eir.is_raw_material):
-		return _resolve_raw_material_warehouse(eir)
+	"""Resolve target warehouse. Process Loss always uses the Department Scrap warehouse."""
 	return _resolve_scrap_warehouse(eir)
-
-
-def _resolve_raw_material_warehouse(eir):
-	if eir.subcontracting == "Yes":
-		if not eir.subcontractor:
-			frappe.throw(
-				_(
-					"Employee IR {0}: subcontractor is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"company": eir.company,
-				"subcontractor": eir.subcontractor,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for "
-					"subcontractor {1}"
-				).format(eir.name, eir.subcontractor)
-			)
-	else:
-		if not eir.employee:
-			frappe.throw(
-				_(
-					"Employee IR {0}: employee is required when "
-					"is_raw_material is enabled"
-				).format(eir.name)
-			)
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"employee": eir.employee,
-				"warehouse_type": "Raw Material",
-			},
-		)
-		if not wh:
-			frappe.throw(
-				_(
-					"Employee IR {0}: No Raw Material warehouse found for employee {1}"
-				).format(eir.name, eir.employee)
-			)
-	return wh
 
 
 def _resolve_scrap_warehouse(eir):
@@ -827,11 +723,7 @@ def _resolve_scrap_warehouse(eir):
 
 def _resolve_loss_item(eir, row, table_name):
 	"""Return the item_code to use on the produce row of the Process Loss SE."""
-	if cint(eir.is_raw_material):
-		# Same item — loss moves to employee/subcontractor raw-material warehouse.
-		return row.item_code
-
-	# Scrap path: resolve the dust/loss variant via the manufacturer's mapping.
+	# Process Loss always resolves the dust/loss variant via the manufacturer's mapping.
 	if not row.variant_of:
 		frappe.throw(
 			_(
@@ -876,11 +768,18 @@ def _resolve_loss_item(eir, row, table_name):
 		)
 
 	from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
+		ensure_loss_item_stockable,
 		get_item_loss_item,
 	)
 
+	# Hand over the template just validated for THIS manufacturer; left to itself the helper
+	# re-reads the Variant Loss Table by variant + loss type with no manufacturer filter.
 	loss_item = get_item_loss_item(
-		eir.company, row.item_code, row.variant_of, loss_type
+		eir.company,
+		row.item_code,
+		row.variant_of,
+		loss_type,
+		loss_variant=loss_variant_template,
 	)
 	if not loss_item:
 		frappe.throw(
@@ -889,7 +788,12 @@ def _resolve_loss_item(eir, row, table_name):
 				"variant_of={1}, loss_type={2} ({3} row {4})"
 			).format(eir.name, row.variant_of, loss_type, table_name, row.idx)
 		)
-	return loss_item
+	# Re-checked here even though get_item_loss_item already guarantees it: the
+	# template's update_variants push runs in a background job after commit once a
+	# template has more than 30 variants, so it can flip this item back to
+	# non-stock between resolution and se.insert(). ERPNext's validate_item would
+	# then reject the produce row with a bare "is not a stock Item".
+	return ensure_loss_item_stockable(loss_item)
 
 
 # ---------------------------------------------------------------------------
@@ -971,17 +875,26 @@ def _stamp_loss_tree(se, eir):
 
 	Unlike the per-row injection Stock Entries, this is ONE Repack spanning every loss row on the
 	Employee IR, so a single header field can only tell the truth when the whole document belongs
-	to one casting tree. On live data most IRs do (a minority span two to four), and stamping a
-	multi-tree IR with whichever tree happened to sort first would be worse than leaving it blank:
-	the tree netting would then subtract another tree's loss from this one's pool.
+	to one casting tree. A CASTING Receive now always does -- a work order from a second tree is
+	rejected by ``tree_casting.validate_single_casting_tree`` -- so for those this always
+	resolves.
+
+	The abstain stays for everything outside that invariant: NON-casting receives (a finding
+	repack keeps its tree past casting, so one can legitimately span several), documents created
+	before the rule, and submits that skipped ``validate``. Stamping one of those with whichever
+	tree happened to sort first would be worse than leaving it blank -- the tree netting would
+	then subtract another tree's loss from this one's pool.
 	"""
 	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 		row_tree_name,
+		single_tree_or_none,
 	)
 
-	trees = {t for t in (row_tree_name(row) for row in eir.employee_ir_operations) if t}
-	if len(trees) == 1:
-		se.custom_tree_number = next(iter(trees))
+	tree_name = single_tree_or_none(
+		row_tree_name(row) for row in eir.employee_ir_operations
+	)
+	if tree_name:
+		se.custom_tree_number = tree_name
 
 
 def _build_combined_loss_se(eir, pending):

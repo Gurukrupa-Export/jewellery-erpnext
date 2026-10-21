@@ -26,10 +26,12 @@
   "order_type",
   "sales_type",
   "flow_type",
+  "design_type",
   "get_mwo",
   "get_sales_order",
   "get_repair_order",
   "manufacturing_plan_table",
+  "finding_details",
   "section_break_cjenr",
   "total_planned_qty",
   "column_break_ahq2y",
@@ -52,10 +54,19 @@
    "label": "Get Sales Order"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
    "fieldname": "manufacturing_plan_table",
    "fieldtype": "Table",
    "label": "Manufacturing Plan Table",
    "options": "Manufacturing Plan Table"
+  },
+  {
+   "depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
+   "fieldname": "finding_details",
+   "fieldtype": "Table",
+   "label": "Finding Details",
+   "mandatory_depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
+   "options": "Manufacturing Plan Finding Detail"
   },
   {
    "fieldname": "company",
@@ -131,7 +142,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Select Manufacture Order",
-   "options": "\nManufacturing\nRepair\nFinding Manufacturing",
+   "options": "\nManufacturing\nRepair\nFinding Manufacturing\nFinding Manufacturing - Without SO",
    "reqd": 1
   },
   {
@@ -141,17 +152,19 @@
    "label": "Get Repair Order"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
    "fieldname": "setting_type",
    "fieldtype": "Link",
    "label": "Setting Type",
    "options": "Attribute Value"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
    "fieldname": "is_subcontracting",
    "fieldtype": "Select",
    "label": "Is Subcontracting",
-   "options": "\nYes\nNo",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
+   "options": "\nYes\nNo"
   },
   {
    "depends_on": "eval: doc.is_subcontracting == \"Yes\";",
@@ -194,6 +207,14 @@
    "read_only": 1
   },
   {
+   "fieldname": "design_type",
+   "fieldtype": "Link",
+   "label": "Design Type",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
    "fieldname": "get_mwo",
    "fieldtype": "Button",
    "label": "Get MWO"
@@ -212,7 +233,7 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2026-07-29 17:37:27.667668",
+ "modified": "2026-10-12 13:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",

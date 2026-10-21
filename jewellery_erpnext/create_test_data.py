@@ -1176,10 +1176,38 @@ def create_test_data():
 			)
 			making_charge_price.insert(ignore_permissions=True)
 
-		if not frappe.db.exists("Purchase Type", "FG Purchase"):
-			frappe.get_doc({"doctype": "Purchase Type", "type": "FG Purchase"}).insert(
-				ignore_permissions=True
-			)
+		# EVERY Purchase Type this app's PRODUCTION code hardcodes, not just the one that
+		# happened to fail first.
+		#
+		# Purchase Order.purchase_type is a Link to Purchase Type (declared in this app's own
+		# custom_fields/purchase_order.json), so each of these masters has to exist or the save
+		# raises "Could not find Purchase Type: <x>":
+		#
+		#   Service            product_certification/doc_events/utils.py:167
+		#   FG Purchase        employee_ir.py:754
+		#   Branch Purchase    customization/sales_invoice/doc_events/utils.py:64
+		#                      customization/serial_and_batch_bundle/serial_and_batch_bundle.py:35
+		#   Subcontracting     gurukrupa_exports/.../sketch_order_form.py:243
+		#
+		# None of this was needed before, because the FIELD was never created on a CI site: this
+		# app's custom_fields/*.json are inert (the after_migrate hook that would load them is
+		# commented out at hooks.py:12), so the assignments landed on an attribute that was not
+		# a field and no link was ever validated. install.provision_schema now creates the
+		# app's own declared field, which is correct -- and that is what made these missing
+		# masters reachable, one CI round at a time.
+		#
+		# Values that appear ONLY in test files ("Invalid Type", "Regular", "Test Type",
+		# "Unknown Type") are deliberate negative-test inputs and must stay absent.
+		for purchase_type in (
+			"FG Purchase",
+			"Service",
+			"Branch Purchase",
+			"Subcontracting",
+		):
+			if not frappe.db.exists("Purchase Type", purchase_type):
+				frappe.get_doc(
+					{"doctype": "Purchase Type", "type": purchase_type}
+				).insert(ignore_permissions=True)
 
 		if not frappe.db.exists("Warehouse Type", "Scrap"):
 			frappe.get_doc({"doctype": "Warehouse Type", "__newname": "Scrap"}).insert(
@@ -1929,7 +1957,9 @@ def create_test_data():
 
 		stock = frappe.get_single("Stock Settings")
 		stock.stock_uom = "Nos"
-		stock.enable_serial_and_batch_no_for_item = 1
+		# enable_serial_and_batch_no_for_item is NOT set here: it has to be on before
+		# the first batch-tracked Item is created, which happens ~400 lines above this
+		# block. setup_data() owns it now -- see the note there.
 		stock.do_not_update_serial_batch_on_creation_of_auto_bundle = 0
 		stock.over_delivery_receipt_allowance = 5
 		stock.mr_qty_allowance = 10
@@ -3049,6 +3079,18 @@ def create_test_data():
 
 			_seed_stock_entry_types()
 
+			from jewellery_erpnext.patches.add_metal_conversion_chain_sc import (
+				execute as _add_metal_conversion_chain_sc,
+			)
+
+			_add_metal_conversion_chain_sc()
+
+			from jewellery_erpnext.patches.add_metal_conversion_workflow import (
+				execute as _add_metal_conversion_workflow,
+			)
+
+			_add_metal_conversion_workflow()
+
 			from jewellery_erpnext.patches.add_stock_entry_type_allowed_roles import (
 				execute as _ensure_stock_entry_type_allowed_roles_field,
 			)
@@ -3109,6 +3151,15 @@ def create_test_data():
 
 			_ensure_order_sales_flow_type_fields()
 
+			# Quotation / Sales Order.custom_design_type is patch-only for the same reason,
+			# and must come after the flow type patch above -- custom_flow_type is its
+			# insert_after anchor on both doctypes.
+			from jewellery_erpnext.patches.add_design_type_fields import (
+				execute as _ensure_design_type_fields,
+			)
+
+			_ensure_design_type_fields()
+
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
 			# Without them every Sales Order / Delivery Note / Sales Invoice save raises
@@ -3121,13 +3172,35 @@ def create_test_data():
 
 			# Serial No.custom_stamping_no is patch-only for the same reason. `bench
 			# install-app` marks every patch as already applied on a fresh site, so
-			# `bench migrate` never runs it and set_stamping_no -- a before_save hook on
-			# EVERY Serial No -- had no field to read.
+			# `bench migrate` never runs it and set_stamping_no -- which every Serial
+			# Number Creator submit calls -- had no field to read.
 			from jewellery_erpnext.patches.add_serial_no_stamping_no_field import (
 				execute as _ensure_serial_no_stamping_no_field,
 			)
 
 			_ensure_serial_no_stamping_no_field()
+
+			# The UNIQUE backstop on custom_stamping_no, so tests run against the same
+			# constraint production has. execute() seeds the tabSeries counters first (it
+			# calls seed_serial_no_stamping_series at its tail), so the index is built over
+			# already-consistent data.
+			from jewellery_erpnext.patches.add_serial_no_stamping_unique_index import (
+				execute as _ensure_serial_no_stamping_unique_index,
+			)
+
+			_ensure_serial_no_stamping_unique_index()
+
+			# The FG-serial BOM weight block on Material Request Item / Stock Entry Detail
+			# (custom_bom_gross_weight ... custom_bom_total_gemstone_pcs). Patch-only for
+			# the same reason as the Serial No fields above, and the git_action_v16 Custom
+			# Field fixture predates it, so without this the columns are missing on
+			# test_site and everything validate_fg_serial_rows / set_fg_bom_weights stamps
+			# is silently dropped on save.
+			from jewellery_erpnext.patches.add_fg_serial_bom_weight_fields import (
+				execute as _ensure_fg_serial_bom_weight_fields,
+			)
+
+			_ensure_fg_serial_bom_weight_fields()
 
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
@@ -3165,6 +3238,70 @@ def create_test_data():
 			)
 
 			_ensure_stock_entry_jwelex_tag_field()
+			# The Customer Gold rate snapshot fields on Stock Entry are declared only by
+			# their patch (custom_fields/*.json is inert -- after_migrate is disabled), so
+			# they must be provisioned here for test_site too, else
+			# set_customer_gold_rate_snapshot silently drops every value it writes.
+			from jewellery_erpnext.patches.add_customer_gold_rate_snapshot_fields import (
+				execute as _ensure_customer_gold_rate_fields,
+			)
+
+			_ensure_customer_gold_rate_fields()
+			# Same for the rate CHECK fields and the approver role (F1).
+			from jewellery_erpnext.patches.add_customer_gold_rate_check_fields import (
+				execute as _ensure_customer_gold_rate_check_fields,
+			)
+
+			_ensure_customer_gold_rate_check_fields()
+			# And the SNC design-tolerance override fields and role (F6).
+			from jewellery_erpnext.patches.add_snc_tolerance_override_fields import (
+				execute as _ensure_snc_tolerance_override_fields,
+			)
+
+			_ensure_snc_tolerance_override_fields()
+			# And the Material Request diamond-substitution fields and role (F11).
+			from jewellery_erpnext.patches.add_mr_diamond_substitution_fields import (
+				execute as _ensure_mr_diamond_substitution_fields,
+			)
+
+			_ensure_mr_diamond_substitution_fields()
+
+			# Sales Order Item ownership-split amounts (custom_company_owned_amount /
+			# custom_customer_supplied_amount). Declared only in the inert
+			# custom_fields/sales_order_item.json, so provision them here for test_site too,
+			# else _update_bom_totals silently drops every value it writes.
+			from jewellery_erpnext.patches.add_sales_order_item_ownership_amount_fields import (
+				execute as _ensure_so_item_ownership_amount_fields,
+			)
+
+			_ensure_so_item_ownership_amount_fields()
+
+			# Stock Entry.ref_customer / Batch.custom_ref_customer (customer-batch-only
+			# Hybrid findings). Patch-only like the fields above, so provision them here
+			# for test_site too, else batch_rename / hybrid_findings read a missing column.
+			from jewellery_erpnext.patches.add_ref_customer_fields import (
+				execute as _ensure_ref_customer_fields,
+			)
+
+			_ensure_ref_customer_fields()
+
+			# Batch.custom_worker_cost / custom_total_cost (Finding Manufacturing - Without
+			# SO). Patch-only like the fields above, so provision them here for test_site too,
+			# else apply_worker_cost_to_batch writes a missing column.
+			from jewellery_erpnext.patches.add_batch_worker_cost_fields import (
+				execute as _ensure_batch_worker_cost_fields,
+			)
+
+			_ensure_batch_worker_cost_fields()
+
+			# The "GK Manufacturing Plan (Get Item Table)" Server Script comes from the
+			# git_action_v16 fixtures enabled, and would refuse every Finding Manufacturing -
+			# Without SO plan; its check now lives in ManufacturingPlan.before_insert.
+			from jewellery_erpnext.patches.disable_mp_get_item_table_server_script import (
+				execute as _disable_mp_get_item_table_script,
+			)
+
+			_disable_mp_get_item_table_script()
 
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:
@@ -3222,6 +3359,32 @@ def create_test_data():
 
 
 def setup_data():
+	# Activate serial/batch BEFORE anything creates an Item.
+	#
+	# erpnext a6fbb0c7 ("fix: respect serial / batch activation in stock settings and
+	# item", 2026-09-29, version-16) made Item.validate throw "Cannot enable Has Batch
+	# No as Activate Serial / Batch No for Item is disabled in Stock Settings" whenever
+	# has_batch_no is set while the Stock Settings flag is off. The flag ships default
+	# 0, and install.sh tracks `version-16` unpinned, so CI picked the change up the
+	# moment it landed.
+	#
+	# create_test_data() calls setup_data() first and create_users_data() after, and
+	# create_users_data creates batch-tracked Items (the first at line ~1541) roughly
+	# 400 lines BEFORE it configured Stock Settings. Every one of them threw. Setting
+	# the flag here is what makes the ordering correct for good: nothing in setup_data
+	# creates an Item, so this always runs first.
+	#
+	# Delegated to the patch so there is ONE implementation, per the app convention: the
+	# patch reaches existing sites, this call reaches fresh / CI ones (install-app marks
+	# patches complete without running them). The assignment that used to sit in
+	# create_users_data's Stock Settings block is gone. Note the sibling patch calls in
+	# create_users_data cannot be used here -- they run ~1500 lines after the first Item.
+	from jewellery_erpnext.patches.enable_serial_and_batch_no_for_item import (
+		execute as _enable_serial_and_batch_no_for_item,
+	)
+
+	_enable_serial_and_batch_no_for_item()
+
 	if not frappe.db.exists("Stock Entry Type", "Process Loss"):
 		frappe.get_doc(
 			{

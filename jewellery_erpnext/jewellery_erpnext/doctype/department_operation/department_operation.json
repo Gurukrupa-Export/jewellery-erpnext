@@ -17,6 +17,7 @@
 "is_subcontracted",
 "allow_zero_qty_wo",
 "allow_finding_mwo",
+"is_finding_repack_requirement",
 "service_item",
 "column_break_otjqr",
 "is_qc_reqd",
@@ -33,6 +34,12 @@
 "column_break_stayp",
 "allowed_diamond_loss",
 "allowed_gemstone_loss",
+"allow_loss_on_tree_number",
+"loss_booking_restrictions_section",
+"dont_allow_loss_metal",
+"dont_allow_loss_diamond",
+"dont_allow_loss_finding",
+"dont_allow_loss_gemstone",
 "finding_loss_booking_section",
 "finding_loss_booking",
 "employee_ir_timing_section",
@@ -121,6 +128,14 @@
 "non_negative": 1
 },
 {
+"depends_on": "eval:doc.tree_no_reqd",
+"description": "Most metal (grams) that can be booked as loss on a Tree Number of this operation, across all its material rows. 0 means no limit.",
+"fieldname": "allow_loss_on_tree_number",
+"fieldtype": "Float",
+"label": "Allow loss on Tree number",
+"non_negative": 1
+},
+{
 "default": "0",
 "fieldname": "is_subcontracted",
 "fieldtype": "Check",
@@ -186,6 +201,12 @@
 "label": "Allow Finding MWO"
 },
 {
+"default": "0",
+"fieldname": "is_finding_repack_requirement",
+"fieldtype": "Check",
+"label": "Is Finding Repack Requirement"
+},
+{
 "fieldname": "manufacturer",
 "fieldtype": "Link",
 "label": "Manufacturer",
@@ -215,11 +236,40 @@
 "fieldtype": "Int",
 "label": "Employee IR Receive Delay (Minutes)",
 "non_negative": 1
+},
+{
+"fieldname": "loss_booking_restrictions_section",
+"fieldtype": "Section Break",
+"label": "Loss Booking Restrictions"
+},
+{
+"default": "0",
+"fieldname": "dont_allow_loss_metal",
+"fieldtype": "Check",
+"label": "Don't Allow Loss Metal"
+},
+{
+"default": "0",
+"fieldname": "dont_allow_loss_diamond",
+"fieldtype": "Check",
+"label": "Don't Allow Loss Diamond"
+},
+{
+"default": "0",
+"fieldname": "dont_allow_loss_finding",
+"fieldtype": "Check",
+"label": "Don't Allow Loss Finding"
+},
+{
+"default": "0",
+"fieldname": "dont_allow_loss_gemstone",
+"fieldtype": "Check",
+"label": "Don't Allow Loss Gemstone"
 }
 ],
 "index_web_pages_for_search": 1,
 "links": [],
-"modified": "2025-04-22 16:34:56.702796",
+"modified": "2026-10-14 10:00:00.000000",
 "modified_by": "Administrator",
 "module": "Jewellery Erpnext",
 "name": "Department Operation",

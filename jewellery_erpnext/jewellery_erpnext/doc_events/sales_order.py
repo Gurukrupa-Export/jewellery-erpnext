@@ -1,9 +1,12 @@
+import hashlib
 import json
+from decimal import Decimal
 
 import frappe
 import requests
 from frappe import _
 from frappe.utils import flt
+from frappe.utils.background_jobs import is_job_enqueued
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	set_bom_item_details,
@@ -43,11 +46,17 @@ def before_validate(self, method):
 		row for row in self.items if not row.get("custom_is_subcontracting_charge_row")
 	]
 
+	validate_no_pending_bom_job(self)
 	set_company_address_from_branch(self)
 	validate_sales_type(self)
 	validate_quotation_item(self)
 	set_repair_serial_bom(self)
-	create_new_bom1(self)
+	if should_create_boms_in_background(self):
+		enqueue_bom_creation(self)
+	elif self.docstatus == 1 and is_bom_pricing_current(self):
+		pass  # priced by the last save or background job; see is_bom_pricing_current
+	else:
+		create_new_bom1(self)
 	add_hybrid_outwork_row(self)
 	set_missing_tax_category_and_template(self)
 	set_sales_type_tax_template(self)
@@ -108,12 +117,18 @@ def set_missing_tax_category_and_template(self):
 	if self.tax_category and self.taxes_and_charges and self.get("taxes"):
 		return
 
-	customer_state = frappe.db.get_value(
-		"Address", self.customer_address, "gst_state_number"
-	)
-	company_state = frappe.db.get_value(
-		"Address", self.company_address, "gst_state_number"
-	)
+	address_states = {
+		a.name: a.gst_state_number
+		for a in frappe.get_all(
+			"Address",
+			filters={
+				"name": ["in", list({self.customer_address, self.company_address})]
+			},
+			fields=["name", "gst_state_number"],
+		)
+	}
+	customer_state = address_states.get(self.customer_address)
+	company_state = address_states.get(self.company_address)
 	if not customer_state or not company_state:
 		return
 
@@ -203,9 +218,9 @@ def on_cancel(self, method):
 	for row in self.items:
 		# Cancel tracking BOM if present
 		if row.custom_tracking_bom:
-			tb = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
-			if tb.docstatus == 1:
-				tb.cancel()
+			from jewellery_erpnext.utils import cancel_tracking_bom_if_unused
+
+			cancel_tracking_bom_if_unused(row.custom_tracking_bom)
 		# Also handle legacy BOM references
 		if row.bom:
 			bom = frappe.get_doc("BOM", row.bom)
@@ -795,6 +810,13 @@ _making_charge_cache = {}  # (customer, metal_type, setting_type, gold_rate, tou
 _metal_purity_cache = {}  # (customer, metal_type, metal_touch) → metal_purity
 _ccp_cache = {}  # customer → ccp_doc | None
 _gemstone_pl_cache = {}  # customer → price_list_type
+_data_migration_cache = {}  # singleton "Data Migration in KGGK" doc — same record every call
+
+
+def _get_data_migration_settings():
+	if "doc" not in _data_migration_cache:
+		_data_migration_cache["doc"] = frappe.get_single("Data Migration in KGGK")
+	return _data_migration_cache["doc"]
 
 
 def _clear_caches():
@@ -803,6 +825,7 @@ def _clear_caches():
 	_metal_purity_cache.clear()
 	_ccp_cache.clear()
 	_gemstone_pl_cache.clear()
+	_data_migration_cache.clear()
 
 
 def _get_bom_context(self):
@@ -940,9 +963,10 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
 		touch,
 		doc.item_subcategory,  # ← added
 	)
-	from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
-	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
-	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	_dmk = _get_data_migration_settings()
+	from_site = _dmk.from_site_1
+	api_key = _dmk.api_key
+	api_secret = _dmk.api_secret
 
 	use_api = bool(from_site)
 
@@ -1247,9 +1271,10 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 	fetch-all cache. Falls back to item_subcategory rows
 	(also from cache) if no direct match.
 	"""
-	from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
-	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
-	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	_dmk = _get_data_migration_settings()
+	from_site = _dmk.from_site_1
+	api_key = _dmk.api_key
+	api_secret = _dmk.api_secret
 	use_api = bool(from_site)
 	if use_api:
 		url = f"{from_site}/api/method/gke_customization.gke_order_forms.doc_events.item.get_finding_charge"
@@ -1505,9 +1530,10 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 		)
 	gemstone_price_list_customer = _gemstone_pl_cache[self.customer]
 
-	from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
-	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
-	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	_dmk = _get_data_migration_settings()
+	from_site = _dmk.from_site_1
+	api_key = _dmk.api_key
+	api_secret = _dmk.api_secret
 	use_api = bool(from_site)
 
 	HEADERS = {"Authorization": f"token {api_key}:{api_secret}"}
@@ -1931,10 +1957,10 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 	if not hasattr(doc, "diamond_detail"):
 		doc.total_diamond_amount = 0
 		return
-
-	from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
-	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
-	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	_dmk = _get_data_migration_settings()
+	from_site = _dmk.from_site_1
+	api_key = _dmk.api_key
+	api_secret = _dmk.api_secret
 	use_api = bool(from_site)
 
 	# customer_key = (
@@ -2533,14 +2559,23 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 
 
 def create_serial_no_bom(self, row, ctx=None):
+	"""Return (unsaved Sales Order BOM copied from the serial's BOM, serial's BOM).
+
+	The caller processes and saves it once. On a re-save, the row's own draft BOM
+	from the previous save (see _get_reusable_so_boms) is overwritten in place
+	instead of a new BOM being created every time.
+	"""
 	serial_no_bom = frappe.db.get_value("Serial No", row.serial_no, "custom_bom_no")
 	if not serial_no_bom:
-		return
+		return None, None
 	# frappe.msgprint(f"{serial_no_bom}")
 	bom_doc = frappe.get_doc("BOM", serial_no_bom)
-	product_certification = frappe.db.get_value(
-		"Customer", self.customer, "custom_ignore_po_creation_for_certification"
-	)
+	if ctx is not None and "ignore_certification" in ctx:
+		product_certification = ctx.ignore_certification
+	else:
+		product_certification = frappe.db.get_value(
+			"Customer", self.customer, "custom_ignore_po_creation_for_certification"
+		)
 	doc = frappe.copy_doc(bom_doc)
 	doc.customer = self.customer
 	if product_certification:
@@ -2568,10 +2603,64 @@ def create_serial_no_bom(self, row, ctx=None):
 		for o in doc.other_detail or []:
 			o.quantity = round(flt(o.quantity), _m_prec)
 
-	doc.save(ignore_permissions=True)
-	row.bom = doc.name
-	row.bom_no = doc.name
-	# frappe.msgprint(f"{row.bom}")
+	existing = (ctx.reusable_boms if ctx else {}).get(row.bom)
+	if existing and existing.item == doc.item:
+		# Saved as an update of the existing BOM: same name, child rows replaced.
+		doc.name = existing.name
+		doc.owner = existing.owner
+		doc.creation = existing.creation
+		doc.modified = existing.modified
+		doc.set("__islocal", 0)
+
+	return doc, bom_doc
+
+
+def _get_reusable_so_boms(self):
+	"""Draft BOMs created for this Sales Order's rows by an earlier save.
+
+	Only a row's own copy qualifies: a draft of the serial BOM's type that is not
+	itself a serial's source BOM, is not used by any other Sales Order and is not
+	shared by two rows of this one (the second row's update would fail on the
+	timestamp the first one changed).
+	"""
+	if self.is_new():
+		return {}
+
+	row_boms = [
+		row.bom
+		for row in self.items
+		if row.bom and row.serial_no and not row.custom_tracking_bom
+	]
+	boms = [bom for bom in set(row_boms) if row_boms.count(bom) == 1]
+	if not boms:
+		return {}
+
+	candidates = {
+		d.name: d
+		for d in frappe.get_all(
+			"BOM",
+			filters={"name": ["in", boms], "docstatus": 0, "bom_type": "Finish Goods"},
+			fields=["name", "item", "owner", "creation", "modified"],
+		)
+	}
+	if not candidates:
+		return {}
+
+	excluded = set(
+		frappe.get_all(
+			"Serial No",
+			filters={"custom_bom_no": ["in", list(candidates)]},
+			pluck="custom_bom_no",
+		)
+	)
+	excluded.update(
+		frappe.get_all(
+			"Sales Order Item",
+			filters={"bom": ["in", list(candidates)], "parent": ["!=", self.name]},
+			pluck="bom",
+		)
+	)
+	return {name: d for name, d in candidates.items() if name not in excluded}
 
 
 def _process_single_row(self, row, ctx):
@@ -2579,28 +2668,19 @@ def _process_single_row(self, row, ctx):
 	item_code = row.item_code
 	cctx = _get_company_context(self, row, ctx)  # ← now cached
 
-	# ── Step 1: create BOM if it doesn't exist yet ──────────────
+	# ── Step 1: build the Sales Order BOM from the serial's BOM ──
 	if not row.custom_tracking_bom:
-		create_serial_no_bom(self, row, ctx)
-		if not row.bom:
+		doc, _snc = create_serial_no_bom(self, row, ctx)
+		if not doc:
 			return
-		# ── Step 2: always process the BOM (new or existing) ─────────
-		if frappe.db.get_value("BOM", row.bom, "docstatus") == 1:
-			frappe.db.set_value("BOM", row.bom, "docstatus", "0")
-		doc = frappe.get_doc("BOM", row.bom)
+		# ── Step 2: process it, then save once (insert, or update on re-save) ──
 		# frappe.throw(f"{doc.as_dict()}")
 		# ── Reset quantities from original Serial No BOM ─────────────
 		# On every save, restore design quantities from the source BOM
 		# (Serial No → custom_bom_no) with customer precision rounding.
 		# This prevents reconcile drift from accumulating across saves —
 		# each save always starts from the same clean design weights.
-		_snc_bom_name = (
-			frappe.db.get_value("Serial No", serial_no, "custom_bom_no")
-			if serial_no
-			else None
-		)
-		if _snc_bom_name:
-			_snc = frappe.get_doc("BOM", _snc_bom_name)
+		if _snc:
 			_m_prec = int(ctx.metal_precision or 3)
 			_s_prec = int(ctx.stone_precision or 3)
 			for m_d, m_s in zip(doc.metal_detail, _snc.metal_detail):
@@ -2617,9 +2697,7 @@ def _process_single_row(self, row, ctx):
 		# Pre-compute metal_and_finding_weight with Diamond Inclusive/Exclusive
 		# logic so threshold checks in _process_metal_detail1 / _process_finding_detail1
 		# are correct (quantities are already reset from SNC BOM above).
-		_pre_making_charges_on = frappe.db.get_value(
-			"Customer", self.customer, "compute_making_charges_on"
-		)
+		_pre_making_charges_on = ctx.making_charges_on
 		_pre_chain = sum(
 			r.quantity for r in doc.finding_detail if r.finding_category == "Chains"
 		)
@@ -2655,20 +2733,18 @@ def _process_single_row(self, row, ctx):
 		_update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=cctx)
 
 		doc.save(ignore_permissions=True)
+		row.bom = doc.name
+		row.bom_no = doc.name
 
-	elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+	elif not row.bom and _tracking_bom_exists(row.custom_tracking_bom, ctx):
 		# row.bom = row.custom_tracking_bom
-		frappe.db.set_value(
-			"Tracking Bom",
-			row.custom_tracking_bom,
-			{
-				"bom_type": "Sales Order",
-				"reference_doctype": "Sales Order",
-				"reference_docname": self.name,
-				"gold_rate_with_gst": self.gold_rate_with_gst,
-			},
+		# Linked to this Sales Order in one bulk write by create_new_bom1 after the loop;
+		# nothing in the loop reads these fields back.
+		ctx.tracking_boms_to_link.append(row.custom_tracking_bom)
+		# Only the amounts are read below, and the link write above does not touch them.
+		doc = ctx.tracking_bom_data.get(row.custom_tracking_bom) or frappe.get_doc(
+			"Tracking Bom", row.custom_tracking_bom
 		)
-		doc = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
 		row.gold_bom_rate = doc.gold_bom_amount
 		row.diamond_bom_rate = doc.diamond_bom_amount
 		row.gemstone_bom_rate = doc.gemstone_bom_amount
@@ -2676,6 +2752,75 @@ def _process_single_row(self, row, ctx):
 		row.making_charge = doc.making_charge
 		row.bom_rate = doc.total_bom_amount
 		row.rate = doc.total_bom_amount
+
+
+_TRACKING_BOM_AMOUNT_FIELDS = (
+	"gold_bom_amount",
+	"diamond_bom_amount",
+	"gemstone_bom_amount",
+	"other_bom_amount",
+	"making_charge",
+	"total_bom_amount",
+)
+
+
+def _get_tracking_bom_amounts(self):
+	"""Amounts of every Tracking BOM linked on the items, keyed by name, in one query."""
+	names = list(
+		{
+			row.custom_tracking_bom
+			for row in self.items
+			if row.get("custom_tracking_bom")
+		}
+	)
+	if not names:
+		return {}
+	return {
+		d.name: d
+		for d in frappe.get_all(
+			"Tracking Bom",
+			filters={"name": ["in", names]},
+			fields=["name", *_TRACKING_BOM_AMOUNT_FIELDS],
+		)
+	}
+
+
+def _tracking_bom_exists(name, ctx):
+	"""``frappe.db.exists("Tracking Bom", name)`` answered from the prefetched map.
+
+	A name the bulk query did not return (missing, or matched only by the database's
+	case-insensitive collation) is checked exactly as before.
+	"""
+	if name and name in ctx.tracking_bom_data:
+		return True
+	return frappe.db.exists("Tracking Bom", name)
+
+
+def _link_tracking_boms_to_sales_order(self, tracking_bom_names):
+	"""Point the rows' Tracking BOMs at this Sales Order in one UPDATE.
+
+	Same values the per-row ``frappe.db.set_value`` wrote. A failure is logged like the per-row
+	failures in create_new_bom1 rather than stopping the save.
+	"""
+	names = list(dict.fromkeys(tracking_bom_names))
+	if not names:
+		return
+	try:
+		frappe.db.set_value(
+			"Tracking Bom",
+			{"name": ["in", names]},
+			{
+				"bom_type": "Sales Order",
+				"reference_doctype": "Sales Order",
+				"reference_docname": self.name,
+				"gold_rate_with_gst": self.gold_rate_with_gst,
+			},
+		)
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			f"BOM failed — {self.name} linking Tracking BOMs",
+		)
 
 
 def _bulk_update_child_rows(self):
@@ -2757,22 +2902,296 @@ def create_new_bom1(self):
 
 	self.total = 0
 	ctx = _get_bom_context(self)
+	# Tracking BOM rows: amounts read in one query (was an exists + get_doc per row) and the
+	# Sales Order link written in one UPDATE (was a set_value per row).
+	ctx.tracking_bom_data = _get_tracking_bom_amounts(self)
+	ctx.tracking_boms_to_link = []
+	ctx.making_charges_on, ctx.ignore_certification = frappe.db.get_value(
+		"Customer",
+		self.customer,
+		["compute_making_charges_on", "custom_ignore_po_creation_for_certification"],
+	) or (None, None)
+	ctx.reusable_boms = _get_reusable_so_boms(self)
+	failures = []
 
 	for i, row in enumerate(self.items):
+		# A failed row must leave neither a half-saved BOM behind nor rates
+		# computed for a BOM that was never saved.
+		row_snapshot = row.as_dict()
+		message_count = len(frappe.local.message_log)
+		frappe.db.savepoint("so_bom_row")
 		try:
 			_process_single_row(self, row, ctx)
-		except Exception:
+		except Exception as e:
+			try:
+				frappe.db.rollback(save_point="so_bom_row")
+			except Exception:
+				# The savepoint is gone: the database already rolled back the whole
+				# transaction (e.g. a deadlock with a concurrent save), so this save
+				# cannot continue. Surface the original error, not the savepoint one.
+				raise e from None
+			row.update(row_snapshot)
+			# The failing BOM's own msgprint/throw would otherwise pop up once per
+			# row; one summary is shown after the loop instead.
+			del frappe.local.message_log[message_count:]
+			failures.append(
+				{"idx": row.idx, "serial_no": row.serial_no, "error": _short_error(e)}
+			)
 			frappe.log_error(
 				frappe.get_traceback(),
 				f"BOM failed — {self.name} row {i} serial_no {row.serial_no}",
 			)
 
+	self.flags.bom_failures = failures
+	if failures and not self.flags.in_so_bom_job:
+		frappe.msgprint(
+			get_bom_failure_message(failures),
+			title=_("BOM not created for {0} rows").format(len(failures)),
+			indicator="orange",
+		)
+
+	_link_tracking_boms_to_sales_order(self, ctx.tracking_boms_to_link)
 	_bulk_update_child_rows(self)
+	if failures:
+		# Failed rows must be priced again at Submit, so this order must not
+		# count as priced (an older key from a clean save is dropped too).
+		forget_bom_pricing(self)
+	else:
+		remember_bom_pricing(self)
 	# frappe.db.set_value(self.doctype, self.name, "total", self.total)
 	# frappe.db.commit()
 	for row in self.items:
 		row.net_amount = flt(row.amount) / flt(row.conversion_factor or 1)
 		row.base_amount = flt(row.amount)
+
+
+# Draft saves with at least this many serial rows create their BOMs in a
+# background job (~0.5s per row), so the save returns in seconds instead of
+# holding the request and the Sales Order naming lock for minutes.
+SO_BOM_BACKGROUND_THRESHOLD = 50
+SO_BOM_JOB_PENDING_KEY = "so_bom_job_pending:{}"
+SO_BOM_JOB_ID = "so_bom::{}"
+SO_BOM_JOB_TIMEOUT = 30 * 60
+SO_BOM_JOB_DONE_EVENT = "so_bom_job_done"
+
+
+def _short_error(e):
+	return (
+		frappe.utils.strip_html(str(e) or type(e).__name__)
+		.split("Note:")[0]
+		.strip()[:200]
+	)
+
+
+def get_bom_failure_message(failures):
+	rows = "".join(
+		f"<tr><td>{f['idx']}</td><td>{frappe.utils.escape_html(f['serial_no'] or '')}</td>"
+		f"<td>{frappe.utils.escape_html(f['error'])}</td></tr>"
+		for f in failures
+	)
+	return (
+		_("These rows were saved without a BOM and rate:")
+		+ "<table class='table table-bordered table-sm mt-2'>"
+		+ f"<tr><th>{_('Row')}</th><th>{_('Serial No')}</th><th>{_('Reason')}</th></tr>"
+		+ rows
+		+ "</table>"
+	)
+
+
+def is_bom_job_pending(sales_order):
+	# The flag alone could outlive a worker that was killed before its finally
+	# block ran, so the job must also still be queued or running.
+	return bool(
+		sales_order
+		and frappe.cache.get_value(SO_BOM_JOB_PENDING_KEY.format(sales_order))
+		and is_job_enqueued(SO_BOM_JOB_ID.format(sales_order))
+	)
+
+
+@frappe.whitelist()
+def clear_bom_job_flag(sales_order):
+	"""Release a Sales Order whose background BOM job is known to be gone."""
+	frappe.only_for("System Manager")
+	frappe.cache.delete_value(SO_BOM_JOB_PENDING_KEY.format(sales_order))
+
+
+# Submit re-prices every BOM (minutes for a large order) unless the order is
+# exactly as it was when last priced, at most this long ago.
+SO_BOM_PRICED_KEY = "so_bom_priced:{}"
+SO_BOM_PRICING_VALID_FOR = 30 * 60
+
+_BOM_PRICING_HEADER_FIELDS = (
+	"customer",
+	"company",
+	"sales_type",
+	"gold_rate",
+	"gold_rate_with_gst",
+	"custom_precision",
+	"custom_precision_for_stone",
+	"custom_parent_sales_order",
+	"custom_diamond_quality",  # copied into every row's diamonds while pricing
+)
+_BOM_PRICING_ROW_FIELDS = (
+	"serial_no",
+	"item_code",
+	"diamond_quality",
+	"bom",
+	"custom_tracking_bom",
+)
+_BOM_PRICING_ROW_NUMBERS = ("qty", "rate")
+
+
+def _normalized(value):
+	# The same order arrives as DB values on save and as browser JSON on submit
+	# (0 vs 0.0, "" vs None), so values are compared in one canonical form.
+	if value in (None, ""):
+		return None
+	if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+		return flt(value, 6)
+	return str(value)
+
+
+def _bom_pricing_fingerprint(self):
+	data = [[_normalized(self.get(f)) for f in _BOM_PRICING_HEADER_FIELDS]]
+	for row in self.items:
+		if row.get("custom_is_subcontracting_charge_row"):
+			continue  # rebuilt by add_hybrid_outwork_row on every save
+		data.append(
+			[_normalized(row.get(f)) for f in _BOM_PRICING_ROW_FIELDS]
+			+ [flt(row.get(f), 6) for f in _BOM_PRICING_ROW_NUMBERS]
+		)
+	return hashlib.sha1(json.dumps(data).encode()).hexdigest()
+
+
+def remember_bom_pricing(self):
+	key = SO_BOM_PRICED_KEY.format(self.name)
+	# Taken from the final committed values, so it matches what submit receives.
+	frappe.db.after_commit.add(
+		lambda: frappe.cache.set_value(
+			key, _bom_pricing_fingerprint(self), expires_in_sec=SO_BOM_PRICING_VALID_FOR
+		)
+	)
+
+
+def forget_bom_pricing(self):
+	frappe.cache.delete_value(SO_BOM_PRICED_KEY.format(self.name))
+
+
+def is_bom_pricing_current(self):
+	if self.sales_type == "Hybrid":
+		# The Subcontracting Charges row is rebuilt from per-row supplied amounts
+		# that only pricing sets (the previous save zeroes them), so a Hybrid
+		# order must always be priced.
+		return False
+	return frappe.cache.get_value(
+		SO_BOM_PRICED_KEY.format(self.name)
+	) == _bom_pricing_fingerprint(self)
+
+
+def onload(self, method=None):
+	# Lets the form disable Save/Submit while the background job holds this
+	# Sales Order; a request sent anyway would wait on the job's row lock and
+	# fail with a lock timeout before any validation could explain why.
+	if self.flags.bom_job_enqueued or is_bom_job_pending(self.name):
+		self.set_onload("bom_job_pending", 1)
+
+
+def validate_no_pending_bom_job(self):
+	if (
+		not self.flags.in_so_bom_job
+		and not self.is_new()
+		and is_bom_job_pending(self.name)
+	):
+		frappe.throw(
+			_(
+				"BOMs for this Sales Order are still being created in the background. "
+				"Please wait for the form to refresh, then try again."
+			),
+			title=_("BOM creation in progress"),
+		)
+
+
+def should_create_boms_in_background(self):
+	if self.flags.in_so_bom_job or self.docstatus != 0 or frappe.flags.in_test:
+		return False
+	rows = sum(1 for row in self.items if row.serial_no and not row.custom_tracking_bom)
+	return rows >= SO_BOM_BACKGROUND_THRESHOLD
+
+
+def enqueue_bom_creation(self):
+	key = SO_BOM_JOB_PENDING_KEY.format(self.name)
+	self.flags.bom_job_enqueued = True  # read by onload, which runs before the commit
+	# deduplicate only sees jobs already in the queue, and this one is pushed
+	# after commit, so a second save of the order in the same request must not
+	# queue it again.
+	queued = frappe.flags.so_bom_jobs_queued = frappe.flags.so_bom_jobs_queued or set()
+	if self.name in queued:
+		return
+	queued.add(self.name)
+	# Marked pending only once this save is committed, so a failed save never
+	# leaves the Sales Order locked.
+	frappe.db.after_commit.add(
+		lambda: frappe.cache.set_value(
+			key, 1, expires_in_sec=SO_BOM_JOB_TIMEOUT + 5 * 60
+		)
+	)
+	frappe.enqueue(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.create_boms_in_background",
+		queue="long",
+		timeout=SO_BOM_JOB_TIMEOUT,
+		job_id=SO_BOM_JOB_ID.format(self.name),
+		deduplicate=True,
+		enqueue_after_commit=True,
+		sales_order=self.name,
+		user=frappe.session.user,
+	)
+	frappe.msgprint(
+		_(
+			"BOMs and rates for {0} rows are being created in the background. "
+			"This form will refresh when they are ready."
+		).format(
+			sum(
+				1 for row in self.items if row.serial_no and not row.custom_tracking_bom
+			)
+		),
+		alert=True,
+		indicator="blue",
+	)
+
+
+def create_boms_in_background(sales_order, user=None):
+	"""Re-save the Sales Order with BOM creation run inline (see before_validate)."""
+	failures, error = [], None
+	try:
+		doc = frappe.get_doc("Sales Order", sales_order)
+		if doc.docstatus == 0:
+			doc.flags.in_so_bom_job = True
+			doc.save(ignore_permissions=True)
+			failures = doc.flags.bom_failures or []
+		frappe.db.commit()
+	except Exception as e:
+		frappe.db.rollback()
+		if isinstance(e, (frappe.QueryDeadlockError, frappe.QueryTimeoutError)) or (
+			frappe.db.is_deadlocked(e) or frappe.db.is_timedout(e)
+		):
+			# Let execute_job retry the whole job; it is safe to repeat because a
+			# re-save reuses the order's own draft BOMs. The flag stays set and the
+			# job keeps its id, so the order remains locked while it retries.
+			raise frappe.RetryBackgroundJobError from e
+		error = _short_error(e)
+		frappe.log_error(title=f"Background BOM creation failed — {sales_order}")
+	frappe.cache.delete_value(SO_BOM_JOB_PENDING_KEY.format(sales_order))
+
+	frappe.publish_realtime(
+		SO_BOM_JOB_DONE_EVENT,
+		{
+			"sales_order": sales_order,
+			"error": error,
+			"failures": len(failures),
+			"failure_message": get_bom_failure_message(failures) if failures else None,
+		},
+		user=user,
+	)
 
 
 def create_sales_order_bom(self, row, diamond_grade_data):
@@ -2875,26 +3294,10 @@ def cancel_bom(self):
 
 
 def validate_serial_number(self):
-	if getattr(self, "skip_serial_validation", False):
-		return
-
-	for row in self.items:
-		if row.serial_no and (not row.quotation_item or not row.prevdoc_docname):
-			# serial_nos = [s.strip() for s in row.serial_no.split('\n') if s.strip()]
-
-			# for serial in serial_nos:
-			existing = frappe.db.sql(  # noqa: F841 - consumed by the duplicate-serial throw commented out below
-				"""
-				SELECT soi.name, soi.parent
-				FROM `tabSales Order Item` soi
-				JOIN `tabSales Order` so ON soi.parent = so.name
-				WHERE so.docstatus = 1
-					AND soi.serial_no = %s
-
-			""",
-				(row.serial_no),
-				as_dict=True,
-			)
+	# The duplicate-serial check (serial already on a submitted Sales Order) is
+	# disabled, so its per-row lookup is not run: it took ~60 ms per row and its
+	# result was never used.
+	return
 
 
 def set_warehouse_from_serial_no(self):
@@ -2911,6 +3314,87 @@ def set_warehouse_from_serial_no(self):
 			# if existing:
 			# 	so_name = existing[0].parent
 			# 	frappe.throw(f"Serial No {row.serial_no} is already used in submitted Sales Order {so_name}.")
+
+
+@frappe.whitelist()
+def fill_items_from_serial_no(serial_nos):
+	"""Item values for rows that carry only a serial_no (e.g. from the grid's CSV upload).
+
+	Only what the form needs to save is fetched, in two bulk queries; the full
+	item details (price, taxes, defaults) are filled by set_missing_values on
+	save, and rates come from the BOM there. Running get_item_details per row
+	here took ~25s for 300 rows.
+	"""
+	frappe.has_permission("Sales Order", "create", throw=True)
+	frappe.has_permission("Serial No", "read", throw=True)
+	frappe.has_permission("Item", "read", throw=True)
+
+	# Results are keyed by the text the client sent, which may differ from the
+	# stored name in case or surrounding spaces (the name lookup ignores both).
+	serial_nos = list(dict.fromkeys(frappe.parse_json(serial_nos) or []))
+	requested = {s: s.strip() for s in serial_nos if s and s.strip()}
+	if not requested:
+		return {"details": {}, "missing": serial_nos}
+
+	serials = frappe.get_all(
+		"Serial No",
+		filters={"name": ["in", list(set(requested.values()))]},
+		fields=["name", "item_code", "custom_bom_no", "custom_gross_wt", "warehouse"],
+	)
+	item_codes = list({d.item_code for d in serials if d.item_code})
+	items = (
+		{
+			d.name: d
+			for d in frappe.get_all(
+				"Item",
+				filters={"name": ["in", item_codes]},
+				fields=[
+					"name",
+					"item_name",
+					"description",
+					"item_group",
+					"stock_uom",
+					"is_stock_item",
+					"gst_hsn_code",
+					"image",
+					"grant_commission",
+				],
+			)
+		}
+		if item_codes
+		else {}
+	)
+
+	found = {}
+	for d in serials:
+		item = items.get(d.item_code)
+		if not item:
+			continue
+
+		found[d.name.casefold()] = {
+			"serial_no": d.name,
+			"item_code": item.name,
+			"item_name": item.item_name,
+			"description": item.description,
+			"item_group": item.item_group,
+			"stock_uom": item.stock_uom,
+			"uom": item.stock_uom,
+			"conversion_factor": 1,
+			"is_stock_item": item.is_stock_item,
+			"gst_hsn_code": item.gst_hsn_code,
+			"image": item.image,
+			"grant_commission": item.grant_commission,
+			"bom": d.custom_bom_no,
+			"custom_gross_weight": d.custom_gross_wt,
+			"warehouse": d.warehouse,
+		}
+
+	details = {
+		sent: found[stripped.casefold()]
+		for sent, stripped in requested.items()
+		if stripped.casefold() in found
+	}
+	return {"details": details, "missing": [s for s in serial_nos if s not in details]}
 
 
 @frappe.whitelist()
@@ -3280,10 +3764,6 @@ def validate_item_dharm(self):
 
 		e_invoice_items = []
 
-		for row in self.items:
-			gross_weighh = frappe.get_value("BOM", row.bom, "gross_weight")
-			row.custom_gross_weight = gross_weighh
-
 		# Prepare invoice items as before
 		for row in customer_payment_term_doc.customer_payment_details:
 			item_type = row.item_type
@@ -3351,6 +3831,7 @@ def validate_item_dharm(self):
 			bom_doc = None
 			if item.bom:
 				bom_doc = frappe.get_doc("BOM", item.bom)
+			item.custom_gross_weight = bom_doc.gross_weight if bom_doc else None
 			if bom_doc:
 				if bom_doc.hallmarking_amount:
 					# frappe.throw("hii")
@@ -4520,21 +5001,24 @@ def make_sales_order_batch(sales_orders, target_doc=None):
 			"Sales Order Item", filters={"parent": so_name}, fields="*"
 		)
 
-		for it in items:
-			snc_list = frappe.db.get_list(
-				"Serial Number Creator",
-				filters={"sales_order_id": so_name},
-				fields=["name"],
+		# Depends only on so_name, not on the item — fetch once per Sales
+		# Order instead of once per item (was re-fetching identical results
+		# for every item in the loop below).
+		snc_list = frappe.db.get_list(
+			"Serial Number Creator",
+			filters={"sales_order_id": so_name},
+			fields=["name"],
+		)
+
+		stock_entries = []
+		for snc in snc_list:
+			stock_entry = frappe.db.get_value(
+				"Stock Entry", {"custom_serial_number_creator": snc.name}, "name"
 			)
+			if stock_entry:
+				stock_entries.append(stock_entry)
 
-			stock_entries = []
-			for snc in snc_list:
-				stock_entry = frappe.db.get_value(
-					"Stock Entry", {"custom_serial_number_creator": snc.name}, "name"
-				)
-				if stock_entry:
-					stock_entries.append(stock_entry)
-
+		for it in items:
 			available_serials = []
 			for stock_entry in stock_entries:
 				serial_no = frappe.db.sql(

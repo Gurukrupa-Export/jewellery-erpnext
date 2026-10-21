@@ -133,32 +133,11 @@ def make_melting_loss_stock_entry(doc):
 	V11 (scrap warehouse). Idempotent.
 	"""
 	# Idempotency: never mint a second loss SE for the same document.
-	if frappe.db.exists(
-		"Stock Entry",
-		{
-			"custom_metal_conversion_reference": doc.name,
-			"stock_entry_type": MELTING_LOSS_SE_TYPE,
-			"auto_created": 1,
-			"docstatus": ["!=", 2],
-		},
-	):
+	if _existing_process_loss_entry(doc):
 		return
 
 	prec = _loss_precision()
 	loss_qty = flt(doc.loss_qty, prec)
-
-	# V11 — department Scrap warehouse (imported resolver throws when unconfigured).
-	from jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion import (
-		get_scrap_warehouse,
-	)
-
-	scrap_wh = get_scrap_warehouse(doc.department)
-
-	# V9 / V10 — mapped loss item variant.
-	loss_item = _resolve_loss_item(doc)
-
-	source_wh = doc.source_warehouse
-	inventory_type = doc.inventory_type or "Regular Stock"
 
 	# Consume rows: FIFO batches already allocated to exactly loss_qty in
 	# update_source_betch (loss mode passes required_qty = loss_qty).
@@ -176,6 +155,65 @@ def make_melting_loss_stock_entry(doc):
 			).format(allocated, loss_qty)
 		)
 
+	se_name = make_process_loss_entry(
+		doc, rows=rows, loss_qty=loss_qty, source_wh=doc.source_warehouse
+	)
+	# db_set persists post-save; a plain attribute assignment would not.
+	doc.db_set("stock_entry", se_name)
+
+
+def _existing_process_loss_entry(doc):
+	"""The live "Process Loss" entry this document already booked, else None.
+
+	``frappe.db.exists`` with a filter dict returns the matching name.
+	"""
+	return frappe.db.exists(
+		"Stock Entry",
+		{
+			"custom_metal_conversion_reference": doc.name,
+			"stock_entry_type": MELTING_LOSS_SE_TYPE,
+			"auto_created": 1,
+			"docstatus": ["!=", 2],
+		},
+	)
+
+
+def _allocation(row):
+	"""``{batch, qty}`` from a Source Batch Details row or a ``split_allocations`` dict."""
+	get = row.get if hasattr(row, "get") else (lambda f, d=None: getattr(row, f, d))
+	return {"batch": get("batch") or get("batch_no"), "qty": get("qty")}
+
+
+def make_process_loss_entry(doc, *, rows, loss_qty, source_wh):
+	"""Build + submit ONE "Process Loss" Repack SE and return its name.
+
+	Consumes ``doc.source_item`` from ``source_wh`` -- ``rows`` are the ``{batch, qty}``
+	allocations that fund ``loss_qty`` -- and produces the mapped loss item into the
+	department Scrap warehouse. Shared by melting loss (department RM warehouse) and the
+	Chain Subcontracting Receive (supplier RM warehouse, ``chain_subcontracting``).
+
+	Carries V9/V10 (loss item) and V11 (scrap warehouse); the caller owns the allocation
+	check. Idempotent: a document's live loss entry is returned instead of minting another.
+	"""
+	existing = _existing_process_loss_entry(doc)
+	if existing:
+		return existing
+
+	prec = _loss_precision()
+	loss_qty = flt(loss_qty, prec)
+
+	# V11 — department Scrap warehouse (imported resolver throws when unconfigured).
+	from jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion import (
+		get_scrap_warehouse,
+	)
+
+	scrap_wh = get_scrap_warehouse(doc.department)
+
+	# V9 / V10 — mapped loss item variant.
+	loss_item = _resolve_loss_item(doc)
+
+	inventory_type = doc.get("inventory_type") or "Regular Stock"
+
 	from jewellery_erpnext.jewellery_erpnext.lock_order import (
 		lock_bins,
 		preallocate_series_for_docs,
@@ -184,7 +222,8 @@ def make_melting_loss_stock_entry(doc):
 
 	# RULE A — deterministic consume order (by batch) to avoid 1213 lock cycles.
 	rows = sorted(
-		rows, key=lambda r: stock_lock_key(doc.source_item, source_wh, r.batch)
+		(_allocation(r) for r in rows),
+		key=lambda r: stock_lock_key(doc.source_item, source_wh, r["batch"]),
 	)
 	# Canonical lock order: pin the Stock Entry naming-series row (position 2) BEFORE
 	# the Bins so this flow is Series-then-Bin like every conformant SE submit -- fixes
@@ -223,9 +262,9 @@ def make_melting_loss_stock_entry(doc):
 			"items",
 			{
 				"item_code": doc.source_item,
-				"qty": flt(r.qty, prec),
+				"qty": flt(r["qty"], prec),
 				"s_warehouse": source_wh,
-				"batch_no": r.batch,
+				"batch_no": r["batch"],
 				"inventory_type": inventory_type,
 				"department": doc.department,
 				"employee": doc.employee,
@@ -259,8 +298,7 @@ def make_melting_loss_stock_entry(doc):
 
 	se.save()
 	se.submit()
-	# db_set persists post-save; a plain attribute assignment would not.
-	doc.db_set("stock_entry", se.name)
+	return se.name
 
 
 def _resolve_loss_item(doc):
@@ -314,8 +352,8 @@ def _resolve_loss_item(doc):
 
 def cancel_melting_loss_stock_entries(doc):
 	"""Scoped cancel cascade: cancel ONLY the auto-created "Process Loss" SEs owned
-	by this document. Legacy conversion SEs (Repack-Metal Conversion) are left
-	untouched, preserving today's behaviour. A no-op for conversion-mode documents.
+	by this document. A no-op for conversion-mode documents, whose Repack-Metal
+	Conversion entry ``metal_conversions.cancel_conversion_stock_entries`` cancels.
 	"""
 	for se_name in frappe.db.get_all(
 		"Stock Entry",

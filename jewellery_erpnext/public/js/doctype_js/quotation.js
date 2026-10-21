@@ -8,6 +8,7 @@ frappe.ui.form.on("Quotation", {
 	},
 	refresh(frm) {
 		update_total_rows(frm);
+		toggle_customer_material_read_only(frm);
 		frm.add_custom_button(
 			__("Purchase Order"),
 			function () {
@@ -270,27 +271,56 @@ frappe.ui.form.on("Quotation", {
 				custom_customer_good: "No",
 				custom_customer_stone: "No",
 				custom_customer_diamond: "No",
-				custom_customer_gold: "No"
+				custom_customer_gold: "No",
 			},
 			Outwork: {
 				custom_customer_finding: "Yes",
 				custom_customer_good: "Yes",
 				custom_customer_stone: "Yes",
 				custom_customer_diamond: "Yes",
-				custom_customer_gold: "Yes"
+				custom_customer_gold: "Yes",
 			},
 			Outright: {
 				custom_customer_finding: "No",
 				custom_customer_good: "No",
 				custom_customer_stone: "No",
 				custom_customer_diamond: "No",
-				custom_customer_gold: "No"
-			}
+				custom_customer_gold: "No",
+			},
 		};
 
 		frm.set_value(config[frm.doc.custom_sales_type] || {});
+
+		// The per-field handlers above only fill blank rows; for a locked Sales Type the rows are
+		// read-only, so push the values now instead of leaving stale ones visible until save.
+		if (LOCKED_SALES_TYPES.includes(frm.doc.custom_sales_type)) {
+			const values = config[frm.doc.custom_sales_type];
+			(frm.doc.items || []).forEach((d) => Object.assign(d, values));
+		}
+		toggle_customer_material_read_only(frm);
 	},
 });
+
+// Sales Types that fix material ownership for the whole order. update_customer_details
+// (customization/quotation/doc_events/utils.py) refetches these rows from the header on save.
+const LOCKED_SALES_TYPES = ["Outright", "Outwork", "Hybrid"];
+const CUSTOMER_MATERIAL_FIELDS = [
+	"custom_customer_gold",
+	"custom_customer_diamond",
+	"custom_customer_stone",
+	"custom_customer_good",
+	"custom_customer_finding",
+];
+
+function toggle_customer_material_read_only(frm) {
+	const locked = LOCKED_SALES_TYPES.includes(frm.doc.custom_sales_type) ? 1 : 0;
+	const grid = frm.fields_dict.items.grid;
+	CUSTOMER_MATERIAL_FIELDS.forEach((field) => {
+		frm.set_df_property(field, "read_only", locked);
+		grid.update_docfield_property(field, "read_only", locked);
+	});
+	frm.refresh_field("items");
+}
 
 function set_item_attribute_filters_on_fields_in_parent_doctype(frm, fields) {
 	fields.map(function (field) {

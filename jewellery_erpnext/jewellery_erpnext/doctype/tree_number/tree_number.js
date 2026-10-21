@@ -192,10 +192,20 @@ function render_balance_summary(frm) {
 			let pending = flt(row.issue_qty) - flt(row.receive_qty) - flt(row.loss_qty);
 			// Surface an over-draw instead of letting it hide in a column of numbers.
 			let flag = pending < 0 ? ' <span class="indicator-pill red">over-drawn</span>' : "";
+			// Received splits by provenance and the halves must add back up. A gap means a
+			// writer drifted (or the row predates the split and was never backfilled), so
+			// show it rather than quietly rendering three numbers that do not reconcile.
+			let split = flt(row.wo_receive_qty) + flt(row.manual_receive_qty);
+			let split_flag =
+				Math.abs(split - flt(row.receive_qty)) > 0.0005
+					? ' <span class="indicator-pill orange">unsplit</span>'
+					: "";
 			return `<tr>
 				<td>${frappe.utils.escape_html(row.item_code || "")}</td>
 				<td class="text-right">${format_number(row.issue_qty)}</td>
-				<td class="text-right">${format_number(row.receive_qty)}</td>
+				<td class="text-right">${format_number(row.receive_qty)}${split_flag}</td>
+				<td class="text-right">${format_number(row.wo_receive_qty)}</td>
+				<td class="text-right">${format_number(row.manual_receive_qty)}</td>
 				<td class="text-right">${format_number(row.loss_qty)}</td>
 				<td class="text-right">${format_number(pending)}${flag}</td>
 			</tr>`;
@@ -208,6 +218,8 @@ function render_balance_summary(frm) {
 				<th>${__("Item")}</th>
 				<th class="text-right">${__("Issued")}</th>
 				<th class="text-right">${__("Received")}</th>
+				<th class="text-right">${__("Receive MWO")}</th>
+				<th class="text-right">${__("Receive unused Material")}</th>
 				<th class="text-right">${__("Loss")}</th>
 				<th class="text-right">${__("Pending")}</th>
 			</tr></thead>

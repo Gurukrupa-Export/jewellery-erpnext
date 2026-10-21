@@ -1,0 +1,104 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-09-14 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "inventory_type",
+  "customer",
+  "qty",
+  "pure_qty",
+  "source_batch",
+  "source_voucher_type",
+  "source_voucher_detail_no",
+  "rate",
+  "amount"
+ ],
+ "fields": [
+  {
+   "columns": 2,
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "columns": 1,
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Inventory Type",
+   "options": "Inventory Type"
+  },
+  {
+   "columns": 2,
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "columns": 1,
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty",
+   "precision": "3"
+  },
+  {
+   "columns": 1,
+   "fieldname": "pure_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Fine Qty",
+   "precision": "3"
+  },
+  {
+   "columns": 2,
+   "fieldname": "source_batch",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Source Batch",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "source_voucher_type",
+   "fieldtype": "Link",
+   "label": "Source Voucher Type",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "source_voucher_detail_no",
+   "fieldtype": "Data",
+   "label": "Source Voucher Detail No"
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Currency",
+   "label": "Rate"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Amount"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-14 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Customer Subcontracting",
+ "name": "Batch Component",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

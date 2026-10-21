@@ -25,6 +25,92 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import (
 )
 
 
+def _get_values_map(doctype, names, fields):
+	"""Fetch ``fields`` of many documents in one query, keyed by name.
+
+	Replaces a ``frappe.db.get_value`` per item row. Read it through ``_lookup``.
+	"""
+	names = list({name for name in names if name})
+	if not names:
+		return {}
+	return {
+		d.name: d
+		for d in frappe.get_all(
+			doctype, filters={"name": ["in", names]}, fields=["name", *fields]
+		)
+	}
+
+
+def _lookup(values_map, doctype, name, fieldname):
+	"""Read one value from a ``_get_values_map`` result.
+
+	A name the bulk query did not return (empty, missing, or matched only by the database's
+	case-insensitive collation) falls back to the original ``frappe.db.get_value``, so the
+	result is exactly what the per-row lookup used to give.
+	"""
+	row = values_map.get(name) if name else None
+	if row is not None:
+		return row.get(fieldname)
+	return frappe.db.get_value(doctype, name, fieldname)
+
+
+def _get_doc_cached(doctype, name, doc_cache):
+	"""``frappe.get_doc`` once per name for the duration of one call (read-only use)."""
+	if name not in doc_cache:
+		doc_cache[name] = frappe.get_doc(doctype, name)
+	return doc_cache[name]
+
+
+def _query_item_bom(item_code, serial_no):
+	bom = frappe.qb.DocType("BOM")
+	query = (
+		frappe.qb.from_(bom)
+		.select(bom.name)
+		.where(
+			(bom.item == item_code)
+			& (
+				(bom.tag_no == serial_no)
+				| (
+					(bom.bom_type == "Finished Goods")
+					& (bom.is_active == 1)
+					& (bom.docstatus == 1)
+				)
+				| ((bom.bom_type == "Template") & (bom.docstatus < 2))
+			)
+		)
+		.orderby(
+			frappe.qb.terms.Case()
+			.when(bom.tag_no == serial_no, 1)
+			.when(bom.bom_type == "Finished Goods", 2)
+			.when(bom.bom_type == "Template", 3)
+			.else_(0),
+		)
+		.orderby(bom.creation)
+		.limit(1)
+	)
+	return query.run(as_dict=True)
+
+
+def _find_item_bom(item_code, serial_no, bom_cache):
+	"""The item's BOM, else its variant parent's (template item's) BOM.
+
+	Memoised per (item_code, serial_no) for one call: a Quotation repeating an item would
+	otherwise run the same queries once per row.
+	"""
+	key = (item_code, serial_no)
+	if key not in bom_cache:
+		bom_result = _query_item_bom(item_code, serial_no)
+
+		# If no BOM found for the item, try to find BOM for the variant parent (template item)
+		if not bom_result:
+			variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+			if variant_of:
+				bom_result = _query_item_bom(variant_of, serial_no)
+
+		bom_cache[key] = bom_result
+	return bom_cache[key]
+
+
 @frappe.whitelist()
 def update_status(quotation_id):
 	status = frappe.db.get_value("Quotation", quotation_id, "status")
@@ -93,12 +179,37 @@ def validate(self, method):
 			deduplicate=True,
 		)
 	if self.docstatus == 0:
+		clear_cancelled_tracking_boms(self)
 		calculate_gst_rate(self)
 		if not self.get("__islocal"):
 			set_bom_item_details(self)
 			update_si(self)
 			validate_invoice_item(self)
 		set_tracking_bom_rate_in_quotation(self)
+
+
+def clear_cancelled_tracking_boms(self):
+	"""Drop row links to cancelled Tracking BOMs from a draft Quotation.
+
+	Cancelling the Quotation can cancel its Tracking BOM (cancel_bom), and an amended copy carries
+	the old link over, which would fail on submit with "Cannot link cancelled document". Cleared
+	here, before_submit asks for the Tracking BOM to be created again; a still-submitted, shared
+	one keeps its link.
+	"""
+	tracking_bom_map = _get_values_map(
+		"Tracking Bom",
+		[row.custom_tracking_bom for row in self.items],
+		["docstatus"],
+	)
+	for row in self.items:
+		if (
+			row.custom_tracking_bom
+			and _lookup(
+				tracking_bom_map, "Tracking Bom", row.custom_tracking_bom, "docstatus"
+			)
+			== 2
+		):
+			row.custom_tracking_bom = None
 
 
 def create_bom_scientifically(self):
@@ -164,13 +275,44 @@ def submit_bom(self):
 def cancel_bom(self):
 	for row in self.items:
 		if row.custom_tracking_bom:
-			bom = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
-			bom.is_active = 0
-			bom.save()
+			# This used to set is_active = 0 and save the Tracking Bom, but Tracking Bom has no
+			# is_active field, so the save changed nothing -- and it failed with "Cannot edit cancelled
+			# document" once the Sales Order's on_cancel had already cancelled it. Now it is cancelled
+			# here when this Quotation was its last user (the Sales Order goes first and has to leave
+			# it while the Quotation still links to it), and left alone while other orders use it.
+			from jewellery_erpnext.utils import cancel_tracking_bom_if_unused
+
+			cancel_tracking_bom_if_unused(row.custom_tracking_bom)
 			row.custom_tracking_bom = None
 
 
-@frappe.whitelist()
+#: The only parents the BOM-detail dialog is ever opened against. Every call site passes
+#: one of these two literals -- ``BOM`` from the Sales Order / Sales Invoice / Delivery
+#: Note / Purchase Order / Stock Entry dialogs, ``Tracking Bom`` from Quotation. Kept as an
+#: allowlist because ``parent_doctype`` arrives from the client and is fed straight to
+#: ``frappe.get_doc``.
+BOM_DETAIL_PARENTS = ("BOM", "Tracking Bom")
+
+#: Never accepted from the caller's row payload. ``docname``/``name`` identify the row;
+#: the rest are framework-owned. ``parenttype``/``parent`` matter most: Frappe's
+#: ``has_child_permission`` resolves the permission target from the row's IN-MEMORY
+#: ``parenttype``, so letting a caller set it lets them choose which doctype their own
+#: permission is checked against.
+_PROTECTED_ROW_FIELDS = (
+	"docname",
+	"name",
+	"parent",
+	"parenttype",
+	"parentfield",
+	"docstatus",
+	"owner",
+	"creation",
+	"modified",
+	"modified_by",
+)
+
+
+@frappe.whitelist(methods=["POST"])
 def update_bom_detail(
 	parent_doctype,
 	parent_doctype_name,
@@ -180,7 +322,40 @@ def update_bom_detail(
 	finding_detail,
 	other_detail,
 ):
+	"""Update the BOM detail child tables of one BOM or Tracking Bom.
+
+	SECURITY. This endpoint took its caller entirely on trust. It is reachable by any
+	authenticated session, and the five child DocTypes it writes are SHARED -- attached to
+	ERPNext's ``BOM`` by ``custom_fields/bom.json`` and to ``Order`` / ``Repair Order`` by
+	gke_customization. A row name therefore addresses far more than the named parent.
+
+	Four things are fixed here:
+
+	* **POST only.** ``@frappe.whitelist()`` alone leaves the endpoint GET-callable, and
+	  Frappe skips CSRF validation for methods outside ``UNSAFE_HTTP_METHODS`` -- so a write
+	  endpoint was drive-by triggerable from a link or an ``<img src>``.
+	* **Authorization.** There was no permission check at all. The parent's own ``save()``
+	  eventually checks ``write``, but only after every child row has already been written
+	  and saved individually.
+	* **``parent_doctype`` is caller-supplied** and went straight into ``frappe.get_doc``.
+	  Now restricted to the two doctypes the dialog actually uses.
+	* **Row resolution** -- see ``update_table``.
+
+	``ignore_validate_update_after_submit`` is deliberately left in place: editing a
+	submitted BOM's costing rows is what this endpoint is for, and narrowing that is a
+	behavioural decision for the business, not part of a security fix.
+	"""
+	if parent_doctype not in BOM_DETAIL_PARENTS:
+		frappe.throw(
+			_("{0} is not a valid parent for BOM details.").format(
+				frappe.bold(parent_doctype)
+			),
+			title=_("Invalid Parent DocType"),
+			exc=frappe.PermissionError,
+		)
+
 	parent = frappe.get_doc(parent_doctype, parent_doctype_name)
+	frappe.has_permission(parent_doctype, "write", doc=parent, throw=True)
 
 	set_metal_detail(parent, metal_detail)
 	set_diamond_detail(parent, diamond_detail)
@@ -239,12 +414,41 @@ def set_other_detail(parent, other_material):
 
 
 def update_table(parent, table, table_field, doc):
-	if not doc.get("docname"):
+	"""Update one row of ``table_field`` on ``parent``.
+
+	Existing rows are resolved from the PARENT's own child table, never globally by name.
+	``frappe.get_doc(table, docname)`` looked the row up by primary key alone and never
+	checked it belonged to ``parent`` -- and because these child DocTypes are shared with
+	ERPNext's ``BOM`` and with gke's ``Order`` / ``Repair Order``, a caller could name a row
+	under any of them and have it rewritten through a parent they were allowed to touch.
+
+	Framework-owned keys are stripped from the payload rather than merged. ``parenttype``
+	is the one that matters: ``frappe.permissions.has_child_permission`` reads it from the
+	row IN MEMORY, so a caller who could set it could choose which doctype their own
+	permission was checked against -- steering the check meant to police them.
+	"""
+	docname = doc.get("docname")
+
+	if not docname:
 		child_doc = parent.append(table_field, {})
 	else:
-		child_doc = frappe.get_doc(table, doc.get("docname"))
-	doc.pop("docname", "")
-	doc.pop("name", "")
+		child_doc = next(
+			(row for row in parent.get(table_field) or [] if row.name == docname), None
+		)
+		if not child_doc:
+			frappe.throw(
+				_("Row {0} does not belong to {1} {2}.").format(
+					frappe.bold(docname),
+					_(parent.doctype),
+					frappe.bold(parent.name),
+				),
+				title=_("Invalid Row Reference"),
+				exc=frappe.PermissionError,
+			)
+
+	for field in _PROTECTED_ROW_FIELDS:
+		doc.pop(field, None)
+
 	child_doc.update(doc)
 	child_doc.flags.ignore_validate_update_after_submit = True
 	child_doc.save()
@@ -353,6 +557,22 @@ def validate_invoice_item(self):
 		aggregated_finding_making_items = {}
 		aggregated_gemstone_items = {}
 
+		# Per-call caches: the lookups below used to run once per item row.
+		bom_cache = {}
+		tracking_bom_docs = {}
+		order_map = _get_values_map(
+			"Order",
+			[
+				item.order_form_id
+				for item in self.items
+				if item.get("item_code")
+				and not item.get("copy_bom")
+				and not item.get("custom_po_details")
+				and item.order_form_type == "Order"
+			],
+			["mod_reason", "new_bom"],
+		)
+
 		for item in self.items:
 			if not item.get("item_code"):
 				continue
@@ -362,77 +582,17 @@ def validate_invoice_item(self):
 			# Order, and a blank one is already refused at make_quotation, so anything this
 			# resolved for such a row would be the item master BOM creeping back in.
 			if not item.get("copy_bom") and not item.get("custom_po_details"):
-				bom = frappe.qb.DocType("BOM")
-				query = (
-					frappe.qb.from_(bom)
-					.select(bom.name)
-					.where(
-						(bom.item == item.get("item_code"))
-						& (
-							(bom.tag_no == item.get("serial_no"))
-							| (
-								(bom.bom_type == "Finished Goods")
-								& (bom.is_active == 1)
-								& (bom.docstatus == 1)
-							)
-							| ((bom.bom_type == "Template") & (bom.docstatus < 2))
-						)
-					)
-					.orderby(
-						frappe.qb.terms.Case()
-						.when(bom.tag_no == item.get("serial_no"), 1)
-						.when(bom.bom_type == "Finished Goods", 2)
-						.when(bom.bom_type == "Template", 3)
-						.else_(0),
-					)
-					.orderby(bom.creation)
-					.limit(1)
+				bom_result = _find_item_bom(
+					item.get("item_code"), item.get("serial_no"), bom_cache
 				)
-				bom_result = query.run(as_dict=True)
-
-				# If no BOM found for the item, try to find BOM for the variant parent (template item)
-				if not bom_result:
-					variant_of = frappe.db.get_value(
-						"Item", item.get("item_code"), "variant_of"
-					)
-					if variant_of:
-						query = (
-							frappe.qb.from_(bom)
-							.select(bom.name)
-							.where(
-								(bom.item == variant_of)
-								& (
-									(bom.tag_no == item.get("serial_no"))
-									| (
-										(bom.bom_type == "Finished Goods")
-										& (bom.is_active == 1)
-										& (bom.docstatus == 1)
-									)
-									| (
-										(bom.bom_type == "Template")
-										& (bom.docstatus < 2)
-									)
-								)
-							)
-							.orderby(
-								frappe.qb.terms.Case()
-								.when(bom.tag_no == item.get("serial_no"), 1)
-								.when(bom.bom_type == "Finished Goods", 2)
-								.when(bom.bom_type == "Template", 3)
-								.else_(0),
-							)
-							.orderby(bom.creation)
-							.limit(1)
-						)
-						bom_result = query.run(as_dict=True)
 
 				if item.order_form_type == "Order":
-					mod_reason = frappe.db.get_value(
-						"Order", item.order_form_id, "mod_reason"
+					mod_reason = _lookup(
+						order_map, "Order", item.order_form_id, "mod_reason"
 					)
 					if "F-G" in item.item_code or mod_reason == "Change in Metal Touch":
-						new_bom = frappe.db.get_value(
-							"Order", item.order_form_id, "new_bom"
+						new_bom = _lookup(
+							order_map, "Order", item.order_form_id, "new_bom"
 						)
 						if new_bom:
 							bom_result = [{"name": new_bom}]
@@ -442,7 +602,9 @@ def validate_invoice_item(self):
 					item.copy_bom = bom_result[0].get("name")
 
 			if item.custom_tracking_bom:
-				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
+				bom_doc = _get_doc_cached(
+					"Tracking Bom", item.custom_tracking_bom, tracking_bom_docs
+				)
 				for diamond in bom_doc.diamond_detail:
 					for e_item in e_invoice_items:
 						if (
@@ -712,9 +874,10 @@ def validate_invoice_item(self):
 
 
 def validate_gold_rate_with_gst(self):
+	order_map = _get_values_map("Order", [i.order_form_id for i in self.items], ["qty"])
 	for i in self.items:
 		if i.order_form_id:
-			order_qty = frappe.db.get_value("Order", i.order_form_id, "qty")
+			order_qty = _lookup(order_map, "Order", i.order_form_id, "qty")
 			if order_qty is not None and i.qty > order_qty:
 				frappe.throw(
 					_(
@@ -748,6 +911,22 @@ def create_tracking_bom_directly(self):
 
 	tracking_boms_to_insert = []
 
+	# Per-call caches: the lookups below used to run once per item row. Nothing they read is
+	# written until the loop is over (Tracking BOMs are inserted after it).
+	tracking_bom_map = _get_values_map(
+		"Tracking Bom",
+		[row.custom_tracking_bom for row in self.items],
+		["docstatus"],
+	)
+	order_map = _get_values_map(
+		"Order",
+		[row.order_form_id for row in self.items],
+		["mod_reason", "new_bom"],
+	)
+	bom_cache = {}
+	source_bom_docs = {}
+	pricing_cache = {}
+
 	for row in self.items:
 		if item_tracking_data.get(row.item_code):
 			row.custom_tracking_bom = item_tracking_data.get(row.item_code)
@@ -756,7 +935,11 @@ def create_tracking_bom_directly(self):
 			row.copy_bom = bom_data.get(row.item_code)
 
 		if row.custom_tracking_bom:
-			if not frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+			# A cancelled one (e.g. copied into an amended Quotation) counts as missing: it can no
+			# longer be linked, so a fresh Tracking BOM is built for the row.
+			if _lookup(
+				tracking_bom_map, "Tracking Bom", row.custom_tracking_bom, "docstatus"
+			) in (None, 2):
 				row.custom_tracking_bom = None
 			else:
 				continue
@@ -774,76 +957,19 @@ def create_tracking_bom_directly(self):
 			# here is the exact substitution this change exists to prevent.
 			bom_result = []
 		else:
-			bom = frappe.qb.DocType("BOM")
-			query = (
-				frappe.qb.from_(bom)
-				.select(bom.name)
-				.where(
-					(bom.item == row.get("item_code"))
-					& (
-						(bom.tag_no == row.get("serial_no"))
-						| (
-							(bom.bom_type == "Finished Goods")
-							& (bom.is_active == 1)
-							& (bom.docstatus == 1)
-						)
-						| ((bom.bom_type == "Template") & (bom.docstatus < 2))
-					)
-				)
-				.orderby(
-					frappe.qb.terms.Case()
-					.when(bom.tag_no == row.get("serial_no"), 1)
-					.when(bom.bom_type == "Finished Goods", 2)
-					.when(bom.bom_type == "Template", 3)
-					.else_(0),
-				)
-				.orderby(bom.creation)
-				.limit(1)
+			bom_result = _find_item_bom(
+				row.get("item_code"), row.get("serial_no"), bom_cache
 			)
-			bom_result = query.run(as_dict=True)
-
-			# If no BOM found for the item, try to find BOM for the variant parent (template item)
-			if not bom_result:
-				variant_of = frappe.db.get_value(
-					"Item", row.get("item_code"), "variant_of"
-				)
-				if variant_of:
-					query = (
-						frappe.qb.from_(bom)
-						.select(bom.name)
-						.where(
-							(bom.item == variant_of)
-							& (
-								(bom.tag_no == row.get("serial_no"))
-								| (
-									(bom.bom_type == "Finished Goods")
-									& (bom.is_active == 1)
-									& (bom.docstatus == 1)
-								)
-								| ((bom.bom_type == "Template") & (bom.docstatus < 2))
-							)
-						)
-						.orderby(
-							frappe.qb.terms.Case()
-							.when(bom.tag_no == row.get("serial_no"), 1)
-							.when(bom.bom_type == "Finished Goods", 2)
-							.when(bom.bom_type == "Template", 3)
-							.else_(0),
-						)
-						.orderby(bom.creation)
-						.limit(1)
-					)
-					bom_result = query.run(as_dict=True)
 
 			if row.order_form_type == "Order":
-				mod_reason = frappe.db.get_value(
-					"Order", row.order_form_id, "mod_reason"
+				mod_reason = _lookup(
+					order_map, "Order", row.order_form_id, "mod_reason"
 				)
 				if "F-G" in row.item_code or mod_reason == "Change in Metal Touch":
 					bom_result = [
 						{
-							"name": frappe.db.get_value(
-								"Order", row.order_form_id, "new_bom"
+							"name": _lookup(
+								order_map, "Order", row.order_form_id, "new_bom"
 							)
 						}
 					]
@@ -858,6 +984,9 @@ def create_tracking_bom_directly(self):
 					metal_criteria,
 					item_tracking_data,
 					bom_data,
+					order_map=order_map,
+					source_bom_docs=source_bom_docs,
+					pricing_cache=pricing_cache,
 				)
 				if tb_doc:
 					tracking_boms_to_insert.append(tb_doc)
@@ -931,18 +1060,30 @@ def _create_single_tracking_bom(
 	metal_criteria,
 	item_tracking_data,
 	bom_data,
+	order_map=None,
+	source_bom_docs=None,
+	pricing_cache=None,
 ):
-	"""Create a single Tracking BOM from a source BOM template/FG, with price optimization."""
+	"""Create a single Tracking BOM from a source BOM template/FG, with price optimization.
+
+	``order_map``, ``source_bom_docs`` and ``pricing_cache`` are per-call caches passed in by
+	``create_tracking_bom_directly`` so repeated rows skip repeated lookups; without them every
+	value is fetched as before.
+	"""
 	copy_bom = source_bom_name
 	# Guarded on custom_po_details: a row mapped from a Purchase Order takes its Copy BOM from
 	# that Purchase Order and nothing else may replace it.
 	if row.order_form_id and not row.custom_po_details:
-		order_form_bom = frappe.db.get_value("Order", row.order_form_id, "new_bom")
+		order_form_bom = _lookup(order_map or {}, "Order", row.order_form_id, "new_bom")
 		if order_form_bom:
 			copy_bom = order_form_bom
 
 	row.copy_bom = copy_bom
-	source_bom = frappe.get_doc("BOM", copy_bom)
+	# The source BOM is only read from here on (copied into the new Tracking BOM), so one
+	# loaded copy can serve every row that shares it.
+	source_bom = _get_doc_cached(
+		"BOM", copy_bom, source_bom_docs if source_bom_docs is not None else {}
+	)
 
 	# Create Tracking BOM
 	tracking_bom = frappe.new_doc("Tracking Bom")
@@ -966,7 +1107,13 @@ def _create_single_tracking_bom(
 
 	# Apply customer-specific pricing
 	_apply_customer_pricing(
-		self, row, tracking_bom, source_bom, attribute_data, metal_criteria
+		self,
+		row,
+		tracking_bom,
+		source_bom,
+		attribute_data,
+		metal_criteria,
+		pricing_cache=pricing_cache,
 	)
 
 	# Copy operations and raw materials
@@ -1117,68 +1264,39 @@ def _copy_bom_child_tables(source_bom, tracking_bom):
 
 
 def _apply_customer_pricing(
-	self, row, tracking_bom, source_bom, attribute_data, metal_criteria
+	self,
+	row,
+	tracking_bom,
+	source_bom,
+	attribute_data,
+	metal_criteria,
+	pricing_cache=None,
 ):
 	"""Apply customer-specific pricing to Tracking BOM child tables.
-	Handles KG GK company-specific logic and standard company logic."""
-	ref_customer = frappe.db.get_value("Quotation", self.name, "ref_customer")
-	diamond_price_list_ref_customer = frappe.db.get_value(
-		"Customer", ref_customer, "diamond_price_list"
-	)
-	gemstone_price_list_ref_customer = frappe.db.get_value(
-		"Customer", ref_customer, "custom_gemstone_price_list_type"
-	)
-	diamond_price_list_customer = frappe.db.get_value(
-		"Customer", tracking_bom.customer, "diamond_price_list"
-	)
-	gemstone_price_list_customer = frappe.db.get_value(
-		"Customer", tracking_bom.customer, "custom_gemstone_price_list_type"
-	)
+	Handles KG GK company-specific logic and standard company logic.
 
-	diamond_price_list = frappe.get_all(
-		"Diamond Price List",
-		filters={
-			"customer": tracking_bom.customer,
-			"price_list_type": diamond_price_list_customer,
-		},
-		fields=["name", "price_list_type"],
-	)
-	# The KG GK branch gates and prices diamonds on the ref customer's list, so
-	# it needs the list fetched for that same customer -- fetching by the party
-	# customer and then testing against the ref customer's price_list_type makes
-	# the gate permanently False whenever the two customers differ.
-	diamond_price_list_ref = frappe.get_all(
-		"Diamond Price List",
-		filters={
-			"customer": ref_customer,
-			"price_list_type": diamond_price_list_ref_customer,
-		},
-		fields=["name", "price_list_type"],
-	)
-	gemstone_price_list = frappe.get_all(
-		"Gemstone Price List",
-		filters={
-			"customer": tracking_bom.customer,
-			"price_list_type": gemstone_price_list_customer,
-		},
-		fields=["name", "price_list_type"],
-	)
+	The price-list context depends only on the Quotation and its customer, not on the row, so
+	with a ``pricing_cache`` it is fetched once per customer for a whole Tracking BOM run.
+	"""
+	if pricing_cache is not None and tracking_bom.customer in pricing_cache:
+		pricing_context = pricing_cache[tracking_bom.customer]
+	else:
+		pricing_context = _get_customer_pricing_context(self, tracking_bom.customer)
+		if pricing_cache is not None:
+			pricing_cache[tracking_bom.customer] = pricing_context
 
-	# Resolve which customer the standard branch should price diamonds against.
-	# The party may not be a pricing entity at all -- the internal factory
-	# customer holds none of the Diamond Price List rows, because its correct
-	# diamond price depends on the end customer, which varies per quotation.
-	# Only in that case fall back to the ref customer; a party that has its own
-	# rows keeps using them, so already-priced documents are untouched.
-	diamond_pricing_customer = tracking_bom.customer
-	diamond_pricing_type = diamond_price_list_customer
-	diamond_pricing_list = diamond_price_list
-	if ref_customer and not frappe.db.count(
-		"Diamond Price List", {"customer": tracking_bom.customer}
-	):
-		diamond_pricing_customer = ref_customer
-		diamond_pricing_type = diamond_price_list_ref_customer
-		diamond_pricing_list = diamond_price_list_ref
+	(
+		ref_customer,
+		diamond_price_list_ref_customer,
+		gemstone_price_list_ref_customer,
+		diamond_price_list_customer,
+		gemstone_price_list_customer,
+		diamond_price_list_ref,
+		gemstone_price_list,
+		diamond_pricing_customer,
+		diamond_pricing_type,
+		diamond_pricing_list,
+	) = pricing_context
 
 	if not attribute_data:
 		attribute_data.update(
@@ -1245,6 +1363,84 @@ def _apply_customer_pricing(
 				)
 
 
+def _get_customer_pricing_context(self, customer):
+	"""Price lists and price-list types for the Quotation's customer and ref customer.
+
+	``customer`` is the Tracking BOM's customer (the Quotation's party).
+	"""
+	ref_customer = frappe.db.get_value("Quotation", self.name, "ref_customer")
+	diamond_price_list_ref_customer = frappe.db.get_value(
+		"Customer", ref_customer, "diamond_price_list"
+	)
+	gemstone_price_list_ref_customer = frappe.db.get_value(
+		"Customer", ref_customer, "custom_gemstone_price_list_type"
+	)
+	diamond_price_list_customer = frappe.db.get_value(
+		"Customer", customer, "diamond_price_list"
+	)
+	gemstone_price_list_customer = frappe.db.get_value(
+		"Customer", customer, "custom_gemstone_price_list_type"
+	)
+
+	diamond_price_list = frappe.get_all(
+		"Diamond Price List",
+		filters={
+			"customer": customer,
+			"price_list_type": diamond_price_list_customer,
+		},
+		fields=["name", "price_list_type"],
+	)
+	# The KG GK branch gates and prices diamonds on the ref customer's list, so
+	# it needs the list fetched for that same customer -- fetching by the party
+	# customer and then testing against the ref customer's price_list_type makes
+	# the gate permanently False whenever the two customers differ.
+	diamond_price_list_ref = frappe.get_all(
+		"Diamond Price List",
+		filters={
+			"customer": ref_customer,
+			"price_list_type": diamond_price_list_ref_customer,
+		},
+		fields=["name", "price_list_type"],
+	)
+	gemstone_price_list = frappe.get_all(
+		"Gemstone Price List",
+		filters={
+			"customer": customer,
+			"price_list_type": gemstone_price_list_customer,
+		},
+		fields=["name", "price_list_type"],
+	)
+
+	# Resolve which customer the standard branch should price diamonds against.
+	# The party may not be a pricing entity at all -- the internal factory
+	# customer holds none of the Diamond Price List rows, because its correct
+	# diamond price depends on the end customer, which varies per quotation.
+	# Only in that case fall back to the ref customer; a party that has its own
+	# rows keeps using them, so already-priced documents are untouched.
+	diamond_pricing_customer = customer
+	diamond_pricing_type = diamond_price_list_customer
+	diamond_pricing_list = diamond_price_list
+	if ref_customer and not frappe.db.count(
+		"Diamond Price List", {"customer": customer}
+	):
+		diamond_pricing_customer = ref_customer
+		diamond_pricing_type = diamond_price_list_ref_customer
+		diamond_pricing_list = diamond_price_list_ref
+
+	return (
+		ref_customer,
+		diamond_price_list_ref_customer,
+		gemstone_price_list_ref_customer,
+		diamond_price_list_customer,
+		gemstone_price_list_customer,
+		diamond_price_list_ref,
+		gemstone_price_list,
+		diamond_pricing_customer,
+		diamond_pricing_type,
+		diamond_pricing_list,
+	)
+
+
 create_new_bom = create_tracking_bom_directly
 
 
@@ -1295,10 +1491,13 @@ def xl_preview(docname):
 		"Total Amt",
 	]
 
+	tracking_bom_docs = {}
 	for item in doc.items:
 		if item.copy_bom:
 			# bom_doc = frappe.get_doc("BOM", item.quotation_bom)
-			bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
+			bom_doc = _get_doc_cached(
+				"Tracking Bom", item.custom_tracking_bom, tracking_bom_docs
+			)
 
 			# total_qty = sum([float(d.quantity or 0) for d in bom_doc.diamond_detail])
 			total_qty = sum(

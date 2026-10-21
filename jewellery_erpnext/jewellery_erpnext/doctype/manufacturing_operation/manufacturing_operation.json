@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "MOP-.######",
+ "autoname": "MOP-.YY.MM.-.######",
  "creation": "2023-04-26 01:35:18.614223",
  "default_view": "List",
  "doctype": "DocType",
@@ -25,6 +25,7 @@
   "for_fg",
   "fg_bom",
   "operation",
+  "tree_number",
   "is_last_operation",
   "type",
   "column_break_7",
@@ -102,6 +103,9 @@
   "column_break_zbak",
   "time_taken",
   "total_minutes",
+  "total_working_hours",
+  "workstation_hour_rate",
+  "worker_cost",
   "section_break_fqd2",
   "on_hold",
   "time_logs",
@@ -588,6 +592,15 @@
    "no_copy": 1
   },
   {
+   "fieldname": "tree_number",
+   "fieldtype": "Link",
+   "label": "Tree Number",
+   "no_copy": 1,
+   "options": "Tree Number",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
    "fieldname": "prev_gross_wt",
    "fieldtype": "Float",
    "label": "Previous gross wt",
@@ -681,6 +694,33 @@
    "fieldtype": "Float",
    "hidden": 1,
    "label": "Total Minutes",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.total_working_hours",
+   "description": "Without-SO finding orders: Employee IR Receive To Time - Issue From Time, summed over this operation's time logs.",
+   "fieldname": "total_working_hours",
+   "fieldtype": "Float",
+   "label": "Working Hours",
+   "no_copy": 1,
+   "precision": "4",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.total_working_hours",
+   "fieldname": "workstation_hour_rate",
+   "fieldtype": "Currency",
+   "label": "Workstation Hour Rate",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.total_working_hours",
+   "description": "Working Hours x Workstation Hour Rate.",
+   "fieldname": "worker_cost",
+   "fieldtype": "Currency",
+   "label": "Worker Cost",
    "no_copy": 1,
    "read_only": 1
   },
@@ -791,7 +831,7 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-07-31 16:31:29.486836",
+ "modified": "2026-10-14 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
