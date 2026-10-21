@@ -53,6 +53,7 @@ jobs:
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Sketch Order Form"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Department IR"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Employee IR"
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_parent_manufacturing_order_count
 
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
