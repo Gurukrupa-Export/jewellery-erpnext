@@ -2,7 +2,6 @@ import frappe
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	StockReservationEntry,
 )
-import frappe
 from frappe import _
 from frappe.utils import cstr
 
@@ -64,26 +63,6 @@ class CustomStockReservationEntry(StockReservationEntry):
 				],
 				doc=self,
 			)
-
-	def is_row_of_voucher(self) -> bool:
-		"""A work-order reservation only has to name a line of its Sales Order.
-
-		stock_reservation_entry_for_mwo (doc_events/stock_entry.py) reserves an order's raw
-		materials -- metal, diamonds, gemstones, findings -- against the Sales Order line of the
-		piece they are made into (reservation_voucher), so its item is never that line's own item.
-		ERPNext's check that the item is a row of the Sales Order (version-16 hotfix, merged into
-		version-16 on 2026-10-21) is meant for reserving the sold item itself, and refused every
-		one of these. Every other reservation keeps ERPNext's check.
-		"""
-		if not self.get("manufacturing_work_order"):
-			return super().is_row_of_voucher()
-		return bool(
-			self.voucher_detail_no
-			and frappe.db.exists(
-				"Sales Order Item",
-				{"name": self.voucher_detail_no, "parent": self.voucher_no},
-			)
-		)
 
 	def auto_reserve_serial_and_batch(self, based_on: str | None = None) -> None:
 		# MWO + MOP flow pre-populates sb_entries with the exact operator-picked

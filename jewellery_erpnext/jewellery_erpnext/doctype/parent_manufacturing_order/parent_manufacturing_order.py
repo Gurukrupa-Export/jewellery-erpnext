@@ -280,9 +280,9 @@ def _validate_metal_item_attributes(item_code, row, bom_table):
 		)
 
 
-# What a Hold / Open / Close of the PMO writes besides its state: the reason is stored ahead of
-# the action, the snapshot by the action itself (doc_events/close_open.py).
-STATE_CHANGE_FIELDS = {"workflow_state", "close_reason", "hold_snapshot"}
+# What a Hold / Open / Close of the PMO writes besides its state: the reason row and the
+# snapshot, both by the action itself (doc_events/close_open.py).
+STATE_CHANGE_FIELDS = {"workflow_state", "status_reasons", "hold_snapshot"}
 
 
 class ParentManufacturingOrder(Document):

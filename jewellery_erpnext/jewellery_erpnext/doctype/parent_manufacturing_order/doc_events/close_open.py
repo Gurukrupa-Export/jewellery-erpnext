@@ -33,7 +33,7 @@ from frappe.desk.doctype.notification_log.notification_log import (
 	enqueue_create_notification,
 )
 from frappe.model.workflow import apply_workflow, get_transitions
-from frappe.utils import cint, flt, strip_html
+from frappe.utils import cint, flt, now_datetime, strip_html
 from frappe.utils.background_jobs import is_job_enqueued
 
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
@@ -80,6 +80,16 @@ TRANSFER_PENDING = "Pending"
 # cancel_all.enqueue_cancel_all's job id: a Hybrid Cancel and a Close never run together.
 CANCEL_ALL_JOB_ID = "pmo_cancel_all::{0}"
 
+# The actions that take a reason, the reasons MOP Settings offers for each (its table of status
+# and reason), and the flags that carry the chosen reason through apply_workflow. The internal
+# flag marks enqueue_close's own Hold, which is part of the Close.
+REASON_ACTIONS = (HOLD, OPEN, CLOSE)
+REASONS_DOCTYPE = "PMO Action Reason"
+REASONS_SETTINGS = "MOP Settings"
+REASONS_FIELD = "pmo_action_reasons"
+REASON_FLAG = "pmo_action_reason"
+INTERNAL_FLAG = "pmo_internal_action"
+
 
 def on_workflow_state_change(pmo):
 	"""Hold / Open / Close what belongs to the PMO when the workflow moves it.
@@ -87,6 +97,11 @@ def on_workflow_state_change(pmo):
 	Called from on_update (a draft's transitions) and on_update_after_submit (a submitted
 	PMO's); the state field already holds the new state. An insert has no earlier version and
 	nothing to move.
+
+	Every Hold, Open and Close carries the reason chosen for it (apply_action / the close job
+	put it in ``pmo.flags``, which apply_workflow keeps through its reload) and adds a row to
+	the PMO's Hold / Open / Close Reasons -- here, in the same transaction as the action, so a
+	refused action leaves no row.
 	"""
 	before = pmo.get_doc_before_save()
 	if not before:
@@ -94,16 +109,70 @@ def on_workflow_state_change(pmo):
 	previous, current = before.get("workflow_state"), pmo.get("workflow_state")
 	if previous == current:
 		return
+	action = _action_of(previous, current)
+	reason = _action_reason(pmo, action)
 	if current in HOLD_STATES:
-		_hold(pmo)
+		_hold(pmo, reason)
 	elif current in CLOSED_STATES:
-		_close(pmo)
+		_close(pmo, reason)
 	elif previous in HOLD_STATES:
 		# Open (Hold -> Submitted), or the submit of a draft that was held.
-		_open(pmo)
+		_open(pmo, reason)
+	if action and reason:
+		_record_reason(pmo, action, reason)
 
 
-def _hold(pmo):
+def _action_of(previous, current):
+	"""The action a transition is: Hold, Open, Close, or None (a Submit, even from Hold
+	(Draft), takes no reason)."""
+	if current in HOLD_STATES:
+		return HOLD
+	if current in CLOSED_STATES:
+		return CLOSE
+	if previous == HOLD_STATE and current == SUBMITTED:
+		return OPEN
+	return None
+
+
+def _action_reason(pmo, action):
+	"""The reason ``action`` was done with, or None for a transition that takes none.
+
+	A Hold / Open / Close needs one. The only exception is enqueue_close's own Hold, which is
+	part of the Close and gets no row of its own.
+	"""
+	if not action:
+		return None
+	reason = (pmo.flags.get(REASON_FLAG) or "").strip()
+	if reason or pmo.flags.get(INTERNAL_FLAG):
+		return reason or None
+	frappe.throw(
+		_(
+			"A reason is needed to {0} a Parent Manufacturing Order: use its {0} action, which asks for one."
+		).format(_(action))
+	)
+
+
+def _record_reason(pmo, action, reason):
+	"""Add the action's row to the PMO's Hold / Open / Close Reasons, written directly: the
+	PMO itself is already saved by now."""
+	row = pmo.append(
+		"status_reasons",
+		{
+			"status": action,
+			"reason": reason,
+			"action_by": frappe.session.user,
+			"action_on": now_datetime(),
+		},
+	)
+	row.docstatus = pmo.docstatus
+	row.db_insert()
+
+
+def _with_reason(message, reason):
+	return f"{message} {_('Reason: {0}').format(reason)}" if reason else message
+
+
+def _hold(pmo, reason=None):
 	snapshot = _snapshot(pmo)
 	docs = _pmo_documents(pmo.name, HOLD)
 	_refuse_unless_ready(pmo.name, HOLD, docs)
@@ -132,13 +201,16 @@ def _hold(pmo):
 	_store_snapshot(pmo, snapshot)
 	pmo.add_comment(
 		"Info",
-		_(
-			"Put on Hold: {0} work orders, {1} operations and {2} Material Requests set to Hold."
-		).format(len(mwos), len(mops), len(mrs)),
+		_with_reason(
+			_(
+				"Put on Hold: {0} work orders, {1} operations and {2} Material Requests set to Hold."
+			).format(len(mwos), len(mops), len(mrs)),
+			reason,
+		),
 	)
 
 
-def _open(pmo):
+def _open(pmo, reason=None):
 	snapshot = _snapshot(pmo)
 	_refuse_open_after_close_started(pmo.name, snapshot)
 	docs = _pmo_documents(pmo.name, OPEN, extra_operations=snapshot.get("mop"))
@@ -167,20 +239,19 @@ def _open(pmo):
 	_restore(MOP, mops, "status")
 	_restore(MR, mrs, "workflow_state")
 	_store_snapshot(pmo, None)
-	if mwos or mops or mrs:
+	if mwos or mops or mrs or reason:
 		pmo.add_comment(
 			"Info",
-			_(
-				"Opened: {0} work orders, {1} operations and {2} Material Requests put back as they were."
-			).format(len(mwos), len(mops), len(mrs)),
+			_with_reason(
+				_(
+					"Opened: {0} work orders, {1} operations and {2} Material Requests put back as they were."
+				).format(len(mwos), len(mops), len(mrs)),
+				reason,
+			),
 		)
 
 
-def _close(pmo):
-	if not (pmo.close_reason or "").strip():
-		frappe.throw(
-			_("Close Reason is required to close a Parent Manufacturing Order.")
-		)
+def _close(pmo, reason=None):
 	docs = _pmo_documents(pmo.name, CLOSE)
 	_refuse_unless_ready(pmo.name, CLOSE, docs)
 
@@ -207,9 +278,12 @@ def _close(pmo):
 	_store_snapshot(pmo, None)
 	pmo.add_comment(
 		"Info",
-		_(
-			"Closed ({0}): {1} work orders closed, {2} operations finished and {3} Material Requests closed."
-		).format(pmo.close_reason.strip(), len(mwos), len(mops), len(mrs)),
+		_with_reason(
+			_(
+				"Closed: {0} work orders closed, {1} operations finished and {2} Material Requests closed."
+			).format(len(mwos), len(mops), len(mrs)),
+			reason,
+		),
 	)
 
 
@@ -506,22 +580,24 @@ def _store_snapshot(pmo, snapshot):
 def check_action(pmo, action):
 	"""Dry run of ``action``'s checks, called before its dialog so a refusal comes first.
 
-	For Close it also returns the Stock Entries that have to be cancelled first (latest
-	first) and the Stopped requests that have to be re-opened for that; with any entries the
-	form offers enqueue_close instead of closing straight away.
+	Returns the reasons MOP Settings offers for the action (the dialog's dropdown). For Close
+	it also returns the Stock Entries that have to be cancelled first (latest first) and the
+	Stopped requests that have to be re-opened for that; with any entries the form offers
+	enqueue_close instead of closing straight away.
 	"""
 	doc = frappe.get_doc(PMO, pmo)
 	_require_action(doc, action)
+	if action not in REASON_ACTIONS:
+		return {}
+	reasons = _configured_reasons(action)
 	if action == OPEN:
 		_refuse_open_after_close_started(doc.name, _snapshot(doc))
-		return {}
-	if action not in (HOLD, CLOSE):
-		return {}
+		return {"reasons": reasons}
 	_refuse_while_job_runs(doc.name)
 	docs = _pmo_documents(doc.name, action, lock=False)
 	_refuse_unless_ready(doc.name, action, docs, stock=False)
 	if action != CLOSE:
-		return {}
+		return {"reasons": reasons}
 	plan = _close_stock_plan(list(docs.mrs))
 	details = (
 		{
@@ -536,24 +612,66 @@ def check_action(pmo, action):
 		else {}
 	)
 	return {
+		"reasons": reasons,
 		"entries": [details[se] for se in plan.entries if se in details],
 		"stopped": plan.stopped,
 	}
 
 
 @frappe.whitelist()
-def save_close_reason(pmo, reason):
-	"""Store the reason ahead of the Close action.
+def apply_action(pmo, action, reason):
+	"""Do the workflow ``action`` (Hold / Open / Close) with the reason chosen for it.
 
-	apply_workflow reloads the document from the database before it applies the transition,
-	so a close_reason set on the open form never reaches it; it has to be in the database by
-	then. Only a PMO the user may Close in its current state takes a reason, so the reason of
-	a Closed PMO is never overwritten.
+	The reason travels with the transition: apply_workflow reloads the PMO from the database
+	but keeps its flags, and the action's own handler adds the reason row in the same
+	transaction (on_workflow_state_change). A refused action therefore leaves no row.
 	"""
-	reason = _required_reason(reason)
+	if action not in REASON_ACTIONS:
+		frappe.throw(_("{0} is not done with a reason.").format(frappe.bold(_(action))))
 	doc = frappe.get_doc(PMO, pmo)
-	_require_action(doc, CLOSE)
-	frappe.db.set_value(PMO, doc.name, "close_reason", reason, update_modified=False)
+	_require_action(doc, action)
+	reason = _valid_reason(action, reason)
+	_refuse_while_job_runs(doc.name)
+	doc.flags[REASON_FLAG] = reason
+	apply_workflow(doc, action)
+
+
+def action_reasons(action):
+	"""The reasons MOP Settings offers for ``action``, in its table's order."""
+	return frappe.get_all(
+		REASONS_DOCTYPE,
+		filters={
+			"parenttype": REASONS_SETTINGS,
+			"parent": REASONS_SETTINGS,
+			"parentfield": REASONS_FIELD,
+			"status": action,
+		},
+		pluck="reason",
+		order_by="idx asc",
+	)
+
+
+def _configured_reasons(action):
+	reasons = action_reasons(action)
+	if not reasons:
+		frappe.throw(
+			_(
+				"There are no reasons for {0} yet: add them in MOP Settings, under PMO Hold / Open / Close Reasons."
+			).format(frappe.bold(_(action)))
+		)
+	return reasons
+
+
+def _valid_reason(action, reason):
+	"""``reason`` when it is one MOP Settings offers for ``action``; refused otherwise."""
+	reason = (reason or "").strip()
+	if reason not in _configured_reasons(action):
+		frappe.throw(
+			_("Choose one of the reasons MOP Settings lists for {0}.").format(
+				frappe.bold(_(action))
+			)
+		)
+	return reason
 
 
 @frappe.whitelist()
@@ -566,8 +684,11 @@ def enqueue_close(pmo, reason):
 	minute on a busy item and holds its tabBin rows until it commits -- and applies the Close.
 	If anything fails the PMO stays on Hold with what was done recorded, and Close again
 	carries on from there.
+
+	The reason chosen for the Close is kept with the job and recorded when the PMO closes;
+	the Hold in between is part of the Close and gets no reason row of its own.
 	"""
-	reason = _required_reason(reason)
+	reason = _valid_reason(CLOSE, reason)
 	doc = frappe.get_doc(PMO, pmo)
 	_require_action(doc, CLOSE)
 	_refuse_while_job_runs(doc.name)
@@ -582,13 +703,15 @@ def enqueue_close(pmo, reason):
 		)
 	_check_close_rights(plan)
 
-	frappe.db.set_value(PMO, doc.name, "close_reason", reason, update_modified=False)
 	if doc.workflow_state != HOLD_STATE:
+		doc.flags[INTERNAL_FLAG] = True
 		apply_workflow(doc, HOLD)
+		doc.flags.pop(INTERNAL_FLAG, None)
 		doc.reload()
 	snapshot = _snapshot(doc)
 	snapshot["close"] = {
 		"requested_by": frappe.session.user,
+		"reason": reason,
 		"entries": plan.entries,
 		"reopen": plan.stopped,
 		"cancelled": (snapshot.get("close") or {}).get("cancelled", []),
@@ -613,17 +736,8 @@ def enqueue_close(pmo, reason):
 			", ".join(plan.stopped)
 		)
 	message += " " + _("It closes once they are all cancelled; you will be notified.")
-	doc.add_comment("Info", message)
+	doc.add_comment("Info", _with_reason(message, reason))
 	frappe.msgprint(message, title=_("Close Queued"), indicator="blue")
-
-
-def _required_reason(reason):
-	reason = (reason or "").strip()
-	if not reason:
-		frappe.throw(
-			_("Close Reason is required to close a Parent Manufacturing Order.")
-		)
-	return reason
 
 
 def _require_action(doc, action):
@@ -766,6 +880,8 @@ def _close_with_stock(pmo, requested_by):
 			done.append(current)
 			doc = frappe.get_doc(PMO, pmo, for_update=True)
 		current = pmo
+		# The reason chosen when the Close was queued: the Close records it as it happens.
+		doc.flags[REASON_FLAG] = (_snapshot(doc).get("close") or {}).get("reason")
 		apply_workflow(doc, CLOSE)
 		frappe.db.commit()
 	except Exception as e:

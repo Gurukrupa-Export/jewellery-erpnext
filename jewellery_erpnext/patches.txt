@@ -139,10 +139,7 @@ jewellery_erpnext.patches.add_metal_conversion_chain_sc
 jewellery_erpnext.patches.add_metal_conversion_workflow #2026-10-14 chain to employee or supplier, Cancel Issue
 jewellery_erpnext.patches.remove_unused_chain_sc_stock_entry_type
 jewellery_erpnext.patches.repair_mwo_mop_link_labels
-<<<<<<< HEAD
-=======
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-21 PMO Submit/Hold/Open/Close workflow
 jewellery_erpnext.patches.add_mr_hold_closed_workflow_states
->>>>>>> 7a0058cf (feat(pmo): Submit/Hold/Open/Close workflow cascading to work orders, operations and Material Requests)
 jewellery_erpnext.patches.restore_missing_perf_indexes
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only

@@ -15,7 +15,7 @@
   "column_break_gkjvw",
   "branch",
   "department",
-  "close_reason",
+  "status_reasons",
   "hold_snapshot",
   "section_break_ahpbp",
   "sales_order_item",
@@ -555,11 +555,11 @@
   },
   {
    "allow_on_submit": 1,
-   "depends_on": "eval:(doc.workflow_state=='Closed' || doc.workflow_state=='Closed (Draft)') && doc.close_reason",
-   "fieldname": "close_reason",
-   "fieldtype": "Small Text",
-   "label": "Close Reason",
+   "fieldname": "status_reasons",
+   "fieldtype": "Table",
+   "label": "Hold / Open / Close Reasons",
    "no_copy": 1,
+   "options": "PMO Status Reason",
    "read_only": 1
   },
   {

@@ -4,15 +4,16 @@
 frappe.ui.form.on("Parent Manufacturing Order", {
 	before_workflow_action(frm) {
 		// Hold / Open / Close: a dry run of the checks first, so a refusal comes before any
-		// dialog; then a confirmation (Close: with the mandatory reason). A Close whose Material
-		// Requests moved stock is queued instead (enqueue_close). Rejecting the promise cancels
-		// the workflow action.
+		// dialog; then one dialog with the confirmation and the reason, chosen from the reasons
+		// MOP Settings lists for the action. The action runs through apply_action, which records
+		// the reason with it, so Frappe's own workflow call is always cancelled (rejected). A
+		// Close whose Material Requests moved stock is queued instead (enqueue_close).
 		const action = frm.selected_workflow_action;
 		if (!["Hold", "Open", "Close"].includes(action)) return;
 		// handle_workflow_action freezes the screen before calling this and only unfreezes
 		// once apply_workflow settles, so a rejection here would leave the page frozen and
 		// the freeze overlay sits over any dialog opened meanwhile. Lift it for the checks
-		// and the dialogs; the confirming button freezes again just before the action runs.
+		// and the dialogs; the confirming button freezes again while the action runs.
 		frappe.dom.unfreeze();
 		return new Promise((resolve, reject) => {
 			frappe.call({
@@ -22,11 +23,11 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 				error: () => reject(),
 				callback: (r) => {
 					if (r.exc) return reject();
-					if (action === "Hold") return confirm_action(hold_message(frm), resolve, reject);
-					if (action === "Open") return confirm_action(open_message(), resolve, reject);
 					const plan = r.message || {};
-					if ((plan.entries || []).length) return ask_close_with_stock(frm, plan, reject);
-					ask_close_reason(frm, resolve, reject);
+					if (action === "Close" && (plan.entries || []).length) {
+						return ask_close_with_stock(frm, plan, reject);
+					}
+					ask_reason(frm, action, plan.reasons || [], reject);
 				},
 			});
 		});
@@ -440,15 +441,53 @@ function set_html(frm) {
 	});
 }
 
-function confirm_action(message, resolve, reject) {
-	frappe.confirm(
-		message,
-		() => {
+function reason_field(reasons) {
+	// The reasons MOP Settings lists for the action; one has to be chosen.
+	return {
+		fieldname: "reason",
+		fieldtype: "Select",
+		label: __("Reason"),
+		options: ["", ...reasons].join("\n"),
+		default: reasons.length === 1 ? reasons[0] : undefined,
+		reqd: 1,
+	};
+}
+
+function action_message(frm, action) {
+	if (action === "Hold") return hold_message(frm);
+	if (action === "Open") return open_message();
+	return close_message(frm);
+}
+
+function ask_reason(frm, action, reasons, reject) {
+	// The workflow action itself never runs from here (the promise is always rejected):
+	// apply_action does it, so the reason row is written with it or not at all.
+	const dialog = new frappe.ui.Dialog({
+		title: __(action),
+		fields: [
+			{ fieldtype: "HTML", options: `<p>${action_message(frm, action)}</p>` },
+			reason_field(reasons),
+		],
+		primary_action_label: __("Yes"),
+		primary_action(values) {
+			dialog.hide();
 			frappe.dom.freeze();
-			resolve();
+			frappe
+				.xcall(close_open_method("apply_action"), {
+					pmo: frm.doc.name,
+					action: action,
+					reason: values.reason,
+				})
+				.then(() => frm.reload_doc())
+				.finally(() => frappe.dom.unfreeze());
 		},
-		() => reject()
-	);
+		secondary_action_label: __("No"),
+		secondary_action() {
+			dialog.hide();
+		},
+	});
+	dialog.onhide = () => reject();
+	dialog.show();
 }
 
 function hold_message(frm) {
@@ -507,12 +546,7 @@ function ask_close_with_stock(frm, plan, reject) {
 						"It is on Hold until then. If a cancel fails it stays on Hold with what was done, and Close carries on from there."
 					)}</p>`,
 			},
-			{
-				fieldname: "close_reason",
-				fieldtype: "Small Text",
-				label: __("Reason"),
-				reqd: 1,
-			},
+			reason_field(plan.reasons || []),
 		],
 		primary_action_label: __("Cancel Entries and Close"),
 		primary_action(values) {
@@ -520,7 +554,7 @@ function ask_close_with_stock(frm, plan, reject) {
 			frappe
 				.xcall(close_open_method("enqueue_close"), {
 					pmo: frm.doc.name,
-					reason: values.close_reason,
+					reason: values.reason,
 				})
 				.finally(() => frm.reload_doc());
 		},
@@ -530,52 +564,6 @@ function ask_close_with_stock(frm, plan, reject) {
 		},
 	});
 	dialog.onhide = () => reject();
-	dialog.show();
-}
-
-function ask_close_reason(frm, resolve, reject) {
-	// One dialog for the confirmation and the reason: a prompt opened from a confirm's Yes
-	// callback overlaps the confirm's hide animation.
-	let settled = false;
-	const dialog = new frappe.ui.Dialog({
-		title: __("Confirm"),
-		fields: [
-			{
-				fieldtype: "HTML",
-				options: `<p>${close_message(frm)}</p>`,
-			},
-			{
-				fieldname: "close_reason",
-				fieldtype: "Small Text",
-				label: __("Reason"),
-				reqd: 1,
-			},
-		],
-		primary_action_label: __("Yes"),
-		primary_action(values) {
-			settled = true;
-			dialog.hide();
-			frappe.dom.freeze();
-			// apply_workflow reloads the doc from the database, so the reason is saved
-			// first rather than set on the form.
-			frappe
-				.xcall(close_open_method("save_close_reason"), {
-					pmo: frm.doc.name,
-					reason: values.close_reason,
-				})
-				.then(resolve, (e) => {
-					frappe.dom.unfreeze();
-					reject(e);
-				});
-		},
-		secondary_action_label: __("No"),
-		secondary_action() {
-			dialog.hide();
-		},
-	});
-	dialog.onhide = () => {
-		if (!settled) reject();
-	};
 	dialog.show();
 }
 
