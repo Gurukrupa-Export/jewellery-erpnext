@@ -2420,3 +2420,177 @@ class TestStonePcsConserved(IntegrationTestCase):
 			[{"row_material": _D_ITEM, "pcs": 0}],
 		)
 		_validate_stone_pcs_conserved(doc)
+
+
+class TestMixedProvenanceAndRemainingStones(IntegrationTestCase):
+	"""C3: an unlinked reservation in a group that also holds a linked one still gets its own
+	fallback share. F2: a reservation rebuilt smaller by a partial receive or a loss keeps its
+	original link, so the stones still held are reconciled against what this job's receive and
+	loss entries took out -- never derived from weight, and refused when it cannot be worked out.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _sed(name, pcs, qty, item=_D_ITEM, batch=_D_BATCH):
+		return frappe._dict(
+			name=name,
+			item_code=item,
+			batch_no=batch,
+			pcs=pcs,
+			qty=qty,
+			transfer_qty=qty,
+			creation="2026-10-01 10:00:00",
+			custom_sub_setting_type=None,
+			inventory_type=None,
+			customer=None,
+		)
+
+	@staticmethod
+	def _row(parts, warehouse=_WAXING, item=_D_ITEM, batch=_D_BATCH):
+		return {
+			"item_code": item,
+			"batch_no": batch,
+			"warehouse": warehouse,
+			"qty": sum(p["qty"] for p in parts),
+			"sres": [p["sre"] for p in parts],
+			"seds": [p["sed"] for p in parts if p["sed"]],
+			"parts": parts,
+		}
+
+	def _attrs(self, rows, linked=(), history=(), consumed=None):
+		linked = {s.name: s for s in linked}
+
+		def get_all(doctype, filters=None, fields=None, pluck=None, **kwargs):
+			if doctype == "Stock Entry Detail" and "name" in (filters or {}):
+				return [linked[n] for n in filters["name"][1] if n in linked]
+			if doctype == "Manufacturing Operation":
+				return ["MOP-1"]
+			if doctype == "Stock Entry Detail":
+				return list(history)
+			return []
+
+		with (
+			patch(f"{_SNC_MODULE}.frappe.get_all", side_effect=get_all),
+			patch(
+				f"{_SNC_MODULE}._consuming_rows", return_value=list(consumed or [])
+			) as consuming,
+		):
+			attrs = _sed_attributes_for(rows, ["MWO-1"])
+		return attrs, consuming
+
+	def _pcs(self, attrs, warehouse=_WAXING):
+		return attrs[(_D_ITEM, _D_BATCH, warehouse)]["pcs"]
+
+	# ------------------------------------------------------------------ C3
+	def test_a_linked_and_an_unlinked_reservation_count_both(self):
+		rows = [
+			self._row(
+				[
+					{"sre": "s1", "sed": "sedA", "qty": 0.6},
+					{"sre": "s2", "sed": None, "qty": 0.2},
+				]
+			)
+		]
+		attrs, _c = self._attrs(
+			rows,
+			linked=[self._sed("sedA", 40, 0.6)],
+			history=[self._sed("sedOld", 8, 0.2)],
+		)
+		self.assertEqual(self._pcs(attrs), 48)
+
+	def test_a_link_to_a_missing_row_falls_back_like_an_unlinked_one(self):
+		rows = [
+			self._row(
+				[
+					{"sre": "s1", "sed": "sedA", "qty": 0.6},
+					{"sre": "s2", "sed": "sedGone", "qty": 0.2},
+				]
+			)
+		]
+		attrs, _c = self._attrs(
+			rows,
+			linked=[self._sed("sedA", 40, 0.6)],
+			history=[self._sed("sedOld", 8, 0.2)],
+		)
+		self.assertEqual(self._pcs(attrs), 48)
+
+	def test_an_all_linked_group_takes_no_fallback(self):
+		rows = [self._row([{"sre": "s1", "sed": "sedA", "qty": 0.6}])]
+		attrs, _c = self._attrs(
+			rows,
+			linked=[self._sed("sedA", 40, 0.6)],
+			history=[self._sed("sedOld", 8, 0.2)],
+		)
+		self.assertEqual(self._pcs(attrs), 40)
+
+	# ------------------------------------------------------------------ F2
+	def test_nothing_taken_out_keeps_the_linked_count(self):
+		rows = [self._row([{"sre": "s1", "sed": "sedA", "qty": 2.0}])]
+		attrs, consuming = self._attrs(rows, linked=[self._sed("sedA", 2, 2.0)])
+		self.assertEqual(self._pcs(attrs), 2)
+		consuming.assert_not_called()
+
+	def test_a_partial_receive_leaves_only_the_remaining_stones(self):
+		"""Dhinesh's case: 2 ct / 2 stones in, 1 ct / 1 stone received, 1 ct still reserved."""
+		rows = [self._row([{"sre": "s2", "sed": "sedA", "qty": 1.0}])]
+		attrs, _c = self._attrs(
+			rows,
+			linked=[self._sed("sedA", 2, 2.0)],
+			consumed=[frappe._dict(qty=1.0, transfer_qty=1.0, pcs="1")],
+		)
+		self.assertEqual(self._pcs(attrs), 1)
+
+	def test_a_loss_and_a_receive_are_both_subtracted(self):
+		rows = [self._row([{"sre": "s3", "sed": "sedA", "qty": 0.5}])]
+		attrs, _c = self._attrs(
+			rows,
+			linked=[self._sed("sedA", 10, 2.0)],
+			consumed=[
+				frappe._dict(qty=1.0, transfer_qty=1.0, pcs="5"),
+				frappe._dict(qty=0.5, transfer_qty=0.5, pcs="3"),
+			],
+		)
+		self.assertEqual(self._pcs(attrs), 2)
+
+	def test_entries_that_do_not_explain_the_difference_are_refused(self):
+		rows = [self._row([{"sre": "s2", "sed": "sedA", "qty": 1.0}])]
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._attrs(
+				rows,
+				linked=[self._sed("sedA", 2, 2.0)],
+				consumed=[frappe._dict(qty=0.4, transfer_qty=0.4, pcs="1")],
+			)
+		self.assertIn(_D_ITEM, str(ctx.exception))
+
+	def test_a_consuming_row_without_pieces_is_refused(self):
+		rows = [self._row([{"sre": "s2", "sed": "sedA", "qty": 1.0}])]
+		with self.assertRaises(frappe.ValidationError):
+			self._attrs(
+				rows,
+				linked=[self._sed("sedA", 2, 2.0)],
+				consumed=[frappe._dict(qty=1.0, transfer_qty=1.0, pcs="")],
+			)
+
+	def test_a_partly_consumed_batch_split_over_warehouses_is_refused(self):
+		rows = [
+			self._row([{"sre": "s1", "sed": "sedA", "qty": 0.5}], warehouse=_WAXING),
+			self._row([{"sre": "s2", "sed": "sedA", "qty": 0.5}], warehouse=_MODEL_MAKING),
+		]
+		with self.assertRaises(frappe.ValidationError):
+			self._attrs(rows, linked=[self._sed("sedA", 4, 2.0)])
+
+	def test_metal_is_never_reconciled(self):
+		metal = "M-G-22KT-91.9-Y"
+		rows = [
+			self._row(
+				[{"sre": "s1", "sed": "sedM", "qty": 1.0}], item=metal, batch="MB-1"
+			)
+		]
+		attrs, consuming = self._attrs(
+			rows, linked=[self._sed("sedM", 0, 3.0, item=metal, batch="MB-1")]
+		)
+		consuming.assert_not_called()
+		self.assertIn((metal, "MB-1", _WAXING), attrs)

@@ -1945,11 +1945,23 @@ def _reserved_source_rows(mwo_names):
 				continue
 			budget -= qty
 			key = (sre["item_code"], batch_no, sre["warehouse"])
-			entry = grouped.setdefault(key, {"qty": 0.0, "sres": [], "seds": []})
+			entry = grouped.setdefault(
+				key, {"qty": 0.0, "sres": [], "seds": [], "parts": []}
+			)
 			entry["qty"] += qty
 			entry["sres"].append(sre["name"])
 			if sre["from_voucher_detail_no"]:
 				entry["seds"].append(sre["from_voucher_detail_no"])
+			# Each reservation keeps its own link and quantity (C3, F2): a group can hold a
+			# linked and an unlinked reservation side by side, and the remaining stone count
+			# is reconciled against what each reservation still holds.
+			entry["parts"].append(
+				{
+					"sre": sre["name"],
+					"sed": sre["from_voucher_detail_no"] or None,
+					"qty": qty,
+				}
+			)
 
 	out = []
 	for (item_code, batch_no, warehouse), entry in grouped.items():
@@ -1964,6 +1976,7 @@ def _reserved_source_rows(mwo_names):
 				"qty": qty,
 				"sres": entry["sres"],
 				"seds": entry["seds"],
+				"parts": entry["parts"],
 			}
 		)
 
@@ -2044,18 +2057,30 @@ def _sed_attributes_for(rows, mwo_names):
 	if not rows:
 		return {}
 
-	linked_names = {sed for r in rows for sed in r["seds"]}
+	parts_by_row = {_row_key(row): _row_parts(row) for row in rows}
+	linked_names = {
+		part["sed"] for parts in parts_by_row.values() for part in parts if part["sed"]
+	}
 	by_name = {}
 	if linked_names:
 		for sed in frappe.get_all(
 			"Stock Entry Detail",
 			filters={"name": ["in", list(linked_names)]},
-			fields=_SED_ATTRIBUTE_FIELDS,
+			fields=_SED_ATTRIBUTE_FIELDS + ["qty", "transfer_qty", "creation"],
 		):
 			by_name[sed.name] = sed
 
-	# Candidate movements for rows with no provenance link, newest first per (item, batch).
-	unlinked = [r for r in rows if not r["seds"]]
+	# A reservation is unlinked when it has no link OR its link resolves to nothing (a deleted
+	# or unreadable row). Every unlinked reservation gets its own fallback share -- also when
+	# another reservation in the same group IS linked (C3: 40 linked + 8 unlinked stones read
+	# as 40 when the group's one link stopped the fallback).
+	unlinked_count = {
+		key: sum(1 for part in parts if part["sed"] not in by_name)
+		for key, parts in parts_by_row.items()
+	}
+
+	# Candidate movements for unlinked reservations, newest first per (item, batch).
+	unlinked = [row for row in rows if unlinked_count[_row_key(row)]]
 	pool = {}
 	if unlinked:
 		operations = frappe.get_all(
@@ -2077,28 +2102,193 @@ def _sed_attributes_for(rows, mwo_names):
 			):
 				pool.setdefault((sed.item_code, sed.batch_no), []).append(sed)
 		frappe.logger().info(
-			"serial_number_creator: %s reserved row(s) had no from_voucher_detail_no; "
-			"resolved Stock Entry Detail attributes by (operation, item, batch), bounded "
-			"to one movement per reservation" % len(unlinked)
+			"serial_number_creator: %s reserved row(s) had a reservation without a usable "
+			"from_voucher_detail_no; resolved Stock Entry Detail attributes by (operation, "
+			"item, batch), bounded to one movement per reservation" % len(unlinked)
 		)
+
+	linked_pcs = _linked_remaining_pcs(rows, parts_by_row, by_name, mwo_names)
 
 	# How far into each (item, batch) candidate list we have already consumed, so no
 	# movement is attributed to two warehouse rows.
 	taken = {}
 	attrs = {}
 	for row in rows:
-		seds = [by_name[name] for name in row["seds"] if name in by_name]
-		if not seds:
+		key = _row_key(row)
+		linked = _distinct_linked_seds(parts_by_row[key], by_name)
+		fallback = []
+		if unlinked_count[key]:
 			pool_key = (row["item_code"], row["batch_no"])
 			candidates = pool.get(pool_key, [])
 			start = taken.get(pool_key, 0)
-			want = max(len(row["sres"]), 1)
-			seds = candidates[start : start + want]
-			taken[pool_key] = start + len(seds)
-		attrs[(row["item_code"], row["batch_no"], row["warehouse"])] = _fold_sed_rows(
-			seds
-		)
+			fallback = candidates[start : start + unlinked_count[key]]
+			taken[pool_key] = start + len(fallback)
+		folded = _fold_sed_rows(linked + fallback)
+		if key in linked_pcs:
+			folded["pcs"] = linked_pcs[key] + sum(flt(sed.pcs) for sed in fallback)
+		attrs[key] = folded
 	return attrs
+
+
+def _row_key(row):
+	return (row["item_code"], row["batch_no"], row["warehouse"])
+
+
+def _row_parts(row):
+	"""The reservations behind one source row: ``[{sre, sed, qty}]``.
+
+	Rows built by ``_reserved_source_rows`` carry them. A row given only ``sres`` / ``seds``
+	is read as one part per reservation, linked in order, with the row's quantity on the
+	linked share.
+	"""
+	if row.get("parts") is not None:
+		return row["parts"]
+	sres = row.get("sres") or [None]
+	seds = list(row.get("seds") or [])
+	parts = [
+		{"sre": sre, "sed": seds[i] if i < len(seds) else None, "qty": 0.0}
+		for i, sre in enumerate(sres)
+	]
+	# More links than reservations (one reservation backed by several rows): keep them all.
+	for sed in seds[len(sres) :]:
+		parts.append({"sre": None, "sed": sed, "qty": 0.0})
+	linked = [part for part in parts if part["sed"]]
+	for part in linked:
+		part["qty"] = flt(row.get("qty")) / len(linked)
+	return parts
+
+
+def _distinct_linked_seds(parts, by_name):
+	seen, out = set(), []
+	for part in parts:
+		name = part["sed"]
+		if name in by_name and name not in seen:
+			seen.add(name)
+			out.append(by_name[name])
+	return out
+
+
+# Entries that take stones OUT of a job's reservations while the reservation is rebuilt with
+# its original link: a partial Make Receive (manufacturing_operation._build_replacement_sre)
+# and an Employee IR Process Loss (loss_stock_entry._reduce_sre).
+_RESERVATION_CONSUMING_SE_TYPES = ("Material Receive (WORK ORDER)", "Process Loss")
+_PCS_QTY_TOLERANCE = 0.001
+
+
+def _is_stone(item_code):
+	return (item_code or "")[:1].upper() in ("D", "G")
+
+
+def _linked_remaining_pcs(rows, parts_by_row, by_name, mwo_names):
+	"""``{row key: stones}`` still held by each row's LINKED reservations (F2).
+
+	A reservation keeps its original Stock Entry Detail link when a partial Make Receive or a
+	Process Loss rebuilds it smaller, so that row's ``pcs`` is the count that went IN, not the
+	count left: 2 ct / 2 stones in, 1 ct / 1 stone received, the rebuilt reservation holds 1 ct
+	and the link still says 2. Per diamond / gemstone batch:
+
+	* nothing taken out (the linked rows' quantity equals what the reservations hold): the
+	  linked rows' own ``pcs``, as before;
+	* something taken out: the stones on this job's submitted Make Receive and Process Loss rows
+	  for the batch are subtracted, provided those rows account for exactly the quantity
+	  missing and every one of them records its stones.
+
+	Anything else -- a difference the job's entries do not explain, a consuming row with no
+	pcs, or one batch spread over several warehouse rows after part of it was taken out -- is
+	refused with a message rather than guessed. Stones are counted, never derived from weight.
+	"""
+	by_batch = {}
+	for row in rows:
+		if not _is_stone(row["item_code"]):
+			continue
+		key = _row_key(row)
+		if _distinct_linked_seds(parts_by_row[key], by_name):
+			by_batch.setdefault((row["item_code"], row["batch_no"]), []).append(row)
+
+	out = {}
+	for (item_code, batch_no), batch_rows in by_batch.items():
+		seds = {}
+		remaining = 0.0
+		for row in batch_rows:
+			key = _row_key(row)
+			for part in parts_by_row[key]:
+				if part["sed"] in by_name:
+					seds[part["sed"]] = by_name[part["sed"]]
+					remaining += flt(part["qty"])
+		moved_in = sum(flt(sed.get("transfer_qty") or sed.get("qty")) for sed in seds.values())
+		taken_out = flt(moved_in - remaining, 3)
+
+		if taken_out <= _PCS_QTY_TOLERANCE:
+			for row in batch_rows:
+				key = _row_key(row)
+				out[key] = sum(
+					flt(sed.pcs) for sed in _distinct_linked_seds(parts_by_row[key], by_name)
+				)
+			continue
+
+		if len(batch_rows) > 1:
+			frappe.throw(
+				_(
+					"Cannot work out how many stones of {0} (batch {1}) remain: part of the batch "
+					"was received or lost and the rest is reserved in {2} warehouses. Check the "
+					"job's reservations for this batch."
+				).format(item_code, batch_no or "-", len(batch_rows)),
+				title=_("Stone Count Unclear"),
+			)
+
+		consumed = _consuming_rows(item_code, batch_no, mwo_names, seds.values())
+		consumed_qty = sum(flt(r.get("transfer_qty") or r.get("qty")) for r in consumed)
+		missing_pcs = [r for r in consumed if not flt(r.get("pcs"))]
+		if abs(consumed_qty - taken_out) > _PCS_QTY_TOLERANCE or missing_pcs:
+			frappe.throw(
+				_(
+					"Cannot work out how many stones of {0} (batch {1}) remain: {2} was moved in "
+					"and {3} is still reserved, but this job's receive and loss entries account for "
+					"{4}{5}. Check those entries before creating the Serial Number."
+				).format(
+					item_code,
+					batch_no or "-",
+					flt(moved_in, 3),
+					flt(remaining, 3),
+					flt(consumed_qty, 3),
+					_(" and {0} of them record no pieces").format(len(missing_pcs))
+					if missing_pcs
+					else "",
+				),
+				title=_("Stone Count Unclear"),
+			)
+		stones_in = sum(flt(sed.pcs) for sed in seds.values())
+		stones_out = sum(flt(r.get("pcs")) for r in consumed)
+		out[_row_key(batch_rows[0])] = max(stones_in - stones_out, 0.0)
+	return out
+
+
+def _consuming_rows(item_code, batch_no, mwo_names, seds):
+	"""Submitted Make Receive / Process Loss rows that took this batch out of the job, after the
+	earliest linked movement brought it in."""
+	since = min((sed.get("creation") for sed in seds if sed.get("creation")), default=None)
+	sed = frappe.qb.DocType("Stock Entry Detail")
+	se = frappe.qb.DocType("Stock Entry")
+	query = (
+		frappe.qb.from_(sed)
+		.join(se)
+		.on(se.name == sed.parent)
+		.select(sed.name, sed.qty, sed.transfer_qty, sed.pcs)
+		.where(
+			(se.docstatus == 1)
+			& (se.stock_entry_type.isin(list(_RESERVATION_CONSUMING_SE_TYPES)))
+			& (se.manufacturing_work_order.isin(list(mwo_names)))
+			& (sed.item_code == item_code)
+			& (sed.s_warehouse.isnotnull())
+			& (sed.s_warehouse != "")
+		)
+	)
+	query = query.where(sed.batch_no == batch_no) if batch_no else query.where(
+		sed.batch_no.isnull() | (sed.batch_no == "")
+	)
+	if since:
+		query = query.where(sed.creation >= since)
+	return query.run(as_dict=True)
 
 
 def _get_source_raw_materials(mop_name, snc_doc):
