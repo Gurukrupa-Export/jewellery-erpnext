@@ -24,6 +24,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_mast
 from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+	on_workflow_state_change,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
 	custom_override_grades,
 	customer_grades,
@@ -478,6 +481,7 @@ class ParentManufacturingOrder(Document):
 	def on_update_after_submit(self):
 		update_due_days(self)
 		validate_mfg_date(self)
+		on_workflow_state_change(self)
 
 	def on_submit(self):
 		if self.is_without_so:

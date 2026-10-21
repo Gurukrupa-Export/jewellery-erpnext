@@ -140,3 +140,4 @@ jewellery_erpnext.patches.add_metal_conversion_workflow #2026-10-14 chain to emp
 jewellery_erpnext.patches.remove_unused_chain_sc_stock_entry_type
 jewellery_erpnext.patches.repair_mwo_mop_link_labels
 jewellery_erpnext.patches.restore_missing_perf_indexes
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only

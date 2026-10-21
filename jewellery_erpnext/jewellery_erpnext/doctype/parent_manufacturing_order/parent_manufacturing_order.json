@@ -15,6 +15,7 @@
   "column_break_gkjvw",
   "branch",
   "department",
+  "close_reason",
   "section_break_ahpbp",
   "sales_order_item",
   "new_item",
@@ -552,6 +553,15 @@
    "options": "Department"
   },
   {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.workflow_state=='Closed' && doc.close_reason",
+   "fieldname": "close_reason",
+   "fieldtype": "Small Text",
+   "label": "Close Reason",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
    "collapsible": 1,
    "fieldname": "section_break_ahpbp",
    "fieldtype": "Section Break",
@@ -1005,7 +1015,7 @@
    "link_fieldname": "manufacturing_order"
   }
  ],
- "modified": "2026-10-12 18:00:00.000000",
+ "modified": "2026-10-19 17:30:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Parent Manufacturing Order",

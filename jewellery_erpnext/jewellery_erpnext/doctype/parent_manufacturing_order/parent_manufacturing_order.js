@@ -2,6 +2,30 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("Parent Manufacturing Order", {
+	before_workflow_action(frm) {
+		// Close: pre-check, then one dialog for the confirmation and the mandatory reason.
+		// Open: confirmation only. Rejecting the promise cancels the workflow action.
+		const action = frm.selected_workflow_action;
+		if (action !== "Close" && action !== "Open") return;
+		// handle_workflow_action freezes the screen before calling this and only unfreezes
+		// once apply_workflow settles, so a rejection here would leave the page frozen and
+		// the freeze overlay sits over any dialog opened meanwhile. Lift it for the checks
+		// and the dialogs; the confirming button freezes again just before the action runs.
+		frappe.dom.unfreeze();
+		return new Promise((resolve, reject) => {
+			if (action === "Open") return confirm_open(resolve, reject);
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.check_can_close",
+				args: { pmo: frm.doc.name },
+				// a refusal shows its own error message, so the action just stops here
+				error: () => reject(),
+				callback: (r) => {
+					if (r.exc) return reject();
+					ask_close_reason(frm, resolve, reject);
+				},
+			});
+		});
+	},
 	setup(frm) {
 		filter_departments(frm, "diamond_department");
 		filter_departments(frm, "gemstone_department");
@@ -409,4 +433,63 @@ function set_html(frm) {
 			frm.get_field("stock_entry_details").$wrapper.html(r.message);
 		},
 	});
+}
+
+function confirm_open(resolve, reject) {
+	frappe.confirm(
+		__("Are you sure you want to open this closed Parent Manufacturing Order?"),
+		() => {
+			frappe.dom.freeze();
+			resolve();
+		},
+		() => reject()
+	);
+}
+
+function ask_close_reason(frm, resolve, reject) {
+	// One dialog for the confirmation and the reason: a prompt opened from a confirm's Yes
+	// callback overlaps the confirm's hide animation.
+	let settled = false;
+	const dialog = new frappe.ui.Dialog({
+		title: __("Confirm"),
+		fields: [
+			{
+				fieldtype: "HTML",
+				options: `<p>${__(
+					"Are you sure you want to close this Parent Manufacturing Order and its related Manufacturing Work Orders?"
+				)}</p>`,
+			},
+			{
+				fieldname: "close_reason",
+				fieldtype: "Small Text",
+				label: __("Reason"),
+				reqd: 1,
+			},
+		],
+		primary_action_label: __("Yes"),
+		primary_action(values) {
+			settled = true;
+			dialog.hide();
+			frappe.dom.freeze();
+			// apply_workflow reloads the doc from the database, so the reason is saved
+			// first rather than set on the form.
+			frappe
+				.xcall(
+					"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.save_close_reason",
+					{ pmo: frm.doc.name, reason: values.close_reason }
+				)
+				.then(resolve, (e) => {
+					frappe.dom.unfreeze();
+					reject(e);
+				});
+		},
+		secondary_action_label: __("No"),
+		secondary_action() {
+			dialog.hide();
+		},
+	});
+	dialog.onhide = () => {
+		if (!settled) reject();
+	};
+	dialog.show();
 }

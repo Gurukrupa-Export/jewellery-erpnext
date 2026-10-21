@@ -65,6 +65,7 @@
   "flow_type",
   "design_type",
   "status",
+  "status_before_close",
   "split_from",
   "column_break_p1ihu",
   "manufacturing_plan",
@@ -505,6 +506,15 @@
    "read_only": 1
   },
   {
+   "allow_on_submit": 1,
+   "fieldname": "status_before_close",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Status Before Close",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
    "fieldname": "split_from",
    "fieldtype": "Link",
    "label": "Split From",
@@ -772,7 +782,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-10-13 18:00:00.000000",
+ "modified": "2026-10-19 17:30:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",
