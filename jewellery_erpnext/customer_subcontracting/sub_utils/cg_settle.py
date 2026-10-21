@@ -20,7 +20,9 @@ that batch in ``set_from_warehouse`` (the request's transfer is batch-strict), a
 shortfall is sourced only from the batch itself or metal produced from it
 (``customer_gold_trace.discover_scope``). Another receipt's batch of the same customer
 never counts and is never used. A row without a batch keeps the customer-wide behaviour.
-The request's own target warehouse is never a source.
+The request's own target warehouse is never a source. When no single holding of the batch
+covers a row -- part of it converted, part left as it was -- Settle combines its holdings,
+each part settled the way a single source is (_plan_parts).
 
 Part of the batch's metal may have been issued to a work order. When the Raw Material
 warehouses fall short and that order is a company-gold one whose operation has not
@@ -115,7 +117,8 @@ def settle_material_request(mr_name):
 		}
 
 	_check_customer_goods_flag(actionable)
-	settled = [p["row"] for p in actionable]
+	# A row settled in parts appears once per part.
+	settled = list(dict.fromkeys(p["row"] for p in actionable))
 
 	pulled = []
 	if any(p["level"] == LEVEL_WORK_ORDER for p in actionable):
@@ -181,18 +184,19 @@ def _build_plan(mr, from_work_orders=True):
 
 	plan = []
 	for row in mr.items:
-		plan.append(
-			_plan_row(
-				row,
-				mr,
-				company,
-				all_rm,
-				allocated,
-				consumed_target,
-				lineage_cache,
-				from_work_orders,
-			)
+		planned = _plan_row(
+			row,
+			mr,
+			company,
+			all_rm,
+			allocated,
+			consumed_target,
+			lineage_cache,
+			from_work_orders,
 		)
+		# A row covered from several of its batch's holdings comes back as one entry per
+		# part, each a single-source settle _execute runs as it is.
+		plan.extend(planned if isinstance(planned, list) else [planned])
 	return plan
 
 
@@ -324,10 +328,17 @@ def _plan_row(
 		)
 
 	if mr_batch:
+		holdings = _fetch_lineage_holdings(lineage)
+		# No single holding covers the row: combine the batch's holdings in Raw Material,
+		# each part settled the way a single source is.
+		parts = _plan_parts(
+			row, base, item, shortfall, target, others, company, allocated, holdings
+		)
+		if parts:
+			return parts
 		# The batch's own metal is short in Raw Material. Part of it may sit in a work
 		# order: take that back -- the work order gets Regular Stock in its place -- the
 		# same borrow Settle makes from any other warehouse (see _pull_from_work_order).
-		holdings = _fetch_lineage_holdings(lineage)
 		work_orders = (
 			_judge_work_order_holdings(lineage, company, holdings, all_rm, dest)
 			if from_work_orders
@@ -400,6 +411,180 @@ def _reserve_regular(item, qty, company, target, allocated, row_idx):
 			).format(row_idx, qty, item, target)
 		)
 	return reg
+
+
+def _plan_parts(
+	row, base, item, shortfall, target, others, company, allocated, holdings
+):
+	"""Cover ``shortfall`` from several of the batch's holdings in Raw Material when no single
+	one covers it: one plan entry per part, or None.
+
+	Each part is one of Settle's single-source settles -- _execute runs it as it is, and it
+	lands in the request's batch. In Settle's order of preference, largest holding first so
+	the parts are few:
+
+	1. other purities already in the source warehouse, converted in place (one part per
+	   item, across its batches);
+	2. the same item in another Raw Material warehouse (one part per batch and warehouse);
+	3. another purity in another Raw Material warehouse, converted there (likewise).
+
+	Only what is free is taken: the ledger, net of reservations (get_batch_qty) and of what
+	this run has already claimed. The claims, and the Regular Stock each part reserves, are
+	made on a copy of ``allocated`` and kept only when the parts cover the whole shortfall.
+	"""
+	pure_per_unit = _pure_per_unit(row, item)
+	if not pure_per_unit:
+		return None
+	trial = dict(allocated)
+	remaining = flt(shortfall, 3)
+	parts = []
+
+	def free(holding):
+		key = (holding.batch_no, holding.warehouse)
+		qty = min(
+			flt(holding.qty, 3),
+			flt(
+				get_batch_qty(
+					batch_no=holding.batch_no,
+					warehouse=holding.warehouse,
+					item_code=holding.item_code,
+				),
+				3,
+			),
+		)
+		return max(flt(qty - flt(trial.get(key, 0), 3), 3), 0.0)
+
+	def claim(batch_no, warehouse, qty):
+		trial[(batch_no, warehouse)] = flt(trial.get((batch_no, warehouse), 0) + qty, 3)
+
+	def convertible(holding):
+		return holding.item_code != item and _converts_into(holding.item_code, item)
+
+	# 1. Other purities in the source warehouse, converted in place, one item at a time.
+	in_source = {}
+	for h in holdings:
+		if h.warehouse == target and convertible(h):
+			in_source.setdefault(h.item_code, []).append(h)
+	for item_code, group in sorted(
+		in_source.items(), key=lambda kv: sum(flt(h.qty) for h in kv[1]), reverse=True
+	):
+		purity = flt(_get_item_purity(item_code))
+		if remaining <= TOLERANCE or not purity:
+			continue
+		frees = [
+			(h, free(h)) for h in sorted(group, key=lambda h: flt(h.qty), reverse=True)
+		]
+		take, need = _conversion_take(
+			sum(q for _h, q in frees), remaining, purity, pure_per_unit
+		)
+		if take <= TOLERANCE:
+			continue
+		rows = []
+		for h, q in frees:
+			use = flt(min(q, need - sum(r["qty"] for r in rows)), 3)
+			if use > TOLERANCE:
+				rows.append({"batch_no": h.batch_no, "qty": use})
+				claim(h.batch_no, target, use)
+		parts.append(
+			dict(
+				base,
+				level=LEVEL_CONVERT_IN_PLACE,
+				src={
+					"item_code": item_code,
+					"purity": purity,
+					"warehouse": target,
+					"rows": rows,
+				},
+				shortfall=take,
+				pure_short=flt(take * pure_per_unit, 3),
+			)
+		)
+		remaining = flt(remaining - take, 3)
+
+	# 2. The same item in another Raw Material warehouse.
+	for h in sorted(
+		(h for h in holdings if h.item_code == item and h.warehouse in others),
+		key=lambda h: flt(h.qty),
+		reverse=True,
+	):
+		if remaining <= TOLERANCE:
+			break
+		available = free(h)
+		take = flt(min(available, remaining), 3)
+		if take <= TOLERANCE:
+			continue
+		claim(h.batch_no, h.warehouse, take)
+		parts.append(
+			dict(
+				base,
+				level=LEVEL_SAME_PURITY,
+				src={
+					"batch_no": h.batch_no,
+					"item_code": item,
+					"warehouse": h.warehouse,
+					"qty": take,
+					"available_qty": available,
+				},
+				shortfall=take,
+			)
+		)
+		remaining = flt(remaining - take, 3)
+
+	# 3. Another purity in another Raw Material warehouse, converted there.
+	for h in sorted(
+		(h for h in holdings if h.warehouse in others and convertible(h)),
+		key=lambda h: _equivalent(h, item, pure_per_unit),
+		reverse=True,
+	):
+		purity = flt(_get_item_purity(h.item_code))
+		if remaining <= TOLERANCE:
+			break
+		if not purity:
+			continue
+		take, need = _conversion_take(free(h), remaining, purity, pure_per_unit)
+		if take <= TOLERANCE:
+			continue
+		claim(h.batch_no, h.warehouse, need)
+		parts.append(
+			dict(
+				base,
+				level=LEVEL_CONVERT,
+				src={
+					"batch_no": h.batch_no,
+					"item_code": h.item_code,
+					"warehouse": h.warehouse,
+					"qty": need,
+				},
+				shortfall=take,
+				pure_short=flt(take * pure_per_unit, 3),
+			)
+		)
+		remaining = flt(remaining - take, 3)
+
+	if not parts or remaining > TOLERANCE:
+		return None
+	# Covered: each part's balancing Regular Stock, then keep the claims.
+	for part in parts:
+		part["regular"] = _reserve_regular(
+			item, part["shortfall"], company, target, trial, row.idx
+		)
+	allocated.update(trial)
+	return parts
+
+
+def _conversion_take(free_qty, remaining, purity, pure_per_unit):
+	"""How much of the request's item ``free_qty`` of a ``purity`` metal makes towards
+	``remaining``, and the source it consumes: ``(take, need)``. ``take`` is rounded down, so
+	``need`` -- the source rounded to 3 decimals, like ``free_qty`` -- never exceeds it."""
+	take = _round_down(
+		min(flt(remaining), flt(free_qty) * purity / 100 / pure_per_unit)
+	)
+	return take, flt(take * pure_per_unit / (purity / 100), 3)
+
+
+def _round_down(qty):
+	"""``qty`` rounded down to 3 decimals, so what is promised can always be sourced."""
+	return math.floor(flt(qty) * 1000 + 1e-6) / 1000
 
 
 def _owner_qty_in_warehouse(customer, item, warehouse, consumed_target):
@@ -648,13 +833,12 @@ def _summarise_holdings(rows, batch_no, item, target, dest, pure_per_unit, sourc
 	* ``outside`` -- every other warehouse (Manufacturing, Transit, Scrap...): Settle never
 	  takes metal from these.
 
-	``coverable`` is the most one Settle run can bring in, by Settle's own sourcing rules: in
-	the source warehouse one other purity across its batches (ConvertInPlace), anywhere else
-	one batch in one warehouse (SamePurity / Convert). Rounded down, so a request for exactly
+	``coverable`` is the most one Settle run can bring in: every holding it may use adds up
+	(_plan_parts combines them) -- other purities in the source warehouse converted in place,
+	the same item or another purity elsewhere. Each is rounded down, so a request for exactly
 	that much is sourced in full.
 	"""
 	free, at_dest, outside = [], [], []
-	in_source = {}
 	coverable = 0.0
 	for row in rows:
 		if row.batch_no == batch_no and row.warehouse == target:
@@ -670,21 +854,13 @@ def _summarise_holdings(rows, batch_no, item, target, dest, pure_per_unit, sourc
 			continue
 		free.append(holding)
 		holding.note = _unusable_reason(row, item, target, dest)
-		if holding.note:
-			continue
-		if row.warehouse == target:
-			in_source[row.item_code] = (
-				in_source.get(row.item_code, 0.0) + holding.equivalent
-			)
-		else:
-			coverable = max(coverable, holding.equivalent)
-	if in_source:
-		coverable = max(coverable, max(in_source.values()))
+		if not holding.note:
+			coverable += _round_down(holding.equivalent)
 	return frappe._dict(
 		free=free,
 		at_dest=at_dest,
 		outside=outside,
-		coverable=math.floor(coverable * 1000 + 1e-6) / 1000,
+		coverable=flt(coverable, 3),
 	)
 
 
