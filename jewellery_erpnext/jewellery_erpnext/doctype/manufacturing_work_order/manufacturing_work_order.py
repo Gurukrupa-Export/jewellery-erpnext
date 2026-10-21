@@ -679,8 +679,8 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_unpack_serial_no_stock_entry(self):
-		"""Unpack a repaired FG serial into the raw materials of ITS OWN BOM as Customer
-		Goods.
+		"""Unpack a repaired FG serial into the raw materials of ITS OWN BOM, booked as
+		Regular Stock.
 
 		Consumes the finished-good serial from the RM warehouse that currently holds
 		it and books the raw materials of the serial's as-built BOM (Serial No.custom_bom_no)
@@ -743,9 +743,21 @@ class ManufacturingWorkOrder(Document):
 
 		target_wh = self._resolve_unpack_target_warehouse()
 
-		source_inventory_type, source_customer, _customer = _resolve_unpack_inventory(
-			self.serial_no, self.manufacturing_order
+		source_inventory_type, source_customer = _resolve_unpack_inventory(
+			self.serial_no
 		)
+		# The serial leaves under its own owner. A Customer Goods serial whose batch names no
+		# customer cannot be consumed that way (ownership normalisation would book it as
+		# Regular Stock and the outward ledger entry would not match), so say so up front.
+		if source_inventory_type in ("Customer Goods", "Customer Stock") and not (
+			source_customer
+		):
+			frappe.throw(
+				_(
+					"Serial No {0} is {1} but its batch has no customer, so it cannot be "
+					"unpacked. Set the customer on the serial's batch first."
+				).format(self.serial_no, source_inventory_type)
+			)
 
 		# Unpack the FULL item, not the reduced repair new_bom: resolve every
 		# component (metal + each diamond group + findings) from the serial's own BOM's
@@ -828,6 +840,12 @@ class ManufacturingWorkOrder(Document):
 				# Unpacked raw material is booked as Regular Stock: no customer on the
 				# batch, matching the Regular Stock target row it is received on.
 				batch_doc.custom_inventory_type = "Regular Stock"
+				# Still marked as repair material. SNC settlement skips "Customer Repair"
+				# batches (snc._row_needs_settlement); without the mark a customer-gold
+				# repair would settle this metal as borrowed (None != the order's
+				# customer). Batch validation only rewrites the voucher type on a batch
+				# that has a customer, so the mark survives on this one.
+				batch_doc.custom_customer_voucher_type = "Customer Repair"
 				batch_doc.flags.ignore_permissions = True
 				batch_doc.save()
 				batch_no = batch_doc.name
@@ -860,6 +878,7 @@ class ManufacturingWorkOrder(Document):
 		se.save()
 		self._rate_unpacked_components(se)
 		se.save()
+		_link_batches_to_rows(se)
 		se.submit()
 		return se.name
 
@@ -1134,16 +1153,39 @@ def get_unpack_eligibility(mwo):
 	}
 
 
-def _resolve_unpack_inventory(serial_no, pmo):
+def _link_batches_to_rows(se):
+	"""Tie each batch the unpack minted to the Stock Entry row that receives it.
+
+	The batches are created before the entry exists, so they never got a reference to it.
+	The Batch Rate is stamped from the creating row
+	(``batch/doc_events/utils.update_inventory_dimentions``, found through
+	``reference_doctype`` + ``custom_voucher_detail_no``) when ERPNext re-saves the batch on
+	submit -- and ERPNext fills ``reference_doctype`` only after that re-save. Without the
+	link every unpacked batch kept a Batch Rate of 0.
+	"""
+	for row in se.items:
+		if row.get("t_warehouse") and row.get("batch_no") and row.get("name"):
+			frappe.db.set_value(
+				"Batch",
+				row.batch_no,
+				{
+					"reference_doctype": "Stock Entry",
+					"reference_name": se.name,
+					"custom_voucher_detail_no": row.name,
+				},
+				update_modified=False,
+			)
+
+
+def _resolve_unpack_inventory(serial_no):
 	"""Inventory context for the unpack SE.
 
 	`inventory_type` is a ledger-enforced Inventory Dimension, so the SOURCE row
 	must consume the serial under its ACTUAL inventory type (else the outward SLE
 	goes negative for the wrong dimension). The unpacked TARGET rows are booked as
-	Regular Stock, so they no longer use the customer returned here.
+	Regular Stock and need no owner.
 
-	Returns (source_inventory_type, source_customer, customer) where `customer` is
-	the serial's or PMO's customer.
+	Returns (source_inventory_type, source_customer).
 	"""
 	source_inventory_type = "Regular Stock"
 	source_customer = None
@@ -1161,10 +1203,7 @@ def _resolve_unpack_inventory(serial_no, pmo):
 			if source_inventory_type == "Customer Goods":
 				source_customer = batch_info.custom_customer
 
-	customer = source_customer or frappe.db.get_value(
-		"Parent Manufacturing Order", pmo, "customer"
-	)
-	return source_inventory_type, source_customer, customer
+	return source_inventory_type, source_customer
 
 
 def create_manufacturing_operation(doc):
