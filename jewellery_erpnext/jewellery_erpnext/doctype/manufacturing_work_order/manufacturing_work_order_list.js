@@ -6,6 +6,7 @@ frappe.listview_settings["Manufacturing Work Order"] = {
 	has_indicator_for_draft: true,
 	get_indicator(doc) {
 		if (doc.status === "Closed") return [__("Closed"), "gray", "status,=,Closed"];
+		if (doc.status === "Hold") return [__("Hold"), "orange", "status,=,Hold"];
 		if (cint(doc.docstatus) === 0) return [__("Draft"), "red", "docstatus,=,0"];
 	},
 };

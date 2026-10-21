@@ -168,7 +168,8 @@ from frappe import _
 from frappe.utils import cint, cstr, escape_html, get_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
-	CLOSED_MWO_STATUS,
+	BLOCKED_MWO_STATUSES,
+	HOLD_MWO_STATUS,
 )
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	lock_manufacturing_operations,
@@ -365,6 +366,17 @@ def _same(a, b):
 
 def _b(value):
 	return frappe.bold(escape_html(cstr(value))) if cstr(value) else _("(blank)")
+
+
+def _blocked_work_order(idx, mwo, status):
+	"""Row ``idx`` names work order ``mwo``, which its PMO has put on Hold or Closed."""
+	if cstr(status) == HOLD_MWO_STATUS:
+		return _(
+			"Row {0}: work order {1} is on Hold. Open its Parent Manufacturing Order to work on it again."
+		).format(idx, _b(mwo))
+	return _("Row {0}: work order {1} is Closed and takes no more work.").format(
+		idx, _b(mwo)
+	)
 
 
 def _name_list(names, cap=NAME_LIST_CAP):
@@ -1251,15 +1263,13 @@ def _row_problems(doc, prof, phase, mop_rows, mwo_rows, family):
 				)
 			)
 			continue
-		# From the locked row: a PMO Close committed while this attempt waited for the work
-		# order is invisible to mwo_closed_guard's plain read (this transaction's snapshot).
-		if cstr(w.status) == CLOSED_MWO_STATUS:
+		# From the locked row: a PMO Hold / Close committed while this attempt waited for the
+		# work order is invisible to mwo_closed_guard's plain read (this transaction's snapshot).
+		if cstr(w.status) in BLOCKED_MWO_STATUSES:
 			problems.append(
 				(
 					CurrentOperationError,
-					_(
-						"Row {0}: work order {1} is Closed. Reopen its Parent Manufacturing Order to work on it again."
-					).format(idx, _b(mwo)),
+					_blocked_work_order(idx, mwo, w.status),
 				)
 			)
 			continue
@@ -2020,6 +2030,20 @@ def guard_cancel(doc):
 		mwo = row_mwo or (m.manufacturing_work_order if m else None)
 		w = mwo_rows.get(mwo)
 		if not m or not w:
+			continue
+		# A held work order is frozen until its PMO is Opened, and a Closed one for good: a
+		# cancel would move it (or its operation) again.
+		if cstr(w.status) in BLOCKED_MWO_STATUSES:
+			problems.append(
+				(
+					HistoryRewriteError,
+					_("Cannot cancel {0} {1}: {2}").format(
+						_(doc.doctype),
+						_b(doc.name),
+						_blocked_work_order(_idx, mwo, w.status),
+					),
+				)
+			)
 			continue
 		if double_issued.get(mop):
 			problems.append(

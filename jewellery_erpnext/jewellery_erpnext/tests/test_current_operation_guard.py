@@ -3215,14 +3215,15 @@ class TestCancelWritesLockOnlyTheirRows(_GuardHarness):
 
 
 class TestClosedWorkOrder(_GuardHarness):
-	"""A Closed work order takes no new Employee IR / Department IR work, saved or submitted.
+	"""A Closed or held work order takes no new Employee IR / Department IR work, saved or
+	submitted, and nothing done on it is cancelled.
 
-	The PMO Close writes the status with ``update_modified=False``, as here, so a draft saved
-	before it is still the latest version at submit time."""
+	The PMO Hold / Close writes the status without touching ``modified``, as here, so a draft
+	saved before it is still the latest version at submit time."""
 
-	def close(self, mwo):
+	def close(self, mwo, status="Closed"):
 		frappe.db.set_value(
-			"Manufacturing Work Order", mwo, "status", "Closed", update_modified=False
+			"Manufacturing Work Order", mwo, "status", status, update_modified=False
 		)
 
 	def test_a_draft_saved_while_open_is_refused_at_submit_once_closed(self):
@@ -3276,13 +3277,33 @@ class TestClosedWorkOrder(_GuardHarness):
 
 		self.assertIn("is Closed", message)
 
-	def test_an_issue_submitted_before_the_close_can_still_be_cancelled(self):
+	def test_a_held_work_order_is_refused_at_submit_and_on_a_new_draft(self):
 		w = self.world
 		mwo, mop = fx.make_work_order(w, "MM")
-		issue = fx.issue(w, mwo, employee="MM1")
-		self.close(mwo)
+		draft = fx.issue(w, mwo, submit=False)
+		self.close(mwo, "Hold")
 
-		fx.reload(issue).cancel()
-
-		self.assertEqual(self.docstatus("Employee IR", issue.name), 2)
+		message = self.assertGuard(CurrentOperationError, fx.submit_ir, draft)
+		self.assertIn("is on Hold", message)
+		message = self.assertGuard(
+			CurrentOperationError, fx.insert_ir, fx.employee_ir(w, "Issue", [mwo])
+		)
+		self.assertIn("is on Hold", message)
 		self.assertEqual(fx.operation(mop).status, "Not Started")
+
+	def test_nothing_done_on_a_closed_or_held_work_order_is_cancelled(self):
+		for status, text, employee in (
+			("Closed", "is Closed", "MM1"),
+			("Hold", "is on Hold", "MM2"),
+		):
+			with self.subTest(status=status):
+				w = self.world
+				mwo, mop = fx.make_work_order(w, "MM")
+				issue = fx.issue(w, mwo, employee=employee)
+				self.close(mwo, status)
+
+				message = self.assertGuard(HistoryRewriteError, fx.reload(issue).cancel)
+
+				self.assertIn(text, message)
+				self.assertEqual(self.docstatus("Employee IR", issue.name), 1)
+				self.assertEqual(fx.operation(mop).status, "WIP")

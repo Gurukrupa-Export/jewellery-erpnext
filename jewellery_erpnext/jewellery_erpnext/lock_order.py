@@ -223,6 +223,8 @@ MANUFACTURING_OPERATION_LOCK_FIELDS = (
 	# snapshot the side effects read from is older than the decision (see the guard's
 	# _refuse_if_snapshot_older)
 	"modified",
+	# the material on the operation: a PMO Close needs it to be 0
+	"gross_wt",
 )
 
 WORK_ORDER_LOCK_FIELDS = (
@@ -232,6 +234,16 @@ WORK_ORDER_LOCK_FIELDS = (
 	"company",
 	"manufacturing_operation",
 	"department",
+	"gross_wt",
+)
+
+# What a PMO Hold / Open / Close decides from and writes: the request's place in its
+# workflow, and whether its transfer-from-reserve job is still running.
+MATERIAL_REQUEST_LOCK_FIELDS = (
+	"name",
+	"docstatus",
+	"workflow_state",
+	"custom_transfer_se_state",
 )
 
 
@@ -329,6 +341,17 @@ def lock_work_orders(names, *, wait=None):
 	return _lock_rows_by_name(
 		"tabManufacturing Work Order", WORK_ORDER_LOCK_FIELDS, names, wait
 	)
+
+
+def lock_material_requests(names, *, wait=None, fields=MATERIAL_REQUEST_LOCK_FIELDS):
+	"""Lock Material Request rows and return their fresh state.
+
+	A request's own transitions hold its row before ``tabBin`` and the operation / work order
+	(its controller's check_if_latest), so it comes before them in a block that takes both.
+	``fields`` must name real columns: ``workflow_state`` exists only where the Material
+	Request workflow does.
+	"""
+	return _lock_rows_by_name("tabMaterial Request", fields, names, wait)
 
 
 def lock_items(item_codes):

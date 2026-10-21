@@ -3,24 +3,29 @@
 
 frappe.ui.form.on("Parent Manufacturing Order", {
 	before_workflow_action(frm) {
-		// Close: pre-check, then one dialog for the confirmation and the mandatory reason.
-		// Open: confirmation only. Rejecting the promise cancels the workflow action.
+		// Hold / Open / Close: a dry run of the checks first, so a refusal comes before any
+		// dialog; then a confirmation (Close: with the mandatory reason). A Close whose Material
+		// Requests moved stock is queued instead (enqueue_close). Rejecting the promise cancels
+		// the workflow action.
 		const action = frm.selected_workflow_action;
-		if (action !== "Close" && action !== "Open") return;
+		if (!["Hold", "Open", "Close"].includes(action)) return;
 		// handle_workflow_action freezes the screen before calling this and only unfreezes
 		// once apply_workflow settles, so a rejection here would leave the page frozen and
 		// the freeze overlay sits over any dialog opened meanwhile. Lift it for the checks
 		// and the dialogs; the confirming button freezes again just before the action runs.
 		frappe.dom.unfreeze();
 		return new Promise((resolve, reject) => {
-			if (action === "Open") return confirm_open(resolve, reject);
 			frappe.call({
-				method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.check_can_close",
-				args: { pmo: frm.doc.name },
+				method: close_open_method("check_action"),
+				args: { pmo: frm.doc.name, action: action },
 				// a refusal shows its own error message, so the action just stops here
 				error: () => reject(),
 				callback: (r) => {
 					if (r.exc) return reject();
+					if (action === "Hold") return confirm_action(hold_message(frm), resolve, reject);
+					if (action === "Open") return confirm_action(open_message(), resolve, reject);
+					const plan = r.message || {};
+					if ((plan.entries || []).length) return ask_close_with_stock(frm, plan, reject);
 					ask_close_reason(frm, resolve, reject);
 				},
 			});
@@ -435,15 +440,97 @@ function set_html(frm) {
 	});
 }
 
-function confirm_open(resolve, reject) {
+function confirm_action(message, resolve, reject) {
 	frappe.confirm(
-		__("Are you sure you want to open this closed Parent Manufacturing Order?"),
+		message,
 		() => {
 			frappe.dom.freeze();
 			resolve();
 		},
 		() => reject()
 	);
+}
+
+function hold_message(frm) {
+	if (frm.doc.docstatus === 0) {
+		return __("Put this draft Parent Manufacturing Order on Hold? It can then be submitted or closed.");
+	}
+	return __(
+		"Put this Parent Manufacturing Order on Hold? Its Manufacturing Work Orders, their current operations and its Material Requests are set to Hold, and nothing moves for it until it is opened again. Reserved stock stays reserved."
+	);
+}
+
+function open_message() {
+	return __(
+		"Open this Parent Manufacturing Order? Its Manufacturing Work Orders, their operations and its Material Requests go back to where they were before the Hold."
+	);
+}
+
+function close_message(frm) {
+	if (frm.doc.docstatus === 0) {
+		return __("Close this draft Parent Manufacturing Order? It will never be submitted.");
+	}
+	return __(
+		"Close this Parent Manufacturing Order? Its Manufacturing Work Orders are closed, their waiting operations finished and its Material Requests closed. A Close cannot be undone."
+	);
+}
+
+function ask_close_with_stock(frm, plan, reject) {
+	// The workflow action itself never runs from here (the promise is always rejected): the
+	// background job applies the Close once the Stock Entries are cancelled.
+	const rows = plan.entries
+		.map(
+			(e) =>
+				`<tr><td>${frappe.utils.get_form_link("Stock Entry", e.name, true)}</td>` +
+				`<td>${frappe.utils.escape_html(e.stock_entry_type || "")}</td>` +
+				`<td>${frappe.datetime.str_to_user(e.posting_date)}</td></tr>`
+		)
+		.join("");
+	const stopped = (plan.stopped || []).length
+		? `<p>${__("The Stopped Material Requests {0} are re-opened first.", [plan.stopped.join(", ")])}</p>`
+		: "";
+	const dialog = new frappe.ui.Dialog({
+		title: __("Close: cancel Stock Entries first"),
+		fields: [
+			{
+				fieldtype: "HTML",
+				options:
+					`<p>${__(
+						"Its Material Requests moved stock. These Stock Entries are cancelled in the background, latest first, and then the Parent Manufacturing Order is closed:"
+					)}</p>` +
+					`<table class="table table-bordered table-condensed"><thead><tr>` +
+					`<th>${__("Stock Entry")}</th><th>${__("Type")}</th><th>${__(
+						"Date"
+					)}</th></tr></thead><tbody>${rows}</tbody></table>` +
+					stopped +
+					`<p>${__(
+						"It is on Hold until then. If a cancel fails it stays on Hold with what was done, and Close carries on from there."
+					)}</p>`,
+			},
+			{
+				fieldname: "close_reason",
+				fieldtype: "Small Text",
+				label: __("Reason"),
+				reqd: 1,
+			},
+		],
+		primary_action_label: __("Cancel Entries and Close"),
+		primary_action(values) {
+			dialog.hide();
+			frappe
+				.xcall(close_open_method("enqueue_close"), {
+					pmo: frm.doc.name,
+					reason: values.close_reason,
+				})
+				.finally(() => frm.reload_doc());
+		},
+		secondary_action_label: __("No"),
+		secondary_action() {
+			dialog.hide();
+		},
+	});
+	dialog.onhide = () => reject();
+	dialog.show();
 }
 
 function ask_close_reason(frm, resolve, reject) {
@@ -455,9 +542,7 @@ function ask_close_reason(frm, resolve, reject) {
 		fields: [
 			{
 				fieldtype: "HTML",
-				options: `<p>${__(
-					"Are you sure you want to close this Parent Manufacturing Order and its related Manufacturing Work Orders?"
-				)}</p>`,
+				options: `<p>${close_message(frm)}</p>`,
 			},
 			{
 				fieldname: "close_reason",
@@ -474,10 +559,10 @@ function ask_close_reason(frm, resolve, reject) {
 			// apply_workflow reloads the doc from the database, so the reason is saved
 			// first rather than set on the form.
 			frappe
-				.xcall(
-					"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.save_close_reason",
-					{ pmo: frm.doc.name, reason: values.close_reason }
-				)
+				.xcall(close_open_method("save_close_reason"), {
+					pmo: frm.doc.name,
+					reason: values.close_reason,
+				})
 				.then(resolve, (e) => {
 					frappe.dom.unfreeze();
 					reject(e);
@@ -492,4 +577,8 @@ function ask_close_reason(frm, resolve, reject) {
 		if (!settled) reject();
 	};
 	dialog.show();
+}
+
+function close_open_method(name) {
+	return `jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.${name}`;
 }

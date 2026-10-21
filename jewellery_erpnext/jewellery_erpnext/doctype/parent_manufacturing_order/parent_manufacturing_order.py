@@ -4,6 +4,7 @@
 import frappe
 from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe import _
+from frappe.model import no_value_fields, table_fields
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
@@ -25,7 +26,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+	CLOSED_DRAFT_STATE,
+	CLOSED_STATE,
+	HOLD_DRAFT_STATE,
+	HOLD_STATE,
 	on_workflow_state_change,
+	refuse_while_blocked,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
 	custom_override_grades,
@@ -274,6 +280,11 @@ def _validate_metal_item_attributes(item_code, row, bom_table):
 		)
 
 
+# What a Hold / Open / Close of the PMO writes besides its state: the reason is stored ahead of
+# the action, the snapshot by the action itself (doc_events/close_open.py).
+STATE_CHANGE_FIELDS = {"workflow_state", "close_reason", "hold_snapshot"}
+
+
 class ParentManufacturingOrder(Document):
 	def before_save(self):
 		is_new = self.is_new()
@@ -299,6 +310,14 @@ class ParentManufacturingOrder(Document):
 		self.metal_details()
 
 	def before_submit(self):
+		# A held or closed draft is submitted only through its workflow action, which has
+		# already moved the state to Submitted by now; a direct submit still carries the old one.
+		if self.get("workflow_state") == HOLD_DRAFT_STATE:
+			frappe.throw(
+				_("{0} is on Hold: submit it with the Submit action.").format(self.name)
+			)
+		if self.get("workflow_state") == CLOSED_DRAFT_STATE:
+			frappe.throw(_("{0} is Closed and cannot be submitted.").format(self.name))
 		# frappe runs validate + before_submit on submit and skips before_save, so the grade has
 		# to be resolved here too: without it a PMO that reached submit without a stored grade
 		# silently skips the tracking BOM update below.
@@ -478,10 +497,66 @@ class ParentManufacturingOrder(Document):
 			}
 		)
 
+	def _state_change_only(self):
+		"""True for a save that only moves the workflow state.
+
+		apply_workflow reloads the PMO and changes nothing but its state, so a Hold, Open or
+		Close carries no edit that the PMO's own validation has to see -- and must not be
+		refused by it: a draft whose Sales Order or Manufacturing Plan has been cancelled since
+		is exactly the one to close. Only saves and updates after submit qualify; a submit
+		always runs the full validation.
+		"""
+		if getattr(self, "_action", None) not in ("save", "update_after_submit"):
+			return False
+		before = self.get_doc_before_save()
+		if not before or before.get("workflow_state") == self.get("workflow_state"):
+			return False
+		for df in self.meta.fields:
+			if df.fieldname in STATE_CHANGE_FIELDS:
+				continue
+			if df.fieldtype in table_fields:
+				rows = [row.name for row in self.get(df.fieldname) or []]
+				if rows != [row.name for row in before.get(df.fieldname) or []]:
+					return False
+			elif df.fieldtype not in no_value_fields:
+				if self.get(df.fieldname) != before.get(df.fieldname):
+					return False
+		return True
+
+	def _validate_links(self):
+		if self._state_change_only():
+			return
+		return super()._validate_links()
+
+	def before_validate(self):
+		if self._state_change_only():
+			self.flags.ignore_validate = True
+			self.flags.ignore_mandatory = True
+
+	def before_update_after_submit(self):
+		if self._state_change_only():
+			self.flags.ignore_mandatory = True
+
+	def on_update(self):
+		on_workflow_state_change(self)
+
 	def on_update_after_submit(self):
+		if self._state_change_only():
+			on_workflow_state_change(self)
+			return
 		update_due_days(self)
 		validate_mfg_date(self)
 		on_workflow_state_change(self)
+
+	def before_cancel(self):
+		# Hold has to be undone (Open) before a cancel, and a Close is final. A cancel through
+		# the API (or Hybrid Cancel) skips the workflow, so it is refused here.
+		if self.get("workflow_state") == HOLD_STATE:
+			frappe.throw(
+				_("{0} is on Hold: Open it before cancelling.").format(self.name)
+			)
+		if self.get("workflow_state") == CLOSED_STATE:
+			frappe.throw(_("{0} is Closed and cannot be cancelled.").format(self.name))
 
 	def on_submit(self):
 		if self.is_without_so:
@@ -844,6 +919,7 @@ class ParentManufacturingOrder(Document):
 
 	@frappe.whitelist()
 	def send_to_customer_for_approval(self):
+		refuse_while_blocked(self.name, _("It cannot be sent for customer approval."))
 		mwo_list = frappe.db.get_all(
 			"Manufacturing Work Order",
 			{"manufacturing_order": self.name, "docstatus": 1},
@@ -1728,6 +1804,7 @@ def hold_mop(self):
 
 @frappe.whitelist()
 def create_mwo(pmo, doc, reason=None):
+	refuse_while_blocked(pmo, _("No new work order can be created for it."))
 	cad_mwo = frappe.db.get_value(
 		"Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}
 	)

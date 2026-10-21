@@ -23,7 +23,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 	validate_not_eod_sync_locked,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
-	is_pmo_closed,
+	blocking_message,
+	pmo_blocking_state,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	validate_without_so_source_submitted,
@@ -107,14 +108,14 @@ class ManufacturingWorkOrder(Document):
 		self.db_set({"manufacturing_operation": None, "status": "Cancelled"})
 
 	def before_submit(self):
-		# Closing a PMO closes its draft work orders too; on_submit would set one back to Not
-		# Started under the still Closed PMO.
-		if is_pmo_closed(self.manufacturing_order):
+		# Holding or closing a PMO holds / closes its draft work orders too; on_submit would set
+		# one back to Not Started under the still held or closed PMO.
+		if state := pmo_blocking_state(self.manufacturing_order):
 			frappe.throw(
-				_(
-					"Parent Manufacturing Order {0} is Closed. Reopen it before submitting this work order."
-				).format(frappe.bold(self.manufacturing_order)),
-				title=_("Work Order Closed"),
+				blocking_message(self.manufacturing_order, state)
+				+ " "
+				+ _("Its work orders cannot be submitted."),
+				title=_("Work Order {0}").format(state),
 			)
 		self.validate_photoshop_images()
 		if self.is_without_so:
@@ -1460,6 +1461,7 @@ def _validate_split_basics(docname):
 		docname,
 		[
 			"docstatus",
+			"status",
 			"has_split_mwo",
 			"department",
 			"gross_wt",
@@ -1472,6 +1474,13 @@ def _validate_split_basics(docname):
 			_("Work Order {0} must be submitted before it can be split.").format(
 				docname
 			)
+		)
+
+	# Held or closed with its PMO: the split would close it and start new work orders under
+	# a PMO that takes none. (A split parent is Closed too, but has_split_mwo says so below.)
+	if mwo.status == "Hold" or (mwo.status == "Closed" and not cint(mwo.has_split_mwo)):
+		frappe.throw(
+			_("Work Order {0} is {1} and cannot be split.").format(docname, mwo.status)
 		)
 
 	# A split parent keeps its department and zero weight, and its pending operations are

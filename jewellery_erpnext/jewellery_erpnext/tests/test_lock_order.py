@@ -661,13 +661,35 @@ class TestLockRowsByName(IntegrationTestCase):
 				"department_receive_id",
 				# compared with the snapshot after the wait (the guard's snapshot check)
 				"modified",
+				# a PMO Close needs the operation's material to be 0
+				"gross_wt",
 			},
 			set(lock_order.MANUFACTURING_OPERATION_LOCK_FIELDS),
 		)
 		self.assertLessEqual(
-			# status: a PMO Close committed while the attempt waited (Closed work order)
-			{"name", "docstatus", "status", "manufacturing_operation"},
+			# status: a PMO Hold / Close committed while the attempt waited; gross_wt: a PMO
+			# Close needs the work order's material to be 0
+			{"name", "docstatus", "status", "manufacturing_operation", "gross_wt"},
 			set(lock_order.WORK_ORDER_LOCK_FIELDS),
+		)
+		self.assertLessEqual(
+			# what a PMO Hold / Open / Close decides from and writes
+			{"name", "docstatus", "workflow_state", "custom_transfer_se_state"},
+			set(lock_order.MATERIAL_REQUEST_LOCK_FIELDS),
+		)
+
+	@patch.object(lock_order, "_lock_rows_by_name", return_value={})
+	def test_material_requests_lock_their_table_with_the_given_fields(self, mock_rows):
+		lock_order.lock_material_requests(["MR-1"], wait=0)
+		mock_rows.assert_called_with(
+			"tabMaterial Request", lock_order.MATERIAL_REQUEST_LOCK_FIELDS, ["MR-1"], 0
+		)
+		# A site without the Material Request workflow has no workflow_state column.
+		lock_order.lock_material_requests(
+			["MR-1"], wait=0, fields=("name", "docstatus")
+		)
+		mock_rows.assert_called_with(
+			"tabMaterial Request", ("name", "docstatus"), ["MR-1"], 0
 		)
 
 	def tearDown(self):

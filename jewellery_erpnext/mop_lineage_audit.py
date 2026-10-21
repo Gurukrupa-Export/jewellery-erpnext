@@ -2861,6 +2861,7 @@ def _co_section_pointer_anomalies(
 	counts = {
 		"submitted_work_orders": len(work_orders),
 		"normal": 0,
+		"held": 0,
 		"terminal": 0,
 		"pointer_missing": 0,
 		"pointer_not_found": 0,
@@ -2903,6 +2904,11 @@ def _co_section_pointer_anomalies(
 				key = cstr(w.mwo_status) or "(blank)"
 				terminal_by_status[key] = terminal_by_status.get(key, 0) + 1
 				continue
+		elif cstr(w.p_status) == "Hold" and cstr(w.mwo_status) == "Hold":
+			# Its PMO is on Hold (parent_manufacturing_order/doc_events/close_open.py): the
+			# operation is still the current one and comes back as it was on Open.
+			counts["held"] += 1
+			continue
 		elif cstr(w.p_status) not in open_statuses:
 			kind = "pointer_status_unknown"
 		else:
