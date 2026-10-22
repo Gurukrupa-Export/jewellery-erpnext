@@ -187,30 +187,6 @@ def validate(self, method):
 		set_tracking_bom_rate_in_quotation(self)
 
 
-def clear_cancelled_tracking_boms(self):
-	"""Drop row links to cancelled Tracking BOMs from a draft Quotation.
-
-	Cancelling the Quotation can cancel its Tracking BOM (cancel_bom), and an amended copy carries
-	the old link over, which would fail on submit with "Cannot link cancelled document". Cleared
-	here, before_submit asks for the Tracking BOM to be created again; a still-submitted, shared
-	one keeps its link.
-	"""
-	tracking_bom_map = _get_values_map(
-		"Tracking Bom",
-		[row.custom_tracking_bom for row in self.items],
-		["docstatus"],
-	)
-	for row in self.items:
-		if (
-			row.custom_tracking_bom
-			and _lookup(
-				tracking_bom_map, "Tracking Bom", row.custom_tracking_bom, "docstatus"
-			)
-			== 2
-		):
-			row.custom_tracking_bom = None
-
-
 def create_bom_scientifically(self):
 	create_tracking_bom_directly(self)
 
@@ -841,11 +817,13 @@ def create_tracking_bom_directly(self):
 			row.copy_bom = bom_data.get(row.item_code)
 
 		if row.custom_tracking_bom:
-			# A cancelled one (e.g. copied into an amended Quotation) counts as missing: it can no
-			# longer be linked, so a fresh Tracking BOM is built for the row.
-			if _lookup(
-				tracking_bom_map, "Tracking Bom", row.custom_tracking_bom, "docstatus"
-			) in (None, 2):
+			# Same as frappe.db.exists: only a Tracking BOM that no longer exists is rebuilt.
+			if (
+				_lookup(
+					tracking_bom_map, "Tracking Bom", row.custom_tracking_bom, "docstatus"
+				)
+				is None
+			):
 				row.custom_tracking_bom = None
 			else:
 				continue
