@@ -59,6 +59,7 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_mop_department
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_customizations
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sre_raw_material_against_fg_row
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_finding_without_so_lifecycle
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation
