@@ -123,6 +123,19 @@ class TestSerialNumberCreatorStampsTheOrdersCustomer(IntegrationTestCase):
 		self.assertEqual(second.get(STAMPING_NO_FIELD), first.get(STAMPING_NO_FIELD))
 		self.assertEqual([row.huid for row in second.huid].count(HUID), 1)
 
+	def test_a_site_that_fetches_the_customer_from_the_bom_is_left_to_it(self):
+		"""Where Serial No.customer is fetched from the serial's BOM (a Property Setter, as the CI
+		fixtures have), the save fills it from there as before. The order's customer is not
+		stamped over it, so the save sees no change. Stamping it anyway is what failed in CI:
+		the fetch put the BOM's empty customer back and ERPNext saw a change."""
+		serial_no = self._new_serial()
+		frappe.db.set_value("Serial No", serial_no, "custom_bom_no", _bom(self.item))
+		customer_field = frappe.get_meta("Serial No").get_field("customer")
+		with patch.object(customer_field, "fetch_from", "custom_bom_no.customer"):
+			serial = self._run_snc(serial_no, self.pmo_with_customer)
+
+		self.assertFalse(serial.customer)
+
 	@skipUnless(HAS_MANAGED_FIELDS, "needs ERPNext 16.52+")
 	def test_erpnext_refuses_a_save_that_changes_the_customer(self):
 		"""Control: the plain save the SNC used to do is what ERPNext 16.52 refuses."""
@@ -212,6 +225,15 @@ def _parent_manufacturing_order(label, customer, huid=None):
 	for row in pmo.get("product_certification_details"):
 		row.db_insert()
 	return pmo.name
+
+
+def _bom(item_code):
+	"""A BOM with no customer, written straight to the database: the serial only links to it."""
+	bom = frappe.new_doc("BOM")
+	bom.update({"name": f"{PREFIX} BOM", "item": item_code, "docstatus": 1})
+	bom.set_user_and_timestamp()
+	bom.db_insert()
+	return bom.name
 
 
 def _receive(company, warehouse, item_code):
