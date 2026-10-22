@@ -32,6 +32,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_nu
 _SERVER_SCRIPT_MAP = (
 	"frappe.core.doctype.server_script.server_script_utils.get_server_script_map"
 )
+_EOD_LOCK = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.is_eod_sync_locked"
 _SAVEPOINT = "snc_serial_customer_test"
 
 PREFIX = "_Test SNC"
@@ -57,6 +58,12 @@ class TestSerialNumberCreatorStampsTheOrdersCustomer(IntegrationTestCase):
 		server_scripts = patch(_SERVER_SCRIPT_MAP, return_value={})
 		server_scripts.start()
 		cls.addClassCleanup(server_scripts.stop)
+
+		# An EOD sync lock left on the site (CI's shared test site has had one by the time this
+		# module runs) refuses every Stock Entry save, including the Material Receipt below.
+		eod_lock = patch(_EOD_LOCK, return_value=False)
+		eod_lock.start()
+		cls.addClassCleanup(eod_lock.stop)
 
 		cls.company = _company()
 		cls.customer = frappe.db.get_value("Customer", {"disabled": 0}, "name")
@@ -135,6 +142,15 @@ class TestSerialNumberCreatorStampsTheOrdersCustomer(IntegrationTestCase):
 			serial = self._run_snc(serial_no, self.pmo_with_customer)
 
 		self.assertFalse(serial.customer)
+
+	def test_a_site_that_fetches_the_customer_but_has_no_bom_still_stamps_it(self):
+		"""The fetch only runs when the serial is linked to a BOM. Without one, as on CI's site for
+		a serial no SNC has linked yet, the order's customer is stamped."""
+		customer_field = frappe.get_meta("Serial No").get_field("customer")
+		with patch.object(customer_field, "fetch_from", "custom_bom_no.customer"):
+			serial = self._run_snc(self._new_serial(), self.pmo_with_customer)
+
+		self.assertEqual(serial.customer, self.customer)
 
 	@skipUnless(HAS_MANAGED_FIELDS, "needs ERPNext 16.52+")
 	def test_erpnext_refuses_a_save_that_changes_the_customer(self):
