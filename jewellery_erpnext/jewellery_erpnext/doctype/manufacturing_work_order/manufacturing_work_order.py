@@ -22,6 +22,13 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_ev
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 	validate_not_eod_sync_locked,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+	blocking_message,
+	pmo_blocking_state,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
+	validate_without_so_source_submitted,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
 )
@@ -101,7 +108,22 @@ class ManufacturingWorkOrder(Document):
 		self.db_set({"manufacturing_operation": None, "status": "Cancelled"})
 
 	def before_submit(self):
+		# Holding or closing a PMO holds / closes its draft work orders too; on_submit would set
+		# one back to Not Started under the still held or closed PMO.
+		if state := pmo_blocking_state(self.manufacturing_order):
+			frappe.throw(
+				blocking_message(self.manufacturing_order, state)
+				+ " "
+				+ _("Its work orders cannot be submitted."),
+				title=_("Work Order {0}").format(state),
+			)
 		self.validate_photoshop_images()
+		if self.is_without_so:
+			validate_without_so_source_submitted(
+				"Parent Manufacturing Order",
+				self.manufacturing_order,
+				_("Parent Manufacturing Order"),
+			)
 
 	def on_submit(self):
 		if self.for_fg:
@@ -601,15 +623,17 @@ class ManufacturingWorkOrder(Document):
 		set_item_variant(design)
 
 		components = {}
+		pieces = {}
 		order = []
 
-		def _add(item_code, qty):
+		def _add(item_code, qty, pcs=0):
 			if not item_code or not qty:
 				return
 			if item_code not in components:
 				components[item_code] = 0
 				order.append(item_code)
 			components[item_code] += flt(qty)
+			pieces[item_code] = pieces.get(item_code, 0) + flt(pcs)
 
 		for table in (
 			"metal_detail",
@@ -617,13 +641,19 @@ class ManufacturingWorkOrder(Document):
 			"finding_detail",
 			"gemstone_detail",
 		):
+			counts_pieces = table in ("diamond_detail", "gemstone_detail")
 			for row in design.get(table) or []:
-				_add(row.get("item_variant"), row.get("quantity"))
+				_add(
+					row.get("item_variant"),
+					row.get("quantity"),
+					row.get("pcs") if counts_pieces else 0,
+				)
 		for row in design.get("other_detail") or []:
 			_add(row.get("item_code"), row.get("quantity"))
 
 		component_rows = [
-			{"item_code": code, "qty": components[code]} for code in order
+			{"item_code": code, "qty": components[code], "pcs": pieces.get(code, 0)}
+			for code in order
 		]
 		return component_rows, flt(design.gross_weight), flt(design.quantity) or 1.0
 
@@ -662,13 +692,13 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_unpack_serial_no_stock_entry(self):
-		"""Unpack a repaired FG serial into the raw materials of ITS OWN BOM as Customer
-		Goods.
+		"""Unpack a repaired FG serial into the raw materials of ITS OWN BOM, booked as
+		Regular Stock.
 
 		Consumes the finished-good serial from the RM warehouse that currently holds
 		it and books the raw materials of the serial's as-built BOM (Serial No.custom_bom_no)
-		back into that same warehouse, so the repair operations have their inputs without
-		a separate stock transfer. Only valid for Repair work orders (see the Unpack
+		into the work order's warehouse (see _resolve_unpack_target_warehouse), so the repair
+		operations have their inputs without a separate stock transfer. Only valid for Repair work orders (see the Unpack
 		Serial No button). This is a Customer-Goods sibling of
 		create_repair_un_pack_stock_entry (which stays for the legacy flow).
 		"""
@@ -689,7 +719,7 @@ class ManufacturingWorkOrder(Document):
 
 		# Idempotency: a double-click, a page reload mid-post or a retried request must not
 		# produce a second Stock Entry -- that would consume the serial twice, mint a second
-		# set of Customer Goods batches and double every MOP weight booked off these rows.
+		# set of component batches and double every MOP weight booked off these rows.
 		if existing := self.find_existing_unpack_entry():
 			frappe.throw(
 				_(
@@ -724,47 +754,22 @@ class ManufacturingWorkOrder(Document):
 		# department before it can be unpacked here.
 		self._assert_serial_in_department(source_wh)
 
-		# Target: the warehouse the serial is unpacked out of. The unpacked material
-		# stays (and is reserved) there; it is not moved to the department's working
-		# warehouse.
-		target_wh = source_wh
+		target_wh = self._resolve_unpack_target_warehouse()
 
-		source_inventory_type, source_customer, customer = _resolve_unpack_inventory(
-			self.serial_no, self.manufacturing_order
+		source_inventory_type, source_customer = _resolve_unpack_inventory(
+			self.serial_no
 		)
-		if not customer:
+		# The serial leaves under its own owner. A Customer Goods serial whose batch names no
+		# customer cannot be consumed that way (ownership normalisation would book it as
+		# Regular Stock and the outward ledger entry would not match), so say so up front.
+		if source_inventory_type in ("Customer Goods", "Customer Stock") and not (
+			source_customer
+		):
 			frappe.throw(
 				_(
-					"Cannot unpack as Customer Goods: no customer found on the serial's "
-					"batch or on Parent Manufacturing Order {0}."
-				).format(self.manufacturing_order)
-			)
-
-		# Average per-item rate from the serial's original purchase entry.
-		parent_entry = frappe.db.get_value(
-			"Serial No", self.serial_no, "purchase_document_no"
-		)
-		raw_item_data = (
-			frappe.db.get_all(
-				"Stock Entry Detail",
-				{"parent": parent_entry},
-				["basic_rate", "item_code"],
-			)
-			if parent_entry
-			else []
-		)
-
-		from collections import defaultdict
-
-		row_dict = defaultdict(
-			lambda: {"count": 0, "total_basic_rate": 0, "avg_basic_rate": 0}
-		)
-		for row in raw_item_data:
-			row_dict[row.item_code]["count"] += 1
-			row_dict[row.item_code]["total_basic_rate"] += row.basic_rate
-			row_dict[row.item_code]["avg_basic_rate"] = (
-				row_dict[row.item_code]["total_basic_rate"]
-				/ row_dict[row.item_code]["count"]
+					"Serial No {0} is {1} but its batch has no customer, so it cannot be "
+					"unpacked. Set the customer on the serial's batch first."
+				).format(self.serial_no, source_inventory_type)
 			)
 
 		# Unpack the FULL item, not the reduced repair new_bom: resolve every
@@ -785,6 +790,9 @@ class ManufacturingWorkOrder(Document):
 		self._assert_components_bookable(
 			[comp["item_code"] for comp in components], serial_bom
 		)
+		component_rates = self._unpack_component_rates(
+			[comp["item_code"] for comp in components]
+		)
 
 		se = frappe.get_doc(
 			{
@@ -792,7 +800,8 @@ class ManufacturingWorkOrder(Document):
 				"stock_entry_type": "Repair Unpack",
 				"purpose": "Repack",
 				"company": self.company,
-				"inventory_type": "Customer Goods",
+				# The unpacked materials are booked as Regular Stock (target rows below).
+				"inventory_type": "Regular Stock",
 				"auto_created": 1,
 				"branch": self.branch,
 				# Header MWO/PMO/operation are required by the MOP-Log + reservation
@@ -828,7 +837,7 @@ class ManufacturingWorkOrder(Document):
 			item_code = comp["item_code"]
 			qty = flt((self.qty * comp["qty"]) / design_qty, 3)
 
-			# Only batch-tracked items get a (Customer Goods) child batch; setting a
+			# Only batch-tracked items get a (Regular Stock) child batch; setting a
 			# batch on a non-batch item would fail SE validation at submit.
 			has_batch, batch_number_series = frappe.db.get_value(
 				"Item", item_code, ["has_batch_no", "batch_number_series"]
@@ -841,45 +850,174 @@ class ManufacturingWorkOrder(Document):
 					batch_doc.batch_id = make_autoname(
 						batch_number_series, doc=batch_doc
 					)
-				batch_doc.custom_inventory_type = "Customer Goods"
-				batch_doc.custom_customer = customer
-				# Unpacked raw material is the customer's repair stock -- tag the voucher type
-				# so it is correctly identified as Customer Repair downstream (the SE-level
-				# customer_voucher_type cannot be used here: it would trip
-				# inventory_utils.validate_customer_voucher's "Customer Repair" branch, which
-				# forbids batch-tracked rows).
+				# Unpacked raw material is booked as Regular Stock: no customer on the
+				# batch, matching the Regular Stock target row it is received on.
+				batch_doc.custom_inventory_type = "Regular Stock"
+				# Still marked as repair material. SNC settlement skips "Customer Repair"
+				# batches (snc._row_needs_settlement); without the mark a customer-gold
+				# repair would settle this metal as borrowed (None != the order's
+				# customer). Batch validation only rewrites the voucher type on a batch
+				# that has a customer, so the mark survives on this one.
 				batch_doc.custom_customer_voucher_type = "Customer Repair"
 				batch_doc.flags.ignore_permissions = True
 				batch_doc.save()
 				batch_no = batch_doc.name
 
-			rate = 0
-			if row_dict.get(item_code) and row_dict[item_code].get("avg_basic_rate"):
-				rate = row_dict[item_code].get("avg_basic_rate")
+			row = {
+				"item_code": item_code,
+				"qty": qty,
+				"inventory_type": "Regular Stock",
+				"customer": None,
+				"t_warehouse": target_wh,
+				"department": self.department,
+				"use_serial_batch_fields": 1,
+				"set_basic_rate_manually": 1,
+				"basic_rate": flt(component_rates.get(item_code)),
+				"batch_no": batch_no,
+				# All unpacked materials belong to THIS repair MWO's operation so
+				# they surface in its MOP (MOP Log is keyed by the row's operation).
+				"custom_manufacturing_work_order": self.name,
+				"manufacturing_operation": self.manufacturing_operation,
+			}
+			# Stones carry the BOM's piece count; without it the row keeps the
+			# field's default of 1 and the MOP shows 1 pc for a 35-stone group.
+			if flt(comp.get("pcs")):
+				row["pcs"] = cint(round(flt(self.qty) * flt(comp["pcs"]) / design_qty))
+			se.append("items", row)
 
-			se.append(
-				"items",
-				{
-					"item_code": item_code,
-					"qty": qty,
-					"inventory_type": "Customer Goods",
-					"customer": customer,
-					"t_warehouse": target_wh,
-					"department": self.department,
-					"use_serial_batch_fields": 1,
-					"set_basic_rate_manually": 1,
-					"basic_rate": rate,
-					"batch_no": batch_no,
-					# All unpacked materials belong to THIS repair MWO's operation so
-					# they surface in its MOP (MOP Log is keyed by the row's operation).
-					"custom_manufacturing_work_order": self.name,
-					"manufacturing_operation": self.manufacturing_operation,
-				},
-			)
-
+		# First save lets ERPNext value the serial being consumed; the components are then
+		# re-rated so what comes back adds up to exactly that value (nothing booked to
+		# the Difference Account, nothing left at a 0 rate).
 		se.save()
+		self._rate_unpacked_components(se)
+		se.save()
+		_link_batches_to_rows(se)
 		se.submit()
 		return se.name
+
+	def _resolve_unpack_target_warehouse(self):
+		"""Where the unpacked material goes: the work order's own warehouse, the same
+		rule Material Transfer (WORK ORDER) uses. A Not Started operation takes the
+		department's Manufacturing warehouse; one that is WIP with an employee takes
+		that employee's Manufacturing warehouse.
+		"""
+		mop = (
+			frappe.db.get_value(
+				"Manufacturing Operation",
+				self.manufacturing_operation,
+				["status", "employee", "department"],
+				as_dict=True,
+			)
+			if self.manufacturing_operation
+			else None
+		) or frappe._dict()
+		department = mop.get("department") or self.department
+
+		if mop.get("status") == "WIP" and mop.get("employee"):
+			warehouse = frappe.db.get_value(
+				"Warehouse",
+				{
+					"employee": mop.employee,
+					"warehouse_type": "Manufacturing",
+					"disabled": 0,
+				},
+				"name",
+			)
+			if not warehouse:
+				frappe.throw(
+					_("Manufacturing warehouse not found for employee {0}").format(
+						mop.employee
+					)
+				)
+			return warehouse
+
+		warehouse = frappe.db.get_value(
+			"Warehouse",
+			{
+				"department": department,
+				"warehouse_type": "Manufacturing",
+				"disabled": 0,
+			},
+			"name",
+		)
+		if not warehouse:
+			frappe.throw(
+				_("Manufacturing warehouse not found for department {0}").format(
+					department
+				)
+			)
+		return warehouse
+
+	def _unpack_component_rates(self, item_codes):
+		"""Per-unit rate of each component, as it was when this piece was made.
+
+		The serial's own creation entry is the record of what each component cost, so its
+		consumed rows give the rates (qty-weighted per item). Items it does not cover fall
+		back to the Item's last purchase rate. Only the proportions matter:
+		_rate_unpacked_components scales the set to the value of the serial.
+		"""
+		rates = {}
+		entry = frappe.db.sql(
+			"""
+			SELECT bundle.voucher_no
+			FROM `tabSerial and Batch Entry` entry
+			JOIN `tabSerial and Batch Bundle` bundle ON bundle.name = entry.parent
+			WHERE entry.serial_no = %s
+				AND bundle.voucher_type = 'Stock Entry'
+				AND bundle.type_of_transaction = 'Inward'
+				AND bundle.docstatus = 1
+				AND bundle.is_cancelled = 0
+			ORDER BY bundle.creation ASC
+			LIMIT 1
+			""",
+			(self.serial_no,),
+		)
+		if entry:
+			totals = {}
+			for row in frappe.db.get_all(
+				"Stock Entry Detail",
+				{"parent": entry[0][0], "s_warehouse": ["is", "set"]},
+				["item_code", "qty", "basic_rate"],
+			):
+				qty, amount = totals.get(row.item_code, (0.0, 0.0))
+				totals[row.item_code] = (
+					qty + flt(row.qty),
+					amount + flt(row.qty) * flt(row.basic_rate),
+				)
+			rates = {
+				item: amount / qty for item, (qty, amount) in totals.items() if qty
+			}
+
+		for item_code in item_codes:
+			if not flt(rates.get(item_code)):
+				rates[item_code] = flt(
+					frappe.db.get_value("Item", item_code, "last_purchase_rate")
+				)
+		return rates
+
+	def _rate_unpacked_components(self, se):
+		"""Scale the component rates so they add up to the value of the serial consumed.
+
+		``se`` has been saved once, so its source row carries the value ERPNext took for the
+		serial. The last component takes the rounding remainder so the two sides match to the
+		paisa.
+		"""
+		source_value = sum(
+			flt(row.basic_rate) * flt(row.qty) for row in se.items if row.s_warehouse
+		)
+		targets = [row for row in se.items if row.t_warehouse]
+		booked = sum(flt(row.basic_rate) * flt(row.qty) for row in targets)
+		if not (targets and source_value > 0 and booked > 0):
+			return
+
+		factor = source_value / booked
+		running = 0.0
+		for row in targets[:-1]:
+			row.basic_rate = flt(flt(row.basic_rate) * factor, 6)
+			running += flt(flt(row.basic_rate) * flt(row.qty), 2)
+		last = targets[-1]
+		if flt(last.qty):
+			last.basic_rate = flt((source_value - running) / flt(last.qty), 6)
 
 	def validate_photoshop_images(self):
 		"""Block FG submission when the Design Code Item is flagged 'Is Photoshop
@@ -1028,16 +1166,39 @@ def get_unpack_eligibility(mwo):
 	}
 
 
-def _resolve_unpack_inventory(serial_no, pmo):
+def _link_batches_to_rows(se):
+	"""Tie each batch the unpack minted to the Stock Entry row that receives it.
+
+	The batches are created before the entry exists, so they never got a reference to it.
+	The Batch Rate is stamped from the creating row
+	(``batch/doc_events/utils.update_inventory_dimentions``, found through
+	``reference_doctype`` + ``custom_voucher_detail_no``) when ERPNext re-saves the batch on
+	submit -- and ERPNext fills ``reference_doctype`` only after that re-save. Without the
+	link every unpacked batch kept a Batch Rate of 0.
+	"""
+	for row in se.items:
+		if row.get("t_warehouse") and row.get("batch_no") and row.get("name"):
+			frappe.db.set_value(
+				"Batch",
+				row.batch_no,
+				{
+					"reference_doctype": "Stock Entry",
+					"reference_name": se.name,
+					"custom_voucher_detail_no": row.name,
+				},
+				update_modified=False,
+			)
+
+
+def _resolve_unpack_inventory(serial_no):
 	"""Inventory context for the unpack SE.
 
 	`inventory_type` is a ledger-enforced Inventory Dimension, so the SOURCE row
 	must consume the serial under its ACTUAL inventory type (else the outward SLE
 	goes negative for the wrong dimension). The unpacked TARGET rows are booked as
-	Customer Goods per spec.
+	Regular Stock and need no owner.
 
-	Returns (source_inventory_type, source_customer, customer) where `customer` is
-	the owner assigned to the Customer-Goods target rows.
+	Returns (source_inventory_type, source_customer).
 	"""
 	source_inventory_type = "Regular Stock"
 	source_customer = None
@@ -1055,10 +1216,7 @@ def _resolve_unpack_inventory(serial_no, pmo):
 			if source_inventory_type == "Customer Goods":
 				source_customer = batch_info.custom_customer
 
-	customer = source_customer or frappe.db.get_value(
-		"Parent Manufacturing Order", pmo, "customer"
-	)
-	return source_inventory_type, source_customer, customer
+	return source_inventory_type, source_customer
 
 
 def create_manufacturing_operation(doc):
@@ -1303,6 +1461,7 @@ def _validate_split_basics(docname):
 		docname,
 		[
 			"docstatus",
+			"status",
 			"has_split_mwo",
 			"department",
 			"gross_wt",
@@ -1315,6 +1474,13 @@ def _validate_split_basics(docname):
 			_("Work Order {0} must be submitted before it can be split.").format(
 				docname
 			)
+		)
+
+	# Held or closed with its PMO: the split would close it and start new work orders under
+	# a PMO that takes none. (A split parent is Closed too, but has_split_mwo says so below.)
+	if mwo.status == "Hold" or (mwo.status == "Closed" and not cint(mwo.has_split_mwo)):
+		frappe.throw(
+			_("Work Order {0} is {1} and cannot be split.").format(docname, mwo.status)
 		)
 
 	# A split parent keeps its department and zero weight, and its pending operations are

@@ -83,6 +83,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	recalculate_sync_log_totals,
 	sync_mop_logs,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
+	MOPSettings,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler import (
 	check_and_enqueue_eod_sync,
 )
@@ -521,6 +524,56 @@ class TestMOPSettingsPermissions(IntegrationTestCase):
 		with patch.object(frappe, "msgprint"):
 			doc.sync_mop_log()
 		mock_enq.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Saving with a purged Last EOD Error Log
+# ---------------------------------------------------------------------------
+
+
+def _bare_settings(**fields):
+	# Same pattern as ``_bare_sre`` in test_stock_reservation_entry_mwo.py: no DB, no meta
+	# load, only the override's own logic.
+	doc = MOPSettings.__new__(MOPSettings)
+	for k, v in fields.items():
+		setattr(doc, k, v)
+	return doc
+
+
+class TestPurgedEodErrorLog(IntegrationTestCase):
+	"""Log Settings purges Error Logs (14 days on kggk-prod) while the EOD job's pointer to its
+	last one stays; Frappe's link check then refused every save of MOP Settings."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _validate_links(self, error_log, exists):
+		doc = _bare_settings(eod_sync_last_error_log=error_log)
+		with (
+			patch(
+				f"{_SETTINGS_MOD}.frappe.db.exists",
+				side_effect=lambda doctype, name: exists,
+			) as db_exists,
+			patch("frappe.model.document.Document._validate_links") as frappe_check,
+		):
+			doc._validate_links()
+		frappe_check.assert_called_once_with()
+		return doc, db_exists
+
+	def test_a_purged_error_log_is_dropped_before_the_link_check(self):
+		doc, db_exists = self._validate_links("bscacqcs8e", exists=False)
+		db_exists.assert_called_once_with("Error Log", "bscacqcs8e")
+		self.assertIsNone(doc.eod_sync_last_error_log)
+
+	def test_an_existing_error_log_is_kept(self):
+		doc, db_exists = self._validate_links("bscacqcs8e", exists=True)
+		db_exists.assert_called_once_with("Error Log", "bscacqcs8e")
+		self.assertEqual(doc.eod_sync_last_error_log, "bscacqcs8e")
+
+	def test_no_pointer_reads_nothing(self):
+		_doc, db_exists = self._validate_links(None, exists=False)
+		db_exists.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2249,6 +2302,7 @@ class TestReserveFromEodSeRows(IntegrationTestCase):
 		sales_order_item="SOI-1",
 		mo="MO-1",
 		mfr="MF-1",
+		is_without_so=0,
 		has_batch_no=0,
 		has_serial_no=0,
 		stock_uom="Nos",
@@ -2272,10 +2326,17 @@ class TestReserveFromEodSeRows(IntegrationTestCase):
 				return (has_batch_no, has_serial_no, stock_uom)
 			raise AssertionError(f"unexpected get_cached_value doctype: {doctype}")
 
+		def _get_value(doctype, name, fields, *args, **kwargs):
+			# The MWO's (manufacturing_order, manufacturer), or its Without-SO flag, which
+			# _resolve_mwo_so_anchor reads only when the order has no Sales Order.
+			if fields == "is_without_so":
+				return is_without_so
+			return (mo, mfr)
+
 		ep = "erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
 		with patch(f"{_MOD}.frappe.new_doc", side_effect=_new_doc), patch(
 			f"{_MOD}.frappe.get_cached_value", side_effect=_cached
-		), patch(f"{_MOD}.frappe.db.get_value", return_value=(mo, mfr)), patch(
+		), patch(f"{_MOD}.frappe.db.get_value", side_effect=_get_value), patch(
 			f"{_MOD}._eod_base_mr_voucher_qty", return_value=base_mr
 		), patch(ep + "get_available_qty_to_reserve", return_value=avail), patch(
 			# Batched rows resolve free qty via the SBB-aware helper (ERPNext's
@@ -2446,6 +2507,26 @@ class TestReserveFromEodSeRows(IntegrationTestCase):
 		# MWO's MO has no Sales Order → skip (stock moved, but no malformed reservation).
 		_created, sres = self._reserve(rows, sales_order=None)
 		self.assertEqual(sres, [])
+
+	def test_without_so_mwo_reserves_against_itself(self):
+		rows = [
+			{
+				"custom_manufacturing_work_order": "MWO-1",
+				"item_code": "M-1",
+				"t_warehouse": "WH-DEPT",
+				"qty": 3.0,
+				"manufacturing_operation": "MOP-LAST",
+			}
+		]
+		# Finding Manufacturing - Without SO: no Sales Order, anchored to the MWO itself.
+		_created, sres = self._reserve(
+			rows, sales_order=None, sales_order_item=None, is_without_so=1
+		)
+		self.assertEqual(len(sres), 1)
+		self.assertEqual(sres[0].voucher_type, "Manufacturing Work Order")
+		self.assertEqual(sres[0].voucher_no, "MWO-1")
+		self.assertEqual(sres[0].voucher_detail_no, "MWO-1")
+		self.assertEqual(sres[0].reserved_qty, 3.0)
 
 	def test_per_row_mwo_and_operation(self):
 		rows = [
@@ -6648,10 +6729,27 @@ class TestResolveMwoSoAnchor(IntegrationTestCase):
 	@patch(f"{_MOD}.frappe.get_cached_value")
 	@patch(f"{_MOD}.frappe.db.get_value")
 	def test_returns_none_when_no_anchor_on_mo(self, mock_gv, mock_gcv, mock_qty):
-		mock_gv.return_value = ("MO-1", "MF-1")
+		# (manufacturing_order, manufacturer), then is_without_so = 0
+		mock_gv.side_effect = [("MO-1", "MF-1"), 0]
 		# Returns sales_order, sales_order_item, manufacturer
 		mock_gcv.return_value = (None, None, "MF-1")
 		self.assertIsNone(_resolve_mwo_so_anchor("MWO-1"))
+
+	@patch(f"{_MOD}._eod_base_mr_voucher_qty")
+	@patch(f"{_MOD}.frappe.get_cached_value")
+	@patch(f"{_MOD}.frappe.db.get_value")
+	def test_without_so_mwo_is_anchored_to_itself(self, mock_gv, mock_gcv, mock_qty):
+		# (manufacturing_order, manufacturer), then is_without_so = 1
+		mock_gv.side_effect = [("MO-1", "MF-1"), 1]
+		mock_gcv.return_value = (None, None, "MF-1")
+		mock_qty.return_value = None
+
+		res = _resolve_mwo_so_anchor("MWO-1")
+		self.assertEqual(res["voucher_type"], "Manufacturing Work Order")
+		self.assertEqual(res["voucher_no"], "MWO-1")
+		self.assertEqual(res["voucher_detail_no"], "MWO-1")
+		# No Sales Order: the Customer Goods heal guard must still see none.
+		self.assertIsNone(res["sales_order"])
 
 	@patch(f"{_MOD}._eod_base_mr_voucher_qty")
 	@patch(f"{_MOD}.frappe.get_cached_value")
@@ -6666,6 +6764,9 @@ class TestResolveMwoSoAnchor(IntegrationTestCase):
 		self.assertEqual(res["sales_order"], "SO-1")
 		self.assertEqual(res["sales_order_item"], "SO-IT-1")
 		self.assertEqual(res["base_mr_voucher_qty"], 15.0)
+		self.assertEqual(res["voucher_type"], "Sales Order")
+		self.assertEqual(res["voucher_no"], "SO-1")
+		self.assertEqual(res["voucher_detail_no"], "SO-IT-1")
 
 	@patch(f"{_MOD}.frappe.db.get_value")
 	def test_mwo_cache_usage(self, mock_gv):

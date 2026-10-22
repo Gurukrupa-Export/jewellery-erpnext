@@ -61,9 +61,16 @@ def update_inventory_dimentions(self):
 	item_groups = frappe.db.get_all(
 		"Item Group", {"custom_is_alloy_group": 1}, pluck="name"
 	)
+	# Only ever tested for this batch's own item (_rate_field_for_item), so fetch just that
+	# item when it is an alloy instead of every alloy item on the site. The membership test
+	# below still compares against the stored name, so the answer is unchanged.
 	alloy_item_list = frappe.db.get_all(
 		"Item",
-		{"item_group": ["in", item_groups], "variant_of": ["in", ["M", "F"]]},
+		{
+			"name": self.item,
+			"item_group": ["in", item_groups],
+			"variant_of": ["in", ["M", "F"]],
+		},
 		pluck="name",
 	)
 	for row in frappe.db.get_all(

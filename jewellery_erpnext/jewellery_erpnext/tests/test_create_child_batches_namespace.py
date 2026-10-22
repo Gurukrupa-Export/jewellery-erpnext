@@ -213,6 +213,57 @@ class TestCreateChildBatchesNamespace(IntegrationTestCase):
 		self.assertEqual(minted[0].reference_name, doc.name)
 		self.assertEqual(minted[0].custom_voucher_detail_no, "d7ff3r2j6g")
 
+	def _run_with_batch_flags(self, doc, table, flags):
+		"""Run with ``Item.has_batch_no`` answered from ``flags`` ({item_code: 0/1})."""
+
+		def get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Item" and fieldname == "has_batch_no":
+				return flags.get(name)
+			return None
+
+		with patch("frappe.db.get_value", side_effect=get_value):
+			return self._run(doc, table)
+
+	def test_a_serial_only_finished_piece_gets_no_child_batch(self):
+		"""SNC 3s2hk5nnms: every source is one customer's, the piece is serial-only."""
+		parent = "GJCU0009-2F09-D-NT-RO-MH12A-+11.5-12-15"
+		piece = _row(
+			"fg1", item_code="PE00351-002", t_warehouse="Tagging FG - KGJPL", qty=1
+		)
+		table = _BatchTable({parent})
+		doc = _entry(
+			[_consume("c1", parent, item_code="D-NT-RO-MH12A-+11.5-12"), piece],
+			stock_entry_type="Manufacture",
+		)
+
+		minted = self._run_with_batch_flags(doc, table, {"PE00351-002": 0})
+
+		self.assertIsNone(piece.batch_no)
+		self.assertEqual(minted, [])
+		self.assertEqual(table.attempts, 0)
+
+	def test_a_batch_tracked_finished_piece_still_gets_its_child_batch(self):
+		parent = "GJCU0009-2F09-M-G-22KT-91.75-Y-11"
+		piece = _row(
+			"fg1", item_code="RI00210-004", t_warehouse="Tagging FG - KGJPL", qty=1
+		)
+		table = _BatchTable({parent})
+		doc = _entry([_consume("c1", parent), piece], stock_entry_type="Manufacture")
+
+		minted = self._run_with_batch_flags(doc, table, {"RI00210-004": 1})
+
+		self.assertEqual(piece.batch_no, "GJCU0009-2F09-RI00210-004-11-A")
+		self.assertEqual(len(minted), 1)
+
+	def test_an_unreadable_item_flag_still_mints(self):
+		"""Only an explicit has_batch_no=0 skips; a missing Item keeps the old behaviour."""
+		produce = _produce("p1")
+		table = _BatchTable({PARENT_12_A})
+		self._run_with_batch_flags(
+			_entry([_consume("c1", PARENT_12_A), produce]), table, {}
+		)
+		self.assertEqual(produce.batch_no, "GJCU0009-2F09-ML-G-22KT-91.75-Y-12-A-A")
+
 	def test_a_full_legacy_pool_continues_past_z(self):
 		"""A parent whose name cannot be parsed keeps the legacy base -- and no longer stops at Z."""
 		legacy_parent = "GJCU0009-2F09-OLD-FORMAT-A"

@@ -20,11 +20,16 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	pick_diamond_grade,
 	resolve_diamond_grade,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
+	delete_without_so_drafts,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	resolve_parent_chains,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
+	_resolve_existing_variant_item_code,
 	create_mwo,
+	make_finding_without_so_order,
 	make_manufacturing_order,
 )
 from jewellery_erpnext.utils import get_repair_order_design_bom
@@ -40,6 +45,10 @@ ORDER_DIMENSION_MAP = {
 	"custom_design_type": "design_type",
 }
 
+# Plan mode that raises finding orders straight from the plan, with no Sales Order, Repair
+# Order or existing Manufacturing Work Order behind them.
+FINDING_WITHOUT_SO = "Finding Manufacturing - Without SO"
+
 
 def is_subcontracting_selected(value):
 	"""True only when the plan is actually flagged for subcontracting.
@@ -52,7 +61,20 @@ def is_subcontracting_selected(value):
 
 
 class ManufacturingPlan(Document):
+	def before_insert(self):
+		# A Without-SO plan has no Manufacturing Plan Table; its rows are in Finding Details.
+		if (
+			self.select_manufacture_order != FINDING_WITHOUT_SO
+			and not self.manufacturing_plan_table
+		):
+			frappe.throw(_("Select atleast one Item"))
+
 	def on_cancel(self):
+		if self.select_manufacture_order == FINDING_WITHOUT_SO:
+			delete_without_so_drafts(
+				"Parent Manufacturing Order", {"manufacturing_plan": self.name}
+			)
+			return
 		frappe.db.sql(
 			"""
             UPDATE `tabSales Order Item` soi
@@ -77,6 +99,10 @@ class ManufacturingPlan(Document):
 		)
 
 	def on_submit(self):
+		if self.select_manufacture_order == FINDING_WITHOUT_SO:
+			self.create_finding_without_so_orders()
+			return
+
 		is_subcontracting = False
 		# customer_diamond_data removed for memory efficiency
 		frappe.db.sql(
@@ -146,9 +172,72 @@ class ManufacturingPlan(Document):
 			create_subcontracting_order(self)
 
 	def validate(self):
+		self.clear_references_for_finding_without_so()
+		self.validate_finding_details()
 		self.validate_qty_with_bom_creation()
 		self.refresh_mould_ids()
 		self.set_order_dimensions()
+		if self.select_manufacture_order == FINDING_WITHOUT_SO:
+			self.total_planned_qty = sum(cint(row.qty) for row in self.finding_details)
+
+	def clear_references_for_finding_without_so(self):
+		"""A Without-SO plan carries no Sales Order / Repair Order / MWO rows and is never
+		subcontracted. The form hides those fields in this mode, but rows fetched before the
+		mode was switched would still be saved, and on submit they would raise ordinary
+		Sales Order PMOs -- so drop them here. The reverse holds for every other mode: Finding
+		Details rows left over from a switched mode are dropped."""
+		if self.select_manufacture_order != FINDING_WITHOUT_SO:
+			self.finding_details = []
+			return
+		self.manufacturing_plan_table = []
+		self.setting_type = None
+		self.is_subcontracting = "No"
+		self.supplier = None
+		self.estimated_date = None
+		self.purchase_type = None
+
+	def validate_finding_details(self):
+		"""Each Finding Details row raises one Parent Manufacturing Order per unit of Qty, so
+		Qty must be a whole number of at least 1.
+
+		Each row is also resolved to its finding variant here, on save, rather than on submit:
+		every PMO needs an item_code (it is part of the PMO name), and a row whose attributes
+		match no ``F`` variant should fail while the plan is still a draft, naming the row.
+		``F`` variants carry exactly the seven attributes the row asks for, so the match is
+		unique."""
+		# mandatory_depends_on is enforced only in the browser, so the server checks it here.
+		if (
+			self.select_manufacture_order == FINDING_WITHOUT_SO
+			and not self.finding_details
+		):
+			frappe.throw(_("Add at least one row in Finding Details"))
+		for row in self.finding_details:
+			if cint(row.qty) < 1:
+				frappe.throw(
+					_("Finding Details Row #{0}: Qty must be at least 1").format(
+						row.idx
+					)
+				)
+			row.item_code = _resolve_existing_variant_item_code(
+				{**row.as_dict(), "item": "F", "item_variant": None, "item_code": None},
+				_("Finding Details"),
+			)
+
+	def create_finding_without_so_orders(self):
+		"""Raise one Draft Parent Manufacturing Order per unit of Qty on every Finding Details
+		row. They are left in Draft for the user to review and submit one by one; the
+		Manufacturing Work Order comes from that submit, not from this one."""
+		mp_context = get_mp_context()
+		validate_finding_without_so_context(mp_context)
+		created = 0
+		for row in self.finding_details:
+			for _i in range(cint(row.qty)):
+				make_finding_without_so_order(self, row, mp_context)
+				created += 1
+
+		frappe.msgprint(
+			_("{0} Parent Manufacturing Order(s) created in Draft").format(created)
+		)
 
 	def set_order_dimensions(self):
 		"""Stamp Order Type / Sales Type / Flow Type / Design Type from the source Sales Orders.
@@ -371,15 +460,6 @@ class ManufacturingPlan(Document):
 		)
 		attribute_value_set = {d.name for d in attr_values}
 
-		manufacturer = frappe.defaults.get_user_default("manufacturer")
-		finding_default_department = None
-		if manufacturer:
-			finding_default_department = frappe.db.get_value(
-				"Manufacturing Setting",
-				{"manufacturer": manufacturer},
-				"default_department",
-			)
-
 		return {
 			"so_data": so_data_map,
 			"mwo_data": mwo_data_map,
@@ -389,10 +469,7 @@ class ManufacturingPlan(Document):
 			"customer_diamond_grade": customer_diamond_grade_map,
 			"attribute_value_set": attribute_value_set,
 			"ref_customer": ref_customer_map,
-			"mp_context": {
-				"manufacturer": manufacturer,
-				"finding_default_department": finding_default_department,
-			},
+			"mp_context": get_mp_context(),
 		}
 
 	@frappe.whitelist()
@@ -645,6 +722,113 @@ def map_docs(method, source_names, target_doc, args=None):
 	)
 	target_doc = method(*_args)
 	return target_doc
+
+
+# Finding Details fieldname -> the ``F`` template's variant attribute it holds.
+FINDING_ATTRIBUTE_FIELDS = {
+	"finding_category": "Finding Category",
+	"finding_type": "Finding Sub-Category",
+	"metal_type": "Metal Type",
+	"metal_touch": "Metal Touch",
+	"metal_purity": "Metal Purity",
+	"metal_colour": "Metal Colour",
+	"finding_size": "Finding Size",
+}
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def finding_attribute_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Link query for one Finding Details attribute: only the values that occur on an enabled
+	``F`` variant also carrying every attribute already picked on the row.
+
+	The plain attribute query offers every value of the attribute, so a row could be built
+	from values that each exist but never together on one item -- and only fail on save,
+	when no variant matches. Narrowing here keeps each pick on a combination that exists.
+
+	``filters`` carries ``fieldname`` (the column being searched) and ``selected``
+	({fieldname: value} for the row's other filled attributes)."""
+	if isinstance(filters, str):
+		filters = json.loads(filters)
+	filters = filters or {}
+
+	attribute = FINDING_ATTRIBUTE_FIELDS.get(filters.get("fieldname"))
+	if not attribute:
+		return []
+
+	selected = filters.get("selected") or {}
+	if isinstance(selected, str):
+		selected = json.loads(selected)
+
+	conditions = []
+	values = {
+		"attribute": attribute,
+		"txt": f"%{txt}%",
+		"start": cint(start),
+		"page_len": cint(page_len),
+	}
+	for i, (fieldname, value) in enumerate(selected.items()):
+		other = FINDING_ATTRIBUTE_FIELDS.get(fieldname)
+		if not other or other == attribute or not value:
+			continue
+		conditions.append(
+			f"""AND EXISTS (
+				SELECT 1 FROM `tabItem Variant Attribute` o{i}
+				WHERE o{i}.parent = v.parent
+					AND o{i}.attribute = %(attr_{i})s
+					AND o{i}.attribute_value = %(val_{i})s
+			)"""
+		)
+		values[f"attr_{i}"] = other
+		values[f"val_{i}"] = value
+
+	return frappe.db.sql(
+		f"""
+		SELECT DISTINCT v.attribute_value
+		FROM `tabItem Variant Attribute` v
+		INNER JOIN `tabItem` i ON i.name = v.parent
+		WHERE i.variant_of = 'F'
+			AND i.disabled = 0
+			AND v.attribute = %(attribute)s
+			AND v.attribute_value LIKE %(txt)s
+			{" ".join(conditions)}
+		ORDER BY v.attribute_value
+		LIMIT %(start)s, %(page_len)s
+		""",
+		values,
+	)
+
+
+def validate_finding_without_so_context(mp_context):
+	"""A Without-SO plan raises PMOs that need a manufacturer and its default department to
+	make their work order, so stop the submit before any PMO is made without them."""
+	if not mp_context.get("manufacturer"):
+		frappe.throw(
+			_("Set a default Manufacturer for your user before submitting this plan.")
+		)
+	if not mp_context.get("finding_default_department"):
+		frappe.throw(
+			_(
+				"Set Default Department in Manufacturing Setting for Manufacturer {0}."
+			).format(frappe.bold(mp_context.get("manufacturer")))
+		)
+
+
+def get_mp_context():
+	"""The user's manufacturer and its default department, read once per plan submit and
+	shared by every PMO the plan raises."""
+	manufacturer = frappe.defaults.get_user_default("manufacturer")
+	finding_default_department = None
+	if manufacturer:
+		finding_default_department = frappe.db.get_value(
+			"Manufacturing Setting",
+			{"manufacturer": manufacturer},
+			"default_department",
+		)
+	return {
+		"manufacturer": manufacturer,
+		"finding_default_department": finding_default_department,
+	}
 
 
 def fetch_doc_map(doctype, names, fields, key_field="name"):

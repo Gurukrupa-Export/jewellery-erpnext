@@ -897,6 +897,21 @@ def get_repair_order_design_bom(order_form_type, order_form_id):
 	return frappe.db.get_value("Repair Order", order_form_id, "bom")
 
 
+def get_serial_bom(serial_no):
+	"""The BOM of the serial itself (None if it has none).
+
+	``Serial No.custom_bom_no`` is the as-built Finish Goods BOM stamped on the piece. Failing
+	that, the Finish Goods BOM tagged to it: several BOMs can carry the same ``tag_no`` (a
+	repair adds a Template one), so only a submitted Finish Goods BOM counts. Never the
+	item's design BOM -- that is a different identity (see ``get_repair_order_design_bom``).
+	"""
+	if not serial_no:
+		return None
+	return frappe.db.get_value("Serial No", serial_no, "custom_bom_no") or frappe.db.exists(
+		"BOM", {"tag_no": serial_no, "bom_type": "Finish Goods", "docstatus": 1}
+	)
+
+
 def ensure_operation_not_in_use(operation, cancelling_doctype, cancelling_name):
 	"""Stop an IR cancel while any other submitted document still uses the operation it created.
 

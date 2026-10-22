@@ -132,7 +132,14 @@ jewellery_erpnext.patches.audit_pmo_row_ownership
 jewellery_erpnext.patches.add_ref_customer_fields
 jewellery_erpnext.patches.quotation_invoice_item_grid_columns
 jewellery_erpnext.patches.add_serial_and_batch_bundle_item_index
+jewellery_erpnext.patches.add_batch_worker_cost_fields
+jewellery_erpnext.patches.disable_mp_get_item_table_server_script
+jewellery_erpnext.patches.seed_stock_entry_types #2026-10-12 Material Transfer (Chain SC)
 jewellery_erpnext.patches.add_metal_conversion_chain_sc
 jewellery_erpnext.patches.add_metal_conversion_workflow #2026-10-14 chain to employee or supplier, Cancel Issue
 jewellery_erpnext.patches.remove_unused_chain_sc_stock_entry_type
 jewellery_erpnext.patches.repair_mwo_mop_link_labels
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-21 PMO Submit/Hold/Open/Close workflow
+jewellery_erpnext.patches.add_mr_hold_closed_workflow_states
+jewellery_erpnext.patches.restore_missing_perf_indexes
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only

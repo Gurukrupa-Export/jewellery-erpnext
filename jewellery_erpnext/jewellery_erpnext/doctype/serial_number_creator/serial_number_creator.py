@@ -35,6 +35,7 @@ class SerialNumberCreator(Document):
 	def validate(self):
 		# Runs on draft save AND on submit (_submit -> save), so a document created
 		# before this existed repairs itself the next time it is saved or submitted.
+		self._render_pending_source_rows()
 		split_source_rows_by_reservation(self)
 
 	def before_insert(self):
@@ -63,11 +64,35 @@ class SerialNumberCreator(Document):
 		to_prepare_data_for_make_mnf_stock_entry(self)
 		update_new_serial_no(self)
 
+	def _render_pending_source_rows(self):
+		"""Fill a draft that was created before its material was reserved.
+
+		``_render_fg_details`` runs only in ``before_insert``, and
+		``create_snc_from_mwo_submit`` returns the existing document rather than rebuilding
+		it -- so a Serial Number Creator auto-created at Work Order submit BEFORE anything
+		was reserved would keep both tables empty for good, and ``validate_qty`` would
+		refuse every submit. There was no way back.
+
+		Only a draft with BOTH tables empty is touched: that shape is never something an
+		operator meant, because clearing one table leaves the other populated. A draft the
+		operator has actually edited is left alone.
+		"""
+		if self.docstatus != 0:
+			return
+		if self.fg_details or self.source_table:
+			return
+		if not self.manufacturing_operation:
+			return
+
+		self._render_fg_details()
+		if self.source_table:
+			self._compute_total_weight()
+
 	def on_cancel(self):
 		release_tracking_bom_for_finished_goods(self)
 
 	def _render_fg_details(self):
-		"""Build source_table (batch-wise) and fg_details (aggregated) from MOP Log."""
+		"""Build source_table (batch-wise) and fg_details (aggregated) from reservations."""
 		mop_name = self.manufacturing_operation
 		mwo_name = self.manufacturing_work_order
 
@@ -89,9 +114,24 @@ class SerialNumberCreator(Document):
 		if mnf_qty <= 0:
 			return
 
-		# Get batch-wise source rows from MOP Log
+		# Get batch-wise source rows from the job's Stock Reservation Entries
 		source_rows = _get_source_raw_materials(mop_name, self)
 		if not source_rows:
+			# Surfaced, not thrown: this runs in before_insert, and create_snc_from_mwo_submit
+			# creates the document automatically inside the Work Order submit cascade — a
+			# throw here would block that submit. validate_qty refuses the SNC's own submit.
+			frappe.msgprint(
+				_(
+					"No reserved material found for {0}. The Source Table is empty because "
+					"nothing is currently reserved against this job's work orders."
+				).format(
+					frappe.bold(
+						self.parent_manufacturing_order or self.manufacturing_work_order
+					)
+				),
+				title=_("No Reserved Material"),
+				indicator="orange",
+			)
 			return
 
 		self.set("fg_details", [])
@@ -184,6 +224,19 @@ class SerialNumberCreator(Document):
 
 # Floating-point slack for carat/gram comparisons (mirror pc_tagging_stock_sync).
 TOLERANCE = 0.0001
+
+# The Stock Entry Detail columns a Stock Reservation Entry cannot carry. pcs, the sub
+# setting type, the inventory type and the customer all live on the row that moved the
+# material; SRE, Batch and Serial and Batch Entry have none of them.
+_SED_ATTRIBUTE_FIELDS = [
+	"name",
+	"item_code",
+	"batch_no",
+	"pcs",
+	"custom_sub_setting_type",
+	"inventory_type",
+	"customer",
+]
 
 
 def _physical_batch_qty(item_code, batch_no, warehouse):
@@ -1336,6 +1389,21 @@ def validate_not_metal_only(doc):
 
 
 def validate_qty(self):
+	# An empty source table means no live reservation was found for this job. Under the
+	# old MOP Log fetch that could not happen — the ledger always returned something, even
+	# material that had since been handed off — so nothing guarded against it. Reservations
+	# are the truth now, and submitting an empty document would create a Manufacture entry
+	# that consumes nothing.
+	job = self.parent_manufacturing_order or self.manufacturing_work_order
+	if not self.source_table and job:
+		frappe.throw(
+			_(
+				"No reserved material found for {0}. Nothing is reserved against this "
+				"job's work orders, so there is nothing to manufacture from."
+			).format(frappe.bold(job)),
+			title=_("No Reserved Material"),
+		)
+
 	for row in self.source_table:
 		if row.qty <= 0:
 			frappe.throw(_("Source Table Quantity Zero or Negative Not Allowed"))
@@ -1400,29 +1468,18 @@ def create_snc_from_mwo_submit(mwo_name: str) -> str:
 	if exist_snc:
 		return exist_snc
 
-	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-		get_current_mop_balance_rows,
-	)
+	# Pre-flight gate, read from the same source the document itself will use. It used to
+	# read MOP Log, which applies a different skip rule (qty <= 0 AND pcs <= 0) than
+	# _get_source_raw_materials did (qty <= 0 alone) — so a job whose only non-metal line
+	# was a pcs-only row passed this gate and then produced a metal-only source table,
+	# failing later in validate_not_metal_only with a different message.
+	_pmo, mwo_names = _pmo_mwo_names(frappe._dict(manufacturing_work_order=mwo_name))
+	reserved_rows = _reserved_source_rows(mwo_names)
 
-	balance_rows = get_current_mop_balance_rows(
-		mop_name,
-		include_fields=[
-			"item_code",
-			"qty_after_transaction_batch_based",
-			"pcs_after_transaction_batch_based",
-		],
-	)
-
-	has_metal = False
-	has_non_metal = False
-
-	if balance_rows:
-		for r in balance_rows:
-			item_code = r.get("item_code")
-			qty = flt(r.get("qty_after_transaction_batch_based") or 0)
-			pcs = flt(r.get("pcs_after_transaction_batch_based") or 0)
-			if qty <= 0 and pcs <= 0:
-				continue
+	if reserved_rows:
+		has_metal = False
+		has_non_metal = False
+		for item_code in {r["item_code"] for r in reserved_rows}:
 			item_group = frappe.db.get_value("Item", item_code, "item_group") or ""
 			if "Metal" in item_group:
 				has_metal = True
@@ -1491,14 +1548,88 @@ def calulate_id_wise_sum_up(self):
 				f"Source Table SUM: <b>{src_qty}</b>"
 			)
 
+	_validate_stone_pcs_conserved(self)
+
+
+def _validate_stone_pcs_conserved(self):
+	"""Every stone that leaves the source table must arrive in the finished goods.
+
+	Weight is reconciled above, but pcs was not, and for diamond and gemstone items pcs is
+	a physical accountability figure -- a count of stones -- not descriptive metadata. The
+	two tables are built by different code (``source_table`` per reservation,
+	``fg_details`` aggregated per item and split across the manufacturing ids), so nothing
+	structurally guaranteed they agreed.
+
+	What this does NOT catch, deliberately stated: an inflated SOURCE. The finished goods
+	are derived from the source table, so when the source itself over-counts -- as it did
+	when Stock Entry Detail attributes were keyed on (item, batch) while source rows were
+	keyed on (item, batch, warehouse) -- both sides agree and this passes. Correct
+	attribution at the source is what prevents that; this guards the step after it.
+
+	Metal and findings are excluded: their rows can carry an incidental pcs that means
+	"one physical piece", not a count to conserve.
+	"""
+
+	def _stone_pcs(rows):
+		totals = {}
+		for row in rows:
+			item_code = row.get("row_material")
+			if not item_code or item_code[:1].upper() not in ("D", "G"):
+				continue
+			totals[item_code] = totals.get(item_code, 0.0) + flt(row.get("pcs"))
+		return totals
+
+	source_pcs = _stone_pcs(self.source_table)
+	fg_pcs = _stone_pcs(self.fg_details)
+
+	for item_code, fg_total in fg_pcs.items():
+		src_total = source_pcs.get(item_code)
+		# An item absent from the source table is already caught by the weight check.
+		if src_total is None:
+			continue
+		if flt(fg_total, 3) != flt(src_total, 3):
+			frappe.throw(
+				_(
+					"Stone count for {0} does not match. FG Details has {1} pcs but the "
+					"Source Table has {2} pcs. A diamond or gemstone count must be "
+					"conserved between the two tables."
+				).format(frappe.bold(item_code), flt(fg_total, 3), flt(src_total, 3)),
+				title=_("Stone Count Mismatch"),
+			)
+
+
+def _save_refetches(doc, fieldname):
+	"""True when doc.save() overwrites `fieldname` from its fetch_from link.
+
+	Mirrors frappe's link validation: the value is fetched only when the source link holds a
+	value, and a fetch_if_empty field keeps a value that is already set.
+	"""
+	df = doc.meta.get_field(fieldname)
+	if not df or not df.fetch_from or df.fetch_if_empty:
+		return False
+	return bool(doc.get(df.fetch_from.split(".", 1)[0]))
+
 
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
 	customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
 	)
-	if customer:
-		new_sn_doc.customer = customer
+	if (
+		customer
+		and new_sn_doc.customer != customer
+		and not _save_refetches(new_sn_doc, "customer")
+	):
+		# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
+		# customer; only the stock ledger may, and it writes the column directly. The order's
+		# customer is written the same way, so the save below sees it unchanged.
+		#
+		# A site that fetches the customer from the serial's linked BOM (a Property Setter with
+		# fetch_from custom_bom_no.customer, as the CI fixtures have) gets it from there on the
+		# save below, as it always did; stamping the order's customer first would make that
+		# fetch look like a change. A serial with no BOM linked is not re-fetched, so it is
+		# stamped.
+		new_sn_doc.db_set("customer", customer, update_modified=False)
 	existing_huid = []
 	existing_certification = []
 
@@ -1723,228 +1854,543 @@ def submit_tracking_bom_for_finished_goods(doc):
 # 	)
 
 
-def _source_row_ownership(batch_no, inventory_type=None, customer=None):
+def _source_row_ownership(batch_no, inventory_type=None, customer=None, batch=None):
 	"""``(inventory_type, customer)`` for an SNC source row: the batch's own lane first (F23).
 
 	Ownership used to come only from a Stock Entry Detail, so a MOP Log balance row written by
 	any other voucher showed none -- blank on all 5,196 SNC source rows on kg-gk. The batch is
 	the physical truth, the same rule ``update_batches`` applies (F5). A batch that records no
 	lane falls back to what the Stock Entry Detail said.
+
+	``batch`` is the already-read Batch (``custom_inventory_type`` / ``custom_customer``) when
+	the caller loaded many at once; it is read here otherwise.
 	"""
 	if batch_no:
-		batch = frappe.db.get_value(
-			"Batch",
-			batch_no,
-			["custom_inventory_type", "custom_customer"],
-			as_dict=True,
-		)
-		if batch and batch.custom_inventory_type:
+		if batch is None:
+			batch = frappe.db.get_value(
+				"Batch",
+				batch_no,
+				["custom_inventory_type", "custom_customer"],
+				as_dict=True,
+			)
+		if batch and batch.get("custom_inventory_type"):
 			return normalize_ownership(
-				batch.custom_inventory_type, batch.custom_customer, batch_no=batch_no
+				batch.get("custom_inventory_type"),
+				batch.get("custom_customer"),
+				batch_no=batch_no,
 			)
 	return inventory_type, customer
 
 
-def _get_source_raw_materials(mop_name, snc_doc):
-	"""Get batch-wise source raw materials from MOP Log for a Manufacturing Operation.
+def _reserved_source_rows(mwo_names):
+	"""``[(item_code, batch_no, warehouse, qty, sre_names)]`` still reserved for this job.
 
-	Monitors all MOP Log flow_index entries to capture intermediate Stock Entry
-	additions. Checks Stock Reservation Entry for Sales Order warehouse.
+	The row set, the quantities, the batches and the warehouses of a Serial Number Creator
+	all come from here. Stock Reservation Entry is the authority for every one of them:
+	a reservation is what the job actually holds, whereas MOP Log — the previous source —
+	is an append-only ledger of everything that ever flowed through an operation.
 
-	Returns a list of dicts with: item_code, batch_no, qty, uom, pcs,
-	inventory_type, customer, s_warehouse, sub_setting_type, sed_item.
+	Two consequences of that difference are exactly the reported bugs. MOP Log keeps rows
+	for material that has since been handed off, written off as loss or zeroed by refining,
+	so items appear that are no longer the job's (measured on production: 50% of operations
+	carry more items in MOP Log than in reservations). And
+	``qty_after_transaction_batch_based`` is an MWO-wide running sum stamped onto a single
+	operation — ``get_mwo_balance_rows`` says so outright, *"A per-MOP balance does not
+	exist in this field"* — while the old code read it MOP-scoped, so the quantity differed
+	from the reservation on 93% of operations.
+
+	Scoped MWO-wide across the PMO, never by ``Stock Reservation Entry.manufacturing_operation``.
+	That field is a one-shot ``Data`` stamp written when the reservation was created and never
+	re-written as work hands off; on production it matches the SNC's own operation for 1 job
+	in 578. ``_pmo_mwo_names`` is the scope every other reservation consumer in this app uses.
+
+	Grouped per ``(item, batch, warehouse)`` because one item+batch can legitimately be
+	reserved across several warehouses for the same job — the case
+	``split_source_rows_by_reservation`` exists to represent.
 	"""
-	if not mop_name:
+	if not mwo_names:
 		return []
 
-	# Get current balance rows from MOP Log (latest per item/batch)
-	balance_rows = get_current_mop_balance_rows(
-		mop_name,
-		include_fields=[
+	sres = frappe.get_all(
+		"Stock Reservation Entry",
+		filters={
+			"docstatus": 1,
+			"status": ["not in", ["Cancelled", "Delivered"]],
+			"manufacturing_work_order": ["in", mwo_names],
+		},
+		fields=[
+			"name",
 			"item_code",
-			"batch_no",
-			"qty_after_transaction_batch_based",
-			"pcs_after_transaction_batch_based",
-			"serial_and_batch_bundle",
-			"voucher_type",
-			"voucher_no",
-			"row_name",
-			"from_warehouse",
-			"to_warehouse",
-			"manufacturing_work_order",
-			"flow_index",
+			"warehouse",
+			"reserved_qty",
+			"delivered_qty",
+			"from_voucher_no",
+			"from_voucher_detail_no",
 		],
 	)
-	if not balance_rows:
+	if not sres:
 		return []
 
-	# Resolve PMO and Sales Order for SRE lookup
-	mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
-	pmo = None
-	sales_order = None
-	if mwo_name:
-		pmo = frappe.db.get_value(
-			"Manufacturing Work Order", mwo_name, "manufacturing_order"
-		)
-	if pmo:
-		sales_order = frappe.db.get_value(
-			"Parent Manufacturing Order", pmo, "sales_order"
-		)
+	children = {}
+	for child in frappe.get_all(
+		"Serial and Batch Entry",
+		filters={
+			"parent": ["in", [s["name"] for s in sres]],
+			"parenttype": "Stock Reservation Entry",
+		},
+		fields=["parent", "batch_no", "qty", "delivered_qty"],
+	):
+		children.setdefault(child["parent"], []).append(child)
 
-	# Get all MWOs for the PMO (for physical warehouse fallback)
-	# all_mwos = []
-	# if pmo:
-	# 	all_mwos = frappe.get_all(
-	# 		"Manufacturing Work Order",
-	# 		{"manufacturing_order": pmo, "docstatus": 1},
-	# 		pluck="name",
-	# 	)
+	# (item, batch, warehouse) -> {qty, sres, seds}
+	grouped = {}
+	for sre in sres:
+		if not sre["warehouse"]:
+			continue
+		header_remaining = flt(sre["reserved_qty"]) - flt(sre["delivered_qty"])
+		kids = children.get(sre["name"])
+		# A Qty-based reservation has no batch children and reserves at item level; it
+		# keeps the header remainder and yields a batch-less row, exactly as
+		# ``_active_sres_for`` treats it.
+		pairs = (
+			[(k["batch_no"], flt(k["qty"]) - flt(k["delivered_qty"])) for k in kids]
+			if kids
+			else [(None, header_remaining)]
+		)
+		# One shared budget across all of this reservation's children, not a per-child
+		# min(). Capping each child independently lets an SRE whose children have drifted
+		# out of step with its header lend out MORE than the header holds -- a header with
+		# 2 remaining and two children of 2 each yielded 4. The app cancels and rebuilds
+		# reservations in several places, so that drift is reachable, and a reader must
+		# never turn it into extra material.
+		budget = max(header_remaining, 0.0)
+		for batch_no, child_remaining in pairs:
+			qty = flt(min(budget, child_remaining), 3)
+			if qty <= TOLERANCE:
+				continue
+			budget -= qty
+			key = (sre["item_code"], batch_no, sre["warehouse"])
+			entry = grouped.setdefault(
+				key, {"qty": 0.0, "sres": [], "seds": [], "parts": []}
+			)
+			entry["qty"] += qty
+			entry["sres"].append(sre["name"])
+			if sre["from_voucher_detail_no"]:
+				entry["seds"].append(sre["from_voucher_detail_no"])
+			# Each reservation keeps its own link and quantity (C3, F2): a group can hold a
+			# linked and an unlinked reservation side by side, and the remaining stone count
+			# is reconciled against what each reservation still holds.
+			entry["parts"].append(
+				{
+					"sre": sre["name"],
+					"sed": sre["from_voucher_detail_no"] or None,
+					"qty": qty,
+				}
+			)
 
 	out = []
-	for r in balance_rows:
-		item_code = r.get("item_code")
-		batch_no = r.get("batch_no")
-		qty = flt(r.get("qty_after_transaction_batch_based") or 0)
-		pcs = flt(r.get("pcs_after_transaction_batch_based") or 0)
-		# Skip rows with no weight. A real consumable raw material always carries a
-		# weight (gold in grams, diamonds in carats). A qty-0 / pcs>0 balance row is
-		# a tracking artifact — e.g. a finished-gold finding piece that flowed
-		# through an operation as 1 pcs with no weight of its own — and must not
-		# become a source/FG line (it would produce a zero-qty Stock Entry item).
-		if qty <= 0:
+	for (item_code, batch_no, warehouse), entry in grouped.items():
+		qty = flt(entry["qty"], 3)
+		if qty <= TOLERANCE:
 			continue
-
-		uom = frappe.db.get_value("Item", item_code, "stock_uom") if item_code else None
-
-		# Fetch attributes from source Stock Entry Detail if available
-		sub_setting_type = None
-		inventory_type = None
-		customer = None
-		if r.get("voucher_type") == "Stock Entry" and r.get("row_name"):
-			sed_data = frappe.db.get_value(
-				"Stock Entry Detail",
-				r.get("row_name"),
-				["inventory_type", "custom_sub_setting_type", "customer"],
-				as_dict=1,
-			)
-			if sed_data and r.get("voucher_type") == "Stock Entry":
-				sub_setting_type = sed_data.custom_sub_setting_type
-				inventory_type = sed_data.inventory_type
-				customer = sed_data.customer
-		inventory_type, customer = _source_row_ownership(
-			batch_no, inventory_type, customer
+		out.append(
+			{
+				"item_code": item_code,
+				"batch_no": batch_no,
+				"warehouse": warehouse,
+				"qty": qty,
+				"sres": entry["sres"],
+				"seds": entry["seds"],
+				"parts": entry["parts"],
+			}
 		)
 
-		s_wh = None
-		# ── Warehouse resolution for SNC fetch (same priorities as submit) ──
+	# Deterministic regardless of DB row order.
+	out.sort(key=lambda r: (r["item_code"], r["batch_no"] or "", r["warehouse"]))
+	return out
 
-		# Priority 1: SRE — fetch from active Stock Reservation Entries
-		# linked to all MWOs under this PMO for the given item
-		if pmo:
-			all_pmo_mwos = frappe.get_all(
-				"Manufacturing Work Order",
-				{"manufacturing_order": pmo, "docstatus": 1},
-				pluck="name",
+
+def _fold_sed_rows(seds):
+	"""Collapse the Stock Entry Detail rows behind ONE reservation row into its attributes.
+
+	``pcs`` sums, because a single reservation row can legitimately be backed by more than
+	one Stock Entry Detail — two reservations of the same batch in the same warehouse merge
+	into one source row, and each was created from its own movement.
+
+	The descriptive fields take the first row (newest first). A genuine disagreement is
+	logged rather than silently resolved: two movements of the same batch into the same
+	warehouse should not carry different sub setting types, and if they do that is data to
+	look at, not a coin toss.
+	"""
+	folded = {
+		"pcs": 0.0,
+		"sub_setting_type": None,
+		"inventory_type": None,
+		"customer": None,
+		"sed_item": None,
+	}
+	for sed in seds:
+		folded["pcs"] += flt(sed.pcs)
+		if folded["sed_item"] is None:
+			folded["sed_item"] = sed.name
+			folded["sub_setting_type"] = sed.custom_sub_setting_type
+			folded["inventory_type"] = sed.inventory_type
+			folded["customer"] = sed.customer
+		elif (
+			sed.custom_sub_setting_type
+			and folded["sub_setting_type"]
+			and sed.custom_sub_setting_type != folded["sub_setting_type"]
+		):
+			frappe.logger().warning(
+				"serial_number_creator: conflicting sub setting type for %s / %s -- "
+				"kept %s, ignored %s"
+				% (
+					sed.item_code,
+					sed.batch_no,
+					folded["sub_setting_type"],
+					sed.custom_sub_setting_type,
+				)
 			)
-			if not all_pmo_mwos:
-				all_pmo_mwos = (
-					[snc_doc.manufacturing_work_order]
-					if snc_doc.manufacturing_work_order
-					else []
-				)
+	return folded
 
-			if all_pmo_mwos:
-				linked_sres = frappe.get_all(
-					"Stock Reservation Entry",
-					filters={
-						"item_code": item_code,
-						"docstatus": 1,
-						"manufacturing_work_order": ["in", all_pmo_mwos],
-					},
-					fields=["warehouse"],
-				)
-				if linked_sres:
-					for sre in linked_sres:
-						if sre.warehouse:
-							s_wh = sre.warehouse
-							break
 
-		if not s_wh:
-			# Priority 2: PC Receive — check Product Certification receive entries
-			pc_receive_data = frappe.db.sql(
-				"""
-				SELECT se_item.t_warehouse
-				FROM `tabStock Entry` se
-				JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
-				JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
-				WHERE pc.type = 'Receive'
-				  AND se.docstatus = 1
-				  AND EXISTS(
-					  SELECT 1 FROM `tabProduct Details` pd
-					  WHERE pd.parent = pc.name
-						AND (pd.manufacturing_work_order = %(mwo)s
-							 OR pd.parent_manufacturing_order = %(pmo)s)
-				  )
-				  AND se_item.item_code = %(item_code)s
-				ORDER BY se.creation DESC LIMIT 1
-			""",
-				{
-					"mwo": snc_doc.manufacturing_work_order,
-					"pmo": pmo,
-					"item_code": item_code,
+def _sed_attributes_for(rows, mwo_names):
+	"""``{(item_code, batch_no, warehouse): {...}}`` — the Stock Entry Detail attributes a
+	reservation cannot carry, resolved PER RESERVATION ROW.
+
+	``pcs``, ``custom_sub_setting_type``, ``inventory_type`` and ``customer`` live on the
+	Stock Entry Detail row that moved the material; a Stock Reservation Entry has none of
+	them, and neither does the Batch or the Serial and Batch Entry.
+
+	KEYED LIKE THE ROWS, deliberately. One batch can be reserved for the same job in two
+	warehouses -- that is the case ``split_source_rows_by_reservation`` exists for -- and
+	those are two source rows carrying two different piece counts. Keying the attributes on
+	``(item, batch)`` alone handed the batch's WHOLE piece count to each warehouse row, and
+	``_append_fg_rows_aggregated`` then sums pcs across rows for D/G items: 40 pcs in one
+	warehouse and 8 in another became 48 on both rows and 96 in the finished goods. pcs is
+	a physical stone count, so that is a real over-declaration, not a display quirk.
+
+	Resolution is by the ``from_voucher_detail_no`` link stamped at reservation time, using
+	each row's OWN reservations. Rows created before that link existed fall back to matching
+	the Stock Entry Detail on ``(operation of one of this job's work orders, item, batch)``
+	-- but BOUNDED: a reservation is created from exactly one Stock Entry row, so a row
+	takes at most as many movements as it has reservations, newest first, and each movement
+	is handed to at most one row. An unbounded sum over the job's history would count the
+	same physical stones once per operation they passed through: 48 stones moved through
+	three operations would read as 144.
+	"""
+	if not rows:
+		return {}
+
+	parts_by_row = {_row_key(row): _row_parts(row) for row in rows}
+	linked_names = {
+		part["sed"] for parts in parts_by_row.values() for part in parts if part["sed"]
+	}
+	by_name = {}
+	if linked_names:
+		for sed in frappe.get_all(
+			"Stock Entry Detail",
+			filters={"name": ["in", list(linked_names)]},
+			fields=_SED_ATTRIBUTE_FIELDS + ["qty", "transfer_qty", "creation"],
+		):
+			by_name[sed.name] = sed
+
+	# A reservation is unlinked when it has no link OR its link resolves to nothing (a deleted
+	# or unreadable row). Every unlinked reservation gets its own fallback share -- also when
+	# another reservation in the same group IS linked (C3: 40 linked + 8 unlinked stones read
+	# as 40 when the group's one link stopped the fallback).
+	unlinked_count = {
+		key: sum(1 for part in parts if part["sed"] not in by_name)
+		for key, parts in parts_by_row.items()
+	}
+
+	# Candidate movements for unlinked reservations, newest first per (item, batch).
+	unlinked = [row for row in rows if unlinked_count[_row_key(row)]]
+	pool = {}
+	if unlinked:
+		operations = frappe.get_all(
+			"Manufacturing Operation",
+			filters={"manufacturing_work_order": ["in", mwo_names]},
+			pluck="name",
+		)
+		if operations:
+			for sed in frappe.get_all(
+				"Stock Entry Detail",
+				filters={
+					"docstatus": 1,
+					"manufacturing_operation": ["in", operations],
+					"item_code": ["in", sorted({r["item_code"] for r in unlinked})],
+					"batch_no": ["in", sorted({r["batch_no"] or "" for r in unlinked})],
 				},
-				as_dict=1,
-			)
-			if pc_receive_data and pc_receive_data[0].t_warehouse:
-				s_wh = pc_receive_data[0].t_warehouse
+				fields=_SED_ATTRIBUTE_FIELDS,
+				order_by="creation desc",
+			):
+				pool.setdefault((sed.item_code, sed.batch_no), []).append(sed)
+		frappe.logger().info(
+			"serial_number_creator: %s reserved row(s) had a reservation without a usable "
+			"from_voucher_detail_no; resolved Stock Entry Detail attributes by (operation, "
+			"item, batch), bounded to one movement per reservation" % len(unlinked)
+		)
 
-		if not s_wh:
-			# Priority 3: Stock Entry linked to PMO
-			se_wh = frappe.db.sql(
-				"""
-				SELECT sed.t_warehouse, sed.s_warehouse
-				FROM `tabStock Entry Detail` sed
-				JOIN `tabStock Entry` se ON se.name = sed.parent
-				WHERE se.manufacturing_order = %s
-				  AND sed.item_code = %s
-				  AND se.docstatus = 1
-				ORDER BY se.creation DESC
-				LIMIT 1
-			""",
-				(snc_doc.parent_manufacturing_order, item_code),
-				as_dict=True,
-			)
-			if se_wh:
-				s_wh = se_wh[0].t_warehouse or se_wh[0].s_warehouse
+	linked_pcs = _linked_remaining_pcs(rows, parts_by_row, by_name, mwo_names)
 
-		if not s_wh:
-			s_wh = resolve_and_validate(
-				item_code=item_code,
-				qty=qty,
-				batch_no=batch_no,
-				sales_order=sales_order,
-				mwo=mwo_name,
-				mop=mop_name,
+	# How far into each (item, batch) candidate list we have already consumed, so no
+	# movement is attributed to two warehouse rows.
+	taken = {}
+	attrs = {}
+	for row in rows:
+		key = _row_key(row)
+		linked = _distinct_linked_seds(parts_by_row[key], by_name)
+		fallback = []
+		if unlinked_count[key]:
+			pool_key = (row["item_code"], row["batch_no"])
+			candidates = pool.get(pool_key, [])
+			start = taken.get(pool_key, 0)
+			fallback = candidates[start : start + unlinked_count[key]]
+			taken[pool_key] = start + len(fallback)
+		folded = _fold_sed_rows(linked + fallback)
+		if key in linked_pcs:
+			folded["pcs"] = linked_pcs[key] + sum(flt(sed.pcs) for sed in fallback)
+		attrs[key] = folded
+	return attrs
+
+
+def _row_key(row):
+	return (row["item_code"], row["batch_no"], row["warehouse"])
+
+
+def _row_parts(row):
+	"""The reservations behind one source row: ``[{sre, sed, qty}]``.
+
+	Rows built by ``_reserved_source_rows`` carry them. A row given only ``sres`` / ``seds``
+	is read as one part per reservation, linked in order, with the row's quantity on the
+	linked share.
+	"""
+	if row.get("parts") is not None:
+		return row["parts"]
+	sres = row.get("sres") or [None]
+	seds = list(row.get("seds") or [])
+	parts = [
+		{"sre": sre, "sed": seds[i] if i < len(seds) else None, "qty": 0.0}
+		for i, sre in enumerate(sres)
+	]
+	# More links than reservations (one reservation backed by several rows): keep them all.
+	for sed in seds[len(sres) :]:
+		parts.append({"sre": None, "sed": sed, "qty": 0.0})
+	linked = [part for part in parts if part["sed"]]
+	for part in linked:
+		part["qty"] = flt(row.get("qty")) / len(linked)
+	return parts
+
+
+def _distinct_linked_seds(parts, by_name):
+	seen, out = set(), []
+	for part in parts:
+		name = part["sed"]
+		if name in by_name and name not in seen:
+			seen.add(name)
+			out.append(by_name[name])
+	return out
+
+
+# Entries that take stones OUT of a job's reservations while the reservation is rebuilt with
+# its original link: a partial Make Receive (manufacturing_operation._build_replacement_sre)
+# and an Employee IR Process Loss (loss_stock_entry._reduce_sre).
+_RESERVATION_CONSUMING_SE_TYPES = ("Material Receive (WORK ORDER)", "Process Loss")
+_PCS_QTY_TOLERANCE = 0.001
+
+
+def _is_stone(item_code):
+	return (item_code or "")[:1].upper() in ("D", "G")
+
+
+def _linked_remaining_pcs(rows, parts_by_row, by_name, mwo_names):
+	"""``{row key: stones}`` still held by each row's LINKED reservations (F2).
+
+	A reservation keeps its original Stock Entry Detail link when a partial Make Receive or a
+	Process Loss rebuilds it smaller, so that row's ``pcs`` is the count that went IN, not the
+	count left: 2 ct / 2 stones in, 1 ct / 1 stone received, the rebuilt reservation holds 1 ct
+	and the link still says 2. Per diamond / gemstone batch:
+
+	* nothing taken out (the linked rows' quantity equals what the reservations hold): the
+	  linked rows' own ``pcs``, as before;
+	* something taken out: the stones on this job's submitted Make Receive and Process Loss rows
+	  for the batch are subtracted, provided those rows account for exactly the quantity
+	  missing and every one of them records its stones.
+
+	Anything else -- a difference the job's entries do not explain, a consuming row with no
+	pcs, or one batch spread over several warehouse rows after part of it was taken out -- is
+	refused with a message rather than guessed. Stones are counted, never derived from weight.
+	"""
+	by_batch = {}
+	for row in rows:
+		if not _is_stone(row["item_code"]):
+			continue
+		key = _row_key(row)
+		if _distinct_linked_seds(parts_by_row[key], by_name):
+			by_batch.setdefault((row["item_code"], row["batch_no"]), []).append(row)
+
+	out = {}
+	for (item_code, batch_no), batch_rows in by_batch.items():
+		seds = {}
+		remaining = 0.0
+		for row in batch_rows:
+			key = _row_key(row)
+			for part in parts_by_row[key]:
+				if part["sed"] in by_name:
+					seds[part["sed"]] = by_name[part["sed"]]
+					remaining += flt(part["qty"])
+		moved_in = sum(flt(sed.get("transfer_qty") or sed.get("qty")) for sed in seds.values())
+		taken_out = flt(moved_in - remaining, 3)
+
+		if taken_out <= _PCS_QTY_TOLERANCE:
+			for row in batch_rows:
+				key = _row_key(row)
+				out[key] = sum(
+					flt(sed.pcs) for sed in _distinct_linked_seds(parts_by_row[key], by_name)
+				)
+			continue
+
+		if len(batch_rows) > 1:
+			frappe.throw(
+				_(
+					"Cannot work out how many stones of {0} (batch {1}) remain: part of the batch "
+					"was received or lost and the rest is reserved in {2} warehouses. Check the "
+					"job's reservations for this batch."
+				).format(item_code, batch_no or "-", len(batch_rows)),
+				title=_("Stone Count Unclear"),
 			)
 
-		if not s_wh:
-			s_wh = r.get("to_warehouse")
+		consumed = _consuming_rows(item_code, batch_no, mwo_names, seds.values())
+		consumed_qty = sum(flt(r.get("transfer_qty") or r.get("qty")) for r in consumed)
+		missing_pcs = [r for r in consumed if not flt(r.get("pcs"))]
+		if abs(consumed_qty - taken_out) > _PCS_QTY_TOLERANCE or missing_pcs:
+			frappe.throw(
+				_(
+					"Cannot work out how many stones of {0} (batch {1}) remain: {2} was moved in "
+					"and {3} is still reserved, but this job's receive and loss entries account for "
+					"{4}{5}. Check those entries before creating the Serial Number."
+				).format(
+					item_code,
+					batch_no or "-",
+					flt(moved_in, 3),
+					flt(remaining, 3),
+					flt(consumed_qty, 3),
+					_(" and {0} of them record no pieces").format(len(missing_pcs))
+					if missing_pcs
+					else "",
+				),
+				title=_("Stone Count Unclear"),
+			)
+		stones_in = sum(flt(sed.pcs) for sed in seds.values())
+		stones_out = sum(flt(r.get("pcs")) for r in consumed)
+		out[_row_key(batch_rows[0])] = max(stones_in - stones_out, 0.0)
+	return out
+
+
+def _consuming_rows(item_code, batch_no, mwo_names, seds):
+	"""Submitted Make Receive / Process Loss rows that took this batch out of the job, after the
+	earliest linked movement brought it in."""
+	since = min((sed.get("creation") for sed in seds if sed.get("creation")), default=None)
+	sed = frappe.qb.DocType("Stock Entry Detail")
+	se = frappe.qb.DocType("Stock Entry")
+	query = (
+		frappe.qb.from_(sed)
+		.join(se)
+		.on(se.name == sed.parent)
+		.select(sed.name, sed.qty, sed.transfer_qty, sed.pcs)
+		.where(
+			(se.docstatus == 1)
+			& (se.stock_entry_type.isin(list(_RESERVATION_CONSUMING_SE_TYPES)))
+			& (se.manufacturing_work_order.isin(list(mwo_names)))
+			& (sed.item_code == item_code)
+			& (sed.s_warehouse.isnotnull())
+			& (sed.s_warehouse != "")
+		)
+	)
+	query = query.where(sed.batch_no == batch_no) if batch_no else query.where(
+		sed.batch_no.isnull() | (sed.batch_no == "")
+	)
+	if since:
+		query = query.where(sed.creation >= since)
+	return query.run(as_dict=True)
+
+
+def _get_source_raw_materials(mop_name, snc_doc):
+	"""Batch-wise source raw materials for a Serial Number Creator.
+
+	Composed from three sources, each authoritative for what it owns:
+
+	* **Stock Reservation Entry** — the row set, quantity, batch and warehouse
+	  (``_reserved_source_rows``). This replaced MOP Log, which reported extra items on
+	  50% of operations and a different quantity on 93% of them.
+	* **Batch master** — ``inventory_type`` / ``customer``. Already the app's convention:
+	  ``to_prepare_data_for_make_mnf_stock_entry`` and Make Receive Entry both override the
+	  Stock Entry Detail's value with the batch's, because a Customer Goods batch can be
+	  stamped "Regular Stock" on the entry that moved it. Applying it here as well makes the
+	  grid agree with the Manufacture entry it produces.
+	* **Stock Entry Detail** — ``pcs`` and ``sub_setting_type``, which no reservation carries.
+
+	Returns a list of dicts with: item_code, batch_no, qty, uom, pcs, inventory_type,
+	customer, s_warehouse, sub_setting_type, sed_item.
+	"""
+	_pmo, mwo_names = _pmo_mwo_names(snc_doc)
+	rows = _reserved_source_rows(mwo_names)
+	if not rows:
+		return []
+
+	attrs = _sed_attributes_for(rows, mwo_names)
+	batches = {r["batch_no"] for r in rows if r["batch_no"]}
+	batch_master = (
+		{
+			b.name: b
+			for b in frappe.get_all(
+				"Batch",
+				filters={"name": ["in", list(batches)]},
+				fields=["name", "custom_inventory_type", "custom_customer"],
+			)
+		}
+		if batches
+		else {}
+	)
+
+	out = []
+	for row in rows:
+		item_code = row["item_code"]
+		batch_no = row["batch_no"]
+		attr = attrs.get((item_code, batch_no, row["warehouse"]), {})
+
+		# Batch lane first, normalised (F23); the Stock Entry Detail only when the batch
+		# records none. The batches were read above in one query.
+		inventory_type, customer = _source_row_ownership(
+			batch_no,
+			attr.get("inventory_type"),
+			attr.get("customer"),
+			batch=batch_master.get(batch_no) or frappe._dict(),
+		)
+
+		# pcs counts physical stones, so it is meaningful only for diamond (D) and
+		# gemstone (G) items. Metal and finding rows can carry a stray pcs on the Stock
+		# Entry Detail — the transfer branch of the MOP Log writer has no D/G gate — and
+		# summing it would invent a piece count for a weight-tracked item.
+		pcs = (
+			flt(attr.get("pcs")) if (item_code or "")[:1].upper() in ("D", "G") else 0.0
+		)
 
 		out.append(
 			{
 				"item_code": item_code,
 				"batch_no": batch_no,
-				"qty": qty,
-				"uom": uom,
+				"qty": row["qty"],
+				"uom": frappe.db.get_value("Item", item_code, "stock_uom")
+				if item_code
+				else None,
 				"pcs": pcs,
 				"inventory_type": inventory_type,
 				"customer": customer,
-				"sub_setting_type": sub_setting_type,
-				"sed_item": r.get("row_name")
-				if r.get("voucher_type") == "Stock Entry"
-				else None,
-				"s_warehouse": s_wh or r.get("to_warehouse"),
-				"serial_and_batch_bundle": r.get("serial_and_batch_bundle"),
+				"sub_setting_type": attr.get("sub_setting_type"),
+				"sed_item": attr.get("sed_item"),
+				"s_warehouse": row["warehouse"],
 			}
 		)
 	return out

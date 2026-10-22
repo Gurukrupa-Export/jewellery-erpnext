@@ -24,10 +24,7 @@ from frappe.utils import (
 )
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
-	batch_priority_map,
 	describe_customer_loss_posted,
-	is_customer_rank,
-	loss_rank,
 	tiered_allocate,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
@@ -35,6 +32,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	PROCESS_LOSS_SE_TYPE,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
 	check_rows,
 	refetch_from_work_order,
@@ -68,7 +69,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_uti
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
 	cancel_loss_stock_entries,
 	create_loss_stock_entries,
-	get_batch_sre_headroom,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	cancel_injections_for_eir,
@@ -109,6 +109,17 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validati
 	validate_loss_tables_required,
 	validate_manually_book_loss_details,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_costing import (
+	apply_without_so_working_time,
+	is_without_so_mwo,
+	reset_without_so_costing_on_receive_cancel,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_repack import (
+	create_without_so_finding_repack,
+	release_without_so_repack_reservations,
+	restamp_without_so_batches_on_receive_cancel,
+	stamp_without_so_worker_cost,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	update_new_mop_wtg,
 )
@@ -140,6 +151,7 @@ class EmployeeIR(Document):
 			},
 			["name", "gross_wt"],
 		)
+		records = without_closed_mwo_operations(records)
 		self.employee_ir_operations = []
 		if records:
 			for row in records:
@@ -180,7 +192,32 @@ class EmployeeIR(Document):
 	def on_discard(self):
 		current_operation_guard.on_discard(self)
 
+	def before_save(self):
+		self.set_parent_manufacturing_order_count()
+
+	def set_parent_manufacturing_order_count(self):
+		# The rows carry no PMO of their own: read it off each row's work order, which
+		# check_rows has already settled in before_validate. Rebuilt from the whole table
+		# each time, so added, edited and deleted rows all count.
+		work_orders = {
+			row.manufacturing_work_order
+			for row in self.employee_ir_operations
+			if row.manufacturing_work_order
+		}
+		pmos = (
+			frappe.get_all(
+				"Manufacturing Work Order",
+				filters={"name": ["in", list(work_orders)]},
+				pluck="manufacturing_order",
+			)
+			if work_orders
+			else []
+		)
+		self.parent_manufacturing_order_count = len({pmo for pmo in pmos if pmo})
+
 	def before_submit(self):
+		# An insert-and-submit (REST, docstatus=1) runs before_submit instead of before_save.
+		self.set_parent_manufacturing_order_count()
 		if self.type == "Issue":
 			self.issue_submitted_on = now_datetime()
 			validate_casting_group_complete(self)
@@ -214,6 +251,9 @@ class EmployeeIR(Document):
 				self.create_subcontracting_order()
 		else:
 			self.on_submit_receive()
+			# After the receive closed each operation's timer, so the work order's worker
+			# cost includes this operation.
+			stamp_without_so_worker_cost(self)
 			self._announce_customer_loss_posted()
 		# Last statement: a hit here rolls the whole submit back.
 		current_operation_guard.final_draft_check(self)
@@ -264,6 +304,7 @@ class EmployeeIR(Document):
 
 	def validate(self):
 		validate_no_reverted_operations(self, "employee_ir_operations")
+		block_closed_mwo_operations(self, "employee_ir_operations")
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()
@@ -393,7 +434,12 @@ class EmployeeIR(Document):
 			current_operation_guard.guard_cancel(self)
 			self.on_submit_issue_new(cancel=True)
 		else:
+			# Before the receive cancel reverses the Without-SO repack: ERPNext will not take
+			# a reserved finding batch back out of the warehouse.
+			release_without_so_repack_reservations(self)
 			self.on_submit_receive(cancel=True)
+			reset_without_so_costing_on_receive_cancel(self)
+			restamp_without_so_batches_on_receive_cancel(self)
 
 	def on_submit_issue_new(self, cancel=False):
 		# if self.mop_data:
@@ -643,6 +689,11 @@ class EmployeeIR(Document):
 				stock_entry_name = inject_extra_metal_for_eir_receive(
 					self, row, extra_transfer_rows=finding_rows
 				)
+
+				# Finding Manufacturing - Without SO: the metal this receive brought in becomes
+				# the work order's finding item. Before the MOP Log calls below, so the balance
+				# carried to the next operation is the finding.
+				create_without_so_finding_repack(self, row, stock_entry_name)
 
 				# Combined-loss receive: create_mop_log_for_employee_ir_receive
 				# now subtracts employee_loss_details + manually_book_loss_details
@@ -919,11 +970,6 @@ class EmployeeIR(Document):
 		# the truthy string "[]", silently no-opping the gate for that request.
 		self.flags.blocked_loss_variants = get_blocked_loss_variants(self.operation)
 
-		# Recomputed from scratch on every validate, so the spill collected by the
-		# previous run must not leak into this one.
-		self.flags.customer_loss_spill = []
-		self.flags.loss_overflow = []
-
 		rows_to_append = []
 		for child in self.employee_ir_operations:
 			if child.received_gross_wt and self.type == "Receive":
@@ -952,9 +998,8 @@ class EmployeeIR(Document):
 			# customer's batch so it never becomes a customer-owned scrap batch. The
 			# operator must receive the full weight (received == issued) for the
 			# operation holding this customer's material; the unused metal returns as
-			# raw material. Such batches rank LAST in the loss waterfall, so reaching
-			# one means nothing else on the operation had any capacity left — the
-			# throw is the correct outcome, not an accident of proportional spreading.
+			# raw material. book_metal_loss splits loss flat across every item, so any
+			# loss on an operation carrying such a batch reaches it and stops here.
 			if row.get("batch_no") in no_wastage_batches:
 				frappe.throw(
 					_(
@@ -1136,26 +1181,6 @@ class EmployeeIR(Document):
 				}
 			data = list(sum_qty.values())
 
-			# Ownership tier + reservation headroom for every batch in the balance,
-			# resolved in two round-trips for the whole operation rather than per row.
-			ownership = batch_priority_map(
-				[e["batch_no"] for e in data], with_no_wastage=True
-			)
-			headroom = get_batch_sre_headroom(mwo, [e["batch_no"] for e in data])
-			for entry in data:
-				meta = ownership.get(entry["batch_no"])
-				entry["_inventory_type"] = meta.get("inventory_type") if meta else None
-				entry["_customer"] = meta.get("customer") if meta else None
-				entry["_no_wastage"] = bool(meta.get("no_wastage")) if meta else False
-				# Capacity drives the tier cap and the within-tier proportion; `qty`
-				# stays the true MOP balance so received_gross_weight is unaffected.
-				# They differ only when a reservation is smaller than the balance,
-				# i.e. exactly the case that would otherwise trip _validate_sre_qty.
-				cap = headroom.get((entry["item_code"], entry["batch_no"]))
-				entry["_capacity"] = (
-					min(flt(entry["qty"]), flt(cap)) if cap else flt(entry["qty"])
-				)
-
 			# -------------------------------------------------------------------------
 			# Prepare data and calculation proportionally devide each row based on each qty.
 			# Normalised by item-code prefix, not by row.stock_uom: stock_uom is a
@@ -1181,21 +1206,18 @@ class EmployeeIR(Document):
 			if loss < 0:
 				ms_consum = abs(round(loss, 2))
 
-			# Ownership waterfall. Loss lands on Regular Stock first, then Pure
-			# Metal, and reaches a customer's gold only when nothing else on the
-			# operation has capacity left. Within a tier the split is proportional
-			# by balance, so an operation whose batches are all one tier — every
-			# site with no customer-owned metal — books exactly what the previous
-			# flat split booked, row for row. tiered_allocate also owns the
-			# precision-3 reconciliation: it guarantees the booked total equals
-			# flt(loss, 3) exactly, which validate_loss_tables_required asserts
-			# against the gross_wt - received_gross_wt baseline (within 0.0005).
+			# Flat split, no ownership priority: every row loses the same share of its
+			# MOP balance whatever its inventory type -- Regular Stock, Pure Metal and
+			# Customer Goods alike. One tier is the legacy proportional split row for
+			# row, and tiered_allocate owns the precision-3 reconciliation: the booked
+			# total equals flt(loss, 3) exactly, which validate_loss_tables_required
+			# asserts against the gross_wt - received_gross_wt baseline (within 0.0005).
 			if total_qty != 0 and loss > 0:
-				allocations, alloc_info = tiered_allocate(
+				allocations, _alloc_info = tiered_allocate(
 					data,
 					loss,
-					rank_of=lambda e: loss_rank(e["_inventory_type"], e["_no_wastage"]),
-					qty_of=lambda e: flt(e["_capacity"]),
+					rank_of=lambda e: 0,
+					qty_of=lambda e: flt(e["qty"]),
 					precision=3,
 					key_of=lambda e: (e["item_code"], e["batch_no"]),
 				)
@@ -1208,16 +1230,6 @@ class EmployeeIR(Document):
 						flt(entry["qty"] - booked, 3) if booked else 0
 					)
 					entry["main_slip_consumption"] = 0
-					if booked and is_customer_rank(
-						loss_rank(entry["_inventory_type"], entry["_no_wastage"])
-					):
-						doc._collect_customer_loss_spill(entry, booked)
-				if alloc_info.overflow:
-					# Loss exceeded every batch's capacity on this operation. The
-					# excess is anchored on the FIRST funded tier (company metal) by
-					# tiered_allocate — never on the customer — so nothing here has
-					# to redistribute it.
-					doc._collect_loss_overflow(mwo, opt, alloc_info.overflow)
 			elif total_qty != 0 and ms_consum:
 				# Gain: nothing is lost, the operation drew extra from the Main Slip.
 				for entry in data:
@@ -1225,42 +1237,8 @@ class EmployeeIR(Document):
 					entry["proportionally_loss"] = 0
 					entry["received_gross_weight"] = 0
 					entry["main_slip_consumption"] = ms_consum_book
-
-			for entry in data:
-				for helper_key in (
-					"_inventory_type",
-					"_customer",
-					"_no_wastage",
-					"_capacity",
-				):
-					entry.pop(helper_key, None)
 			# -------------------------------------------------------------------------
 		return data
-
-	def _collect_customer_loss_spill(self, entry, qty):
-		"""Record that customer-owned metal absorbed loss.
-
-		Nothing shows this to the operator: a draft save stays silent, and after a
-		successful submit ``_announce_customer_loss_posted`` notes the posted rows on
-		the timeline. The call in ``book_metal_loss`` is kept, like
-		``_collect_loss_overflow``'s, because the loss-waterfall tests observe the
-		allocation by overriding these two hooks.
-		"""
-		spill = self.flags.setdefault("customer_loss_spill", [])
-		spill.append(
-			{
-				"customer": entry.get("_customer"),
-				"item_code": entry.get("item_code"),
-				"batch_no": entry.get("batch_no"),
-				"qty": flt(qty, 3),
-			}
-		)
-
-	def _collect_loss_overflow(self, mwo, opt, qty):
-		"""Record loss that exceeded every batch's capacity on an operation."""
-		self.flags.setdefault("loss_overflow", []).append(
-			{"mwo": mwo, "operation": opt, "qty": flt(qty, 3)}
-		)
 
 	def _announce_customer_loss_posted(self):
 		"""After a successful Receive submit, record which customer metal the loss was posted on.
@@ -1840,6 +1818,8 @@ def batch_add_time_logs(self, mop_args_list):
 				if not row.to_time:
 					row.to_time = get_datetime(args.get("complete_time"))
 					calculation_time_log(doc, row, self)
+					if is_without_so_mwo(doc.manufacturing_work_order):
+						apply_without_so_working_time(doc, row, self.employee)
 					break
 
 		elif args.get("start_time"):

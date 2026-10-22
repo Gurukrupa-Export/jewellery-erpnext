@@ -1138,3 +1138,70 @@ class TestProcessRowCandidateDedup(_MultiRowHarness):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestRelocationKeepsProvenance(unittest.TestCase):
+	"""F8: PC/Tagging relocation must hand the replacement reservation its source-row link.
+
+	Forward: the active-reservation read selects the three ``from_voucher_*`` fields, so
+	``copy_sre_provenance`` has something to copy. Restore: the link is looked up per
+	(item, batch), never taken from the one cancelled reservation the voucher fields come from.
+	"""
+
+	PROVENANCE = ("from_voucher_type", "from_voucher_no", "from_voucher_detail_no")
+
+	def test_the_active_reservation_read_selects_provenance(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events import (
+			pc_tagging_stock_sync as pts,
+		)
+
+		with patch.object(pts.frappe.db, "get_all", return_value=[]) as get_all:
+			pts._get_active_sres_for_mwo("MWO-1")
+		fields = get_all.call_args.kwargs["fields"]
+		for field in self.PROVENANCE:
+			self.assertIn(field, fields)
+
+	def _context(self, original, provenance):
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events import (
+			pc_tagging_stock_sync as pts,
+		)
+
+		with patch.object(
+			pts, "_cancelled_sre_provenance", return_value=provenance
+		) as lookup:
+			context = pts._restore_sre_context(original, "MWO-1", "MOP-1", "D-1", "B-1")
+		lookup.assert_called_once_with("MWO-1", "D-1", "B-1")
+		return context
+
+	def test_restore_takes_the_link_of_its_own_item_and_batch(self):
+		original = frappe._dict(
+			voucher_type="Sales Order",
+			voucher_no="SO-1",
+			voucher_detail_no="SOI-1",
+			company="C",
+			stock_uom="Carat",
+			has_batch_no=1,
+			manufacturing_operation="MOP-0",
+			from_voucher_detail_no="SED-OTHER-ITEM",
+		)
+		context = self._context(
+			original,
+			{
+				"from_voucher_type": "Stock Entry",
+				"from_voucher_no": "STE-1",
+				"from_voucher_detail_no": "SED-D1",
+			},
+		)
+		self.assertEqual(context["from_voucher_detail_no"], "SED-D1")
+		self.assertEqual(context["voucher_no"], "SO-1")
+
+	def test_restore_without_a_matching_link_carries_none(self):
+		context = self._context(frappe._dict(voucher_no="SO-1"), {})
+		for field in self.PROVENANCE:
+			self.assertNotIn(field, context)
+
+	def test_restore_with_only_a_link_still_carries_it(self):
+		context = self._context(
+			None, {"from_voucher_type": "Stock Entry", "from_voucher_detail_no": "SED-D1"}
+		)
+		self.assertEqual(context["from_voucher_detail_no"], "SED-D1")

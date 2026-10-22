@@ -371,6 +371,18 @@ def reconcile_to_settlement(event_names, per_customer, precision=AMOUNT_PRECISIO
 				flt(flt(largest.amount) + residual, precision),
 				update_modified=False,
 			)
+		elif residual:
+			# Not rounding: the receipts behind this settlement do not add up to it. Left as is,
+			# but said out loud, so the gap is found from the log and not by a reconciliation.
+			frappe.log_error(
+				title="Customer Gold: allocations do not tie to settlement",
+				message=(
+					f"Customer {customer}: the settlement posted {flt(amount, precision)} but its "
+					f"{len(mine)} allocation row(s) sum to "
+					f"{flt(amount, precision) - residual}, a difference of {residual}. "
+					f"Events: {', '.join(sorted(event_names))}."
+				),
+			)
 
 
 def reverse_allocations(doc):

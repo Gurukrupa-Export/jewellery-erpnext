@@ -79,7 +79,28 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				},
 			});
 		}
-		if (frm.doc.docstatus == 1 && frm.doc.is_finding_mwo == 1) {
+		if (frm.doc.docstatus == 1 && frm.doc.is_without_so == 1) {
+			// Finding Manufacturing - Without SO: one button sends what is left on the current
+			// operation to the department Raw Material warehouse. Finish PMO / Transfer Finding
+			// belong to findings made for a parent piece, which these orders do not have.
+			frm.add_custom_button(__("Finish Operation"), function () {
+				frappe.confirm(
+					__(
+						"Transfer the remaining material to the department Raw Material warehouse and finish the current operation?"
+					),
+					() =>
+						frappe.call({
+							method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.without_so_finish.finish_without_so_operation",
+							args: { mwo: frm.doc.name },
+							freeze: true,
+							freeze_message: __("Finishing operation..."),
+							callback: (r) => {
+								if (!r.exc) frm.reload_doc();
+							},
+						})
+				);
+			});
+		} else if (frm.doc.docstatus == 1 && frm.doc.is_finding_mwo == 1) {
 			if (!frm.doc.final_transfer_entry) {
 				frm.add_custom_button(__("Finish PMO"), function () {
 					frm.trigger("transfer_to_raw");

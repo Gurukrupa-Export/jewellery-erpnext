@@ -4,6 +4,7 @@
 import frappe
 from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe import _
+from frappe.model import no_value_fields, table_fields
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
@@ -24,6 +25,14 @@ from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_mast
 from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+	CLOSED_DRAFT_STATE,
+	CLOSED_STATE,
+	HOLD_DRAFT_STATE,
+	HOLD_STATE,
+	on_workflow_state_change,
+	refuse_while_blocked,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
 	custom_override_grades,
 	customer_grades,
@@ -33,12 +42,15 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
+	create_finding_without_so_mwo,
 	create_stock_entry,
+	delete_without_so_drafts,
+	validate_without_so_source_submitted,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	update_parent_details,
 )
-from jewellery_erpnext.utils import update_existing
+from jewellery_erpnext.utils import get_serial_bom, update_existing
 
 _VARIANT_TO_ITEM_TYPE = {
 	"M": "metal_item",
@@ -268,6 +280,11 @@ def _validate_metal_item_attributes(item_code, row, bom_table):
 		)
 
 
+# What a Hold / Open / Close of the PMO writes besides its state: the reason row and the
+# snapshot, both by the action itself (doc_events/close_open.py).
+STATE_CHANGE_FIELDS = {"workflow_state", "status_reasons", "hold_snapshot"}
+
+
 class ParentManufacturingOrder(Document):
 	def before_save(self):
 		is_new = self.is_new()
@@ -293,9 +310,21 @@ class ParentManufacturingOrder(Document):
 		self.metal_details()
 
 	def before_submit(self):
+		# A held or closed draft is submitted only through its workflow action, which has
+		# already moved the state to Submitted by now; a direct submit still carries the old one.
+		if self.get("workflow_state") == HOLD_DRAFT_STATE:
+			frappe.throw(
+				_("{0} is on Hold: submit it with the Submit action.").format(self.name)
+			)
+		if self.get("workflow_state") == CLOSED_DRAFT_STATE:
+			frappe.throw(_("{0} is Closed and cannot be submitted.").format(self.name))
 		# frappe runs validate + before_submit on submit and skips before_save, so the grade has
 		# to be resolved here too: without it a PMO that reached submit without a stored grade
 		# silently skips the tracking BOM update below.
+		if self.is_without_so:
+			validate_without_so_source_submitted(
+				"Manufacturing Plan", self.manufacturing_plan, _("Manufacturing Plan")
+			)
 		self._set_diamond_grade()
 		if self.diamond_grade and self.custom_tracking_bom:
 			frappe.db.sql(
@@ -413,13 +442,12 @@ class ParentManufacturingOrder(Document):
 					self.custom_tracking_bom,
 					{"reference_doctype": self.doctype, "reference_docname": self.name},
 				)
-		# Derive the serial's historical BOM from the tag only as a FALLBACK. When the
-		# Manufacturing Plan row already carried a serial_id_bom it is authoritative and
-		# must survive: a repair's serial BOM, its design BOM (master_bom) and its
-		# tracking BOM are three distinct identities, and re-deriving here unconditionally
-		# would let a tag_no match quietly overwrite the one the order was raised against.
-		if self.serial_no and not self.serial_id_bom:
-			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
+		# The serial's BOM is the BOM of THAT serial -- the one tagged to it (as kggk_prod
+		# always did) -- not whatever the quotation / plan row carried, which for a repair
+		# is usually the item's design BOM. The row's value is kept only when the serial
+		# has no BOM of its own.
+		if serial_bom := get_serial_bom(self.serial_no):
+			if serial_bom != self.serial_id_bom:
 				self.db_set("serial_id_bom", serial_bom)
 
 	def validate(self):
@@ -469,11 +497,74 @@ class ParentManufacturingOrder(Document):
 			}
 		)
 
+	def _state_change_only(self):
+		"""True for a save that only moves the workflow state.
+
+		apply_workflow reloads the PMO and changes nothing but its state, so a Hold, Open or
+		Close carries no edit that the PMO's own validation has to see -- and must not be
+		refused by it: a draft whose Sales Order or Manufacturing Plan has been cancelled since
+		is exactly the one to close. Only saves and updates after submit qualify; a submit
+		always runs the full validation.
+		"""
+		if getattr(self, "_action", None) not in ("save", "update_after_submit"):
+			return False
+		before = self.get_doc_before_save()
+		if not before or before.get("workflow_state") == self.get("workflow_state"):
+			return False
+		for df in self.meta.fields:
+			if df.fieldname in STATE_CHANGE_FIELDS:
+				continue
+			if df.fieldtype in table_fields:
+				rows = [row.name for row in self.get(df.fieldname) or []]
+				if rows != [row.name for row in before.get(df.fieldname) or []]:
+					return False
+			elif df.fieldtype not in no_value_fields:
+				if self.get(df.fieldname) != before.get(df.fieldname):
+					return False
+		return True
+
+	def _validate_links(self):
+		if self._state_change_only():
+			return
+		return super()._validate_links()
+
+	def before_validate(self):
+		if self._state_change_only():
+			self.flags.ignore_validate = True
+			self.flags.ignore_mandatory = True
+
+	def before_update_after_submit(self):
+		if self._state_change_only():
+			self.flags.ignore_mandatory = True
+
+	def on_update(self):
+		on_workflow_state_change(self)
+
 	def on_update_after_submit(self):
+		if self._state_change_only():
+			on_workflow_state_change(self)
+			return
 		update_due_days(self)
 		validate_mfg_date(self)
+		on_workflow_state_change(self)
+
+	def before_cancel(self):
+		# Hold has to be undone (Open) before a cancel, and a Close is final. A cancel through
+		# the API (or Hybrid Cancel) skips the workflow, so it is refused here.
+		if self.get("workflow_state") == HOLD_STATE:
+			frappe.throw(
+				_("{0} is on Hold: Open it before cancelling.").format(self.name)
+			)
+		if self.get("workflow_state") == CLOSED_STATE:
+			frappe.throw(_("{0} is Closed and cannot be cancelled.").format(self.name))
 
 	def on_submit(self):
+		if self.is_without_so:
+			# No Sales Order, customer or Tracking BOM stands behind this PMO, so the tolerance
+			# tables, the Tracking BOM submit and the Material Requests below -- all read off
+			# those -- have nothing to work on. Its single MWO makes the finding item itself.
+			create_finding_without_so_mwo(self)
+			return
 		if not self.order_form_type or self.order_form_type == "Order":
 			# One update_after_submit cycle for all three tolerance tables instead of one
 			# per populator, and none at all for a customer with no tolerance master --
@@ -494,6 +585,11 @@ class ParentManufacturingOrder(Document):
 		# gemstone_details_set_mandatory_field(self)
 
 	def on_cancel(self):
+		if self.is_without_so:
+			delete_without_so_drafts(
+				"Manufacturing Work Order", {"manufacturing_order": self.name}
+			)
+			return
 		update_existing(
 			"Manufacturing Plan Table",
 			self.rowname,
@@ -823,6 +919,7 @@ class ParentManufacturingOrder(Document):
 
 	@frappe.whitelist()
 	def send_to_customer_for_approval(self):
+		refuse_while_blocked(self.name, _("It cannot be sent for customer approval."))
 		mwo_list = frappe.db.get_all(
 			"Manufacturing Work Order",
 			{"manufacturing_order": self.name, "docstatus": 1},
@@ -940,6 +1037,44 @@ def make_manufacturing_order(
 		doc.rowname = row.name
 		doc.insert(ignore_mandatory=True)
 		row.manufacturing_bom = so_det.get("master_bom")
+
+
+def make_finding_without_so_order(source_doc, row, mp_context=None):
+	"""Create one Draft Parent Manufacturing Order from a Without-SO plan's Finding Details row.
+
+	There is no Sales Order line or Manufacturing Work Order behind the row, so everything the
+	other two paths read off those comes from the row itself. ``row.item_code`` is the finding
+	variant the plan resolved from the row's attributes on validate. Setting Type goes to
+	``finding_setting_type`` because ``setting_type`` is fetched from the item, and finding
+	items carry none.
+	"""
+	mp_context = mp_context or {}
+	manufacturer = mp_context.get("manufacturer") or frappe.defaults.get_user_default(
+		"manufacturer"
+	)
+
+	doc = frappe.new_doc("Parent Manufacturing Order")
+	doc.company = source_doc.company
+	doc.branch = source_doc.branch
+	if manufacturer:
+		doc.manufacturer = manufacturer
+	doc.department = mp_context.get("finding_default_department")
+	doc.type = "Finding Manufacturing"
+	doc.is_without_so = 1
+	doc.item_code = row.item_code
+	doc.metal_type = row.metal_type
+	doc.metal_touch = row.metal_touch
+	doc.metal_purity = row.metal_purity
+	doc.metal_colour = row.metal_colour
+	doc.finding_category = row.finding_category
+	doc.finding_type = row.finding_type
+	doc.finding_setting_type = row.setting_type
+	doc.finding_size = row.finding_size
+	doc.manufacturing_plan = source_doc.name
+	doc.qty = 1
+	doc.rowname = row.name
+	doc.insert()
+	return doc
 
 
 def create_manufacturing_work_order(self):
@@ -1669,6 +1804,7 @@ def hold_mop(self):
 
 @frappe.whitelist()
 def create_mwo(pmo, doc, reason=None):
+	refuse_while_blocked(pmo, _("No new work order can be created for it."))
 	cad_mwo = frappe.db.get_value(
 		"Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}
 	)

@@ -624,11 +624,18 @@ def _batch_scope(have=0.0, lineage=(MR_BATCH,)):
 	consumable qty in the target is ``have``, and its lineage is ``lineage``.
 
 	A row naming a batch is settled by that batch alone, so ``_owner_qty_in_warehouse``
-	(every batch of the customer) is never consulted for it."""
+	(every batch of the customer) is never consulted for it.
+
+	The item may be Customer Goods, and a refusal finds none of the lineage's metal, in
+	Raw Material or in a work order: all are read from the site otherwise
+	(test_cg_settle_batch_scope covers them)."""
 	with ExitStack() as stack:
 		stack.enter_context(patch(f"{_C}._validate_row_batch"))
 		stack.enter_context(patch(f"{_C}._batch_lineage", return_value=set(lineage)))
 		stack.enter_context(patch(f"{_C}._batch_qty_in_warehouse", return_value=have))
+		stack.enter_context(patch(f"{_C}.can_be_customer_goods", return_value=True))
+		stack.enter_context(patch(f"{_C}._fetch_lineage_holdings", return_value=[]))
+		stack.enter_context(patch(f"{_C}._fetch_work_order_holdings", return_value=[]))
 		yield
 
 

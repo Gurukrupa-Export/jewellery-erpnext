@@ -23,6 +23,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	validate_loss_ownership_carried,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.serial_ownership import (
+	stamp_serial_row_ownership,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
 	should_allow_zero_valuation,
 )
@@ -371,6 +374,11 @@ def before_validate(self, method):
 
 	# Must run BEFORE the blanket default below, which is what erases the evidence.
 	validate_loss_ownership_carried(self)
+
+	# A serial row carries the lane its serial was last received in -- exactly what ERPNext's
+	# serial inventory-dimension check compares the outward SLE against. Before the blanket
+	# default, which would otherwise book a customer's finished piece as "Regular Stock".
+	stamp_serial_row_ownership(self)
 
 	# Ensure all items have a valid inventory_type to prevent None in Stock Ledger Entry
 	for row in self.items:
@@ -1370,6 +1378,12 @@ def creates_mwo_reservation(self):
 		):
 			return False
 
+	# A producer that writes its own reservation and MOP Log rows (the Without-SO finding
+	# repack) opts out here: the generic bridge would log its consumed rows as positive.
+	flags = getattr(self, "flags", None)
+	if isinstance(flags, dict) and flags.get("skip_mwo_reservation"):
+		return False
+
 	types_for_reservation = frappe.db.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},
@@ -1454,6 +1468,92 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 		if (row.name, row.manufacturing_operation) in existing_mop_logs:
 			continue
 		create_mop_log(self, row, is_synced=True)
+
+
+SRE_PROVENANCE_FIELDS = (
+	"from_voucher_type",
+	"from_voucher_no",
+	"from_voucher_detail_no",
+)
+
+
+def set_sre_provenance(sre, stock_entry, stock_entry_detail):
+	"""Record the Stock Entry row a reservation was created from.
+
+	``voucher_*`` on a manufacturing reservation points at the Sales Order -- that is what
+	ERPNext reserves against -- so it is no route back to the Stock Entry Detail that
+	actually moved the material. That row is the only carrier of ``pcs`` and
+	``custom_sub_setting_type``, and Serial Number Creator needs both: a reservation, a
+	Batch and a Serial and Batch Entry all lack them.
+
+	No-op when there is no source row. The EOD heal paths rebuild a reservation from live
+	batch stock and have nothing to point at; inventing a link there would be worse than
+	the bounded (operation, item, batch) fallback Serial Number Creator falls back to.
+	"""
+	if not (stock_entry and stock_entry_detail):
+		return
+	sre.from_voucher_type = "Stock Entry"
+	sre.from_voucher_no = stock_entry
+	sre.from_voucher_detail_no = stock_entry_detail
+
+
+def copy_sre_provenance(source, target):
+	"""Carry the source-row link across a cancel-and-rebuild.
+
+	Relocating a reservation -- PC/Tagging, the EOD sync, a partial Material Receive -- is
+	not a new reservation, so it keeps the link it already had. Dropping it would strand
+	every relocated reservation on the fallback.
+
+	``source`` may be a Document or a plain dict, since the call sites have both.
+	"""
+	getter = (
+		source.get
+		if hasattr(source, "get")
+		else lambda f, d=None: getattr(source, f, d)
+	)
+	for field in SRE_PROVENANCE_FIELDS:
+		value = getter(field, None)
+		if value is not None:
+			setattr(target, field, value)
+
+
+def reservation_voucher(mwo, sales_order, sales_order_item):
+	"""``(voucher_type, voucher_no, voucher_detail_no)`` a Stock Reservation Entry for this
+	Manufacturing Work Order is anchored to, given its Parent Manufacturing Order's Sales
+	Order line.
+
+	The Sales Order line, as always. A Finding Manufacturing - Without SO work order has no
+	Sales Order, so it is anchored to the work order itself: ``Manufacturing Work Order`` is
+	an allowed SRE voucher type (the ``voucher_type`` options Property Setter in
+	``custom/stock_reservation_entry.json``), and ERPNext enforces a reservation by item /
+	warehouse / batch whatever its voucher type, so the stock is protected the same way.
+	Every app reader of these reservations filters by ``manufacturing_work_order`` /
+	``manufacturing_operation``, not by voucher.
+
+	Any other work order without a Sales Order keeps the old ``("Sales Order", None, None)``,
+	so its callers throw or skip exactly as before. The flag is only read when there is no
+	Sales Order, so a Sales Order work order costs no extra query.
+	"""
+	if not sales_order and frappe.db.get_value(
+		"Manufacturing Work Order", mwo, "is_without_so"
+	):
+		return "Manufacturing Work Order", mwo, mwo
+	return "Sales Order", sales_order, sales_order_item
+
+
+def get_mwo_reservation_voucher(mwo):
+	"""``reservation_voucher`` for a work order, reading its Sales Order line itself.
+	``(None, None, None)`` when it has neither a Sales Order nor the Without-SO flag."""
+	pmo = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_order")
+	sales_order, sales_order_item = (
+		frappe.db.get_value(
+			"Parent Manufacturing Order", pmo, ["sales_order", "sales_order_item"]
+		)
+		if pmo
+		else None
+	) or (None, None)
+	voucher = reservation_voucher(mwo, sales_order, sales_order_item)
+	return voucher if voucher[1] else (None, None, None)
 
 
 def stock_reservation_entry_for_mwo(self):
@@ -1583,9 +1683,13 @@ def stock_reservation_entry_for_mwo(self):
 		if row_pmo not in so_lines:
 			so_lines[row_pmo] = _mwo_reservation_so_line(self, row_pmo)
 		sales_order, sales_order_item, base_mr_voucher_qty = so_lines[row_pmo]
+		# The Sales Order line, or for a Without-SO work order the work order itself.
+		voucher_type, voucher_no, voucher_detail_no = reservation_voucher(
+			row_mwo, sales_order, sales_order_item
+		)
 
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			row.item_code, "Sales Order", sales_order, sales_order_item
+			row.item_code, voucher_type, voucher_no, voucher_detail_no
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
@@ -1599,8 +1703,8 @@ def stock_reservation_entry_for_mwo(self):
 			effective_voucher_qty = flt(total_so_reserved) + qty_to_be_reserved
 
 		new_stock_reservation_entries_mwo = frappe.new_doc("Stock Reservation Entry")
-		new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
-		new_stock_reservation_entries_mwo.voucher_no = sales_order
+		new_stock_reservation_entries_mwo.voucher_type = voucher_type
+		new_stock_reservation_entries_mwo.voucher_no = voucher_no
 		new_stock_reservation_entries_mwo.item_code = row.item_code
 		new_stock_reservation_entries_mwo.voucher_qty = effective_voucher_qty
 		new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
@@ -1612,7 +1716,16 @@ def stock_reservation_entry_for_mwo(self):
 		new_stock_reservation_entries_mwo.manufacturing_operation = (
 			row.manufacturing_operation
 		)
-		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
+		new_stock_reservation_entries_mwo.voucher_detail_no = voucher_detail_no
+		# The Stock Entry row this reservation was created from. ``voucher_*`` points at
+		# the Sales Order (that is what ERPNext reserves against), so without these three
+		# there is NO link back to the Stock Entry Detail — and that row is the only
+		# carrier of custom_sub_setting_type, which Serial Number Creator needs. Standard
+		# ERPNext fields, unused by this app until now. Every path that cancels and
+		# recreates an SRE must carry them forward or the link is lost on the first
+		# relocation; see _build_sre_from_context / _build_and_submit_mwo_sre /
+		# _build_replacement_sre.
+		set_sre_provenance(new_stock_reservation_entries_mwo, self.name, row.name)
 		new_stock_reservation_entries_mwo.available_qty = max(
 			available_qty_to_reserve, qty_to_be_reserved
 		)

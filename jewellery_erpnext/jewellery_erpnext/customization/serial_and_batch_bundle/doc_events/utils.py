@@ -1,3 +1,5 @@
+import inspect
+
 import frappe
 from erpnext.stock.serial_batch_bundle import SerialBatchBundle, SerialBatchCreation
 from frappe import _, bold
@@ -223,9 +225,35 @@ def update_parent_batch_id(self):
 
 class CustomSerialBatchBundle(SerialBatchBundle):
 	def make_serial_batch_no_bundle(self):
+		# Mirrors erpnext's SerialBatchBundle.make_serial_batch_no_bundle. ERPNext 16.51 made
+		# make_serial_batch_no_bundle_for_material_transfer take the bundle to copy, and added a
+		# transit-package re-link ahead of everything else; calling the helper the old way threw
+		# "missing 1 required positional argument: 'bundle'" on every inward transfer row.
+		get_transit_package = getattr(self, "get_transit_package", None)
+		if (
+			self.sle.actual_qty > 0
+			and get_transit_package
+			and (transit_package := get_transit_package())
+		):
+			self._make_material_transfer_bundle(transit_package)
+
+			if not self.is_packed_entry():
+				frappe.db.set_value(
+					self.child_doctype,
+					self.sle.voucher_detail_no,
+					"serial_and_batch_bundle",
+					self.sle.serial_and_batch_bundle,
+				)
+
+			return
+
 		self.validate_item()
 		if self.sle.actual_qty > 0 and self.is_material_transfer():
-			self.make_serial_batch_no_bundle_for_material_transfer()
+			self._make_material_transfer_bundle(
+				frappe.db.get_value(
+					"Stock Entry Detail", self.sle.voucher_detail_no, "serial_and_batch_bundle"
+				)
+			)
 			return
 
 		sn_doc = CustomSerialBatchCreation(
@@ -251,6 +279,18 @@ class CustomSerialBatchBundle(SerialBatchBundle):
 		).make_serial_and_batch_bundle()
 
 		self.set_serial_and_batch_bundle(sn_doc)
+
+	def _make_material_transfer_bundle(self, bundle):
+		"""Call erpnext's material-transfer helper with either signature.
+
+		Before 16.51 it took no argument and read the Stock Entry Detail bundle itself; from
+		16.51 it is handed the bundle. Keeps this override working across a bench update.
+		"""
+		helper = self.make_serial_batch_no_bundle_for_material_transfer
+		if inspect.signature(helper).parameters:
+			helper(bundle)
+		else:
+			helper()
 
 	def validate_item_and_warehouse(self):
 		# Skip validation if Purchase Receipt has purchase_type = "Branch Purchase"

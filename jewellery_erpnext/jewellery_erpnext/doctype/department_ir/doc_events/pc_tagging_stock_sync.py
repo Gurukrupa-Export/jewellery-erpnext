@@ -111,8 +111,74 @@ def _get_active_sres_for_mwo(mwo):
 			"stock_uom",
 			"manufacturing_operation",
 			"manufacturing_work_order",
+			# The Stock Entry row the reservation came from (F8). Read here so a relocation
+			# can carry it to the replacement; copy_sre_provenance only copies what it is given.
+			"from_voucher_type",
+			"from_voucher_no",
+			"from_voucher_detail_no",
 		],
 	)
+
+
+def _restore_sre_context(original_sre_info, mwo, restore_mop, item_code, batch_no):
+	"""The ``orig_sre`` context a cancel/restore rebuilds one (item, batch) reservation from.
+
+	Voucher, company and UOM come from ``original_sre_info``, the work order's latest
+	cancelled reservation. Provenance does NOT: that reservation belongs to one item, so its
+	link names another row's Stock Entry Detail for every other item restored here (F8). It
+	is looked up per (item, batch) instead. ``None`` when there is nothing to carry.
+	"""
+	context = None
+	if original_sre_info:
+		context = {
+			"voucher_type": original_sre_info.get("voucher_type"),
+			"voucher_no": original_sre_info.get("voucher_no"),
+			"voucher_detail_no": original_sre_info.get("voucher_detail_no"),
+			"company": original_sre_info.get("company"),
+			"stock_uom": original_sre_info.get("stock_uom"),
+			"has_batch_no": original_sre_info.get("has_batch_no"),
+			"manufacturing_work_order": mwo,
+			"manufacturing_operation": (
+				original_sre_info.get("manufacturing_operation") or restore_mop
+			),
+		}
+	provenance = _cancelled_sre_provenance(mwo, item_code, batch_no)
+	if provenance:
+		context = {**(context or {}), **provenance}
+	return context
+
+
+def _cancelled_sre_provenance(mwo, item_code, batch_no):
+	"""``from_voucher_*`` of the cancelled reservation a restore re-creates (F8).
+
+	Looked up per item and batch: the restore rebuilds one reservation per (item, batch),
+	and the work order's other cancelled reservations point at other Stock Entry rows.
+	Empty when nothing matches or the match carries no link -- the restored reservation
+	then has no provenance, as before.
+	"""
+	sre = frappe.qb.DocType("Stock Reservation Entry")
+	query = (
+		frappe.qb.from_(sre)
+		.select(sre.from_voucher_type, sre.from_voucher_no, sre.from_voucher_detail_no)
+		.where(
+			(sre.manufacturing_work_order == mwo)
+			& (sre.item_code == item_code)
+			& (sre.docstatus == 2)
+			& (sre.from_voucher_detail_no.isnotnull())
+			& (sre.from_voucher_detail_no != "")
+		)
+		.orderby(sre.modified, order=frappe.qb.desc)
+		.limit(1)
+	)
+	if batch_no:
+		entry = frappe.qb.DocType("Serial and Batch Entry")
+		query = query.join(entry).on(
+			(entry.parent == sre.name)
+			& (entry.parenttype == "Stock Reservation Entry")
+			& (entry.batch_no == batch_no)
+		)
+	rows = query.run(as_dict=True)
+	return dict(rows[0]) if rows else {}
 
 
 def _get_sre_batch_entries(sre_names):
@@ -370,31 +436,18 @@ def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates):
 def _resolve_voucher_fields_from_mwo(mwo):
 	"""Return (voucher_type, voucher_no, voucher_detail_no) for a new SRE.
 
-	The project convention (confirmed in stock_entry.py:stock_reservation_entry_for_mwo)
-	is to link SREs to the Sales Order via the Parent Manufacturing Order:
-	  voucher_type = "Sales Order"
-	  voucher_no   = Parent Manufacturing Order → sales_order
-	  voucher_detail_no = Parent Manufacturing Order → sales_order_item
+	Same anchor every MWO reservation uses (stock_entry.get_mwo_reservation_voucher): the
+	Parent Manufacturing Order's Sales Order line, or the work order itself for a Finding
+	Manufacturing - Without SO order.
 
 	Falls back to None values when the chain cannot be resolved so the caller
 	can decide whether to throw or skip.
 	"""
-	manufacturing_order = frappe.db.get_value(
-		"Manufacturing Work Order", mwo, "manufacturing_order"
+	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+		get_mwo_reservation_voucher,
 	)
-	if not manufacturing_order:
-		return None, None, None
 
-	result = frappe.db.get_value(
-		"Parent Manufacturing Order",
-		manufacturing_order,
-		["sales_order", "sales_order_item"],
-		as_dict=True,
-	)
-	if not result:
-		return None, None, None
-
-	return "Sales Order", result.get("sales_order"), result.get("sales_order_item")
+	return get_mwo_reservation_voucher(mwo)
 
 
 def _build_sre_from_context(
@@ -485,6 +538,14 @@ def _build_sre_from_context(
 	new_sre.voucher_type = v_type
 	new_sre.voucher_no = v_no
 	new_sre.voucher_detail_no = v_detail
+	# Carried forward, not re-derived: this is a RELOCATION of an existing reservation,
+	# so it keeps its link to the Stock Entry Detail it was created from. Dropping it
+	# here would strand every relocated SRE without a sub_setting_type source.
+	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+		copy_sre_provenance,
+	)
+
+	copy_sre_provenance(orig_sre or {}, new_sre)
 	new_sre.reserved_qty = flt(qty, 3)
 	new_sre.voucher_qty = effective_voucher_qty
 	new_sre.available_qty = effective_available_qty
@@ -983,20 +1044,9 @@ def _handle_cancel_row(dept_ir_doc, row, scenario):
 		mop_in_log = group_data["mop_name"]
 		restore_mop = row.manufacturing_operation or mop_in_log
 
-		orig_sre_dict = None
-		if original_sre_info:
-			orig_sre_dict = {
-				"voucher_type": original_sre_info.get("voucher_type"),
-				"voucher_no": original_sre_info.get("voucher_no"),
-				"voucher_detail_no": original_sre_info.get("voucher_detail_no"),
-				"company": original_sre_info.get("company"),
-				"stock_uom": original_sre_info.get("stock_uom"),
-				"has_batch_no": original_sre_info.get("has_batch_no"),
-				"manufacturing_work_order": mwo,
-				"manufacturing_operation": (
-					original_sre_info.get("manufacturing_operation") or restore_mop
-				),
-			}
+		orig_sre_dict = _restore_sre_context(
+			original_sre_info, mwo, restore_mop, item_code, batch_no
+		)
 
 		new_sre = _build_sre_from_context(
 			item_code=item_code,

@@ -18,6 +18,7 @@
   "branch",
   "abbr",
   "is_finding_mwo",
+  "is_without_so",
   "final_transfer_entry",
   "finding_transfer_entry",
   "section_break_fsrwq",
@@ -500,7 +501,7 @@
    "fieldtype": "Select",
    "in_preview": 1,
    "label": "Status",
-   "options": "\nDraft\nNot Started\nIn Process\nCompleted\nStopped\nClosed\nCancelled",
+   "options": "\nDraft\nNot Started\nIn Process\nCompleted\nStopped\nHold\nClosed\nCancelled",
    "read_only": 1
   },
   {
@@ -677,6 +678,15 @@
    "label": "Is Finding MWO"
   },
   {
+   "default": "0",
+   "description": "Raised from a Manufacturing Plan in Finding Manufacturing - Without SO mode.",
+   "fieldname": "is_without_so",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Without SO",
+   "read_only": 1
+  },
+  {
    "fieldname": "final_transfer_entry",
    "fieldtype": "Link",
    "label": "Final Transfer Entry",
@@ -762,7 +772,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-10-13 18:00:00.000000",
+ "modified": "2026-10-21 12:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

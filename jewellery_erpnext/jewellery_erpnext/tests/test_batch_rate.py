@@ -318,6 +318,40 @@ class TestBatchRateStamping(IntegrationTestCase):
 		self.assertEqual(batch.custom_alloy_rate, 1000)
 		self.assertFalse(batch.custom_metal_rate)
 
+	def test_alloy_lookup_is_scoped_to_the_batch_item(self):
+		# Only the batch's own item is ever tested for alloy membership, so the Item lookup
+		# asks for that item alone instead of every alloy item on the site.
+		batch = _batch(item="M-AL")
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Stock Entry Detail", "custom_alloy_rate"): None,
+			("Stock Entry Detail", "basic_rate"): 1000,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		db = _db(values)
+		item_filters = []
+
+		def get_all(doctype, filters=None, fields=None, **kw):
+			if doctype == "Item":
+				item_filters.append(filters)
+				return ["M-AL"]
+			if doctype == "Item Group":
+				return ["Alloy"]
+			if doctype == "DocField":
+				return [SimpleNamespace(options="Stock Entry Detail")]
+			return []
+
+		db.get_all.side_effect = get_all
+		with patch.object(batch_utils.frappe, "db", db):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(len(item_filters), 1)
+		self.assertEqual(item_filters[0]["name"], "M-AL")
+		self.assertEqual(batch.custom_alloy_rate, 1000)
+
 	# --- A blended conversion rate must survive a later save ----------------------
 
 	def test_existing_rate_is_not_overwritten_on_resave(self):

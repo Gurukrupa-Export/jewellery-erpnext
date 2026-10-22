@@ -16,7 +16,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_reservation_entry.s
 from jewellery_erpnext.jewellery_erpnext.doc_events import mwo_mop_link
 from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import MWOMOPLinkError
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+	SRE_PROVENANCE_FIELDS,
+	copy_sre_provenance,
 	onsubmit,
+	set_sre_provenance,
 	stock_reservation_entry_for_mwo,
 )
 
@@ -1601,3 +1604,239 @@ class TestCustomStockReservationEntry(IntegrationTestCase):
 		self.assertEqual(
 			log_error.call_args.kwargs["reference_doctype"], "Stock Reservation Entry"
 		)
+
+
+# ── Provenance: the link back to the Stock Entry Detail ────────────────────────
+#
+# ``voucher_*`` on a manufacturing reservation points at the SALES ORDER — that is what
+# ERPNext reserves against — so it is no route back to the Stock Entry row that moved the
+# material. That row is the only carrier of ``pcs`` and ``custom_sub_setting_type``, both
+# of which Serial Number Creator needs and neither of which a reservation, a Batch or a
+# Serial and Batch Entry holds.
+#
+# The link is only worth anything if EVERY path that cancels and rebuilds a reservation
+# carries it forward: the app relocates reservations from PC/Tagging, from the EOD sync and
+# from a partial Material Receive. A reservation that loses it falls back to a bounded
+# (operation, item, batch) guess.
+
+
+class TestSREProvenance(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_stamps_the_source_stock_entry_row(self):
+		sre = _bare_sre()
+		set_sre_provenance(sre, "MAT-STE-7", "SED-42")
+
+		self.assertEqual(sre.from_voucher_type, "Stock Entry")
+		self.assertEqual(sre.from_voucher_no, "MAT-STE-7")
+		self.assertEqual(sre.from_voucher_detail_no, "SED-42")
+
+	def test_no_source_row_leaves_the_link_unset(self):
+		# The EOD heal paths rebuild from live batch stock and have nothing to point at.
+		# Inventing a link there would be worse than the bounded fallback.
+		for entry, detail in ((None, None), ("MAT-STE-7", None), (None, "SED-42")):
+			sre = _bare_sre()
+			set_sre_provenance(sre, entry, detail)
+			self.assertFalse(hasattr(sre, "from_voucher_type"))
+
+	def test_relocation_carries_the_link_from_a_document(self):
+		# Partial Material Receive hands a cancelled SRE document.
+		original = _bare_sre(
+			from_voucher_type="Stock Entry",
+			from_voucher_no="MAT-STE-7",
+			from_voucher_detail_no="SED-42",
+		)
+		replacement = _bare_sre()
+
+		copy_sre_provenance(original, replacement)
+
+		self.assertEqual(replacement.from_voucher_type, "Stock Entry")
+		self.assertEqual(replacement.from_voucher_no, "MAT-STE-7")
+		self.assertEqual(replacement.from_voucher_detail_no, "SED-42")
+
+	def test_relocation_carries_the_link_from_a_dict(self):
+		# PC/Tagging and the EOD snapshot paths hand a plain dict.
+		original = {
+			"from_voucher_type": "Stock Entry",
+			"from_voucher_no": "MAT-STE-7",
+			"from_voucher_detail_no": "SED-42",
+		}
+		replacement = _bare_sre()
+
+		copy_sre_provenance(original, replacement)
+
+		self.assertEqual(replacement.from_voucher_detail_no, "SED-42")
+
+	def test_relocating_an_unlinked_reservation_sets_nothing(self):
+		# Every reservation created before the link existed. It must stay blank so the
+		# reader knows to fall back, rather than inheriting a None it might trust.
+		replacement = _bare_sre()
+
+		copy_sre_provenance({}, replacement)
+
+		for field in SRE_PROVENANCE_FIELDS:
+			self.assertFalse(hasattr(replacement, field))
+
+	def test_a_partially_linked_source_carries_only_what_it_has(self):
+		replacement = _bare_sre()
+
+		copy_sre_provenance({"from_voucher_type": "Stock Entry"}, replacement)
+
+		self.assertEqual(replacement.from_voucher_type, "Stock Entry")
+		self.assertFalse(hasattr(replacement, "from_voucher_detail_no"))
+
+	def test_every_recreate_path_uses_the_shared_helper(self):
+		# The three relocation builders live in three modules; the link is only reliable
+		# because they all route through one definition. If a fourth path is added, or one
+		# of these stops calling it, this fails.
+		import inspect
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events import (
+			pc_tagging_stock_sync,
+		)
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation import (
+			manufacturing_operation,
+		)
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings import (
+			mop_eod_sync,
+		)
+
+		for fn, helper in (
+			(manufacturing_operation._build_replacement_sre, "copy_sre_provenance"),
+			(pc_tagging_stock_sync._build_sre_from_context, "copy_sre_provenance"),
+			(mop_eod_sync._build_and_submit_mwo_sre, "set_sre_provenance"),
+		):
+			self.assertIn(
+				helper,
+				inspect.getsource(fn),
+				"%s must route its provenance through %s" % (fn.__name__, helper),
+			)
+
+
+class TestWorkOrderReservationIsRowOfVoucher(IntegrationTestCase):
+	"""ERPNext 16.52 requires a Sales Order reservation's item to be the line's own item.
+
+	A work-order reservation reserves raw material for the line's finished piece, so it is
+	accepted when it names a real line of the Sales Order -- whatever the item. Everything
+	else keeps ERPNext's rule. CI broke on every PR with "Item D-NT-RO-6B-+9-9.5 is not a
+	row of Sales Order SAL-ORD-2026-00001" when version-16 picked this check up.
+	"""
+def _sales_order_lines(*lines):
+	"""``frappe.db.exists`` that knows these ``(line, sales order)`` Sales Order Item rows and
+	forwards every other call unchanged."""
+	real = frappe.db.exists
+
+	def fake(doctype, filters=None, *args, **kwargs):
+		if doctype == "Sales Order Item":
+			return (
+				filters["name"]
+				if (filters["name"], filters["parent"]) in lines
+				else None
+			)
+		return real(doctype, filters, *args, **kwargs)
+
+	return fake
+
+
+class TestWorkOrderReservationIsARowOfItsSalesOrder(IntegrationTestCase):
+	"""ERPNext's version-16 hotfix refuses a Sales Order reservation whose item is not a row of
+	the Sales Order. A work-order reservation holds raw materials against the line of the piece
+	they are made into, so it only has to name a line of that Sales Order."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _sre(self, **fields):
+		base = {
+			"voucher_type": "Sales Order",
+			"voucher_no": "SO-1",
+			"voucher_detail_no": "SOI-1",
+			"item_code": "D-NT-RO-6B-+9-9.5",
+			"manufacturing_work_order": "MWO-1",
+		}
+		base.update(fields)
+		return _bare_sre(**base)
+
+	def test_a_raw_material_reserved_for_a_real_line_is_accepted(self):
+		sre = self._sre()
+		with patch(f"{_SRE_MODULE}.frappe.db.exists", return_value="SOI-1") as exists:
+			self.assertTrue(sre.is_row_of_voucher())
+		exists.assert_called_once_with(
+			"Sales Order Item", {"name": "SOI-1", "parent": "SO-1"}
+		)
+
+	def test_a_line_that_is_not_on_the_sales_order_is_refused(self):
+		sre = self._sre()
+		with patch(f"{_SRE_MODULE}.frappe.db.exists", return_value=None):
+			self.assertFalse(sre.is_row_of_voucher())
+
+	def test_no_line_is_refused_without_a_lookup(self):
+		sre = self._sre(voucher_detail_no=None)
+		with patch(f"{_SRE_MODULE}.frappe.db.exists") as exists:
+			self.assertFalse(sre.is_row_of_voucher())
+		exists.assert_not_called()
+
+	def test_a_plain_sales_order_reservation_keeps_erpnexts_rule(self):
+		sre = self._sre(manufacturing_work_order=None)
+		parent = getattr(StockReservationEntry, "is_row_of_voucher", None)
+		with patch.object(
+			StockReservationEntry, "is_row_of_voucher", create=True, return_value=False
+		) as core:
+			self.assertFalse(sre.is_row_of_voucher())
+		core.assert_called_once()
+		self.assertIs(getattr(StockReservationEntry, "is_row_of_voucher", None), parent)
+	def _work_order_sre(self, line="SOI-1"):
+		return _bare_sre(
+			manufacturing_work_order="MWO-1",
+			manufacturing_operation="MOP-1",
+			item_code="D-RAW-1",
+			voucher_type="Sales Order",
+			voucher_no="SO-1",
+			voucher_detail_no=line,
+		)
+
+	def test_a_line_of_its_sales_order_is_enough_for_a_raw_material(self):
+		with (
+			patch.object(
+				StockReservationEntry, "is_row_of_voucher", create=True
+			) as erpnext_check,
+			patch.object(
+				frappe.db, "exists", side_effect=_sales_order_lines(("SOI-1", "SO-1"))
+			),
+		):
+			self.assertTrue(self._work_order_sre().is_row_of_voucher())
+		erpnext_check.assert_not_called()
+
+	def test_a_line_of_another_sales_order_or_no_line_is_refused(self):
+		for line in ("SOI-OTHER", None):
+			with self.subTest(line=line):
+				with patch.object(
+					frappe.db,
+					"exists",
+					side_effect=_sales_order_lines(("SOI-1", "SO-1")),
+				):
+					self.assertFalse(
+						self._work_order_sre(line=line).is_row_of_voucher()
+					)
+
+	def test_every_other_reservation_keeps_erpnexts_check(self):
+		sre = _bare_sre(
+			manufacturing_work_order=None,
+			item_code="RING-1",
+			voucher_type="Sales Order",
+			voucher_no="SO-1",
+			voucher_detail_no="SOI-1",
+		)
+		for verdict in (True, False):
+			with self.subTest(verdict=verdict):
+				with patch.object(
+					StockReservationEntry,
+					"is_row_of_voucher",
+					create=True,
+					return_value=verdict,
+				) as erpnext_check:
+					self.assertIs(sre.is_row_of_voucher(), verdict)
+				erpnext_check.assert_called_once_with()

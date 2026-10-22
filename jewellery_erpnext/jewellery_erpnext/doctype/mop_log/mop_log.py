@@ -262,7 +262,7 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None, prefixes
 		FROM `tabMOP Log`
 		WHERE manufacturing_operation = %s
 		  AND is_cancelled = 0
-		ORDER BY creation ASC
+		ORDER BY creation ASC, name ASC
 		""",
 		(mop_name,),
 		as_dict=True,
@@ -510,7 +510,10 @@ def drop_pre_refining_rows(rows, manufacturing_work_order):
 	return [r for r in rows if get_datetime(r.get("creation")) > cutoff]
 
 
-def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
+def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False, outward=None):
+	"""``outward`` -- whether a Stock Entry row takes metal out of the operation. Defaults to
+	the entry type's rule: a Material Receive (WORK ORDER) is outward, any other inward.
+	Customer Goods Return Settle passes it, its legs being plain transfers."""
 	item_code = row.get("item_code") or ""
 	if not item_code:
 		return
@@ -523,7 +526,9 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 			pcs = row.get("pcs_change") or 0
 		qty = row.get("qty_change") or 0
 	else:
-		if doc.stock_entry_type == "Material Receive (WORK ORDER)":
+		if outward is None:
+			outward = doc.stock_entry_type == "Material Receive (WORK ORDER)"
+		if outward:
 			if first_char not in ("D", "G"):
 				pcs = 0
 			else:
@@ -642,11 +647,13 @@ def get_current_mop_balance_rows(
 		if not item_codes:
 			return []
 		filters["item_code"] = ["in", item_codes]
+	# ``name`` settles a ``creation`` tie the way the old scan of the ``creation`` index did;
+	# ``mop_balance_idx`` serves this read now and leaves tie order to the filesort.
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
 		filters=filters,
 		fields=fields,
-		order_by="creation desc",
+		order_by="creation desc, name desc",
 	)
 	if not mop_logs:
 		return []
@@ -969,7 +976,7 @@ def create_mop_log_for_department_ir(
 				"voucher_no": self.receive_against,
 			},
 			fields=select_fields + ["creation"],
-			order_by="creation asc",
+			order_by="creation asc, name asc",
 		)
 
 	else:
@@ -1191,7 +1198,7 @@ def get_employee_ir_loss_map(eir_doc):
 
 
 def create_mop_log_for_employee_ir_receive(
-	doc, row, from_warehouse, to_warehouse, stock_entry_name=[]
+	doc, row, from_warehouse, to_warehouse, stock_entry_name=None
 ):
 	"""Audit-only MOP Log clones on the SOURCE MOP for Employee IR Receive.
 
@@ -1225,7 +1232,7 @@ def create_mop_log_for_employee_ir_receive(
 				"voucher_no": issue_voucher,
 			},
 			select_fields,
-			order_by="creation asc",
+			order_by="creation asc, name asc",
 		)
 		or []
 	)
@@ -1240,7 +1247,7 @@ def create_mop_log_for_employee_ir_receive(
 					"voucher_no": ["in", stock_entry_name],
 				},
 				select_fields,
-				order_by="creation asc",
+				order_by="creation asc, name asc",
 			)
 			or []
 		)
@@ -1268,7 +1275,7 @@ def create_mop_log_for_employee_ir_receive(
 				],
 			},
 			select_fields,
-			order_by="creation asc",
+			order_by="creation asc, name asc",
 		)
 		or []
 	)
@@ -1293,7 +1300,7 @@ def create_mop_log_for_employee_ir_receive(
 				],
 			},
 			select_fields,
-			order_by="creation asc",
+			order_by="creation asc, name asc",
 		)
 		or []
 	)
@@ -1429,7 +1436,7 @@ def create_mop_log_for_employee_ir_loss(
 				"pcs_after_transaction_batch_based",
 				"flow_index",
 			],
-			order_by="creation desc",
+			order_by="creation desc, name desc",
 			as_dict=True,
 		)
 		or {}
