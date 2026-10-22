@@ -1603,8 +1603,11 @@ def update_new_serial_no(self):
 	customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
 	)
-	if customer:
-		new_sn_doc.customer = customer
+	if customer and new_sn_doc.customer != customer:
+		# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
+		# customer; only the stock ledger may, and it writes the column directly. The order's
+		# customer is written the same way, so the save below sees it unchanged.
+		new_sn_doc.db_set("customer", customer, update_modified=False)
 	existing_huid = []
 	existing_certification = []
 
