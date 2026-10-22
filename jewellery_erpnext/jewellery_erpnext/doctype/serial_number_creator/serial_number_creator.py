@@ -1461,10 +1461,19 @@ def update_new_serial_no(self):
 	customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
 	)
-	if customer and new_sn_doc.customer != customer:
+	if (
+		customer
+		and new_sn_doc.customer != customer
+		and not new_sn_doc.meta.get_field("customer").fetch_from
+	):
 		# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
 		# customer; only the stock ledger may, and it writes the column directly. The order's
 		# customer is written the same way, so the save below sees it unchanged.
+		#
+		# A site that fetches the customer from the serial's BOM (a Property Setter with
+		# fetch_from custom_bom_no.customer, as the CI fixtures have) gets it from there on the
+		# save below, as it always did; stamping the order's customer first would make that
+		# fetch look like a change.
 		new_sn_doc.db_set("customer", customer, update_modified=False)
 	existing_huid = []
 	existing_certification = []
