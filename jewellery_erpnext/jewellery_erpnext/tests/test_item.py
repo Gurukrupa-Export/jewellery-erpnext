@@ -938,6 +938,58 @@ class TestBeforeInsert(IntegrationTestCase):
 			)
 
 
+class TestChainVariantIsManufacturingItem(IntegrationTestCase):
+	"""before_insert(): a new F chain variant is ticked Is Manufacturing Item, so its
+	PMOs get a Finding Manufacturing Work Order."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _finding(self, variant_of="F", category="Chains"):
+		return _item(
+			item_group="Finding - V",
+			variant_of=variant_of,
+			custom_is_manufacturing_item=0,
+			attributes=[
+				_attr("Finding Category", category),
+				_attr("Finding Sub-Category", "Box Chain"),
+			],
+		)
+
+	def test_f_chain_variant_is_ticked(self):
+		doc = self._finding()
+		item_events.set_chain_as_manufacturing_item(doc)
+		self.assertEqual(doc.custom_is_manufacturing_item, 1)
+
+	def test_other_finding_category_is_left_alone(self):
+		doc = self._finding(category="Screws")
+		item_events.set_chain_as_manufacturing_item(doc)
+		self.assertEqual(doc.custom_is_manufacturing_item, 0)
+
+	def test_chain_of_another_template_is_left_alone(self):
+		doc = self._finding(variant_of="FL")
+		item_events.set_chain_as_manufacturing_item(doc)
+		self.assertEqual(doc.custom_is_manufacturing_item, 0)
+
+	def test_non_variant_is_left_alone(self):
+		doc = self._finding(variant_of=None)
+		item_events.set_chain_as_manufacturing_item(doc)
+		self.assertEqual(doc.custom_is_manufacturing_item, 0)
+
+	def test_before_insert_ticks_the_chain_variant(self):
+		doc = self._finding()
+		qb = _QB({"attribute_value": [(CONSUMABLES_GROUP,)]})
+		with (
+			patch.object(item_events.frappe, "qb", qb),
+			patch.object(item_events.frappe, "db", _db_mock(abbr={"Box Chain": "BC"})),
+			patch.object(item_events, "datetime", _fixed_clock()),
+		):
+			item_events.before_insert(doc, None)
+		self.assertEqual(doc.custom_is_manufacturing_item, 1)
+		self.assertEqual(doc.batch_number_series, f"{DATE_CODE}-FBC{BATCH_SUFFIX}")
+
+
 class TestDateCodeHelpers(IntegrationTestCase):
 	"""The GE series date codes embed the current date deterministically."""
 
