@@ -3207,3 +3207,114 @@ class TestCancelWritesLockOnlyTheirRows(_GuardHarness):
 			{r.is_cancelled for r in fx.mop_logs(voucher_no=dir_receive.name)} or {1},
 			{1},
 		)
+
+
+# ==============================================================================================
+# a work order closed with its Parent Manufacturing Order (PR #1491)
+# ==============================================================================================
+
+
+class TestClosedWorkOrder(_GuardHarness):
+	"""A Closed or held work order takes no new Employee IR / Department IR work, saved or
+	submitted, and nothing done on it is cancelled.
+
+	The PMO Hold / Close writes the status without touching ``modified``, as here, so a draft
+	saved before it is still the latest version at submit time."""
+
+	def close(self, mwo, status="Closed"):
+		frappe.db.set_value(
+			"Manufacturing Work Order", mwo, "status", status, update_modified=False
+		)
+
+	def test_a_draft_saved_while_open_is_refused_at_submit_once_closed(self):
+		w = self.world
+		mwo, mop = fx.make_work_order(w, "MM")
+		draft = fx.issue(w, mwo, submit=False)
+		self.close(mwo)
+
+		message = self.assertGuard(CurrentOperationError, fx.submit_ir, draft)
+
+		self.assertIn("is Closed", message)
+		self.assertEqual(self.docstatus("Employee IR", draft.name), 0)
+		self.assertEqual(fx.operation(mop).status, "Not Started")
+
+	def test_warn_mode_still_refuses_the_submit(self):
+		"""The kill switch turns the guard's rules into warnings; the Closed rule of
+		mwo_closed_guard (validate) still runs at submit, where docstatus is already 1."""
+		w = self.world
+		self.addCleanup(self._delete_warn_logs)
+		mwo, mop = fx.make_work_order(w, "MM")
+		draft = fx.issue(w, mwo, submit=False)
+		self.close(mwo)
+
+		with patch.dict(frappe.local.conf, {"current_operation_guard": "warn"}):
+			with self.assertRaisesRegex(frappe.ValidationError, "is Closed"):
+				fx.submit_ir(draft)
+
+		self.assertEqual(self.docstatus("Employee IR", draft.name), 0)
+		self.assertEqual(fx.operation(mop).status, "Not Started")
+
+	def _delete_warn_logs(self):
+		# tabError Log is MyISAM: its rows survive the rollback.
+		for name in frappe.get_all(
+			"Error Log",
+			filters={
+				"method": ["like", f"{WARN_LOG_TITLE}%"],
+				"error": ["like", f"%{self.world.prefix}%"],
+			},
+			pluck="name",
+		):
+			frappe.db.delete("Error Log", {"name": name})
+
+	def test_a_new_draft_on_a_closed_work_order_is_refused(self):
+		w = self.world
+		mwo, _mop = fx.make_work_order(w, "MM")
+		self.close(mwo)
+
+		message = self.assertGuard(
+			CurrentOperationError, fx.insert_ir, fx.employee_ir(w, "Issue", [mwo])
+		)
+
+		self.assertIn("is Closed", message)
+
+	def test_a_held_work_order_is_refused_at_submit_and_on_a_new_draft(self):
+		w = self.world
+		mwo, mop = fx.make_work_order(w, "MM")
+		draft = fx.issue(w, mwo, submit=False)
+		self.close(mwo, "Hold")
+
+		message = self.assertGuard(CurrentOperationError, fx.submit_ir, draft)
+		self.assertIn("is on Hold", message)
+		self.assertEqual(fx.operation(mop).status, "Not Started")
+
+		# A work order of its own: an outstanding Issue draft would add the (more severe)
+		# OutstandingDraftError of the draft rule to the refusal.
+		other, _other_mop = fx.make_work_order(w, "MM")
+		self.close(other, "Hold")
+		message = self.assertGuard(
+			CurrentOperationError, fx.insert_ir, fx.employee_ir(w, "Issue", [other])
+		)
+		self.assertIn("is on Hold", message)
+
+	def test_nothing_done_on_a_closed_or_held_work_order_is_cancelled(self):
+		for status, text, employee in (
+			("Closed", "is Closed", "MM1"),
+			("Hold", "is on Hold", "MM2"),
+		):
+			with self.subTest(status=status):
+				w = self.world
+				mwo, mop = fx.make_work_order(w, "MM")
+				issue = fx.issue(w, mwo, employee=employee)
+				self.close(mwo, status)
+
+				# As TestCancelGuards._cancel_refused: Frappe writes docstatus 2 before the
+				# guard raises, and the refusal rolls the whole request back.
+				before = fx.snapshot(mwo)
+				frappe.db.savepoint("cog_closed_cancel")
+				message = self.assertGuard(HistoryRewriteError, fx.reload(issue).cancel)
+				self.assertEqual(fx.snapshot(mwo), before)
+				frappe.db.rollback(save_point="cog_closed_cancel")
+
+				self.assertIn(text, message)
+				self.assertEqual(self.docstatus("Employee IR", issue.name), 1)
+				self.assertEqual(fx.operation(mop).status, "WIP")

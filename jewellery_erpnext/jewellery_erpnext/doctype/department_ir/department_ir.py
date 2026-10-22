@@ -12,6 +12,10 @@ from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
 	check_rows,
 	mop_owners,
@@ -147,6 +151,7 @@ class DepartmentIR(Document):
 			["name", "gross_wt"],
 			order_by="creation asc",
 		)
+		records = without_closed_mwo_operations(records)
 		self.department_ir_operation = []
 		if records:
 			for row in records:
@@ -156,6 +161,7 @@ class DepartmentIR(Document):
 
 	def validate(self):
 		validate_no_reverted_operations(self, "department_ir_operation")
+		block_closed_mwo_operations(self, "department_ir_operation")
 
 	def before_save(self):
 		self.set_parent_manufacturing_order_count()

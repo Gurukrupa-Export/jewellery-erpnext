@@ -32,6 +32,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	PROCESS_LOSS_SE_TYPE,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
 	check_rows,
 	refetch_from_work_order,
@@ -147,6 +151,7 @@ class EmployeeIR(Document):
 			},
 			["name", "gross_wt"],
 		)
+		records = without_closed_mwo_operations(records)
 		self.employee_ir_operations = []
 		if records:
 			for row in records:
@@ -299,6 +304,7 @@ class EmployeeIR(Document):
 
 	def validate(self):
 		validate_no_reverted_operations(self, "employee_ir_operations")
+		block_closed_mwo_operations(self, "employee_ir_operations")
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()
