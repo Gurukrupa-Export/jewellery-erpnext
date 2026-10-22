@@ -30,6 +30,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 	create_po,
 	earring_units,
 	process_fire_assy_xrf_submit,
+	stamp_rows_from_batches,
 	update_bom_details,
 	validate_po_configuration,
 )
@@ -41,9 +42,36 @@ from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_material_balan
 )
 
 
+def _row_key(row):
+	"""The per-row key tying a Product Details row to its own exploded set.
+
+	Product Details carries it as ``exploded_row_key``; its exploded rows carry the same value
+	in ``docname``. Blank on documents written before the key existed.
+	"""
+	return row.get("exploded_row_key") or row.get("docname") or ""
+
+
+def _legacy_slip_key(row):
+	"""The pre-row-key grouping: ``(main_slip, tree_no, sample_name)``, blanks normalised."""
+	return (
+		row.get("main_slip") or "",
+		row.get("tree_no") or "",
+		row.get("sample_name") or "",
+	)
+
+
 def _slip_key(row):
 	"""Fire Assy / XRF grouping key, shared by every routine that pairs a Product Details
 	row with its generated Exploded Product Details rows.
+
+	Every Product Details row has its own key (``_row_key``), so each row gets its own
+	main / pure / loss set -- also two rows scanned off the same tree with no sample name,
+	which used to share one set and have their weights summed. Sample Name is left out of the
+	key once a row has one: renaming a sample is a label change, not a different group, and
+	including it orphaned the set the moment a sample was named after the first save.
+
+	Rows without a key (documents written before it existed) fall back to the original
+	grouping below.
 
 	It is the same ``[main_slip, tree_no, sample_name]`` triple ``get_exploded_table``
 	dedupes on, with blanks normalised so ``None`` and ``""`` land in one group instead of two.
@@ -59,11 +87,9 @@ def _slip_key(row):
 	compare it to another key from this same function, test it with ``any()``, or destructure
 	it (once, in ``validate_exploded_qty``), so grouping on those documents is unchanged.
 	"""
-	return (
-		row.get("main_slip") or "",
-		row.get("tree_no") or "",
-		row.get("sample_name") or "",
-	)
+	if key := _row_key(row):
+		return (row.get("main_slip") or "", row.get("tree_no") or "", key)
+	return _legacy_slip_key(row)
 
 
 @frappe.request_cache
@@ -148,6 +174,7 @@ class ProductCertification(Document):
 		self.validate_items()
 		validate_over_receipt(self)
 		self.update_bom()
+		self._assign_exploded_row_keys()
 		self.get_exploded_table()
 		self.set_assay_row_types()
 		self.calculate_fire_assy_loss_weight()
@@ -358,6 +385,41 @@ class ProductCertification(Document):
 			title=_("Tree Number or Sample Name Required"),
 		)
 
+	def _assign_exploded_row_keys(self):
+		"""Give every Fire Assy / XRF Product Details row its own exploded-set key.
+
+		New rows get a fresh key; a key that repeats an earlier row's (the grid's duplicate
+		row, a CSV paste) is replaced so the copy gets a set of its own. The key is copied on
+		Amend and on Create Receiving, so those keep their sets.
+
+		A draft written before the key existed holds sets with no ``docname``, keyed on
+		``(main_slip, tree_no, sample_name)``. The first row matching such a set claims it
+		(the set is stamped with the row's key), so the draft is re-split instead of orphaning
+		a set that already carries weight. Later rows of that group get new sets.
+		"""
+		if self.service_type not in ["Fire Assy Service", "XRF Services"]:
+			return
+
+		unclaimed = defaultdict(list)
+		for row in self.exploded_product_details:
+			if not row.get("docname"):
+				unclaimed[_legacy_slip_key(row)].append(row)
+
+		seen = set()
+		for row in self.product_details:
+			key = row.get("exploded_row_key")
+			if key and key not in seen:
+				seen.add(key)
+				continue
+			legacy_key = _legacy_slip_key(row)
+			key = frappe.generate_hash(length=10)
+			while key in seen:
+				key = frappe.generate_hash(length=10)
+			row.exploded_row_key = key
+			seen.add(key)
+			for exploded in unclaimed.pop(legacy_key, []):
+				exploded.docname = key
+
 	def validate_duplicate_product_rows(self):
 		"""One Product Details row per serial / per work order.
 
@@ -370,8 +432,8 @@ class ProductCertification(Document):
 		(a tree goes for assay in more than one sample). The *sample* is what discriminates
 		those rows, and ``validate_unique_sample_name`` refuses two rows sharing one -- which
 		is stricter than a (tree, sample) key here would be. Two same-tree rows carrying no
-		sample name at all remain legal, and ``set_fire_assy_issue_weight`` still sums them
-		onto a single exploded main row, which is the intended behaviour for them.
+		sample name at all remain legal, and each still gets its own exploded set (see
+		``_slip_key``).
 		The weight is what needs care, not the row count -- so the scan handler auto-fills the
 		tree's weight only on the FIRST row for that tree and leaves repeats at 0 for the
 		operator to type, and ``validate_fire_assy_weight`` still refuses a submit that leaves
@@ -512,10 +574,12 @@ class ProductCertification(Document):
 		# collapses to a single ("", "") group — i.e. the grand-total comparison.
 		issued = defaultdict(float)
 		first_idx = {}
+		first_row = {}
 		for row in self.product_details:
 			key = _slip_key(row)
 			issued[key] += flt(row.total_weight)
 			first_idx.setdefault(key, row.idx)
+			first_row.setdefault(key, row)
 
 		booked = defaultdict(float)
 		for row in self.exploded_product_details:
@@ -526,8 +590,13 @@ class ProductCertification(Document):
 			if abs(total_weight - exploded_weight) <= 0.001:
 				continue
 
-			main_slip, tree_no, sample_name = key
-			if main_slip or tree_no or sample_name:
+			first = first_row.get(key)
+			label = (
+				(first.get("sample_name") or first.get("tree_no") or first.get("main_slip"))
+				if first
+				else None
+			)
+			if label:
 				frappe.throw(
 					_(
 						"Row #{0}: Total Gross Weight in Exploded Product Details ({1}) does not match Total Weight in Product Details ({2}) for {3}"
@@ -535,7 +604,7 @@ class ProductCertification(Document):
 						first_idx.get(key),
 						exploded_weight,
 						total_weight,
-						main_slip or tree_no or sample_name,
+						label,
 					)
 				)
 			frappe.throw(
@@ -584,7 +653,7 @@ class ProductCertification(Document):
 					"loss_item": None,
 				},
 			)
-			# Summed, not overwritten: two rows on the same slip issue their combined weight.
+			# Summed, not overwritten: only a legacy document still puts two rows in one group.
 			data["issue_weight"] += flt(pd.total_weight)
 			data["main_item"] = data["main_item"] or pd.item_code
 			data["pure_item"] = data["pure_item"] or pd.get("pure_item")
@@ -704,7 +773,7 @@ class ProductCertification(Document):
 			data = slip_data.setdefault(
 				_slip_key(pd), {"main_item": None, "issue_weight": 0.0}
 			)
-			# Summed, not overwritten: two rows on the same slip issue their combined weight.
+			# Summed, not overwritten: only a legacy document still puts two rows in one group.
 			data["issue_weight"] += flt(pd.total_weight)
 			data["main_item"] = data["main_item"] or pd.item_code
 
@@ -1531,6 +1600,14 @@ class ProductCertification(Document):
 			# [main_slip, tree_no] comparison mixes None and "" and appends the same group twice.
 			existing_data = {_slip_key(row) for row in self.exploded_product_details}
 
+			# A row's set follows the row's label: a sample named (or renamed) after the first
+			# save keeps its set and simply shows the new name.
+			by_key = {_row_key(row): row for row in self.product_details if _row_key(row)}
+			for exploded in self.exploded_product_details:
+				source = by_key.get(_row_key(exploded))
+				if source is not None:
+					exploded.sample_name = source.sample_name
+
 			# get_item_loss_item is not a lookup: it runs several queries AND saves the
 			# resolved Item. Memoised on item_code (company and variant are fixed for this
 			# call) because a Fire Assy document is many tree rows of the same metal, which
@@ -1555,6 +1632,7 @@ class ProductCertification(Document):
 							"main_slip": row.main_slip,
 							"tree_no": row.tree_no,
 							"sample_name": row.sample_name,
+							"docname": row.get("exploded_row_key"),
 						}
 					)
 					if self.service_type == "Fire Assy Service":
@@ -1564,6 +1642,7 @@ class ProductCertification(Document):
 								"main_slip": row.main_slip,
 								"tree_no": row.tree_no,
 								"sample_name": row.sample_name,
+								"docname": row.get("exploded_row_key"),
 							}
 						)
 					exploded_product_details.append(
@@ -1572,6 +1651,7 @@ class ProductCertification(Document):
 							"main_slip": row.main_slip,
 							"tree_no": row.tree_no,
 							"sample_name": row.sample_name,
+							"docname": row.get("exploded_row_key"),
 						}
 					)
 				row.loss_item = loss_item
@@ -1690,6 +1770,94 @@ class ProductCertification(Document):
 		}
 
 
+def _issue_rows_by_batch(base_row, warehouse, qty, taken, posting_date=None, posting_time=None):
+	"""Fan one batchless Issue row out into one row per batch it will actually draw.
+
+	This row used to be appended with NO ``batch_no`` at all. The app's own FIFO splitter,
+	``CustomStockEntry.update_batches``, is gated on ``not self.auto_created`` and a Product
+	Certification entry sets ``auto_created = 1``, so nothing filled it in; the row reached
+	the ledger batchless and ERPNext's SLE-time auto-picker built a FIFO bundle across as
+	many batches as it took, writing back the bundle name and never the ``batch_no``. The
+	batch column on the Issue was therefore blank exactly when the draw spanned more than one
+	batch -- the case you most want to read off the document.
+
+	Same batches, same quantities, same FIFO order as the picker was already choosing; they
+	are just resolved here, up front, so each one gets its own visible row. ``inventory_type``
+	is not set here: ``create_stock_entry`` books every row under its batch's owner once the
+	table is built (``stamp_rows_from_batches``), and the receipt side does the same for the
+	batches it draws back, so both sides of one certification agree.
+
+	``taken`` is shared across the document so two rows of the same item cannot both spend
+	the same batch. Returns ``[base_row]`` unchanged for a serialised or non-batched item, or
+	when no batch is available -- the pre-existing behaviour, and the pre-existing error.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+		capped_auto_batch_nos,
+	)
+	from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+		allocate_in_order,
+	)
+
+	item_code = base_row.get("item_code")
+	if base_row.get("serial_no") or not item_code or not warehouse:
+		return [base_row]
+	if not frappe.get_cached_value("Item", item_code, "has_batch_no"):
+		return [base_row]
+
+	precision = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+	need = flt(qty, precision)
+	if need <= 0:
+		return [base_row]
+
+	# No ``qty`` in the kwargs: get_auto_batch_nos truncates the pool at the first batch that
+	# covers the need, which would hide the later batches this split exists to expose.
+	batches = (
+		capped_auto_batch_nos(
+			frappe._dict(
+				{
+					"item_code": item_code,
+					"warehouse": warehouse,
+					"posting_date": posting_date,
+					"posting_time": posting_time,
+				}
+			)
+		)
+		or []
+	)
+	# Keyed on (warehouse, batch): one batch can carry stock in more than one warehouse.
+	pool = [
+		((warehouse, b.batch_no), flt(b.qty)) for b in batches if flt(b.qty) > 0
+	]
+	if not pool:
+		return [base_row]
+
+	allocation, shortfall = allocate_in_order(pool, need, precision, taken=taken)
+	if shortfall > 0:
+		available = flt(sum(q for _k, q in pool), precision)
+		frappe.throw(
+			_(
+				"{0} needs {1} in {2}, but only {3} is available across its batches "
+				"(short by {4})."
+			).format(
+				frappe.bold(item_code),
+				need,
+				frappe.bold(warehouse),
+				available,
+				flt(shortfall, precision),
+			),
+			title=_("Insufficient Batch Stock"),
+		)
+
+	rows = []
+	for (_wh, batch_no), batch_qty in allocation:
+		line = dict(base_row)
+		line["batch_no"] = batch_no
+		line["qty"] = batch_qty
+		line["gross_weight"] = batch_qty
+		rows.append(line)
+	return rows
+
+
 def create_stock_entry(doc):
 	if doc.type == "Issue" or doc.service_type in [
 		"Hall Marking Service",
@@ -1796,6 +1964,8 @@ def create_stock_entry(doc):
 		# orders turned each one into a linear scan of everything added so far.
 		added_mwo = set()
 		added_serial = set()
+		# {(warehouse, batch_no): qty} claimed so far, shared by every row of this entry.
+		batch_taken = {}
 		# Shared across every get_stock_item_against_mwo call of this document -- see the
 		# Receive branch there for what it holds and why.
 		receive_context = {}
@@ -1839,28 +2009,47 @@ def create_stock_entry(doc):
 					supplier_wh = _t_warehouse_serial()
 					source_wh = s_warehouse if doc.type == "Issue" else supplier_wh
 
-					se_doc.append(
-						"items",
-						{
-							"item_code": row.item_code,
-							"serial_no": row.serial_no,
-							"qty": 1 if row.serial_no else row.gross_weight,
-							"s_warehouse": source_wh,
-							"t_warehouse": supplier_wh
-							if doc.type == "Issue"
-							else s_warehouse,
-							"Inventory_type": "Regular Stock",
-							"reference_doctype": "Serial No",
-							"reference_docname": row.serial_no,
-							"serial_and_batch_bundle": None,
-							"use_serial_batch_fields": True,
-							"gross_weight": row.gross_weight,
-						},
+					base_row = {
+						"item_code": row.item_code,
+						"serial_no": row.serial_no,
+						"qty": 1 if row.serial_no else row.gross_weight,
+						"s_warehouse": source_wh,
+						"t_warehouse": supplier_wh
+						if doc.type == "Issue"
+						else s_warehouse,
+						# No inventory_type: the piece's lane comes from its serial's last receipt
+						# (serial_ownership.stamp_serial_row_ownership). The "Inventory_type" key
+						# that sat here was capitalised, so it never reached the row anyway.
+						"reference_doctype": "Serial No",
+						"reference_docname": row.serial_no,
+						"serial_and_batch_bundle": None,
+						"use_serial_batch_fields": True,
+						"gross_weight": row.gross_weight,
+					}
+					# Issue only. A Receive on this branch (Hall Marking / Diamond
+					# Certificate) draws back out of the supplier warehouse and has its own
+					# batch story; leave it exactly as it was.
+					item_rows = (
+						_issue_rows_by_batch(
+							base_row,
+							source_wh,
+							row.gross_weight,
+							batch_taken,
+							posting_date=se_doc.get("posting_date"),
+							posting_time=se_doc.get("posting_time"),
+						)
+						if doc.type == "Issue"
+						else [base_row]
 					)
+					for item_row in item_rows:
+						se_doc.append("items", item_row)
 		if not se_doc.items:
 			frappe.throw(_("No item found for Repack"))
 		se_doc.flags.throw_batch_error = True
 		se_doc.inventory_type = "Regular Stock"
+		# This entry is auto_created, so update_batches never copies a batch's owner onto its
+		# row: a customer's batch would otherwise be issued as "Regular Stock".
+		stamp_rows_from_batches(se_doc.items)
 		se_doc.save()
 		se_doc.submit()
 		frappe.msgprint(_("Stock Entry created"))
@@ -2291,7 +2480,6 @@ def get_stock_item_against_mwo(
 				"qty": qty,
 				"s_warehouse": item_s_warehouse,
 				"t_warehouse": t_warehouse,
-				"Inventory_type": "Regular Stock",
 				"reference_doctype": "Manufacturing Work Order"
 				if row.manufacturing_work_order
 				else "Parent Manufacturing Order",
@@ -2431,7 +2619,6 @@ def get_stock_item_against_mwo(
 				"qty": qty,
 				"s_warehouse": item.t_warehouse,  # Issue's target becomes Receive's source
 				"t_warehouse": s_warehouse,  # Department warehouse as target for receive
-				"Inventory_type": "Regular Stock",
 				# Mirror the Issue line's own reference so the next partial receipt can
 				# match its outstanding on the same key. Falls back to the exploded row
 				# for legacy Issue entries that carry no reference.
