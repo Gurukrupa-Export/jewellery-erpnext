@@ -565,6 +565,8 @@ class ParentManufacturingOrder(Document):
 			# those -- have nothing to work on. Its single MWO makes the finding item itself.
 			create_finding_without_so_mwo(self)
 			return
+		# First, before the tolerance save, BOM submit and Material Requests.
+		_validate_chain_findings_are_manufacturing_items(self)
 		if not self.order_form_type or self.order_form_type == "Order":
 			# One update_after_submit cycle for all three tolerance tables instead of one
 			# per populator, and none at all for a customer with no tolerance master --
@@ -1077,28 +1079,10 @@ def make_finding_without_so_order(source_doc, row, mp_context=None):
 	return doc
 
 
-def create_manufacturing_work_order(self):
-	if not self.custom_tracking_bom:
-		return
-
-	BOMMetalDetail = frappe.qb.DocType("BOM Metal Detail")
+def _get_chain_finding_rows(self):
+	"""The Tracking BOM finding rows a Finding Manufacturing Work Order is raised for,
+	each with its resolved ``item_variant``."""
 	BOMFindingDetail = frappe.qb.DocType("BOM Finding Detail")
-	# Item = frappe.qb.DocType("Item")
-
-	metal_detail_query = (
-		frappe.qb.from_(BOMMetalDetail)
-		.select(
-			BOMMetalDetail.metal_touch,
-			BOMMetalDetail.metal_type,
-			BOMMetalDetail.metal_purity,
-			BOMMetalDetail.metal_colour,
-			BOMMetalDetail.parent,
-		)
-		.where(BOMMetalDetail.parent == self.custom_tracking_bom)
-	)
-
-	metal_details = metal_detail_query.run(as_dict=True)
-
 	finding_details = (
 		frappe.qb.from_(BOMFindingDetail)
 		.select("*")
@@ -1135,6 +1119,66 @@ def create_manufacturing_work_order(self):
 			and row.get("parentfield") == "finding_detail"
 		):
 			finding_data.append(row)
+
+	return finding_data
+
+
+def _validate_chain_findings_are_manufacturing_items(self):
+	"""Refuse the submit when a chain would get no Finding Manufacturing Work Order.
+
+	create_finding_mwo() skips a chain whose variant is not ticked Is Manufacturing
+	Item, and the PMO used to submit without one -- unnoticed until the floor asked
+	for the chain. Ticking the item afterwards never raised the missing order.
+	"""
+	if not self.custom_tracking_bom:
+		return
+	# Same gate as create_manufacturing_work_order(): no Finding MWO is made here.
+	variant_of = frappe.get_cached_value("Item", self.item_code, "variant_of")
+	if self.type == "Finding Manufacturing" and variant_of != "F":
+		return
+
+	not_ticked = sorted(
+		{
+			row.item_variant
+			for row in _get_chain_finding_rows(self)
+			if not frappe.db.get_value(
+				"Item", row.item_variant, "custom_is_manufacturing_item"
+			)
+		}
+	)
+	if not_ticked:
+		frappe.throw(
+			_(
+				"Chain item(s) {0} are not marked Is Manufacturing Item, so no Finding "
+				"Work Order would be created for this PMO. Tick Is Manufacturing Item "
+				"on the item(s) and submit again."
+			).format(", ".join(frappe.bold(item) for item in not_ticked)),
+			title=_("Chain Not Marked for Manufacturing"),
+		)
+
+
+def create_manufacturing_work_order(self):
+	if not self.custom_tracking_bom:
+		return
+
+	BOMMetalDetail = frappe.qb.DocType("BOM Metal Detail")
+	# Item = frappe.qb.DocType("Item")
+
+	metal_detail_query = (
+		frappe.qb.from_(BOMMetalDetail)
+		.select(
+			BOMMetalDetail.metal_touch,
+			BOMMetalDetail.metal_type,
+			BOMMetalDetail.metal_purity,
+			BOMMetalDetail.metal_colour,
+			BOMMetalDetail.parent,
+		)
+		.where(BOMMetalDetail.parent == self.custom_tracking_bom)
+	)
+
+	metal_details = metal_detail_query.run(as_dict=True)
+
+	finding_data = _get_chain_finding_rows(self)
 
 	# Build multicolour grouping from BOM Metal Detail rows only.
 	grouped_data = {}
