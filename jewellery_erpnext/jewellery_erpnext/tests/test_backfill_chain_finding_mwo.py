@@ -157,20 +157,37 @@ class TestBackfillChainFindingMWO(IntegrationTestCase):
 		)
 		self.assertEqual((site.created, site.ticks), ({}, []))
 
-	def test_finished_or_closed_work_orders_are_skipped(self):
+	def test_pmo_with_no_open_work_order_is_skipped(self):
 		site = _Site(
 			{
 				"PMO-DONE": _pmo(mwos=(("MWO-1", "Completed"),)),
 				"PMO-CLOSED": _pmo(mwos=(("MWO-2", "Closed"), ("MWO-3", "Completed"))),
+				"PMO-STOPPED": _pmo(mwos=(("MWO-4", "Stopped"),)),
+				# kggk_uat's PMO Hold puts every open work order on Hold.
+				"PMO-HELD": _pmo(mwos=(("MWO-5", "Hold"), ("MWO-6", "Completed"))),
 				"PMO-NONE": _pmo(mwos=()),
 			}
 		)
 		result = self._run(site)
+		self.assertEqual(len(result["skipped"]), 5)
 		self.assertEqual(
 			{outcome for _, outcome in result["skipped"]},
-			{"skipped: work orders finished or closed"},
+			{"skipped: no work order still open"},
 		)
 		self.assertEqual((site.created, site.ticks), ({}, []))
+
+	def test_every_open_status_is_back_filled(self):
+		site = _Site(
+			{
+				"PMO-DRAFT": _pmo(mwos=(("MWO-1", "Draft"),)),
+				"PMO-NOT-STARTED": _pmo(mwos=(("MWO-2", "Not Started"),)),
+				"PMO-IN-PROCESS": _pmo(mwos=(("MWO-3", "In Process"),)),
+			}
+		)
+		self._run(site)
+		self.assertEqual(
+			set(site.created), {"PMO-DRAFT", "PMO-NOT-STARTED", "PMO-IN-PROCESS"}
+		)
 
 	def test_one_live_work_order_beside_a_closed_one_is_back_filled(self):
 		# EA13136-002-0002: its first MWO was closed when it was split; the split one is live.

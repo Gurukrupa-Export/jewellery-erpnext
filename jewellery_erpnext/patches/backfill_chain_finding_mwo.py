@@ -18,8 +18,9 @@ are deliberately left out:
 
 The names exist only on KGGK, so on every other site this is a no-op. For each PMO it:
 
-1. skips it if it already has a Finding MWO, if its work orders are all Completed/Closed, or
-   if a chain was already issued from stock against them -- the piece has its chain then;
+1. skips it if it already has a Finding MWO, if none of its work orders is still open
+   (finished, closed, stopped or on hold), or if a chain was already issued from stock
+   against them -- the piece has its chain then;
 2. ticks the chain variant(s) the PMO needs, as ``before_insert`` now does for new ones;
 3. creates the draft Finding MWO through ``create_finding_mwo()``, exactly as submit does.
 
@@ -53,8 +54,9 @@ PMOS = (
 	"PMO-KGJPL-EA13136-002-0002",
 )
 
-# A work order in either status will take no new material: the piece is done or stopped.
-DONE_STATUSES = ("Completed", "Closed")
+# Only a work order in one of these can still take its chain. Completed, Closed, Stopped,
+# Cancelled and (on branches with the PMO Hold/Close workflow) Hold cannot.
+OPEN_STATUSES = ("Draft", "Not Started", "In Process")
 
 
 def execute(dry_run=False):
@@ -108,8 +110,8 @@ def _backfill(name):
 		},
 		["name", "status"],
 	)
-	if not main_mwos or all(mwo.status in DONE_STATUSES for mwo in main_mwos):
-		return "skipped: work orders finished or closed"
+	if not any(mwo.status in OPEN_STATUSES for mwo in main_mwos):
+		return "skipped: no work order still open"
 	if _chain_issued_from_stock([mwo.name for mwo in main_mwos]):
 		return "skipped: chain already issued from stock"
 
