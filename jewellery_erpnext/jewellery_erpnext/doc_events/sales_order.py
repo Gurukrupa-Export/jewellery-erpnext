@@ -2902,10 +2902,17 @@ def create_new_bom1(self):
 
 	self.total = 0
 	ctx = _get_bom_context(self)
+	ctx.making_charges_on, ctx.ignore_certification = frappe.db.get_value(
+		"Customer",
+		self.customer,
+		["compute_making_charges_on", "custom_ignore_po_creation_for_certification"],
+	) or (None, None)
+	ctx.reusable_boms = _get_reusable_so_boms(self)
 	# Tracking BOM rows: amounts read in one query (was an exists + get_doc per row) and the
 	# Sales Order link written in one UPDATE (was a set_value per row).
 	ctx.tracking_bom_data = _get_tracking_bom_amounts(self)
 	ctx.tracking_boms_to_link = []
+	failures = []
 
 	for i, row in enumerate(self.items):
 		# A failed row must leave neither a half-saved BOM behind nor rates
@@ -2935,6 +2942,13 @@ def create_new_bom1(self):
 				f"BOM failed — {self.name} row {i} serial_no {row.serial_no}",
 			)
 
+	self.flags.bom_failures = failures
+	if failures and not self.flags.in_so_bom_job:
+		frappe.msgprint(
+			get_bom_failure_message(failures),
+			title=_("BOM not created for {0} rows").format(len(failures)),
+			indicator="orange",
+		)
 	_link_tracking_boms_to_sales_order(self, ctx.tracking_boms_to_link)
 	_bulk_update_child_rows(self)
 	if failures:
