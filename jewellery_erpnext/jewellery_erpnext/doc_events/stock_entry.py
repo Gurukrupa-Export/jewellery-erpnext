@@ -528,10 +528,21 @@ def validate_pcs(self):
 		if row.material_request_item:
 			rows_by_mri.setdefault(row.material_request_item, []).append(row)
 
+	# One query for every split MR Item instead of one per item. A name the map does not
+	# hold falls back to the original lookup, so the result is identical either way.
+	pcs_map = bulk_map(
+		"Material Request Item",
+		[mri for mri, rows in rows_by_mri.items() if len(rows) > 1],
+		["pcs"],
+	)
+
 	for mri, rows in rows_by_mri.items():
 		if len(rows) <= 1:
 			continue
-		total = cint(frappe.db.get_value("Material Request Item", mri, "pcs"))
+		if mri in pcs_map:
+			total = cint(pcs_map[mri].pcs)
+		else:
+			total = cint(frappe.db.get_value("Material Request Item", mri, "pcs"))
 		if total <= 0:
 			# No authoritative total — leave the rows untouched.
 			continue
@@ -2221,6 +2232,8 @@ def make_stock_in_entry(source_name, target_doc=None):
 	issue_type, issue_left = _customer_gold_issue_plan(source_name)
 	department_destination = _department_destination_lookup()
 	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
+	# The referenced Material Request, loaded once per mapping instead of once per row.
+	ref_mrs = {}
 
 	def set_missing_values(source, target):
 		if issue_type or target.stock_entry_type == "Customer Goods Received":
@@ -2240,9 +2253,10 @@ def make_stock_in_entry(source_name, target_doc=None):
 		# getting target warehouse on end transit
 		target_wh = ""
 		if source_parent.custom_material_request_reference:
-			ref_mr = frappe.get_doc(
-				"Material Request", source_parent.custom_material_request_reference
-			)
+			mr_name = source_parent.custom_material_request_reference
+			if mr_name not in ref_mrs:
+				ref_mrs[mr_name] = frappe.get_doc("Material Request", mr_name)
+			ref_mr = ref_mrs[mr_name]
 			for wh in ref_mr.items:
 				if wh.item_code == source_doc.item_code:
 					target_wh = wh.warehouse
@@ -2596,23 +2610,44 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 	department_destination = _department_destination_lookup()
 	qty_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty")
 
+	# Read once per mapping rather than once per row: the source entry's add_to_transit,
+	# and the warehouse of every Material Request Item its rows point at.
+	lookups = {}
+
 	def set_missing_values(source, target):
 		target.stock_entry_type = source.stock_entry_type
 		target.set_missing_values()
+
+	def mr_item_warehouse(material_request_item):
+		if "mr_item_warehouses" not in lookups:
+			lookups["mr_item_warehouses"] = bulk_map(
+				"Material Request Item",
+				frappe.get_all(
+					"Stock Entry Detail",
+					filters={"parent": source_name, "parenttype": "Stock Entry"},
+					pluck="material_request_item",
+					order_by=None,
+				),
+				["warehouse"],
+			)
+		row = lookups["mr_item_warehouses"].get(material_request_item)
+		if row is None:
+			# Not an exact hit: ask exactly as before.
+			return frappe.get_value(
+				"Material Request Item", material_request_item, "warehouse"
+			)
+		return row.warehouse
 
 	def update_item(source_doc, target_doc, source_parent):
 		target_doc.t_warehouse = ""
 
 		if source_doc.material_request_item and source_doc.material_request:
-			add_to_transit = frappe.db.get_value(
-				"Stock Entry", source_name, "add_to_transit"
-			)
-			if add_to_transit:
-				warehouse = frappe.get_value(
-					"Material Request Item",
-					source_doc.material_request_item,
-					"warehouse",
+			if "add_to_transit" not in lookups:
+				lookups["add_to_transit"] = frappe.db.get_value(
+					"Stock Entry", source_name, "add_to_transit"
 				)
+			if lookups["add_to_transit"]:
+				warehouse = mr_item_warehouse(source_doc.material_request_item)
 				target_doc.t_warehouse = warehouse
 
 		destination = department_destination(source_parent)
