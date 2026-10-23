@@ -62,6 +62,15 @@ R02_A = "GJCU0009-2F10-M-G-22KT-91.75-Y-02-A"
 #: both still in Waxing RM -- no single holding covers the 10 g.
 R03 = "KACU0040-2F10-M-G-24KT-99.9-Y-03"
 R03_A = "KACU0040-2F10-M-G-22KT-91.75-Y-03-A"
+#: MR-04004: GJCU0009's 24KT (-04) converted to 22KT (-04-A); 0.27 g of that was lost in
+#: Diamond Setting and booked as the customer's metal-loss scrap (-04-A-A, an ML item).
+R04 = "GJCU0009-2F10-M-G-24KT-99.9-Y-04"
+R04_A = "GJCU0009-2F10-M-G-22KT-91.75-Y-04-A"
+R04_AA = "GJCU0009-2F10-ML-G-22KT-91.75-Y-04-A-A"
+ITEM_22KT_ML = "ML-G-22KT-91.75-Y"
+DIAMOND_SCRAP = "Diamond Setting Scrap - KGJPL"
+#: Another receipt of the same customer (GJCU0009), used only once -04's own metal runs out.
+R05 = "GJCU0009-2F10-M-G-24KT-99.9-Y-05"
 #: The receipt that minted -02.
 RECEIPT = "KGJPL-SE-CGR-26-00007"
 #: The company-gold order -02-A was issued to (MAT-STE-57625), and its operation.
@@ -88,6 +97,7 @@ BATCHES = {
 	B02: _customer_batch(CUSTOMER),
 	R02: _customer_batch(CUSTOMER_03997),
 	R03: _customer_batch(CUSTOMER),
+	R04: _customer_batch(CUSTOMER_03997),
 }
 
 #: Stock Entry Type of each entry a batch above was minted by.
@@ -101,6 +111,10 @@ BATCH_ITEMS = {
 	R02_A: ITEM_22KT,
 	R03: ITEM,
 	R03_A: ITEM_22KT,
+	R04: ITEM,
+	R04_A: ITEM_22KT,
+	R04_AA: ITEM_22KT_ML,
+	R05: ITEM,
 }
 WAREHOUSE_TYPES = {
 	CENTRAL: "Raw Material",
@@ -108,6 +122,7 @@ WAREHOUSE_TYPES = {
 	WAXING: "Raw Material",
 	WAXING_WO: "Manufacturing",
 	CASTING_WO: "Manufacturing",
+	DIAMOND_SCRAP: "Scrap",
 }
 
 #: MR-03988's ledger: -01 is back in RM Procurement, -02 sits in Central RM.
@@ -173,6 +188,7 @@ def _world(
 	batches=None,
 	mr=None,
 	work_orders=None,
+	other_batches=(),
 ):
 	"""Patch every read Settle's planner makes, plus the writers, around one request.
 
@@ -250,6 +266,10 @@ def _world(
 			side_effect=lambda *a, **k: [frappe._dict(h) for h in work_orders or ()]
 		),
 		pull=MagicMock(side_effect=pull),
+		# The customer's other batches, as _fetch_customer_other_holdings returns them.
+		other=MagicMock(
+			side_effect=lambda *a, **k: lineage_holdings(set(other_batches))
+		),
 		events=events,
 		# get_batch_qty nets reservations; by default nothing is reserved.
 		batch_qty=MagicMock(
@@ -293,6 +313,7 @@ def _world(
 		)
 		stack.enter_context(patch(f"{_C}._pull_from_work_order", mocks.pull))
 		stack.enter_context(patch(f"{_C}.get_batch_qty", mocks.batch_qty))
+		stack.enter_context(patch(f"{_C}._fetch_customer_other_holdings", mocks.other))
 		for name in ("preallocate_series_for_docs", "lock_bins", "series_stubs"):
 			stack.enter_context(patch(f"{_LOCK}.{name}"))
 		# flt(x, precision) reads the rounding method from System Settings and returns 0.0 if
@@ -364,6 +385,7 @@ def _holding(**fields):
 		"operation_balance": 2.36,
 		"in_warehouse": 2.36,
 		"department_rm": WAXING,
+		"manufacturing_order": "PMO-KGJPL-RI00413-004-0001",
 	}
 	values.update(fields)
 	return values
@@ -682,11 +704,12 @@ class TestHoldingsAreSortedBySettlesRules(_Base):
 		)
 		notes = {h.batch_no: h.get("note") for h in summary.free}
 		self.assertIsNone(notes[R02_A])
-		self.assertIn("relabel", notes["R02-B"])
+		# Another batch of the item in the source warehouse is relabelled in place.
+		self.assertIsNone(notes["R02-B"])
 		self.assertIn("target warehouse", notes["R02-C"])
 		self.assertIn("does not convert", notes["R02-D"])
-		# Only the 22KT in Waxing RM counts: 3.09 x 0.9175 = 2.835075, rounded down.
-		self.assertEqual(summary.coverable, 2.835)
+		# The 22KT in Waxing RM (3.09 x 0.9175 = 2.835) and the 1.0 g relabelled in place.
+		self.assertEqual(summary.coverable, 3.835)
 
 	def test_every_usable_holding_adds_up(self):
 		# Settle combines holdings (_plan_parts): 2 x 1.5 g of 18KT in the source warehouse
@@ -932,7 +955,7 @@ class TestCoveringARowFromSeveralHoldings(_Base):
 				[WAXING],
 				"KG GK Jewellers Private Limited",
 				allocated,
-				holdings,
+				[holdings],
 			)
 
 		self.assertIsNone(parts)
@@ -1181,11 +1204,13 @@ class TestPullingFromAWorkOrder(_Base):
 		)
 		calls = []
 
-		def transfer(mr, item, qty, batch, from_wh, to_wh, customer):
-			calls.append(("transfer", item, qty, batch, from_wh, to_wh, customer))
+		def transfer(mr, p, qty, batch, from_wh, to_wh, customer):
+			calls.append(
+				("transfer", p.item_code, qty, batch, from_wh, to_wh, customer)
+			)
 			return "SE-REG" if customer is None else "SE-CUST"
 
-		with patch(f"{_C}._transfer", side_effect=transfer), patch(
+		with patch(f"{_C}._work_order_transfer", side_effect=transfer), patch(
 			f"{_C}._move_reservation",
 			side_effect=lambda *a: calls.append(("reservation", *a)) or "sre-new",
 		), patch(
@@ -1489,6 +1514,365 @@ class TestWorkOrderMovesWaitingForTheSync(_Base):
 
 			self.assertEqual(regular["batch_no"], expected)
 			self.assertEqual(trial, {(expected, WAXING): 2.36})
+
+
+class TestTheCustomersMetalLossScrap(_Base):
+	"""MR-04004: 7.257 g of -04 asked from Central RM. 7.639 g of 22KT (-04-A) is free in
+	Waxing RM -- 7.009 g of 24KT -- and the customer's 0.27 g of metal-loss scrap (-04-A-A)
+	sits in Diamond Setting Scrap: 0.248 g. Together exactly 7.257 g."""
+
+	LEDGER = {(R04_A, WAXING): 7.639, (R04_AA, DIAMOND_SCRAP): 0.27}
+
+	@staticmethod
+	def _row(**fields):
+		values = {
+			"qty": 7.257,
+			"custom_pure_qty": 7.257,
+			"batch_no": R04,
+			"customer": CUSTOMER_03997,
+		}
+		values.update(fields)
+		return _row(**values)
+
+	def _settle(self, ledger):
+		mr = _mr([self._row()], name="KGJPL-MR-MT-26-04004")
+		with _world(dict(ledger), lineage={R04, R04_A, R04_AA}, mr=mr) as w:
+			result = cg_settle.settle_material_request(mr.name)
+		return w, result
+
+	def test_mr_04004_converts_the_metal_then_the_scrap(self):
+		w, result = self._settle(self.LEDGER)
+
+		parts = w.execute.call_args.args[1]
+		self.assertEqual(
+			[
+				(
+					p["level"],
+					p["src"]["batch_no"],
+					p["src"]["warehouse"],
+					p["src"]["qty"],
+					p["shortfall"],
+				)
+				for p in parts
+			],
+			[
+				(cg_settle.LEVEL_CONVERT, R04_A, WAXING, 7.639, 7.009),
+				(cg_settle.LEVEL_CONVERT, R04_AA, DIAMOND_SCRAP, 0.27, 0.248),
+			],
+		)
+		self.assertTrue(all(p["mr_batch"] == R04 for p in parts))
+		self.assertEqual(result["settled"], [1])
+
+	def test_scrap_outside_a_scrap_warehouse_is_not_used(self):
+		# The same ML batch in a work-order warehouse is production's, not scrap.
+		mr = _mr([self._row()], name="KGJPL-MR-MT-26-04004")
+		ledger = {(R04_A, WAXING): 7.639, (R04_AA, WAXING_WO): 0.27}
+		with _world(
+			ledger, lineage={R04, R04_A, R04_AA}, mr=mr
+		) as w, self.assertRaises(frappe.ValidationError) as raised:
+			cg_settle.settle_material_request(mr.name)
+
+		w.execute.assert_not_called()
+		self.assertNotIn("metal-loss scrap", _text(str(raised.exception)))
+
+	def test_a_short_refusal_lists_the_scrap(self):
+		mr = _mr([self._row()], name="KGJPL-MR-MT-26-04004")
+		ledger = {(R04_A, WAXING): 7.0, (R04_AA, DIAMOND_SCRAP): 0.1}
+		with _world(ledger, lineage={R04, R04_A, R04_AA}, mr=mr), self.assertRaises(
+			frappe.ValidationError
+		) as raised:
+			cg_settle.settle_material_request(mr.name)
+
+		text = _text(str(raised.exception))
+		self.assertIn(
+			"The customer's metal-loss scrap, which Settle converts back:", text
+		)
+		self.assertIn(
+			f"0.1 of {ITEM_22KT_ML} (batch {R04_AA}) in {DIAMOND_SCRAP} (Scrap)", text
+		)
+
+	def test_which_metal_loss_items_convert(self):
+		self.assertTrue(cg_settle._converts_into(ITEM_22KT_ML, ITEM))
+		# Its own purity too: 24KT scrap back into 24KT metal.
+		self.assertTrue(cg_settle._converts_into("ML-G-24KT-99.9-Y", ITEM))
+		self.assertFalse(cg_settle._converts_into("ML-G-22KT-91.75-W", ITEM))
+		self.assertFalse(cg_settle._converts_into("ML-G-14KT-58.5-Y", ITEM))
+		self.assertFalse(cg_settle._converts_into("ML-S-92.5-Y", ITEM))
+
+	def test_rounding_steps_down_only_when_the_source_would_not_fit(self):
+		# MR-04004's first part: rounded, not truncated -- 7.009, consuming all 7.639 g.
+		self.assertEqual(
+			cg_settle._conversion_take(7.639, 7.257, 91.75, 1.0), (7.009, 7.639)
+		)
+		# 1 g makes 0.9175 g: 0.918 would need 1.001 g, so it steps down to 0.917.
+		self.assertEqual(
+			cg_settle._conversion_take(1.0, 10.0, 91.75, 1.0), (0.917, 0.999)
+		)
+
+
+class TestWorkOrderLegs(_Base):
+	"""_work_order_transfer: a Material Transfer (WORK ORDER) naming the work order."""
+
+	def test_the_leg_names_the_work_order_and_keeps_the_bridge_out(self):
+		se = SimpleNamespace(
+			flags=frappe._dict(), insert=MagicMock(), name="SE-WO", values={}
+		)
+		se.update = se.values.update
+		rows = []
+		pull = frappe._dict(_holding(), landing=WAXING)
+		with patch(f"{_C}._new_se", return_value=se) as new_se, patch(
+			f"{_C}._append_item", side_effect=lambda doc, row: rows.append(row)
+		), patch(f"{_C}._submit_consuming_stock_entry") as submit:
+			name = cg_settle._work_order_transfer(
+				_mr(), pull, 2.36, R02_A, WAXING_WO, WAXING, CUSTOMER_03997
+			)
+
+		self.assertEqual(name, "SE-WO")
+		self.assertEqual(new_se.call_args.args[1], cg_settle.WORK_ORDER_SE_TYPE)
+		self.assertEqual(
+			se.values,
+			{
+				"manufacturing_order": "PMO-KGJPL-RI00413-004-0001",
+				"manufacturing_work_order": WORK_ORDER,
+				"manufacturing_operation": OPERATION,
+			},
+		)
+		# Settle writes the reservation and MOP Log itself; the generic bridge would log
+		# the way out as +qty.
+		self.assertTrue(se.flags.skip_mwo_reservation)
+		self.assertEqual(
+			(
+				rows[0]["batch_no"],
+				rows[0]["s_warehouse"],
+				rows[0]["t_warehouse"],
+				rows[0]["customer"],
+				rows[0]["manufacturing_operation"],
+				rows[0]["custom_manufacturing_work_order"],
+				rows[0]["custom_parent_manufacturing_order"],
+			),
+			(
+				R02_A,
+				WAXING_WO,
+				WAXING,
+				CUSTOMER_03997,
+				OPERATION,
+				WORK_ORDER,
+				"PMO-KGJPL-RI00413-004-0001",
+			),
+		)
+		submit.assert_called_once_with(se)
+
+
+class TestTheCustomersOtherBatches(_Base):
+	"""Only once the request batch's own metal runs out does Settle take the same customer's
+	other batches -- never another customer's. MR-04004 asks for 7.257 g of -04; its own
+	metal is 5.45 g of 22KT (-04-A, 5.0 g of 24KT); the customer's other receipt -05 has 24KT."""
+
+	@staticmethod
+	def _row(**fields):
+		values = {
+			"qty": 7.257,
+			"custom_pure_qty": 7.257,
+			"batch_no": R04,
+			"customer": CUSTOMER_03997,
+		}
+		values.update(fields)
+		return _row(**values)
+
+	def _settle(self, ledger, other_batches=(R05,), work_orders=None, rows=None):
+		mr = _mr(rows or [self._row()], name="KGJPL-MR-MT-26-04004")
+		with _world(
+			dict(ledger),
+			lineage={R04, R04_A, R04_AA},
+			finder=_ledger_finder(ledger),
+			mr=mr,
+			work_orders=work_orders,
+			other_batches=other_batches,
+		) as w:
+			result = cg_settle.settle_material_request(mr.name)
+		return w, result
+
+	def test_the_batchs_own_metal_first_other_batches_untouched(self):
+		# MR-04004 as it is: -04-A and its scrap cover the 7.257 g exactly; -05's 5 g is
+		# never even looked up.
+		w, _result = self._settle(
+			{(R04_A, WAXING): 7.639, (R04_AA, DIAMOND_SCRAP): 0.27, (R05, WAXING): 5.0},
+			other_batches=(R05,),
+		)
+
+		w.other.assert_not_called()
+		parts = w.execute.call_args.args[1]
+		self.assertEqual([p["src"]["batch_no"] for p in parts], [R04_A, R04_AA])
+
+	def test_another_batch_of_the_customer_tops_up_only_the_rest(self):
+		w, result = self._settle({(R04_A, WAXING): 5.45, (R05, WAXING): 3.0})
+
+		parts = w.execute.call_args.args[1]
+		self.assertEqual(
+			[(p["level"], p["src"]["batch_no"], p["shortfall"]) for p in parts],
+			[
+				(cg_settle.LEVEL_CONVERT, R04_A, 5.0),
+				# The rest from -05, relabelled into -04 on the way (SamePurity).
+				(cg_settle.LEVEL_SAME_PURITY, R05, 2.257),
+			],
+		)
+		self.assertTrue(all(p["mr_batch"] == R04 for p in parts))
+		self.assertEqual(result["settled"], [1])
+
+	def test_another_batch_already_in_the_source_is_relabelled_in_place(self):
+		w, _result = self._settle({(R04_A, WAXING): 5.45, (R05, CENTRAL): 3.0})
+
+		relabel = w.execute.call_args.args[1][1]
+		self.assertEqual(
+			(relabel["level"], relabel["src"]["batch_no"], relabel["src"]["warehouse"]),
+			(cg_settle.LEVEL_RELABEL, R05, CENTRAL),
+		)
+		self.assertEqual(relabel["shortfall"], 2.257)
+		# Nothing moves between warehouses, so nothing is borrowed.
+		self.assertNotIn("regular", relabel)
+
+	def test_the_relabel_is_one_same_item_repack_into_the_requests_batch(self):
+		entry = {
+			"item": ITEM,
+			"target": CENTRAL,
+			"customer": CUSTOMER_03997,
+			"mr_batch": R04,
+			"shortfall": 2.257,
+			"src": {"batch_no": R05, "warehouse": CENTRAL},
+		}
+		with patch(f"{_C}._convert") as convert:
+			cg_settle._settle_relabel(_mr(), entry)
+
+		self.assertEqual(
+			convert.call_args.kwargs,
+			{
+				"source_item": ITEM,
+				"source_qty": 2.257,
+				"source_batch": R05,
+				"target_item": ITEM,
+				"target_qty": 2.257,
+				"warehouse": CENTRAL,
+				"customer": CUSTOMER_03997,
+				"target_batch": R04,
+			},
+		)
+
+	def test_the_work_order_metal_is_taken_before_another_batch(self):
+		# 1 g of 22KT free + 1 g in a work order is 1.835 g -- short of 3.5 g on its own,
+		# enough with -05's 2 g: the work order's metal comes back first, -05 tops up.
+		ledger = {(R02_A, WAXING): 1.0, (R02_A, WAXING_WO): 1.0, (R05, WAXING): 2.0}
+		mr = _mr([_row_03997()], name="KGJPL-MR-MT-26-03997")
+		with _world(
+			ledger,
+			lineage={R02, R02_A},
+			finder=_ledger_finder(ledger),
+			mr=mr,
+			work_orders=[_holding(qty=1.0, operation_balance=1.0, in_warehouse=1.0)],
+			other_batches=(R05,),
+		) as w:
+			cg_settle.settle_material_request(mr.name)
+
+		self.assertEqual(w.events, [("pull", WORK_ORDER), ("execute",)])
+		parts = w.execute.call_args.args[1]
+		self.assertEqual([p["src"]["batch_no"] for p in parts], [R02_A, R05])
+
+	def test_a_short_refusal_lists_the_customers_other_batches(self):
+		mr = _mr([self._row()], name="KGJPL-MR-MT-26-04004")
+		ledger = {(R04_A, WAXING): 5.45, (R05, WAXING): 1.0}
+		with _world(
+			ledger, lineage={R04, R04_A, R04_AA}, mr=mr, other_batches=(R05,)
+		), self.assertRaises(frappe.ValidationError) as raised:
+			cg_settle.settle_material_request(mr.name)
+
+		text = _text(str(raised.exception))
+		self.assertIn("never another customer's", text)
+		self.assertIn("The customer's other batches, used once", text)
+		self.assertIn(f"1.0 of {ITEM} (batch {R05}) in {WAXING}", text)
+		# 5.0 g of its own metal + 1.0 g of -05.
+		self.assertIn(f"at most 6.0 of {ITEM} now", text)
+
+
+class TestFetchingTheCustomersOtherBatches(_Base):
+	"""_fetch_customer_other_holdings: the same customer and end customer, outside the
+	lineage, never repair or sample goods, less what other open requests still need."""
+
+	def test_filters_and_netting(self):
+		seen = {}
+
+		def get_value(*args, **kwargs):
+			if args[:1] == ("Batch",):
+				return frappe._dict(
+					custom_customer="GJCU0009", custom_ref_customer=None
+				)
+			raise AssertionError(args)
+
+		def get_all(doctype, *args, **kwargs):
+			if doctype == "Batch":
+				seen["filters"] = kwargs["filters"]
+				return [
+					frappe._dict(name=R05, item=ITEM),
+					frappe._dict(name="GJCU0009-F", item="F-G-22KT-91.75-Y-BA"),
+				]
+			return _REAL_GET_ALL(doctype, *args, **kwargs)
+
+		holdings = [
+			frappe._dict(
+				batch_no=R05,
+				item_code=ITEM,
+				warehouse=CENTRAL,
+				warehouse_type="Raw Material",
+				qty=5.0,
+			),
+			frappe._dict(
+				batch_no=R05,
+				item_code=ITEM,
+				warehouse=WAXING,
+				warehouse_type="Raw Material",
+				qty=1.0,
+			),
+		]
+		with patch.object(frappe.db, "get_value", side_effect=get_value), patch.object(
+			frappe.db, "has_column", return_value=True
+		), patch("frappe.get_all", side_effect=get_all), patch(
+			f"{_C}._fetch_lineage_holdings", return_value=holdings
+		) as fetch, patch(
+			f"{_C}._open_request_claims",
+			return_value={(R05, CENTRAL): 3.5, (R05, WAXING): 1.0},
+		) as claims:
+			kept = cg_settle._fetch_customer_other_holdings(
+				_Doc(name="MR-1"), R04, {R04, R04_A}, ITEM
+			)
+
+		filters = seen["filters"]
+		self.assertEqual(filters["custom_customer"], "GJCU0009")
+		self.assertEqual(filters["custom_ref_customer"], ["is", "not set"])
+		self.assertEqual(filters["name"], ["not in", sorted({R04, R04_A})])
+		self.assertEqual(
+			filters["custom_customer_voucher_type"],
+			["not in", ["Customer Repair", "Customer Sample Goods"]],
+		)
+		self.assertEqual(filters["item"], ["like", "%-Y"])
+		# The finding is not an item Settle converts into 24KT metal.
+		fetch.assert_called_once_with([R05])
+		claims.assert_called_once_with([R05], "MR-1")
+		# 3.5 g of -05 in Central RM waits for another request; Waxing RM's 1 g is all taken.
+		self.assertEqual([(h.warehouse, h.qty) for h in kept], [(CENTRAL, 1.5)])
+
+	def test_open_request_claims_exclude_the_request_being_settled(self):
+		with patch.object(
+			frappe.db,
+			"sql",
+			return_value=[frappe._dict(batch_no=R05, warehouse=CENTRAL, qty=3.5)],
+		) as sql:
+			claims = cg_settle._open_request_claims([R05], "MR-1")
+
+		self.assertEqual(claims, {(R05, CENTRAL): 3.5})
+		params = sql.call_args.args[1]
+		self.assertEqual(params, {"batch_nos": (R05,), "exclude": "MR-1"})
+		self.assertIn(
+			"mr.status not in ('Stopped', 'Cancelled', 'Transferred')",
+			sql.call_args.args[0],
+		)
 
 
 class TestMopLogDirection(_Base):
