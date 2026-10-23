@@ -3626,17 +3626,23 @@ class TestPendingRawMaterials(UnitTestCase):
 		"D-NT-RO-6B-+9-9.5": ("D", "Natural", "Round", "+9-9.5"),
 	}
 
-	def _run(self, bom, requested, pmo_qty=1, grade_free_key=None):
+	def _run_rows(self, bom, requested, pmo_qty=1, grade_free_key=None):
+		"""``requested`` is keyed like _get_requested_qty_by_item; a bare item code stands
+		for a company-owned line with no sub setting type."""
 		doc = SimpleNamespace(
 			name="PMO-TEST-0001",
 			qty=pmo_qty,
 			manufacturer="MNF",
 			get_bom_raw_materials=lambda: bom,
 		)
+		requested = {
+			key if isinstance(key, tuple) else (key, 0, ""): qty
+			for key, qty in requested.items()
+		}
 		with (
 			patch(
 				f"{PMO_MODULE}._get_requested_qty_by_item",
-				return_value=dict(requested),
+				return_value=requested,
 			),
 			patch(
 				f"{PMO_MODULE}._get_grade_free_key",
@@ -3644,8 +3650,61 @@ class TestPendingRawMaterials(UnitTestCase):
 			),
 			patch(f"{PMO_MODULE}.frappe.get_precision", return_value=3),
 		):
-			rows = get_pending_raw_materials(doc)
+			return get_pending_raw_materials(doc)
+
+	def _run(self, bom, requested, pmo_qty=1, grade_free_key=None):
+		rows = self._run_rows(bom, requested, pmo_qty, grade_free_key)
 		return {row["item_code"]: row for row in rows}
+
+	# One item on several BOM rows (review finding: matching by item code alone).
+
+	def test_request_covers_the_row_it_was_raised_for_not_the_first_row(self):
+		"""Customer and company rows of one stone; only the company request remains."""
+		customer_row, company_row = self._run_rows(
+			{
+				"gemstone_item": [
+					_bom_raw_material("G-RUBY", 5, is_customer_item=1),
+					_bom_raw_material("G-RUBY", 5, is_customer_item=0),
+				]
+			},
+			{("G-RUBY", 0, ""): 5},
+		)
+		self.assertQty(customer_row, 5, 0, 5)
+		self.assertQty(company_row, 5, 5, 0)
+
+	def test_rows_of_one_item_in_two_settings_are_kept_apart(self):
+		open_row, close_row = self._run_rows(
+			{
+				"gemstone_item": [
+					_bom_raw_material("G-RUBY", 0.4, sub_setting_type="Open"),
+					_bom_raw_material("G-RUBY", 0.6, sub_setting_type="Close"),
+				]
+			},
+			{("G-RUBY", 0, "Close"): 0.6},
+		)
+		self.assertQty(open_row, 0.4, 0, 0.4)
+		self.assertQty(close_row, 0.6, 0.6, 0)
+
+	def test_line_edited_to_other_ownership_still_counts_by_item(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 2.0)]},
+			{("M-G-22KT", 1, ""): 2.0},
+		)
+		self.assertQty(rows["M-G-22KT"], 2.0, 2.0, 0)
+
+	def test_exact_row_match_comes_before_item_code_match(self):
+		"""Leftover by item code fills only what exact matches did not."""
+		customer_row, company_row = self._run_rows(
+			{
+				"gemstone_item": [
+					_bom_raw_material("G-RUBY", 5, is_customer_item=1),
+					_bom_raw_material("G-RUBY", 5, is_customer_item=0),
+				]
+			},
+			{("G-RUBY", 0, ""): 5, ("G-RUBY", 1, "Bezel"): 2},
+		)
+		self.assertQty(customer_row, 5, 2, 3)
+		self.assertQty(company_row, 5, 5, 0)
 
 	def assertQty(self, row, required, requested, pending):
 		self.assertEqual(
@@ -3751,33 +3810,39 @@ class TestPendingRawMaterials(UnitTestCase):
 
 
 class TestRequestedQtyByItem(UnitTestCase):
-	"""What the PMO's Material Requests already cover, keyed by BOM item code."""
+	"""What the PMO's Material Requests already cover, per BOM row requirement
+	(item, ownership, sub setting type), in stock UOM."""
 
-	def _run(self, lines, default_gemstone_item="G-PER-DUM-PRE-CC"):
+	def _run(self, lines, default_gemstone_item="G-PER-DUM-PRE-CC", for_update=False):
 		doc = SimpleNamespace(name="PMO-TEST-0001", manufacturer="MNF")
+		lines = [
+			frappe._dict(
+				{"custom_is_customer_item": 0, "custom_sub_setting_type": None, **line}
+			)
+			for line in lines
+		]
 		with (
-			patch.object(
-				frappe.db, "sql", return_value=[frappe._dict(line) for line in lines]
-			) as sql,
+			patch.object(frappe.db, "sql", return_value=lines) as sql,
 			patch.object(frappe.db, "get_value", return_value=default_gemstone_item),
 		):
-			requested = _get_requested_qty_by_item(doc)
+			requested = _get_requested_qty_by_item(doc, for_update=for_update)
 		# Only lines of this PMO's draft and submitted Material Requests are read.
 		query, params = str(sql.call_args.args[0]), sql.call_args.args[1]
 		self.assertIn("`manufacturing_order`=%(param1)s", query)
 		self.assertEqual(params["param1"], "PMO-TEST-0001")
 		self.assertIn("`docstatus`<2", query)
+		self.last_query = query
 		return requested
 
 	def test_lines_of_the_same_item_are_summed(self):
 		requested = self._run(
 			[
-				{"item_code": "M-G-22KT", "description": "M", "qty": 1.5},
-				{"item_code": "M-G-22KT", "description": "M", "qty": 0.5},
-				{"item_code": "F-SCREW", "description": "F", "qty": 1.1},
+				{"item_code": "M-G-22KT", "description": "M", "stock_qty": 1.5},
+				{"item_code": "M-G-22KT", "description": "M", "stock_qty": 0.5},
+				{"item_code": "F-SCREW", "description": "F", "stock_qty": 1.1},
 			]
 		)
-		self.assertEqual(requested, {"M-G-22KT": 2.0, "F-SCREW": 1.1})
+		self.assertEqual(requested, {("M-G-22KT", 0, ""): 2.0, ("F-SCREW", 0, ""): 1.1})
 
 	def test_gemstone_line_counts_against_the_bom_item_in_its_description(self):
 		requested = self._run(
@@ -3785,18 +3850,63 @@ class TestRequestedQtyByItem(UnitTestCase):
 				{
 					"item_code": "G-PER-DUM-PRE-CC",
 					"description": "<p>G-RUBY</p>",
-					"qty": 0.38,
+					"stock_qty": 0.38,
 				}
 			]
 		)
-		self.assertEqual(requested, {"G-RUBY": 0.38})
+		self.assertEqual(requested, {("G-RUBY", 0, ""): 0.38})
 
 	def test_without_default_gemstone_item_lines_keep_their_item_code(self):
 		requested = self._run(
-			[{"item_code": "G-PER-DUM-PRE-CC", "description": "G-RUBY", "qty": 0.38}],
+			[
+				{
+					"item_code": "G-PER-DUM-PRE-CC",
+					"description": "G-RUBY",
+					"stock_qty": 0.38,
+				}
+			],
 			default_gemstone_item=None,
 		)
-		self.assertEqual(requested, {"G-PER-DUM-PRE-CC": 0.38})
+		self.assertEqual(requested, {("G-PER-DUM-PRE-CC", 0, ""): 0.38})
+
+	def test_ownership_and_sub_setting_type_keep_lines_apart(self):
+		requested = self._run(
+			[
+				{"item_code": "D-A", "description": "D", "stock_qty": 1.0},
+				{
+					"item_code": "D-A",
+					"description": "D",
+					"stock_qty": 0.5,
+					"custom_is_customer_item": 1,
+				},
+				{
+					"item_code": "D-A",
+					"description": "D",
+					"stock_qty": 0.2,
+					"custom_sub_setting_type": "Open",
+				},
+			]
+		)
+		self.assertEqual(
+			requested,
+			{("D-A", 0, ""): 1.0, ("D-A", 1, ""): 0.5, ("D-A", 0, "Open"): 0.2},
+		)
+
+	def test_stock_uom_quantity_is_counted(self):
+		"""A line in another UOM counts by its stock qty, the unit the BOM uses."""
+		requested = self._run(
+			[{"item_code": "M-G-22KT", "description": "M", "qty": 2, "stock_qty": 2000}]
+		)
+		self.assertEqual(requested, {("M-G-22KT", 0, ""): 2000})
+		self.assertIn("`stock_qty`", self.last_query)
+
+	def test_creation_reads_the_requests_with_a_locking_read(self):
+		self._run([], for_update=True)
+		self.assertIn("FOR UPDATE", self.last_query)
+
+	def test_plain_reads_take_no_lock(self):
+		self._run([])
+		self.assertNotIn("FOR UPDATE", self.last_query)
 
 
 class TestGradeFreeKey(UnitTestCase):
@@ -3853,16 +3963,33 @@ class TestGradeFreeKey(UnitTestCase):
 class TestGetPMORawMaterials(UnitTestCase):
 	"""The Create Material Request endpoint: submitted PMOs only, pending rows only."""
 
-	def _run(self, docstatus=1, rows=(), tracking_bom_draft=True):
+	def _run(self, docstatus=1, rows=(), tracking_bom_draft=True, blocked=False):
 		doc = MagicMock(docstatus=docstatus)
+		doc.name = "PMO-TEST-0001"
+
+		def refuse_while_blocked(pmo_name, what):
+			if blocked:
+				frappe.throw(f"{pmo_name} is on Hold. {what}")
+
 		with (
 			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=doc),
 			patch(f"{PMO_MODULE}.get_pending_raw_materials", return_value=list(rows)),
 			patch(
 				f"{PMO_MODULE}.tracking_bom_is_draft", return_value=tracking_bom_draft
 			),
+			patch(
+				f"{PMO_MODULE}.refuse_while_blocked", side_effect=refuse_while_blocked
+			),
 		):
 			return doc, get_pmo_raw_materials("PMO-TEST-0001")
+
+	def test_pmo_on_hold_or_closed_is_refused(self):
+		"""Review finding: the read endpoint gave out pending materials of a blocked PMO."""
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(blocked=True)
+		self.assertIn(
+			"No Material Request can be created for it.", str(caught.exception)
+		)
 
 	def test_only_rows_with_pending_qty_are_returned(self):
 		_doc, rows = self._run(
@@ -4126,6 +4253,40 @@ class TestCreatePMOMaterialRequest(UnitTestCase):
 	"""The dialog's Create action: validate, create through the existing logic, note it."""
 
 	SELECTED = {"metal_item": [{"item_code": "M-G-22KT", "qty": 0.8}]}
+
+	def test_pmo_is_locked_before_anything_is_read(self):
+		"""Review finding: two calls for one PMO must not both see the same pending qty.
+		The PMO row lock comes first, and pending is then read with a locking read."""
+		calls = MagicMock()
+		doc = MagicMock()
+		doc.make_material_requests.return_value = ["MR-0001"]
+		calls.get_doc.return_value = doc
+		calls.pending.return_value = [_pending_row("M-G-22KT", 0.8, 0.8)]
+		with (
+			patch.object(frappe.db, "get_value", calls.lock),
+			patch(f"{PMO_MODULE}.frappe.get_doc", calls.get_doc),
+			patch(f"{PMO_MODULE}.get_pending_raw_materials", calls.pending),
+			patch(
+				f"{PMO_MODULE}.validate_material_request_items",
+				return_value=self.SELECTED,
+			),
+			patch(f"{PMO_MODULE}.add_material_request_comment"),
+			patch(f"{PMO_MODULE}.check_pmo_material_request_role"),
+		):
+			create_pmo_material_request("PMO-TEST-0001")
+
+		self.assertEqual(
+			[name for name, _args, _kwargs in calls.mock_calls if "." not in name][:3],
+			["lock", "get_doc", "pending"],
+		)
+		self.assertEqual(
+			calls.lock.call_args,
+			(
+				("Parent Manufacturing Order", "PMO-TEST-0001", "name"),
+				{"for_update": True},
+			),
+		)
+		self.assertEqual(calls.pending.call_args.kwargs, {"for_update": True})
 
 	def test_validated_selection_is_created_without_pmo_qty_multiplier(self):
 		doc = MagicMock()

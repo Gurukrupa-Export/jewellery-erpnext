@@ -1939,6 +1939,7 @@ def get_pmo_raw_materials(pmo_name):
 	doc.check_permission("read")
 	if doc.docstatus != 1:
 		frappe.throw(_("Material Request can be created only for a submitted PMO."))
+	refuse_while_blocked(doc.name, _("No Material Request can be created for it."))
 	check_tracking_bom_is_draft(doc)
 
 	return [row for row in get_pending_raw_materials(doc) if row["pending_qty"] > 0]
@@ -1951,12 +1952,17 @@ def create_pmo_material_request(pmo_name, items=None):
 	as from the Create Material Request button, every pending raw material is requested at
 	its full pending quantity."""
 	check_pmo_material_request_role()
+	# One creation per PMO at a time. A second click or user waits here until the first
+	# commits; its pending quantities then come from a locking read (see
+	# _get_requested_qty_by_item), which sees the requests just committed even though this
+	# transaction's snapshot is older under REPEATABLE READ.
+	frappe.db.get_value("Parent Manufacturing Order", pmo_name, "name", for_update=True)
 	doc = frappe.get_doc("Parent Manufacturing Order", pmo_name)
 	doc.check_permission("read")
 	if items is None:
 		items = [
 			{"item_code": row["item_code"], "qty": row["pending_qty"]}
-			for row in get_pending_raw_materials(doc)
+			for row in get_pending_raw_materials(doc, for_update=True)
 			if row["pending_qty"] > 0
 		]
 	else:
@@ -1968,10 +1974,11 @@ def create_pmo_material_request(pmo_name, items=None):
 	return material_requests
 
 
-def get_pending_raw_materials(doc):
+def get_pending_raw_materials(doc, for_update=False):
 	"""Every raw material of the PMO's Tracking BOM with its ``required_qty`` for the whole
 	order (per-piece BOM qty x PMO qty), the ``requested_qty`` already covered by the PMO's
-	non-cancelled Material Requests, and the ``pending_qty`` still left to request."""
+	non-cancelled Material Requests, and the ``pending_qty`` still left to request.
+	``for_update`` reads those requests with a locking read, for the creation path."""
 	precision = frappe.get_precision("Material Request Item", "qty")
 	raw_materials = []
 	for item_type, rows in doc.get_bom_raw_materials().items():
@@ -1993,19 +2000,39 @@ def get_pending_raw_materials(doc):
 				}
 			)
 
-	requested = _get_requested_qty_by_item(doc)
+	requested = _get_requested_qty_by_item(doc, for_update=for_update)
 
-	# Pass 1: a requested line counts against the BOM row with the same item code.
+	# Pass 1: a requested line counts against the BOM row it was raised for -- same item,
+	# ownership and sub setting type -- so when one item sits on several rows (a gemstone
+	# in two settings, a customer's and a company's stone) a request never covers the
+	# wrong row and the next request never carries the wrong ownership.
 	for row in raw_materials:
 		row["requested_qty"] = _take_qty(
-			requested, row["item_code"], row["required_qty"]
+			requested,
+			_requirement_key(
+				row["item_code"], row["is_customer_item"], row["sub_setting_type"]
+			),
+			row["required_qty"],
 		)
 
-	# Pass 2: diamond quantity still unmatched counts against a still-pending diamond row
+	# Pass 2: what is left counts by item code alone, for a line whose ownership or sub
+	# setting type was edited on the request.
+	requested_by_item = {}
+	for (item_code, _owned, _setting), qty in requested.items():
+		if qty > 0:
+			requested_by_item[item_code] = requested_by_item.get(item_code, 0) + qty
+	for row in raw_materials:
+		remaining = row["required_qty"] - row["requested_qty"]
+		if remaining > 0:
+			row["requested_qty"] += _take_qty(
+				requested_by_item, row["item_code"], remaining
+			)
+
+	# Pass 3: diamond quantity still unmatched counts against a still-pending diamond row
 	# that differs only in Diamond Grade. Users regrade diamond lines on the Material
 	# Request (mostly to 6B) before submitting, and those stones are already requested.
 	grade_free_requested = {}
-	for item_code, qty in requested.items():
+	for item_code, qty in requested_by_item.items():
 		key = _get_grade_free_key(item_code) if qty > 0 else None
 		if key:
 			grade_free_requested[key] = grade_free_requested.get(key, 0) + qty
@@ -2023,22 +2050,37 @@ def get_pending_raw_materials(doc):
 	return raw_materials
 
 
-def _get_requested_qty_by_item(doc):
-	"""Quantity per BOM item code on the PMO's draft and submitted Material Requests."""
+def _requirement_key(item_code, is_customer_item, sub_setting_type):
+	"""What tells two BOM rows of the same item apart, as stamped on the request rows."""
+	return (item_code, cint(is_customer_item), sub_setting_type or "")
+
+
+def _get_requested_qty_by_item(doc, for_update=False):
+	"""Stock-UOM quantity on the PMO's draft and submitted Material Requests, per
+	``_requirement_key`` of the BOM row each line was raised for.
+
+	Only requests linked to the PMO through ``manufacturing_order`` count: a request raised
+	by hand without that link cannot be told apart from another PMO's demand for the same
+	item, so it has to be linked to the PMO to be counted."""
 	MaterialRequest = frappe.qb.DocType("Material Request")
 	MaterialRequestItem = frappe.qb.DocType("Material Request Item")
-	lines = (
+	query = (
 		frappe.qb.from_(MaterialRequestItem)
 		.join(MaterialRequest)
 		.on(MaterialRequestItem.parent == MaterialRequest.name)
 		.select(
 			MaterialRequestItem.item_code,
 			MaterialRequestItem.description,
-			MaterialRequestItem.qty,
+			MaterialRequestItem.stock_qty,
+			MaterialRequestItem.custom_is_customer_item,
+			MaterialRequestItem.custom_sub_setting_type,
 		)
 		.where(MaterialRequest.manufacturing_order == doc.name)
 		.where(MaterialRequest.docstatus < 2)
-	).run(as_dict=True)
+	)
+	if for_update:
+		query = query.for_update()
+	lines = query.run(as_dict=True)
 
 	# Gemstones are requested as the manufacturer's default gemstone item with the
 	# actual BOM item code in the description (see make_material_requests).
@@ -2052,7 +2094,10 @@ def _get_requested_qty_by_item(doc):
 		item_code = line.item_code
 		if default_gemstone_item and item_code == default_gemstone_item:
 			item_code = strip_html(line.description or "").strip()
-		requested[item_code] = requested.get(item_code, 0) + flt(line.qty)
+		key = _requirement_key(
+			item_code, line.custom_is_customer_item, line.custom_sub_setting_type
+		)
+		requested[key] = requested.get(key, 0) + flt(line.stock_qty)
 	return requested
 
 
@@ -2101,7 +2146,8 @@ def validate_material_request_items(doc, items):
 	check_tracking_bom_is_draft(doc)
 
 	pending_by_item = {}
-	for row in get_pending_raw_materials(doc):
+	# Locking read: a request committed by a concurrent creation is seen and not repeated.
+	for row in get_pending_raw_materials(doc, for_update=True):
 		if row["pending_qty"] > 0:
 			pending_by_item.setdefault(row["item_code"], []).append(row)
 	if not pending_by_item:
