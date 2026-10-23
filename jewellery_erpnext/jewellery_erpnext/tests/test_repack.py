@@ -627,7 +627,8 @@ def _batch_scope(have=0.0, lineage=(MR_BATCH,)):
 	(every batch of the customer) is never consulted for it.
 
 	The item may be Customer Goods, and a refusal finds none of the lineage's metal, in
-	Raw Material or in a work order: all are read from the site otherwise
+	Raw Material or in a work order, nor the customer's other batches: all are read from
+	the site otherwise
 	(test_cg_settle_batch_scope covers them)."""
 	with ExitStack() as stack:
 		stack.enter_context(patch(f"{_C}._validate_row_batch"))
@@ -636,6 +637,9 @@ def _batch_scope(have=0.0, lineage=(MR_BATCH,)):
 		stack.enter_context(patch(f"{_C}.can_be_customer_goods", return_value=True))
 		stack.enter_context(patch(f"{_C}._fetch_lineage_holdings", return_value=[]))
 		stack.enter_context(patch(f"{_C}._fetch_work_order_holdings", return_value=[]))
+		stack.enter_context(
+			patch(f"{_C}._fetch_customer_other_holdings", return_value=[])
+		)
 		yield
 
 
