@@ -28,7 +28,9 @@ Part of the batch's metal may have been issued to a work order. When the Raw Mat
 warehouses fall short and that order is a company-gold one whose operation has not
 started, Settle takes the metal back first -- the same borrow it makes from any other
 warehouse: the customer's batch comes out and an equal weight of Regular Stock goes in, so
-the work order ends whole -- and settles from Raw Material as usual. When the lineage still
+the work order ends whole -- and settles from Raw Material as usual. That holds while the
+work order's IR moves still wait for the end-of-day sync: the pull is written into them, so
+the sync moves the regular batch on instead. When the lineage still
 cannot cover a batch row, the refusal lists where the batch's metal is and how much the row
 can be settled for.
 
@@ -49,7 +51,7 @@ import math
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
-from frappe.utils import flt, now_datetime
+from frappe.utils import cint, flt, now_datetime
 
 from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
 	CUSTOMER_GOODS_FLAG_LABEL,
@@ -1172,13 +1174,26 @@ def _fetch_work_order_holdings(lineage, company):
 	)
 	for row in rows:
 		row.qty = flt(row.qty, 3)
-		row.unsynced_logs = frappe.db.count(
+		# Moves an IR logged that the end-of-day sync has not posted yet.
+		pending = frappe.get_all(
 			"MOP Log",
-			{
+			filters={
 				"manufacturing_work_order": row.work_order,
 				"is_cancelled": 0,
 				"is_synced": 0,
 			},
+			fields=[
+				"manufacturing_operation",
+				"to_warehouse",
+				"flow_index",
+				"creation",
+			],
+		)
+		row.pending_elsewhere = _pending_on_another_open_operation(
+			pending, row.operation
+		)
+		row.eod_target = (
+			_eod_target(pending, row.operation, row.department) if pending else None
 		)
 		row.draft_ir = any(
 			frappe.db.exists(
@@ -1208,6 +1223,50 @@ def _fetch_work_order_holdings(lineage, company):
 	return rows
 
 
+def _pending_on_another_open_operation(pending, operation):
+	"""Whether a pending log sits on an open operation other than the work order's current
+	one: the end-of-day sync holds such a work order (_open_non_pointer_operations), so its
+	metal cannot be followed. Pending logs on a finished predecessor are the normal IR
+	audit copies."""
+	from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+		is_open_operation,
+	)
+
+	others = {
+		log.manufacturing_operation
+		for log in pending
+		if log.manufacturing_operation and log.manufacturing_operation != operation
+	}
+	if not others:
+		return False
+	return any(
+		is_open_operation(op.status, op.department_ir_status)
+		for op in frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", sorted(others)]},
+			fields=["status", "department_ir_status"],
+		)
+	)
+
+
+def _eod_target(pending, operation, department):
+	"""Where the end-of-day sync will move the work order's metal: the latest pending
+	``to_warehouse`` on the current operation, else on the work order, else the
+	department's Manufacturing warehouse -- the sync's own rule (_plan_mwo_group)."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+		_get_t_warehouse_from_logs,
+		_resolve_department_warehouse,
+	)
+
+	return (
+		_get_t_warehouse_from_logs(
+			[log for log in pending if log.manufacturing_operation == operation]
+		)
+		or _get_t_warehouse_from_logs(pending)
+		or _resolve_department_warehouse({"department": department})
+	)
+
+
 def _operation_batch_balance(operation, item_code, batch_no):
 	"""The operation's MOP Log balance for (item, batch): its latest row's batch figure."""
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
@@ -1226,9 +1285,10 @@ def _why_not_taken(holding):
 	"""Why Settle may not take ``holding`` back from its work order, or None when it may.
 
 	Only from a company-gold order, whose operation is the work order's current one and not
-	started -- the metal still in the department's work-order warehouse -- with nothing
-	pending that would carry the old batch forward (an end-of-day sync, a draft IR), and with
-	the reservation, the operation's MOP Log and the ledger all holding what is taken.
+	started, with no draft IR about to carry the batch forward. IR moves still waiting for the
+	end-of-day sync are followed (_log_on_operation writes the pull into them), unless they
+	sit on another open operation, which the sync holds. The reservation and the ledger must
+	hold what is taken, and the operation's MOP Log exactly that, so the batch ends at 0.
 	"""
 	if holding.customer_gold:
 		return _("it is a customer-gold order")
@@ -1240,14 +1300,23 @@ def _why_not_taken(holding):
 		)
 	if holding.department_ir_status == "In-Transit":
 		return _("its operation is In-Transit")
-	if holding.unsynced_logs:
-		return _("its MOP Logs are waiting for the end-of-day sync")
+	if holding.pending_elsewhere:
+		return _(
+			"its MOP Logs waiting for the end-of-day sync sit on another open operation"
+		)
 	if holding.draft_ir:
 		return _("a draft Employee IR or Department IR holds it")
-	held = min(flt(holding.operation_balance), flt(holding.in_warehouse))
-	if held < flt(holding.qty) - TOLERANCE:
-		return _("its operation and {0} hold {1} of the {2} reserved").format(
-			holding.warehouse, flt(held, 3), holding.qty
+	if (
+		abs(flt(holding.operation_balance) - flt(holding.qty)) > TOLERANCE
+		or flt(holding.in_warehouse) < flt(holding.qty) - TOLERANCE
+	):
+		return _(
+			"its operation's MOP Log shows {0} and {1} holds {2}, not the {3} reserved"
+		).format(
+			flt(holding.operation_balance, 3),
+			holding.warehouse,
+			flt(holding.in_warehouse, 3),
+			holding.qty,
 		)
 	if not holding.landing:
 		return _("no Raw Material warehouse to take it back to")
@@ -1305,14 +1374,7 @@ def _plan_work_order_pull(
 	trial = dict(allocated)
 	pulls = []
 	for holding in eligible:
-		regular = find_owner_rm_warehouse(
-			None,
-			holding.item_code,
-			holding.qty,
-			company=company,
-			warehouses=[holding.landing],
-			allocated=trial,
-		)
+		regular = _regular_to_put_back(holding, company, trial)
 		if not regular:
 			holding.reason = _(
 				"no free Regular Stock of {0} in {1} to put back"
@@ -1334,6 +1396,44 @@ def _plan_work_order_pull(
 		if after.coverable + landed >= shortfall - TOLERANCE:
 			allocated.update(trial)
 			return pulls
+	return None
+
+
+def _regular_to_put_back(holding, company, trial):
+	"""The Regular Stock batch that goes into the work order in place of the customer's,
+	claimed in ``trial``.
+
+	With moves waiting for the end-of-day sync, never a batch the sync's target already holds
+	enough of: the sync would take it as already there and leave it where Settle put it.
+	"""
+	probe = dict(trial)
+	for _attempt in range(5):
+		regular = find_owner_rm_warehouse(
+			None,
+			holding.item_code,
+			holding.qty,
+			company=company,
+			warehouses=[holding.landing],
+			allocated=probe,
+			reserve=False,
+		)
+		if not regular:
+			return None
+		key = (regular["batch_no"], holding.landing)
+		already_there = (
+			holding.eod_target
+			and flt(
+				_consumable_batch_qty_map(
+					[regular["batch_no"]], holding.item_code, [holding.eod_target]
+				).get((regular["batch_no"], holding.eod_target), 0)
+			)
+			>= flt(holding.qty) - TOLERANCE
+		)
+		if not already_there:
+			trial[key] = flt(trial.get(key, 0) + holding.qty, 3)
+			return regular
+		# Counted as fully taken, so the finder offers the next batch.
+		probe[key] = float("inf")
 	return None
 
 
@@ -1605,8 +1705,11 @@ def _pull_from_work_order(mr, pull):
 		pull.landing,
 		pull.customer,
 	)
-	_log_on_operation(regular_entry, pull, outward=False)
-	_log_on_operation(customer_entry, pull, outward=True)
+	# Both rows at the operation's highest flow index, so readers ordering by it -- the
+	# end-of-day sync, the finished-goods receive -- take them as the latest.
+	flow_index = _highest_flow_index(pull.operation)
+	_log_on_operation(regular_entry, pull, outward=False, flow_index=flow_index)
+	_log_on_operation(customer_entry, pull, outward=True, flow_index=flow_index)
 	_restamp_snc_requirement(pull.work_order)
 	return frappe._dict(
 		pull,
@@ -1646,16 +1749,33 @@ def _move_reservation(reservation, from_batch, to_batch):
 	)
 
 
-def _log_on_operation(entry_name, pull, outward):
+def _highest_flow_index(operation):
+	"""The highest flow index on the operation's live MOP Log rows (0 when none)."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_last_mop_index,
+	)
+
+	return cint(get_last_mop_index(operation))
+
+
+def _log_on_operation(entry_name, pull, outward, flow_index):
 	"""Record one leg of a pull on the work order's operation, as a WORK ORDER entry's own
 	submit would (create_mop_log_for_stock_transfer_to_mo). Settle's legs are plain
-	transfers, so the direction is passed, not read off the entry type."""
+	transfers, so the direction is passed, not read off the entry type.
+
+	With IR moves still waiting for the end-of-day sync (``pull.eod_target``), the rows join
+	them: unsynced, bound for the sync's target. The sync then moves the regular batch -- the
+	customer's ends at 0 and is skipped -- and marks them all synced. Written synced, the
+	pending chain would still move the customer's batch, which is gone: "batch short", and
+	the work order held every night.
+	"""
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 		create_mop_log_for_stock_transfer_to_mo,
 	)
 
 	entry = frappe.get_doc("Stock Entry", entry_name)
 	row = entry.items[0]
+	pending = bool(pull.get("eod_target"))
 	create_mop_log_for_stock_transfer_to_mo(
 		frappe._dict(
 			doctype=entry.doctype,
@@ -1670,13 +1790,14 @@ def _log_on_operation(entry_name, pull, outward):
 			pcs=0,
 			batch_no=row.batch_no,
 			s_warehouse=row.s_warehouse,
-			t_warehouse=row.t_warehouse,
+			t_warehouse=pull.eod_target if pending else row.t_warehouse,
 			manufacturing_operation=pull.operation,
 			name=row.name,
 			serial_and_batch_bundle=row.serial_and_batch_bundle,
 		),
-		is_synced=True,
+		is_synced=not pending,
 		outward=outward,
+		flow_index=flow_index,
 	)
 
 

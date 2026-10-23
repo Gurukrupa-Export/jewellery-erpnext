@@ -510,10 +510,13 @@ def drop_pre_refining_rows(rows, manufacturing_work_order):
 	return [r for r in rows if get_datetime(r.get("creation")) > cutoff]
 
 
-def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False, outward=None):
+def create_mop_log_for_stock_transfer_to_mo(
+	doc, row, is_synced=False, outward=None, flow_index=None
+):
 	"""``outward`` -- whether a Stock Entry row takes metal out of the operation. Defaults to
 	the entry type's rule: a Material Receive (WORK ORDER) is outward, any other inward.
-	Customer Goods Return Settle passes it, its legs being plain transfers."""
+	``flow_index`` -- the row's flow index; defaults to the alternating rule below.
+	Customer Goods Return Settle passes both, its legs being plain transfers."""
 	item_code = row.get("item_code") or ""
 	if not item_code:
 		return
@@ -582,7 +585,9 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False, outward=N
 	mop_log.is_synced = is_synced
 	mop_log.serial_and_batch_bundle = row.get("serial_and_batch_bundle")
 	mop_log.batch_no = batch_no
-	mop_log.flow_index = last_mop_index + 1 if last_mop_index == 0 else 0
+	if flow_index is None:
+		flow_index = last_mop_index + 1 if last_mop_index == 0 else 0
+	mop_log.flow_index = flow_index
 	mop_log.save()
 
 

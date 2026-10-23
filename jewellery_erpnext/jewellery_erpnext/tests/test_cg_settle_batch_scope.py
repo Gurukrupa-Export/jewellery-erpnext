@@ -358,7 +358,8 @@ def _holding(**fields):
 		"department_ir_status": "",
 		"department": "Waxing - KGJPL",
 		"customer_gold": 0,
-		"unsynced_logs": 0,
+		"pending_elsewhere": False,
+		"eod_target": None,
 		"draft_ir": False,
 		"operation_balance": 2.36,
 		"in_warehouse": 2.36,
@@ -1024,11 +1025,14 @@ class TestTakingTheBatchBackFromAWorkOrder(_Base):
 			"the work order is not submitted": {"work_order_docstatus": 0},
 			f"its operation {OPERATION} is WIP": {"operation_status": "WIP"},
 			"its operation is In-Transit": {"department_ir_status": "In-Transit"},
-			"its MOP Logs are waiting for the end-of-day sync": {"unsynced_logs": 2},
+			"its MOP Logs waiting for the end-of-day sync sit on another open "
+			"operation": {"pending_elsewhere": True},
 			"a draft Employee IR or Department IR holds it": {"draft_ir": True},
-			f"its operation and {WAXING_WO} hold 1.0 of the 2.36 reserved": {
-				"operation_balance": 1.0
-			},
+			f"its operation's MOP Log shows 1.0 and {WAXING_WO} holds 2.36, not the "
+			"2.36 reserved": {"operation_balance": 1.0},
+			# More on the MOP Log than reserved: the batch would not end at 0.
+			f"its operation's MOP Log shows 3.0 and {WAXING_WO} holds 2.36, not the "
+			"2.36 reserved": {"operation_balance": 3.0},
 		}
 		for reason, fields in cases.items():
 			with self.subTest(reason=reason):
@@ -1186,11 +1190,13 @@ class TestPullingFromAWorkOrder(_Base):
 			side_effect=lambda *a: calls.append(("reservation", *a)) or "sre-new",
 		), patch(
 			f"{_C}._log_on_operation",
-			side_effect=lambda entry, p, outward: calls.append(("log", entry, outward)),
+			side_effect=lambda entry, p, outward, flow_index: calls.append(
+				("log", entry, outward, flow_index)
+			),
 		), patch(
 			f"{_C}._restamp_snc_requirement",
 			side_effect=lambda work_order: calls.append(("snc", work_order)),
-		):
+		), patch(f"{_C}._highest_flow_index", return_value=2):
 			done = cg_settle._pull_from_work_order(_mr(), pull)
 
 		self.assertEqual(
@@ -1199,8 +1205,8 @@ class TestPullingFromAWorkOrder(_Base):
 				("transfer", ITEM_22KT, 2.36, "REG-22", WAXING, WAXING_WO, None),
 				("reservation", "2j9cif0g4c", R02_A, "REG-22"),
 				("transfer", ITEM_22KT, 2.36, R02_A, WAXING_WO, WAXING, CUSTOMER_03997),
-				("log", "SE-REG", False),
-				("log", "SE-CUST", True),
+				("log", "SE-REG", False, 2),
+				("log", "SE-CUST", True, 2),
 				("snc", WORK_ORDER),
 			],
 		)
@@ -1272,7 +1278,7 @@ class TestPullingFromAWorkOrder(_Base):
 			f"{_MOP_LOG}.create_mop_log_for_stock_transfer_to_mo"
 		) as write:
 			cg_settle._log_on_operation(
-				"SE-CUST", frappe._dict(_holding()), outward=True
+				"SE-CUST", frappe._dict(_holding()), outward=True, flow_index=3
 			)
 
 		doc, logged = write.call_args.args
@@ -1293,7 +1299,10 @@ class TestPullingFromAWorkOrder(_Base):
 			),
 			(OPERATION, R02_A, 2.36, 0, WAXING_WO, WAXING, "row-1", "SBB-1"),
 		)
-		self.assertEqual(write.call_args.kwargs, {"is_synced": True, "outward": True})
+		self.assertEqual(
+			write.call_args.kwargs,
+			{"is_synced": True, "outward": True, "flow_index": 3},
+		)
 
 	def test_the_snc_requirement_follows_what_the_work_order_now_holds(self):
 		for needs, values in (
@@ -1328,11 +1337,165 @@ class TestPullingFromAWorkOrder(_Base):
 		)
 
 
+class TestWorkOrderMovesWaitingForTheSync(_Base):
+	"""MR-04001: the work order's Department IR and Employee IR moves since 12:04 wait for the
+	19:00 end-of-day sync. The ledger still has the 1.207 g in Waxing WO; the MOP Log has it
+	on the current operation, bound for Model Making WO."""
+
+	MODEL_MAKING_WO = "Model Making WO - KGJPL"
+
+	def test_a_work_order_with_moves_waiting_for_the_sync_is_taken_back(self):
+		mr = _mr([_row_03997()], name="KGJPL-MR-MT-26-03997")
+		ledger = dict(LEDGER_03997)
+		with _world(
+			ledger,
+			lineage={R02, R02_A},
+			finder=_ledger_finder(ledger),
+			mr=mr,
+			work_orders=[_holding(eod_target=self.MODEL_MAKING_WO)],
+		) as w:
+			cg_settle.settle_material_request(mr.name)
+
+		pull = w.pull.call_args.args[1]
+		self.assertEqual(pull.eod_target, self.MODEL_MAKING_WO)
+		self.assertEqual(w.events, [("pull", WORK_ORDER), ("execute",)])
+
+	def _logged(self, eod_target):
+		row = SimpleNamespace(
+			item_code=ITEM_22KT,
+			qty=2.36,
+			batch_no="REG-22",
+			s_warehouse=WAXING,
+			t_warehouse=WAXING_WO,
+			name="row-1",
+			serial_and_batch_bundle="SBB-1",
+		)
+		entry = SimpleNamespace(
+			doctype="Stock Entry",
+			name="SE-REG",
+			stock_entry_type="Material Transfer",
+			items=[row],
+		)
+
+		def get_doc(doctype, *args, **kwargs):
+			if doctype == "Stock Entry":
+				return entry
+			return _REAL_GET_DOC(doctype, *args, **kwargs)
+
+		with patch("frappe.get_doc", side_effect=get_doc), patch(
+			f"{_MOP_LOG}.create_mop_log_for_stock_transfer_to_mo"
+		) as write:
+			cg_settle._log_on_operation(
+				"SE-REG",
+				frappe._dict(_holding(eod_target=eod_target)),
+				outward=False,
+				flow_index=0,
+			)
+		return write.call_args.args[1], write.call_args.kwargs
+
+	def test_with_moves_pending_the_rows_join_them(self):
+		# Unsynced and bound for the sync's target: tonight the sync moves the regular batch
+		# from Waxing WO to Model Making WO and skips the customer's, now at 0.
+		logged, kwargs = self._logged(self.MODEL_MAKING_WO)
+
+		self.assertEqual(logged.t_warehouse, self.MODEL_MAKING_WO)
+		self.assertEqual(logged.s_warehouse, WAXING)
+		self.assertEqual(
+			kwargs, {"is_synced": False, "outward": False, "flow_index": 0}
+		)
+
+	def test_with_nothing_pending_the_rows_are_synced_as_before(self):
+		logged, kwargs = self._logged(None)
+
+		self.assertEqual(logged.t_warehouse, WAXING_WO)
+		self.assertTrue(kwargs["is_synced"])
+
+	def test_the_sync_target_is_where_the_pending_moves_end(self):
+		def log(operation, to_warehouse, flow_index, creation):
+			return frappe._dict(
+				manufacturing_operation=operation,
+				to_warehouse=to_warehouse,
+				flow_index=flow_index,
+				creation=creation,
+			)
+
+		# A finished predecessor's IR copies can sort higher (flow index 2) than the current
+		# operation's rows; the sync still takes the target from the current operation.
+		pending = [
+			log("MOP-OLD", "Model Making Transit - KGJPL", 2, "2026-10-23 12:04:07"),
+			log(OPERATION, self.MODEL_MAKING_WO, 0, "2026-10-23 12:06:28"),
+			log(OPERATION, None, 0, "2026-10-23 12:06:29"),
+		]
+		self.assertEqual(
+			cg_settle._eod_target(pending, OPERATION, "Model Making - KGJPL"),
+			self.MODEL_MAKING_WO,
+		)
+		# Nothing on the current operation carries a target: the work order's latest.
+		self.assertEqual(
+			cg_settle._eod_target(pending[:1], OPERATION, "Model Making - KGJPL"),
+			"Model Making Transit - KGJPL",
+		)
+		# No target logged at all: the department's Manufacturing warehouse.
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync."
+			"_resolve_department_warehouse",
+			return_value=self.MODEL_MAKING_WO,
+		):
+			self.assertEqual(
+				cg_settle._eod_target(
+					[log(OPERATION, None, 0, "x")], OPERATION, "Model Making - KGJPL"
+				),
+				self.MODEL_MAKING_WO,
+			)
+
+	def test_moves_pending_on_another_open_operation_hold_the_work_order(self):
+		pending = [
+			frappe._dict(manufacturing_operation=OPERATION),
+			frappe._dict(manufacturing_operation="MOP-OTHER"),
+		]
+		for status, held in (("Finished", False), ("WIP", True), ("Not Started", True)):
+			with self.subTest(status=status), patch(
+				"frappe.get_all",
+				side_effect=lambda doctype, *a, **k: [
+					frappe._dict(status=status, department_ir_status="")
+				]
+				if doctype == "Manufacturing Operation"
+				else _REAL_GET_ALL(doctype, *a, **k),
+			):
+				self.assertEqual(
+					cg_settle._pending_on_another_open_operation(pending, OPERATION),
+					held,
+				)
+		self.assertFalse(
+			cg_settle._pending_on_another_open_operation(pending[:1], OPERATION)
+		)
+
+	def test_never_a_regular_batch_the_sync_target_already_holds(self):
+		# REG-22 already sits in Model Making WO: the sync would think the regular batch was
+		# already there and leave it in Waxing WO. REG-23 goes in instead.
+		def finder(owner_customer, item_code, required, **kwargs):
+			warehouse = kwargs["warehouses"][0]
+			for batch in ("REG-22", "REG-23"):
+				if kwargs["allocated"].get((batch, warehouse)) != float("inf"):
+					return _source(warehouse, batch=batch, qty=required, item=item_code)
+			return None
+
+		ledger = {("REG-22", self.MODEL_MAKING_WO): 5.0}
+		for target, expected in ((self.MODEL_MAKING_WO, "REG-23"), (None, "REG-22")):
+			with self.subTest(target=target), _world(ledger, finder=finder):
+				trial = {}
+				holding = frappe._dict(_holding(eod_target=target), landing=WAXING)
+				regular = cg_settle._regular_to_put_back(holding, "KGJPL", trial)
+
+			self.assertEqual(regular["batch_no"], expected)
+			self.assertEqual(trial, {(expected, WAXING): 2.36})
+
+
 class TestMopLogDirection(_Base):
 	"""create_mop_log_for_stock_transfer_to_mo: an explicit ``outward`` wins; without one,
 	the entry type decides as before."""
 
-	def _logged(self, stock_entry_type, outward=None):
+	def _logged(self, stock_entry_type, outward=None, flow_index=None, last_index=0):
 		saved = SimpleNamespace(save=MagicMock())
 		doc = frappe._dict(
 			doctype="Stock Entry",
@@ -1366,22 +1529,38 @@ class TestMopLogDirection(_Base):
 
 		with patch.object(
 			mop_log, "get_mop_opening_balances", return_value=opening
-		), patch.object(mop_log, "get_last_mop_index", return_value=0), patch.object(
-			mop_log.frappe, "new_doc", side_effect=new_doc
-		):
+		), patch.object(
+			mop_log, "get_last_mop_index", return_value=last_index
+		), patch.object(mop_log.frappe, "new_doc", side_effect=new_doc):
 			mop_log.create_mop_log_for_stock_transfer_to_mo(
-				doc, row, is_synced=True, outward=outward
+				doc, row, is_synced=True, outward=outward, flow_index=flow_index
 			)
 		saved.save.assert_called_once()
-		return saved.qty_change
+		return saved
 
 	def test_an_explicit_outward_leg_is_negative(self):
-		self.assertEqual(self._logged("Material Transfer", outward=True), -2.36)
-		self.assertEqual(self._logged("Material Transfer", outward=False), 2.36)
+		self.assertEqual(
+			self._logged("Material Transfer", outward=True).qty_change, -2.36
+		)
+		self.assertEqual(
+			self._logged("Material Transfer", outward=False).qty_change, 2.36
+		)
 
 	def test_without_it_the_entry_type_decides_as_before(self):
-		self.assertEqual(self._logged("Material Receive (WORK ORDER)"), -2.36)
-		self.assertEqual(self._logged("Material Transfer (WORK ORDER)"), 2.36)
+		self.assertEqual(
+			self._logged("Material Receive (WORK ORDER)").qty_change, -2.36
+		)
+		self.assertEqual(
+			self._logged("Material Transfer (WORK ORDER)").qty_change, 2.36
+		)
+
+	def test_an_explicit_flow_index_wins_and_the_old_rule_stays_the_default(self):
+		self.assertEqual(
+			self._logged("Material Transfer", flow_index=3, last_index=3).flow_index, 3
+		)
+		# The alternating rule: after 0 comes 1, after anything else 0.
+		self.assertEqual(self._logged("Material Transfer", last_index=0).flow_index, 1)
+		self.assertEqual(self._logged("Material Transfer", last_index=3).flow_index, 0)
 
 
 if __name__ == "__main__":
