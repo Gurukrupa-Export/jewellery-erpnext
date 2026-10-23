@@ -143,3 +143,4 @@ jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-21 PMO Submit/
 jewellery_erpnext.patches.add_mr_hold_closed_workflow_states
 jewellery_erpnext.patches.restore_missing_perf_indexes
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only
+jewellery_erpnext.patches.move_manufacturing_plan_layout_to_core
