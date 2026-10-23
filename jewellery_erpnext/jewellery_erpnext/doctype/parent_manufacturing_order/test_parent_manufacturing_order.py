@@ -42,6 +42,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 	check_pmo_material_request_role,
 	check_tracking_bom_is_draft,
 	create_pmo_material_request,
+	_get_chain_finding_rows,
+	_validate_chain_findings_are_manufacturing_items,
 	get_item_code,
 	get_pending_raw_materials,
 	get_pmo_raw_materials,
@@ -5131,3 +5133,138 @@ class TestPMOCreateMaterialRequestFlow(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError) as caught:
 				call()
 			self.assertIn("already manufactured", str(caught.exception))
+class _FindingQB:
+	"""frappe.qb stand-in whose BOM Finding Detail query returns the given rows."""
+
+	def __init__(self, rows):
+		self._rows = rows
+
+	def DocType(self, _name):
+		return SimpleNamespace(parent="parent")
+
+	def from_(self, _table):
+		return self
+
+	def select(self, *_cols):
+		return self
+
+	def where(self, *_args):
+		return self
+
+	def run(self, **_kwargs):
+		return [frappe._dict(row) for row in self._rows]
+
+
+def _finding_row(
+	category="Chains", item="F", item_variant=None, parentfield="finding_detail"
+):
+	return {
+		"item": item,
+		"item_variant": item_variant,
+		"finding_category": category,
+		"finding_type": "Box Chain",
+		"finding_size": "1.00 INCH",
+		"parentfield": parentfield,
+	}
+
+
+class TestChainFindingRows(UnitTestCase):
+	"""_get_chain_finding_rows(): the rows create_manufacturing_work_order() raises a
+	Finding Manufacturing Work Order for, each with its variant resolved."""
+
+	def _rows(self, rows, ignore_wo=()):
+		pmo = frappe._dict(custom_tracking_bom="TB-1", diamond_grade="EF-VVS")
+
+		def get_value(doctype, name, fieldname):
+			if fieldname == "custom_ignore_work_order":
+				return 1 if name in ignore_wo else 0
+			return None
+
+		with (
+			patch.object(frappe, "qb", _FindingQB(rows)),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch(
+				f"{PMO_MODULE}._resolve_existing_variant_item_code",
+				side_effect=lambda row, table, grade: f"{row.item}-{row.finding_size}",
+			),
+		):
+			return _get_chain_finding_rows(pmo)
+
+	def test_only_chains_rows_are_returned_with_their_variant(self):
+		rows = self._rows([_finding_row(), _finding_row(category="Screws")])
+		self.assertEqual([row.item_variant for row in rows], ["F-1.00 INCH"])
+
+	def test_a_stored_variant_is_kept(self):
+		rows = self._rows([_finding_row(item_variant="F-G-22KT-CHA-BC-1.00 INCH")])
+		self.assertEqual(
+			[row.item_variant for row in rows], ["F-G-22KT-CHA-BC-1.00 INCH"]
+		)
+
+	def test_chains_outside_finding_detail_are_skipped(self):
+		self.assertEqual(self._rows([_finding_row(parentfield="other_detail")]), [])
+
+	def test_ignore_work_order_template_is_skipped(self):
+		self.assertEqual(self._rows([_finding_row()], ignore_wo={"F"}), [])
+
+
+class TestChainFindingsMustBeManufacturingItems(UnitTestCase):
+	"""PMO submit is refused when a chain's variant is not ticked Is Manufacturing Item:
+	create_finding_mwo() would skip it and the PMO would go on without its Finding MWO."""
+
+	def _validate(
+		self,
+		rows,
+		ticked=(),
+		pmo_type="Manufacturing",
+		variant_of="EA",
+		tracking_bom="TB-1",
+	):
+		pmo = frappe._dict(
+			custom_tracking_bom=tracking_bom, type=pmo_type, item_code="ITEM"
+		)
+
+		def get_value(doctype, name, fieldname):
+			if fieldname == "custom_is_manufacturing_item":
+				return 1 if name in ticked else 0
+			return None
+
+		with (
+			patch(
+				f"{PMO_MODULE}._get_chain_finding_rows",
+				return_value=[frappe._dict(item_variant=v) for v in rows],
+			) as get_rows,
+			patch.object(frappe, "get_cached_value", return_value=variant_of),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+		):
+			_validate_chain_findings_are_manufacturing_items(pmo)
+		return get_rows
+
+	def test_unticked_chain_variant_blocks_submit_and_is_named(self):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._validate(
+				["F-BC-1.00 INCH", "F-BC-1.50 INCH"], ticked={"F-BC-1.50 INCH"}
+			)
+		self.assertIn("F-BC-1.00 INCH", str(ctx.exception))
+		self.assertNotIn("F-BC-1.50 INCH", str(ctx.exception))
+
+	def test_ticked_chain_variants_pass(self):
+		self._validate(["F-BC-1.00 INCH"], ticked={"F-BC-1.00 INCH"})
+
+	def test_no_chains_pass(self):
+		self._validate([])
+
+	def test_no_tracking_bom_is_not_checked(self):
+		get_rows = self._validate(["F-BC-1.00 INCH"], tracking_bom=None)
+		get_rows.assert_not_called()
+
+	def test_finding_manufacturing_pmo_of_a_non_f_item_is_not_checked(self):
+		get_rows = self._validate(
+			["F-BC-1.00 INCH"], pmo_type="Finding Manufacturing", variant_of="EA"
+		)
+		get_rows.assert_not_called()
+
+	def test_finding_manufacturing_pmo_of_an_f_item_is_checked(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(
+				["F-BC-1.00 INCH"], pmo_type="Finding Manufacturing", variant_of="F"
+			)
