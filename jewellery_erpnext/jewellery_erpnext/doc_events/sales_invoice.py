@@ -278,6 +278,8 @@ def validate(self, method):
 		self.custom_gross_weight = totals["custom_gross_weight"]
 		payment_terms_data = update_si_data(self)
 		update_payment_terms(self, payment_terms_data)
+		activate_remote_serial_no(self)
+
 		return
 	prec = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 
@@ -378,6 +380,86 @@ def validate(self, method):
 	set_gst_details(self)
 	self.calculate_taxes_and_totals()
 
+
+
+
+def activate_remote_serial_no(self):
+    import requests
+
+    migration_settings = frappe.get_single("Data Migration in KGGK")
+
+    site_url = (migration_settings.serial_no_activate_site or "").rstrip("/")
+    api_key = migration_settings.serial_no_api_key
+    api_secret = migration_settings.get_password("serial_no_secret")
+
+    if not site_url:
+        frappe.log_error(
+            title="Remote Serial No Activation Failed",
+            message="serial_no_activate_site is not configured."
+        )
+        return
+
+    if not api_key or not api_secret:
+        frappe.log_error(
+            title="Remote Serial No Activation Failed",
+            message="API key or API secret is missing."
+        )
+        return
+
+    remote_url = site_url + "/api/method/get_serial_no_kggk"
+
+    headers = {
+        "Authorization": "token " + api_key + ":" + api_secret,
+        "Content-Type": "application/json"
+    }
+
+    for item in self.items:
+        serial_no = item.custom_serial_no
+
+        if not serial_no:
+            continue
+
+        response = None
+
+        try:
+            response = requests.post(
+                remote_url,
+                headers=headers,
+                json={"serial_no": serial_no},
+                timeout=30
+            )
+
+            response.raise_for_status()
+
+            # Update local Serial No only after remote success
+            if frappe.db.exists("Serial No", serial_no):
+                frappe.db.set_value(
+                    "Serial No",
+                    serial_no,
+                    "status",
+                    "Active"
+                )
+
+            # Clear Sales Order reference after remote success
+            item.sales_order = ""
+
+        except Exception as e:
+            error_details = str(e)
+
+            if response is not None:
+                error_details += (
+                    "\nHTTP Status: " + str(response.status_code)
+                    + "\nResponse Body: " + response.text
+                )
+
+            frappe.log_error(
+                title="Remote Serial No Activation Failed",
+                message=(
+                    "Serial No: " + str(serial_no)
+                    + "\nURL: " + remote_url
+                    + "\nError Details:\n" + error_details
+                )
+            )
 
 def get_allowed_item_types(customer, sales_type):
 	"""Return the set of E Invoice Item names whose Customer Payment Terms entry
