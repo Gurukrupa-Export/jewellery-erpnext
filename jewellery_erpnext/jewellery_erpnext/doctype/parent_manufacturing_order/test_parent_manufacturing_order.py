@@ -4607,7 +4607,10 @@ class TestPMOCreateMaterialRequestFlow(IntegrationTestCase):
 
 	@classmethod
 	def setUpClass(cls):
-		super().setUpClass()
+		# No super(), like the other integration classes here: IntegrationTestCase would
+		# generate test records for every doctype the PMO links to, which runs ERPNext's
+		# _Test Company bootstrap and fails on this app's site. The CI test data
+		# (Test_Company, Test_Department, ...) is what create_man_plan builds on.
 		cls.pmo_name = cls.make_submitted_pmo()
 
 	@classmethod
