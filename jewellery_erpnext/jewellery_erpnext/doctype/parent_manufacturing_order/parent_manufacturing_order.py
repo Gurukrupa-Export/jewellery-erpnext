@@ -8,7 +8,7 @@ from frappe.model import no_value_fields, table_fields
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
-from frappe.utils import cint, flt, get_link_to_form
+from frappe.utils import cint, flt, get_link_to_form, strip_html
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	CUSTOMER_GOODS_INVENTORY_TYPE,
@@ -31,6 +31,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	HOLD_DRAFT_STATE,
 	HOLD_STATE,
 	on_workflow_state_change,
+	pmo_blocking_state,
 	refuse_while_blocked,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
@@ -540,6 +541,19 @@ class ParentManufacturingOrder(Document):
 	def on_update(self):
 		on_workflow_state_change(self)
 
+	def onload(self):
+		# Jewellery Settings is readable by System Manager only, so the form cannot work
+		# out the Create Material Request role itself. A PMO on Hold or Closed, or one whose
+		# Tracking BOM is submitted, is refused by the server anyway, so the button is not
+		# offered for it.
+		self.set_onload(
+			"can_create_material_request",
+			self.docstatus == 1
+			and not pmo_blocking_state(self.name)
+			and tracking_bom_is_draft(self)
+			and can_create_pmo_material_request(),
+		)
+
 	def on_update_after_submit(self):
 		if self._state_change_only():
 			on_workflow_state_change(self)
@@ -645,13 +659,25 @@ class ParentManufacturingOrder(Document):
 		if not bom:
 			frappe.throw(_("BOM is missing"))
 
-		mnf_abb = frappe.get_value(
-			"Manufacturer", self.manufacturer, "custom_abbreviation"
-		)
 		bom_doc = frappe.get_doc("Tracking Bom", bom)
 		if bom_doc.get("bom_type") == "Template":
 			set_item_variant(bom_doc)
 			bom_doc.save(ignore_permissions=True)
+
+		items = self.get_bom_raw_materials()
+		self.make_material_requests(items, self.qty)
+		frappe.msgprint(_("Material Request Created !!"))
+
+	def get_bom_raw_materials(self):
+		"""Raw materials of the PMO's Tracking BOM, bucketed by item type.
+
+		Each row carries the resolved item_code, the per-piece BOM ``qty`` and the
+		source/target warehouses. Shared by the submit-time Material Requests and the
+		Create Material Request button, so both read the BOM the same way.
+		"""
+		bom = self.custom_tracking_bom
+		if not bom:
+			frappe.throw(_("BOM is missing"))
 
 		warehouse_dict = {
 			row.variant: row
@@ -782,6 +808,16 @@ class ParentManufacturingOrder(Document):
 			"gemstone_item": gemstone_items,
 			"other_item": other_items,
 		}
+		return items
+
+	def make_material_requests(self, items, qty_multiplier):
+		"""One draft Material Request per item type in ``items`` (bucketed as
+		``get_bom_raw_materials`` returns them), each row asking for ``qty x qty_multiplier``.
+		Returns the names of the requests created."""
+		mnf_abb = frappe.get_value(
+			"Manufacturer", self.manufacturer, "custom_abbreviation"
+		)
+		material_requests = []
 
 		counter = 1
 		for item_type, val in items.items():
@@ -868,7 +904,7 @@ class ParentManufacturingOrder(Document):
 						"items",
 						{
 							"item_code": item_code_to_use,
-							"qty": i["qty"] * self.qty,
+							"qty": i["qty"] * qty_multiplier,
 							"warehouse": i["warehouse"],
 							"from_warehouse": i["from_warehouse"],
 							"custom_is_customer_item": i.get("is_customer_item", 0),
@@ -917,7 +953,8 @@ class ParentManufacturingOrder(Document):
 					)
 			counter += 1
 			mr_doc.save()
-		frappe.msgprint(_("Material Request Created !!"))
+			material_requests.append(mr_doc.name)
+		return material_requests
 
 	@frappe.whitelist()
 	def send_to_customer_for_approval(self):
@@ -1884,3 +1921,357 @@ def create_mwo(pmo, doc, reason=None):
 		fg_doc.reason = reason
 	fg_doc.save()
 	frappe.msgprint("Manufacturing Work Order for CAD/CAM Department is created.")
+
+
+def can_create_pmo_material_request(user=None):
+	"""True when ``user`` may use Create Material Request on a PMO: Administrator, System
+	Manager, or a holder of a role listed in Jewellery Settings. No role listed means
+	nobody else may."""
+	user = user or frappe.session.user
+	if user == "Administrator":
+		return True
+	roles = set(frappe.get_roles(user))
+	if "System Manager" in roles:
+		return True
+	# Rows of core's Has Role parented to Jewellery Settings never reach a user's own
+	# roles: frappe.get_roles reads only rows parented to a User.
+	allowed = frappe.get_all(
+		"Has Role",
+		filters={
+			"parenttype": "Jewellery Settings",
+			"parentfield": "pmo_material_request_roles",
+		},
+		pluck="role",
+	)
+	return bool(roles.intersection(role for role in allowed if role))
+
+
+def check_pmo_material_request_role():
+	if not can_create_pmo_material_request():
+		frappe.throw(
+			_("You are not permitted to create Material Requests from a PMO."),
+			frappe.PermissionError,
+		)
+
+
+def tracking_bom_is_draft(doc):
+	"""A submitted Tracking BOM means the finished item has been manufactured, so there is
+	nothing left to request; only a draft one can still change."""
+	return (
+		frappe.db.get_value("Tracking Bom", doc.custom_tracking_bom, "docstatus") == 0
+		if doc.custom_tracking_bom
+		else False
+	)
+
+
+def check_tracking_bom_is_draft(doc):
+	if not tracking_bom_is_draft(doc):
+		frappe.throw(
+			_(
+				"Material Request can be created only while the PMO's Tracking BOM is in draft. "
+				"A submitted Tracking BOM means the item is already manufactured."
+			)
+		)
+
+
+@frappe.whitelist()
+def get_pmo_raw_materials(pmo_name):
+	"""Raw materials of a submitted PMO's updated Tracking BOM that still have a quantity
+	left to request, for the Create Material Request button."""
+	check_pmo_material_request_role()
+	doc = frappe.get_doc("Parent Manufacturing Order", pmo_name)
+	doc.check_permission("read")
+	if doc.docstatus != 1:
+		frappe.throw(_("Material Request can be created only for a submitted PMO."))
+	refuse_while_blocked(doc.name, _("No Material Request can be created for it."))
+	check_tracking_bom_is_draft(doc)
+
+	return [row for row in get_pending_raw_materials(doc) if row["pending_qty"] > 0]
+
+
+@frappe.whitelist()
+def create_pmo_material_request(pmo_name, items=None):
+	"""Create draft Material Requests for the PMO's pending raw materials; returns the names
+	of the requests created. ``items`` is a list of ``{"item_code", "qty"}``; without it,
+	as from the Create Material Request button, every pending raw material is requested at
+	its full pending quantity."""
+	check_pmo_material_request_role()
+	# One creation per PMO at a time. A second click or user waits here until the first
+	# commits; its pending quantities then come from a locking read (see
+	# _get_requested_qty_by_item), which sees the requests just committed even though this
+	# transaction's snapshot is older under REPEATABLE READ.
+	frappe.db.get_value("Parent Manufacturing Order", pmo_name, "name", for_update=True)
+	doc = frappe.get_doc("Parent Manufacturing Order", pmo_name)
+	doc.check_permission("read")
+	if items is None:
+		items = [
+			{"item_code": row["item_code"], "qty": row["pending_qty"]}
+			for row in get_pending_raw_materials(doc, for_update=True)
+			if row["pending_qty"] > 0
+		]
+	else:
+		items = frappe.parse_json(items) or []
+	selected = validate_material_request_items(doc, items)
+	# The selected quantities are already for the whole order, so no PMO qty multiplier.
+	material_requests = doc.make_material_requests(selected, 1)
+	add_material_request_comment(doc, material_requests)
+	return material_requests
+
+
+def get_pending_raw_materials(doc, for_update=False):
+	"""Every raw material of the PMO's Tracking BOM with its ``required_qty`` for the whole
+	order (per-piece BOM qty x PMO qty), the ``requested_qty`` already covered by the PMO's
+	non-cancelled Material Requests, and the ``pending_qty`` still left to request.
+	``for_update`` reads those requests with a locking read, for the creation path."""
+	precision = frappe.get_precision("Material Request Item", "qty")
+	raw_materials = []
+	for item_type, rows in doc.get_bom_raw_materials().items():
+		for row in rows:
+			required_qty = flt(flt(row["qty"]) * flt(doc.qty), precision)
+			if required_qty <= 0:
+				continue
+			raw_materials.append(
+				{
+					"item_type": item_type,
+					"item_code": row["item_code"],
+					"required_qty": required_qty,
+					"requested_qty": 0,
+					"pcs": row.get("pcs"),
+					"from_warehouse": row["from_warehouse"],
+					"warehouse": row["warehouse"],
+					"is_customer_item": row.get("is_customer_item"),
+					"sub_setting_type": row.get("sub_setting_type"),
+				}
+			)
+
+	requested = _get_requested_qty_by_item(doc, for_update=for_update)
+
+	# Pass 1: a requested line counts against the BOM row it was raised for -- same item,
+	# ownership and sub setting type -- so when one item sits on several rows (a gemstone
+	# in two settings, a customer's and a company's stone) a request never covers the
+	# wrong row and the next request never carries the wrong ownership.
+	for row in raw_materials:
+		row["requested_qty"] = _take_qty(
+			requested,
+			_requirement_key(
+				row["item_code"], row["is_customer_item"], row["sub_setting_type"]
+			),
+			row["required_qty"],
+		)
+
+	# Pass 2: what is left counts by item code alone, for a line whose ownership or sub
+	# setting type was edited on the request.
+	requested_by_item = {}
+	for (item_code, _owned, _setting), qty in requested.items():
+		if qty > 0:
+			requested_by_item[item_code] = requested_by_item.get(item_code, 0) + qty
+	for row in raw_materials:
+		remaining = row["required_qty"] - row["requested_qty"]
+		if remaining > 0:
+			row["requested_qty"] += _take_qty(
+				requested_by_item, row["item_code"], remaining
+			)
+
+	# Pass 3: diamond quantity still unmatched counts against a still-pending diamond row
+	# that differs only in Diamond Grade. Users regrade diamond lines on the Material
+	# Request (mostly to 6B) before submitting, and those stones are already requested.
+	grade_free_requested = {}
+	for item_code, qty in requested_by_item.items():
+		key = _get_grade_free_key(item_code) if qty > 0 else None
+		if key:
+			grade_free_requested[key] = grade_free_requested.get(key, 0) + qty
+	for row in raw_materials:
+		remaining = row["required_qty"] - row["requested_qty"]
+		if row["item_type"] != "diamond_item" or remaining <= 0:
+			continue
+		key = _get_grade_free_key(row["item_code"])
+		if key:
+			row["requested_qty"] += _take_qty(grade_free_requested, key, remaining)
+
+	for row in raw_materials:
+		row["requested_qty"] = flt(row["requested_qty"], precision)
+		row["pending_qty"] = flt(row["required_qty"] - row["requested_qty"], precision)
+	return raw_materials
+
+
+def _requirement_key(item_code, is_customer_item, sub_setting_type):
+	"""What tells two BOM rows of the same item apart, as stamped on the request rows."""
+	return (item_code, cint(is_customer_item), sub_setting_type or "")
+
+
+def _get_requested_qty_by_item(doc, for_update=False):
+	"""Stock-UOM quantity on the PMO's draft and submitted Material Requests, per
+	``_requirement_key`` of the BOM row each line was raised for.
+
+	Only requests linked to the PMO through ``manufacturing_order`` count: a request raised
+	by hand without that link cannot be told apart from another PMO's demand for the same
+	item, so it has to be linked to the PMO to be counted."""
+	MaterialRequest = frappe.qb.DocType("Material Request")
+	MaterialRequestItem = frappe.qb.DocType("Material Request Item")
+	query = (
+		frappe.qb.from_(MaterialRequestItem)
+		.join(MaterialRequest)
+		.on(MaterialRequestItem.parent == MaterialRequest.name)
+		.select(
+			MaterialRequestItem.item_code,
+			MaterialRequestItem.description,
+			MaterialRequestItem.stock_qty,
+			MaterialRequestItem.custom_is_customer_item,
+			MaterialRequestItem.custom_sub_setting_type,
+		)
+		.where(MaterialRequest.manufacturing_order == doc.name)
+		.where(MaterialRequest.docstatus < 2)
+	)
+	if for_update:
+		query = query.for_update()
+	lines = query.run(as_dict=True)
+
+	# Gemstones are requested as the manufacturer's default gemstone item with the
+	# actual BOM item code in the description (see make_material_requests).
+	default_gemstone_item = frappe.db.get_value(
+		"Manufacturing Setting",
+		{"manufacturer": doc.manufacturer},
+		"default_gemstone_item",
+	)
+	requested = {}
+	for line in lines:
+		item_code = line.item_code
+		if default_gemstone_item and item_code == default_gemstone_item:
+			item_code = strip_html(line.description or "").strip()
+		key = _requirement_key(
+			item_code, line.custom_is_customer_item, line.custom_sub_setting_type
+		)
+		requested[key] = requested.get(key, 0) + flt(line.stock_qty)
+	return requested
+
+
+def _take_qty(pool, key, qty):
+	"""Take up to ``qty`` of ``key`` out of ``pool`` and return what was taken."""
+	taken = min(pool.get(key, 0), qty)
+	if taken <= 0:
+		return 0
+	pool[key] -= taken
+	return taken
+
+
+def _get_grade_free_key(item_code):
+	"""(template, attributes other than Diamond Grade) for a graded diamond variant, else
+	None. Two diamonds with the same key differ only in grade."""
+	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+	if not variant_of:
+		return None
+	attributes = frappe.get_all(
+		"Item Variant Attribute",
+		{"parent": item_code},
+		["attribute", "attribute_value"],
+	)
+	if not any(a.attribute == "Diamond Grade" for a in attributes):
+		return None
+	return (
+		variant_of,
+		tuple(
+			sorted(
+				(a.attribute, a.attribute_value)
+				for a in attributes
+				if a.attribute != "Diamond Grade"
+			)
+		),
+	)
+
+
+def validate_material_request_items(doc, items):
+	"""Check the dialog's selection against what the PMO still has pending, worked out
+	afresh so a request raised since the dialog opened is not requested again. Returns the
+	selection bucketed by item type with each BOM row's details, ready for
+	``make_material_requests``."""
+	if doc.docstatus != 1:
+		frappe.throw(_("Material Request can be created only for a submitted PMO."))
+	refuse_while_blocked(doc.name, _("No Material Request can be created for it."))
+	check_tracking_bom_is_draft(doc)
+
+	pending_by_item = {}
+	# Locking read: a request committed by a concurrent creation is seen and not repeated.
+	for row in get_pending_raw_materials(doc, for_update=True):
+		if row["pending_qty"] > 0:
+			pending_by_item.setdefault(row["item_code"], []).append(row)
+	if not pending_by_item:
+		frappe.throw(
+			_("No pending raw materials are available for Material Request creation.")
+		)
+	if not items:
+		frappe.throw(_("Please select at least one raw material."))
+
+	precision = frappe.get_precision("Material Request Item", "qty")
+	errors = []
+	requested_by_item = {}
+	for item in items:
+		item_code = item.get("item_code")
+		qty = flt(item.get("qty"), precision)
+		if item_code not in pending_by_item:
+			errors.append(
+				_("Item {0} is not pending in the BOM of this PMO.").format(
+					frappe.bold(item_code)
+				)
+			)
+		elif qty <= 0:
+			errors.append(
+				_("Quantity for {0} must be greater than 0.").format(
+					frappe.bold(item_code)
+				)
+			)
+		else:
+			requested_by_item[item_code] = flt(
+				requested_by_item.get(item_code, 0) + qty, precision
+			)
+
+	for item_code, qty in requested_by_item.items():
+		pending_qty = flt(
+			sum(row["pending_qty"] for row in pending_by_item[item_code]), precision
+		)
+		if qty > pending_qty:
+			errors.append(
+				_("Quantity for {0} ({1}) exceeds the pending quantity ({2}).").format(
+					frappe.bold(item_code), qty, pending_qty
+				)
+			)
+	if errors:
+		frappe.throw("<br>".join(errors), title=_("Invalid Raw Material Selection"))
+
+	# Spread each item's quantity over its pending BOM rows in order, so every Material
+	# Request row keeps the warehouses and sub setting type of the BOM row it covers.
+	selected = {}
+	for item_code, qty in requested_by_item.items():
+		for row in pending_by_item[item_code]:
+			take = min(qty, row["pending_qty"])
+			if take <= 0:
+				break
+			qty = flt(qty - take, precision)
+			selected.setdefault(row["item_type"], []).append(
+				{
+					"item_code": item_code,
+					"qty": take,
+					"from_warehouse": row["from_warehouse"],
+					"warehouse": row["warehouse"],
+					"is_customer_item": row["is_customer_item"],
+					"sub_setting_type": row["sub_setting_type"],
+					# The BOM pcs describe the whole row; a part of it has no known count,
+					# so the user fills pcs in on the draft request.
+					"pcs": row["pcs"] if take == row["required_qty"] else None,
+				}
+			)
+	return selected
+
+
+def add_material_request_comment(doc, material_requests):
+	"""Note the new requests on the PMO's timeline. The requests themselves are linked
+	through ``manufacturing_order`` and listed under the PMO's Connections."""
+	if not material_requests:
+		return
+	doc.add_comment(
+		"Info",
+		_("Material Request {0} created for pending raw materials.").format(
+			", ".join(
+				get_link_to_form("Material Request", name) for name in material_requests
+			)
+		),
+	)
