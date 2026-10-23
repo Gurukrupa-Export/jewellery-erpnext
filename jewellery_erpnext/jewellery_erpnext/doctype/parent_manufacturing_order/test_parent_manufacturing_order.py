@@ -34,9 +34,16 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	ParentManufacturingOrder,
+	_get_grade_free_key,
+	_get_requested_qty_by_item,
+	add_material_request_comment,
+	create_pmo_material_request,
 	get_item_code,
+	get_pending_raw_materials,
+	get_pmo_raw_materials,
 	set_diamond_tolerance_table,
 	set_metal_tolerance_table,
+	validate_material_request_items,
 	validate_mfg_date,
 )
 
@@ -3587,3 +3594,792 @@ class TestCancelAllLinked(UnitTestCase):
 				frappe.PermissionError, cancel_all.get_cancel_preview, "PMO1"
 			)
 		enqueue.assert_not_called()
+
+
+def _bom_raw_material(item_code, qty, **kwargs):
+	row = {
+		"item_code": item_code,
+		"qty": qty,
+		"from_warehouse": "RM-WH",
+		"warehouse": "DEPT-WH",
+		"is_customer_item": 0,
+		"sub_setting_type": None,
+		"pcs": None,
+	}
+	row.update(kwargs)
+	return row
+
+
+class TestPendingRawMaterials(UnitTestCase):
+	"""Pending qty for the Create Material Request button: BOM requirement less what the
+	PMO's non-cancelled Material Requests already cover, so nothing is requested twice."""
+
+	# Template plus every attribute except Diamond Grade, as _get_grade_free_key builds it.
+	GRADE_FREE_KEYS = {
+		"D-NT-RO-7-+8-8.5": ("D", "Natural", "Round", "+8-8.5"),
+		"D-NT-RO-6B-+8-8.5": ("D", "Natural", "Round", "+8-8.5"),
+		"D-NT-RO-6B-+9-9.5": ("D", "Natural", "Round", "+9-9.5"),
+	}
+
+	def _run(self, bom, requested, pmo_qty=1, grade_free_key=None):
+		doc = SimpleNamespace(
+			name="PMO-TEST-0001",
+			qty=pmo_qty,
+			manufacturer="MNF",
+			get_bom_raw_materials=lambda: bom,
+		)
+		with (
+			patch(
+				f"{PMO_MODULE}._get_requested_qty_by_item",
+				return_value=dict(requested),
+			),
+			patch(
+				f"{PMO_MODULE}._get_grade_free_key",
+				side_effect=grade_free_key or self.GRADE_FREE_KEYS.get,
+			),
+			patch(f"{PMO_MODULE}.frappe.get_precision", return_value=3),
+		):
+			rows = get_pending_raw_materials(doc)
+		return {row["item_code"]: row for row in rows}
+
+	def assertQty(self, row, required, requested, pending):
+		self.assertEqual(
+			(row["required_qty"], row["requested_qty"], row["pending_qty"]),
+			(required, requested, pending),
+		)
+
+	def test_fully_requested_item_has_nothing_pending(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 9.351)]},
+			{"M-G-22KT": 9.351},
+		)
+		self.assertQty(rows["M-G-22KT"], 9.351, 9.351, 0)
+
+	def test_partly_requested_item_keeps_the_remainder(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 2.0)]},
+			{"M-G-22KT": 1.2},
+		)
+		self.assertQty(rows["M-G-22KT"], 2.0, 1.2, 0.8)
+
+	def test_item_added_to_the_bom_later_is_fully_pending(self):
+		rows = self._run(
+			{
+				"metal_item": [_bom_raw_material("M-G-22KT", 2.0)],
+				"finding_item": [_bom_raw_material("F-SCREW", 1.1)],
+			},
+			{"M-G-22KT": 2.0},
+		)
+		self.assertQty(rows["M-G-22KT"], 2.0, 2.0, 0)
+		self.assertQty(rows["F-SCREW"], 1.1, 0, 1.1)
+
+	def test_required_qty_is_bom_qty_times_pmo_qty(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 1.25)]},
+			{"M-G-22KT": 1.0},
+			pmo_qty=3,
+		)
+		self.assertQty(rows["M-G-22KT"], 3.75, 1.0, 2.75)
+
+	def test_zero_qty_bom_row_is_left_out(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 0)]},
+			{},
+		)
+		self.assertEqual(rows, {})
+
+	def test_request_above_the_requirement_never_goes_negative(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 2.0)]},
+			{"M-G-22KT": 5.0},
+		)
+		self.assertQty(rows["M-G-22KT"], 2.0, 2.0, 0)
+
+	def test_regraded_diamond_counts_as_requested(self):
+		"""The reported case: BOM resolves grade 7, the user regraded the request to 6B."""
+		rows = self._run(
+			{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.78)]},
+			{"D-NT-RO-6B-+8-8.5": 0.78},
+		)
+		self.assertQty(rows["D-NT-RO-7-+8-8.5"], 0.78, 0.78, 0)
+
+	def test_exact_grade_match_is_taken_before_the_regrade_fallback(self):
+		rows = self._run(
+			{
+				"diamond_item": [
+					_bom_raw_material("D-NT-RO-7-+8-8.5", 0.78),
+					_bom_raw_material("D-NT-RO-6B-+8-8.5", 0.5),
+				]
+			},
+			{"D-NT-RO-6B-+8-8.5": 0.5},
+		)
+		self.assertQty(rows["D-NT-RO-6B-+8-8.5"], 0.5, 0.5, 0)
+		self.assertQty(rows["D-NT-RO-7-+8-8.5"], 0.78, 0, 0.78)
+
+	def test_only_the_leftover_after_exact_match_is_regraded(self):
+		rows = self._run(
+			{
+				"diamond_item": [
+					_bom_raw_material("D-NT-RO-7-+8-8.5", 0.78),
+					_bom_raw_material("D-NT-RO-6B-+8-8.5", 0.5),
+				]
+			},
+			{"D-NT-RO-6B-+8-8.5": 0.9},
+		)
+		self.assertQty(rows["D-NT-RO-6B-+8-8.5"], 0.5, 0.5, 0)
+		self.assertQty(rows["D-NT-RO-7-+8-8.5"], 0.78, 0.4, 0.38)
+
+	def test_different_sieve_size_is_not_matched(self):
+		rows = self._run(
+			{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.78)]},
+			{"D-NT-RO-6B-+9-9.5": 0.78},
+		)
+		self.assertQty(rows["D-NT-RO-7-+8-8.5"], 0.78, 0, 0.78)
+
+	def test_regrade_fallback_is_only_for_diamonds(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-NEW", 2.0)]},
+			{"M-OLD": 2.0},
+			grade_free_key=lambda item_code: ("M", "same"),
+		)
+		self.assertQty(rows["M-NEW"], 2.0, 0, 2.0)
+
+
+class TestRequestedQtyByItem(UnitTestCase):
+	"""What the PMO's Material Requests already cover, keyed by BOM item code."""
+
+	def _run(self, lines, default_gemstone_item="G-PER-DUM-PRE-CC"):
+		doc = SimpleNamespace(name="PMO-TEST-0001", manufacturer="MNF")
+		with (
+			patch.object(
+				frappe.db, "sql", return_value=[frappe._dict(line) for line in lines]
+			) as sql,
+			patch.object(frappe.db, "get_value", return_value=default_gemstone_item),
+		):
+			requested = _get_requested_qty_by_item(doc)
+		# Only lines of this PMO's draft and submitted Material Requests are read.
+		query, params = str(sql.call_args.args[0]), sql.call_args.args[1]
+		self.assertIn("`manufacturing_order`=%(param1)s", query)
+		self.assertEqual(params["param1"], "PMO-TEST-0001")
+		self.assertIn("`docstatus`<2", query)
+		return requested
+
+	def test_lines_of_the_same_item_are_summed(self):
+		requested = self._run(
+			[
+				{"item_code": "M-G-22KT", "description": "M", "qty": 1.5},
+				{"item_code": "M-G-22KT", "description": "M", "qty": 0.5},
+				{"item_code": "F-SCREW", "description": "F", "qty": 1.1},
+			]
+		)
+		self.assertEqual(requested, {"M-G-22KT": 2.0, "F-SCREW": 1.1})
+
+	def test_gemstone_line_counts_against_the_bom_item_in_its_description(self):
+		requested = self._run(
+			[
+				{
+					"item_code": "G-PER-DUM-PRE-CC",
+					"description": "<p>G-RUBY</p>",
+					"qty": 0.38,
+				}
+			]
+		)
+		self.assertEqual(requested, {"G-RUBY": 0.38})
+
+	def test_without_default_gemstone_item_lines_keep_their_item_code(self):
+		requested = self._run(
+			[{"item_code": "G-PER-DUM-PRE-CC", "description": "G-RUBY", "qty": 0.38}],
+			default_gemstone_item=None,
+		)
+		self.assertEqual(requested, {"G-PER-DUM-PRE-CC": 0.38})
+
+
+class TestGradeFreeKey(UnitTestCase):
+	"""Two diamonds share a key only when they differ in Diamond Grade alone."""
+
+	ATTRIBUTES = {
+		"D-NT-RO-7-+8-8.5": [
+			("Diamond Type", "Natural"),
+			("Stone Shape", "Round"),
+			("Diamond Grade", "7"),
+			("Diamond Sieve Size", "+8-8.5"),
+		],
+		"D-NT-RO-6B-+8-8.5": [
+			("Diamond Type", "Natural"),
+			("Stone Shape", "Round"),
+			("Diamond Grade", "6B"),
+			("Diamond Sieve Size", "+8-8.5"),
+		],
+		"D-NT-RO-6B-+9-9.5": [
+			("Diamond Type", "Natural"),
+			("Stone Shape", "Round"),
+			("Diamond Grade", "6B"),
+			("Diamond Sieve Size", "+9-9.5"),
+		],
+		"M-G-22KT": [("Metal Type", "Gold"), ("Metal Touch", "22KT")],
+	}
+
+	def _key(self, item_code, variant_of="D"):
+		attributes = [
+			frappe._dict(attribute=a, attribute_value=v)
+			for a, v in self.ATTRIBUTES.get(item_code, [])
+		]
+		with (
+			patch(f"{PMO_MODULE}.frappe.db.get_value", return_value=variant_of),
+			patch(f"{PMO_MODULE}.frappe.get_all", return_value=attributes),
+		):
+			return _get_grade_free_key(item_code)
+
+	def test_same_diamond_in_another_grade_shares_the_key(self):
+		self.assertEqual(self._key("D-NT-RO-7-+8-8.5"), self._key("D-NT-RO-6B-+8-8.5"))
+
+	def test_another_sieve_size_gets_another_key(self):
+		self.assertNotEqual(
+			self._key("D-NT-RO-6B-+8-8.5"), self._key("D-NT-RO-6B-+9-9.5")
+		)
+
+	def test_variant_without_diamond_grade_has_no_key(self):
+		self.assertIsNone(self._key("M-G-22KT", variant_of="M"))
+
+	def test_item_that_is_not_a_variant_has_no_key(self):
+		self.assertIsNone(self._key("D-NT-RO-7-+8-8.5", variant_of=None))
+
+
+class TestGetPMORawMaterials(UnitTestCase):
+	"""The Create Material Request endpoint: submitted PMOs only, pending rows only."""
+
+	def _run(self, docstatus=1, rows=()):
+		doc = MagicMock(docstatus=docstatus)
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=doc),
+			patch(f"{PMO_MODULE}.get_pending_raw_materials", return_value=list(rows)),
+		):
+			return doc, get_pmo_raw_materials("PMO-TEST-0001")
+
+	def test_only_rows_with_pending_qty_are_returned(self):
+		_doc, rows = self._run(
+			rows=[
+				{"item_code": "M-G-22KT", "pending_qty": 0},
+				{"item_code": "F-SCREW", "pending_qty": 1.1},
+			]
+		)
+		self.assertEqual([row["item_code"] for row in rows], ["F-SCREW"])
+
+	def test_read_permission_is_checked(self):
+		doc, _rows = self._run()
+		doc.check_permission.assert_called_once_with("read")
+
+	def test_draft_pmo_is_refused(self):
+		self.assertRaises(frappe.ValidationError, self._run, docstatus=0)
+
+	def test_cancelled_pmo_is_refused(self):
+		self.assertRaises(frappe.ValidationError, self._run, docstatus=2)
+
+
+class TestGetBomRawMaterials(UnitTestCase):
+	def test_missing_tracking_bom_is_refused(self):
+		doc = SimpleNamespace(custom_tracking_bom=None)
+		self.assertRaises(
+			frappe.ValidationError, ParentManufacturingOrder.get_bom_raw_materials, doc
+		)
+
+
+def _pending_row(
+	item_code, required_qty, pending_qty, item_type="diamond_item", **kwargs
+):
+	row = {
+		"item_type": item_type,
+		"item_code": item_code,
+		"required_qty": required_qty,
+		"requested_qty": required_qty - pending_qty,
+		"pending_qty": pending_qty,
+		"pcs": 70,
+		"from_warehouse": "RM-WH",
+		"warehouse": "DEPT-WH",
+		"is_customer_item": 0,
+		"sub_setting_type": None,
+	}
+	row.update(kwargs)
+	return row
+
+
+class TestValidateMaterialRequestItems(UnitTestCase):
+	"""The dialog's selection is checked against the pending qty worked out afresh on the
+	server, never against what the dialog showed."""
+
+	PENDING = [
+		_pending_row("D-NT-RO-7-+8-8.5", 1.736, 1.736),
+		_pending_row("M-G-22KT", 2.0, 0.8, item_type="metal_item", pcs=None),
+		_pending_row("F-SCREW", 1.1, 0, item_type="finding_item"),
+	]
+
+	def _run(self, items, pending=None, docstatus=1, blocked=False):
+		doc = SimpleNamespace(name="PMO-TEST-0001", docstatus=docstatus)
+
+		def refuse_while_blocked(pmo_name, what):
+			if blocked:
+				frappe.throw(f"{pmo_name} is on Hold. {what}")
+
+		with (
+			patch(
+				f"{PMO_MODULE}.get_pending_raw_materials",
+				return_value=[
+					dict(row) for row in (self.PENDING if pending is None else pending)
+				],
+			),
+			patch(
+				f"{PMO_MODULE}.refuse_while_blocked", side_effect=refuse_while_blocked
+			),
+			patch(f"{PMO_MODULE}.frappe.get_precision", return_value=3),
+		):
+			return validate_material_request_items(doc, items)
+
+	def assertRefused(self, items, message, **kwargs):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(items, **kwargs)
+		self.assertIn(message, str(caught.exception))
+		return str(caught.exception)
+
+	def test_draft_pmo_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0.8}],
+			"only for a submitted PMO",
+			docstatus=0,
+		)
+
+	def test_pmo_on_hold_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0.8}],
+			"No Material Request can be created for it.",
+			blocked=True,
+		)
+
+	def test_nothing_pending_shows_the_no_pending_message(self):
+		self.assertRefused(
+			[{"item_code": "F-SCREW", "qty": 1}],
+			"No pending raw materials are available for Material Request creation.",
+			pending=[_pending_row("F-SCREW", 1.1, 0)],
+		)
+
+	def test_empty_selection_is_refused(self):
+		self.assertRefused([], "Please select at least one raw material.")
+
+	def test_item_not_pending_in_the_bom_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "F-SCREW", "qty": 0.5}], "is not pending in the BOM"
+		)
+		self.assertRefused(
+			[{"item_code": "NOT-IN-BOM", "qty": 0.5}], "is not pending in the BOM"
+		)
+
+	def test_zero_or_negative_qty_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0}], "must be greater than 0"
+		)
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": -1}], "must be greater than 0"
+		)
+
+	def test_qty_above_pending_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0.801}],
+			"exceeds the pending quantity (0.8)",
+		)
+
+	def test_same_item_selected_twice_is_summed_against_pending(self):
+		self.assertRefused(
+			[
+				{"item_code": "M-G-22KT", "qty": 0.5},
+				{"item_code": "M-G-22KT", "qty": 0.5},
+			],
+			"(1.0) exceeds the pending quantity (0.8)",
+		)
+
+	def test_every_problem_is_reported_at_once(self):
+		message = self.assertRefused(
+			[
+				{"item_code": "NOT-IN-BOM", "qty": 1},
+				{"item_code": "M-G-22KT", "qty": 5},
+				{"item_code": "D-NT-RO-7-+8-8.5", "qty": 0},
+			],
+			"is not pending in the BOM",
+		)
+		self.assertIn("exceeds the pending quantity", message)
+		self.assertIn("must be greater than 0", message)
+
+	def test_exactly_the_pending_qty_is_accepted(self):
+		selected = self._run([{"item_code": "M-G-22KT", "qty": "0.8"}])
+		self.assertEqual(selected["metal_item"][0]["qty"], 0.8)
+
+	def test_selection_is_bucketed_with_the_bom_row_details(self):
+		selected = self._run(
+			[
+				{"item_code": "D-NT-RO-7-+8-8.5", "qty": 1.736},
+				{"item_code": "M-G-22KT", "qty": 0.5},
+			]
+		)
+		self.assertEqual(
+			selected,
+			{
+				"diamond_item": [
+					{
+						"item_code": "D-NT-RO-7-+8-8.5",
+						"qty": 1.736,
+						"from_warehouse": "RM-WH",
+						"warehouse": "DEPT-WH",
+						"is_customer_item": 0,
+						"sub_setting_type": None,
+						"pcs": 70,
+					}
+				],
+				"metal_item": [
+					{
+						"item_code": "M-G-22KT",
+						"qty": 0.5,
+						"from_warehouse": "RM-WH",
+						"warehouse": "DEPT-WH",
+						"is_customer_item": 0,
+						"sub_setting_type": None,
+						"pcs": None,
+					}
+				],
+			},
+		)
+
+	def test_bom_pcs_are_dropped_for_part_of_a_row(self):
+		selected = self._run([{"item_code": "D-NT-RO-7-+8-8.5", "qty": 1.0}])
+		self.assertIsNone(selected["diamond_item"][0]["pcs"])
+
+	def test_qty_is_spread_over_bom_rows_of_the_same_item(self):
+		selected = self._run(
+			[{"item_code": "D-NT-RO-7-+8-8.5", "qty": 0.7}],
+			pending=[
+				_pending_row("D-NT-RO-7-+8-8.5", 0.5, 0.5, sub_setting_type="Open"),
+				_pending_row("D-NT-RO-7-+8-8.5", 0.4, 0.4, sub_setting_type="Close"),
+			],
+		)
+		self.assertEqual(
+			[(row["qty"], row["sub_setting_type"]) for row in selected["diamond_item"]],
+			[(0.5, "Open"), (0.2, "Close")],
+		)
+
+
+class TestCreatePMOMaterialRequest(UnitTestCase):
+	"""The dialog's Create action: validate, create through the existing logic, note it."""
+
+	SELECTED = {"metal_item": [{"item_code": "M-G-22KT", "qty": 0.8}]}
+
+	def test_validated_selection_is_created_without_pmo_qty_multiplier(self):
+		doc = MagicMock()
+		doc.make_material_requests.return_value = ["MR-0001"]
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=doc),
+			patch(
+				f"{PMO_MODULE}.validate_material_request_items",
+				return_value=self.SELECTED,
+			) as validate,
+			patch(f"{PMO_MODULE}.add_material_request_comment") as comment,
+		):
+			created = create_pmo_material_request(
+				"PMO-TEST-0001", '[{"item_code": "M-G-22KT", "qty": 0.8}]'
+			)
+
+		self.assertEqual(created, ["MR-0001"])
+		doc.check_permission.assert_called_once_with("read")
+		validate.assert_called_once_with(doc, [{"item_code": "M-G-22KT", "qty": 0.8}])
+		doc.make_material_requests.assert_called_once_with(self.SELECTED, 1)
+		comment.assert_called_once_with(doc, ["MR-0001"])
+
+	def test_nothing_is_created_when_validation_fails(self):
+		doc = MagicMock()
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=doc),
+			patch(
+				f"{PMO_MODULE}.validate_material_request_items",
+				side_effect=frappe.ValidationError,
+			),
+		):
+			self.assertRaises(
+				frappe.ValidationError,
+				create_pmo_material_request,
+				"PMO-TEST-0001",
+				"[]",
+			)
+		doc.make_material_requests.assert_not_called()
+
+
+class TestMakeMaterialRequests(UnitTestCase):
+	"""The creation loop shared by PMO submit and the Create Material Request button."""
+
+	def _run(
+		self,
+		items,
+		qty_multiplier,
+		customer=None,
+		customer_owned=False,
+		default_gemstone_item="G-PER-DUM-PRE-CC",
+	):
+		pmo = SimpleNamespace(
+			name="PMO-TEST-0001",
+			manufacturer="MNF",
+			company="CO",
+			item_code="RI00650",
+			customer=customer,
+		)
+		created = []
+		real_get_value = frappe.db.get_value
+		fake_values = {
+			"Manufacturing Setting": default_gemstone_item,
+			"Warehouse": "Test_Department",
+		}
+
+		def get_value(doctype, *args, **kwargs):
+			if doctype in fake_values:
+				return fake_values[doctype]
+			return real_get_value(doctype, *args, **kwargs)
+
+		def new_doc(doctype):
+			mr = MagicMock(name="mr")
+			mr.name = f"MR-{len(created) + 1:04d}"
+			created.append(mr)
+			return mr
+
+		with (
+			patch(f"{PMO_MODULE}.frappe.new_doc", side_effect=new_doc),
+			patch(f"{PMO_MODULE}.frappe.get_value", return_value="LH"),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch(
+				f"{PMO_MODULE}.pmo_expects_customer_goods", return_value=customer_owned
+			),
+		):
+			names = ParentManufacturingOrder.make_material_requests(
+				pmo, items, qty_multiplier
+			)
+		return names, created
+
+	def _rows(self, mr):
+		return [c.args[1] for c in mr.append.call_args_list]
+
+	def test_qty_is_multiplied_and_one_request_per_item_type(self):
+		names, created = self._run(
+			{
+				"metal_item": [_bom_raw_material("M-G-22KT", 0.5)],
+				"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25, pcs=10)],
+			},
+			qty_multiplier=3,
+		)
+		self.assertEqual(names, ["MR-0001", "MR-0002"])
+		self.assertEqual(created[0].manufacturing_order, "PMO-TEST-0001")
+		self.assertEqual(self._rows(created[0])[0]["qty"], 1.5)
+		self.assertEqual(self._rows(created[1])[0]["qty"], 0.75)
+		self.assertEqual(self._rows(created[1])[0]["pcs"], 10)
+		for mr in created:
+			mr.save.assert_called_once()
+
+	def test_gemstone_is_requested_as_the_default_item_with_bom_item_in_description(
+		self,
+	):
+		_names, created = self._run(
+			{"gemstone_item": [_bom_raw_material("G-RUBY", 0.38)]}, qty_multiplier=1
+		)
+		row = self._rows(created[0])[0]
+		self.assertEqual(
+			(row["item_code"], row["description"], row["qty"]),
+			("G-PER-DUM-PRE-CC", "G-RUBY", 0.38),
+		)
+
+	# Existing PMO submit behaviour, unchanged by moving the loop into this method.
+
+	def test_request_header_is_filled_as_on_pmo_submit(self):
+		_names, created = self._run(
+			{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25)]},
+			qty_multiplier=1,
+		)
+		mr = created[0]
+		self.assertEqual(
+			(
+				mr.title,
+				mr.company,
+				mr.material_request_type,
+				mr.manufacturing_order,
+				mr.custom_manufacturer,
+				mr.custom_department,
+			),
+			(
+				"MRD-LH-(RI00650)-1",
+				"CO",
+				"Manufacture",
+				"PMO-TEST-0001",
+				"MNF",
+				"Test_Department",
+			),
+		)
+		self.assertEqual(mr.schedule_date, frappe.utils.nowdate())
+
+	def test_request_titles_are_numbered_per_item_type(self):
+		_names, created = self._run(
+			{
+				"metal_item": [_bom_raw_material("M-G-22KT", 0.5)],
+				"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25)],
+				"finding_item": [],
+				"gemstone_item": [_bom_raw_material("G-RUBY", 0.38)],
+			},
+			qty_multiplier=1,
+		)
+		self.assertEqual(
+			[mr.title for mr in created],
+			["MRM-LH-(RI00650)-1", "MRD-LH-(RI00650)-2", "MRG-LH-(RI00650)-3"],
+		)
+
+	def test_rows_of_one_item_type_go_on_one_request(self):
+		_names, created = self._run(
+			{
+				"diamond_item": [
+					_bom_raw_material(
+						"D-NT-RO-7-+8-8.5", 0.25, sub_setting_type="Open"
+					),
+					_bom_raw_material(
+						"D-NT-RO-7-+9-9.5", 0.1, sub_setting_type="Close"
+					),
+				]
+			},
+			qty_multiplier=2,
+		)
+		self.assertEqual(len(created), 1)
+		self.assertEqual(
+			[
+				(row["item_code"], row["qty"], row["custom_sub_setting_type"])
+				for row in self._rows(created[0])
+			],
+			[("D-NT-RO-7-+8-8.5", 0.5, "Open"), ("D-NT-RO-7-+9-9.5", 0.2, "Close")],
+		)
+
+	def test_company_owned_rows_carry_no_ownership_stamp(self):
+		_names, created = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 0.5)]}, qty_multiplier=1
+		)
+		row = self._rows(created[0])[0]
+		self.assertEqual((row["inventory_type"], row["customer"]), (None, None))
+
+	def test_customer_owned_request_is_stamped_on_header_and_rows(self):
+		_names, created = self._run(
+			{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25)]},
+			qty_multiplier=1,
+			customer="CUST-1",
+			customer_owned=True,
+		)
+		mr = created[0]
+		row = self._rows(mr)[0]
+		self.assertEqual((mr.customer, mr.inventory_type), ("CUST-1", "Customer Goods"))
+		self.assertEqual(
+			(row["inventory_type"], row["customer"]), ("Customer Goods", "CUST-1")
+		)
+
+	def test_customer_item_row_is_stamped_even_without_the_pmo_flag(self):
+		_names, created = self._run(
+			{
+				"diamond_item": [
+					_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25, is_customer_item=1)
+				]
+			},
+			qty_multiplier=1,
+			customer="CUST-1",
+		)
+		row = self._rows(created[0])[0]
+		self.assertEqual(
+			(row["inventory_type"], row["customer"]), ("Customer Goods", "CUST-1")
+		)
+
+	def test_customer_owned_rows_without_a_customer_are_refused(self):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(
+				{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25)]},
+				qty_multiplier=1,
+				customer_owned=True,
+			)
+		self.assertIn("the order has no Customer", str(caught.exception))
+
+	def test_zero_qty_bom_row_is_refused(self):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(
+				{"metal_item": [_bom_raw_material("M-G-22KT", 0)]}, qty_multiplier=1
+			)
+		self.assertIn("Please Check BOM Table", str(caught.exception))
+
+	def test_gemstone_without_default_gemstone_item_is_refused(self):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(
+				{"gemstone_item": [_bom_raw_material("G-RUBY", 0.38)]},
+				qty_multiplier=1,
+				default_gemstone_item=None,
+			)
+		self.assertIn("Default Gemstone Item is not set", str(caught.exception))
+
+
+class TestCreateMaterialRequestsOnSubmit(UnitTestCase):
+	"""PMO submit still requests the whole Tracking BOM x PMO qty, as before the refactor."""
+
+	def _pmo(self, bom="TB-0001", qty=3):
+		pmo = MagicMock()
+		pmo.custom_tracking_bom = bom
+		pmo.qty = qty
+		pmo.get_bom_raw_materials.return_value = {"metal_item": ["row"]}
+		return pmo
+
+	def test_whole_bom_is_requested_times_pmo_qty(self):
+		pmo = self._pmo()
+		bom_doc = MagicMock()
+		bom_doc.get.return_value = "Fixed"
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=bom_doc),
+			patch(f"{PMO_MODULE}.frappe.msgprint") as msgprint,
+		):
+			ParentManufacturingOrder.create_material_requests(pmo)
+
+		pmo.make_material_requests.assert_called_once_with({"metal_item": ["row"]}, 3)
+		msgprint.assert_called_once_with("Material Request Created !!")
+		bom_doc.save.assert_not_called()
+
+	def test_template_bom_gets_its_variants_set_before_it_is_read(self):
+		pmo = self._pmo()
+		bom_doc = MagicMock()
+		bom_doc.get.return_value = "Template"
+		order = MagicMock()
+		order.attach_mock(bom_doc.save, "bom_save")
+		order.attach_mock(pmo.get_bom_raw_materials, "read_bom")
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=bom_doc),
+			patch(f"{PMO_MODULE}.set_item_variant") as set_item_variant,
+			patch(f"{PMO_MODULE}.frappe.msgprint"),
+		):
+			ParentManufacturingOrder.create_material_requests(pmo)
+
+		set_item_variant.assert_called_once_with(bom_doc)
+		self.assertEqual([c[0] for c in order.mock_calls], ["bom_save", "read_bom"])
+
+	def test_missing_tracking_bom_is_refused_before_anything_is_created(self):
+		pmo = self._pmo(bom=None)
+		self.assertRaises(
+			frappe.ValidationError,
+			ParentManufacturingOrder.create_material_requests,
+			pmo,
+		)
+		pmo.make_material_requests.assert_not_called()
+
+
+class TestAddMaterialRequestComment(UnitTestCase):
+	def test_new_requests_are_noted_on_the_pmo_timeline(self):
+		doc = MagicMock()
+		with patch(
+			f"{PMO_MODULE}.get_link_to_form",
+			side_effect=lambda doctype, name: f"<a>{name}</a>",
+		):
+			add_material_request_comment(doc, ["MR-0001", "MR-0002"])
+		comment_type, content = doc.add_comment.call_args.args
+		self.assertEqual(comment_type, "Info")
+		self.assertIn("<a>MR-0001</a>, <a>MR-0002</a>", content)
+
+	def test_no_comment_without_requests(self):
+		doc = MagicMock()
+		add_material_request_comment(doc, [])
+		doc.add_comment.assert_not_called()
