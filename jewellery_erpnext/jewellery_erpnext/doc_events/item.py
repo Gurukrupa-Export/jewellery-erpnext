@@ -363,7 +363,18 @@ def calculate_item_wt_details(doc, bom=None, item=None):
 	return doc
 
 
+def set_chain_as_manufacturing_item(self):
+	"""Chains are made in-house: a new chain variant carries the flag that raises its
+	Finding Manufacturing Work Order, instead of waiting for someone to tick it."""
+	if self.variant_of == "F" and any(
+		row.attribute == "Finding Category" and row.attribute_value == "Chains"
+		for row in self.attributes
+	):
+		self.custom_is_manufacturing_item = 1
+
+
 def before_insert(self, method):
+	set_chain_as_manufacturing_item(self)
 	consumables_list = []
 	iav = frappe.qb.DocType("Item Attribute Value")
 
