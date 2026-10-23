@@ -31,6 +31,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	HOLD_DRAFT_STATE,
 	HOLD_STATE,
 	on_workflow_state_change,
+	pmo_blocking_state,
 	refuse_while_blocked,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
@@ -539,6 +540,19 @@ class ParentManufacturingOrder(Document):
 
 	def on_update(self):
 		on_workflow_state_change(self)
+
+	def onload(self):
+		# Jewellery Settings is readable by System Manager only, so the form cannot work
+		# out the Create Material Request role itself. A PMO on Hold or Closed, or one whose
+		# Tracking BOM is submitted, is refused by the server anyway, so the button is not
+		# offered for it.
+		self.set_onload(
+			"can_create_material_request",
+			self.docstatus == 1
+			and not pmo_blocking_state(self.name)
+			and tracking_bom_is_draft(self)
+			and can_create_pmo_material_request(),
+		)
 
 	def on_update_after_submit(self):
 		if self._state_change_only():
@@ -1865,26 +1879,89 @@ def create_mwo(pmo, doc, reason=None):
 	frappe.msgprint("Manufacturing Work Order for CAD/CAM Department is created.")
 
 
+def can_create_pmo_material_request(user=None):
+	"""True when ``user`` may use Create Material Request on a PMO: Administrator, System
+	Manager, or a holder of a role listed in Jewellery Settings. No role listed means
+	nobody else may."""
+	user = user or frappe.session.user
+	if user == "Administrator":
+		return True
+	roles = set(frappe.get_roles(user))
+	if "System Manager" in roles:
+		return True
+	# Rows of core's Has Role parented to Jewellery Settings never reach a user's own
+	# roles: frappe.get_roles reads only rows parented to a User.
+	allowed = frappe.get_all(
+		"Has Role",
+		filters={
+			"parenttype": "Jewellery Settings",
+			"parentfield": "pmo_material_request_roles",
+		},
+		pluck="role",
+	)
+	return bool(roles.intersection(role for role in allowed if role))
+
+
+def check_pmo_material_request_role():
+	if not can_create_pmo_material_request():
+		frappe.throw(
+			_("You are not permitted to create Material Requests from a PMO."),
+			frappe.PermissionError,
+		)
+
+
+def tracking_bom_is_draft(doc):
+	"""A submitted Tracking BOM means the finished item has been manufactured, so there is
+	nothing left to request; only a draft one can still change."""
+	return (
+		frappe.db.get_value("Tracking Bom", doc.custom_tracking_bom, "docstatus") == 0
+		if doc.custom_tracking_bom
+		else False
+	)
+
+
+def check_tracking_bom_is_draft(doc):
+	if not tracking_bom_is_draft(doc):
+		frappe.throw(
+			_(
+				"Material Request can be created only while the PMO's Tracking BOM is in draft. "
+				"A submitted Tracking BOM means the item is already manufactured."
+			)
+		)
+
+
 @frappe.whitelist()
 def get_pmo_raw_materials(pmo_name):
 	"""Raw materials of a submitted PMO's updated Tracking BOM that still have a quantity
 	left to request, for the Create Material Request button."""
+	check_pmo_material_request_role()
 	doc = frappe.get_doc("Parent Manufacturing Order", pmo_name)
 	doc.check_permission("read")
 	if doc.docstatus != 1:
 		frappe.throw(_("Material Request can be created only for a submitted PMO."))
+	check_tracking_bom_is_draft(doc)
 
 	return [row for row in get_pending_raw_materials(doc) if row["pending_qty"] > 0]
 
 
 @frappe.whitelist()
-def create_pmo_material_request(pmo_name, items):
-	"""Create draft Material Requests for the raw materials selected in the Create Material
-	Request dialog. ``items`` is a list of ``{"item_code", "qty"}``; returns the names of
-	the requests created."""
+def create_pmo_material_request(pmo_name, items=None):
+	"""Create draft Material Requests for the PMO's pending raw materials; returns the names
+	of the requests created. ``items`` is a list of ``{"item_code", "qty"}``; without it,
+	as from the Create Material Request button, every pending raw material is requested at
+	its full pending quantity."""
+	check_pmo_material_request_role()
 	doc = frappe.get_doc("Parent Manufacturing Order", pmo_name)
 	doc.check_permission("read")
-	selected = validate_material_request_items(doc, frappe.parse_json(items) or [])
+	if items is None:
+		items = [
+			{"item_code": row["item_code"], "qty": row["pending_qty"]}
+			for row in get_pending_raw_materials(doc)
+			if row["pending_qty"] > 0
+		]
+	else:
+		items = frappe.parse_json(items) or []
+	selected = validate_material_request_items(doc, items)
 	# The selected quantities are already for the whole order, so no PMO qty multiplier.
 	material_requests = doc.make_material_requests(selected, 1)
 	add_material_request_comment(doc, material_requests)
@@ -2021,6 +2098,7 @@ def validate_material_request_items(doc, items):
 	if doc.docstatus != 1:
 		frappe.throw(_("Material Request can be created only for a submitted PMO."))
 	refuse_while_blocked(doc.name, _("No Material Request can be created for it."))
+	check_tracking_bom_is_draft(doc)
 
 	pending_by_item = {}
 	for row in get_pending_raw_materials(doc):
