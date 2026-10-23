@@ -97,7 +97,22 @@ class DepartmentIR(Document):
 					"department_ir_operation", {"manufacturing_operation": row.name}
 				)
 
+	def before_save(self):
+		self.set_parent_manufacturing_order_count()
+
+	def set_parent_manufacturing_order_count(self):
+		# Rebuilt from the whole table each time, so added, edited and deleted rows all count.
+		self.parent_manufacturing_order_count = len(
+			{
+				row.parent_manufacturing_order
+				for row in self.department_ir_operation
+				if row.parent_manufacturing_order
+			}
+		)
+
 	def before_submit(self):
+		# An insert-and-submit (REST, docstatus=1) runs before_submit instead of before_save.
+		self.set_parent_manufacturing_order_count()
 		if not self.department_ir_operation:
 			frappe.throw("Add row in <b>Department IR Operations Table</b>")
 
