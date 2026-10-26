@@ -8,7 +8,6 @@ from frappe import _
 from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.bom.doc_events.utils import (
-	follow_first_metal_row,
 	product_ratio,
 	update_specifications,
 )
@@ -21,8 +20,6 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 def before_validate(self, method):
 	validate_rating(self)
 	validate_weight(self)
-	# Every BOM type: Template BOMs - the ones KGGK receives - never reach update_specifications.
-	follow_first_metal_row(self)
 	if self.bom_type == "Quotation" or self.docstatus == 1:
 		precision_data = frappe.db.get_value(
 			"Customer",
@@ -662,31 +659,30 @@ def set_specifications_for_modified_bom(self, fields_list):
 # 	)
 # 	return result
 
-
 @frappe.whitelist()
 def check_diamond_sieve_size_tolerance_value_exist(filters):
-	if isinstance(filters, str):
-		filters = frappe.parse_json(filters)
+    if isinstance(filters, str):
+        filters = frappe.parse_json(filters)
 
-	result = frappe.get_all(
-		"Attribute Value Diamond Sieve Size",
-		filters=filters,
-		fields=[
-			"name",
-			"parent",
-			"diamond_shape",
-			"diamond_quality",
-			"from_weight",
-			"to_weight",
-			"for_universal_value",
-		],
-	)
+    result = frappe.get_all(
+        "Attribute Value Diamond Sieve Size",
+        filters=filters,
+        fields=[
+            "name",
+            "parent",
+            "diamond_shape",
+            "diamond_quality",
+            "from_weight",
+            "to_weight",
+            "for_universal_value",
+        ],
+    )
 
-	return {
-		"site": frappe.local.site,
-		"filters_received": filters,
-		"result": result,
-	}
+    return {
+        "site": frappe.local.site,
+        "filters_received": filters,
+        "result": result,
+    }
 
 
 @frappe.whitelist()
