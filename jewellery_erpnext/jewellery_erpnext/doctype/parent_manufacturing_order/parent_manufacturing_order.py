@@ -1975,47 +1975,47 @@ def check_tracking_bom_is_draft(doc):
 
 
 @frappe.whitelist()
-def get_pmo_raw_materials(pmo_name):
-	"""Raw materials of a submitted PMO's updated Tracking BOM that still have a quantity
-	left to request, for the Create Material Request button."""
-	check_pmo_material_request_role()
-	doc = frappe.get_doc("Parent Manufacturing Order", pmo_name)
-	doc.check_permission("read")
-	if doc.docstatus != 1:
-		frappe.throw(_("Material Request can be created only for a submitted PMO."))
-	refuse_while_blocked(doc.name, _("No Material Request can be created for it."))
-	check_tracking_bom_is_draft(doc)
-
-	return [row for row in get_pending_raw_materials(doc) if row["pending_qty"] > 0]
-
-
-@frappe.whitelist()
 def create_pmo_material_request(pmo_name, items=None):
 	"""Create draft Material Requests for the PMO's pending raw materials; returns the names
 	of the requests created. ``items`` is a list of ``{"item_code", "qty"}``; without it,
 	as from the Create Material Request button, every pending raw material is requested at
-	its full pending quantity."""
+	its full pending quantity.
+
+	Locking: the PMO row first, then the PMO's own Material Requests (a narrow, indexed
+	range). The Hold/Open/Close flow takes the same two in the same order, and Material
+	Request flows only read the PMO, so the button queues behind them instead of deadlocking.
+	A second click or user waits here until the first commits."""
 	check_pmo_material_request_role()
-	# One creation per PMO at a time. A second click or user waits here until the first
-	# commits; its pending quantities then come from a locking read (see
-	# _get_requested_qty_by_item), which sees the requests just committed even though this
-	# transaction's snapshot is older under REPEATABLE READ.
-	frappe.db.get_value("Parent Manufacturing Order", pmo_name, "name", for_update=True)
-	doc = frappe.get_doc("Parent Manufacturing Order", pmo_name)
-	doc.check_permission("read")
-	if items is None:
-		items = [
-			{"item_code": row["item_code"], "qty": row["pending_qty"]}
-			for row in get_pending_raw_materials(doc, for_update=True)
-			if row["pending_qty"] > 0
-		]
-	else:
-		items = frappe.parse_json(items) or []
-	selected = validate_material_request_items(doc, items)
-	# The selected quantities are already for the whole order, so no PMO qty multiplier.
-	material_requests = doc.make_material_requests(selected, 1)
-	add_material_request_comment(doc, material_requests)
-	return material_requests
+	try:
+		# The locking read of the requests below sees the ones just committed even though
+		# this transaction's snapshot is older under REPEATABLE READ.
+		frappe.db.get_value(
+			"Parent Manufacturing Order", pmo_name, "name", for_update=True
+		)
+		doc = frappe.get_doc("Parent Manufacturing Order", pmo_name)
+		doc.check_permission("read")
+		if items is None:
+			items = [
+				{"item_code": row["item_code"], "qty": row["pending_qty"]}
+				for row in get_pending_raw_materials(doc, for_update=True)
+				if row["pending_qty"] > 0
+			]
+		else:
+			items = frappe.parse_json(items) or []
+		selected = validate_material_request_items(doc, items)
+		# The selected quantities are already for the whole order, so no PMO qty multiplier.
+		material_requests = doc.make_material_requests(selected, 1)
+		add_material_request_comment(doc, material_requests)
+		return material_requests
+	except (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
+		# Another session held the PMO or one of its requests past the lock wait. Nothing
+		# was created; say so instead of showing the raw database error.
+		frappe.throw(
+			_(
+				"Another change to this PMO's Material Requests is in progress. "
+				"Please try again in a moment."
+			)
+		)
 
 
 def get_pending_raw_materials(doc, for_update=False):
