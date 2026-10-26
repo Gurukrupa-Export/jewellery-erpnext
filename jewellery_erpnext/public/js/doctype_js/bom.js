@@ -10,6 +10,12 @@ frappe.ui.form.on("BOM", {
 });
 
 frappe.ui.form.on("BOM Metal Detail", {
+	metal_touch: function (frm, cdt, cdn) {
+		follow_first_metal_row(frm, cdt, cdn, "metal_touch");
+	},
+	metal_purity: function (frm, cdt, cdn) {
+		follow_first_metal_row(frm, cdt, cdn, "metal_purity");
+	},
 	cad_weight: function (frm, cdt, cdn) {
 		let d = locals[cdt][cdn];
 		if (d.cad_weight && d.cad_to_finish_ratio) {
@@ -62,58 +68,42 @@ frappe.ui.form.on("BOM Diamond Detail", {
 	// 		},
 	// 	});
 	// },
-	 diamond_sieve_size: function (frm, cdt, cdn) {
-        let d = locals[cdt][cdn];
+	diamond_sieve_size: function (frm, cdt, cdn) {
+		let d = locals[cdt][cdn];
 
-        // Fetch weight in carats from Attribute Value
-        if (d.diamond_sieve_size) {
-            frappe.db.get_value(
-                "Attribute Value",
-                d.diamond_sieve_size,
-                "weight_in_cts"
-            ).then((r) => {
-                if (r.message) {
-                    frappe.model.set_value(
-                        cdt,
-                        cdn,
-                        "weight_per_pcs",
-                        r.message.weight_in_cts || 0
-                    );
-                }
-            });
-        }
+		// Fetch weight in carats from Attribute Value
+		if (d.diamond_sieve_size) {
+			frappe.db.get_value("Attribute Value", d.diamond_sieve_size, "weight_in_cts").then((r) => {
+				if (r.message) {
+					frappe.model.set_value(cdt, cdn, "weight_per_pcs", r.message.weight_in_cts || 0);
+				}
+			});
+		}
 
-        // Check diamond sieve size tolerance
-        let filter_value = {
-            parent: d.diamond_sieve_size,
-            diamond_shape: d.stone_shape,
-        };
+		// Check diamond sieve size tolerance
+		let filter_value = {
+			parent: d.diamond_sieve_size,
+			diamond_shape: d.stone_shape,
+		};
 
-        frappe.call({
-            method: "jewellery_erpnext.jewellery_erpnext.doc_events.bom.check_diamond_sieve_size_tolerance_value_exist",
-            args: {
-                filters: filter_value,
-            },
-            callback: function (r) {
-                if (r.exc || !r.message) {
-                    return;
-                }
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doc_events.bom.check_diamond_sieve_size_tolerance_value_exist",
+			args: {
+				filters: filter_value,
+			},
+			callback: function (r) {
+				if (r.exc || !r.message) {
+					return;
+				}
 
-                let records = r.message.result || [];
+				let records = r.message.result || [];
 
-                if (
-                    records.length === 0 &&
-                    d.stone_shape === "Round"
-                ) {
-                    frappe.msgprint(
-                        __(
-                            "Please Insert Diamond Sieve Size Tolerance at Attribute Value"
-                        )
-                    );
-                }
-            },
-        });
-    },
+				if (records.length === 0 && d.stone_shape === "Round") {
+					frappe.msgprint(__("Please Insert Diamond Sieve Size Tolerance at Attribute Value"));
+				}
+			},
+		});
+	},
 	pcs: function (frm, cdt, cdn) {
 		let d = locals[cdt][cdn];
 		if (d.quantity == 0.0) {
@@ -130,12 +120,7 @@ frappe.ui.form.on("BOM Diamond Detail", {
 						let weight_in_cts = r.message[0].weight_in_cts;
 						console.log(weight_in_cts);
 						frappe.model.set_value(d.doctype, d.name, "weight_per_pcs", weight_in_cts);
-						frappe.model.set_value(
-							d.doctype,
-							d.name,
-							"quantity",
-							flt(d.pcs * weight_in_cts)
-						);
+						frappe.model.set_value(d.doctype, d.name, "quantity", flt(d.pcs * weight_in_cts));
 					}
 				},
 			});
@@ -293,12 +278,27 @@ function calculate_total(frm) {
 	frm.set_value("finding_weight", finding_weight);
 	frm.set_value("metal_and_finding_weight", frm.doc.total_metal_weight + frm.doc.finding_weight);
 	if (frm.doc.metal_and_finding_weight) {
-		frm.set_value(
-			"gold_to_diamond_ratio",
-			frm.doc.metal_and_finding_weight / frm.doc.diamond_weight
-		);
+		frm.set_value("gold_to_diamond_ratio", frm.doc.metal_and_finding_weight / frm.doc.diamond_weight);
 	}
 	if (frm.doc.total_diamond_pcs) {
 		frm.set_value("diamond_ratio", frm.doc.diamond_weight / frm.doc.total_diamond_pcs);
+	}
+}
+
+// The Specification tab's Metal Touch / Metal Purity follow the first metal row, as on the server
+// (`follow_first_metal_row`), which applies the same rule on save. A cleared row leaves them as
+// they are.
+function first_metal_row(frm) {
+	return (frm.doc.metal_detail || []).reduce(
+		(first, row) => (!first || row.idx < first.idx ? row : first),
+		null
+	);
+}
+
+function follow_first_metal_row(frm, cdt, cdn, field) {
+	const row = locals[cdt][cdn];
+	const first = first_metal_row(frm);
+	if (first && first.name === row.name && row[field] && frm.doc[field] !== row[field]) {
+		frm.set_value(field, row[field]);
 	}
 }
