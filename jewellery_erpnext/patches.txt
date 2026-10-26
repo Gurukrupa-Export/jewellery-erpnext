@@ -123,3 +123,4 @@ jewellery_erpnext.patches.enable_serial_and_batch_no_for_item
 jewellery_erpnext.patches.split_sales_order_finding_weight #2026-10-23 (gms) labels
 jewellery_erpnext.patches.add_other_weight_e_invoice_item
 jewellery_erpnext.patches.add_sales_order_item_customer_material_weights
+jewellery_erpnext.patches.add_sales_order_item_bom_index
