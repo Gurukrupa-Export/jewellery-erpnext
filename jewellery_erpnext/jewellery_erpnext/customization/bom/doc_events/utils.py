@@ -1,6 +1,3 @@
-import frappe
-
-
 def product_ratio(self):
 	gold_wt = 0.0
 	for gold in self.metal_detail:
@@ -24,6 +21,9 @@ def follow_first_metal_row(self):
 	row's value: keeping a "deliberately different" header cannot work while the BOM Client
 	Scripts reset it from the header Metal Touch on every refresh, which made a hand-set value
 	and a script-set one look the same. A row cleared to nothing never clears the header.
+
+	Only Metal Touch and Metal Purity: Metal Type and Metal Colour keep `update_specifications`'
+	fill-while-blank rule, as nothing reported them stale.
 	"""
 	row = _first_metal_row(self)
 	if not row:
@@ -36,7 +36,8 @@ def follow_first_metal_row(self):
 
 
 def _first_metal_row(doc):
-	"""The metal row the header copies from: first by idx, as `update_specifications` reads it."""
+	"""The metal row the header copies from: the lowest idx. `update_specifications` reads
+	``metal_detail[0]``, the same row whenever the table is in idx order, as a saved BOM is."""
 	rows = doc.get("metal_detail") or []
 	return min(rows, key=lambda row: row.get("idx") or 0) if rows else None
 

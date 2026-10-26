@@ -12,6 +12,7 @@ import frappe
 from jewellery_erpnext.jewellery_erpnext.customization.bom.doc_events.utils import (
 	follow_first_metal_row,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events import bom as bom_events
 
 
 class _BOM(frappe._dict):
@@ -74,6 +75,64 @@ class TestFollowFirstMetalRow(unittest.TestCase):
 		follow_first_metal_row(bom)
 
 		self.assertEqual((bom.metal_touch, bom.metal_purity), ("22KT", "91.75"))
+
+
+class TestBeforeValidateWiring(unittest.TestCase):
+	"""The helper is only useful if every BOM save reaches it - the original bug was a call that
+	only Quotation and submitted BOMs ever made."""
+
+	def test_the_bom_hook_is_registered(self):
+		hooks = (
+			frappe.get_hooks("doc_events").get("BOM", {}).get("before_validate") or []
+		)
+		self.assertIn(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate", hooks
+		)
+
+	def test_a_template_bom_follows_through_before_validate(self):
+		"""A draft Template BOM never enters the Quotation/submitted block, so this fails if the
+		call is removed or moved back inside it."""
+		bom = _bom("22KT", "91.75", [_row(1, "22KT", "92.5")])
+		bom.update(
+			bom_type="Template",
+			docstatus=0,
+			diamond_detail=[],
+			finding_detail=[],
+			gemstone_detail=[],
+			other_detail=[],
+		)
+
+		bom_events.before_validate(bom, "before_validate")
+
+		self.assertEqual((bom.metal_touch, bom.metal_purity), ("22KT", "92.5"))
+
+
+class TestTemplateBOMSave(unittest.TestCase):
+	"""A real save of a draft Template BOM already on the site, rolled back afterwards. Skipped on
+	a site without one - no test here builds BOMs from scratch."""
+
+	def tearDown(self):
+		frappe.db.rollback()
+
+	def test_the_saved_header_follows_the_first_metal_row(self):
+		name = frappe.db.get_value(
+			"BOM",
+			{"bom_type": "Template", "docstatus": 0, "is_active": 1},
+			"name",
+			order_by="modified desc",
+		)
+		bom = frappe.get_doc("BOM", name) if name else None
+		if not bom or not bom.metal_detail:
+			self.skipTest("no draft Template BOM with metal rows on this site")
+
+		first = min(bom.metal_detail, key=lambda row: row.idx)
+		purity = "75.4" if first.metal_purity != "75.4" else "91.75"
+		if not frappe.db.exists("Attribute Value", purity):
+			self.skipTest(f"Attribute Value {purity} is not on this site")
+		first.metal_purity = purity
+		bom.save(ignore_permissions=True)
+
+		self.assertEqual(frappe.db.get_value("BOM", name, "metal_purity"), purity)
 
 
 if __name__ == "__main__":
