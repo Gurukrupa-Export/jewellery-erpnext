@@ -1,11 +1,13 @@
 """
 Add per-Sales-Order precision-override custom fields to Sales Order.
 
-These two Check fields let a Sales Order override the customer-level precision
+These Check fields let a Sales Order override the customer-level precision
 defaults used when the BOM is (re)built during Sales Order validation
 (_get_bom_context in doc_events/sales_order.py):
   - custom_precision            -> when ticked, forces metal_precision = 2
   - custom_precision_for_stone  -> when ticked, forces stone_precision = 2
+  - custom_precision_for_gemstone -> when ticked, forces gemstone_precision = 3
+    (gemstones only; custom_precision_for_stone still covers gemstones too)
 
 They are declared only in custom_fields/sales_order.json, but this app's
 custom_fields/*.json are dead config on real and CI sites: the after_migrate
@@ -39,6 +41,14 @@ def execute():
 				"fieldtype": "Check",
 				"label": "Precision For Stone(2 Digit)",
 				"insert_after": "custom_precision",
+				"is_system_generated": 1,
+				"module": "Jewellery Erpnext",
+			},
+			{
+				"fieldname": "custom_precision_for_gemstone",
+				"fieldtype": "Check",
+				"label": "Precision For Gemstone(2 Digit)",
+				"insert_after": "custom_precision_for_stone",
 				"is_system_generated": 1,
 				"module": "Jewellery Erpnext",
 			},

@@ -12,6 +12,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.sales_order import (
 	_get_bom_context,
+	_keep_customer_item_flags,
 	before_submit,
 	validate_sales_type,
 )
@@ -20,6 +21,9 @@ from jewellery_erpnext.jewellery_erpnext.tests.test_quotation import (
 )
 from jewellery_erpnext.patches.add_sales_order_precision_fields import (
 	execute as provision_precision_fields,
+)
+from jewellery_erpnext.patches.split_sales_order_finding_weight import (
+	execute as split_finding_weight,
 )
 
 
@@ -194,13 +198,87 @@ class TestSalesOrder(IntegrationTestCase):
 _SO_MODULE = "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order"
 
 
+class TestSalesOrderSplitFindingWeight(IntegrationTestCase):
+	FIELDS = ("custom_chain_finding_weight", "custom_other_finding_weight")
+
+	def test_patch_provisions_split_finding_fields(self):
+		# Idempotent: a re-run must not add another column break.
+		split_finding_weight()
+		split_finding_weight()
+
+		for doctype in ("Sales Order", "Sales Order Item"):
+			meta = frappe.get_meta(doctype)
+			for fieldname in self.FIELDS:
+				self.assertIsNotNone(
+					meta.get_field(fieldname), f"{doctype}.{fieldname}"
+				)
+				self.assertTrue(frappe.db.has_column(doctype, fieldname))
+
+		so_meta = frappe.get_meta("Sales Order")
+		self.assertTrue(so_meta.get_field("custom_finding_weight").hidden)
+		self.assertFalse(
+			frappe.get_meta("Sales Order Item")
+			.get_field("custom_finding_weight")
+			.hidden
+		)
+
+		# 5 columns x 2 rows: exactly four column breaks in the weight block.
+		breaks = frappe.get_all(
+			"Custom Field",
+			filters={"dt": "Sales Order", "fieldname": ["like", "custom_weight_col_%"]},
+			pluck="fieldname",
+		)
+		self.assertEqual(len(breaks), 4)
+
+
+class TestKeepCustomerItemFlags(IntegrationTestCase):
+	"""Outwork ticks made in the Edit BOM dialog survive the rebuild from the serial's BOM."""
+
+	def _doc(self, metal=1, diamond=2, gemstone=0):
+		return frappe._dict(
+			metal_detail=[frappe._dict(is_customer_item=0) for _ in range(metal)],
+			diamond_detail=[frappe._dict(is_customer_item=0) for _ in range(diamond)],
+			gemstone_detail=[frappe._dict(is_customer_item=0) for _ in range(gemstone)],
+		)
+
+	def _run(self, doc, previous):
+		def get_all(child_doctype, filters, **kwargs):
+			return previous[filters["parentfield"]]
+
+		with patch(f"{_SO_MODULE}.frappe.get_all", side_effect=get_all):
+			_keep_customer_item_flags(doc, "BOM-PREVIOUS")
+
+	def test_flags_copied_by_position(self):
+		doc = self._doc()
+		self._run(
+			doc, {"metal_detail": [1], "diamond_detail": [0, 1], "gemstone_detail": []}
+		)
+
+		self.assertEqual([r.is_customer_item for r in doc.metal_detail], [1])
+		self.assertEqual([r.is_customer_item for r in doc.diamond_detail], [0, 1])
+
+	def test_table_with_changed_row_count_is_left_alone(self):
+		doc = self._doc(diamond=2)
+		self._run(
+			doc,
+			{"metal_detail": [1], "diamond_detail": [1, 1, 1], "gemstone_detail": []},
+		)
+
+		self.assertEqual([r.is_customer_item for r in doc.metal_detail], [1])
+		self.assertEqual([r.is_customer_item for r in doc.diamond_detail], [0, 0])
+
+
 class TestSalesOrderPrecisionFields(IntegrationTestCase):
 	def test_patch_provisions_precision_fields(self):
 		# Idempotent: a no-op once the fields already exist.
 		provision_precision_fields()
 
 		meta = frappe.get_meta("Sales Order")
-		for fieldname in ("custom_precision", "custom_precision_for_stone"):
+		for fieldname in (
+			"custom_precision",
+			"custom_precision_for_stone",
+			"custom_precision_for_gemstone",
+		):
 			self.assertTrue(
 				meta.has_field(fieldname),
 				f"Sales Order.{fieldname} is missing -- _get_bom_context would raise "
@@ -237,6 +315,7 @@ class TestSalesOrderPrecisionFields(IntegrationTestCase):
 		# Override off -> the Customer's configured metal/stone precision wins.
 		self.assertEqual(ctx.metal_precision, 5)
 		self.assertEqual(ctx.stone_precision, 6)
+		self.assertEqual(ctx.gemstone_precision, 6)
 
 	def test_bom_context_override_collapses_to_3(self):
 		so = frappe._dict(
@@ -253,6 +332,20 @@ class TestSalesOrderPrecisionFields(IntegrationTestCase):
 		# Checkbox on -> forced 3 regardless of the Customer value.
 		self.assertEqual(ctx.metal_precision, 3)
 		self.assertEqual(ctx.stone_precision, 3)
+		self.assertEqual(ctx.gemstone_precision, 3)
+
+	def test_bom_context_gemstone_override_leaves_diamond_alone(self):
+		so = frappe._dict(customer="Test", custom_precision_for_gemstone=1)
+		with patch(
+			f"{_SO_MODULE}.frappe.db.get_single_value", MagicMock(return_value=3)
+		), patch(
+			f"{_SO_MODULE}.frappe.db.get_value",
+			MagicMock(return_value=("Internal", 4, 5, 6, None, None)),
+		):
+			ctx = _get_bom_context(so)
+
+		self.assertEqual(ctx.gemstone_precision, 3)
+		self.assertEqual(ctx.stone_precision, 6)
 
 	def test_bom_context_does_not_raise_when_field_absent(self):
 		# A bare doc with no custom_precision attribute must not crash the read.
