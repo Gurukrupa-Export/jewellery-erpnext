@@ -1228,9 +1228,9 @@ class TestPullingFromAWorkOrder(_Base):
 		)
 		calls = []
 
-		def transfer(mr, p, qty, batch, from_wh, to_wh, customer):
+		def transfer(mr, p, qty, batch, from_wh, to_wh, customer, outward=False):
 			calls.append(
-				("transfer", p.item_code, qty, batch, from_wh, to_wh, customer)
+				("transfer", p.item_code, qty, batch, from_wh, to_wh, customer, outward)
 			)
 			return "SE-REG" if customer is None else "SE-CUST"
 
@@ -1251,9 +1251,19 @@ class TestPullingFromAWorkOrder(_Base):
 		self.assertEqual(
 			calls,
 			[
-				("transfer", ITEM_22KT, 2.36, "REG-22", WAXING, WAXING_WO, None),
+				# Regular Stock into the work order, the customer's batch back out of it.
+				("transfer", ITEM_22KT, 2.36, "REG-22", WAXING, WAXING_WO, None, False),
 				("reservation", "2j9cif0g4c", R02_A, "REG-22"),
-				("transfer", ITEM_22KT, 2.36, R02_A, WAXING_WO, WAXING, CUSTOMER_03997),
+				(
+					"transfer",
+					ITEM_22KT,
+					2.36,
+					R02_A,
+					WAXING_WO,
+					WAXING,
+					CUSTOMER_03997,
+					True,
+				),
 				("log", "SE-REG", False, 2),
 				("log", "SE-CUST", True, 2),
 				("snc", WORK_ORDER),
@@ -1739,9 +1749,10 @@ class TestTheLastThousandth(_Base):
 
 
 class TestWorkOrderLegs(_Base):
-	"""_work_order_transfer: a Material Transfer (WORK ORDER) naming the work order."""
+	"""_work_order_transfer: a leg naming the work order -- into it a Material Transfer
+	(WORK ORDER), back out of it a Material Receive (WORK ORDER)."""
 
-	def test_the_leg_names_the_work_order_and_keeps_the_bridge_out(self):
+	def _leg(self, *args, **kwargs):
 		se = SimpleNamespace(
 			flags=frappe._dict(), insert=MagicMock(), name="SE-WO", values={}
 		)
@@ -1751,12 +1762,29 @@ class TestWorkOrderLegs(_Base):
 		with patch(f"{_C}._new_se", return_value=se) as new_se, patch(
 			f"{_C}._append_item", side_effect=lambda doc, row: rows.append(row)
 		), patch(f"{_C}._submit_consuming_stock_entry") as submit:
-			name = cg_settle._work_order_transfer(
-				_mr(), pull, 2.36, R02_A, WAXING_WO, WAXING, CUSTOMER_03997
-			)
-
+			name = cg_settle._work_order_transfer(_mr(), pull, *args, **kwargs)
 		self.assertEqual(name, "SE-WO")
-		self.assertEqual(new_se.call_args.args[1], cg_settle.WORK_ORDER_SE_TYPE)
+		submit.assert_called_once_with(se)
+		return new_se.call_args.args[1], se, rows
+
+	def test_the_leg_into_the_work_order_is_a_transfer(self):
+		se_type, se, rows = self._leg(2.36, "REG-22", WAXING, WAXING_WO, None)
+
+		self.assertEqual(se_type, cg_settle.WORK_ORDER_SE_TYPE)
+		self.assertEqual(se_type, "Material Transfer (WORK ORDER)")
+		self.assertTrue(se.flags.skip_mwo_reservation)
+		self.assertEqual(
+			(rows[0]["batch_no"], rows[0]["s_warehouse"], rows[0]["t_warehouse"]),
+			("REG-22", WAXING, WAXING_WO),
+		)
+
+	def test_the_leg_out_of_the_work_order_names_it_and_keeps_the_bridge_out(self):
+		se_type, se, rows = self._leg(
+			2.36, R02_A, WAXING_WO, WAXING, CUSTOMER_03997, outward=True
+		)
+
+		self.assertEqual(se_type, cg_settle.WORK_ORDER_RECEIVE_SE_TYPE)
+		self.assertEqual(se_type, "Material Receive (WORK ORDER)")
 		self.assertEqual(
 			se.values,
 			{
@@ -1765,8 +1793,8 @@ class TestWorkOrderLegs(_Base):
 				"manufacturing_operation": OPERATION,
 			},
 		)
-		# Settle writes the reservation and MOP Log itself; the generic bridge would log
-		# the way out as +qty.
+		# Settle writes the reservation and MOP Log itself; the generic bridge would write
+		# a second MOP Log row for a receive.
 		self.assertTrue(se.flags.skip_mwo_reservation)
 		self.assertEqual(
 			(
@@ -1788,7 +1816,6 @@ class TestWorkOrderLegs(_Base):
 				"PMO-KGJPL-RI00413-004-0001",
 			),
 		)
-		submit.assert_called_once_with(se)
 
 
 class TestTheCustomersOtherBatches(_Base):

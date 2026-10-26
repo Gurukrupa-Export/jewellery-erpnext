@@ -88,9 +88,12 @@ REGULAR_STOCK = "Regular Stock"
 # add_to_transit = 0, giving the direct one-shot transfer.
 TRANSFER_SE_TYPE = "Material Transfer"
 REPACK_SE_TYPE = "Repack-Metal Conversion"
-# The type a work-order issue is booked under. Settle's legs into and out of a work order
-# use it too, naming the work order and its operation, so they are found with its issues.
+# The type a work-order issue is booked under. Settle's leg into a work order uses it,
+# naming the work order and its operation, so it is found with the work order's issues.
 WORK_ORDER_SE_TYPE = "Material Transfer (WORK ORDER)"
+# The type a work order's metal comes back under (Make Receive): Settle's leg out of a work
+# order, the customer's batch received back.
+WORK_ORDER_RECEIVE_SE_TYPE = "Material Receive (WORK ORDER)"
 
 # The customer's metal lost in production: a metal-loss (ML) item batch in a Scrap
 # warehouse, still the customer's. Settle converts it back like any other purity, last.
@@ -1929,7 +1932,13 @@ def _pull_from_work_orders(mr, actionable):
 					pairs.append((item_code, warehouse))
 
 	preallocate_series_for_docs(
-		*series_stubs(mr.company, TRANSFER_SE_TYPE, REPACK_SE_TYPE, WORK_ORDER_SE_TYPE)
+		*series_stubs(
+			mr.company,
+			TRANSFER_SE_TYPE,
+			REPACK_SE_TYPE,
+			WORK_ORDER_SE_TYPE,
+			WORK_ORDER_RECEIVE_SE_TYPE,
+		)
 	)
 	lock_bins(pairs)
 	return [_pull_from_work_order(mr, pull) for pull in pulls.values()]
@@ -1961,7 +1970,14 @@ def _pull_from_work_order(mr, pull):
 	)
 	reservation = _move_reservation(pull.reservation, pull.batch_no, regular_batch)
 	customer_entry = _work_order_transfer(
-		mr, pull, qty, pull.batch_no, pull.warehouse, pull.landing, pull.customer
+		mr,
+		pull,
+		qty,
+		pull.batch_no,
+		pull.warehouse,
+		pull.landing,
+		pull.customer,
+		outward=True,
 	)
 	# Both rows at the operation's highest flow index, so readers ordering by it -- the
 	# end-of-day sync, the finished-goods receive -- take them as the latest.
@@ -2018,8 +2034,8 @@ def _highest_flow_index(operation):
 
 def _log_on_operation(entry_name, pull, outward, flow_index):
 	"""Record one leg of a pull on the work order's operation, as a WORK ORDER entry's own
-	submit would (create_mop_log_for_stock_transfer_to_mo). Settle's legs are plain
-	transfers, so the direction is passed, not read off the entry type.
+	submit would (create_mop_log_for_stock_transfer_to_mo). The direction is passed, not read
+	off the entry type, though the two agree: out is a Receive, in a Transfer.
 
 	With IR moves still waiting for the end-of-day sync (``pull.eod_target``), the rows join
 	them: unsynced, bound for the sync's target. The sync then moves the regular batch -- the
@@ -2135,17 +2151,20 @@ def _transfer(mr, item, qty, batch, from_wh, to_wh, customer):
 	return se.name
 
 
-def _work_order_transfer(mr, pull, qty, batch, from_wh, to_wh, customer):
-	"""One leg of a pull: a Material Transfer (WORK ORDER) naming the work order, its
-	operation and its order, so the move is found with the work order's issues.
+def _work_order_transfer(mr, pull, qty, batch, from_wh, to_wh, customer, outward=False):
+	"""One leg of a pull, naming the work order, its operation and its order, so the move
+	is found with the work order's own entries: into the work order a Material Transfer
+	(WORK ORDER), as its issues are booked; ``outward`` -- the customer's batch coming back
+	out -- a Material Receive (WORK ORDER), as Make Receive books it.
 
 	Settle writes the leg's reservation and MOP Log rows itself (_move_reservation,
 	_log_on_operation), so the generic bridge stays out (``skip_mwo_reservation``, the
-	opt-out creates_mwo_reservation offers such producers): it reads every row as an issue
-	and would log the leg out of the work order as +qty and reserve it in Raw Material.
+	opt-out creates_mwo_reservation offers such producers): it would reserve the leg in, and
+	write a second MOP Log row for the leg out.
 	"""
 	inv = CUSTOMER_GOODS if customer else REGULAR_STOCK
-	se = _new_se(mr, WORK_ORDER_SE_TYPE, "Material Transfer", from_wh, to_wh, customer)
+	se_type = WORK_ORDER_RECEIVE_SE_TYPE if outward else WORK_ORDER_SE_TYPE
+	se = _new_se(mr, se_type, "Material Transfer", from_wh, to_wh, customer)
 	se.update(
 		{
 			"manufacturing_order": pull.manufacturing_order,
