@@ -1456,13 +1456,38 @@ def calulate_id_wise_sum_up(self):
 			)
 
 
+def _save_refetches(doc, fieldname):
+	"""True when doc.save() overwrites `fieldname` from its fetch_from link.
+
+	Mirrors frappe's link validation: the value is fetched only when the source link holds a
+	value, and a fetch_if_empty field keeps a value that is already set.
+	"""
+	df = doc.meta.get_field(fieldname)
+	if not df or not df.fetch_from or df.fetch_if_empty:
+		return False
+	return bool(doc.get(df.fetch_from.split(".", 1)[0]))
+
+
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
 	customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
 	)
-	if customer:
-		new_sn_doc.customer = customer
+	if (
+		customer
+		and new_sn_doc.customer != customer
+		and not _save_refetches(new_sn_doc, "customer")
+	):
+		# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
+		# customer; only the stock ledger may, and it writes the column directly. The order's
+		# customer is written the same way, so the save below sees it unchanged.
+		#
+		# A site that fetches the customer from the serial's linked BOM (a Property Setter with
+		# fetch_from custom_bom_no.customer, as the CI fixtures have) gets it from there on the
+		# save below, as it always did; stamping the order's customer first would make that
+		# fetch look like a change. A serial with no BOM linked is not re-fetched, so it is
+		# stamped.
+		new_sn_doc.db_set("customer", customer, update_modified=False)
 	existing_huid = []
 	existing_certification = []
 
