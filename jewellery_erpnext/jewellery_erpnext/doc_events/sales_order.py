@@ -2273,7 +2273,13 @@ def sync_customer_material_weights(bom, method=None):
 	The weights are otherwise only worked out on a Sales Order save, so a tick changed
 	on the BOM itself (BOM form, or the Edit BOM dialog without a save) would not show
 	on the order until it was saved again.
+
+	Skipped for the BOM saves a Sales Order save makes itself: that save has just set
+	the weights, and Sales Order Item.bom is not indexed.
 	"""
+	if bom.flags.skip_customer_weight_sync:
+		return
+
 	SalesOrder = frappe.qb.DocType("Sales Order")
 	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 	rows = (
@@ -2850,6 +2856,8 @@ def _process_single_row(self, row, ctx):
 		_process_diamond_detail(self, doc, ctx, row, cctx)
 		_update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=cctx)
 
+		# _update_bom_totals already set this row's customer weights.
+		doc.flags.skip_customer_weight_sync = True
 		doc.save(ignore_permissions=True)
 		row.bom = doc.name
 		row.bom_no = doc.name
