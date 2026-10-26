@@ -42,7 +42,7 @@ jewellery_erpnext.patches.add_customer_refining_flags
 jewellery_erpnext.patches.add_po_refining_entry_field
 jewellery_erpnext.patches.seed_refining_masters
 jewellery_erpnext.patches.seed_refinery_price_list
-jewellery_erpnext.patches.add_sales_order_precision_fields
+jewellery_erpnext.patches.add_sales_order_precision_fields #2026-10-23 Precision for Gemstone
 jewellery_erpnext.patches.add_order_type_repair_option
 jewellery_erpnext.patches.add_repair_unpack_to_mop_reservation
 jewellery_erpnext.patches.add_material_request_manufacturing_order_index
@@ -143,4 +143,6 @@ jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-21 PMO Submit/
 jewellery_erpnext.patches.add_mr_hold_closed_workflow_states
 jewellery_erpnext.patches.restore_missing_perf_indexes
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only
-jewellery_erpnext.patches.backfill_chain_finding_mwo
+jewellery_erpnext.patches.split_sales_order_finding_weight #2026-10-23 (gms) labels
+jewellery_erpnext.patches.add_other_weight_e_invoice_item
+jewellery_erpnext.patches.add_sales_order_item_customer_material_weights
