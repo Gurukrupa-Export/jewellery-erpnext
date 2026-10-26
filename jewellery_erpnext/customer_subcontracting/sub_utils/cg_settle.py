@@ -100,6 +100,10 @@ NOT_RETURNABLE_GOODS = ("Customer Repair", "Customer Sample Goods")
 SCRAP_WAREHOUSE_TYPE = "Scrap"
 
 TOLERANCE = 0.001
+# Quantities are kept to 3 decimals: under half a thousandth is rounding noise. A thousandth
+# is real metal the request's batch-strict transfer needs, so what is left to source, and
+# what a part or holding is worth, is judged against this, not TOLERANCE.
+NEGLIGIBLE = 0.0005
 
 # Sourcing outcomes recorded per row (for the response / logging).
 LEVEL_AVAILABLE = "Available"
@@ -276,7 +280,7 @@ def _plan_row(
 		"mr_batch": mr_batch,
 	}
 
-	if shortfall <= TOLERANCE:
+	if shortfall <= NEGLIGIBLE:
 		# Case 1 — enough of the customer's material already in the target warehouse.
 		_claim_have(
 			consumed_target, customer, item, target, mr_batch, min(required, have)
@@ -532,10 +536,10 @@ def _plan_parts(row, base, item, shortfall, target, others, company, allocated, 
 			key=lambda h: flt(h.qty),
 			reverse=True,
 		):
-			if remaining <= TOLERANCE:
+			if remaining <= NEGLIGIBLE:
 				return
 			take = flt(min(free(h), remaining), 3)
-			if take <= TOLERANCE:
+			if take <= NEGLIGIBLE:
 				continue
 			claim(h.batch_no, target, take)
 			add(
@@ -560,7 +564,7 @@ def _plan_parts(row, base, item, shortfall, target, others, company, allocated, 
 			reverse=True,
 		):
 			purity = flt(_get_item_purity(item_code))
-			if remaining <= TOLERANCE:
+			if remaining <= NEGLIGIBLE:
 				return
 			if not purity:
 				continue
@@ -571,12 +575,12 @@ def _plan_parts(row, base, item, shortfall, target, others, company, allocated, 
 			take, need = _conversion_take(
 				sum(q for _h, q in frees), remaining, purity, pure_per_unit
 			)
-			if take <= TOLERANCE:
+			if take <= NEGLIGIBLE:
 				continue
 			rows = []
 			for h, q in frees:
 				use = flt(min(q, need - sum(r["qty"] for r in rows)), 3)
-				if use > TOLERANCE:
+				if use > NEGLIGIBLE:
 					rows.append({"batch_no": h.batch_no, "qty": use})
 					claim(h.batch_no, target, use)
 			add(
@@ -597,11 +601,11 @@ def _plan_parts(row, base, item, shortfall, target, others, company, allocated, 
 			key=lambda h: flt(h.qty),
 			reverse=True,
 		):
-			if remaining <= TOLERANCE:
+			if remaining <= NEGLIGIBLE:
 				return
 			available = free(h)
 			take = flt(min(available, remaining), 3)
-			if take <= TOLERANCE:
+			if take <= NEGLIGIBLE:
 				continue
 			claim(h.batch_no, h.warehouse, take)
 			add(
@@ -628,12 +632,12 @@ def _plan_parts(row, base, item, shortfall, target, others, company, allocated, 
 			key=lambda h: (_is_scrap_source(h), -_equivalent(h, item, pure_per_unit)),
 		):
 			purity = flt(_get_item_purity(h.item_code))
-			if remaining <= TOLERANCE:
+			if remaining <= NEGLIGIBLE:
 				return
 			if not purity:
 				continue
 			take, need = _conversion_take(free(h), remaining, purity, pure_per_unit)
-			if take <= TOLERANCE:
+			if take <= NEGLIGIBLE:
 				continue
 			claim(h.batch_no, h.warehouse, need)
 			add(
@@ -649,11 +653,11 @@ def _plan_parts(row, base, item, shortfall, target, others, company, allocated, 
 			)
 
 	for holdings in tiers:
-		if remaining <= TOLERANCE:
+		if remaining <= NEGLIGIBLE:
 			break
 		plan_tier(holdings or [])
 
-	if not parts or remaining > TOLERANCE:
+	if not parts or remaining > NEGLIGIBLE:
 		return None
 	# Covered: each borrowing part's balancing Regular Stock, then keep the claims. A
 	# relabel moves nothing, so it borrows nothing.
@@ -670,17 +674,19 @@ def _conversion_take(free_qty, remaining, purity, pure_per_unit):
 	"""How much of the request's item ``free_qty`` of a ``purity`` metal makes towards
 	``remaining``, and the source it consumes: ``(take, need)``.
 
-	``take`` is rounded to 3 decimals, then stepped down while ``need`` -- the source, rounded
-	the same way -- would exceed ``free_qty``. Rounding rather than truncating keeps parts that
-	together cover a row from each losing a thousandth (7.009 + 0.248, not 7.008 + 0.247).
+	When ``remaining`` reaches all the holding makes, the whole holding is consumed and makes
+	its own weight rounded to 3 decimals (0.030 g of 22KT -> 0.028 g): re-deriving the source
+	from the rounded take (0.031 g) would not fit, and stepping down left a thousandth behind
+	in the batch, short of the row (MR-04011). Otherwise ``take`` is ``remaining`` and
+	``need`` its source, rounded the same way. Rounding rather than truncating keeps parts
+	that together cover a row from each losing a thousandth (7.009 + 0.248, not 7.008 + 0.247).
 	"""
 	free_qty = flt(free_qty, 3)
-	take = flt(min(flt(remaining), free_qty * purity / 100 / pure_per_unit), 3)
-	need = flt(take * pure_per_unit / (purity / 100), 3)
-	while take > TOLERANCE and need > free_qty:
-		take = flt(take - 0.001, 3)
-		need = flt(take * pure_per_unit / (purity / 100), 3)
-	return take, need
+	whole = flt(free_qty * purity / 100 / pure_per_unit, 3)
+	if flt(remaining, 3) >= whole:
+		return whole, free_qty
+	take = flt(remaining, 3)
+	return take, min(flt(take * pure_per_unit / (purity / 100), 3), free_qty)
 
 
 def _is_scrap_source(holding):
@@ -907,7 +913,7 @@ def _throw_batch_unavailable(
 
 	# What the source warehouse already holds of the batch, plus what Settle can bring in.
 	reach = flt(flt(row.qty, 3) - shortfall + ceiling + landed, 3)
-	if ceiling + landed >= shortfall - TOLERANCE:
+	if ceiling + landed >= shortfall - NEGLIGIBLE:
 		# The ledger shows enough, but the finder saw less: Stock Reservation Entries
 		# (get_batch_qty) or an earlier row of this run took part of it.
 		lines.append(
@@ -916,14 +922,14 @@ def _throw_batch_unavailable(
 				"request already take it."
 			)
 		)
-	elif reach > TOLERANCE and summary.outside:
+	elif reach > NEGLIGIBLE and summary.outside:
 		lines.append(
 			_(
 				"This row can be settled for at most {0} of {1} now: reduce its quantity to "
 				"that, or bring the metal outside Raw Material warehouses back to one first."
 			).format(reach, frappe.bold(item))
 		)
-	elif reach > TOLERANCE:
+	elif reach > NEGLIGIBLE:
 		lines.append(
 			_(
 				"This row can be settled for at most {0} of {1} now: reduce its quantity to "
@@ -936,7 +942,8 @@ def _throw_batch_unavailable(
 def _fetch_lineage_holdings(batch_nos):
 	"""Every positive holding of ``batch_nos`` in any warehouse, with the warehouse's type:
 	one row per (batch, item, warehouse). The same balance _consumable_batch_qty_map reads --
-	submitted bundle rows up to now, no future-dated ones."""
+	submitted bundle rows up to now, no future-dated ones. A thousandth counts: it is what a
+	row can still be short of."""
 	if not batch_nos:
 		return []
 	return frappe.db.sql(
@@ -949,12 +956,12 @@ def _fetch_lineage_holdings(batch_nos):
 			and sbe.type_of_transaction in ('Inward', 'Outward')
 			and sbe.posting_datetime <= %(now)s
 		group by sbe.batch_no, sbe.item_code, sbe.warehouse, wh.warehouse_type
-		having sum(sbe.qty) > %(tolerance)s
+		having sum(sbe.qty) > %(negligible)s
 		""",
 		{
 			"batch_nos": tuple(batch_nos),
 			"now": now_datetime(),
-			"tolerance": TOLERANCE,
+			"negligible": NEGLIGIBLE,
 		},
 		as_dict=True,
 	)
@@ -1004,7 +1011,7 @@ def _fetch_customer_other_holdings(mr, mr_batch, lineage, item):
 	kept = []
 	for h in holdings:
 		h.qty = flt(flt(h.qty) - flt(claims.get((h.batch_no, h.warehouse), 0)), 3)
-		if h.qty > TOLERANCE:
+		if h.qty > NEGLIGIBLE:
 			kept.append(h)
 	return kept
 
@@ -1630,7 +1637,7 @@ def _plan_work_order_pull(
 		landed = sum(
 			flt(p.qty) for p in pulls if p.batch_no == mr_batch and p.landing == target
 		)
-		if after.coverable + landed + flt(extra_coverable) >= shortfall - TOLERANCE:
+		if after.coverable + landed + flt(extra_coverable) >= shortfall - NEGLIGIBLE:
 			allocated.update(trial)
 			return pulls
 	return None
@@ -1697,7 +1704,7 @@ def _moved(holdings, pulls):
 			qty=flt(qty, 3),
 		)
 		for (batch_no, item_code, warehouse), qty in totals.items()
-		if qty > TOLERANCE
+		if qty > NEGLIGIBLE
 	]
 
 

@@ -71,6 +71,14 @@ ITEM_22KT_ML = "ML-G-22KT-91.75-Y"
 DIAMOND_SCRAP = "Diamond Setting Scrap - KGJPL"
 #: Another receipt of the same customer (GJCU0009), used only once -04's own metal runs out.
 R05 = "GJCU0009-2F10-M-G-24KT-99.9-Y-05"
+#: MR-04011: GJCU0009's 24KT (-08) converted to 3.09 g of 22KT (-08-A), whose losses were
+#: booked as the customer's metal-loss scrap: 0.03 g in Diamond Setting (-08-A-B) and 0.02 g
+#: in Waxing (-08-A-A).
+R08 = "GJCU0009-2F10-M-G-24KT-99.9-Y-08"
+R08_A = "GJCU0009-2F10-M-G-22KT-91.75-Y-08-A"
+R08_AA = "GJCU0009-2F10-ML-G-22KT-91.75-Y-08-A-A"
+R08_AB = "GJCU0009-2F10-ML-G-22KT-91.75-Y-08-A-B"
+WAXING_SCRAP = "Waxing Scrap - KGJPL"
 #: The receipt that minted -02.
 RECEIPT = "KGJPL-SE-CGR-26-00007"
 #: The company-gold order -02-A was issued to (MAT-STE-57625), and its operation.
@@ -98,6 +106,7 @@ BATCHES = {
 	R02: _customer_batch(CUSTOMER_03997),
 	R03: _customer_batch(CUSTOMER),
 	R04: _customer_batch(CUSTOMER_03997),
+	R08: _customer_batch(CUSTOMER_03997),
 }
 
 #: Stock Entry Type of each entry a batch above was minted by.
@@ -115,6 +124,10 @@ BATCH_ITEMS = {
 	R04_A: ITEM_22KT,
 	R04_AA: ITEM_22KT_ML,
 	R05: ITEM,
+	R08: ITEM,
+	R08_A: ITEM_22KT,
+	R08_AA: ITEM_22KT_ML,
+	R08_AB: ITEM_22KT_ML,
 }
 WAREHOUSE_TYPES = {
 	CENTRAL: "Raw Material",
@@ -123,6 +136,7 @@ WAREHOUSE_TYPES = {
 	WAXING_WO: "Manufacturing",
 	CASTING_WO: "Manufacturing",
 	DIAMOND_SCRAP: "Scrap",
+	WAXING_SCRAP: "Scrap",
 }
 
 #: MR-03988's ledger: -01 is back in RM Procurement, -02 sits in Central RM.
@@ -233,7 +247,7 @@ def _world(
 				qty=qty,
 			)
 			for (batch, warehouse), qty in ledger.items()
-			if batch in batch_nos and qty > cg_settle.TOLERANCE
+			if batch in batch_nos and qty > cg_settle.NEGLIGIBLE
 		]
 
 	events = []
@@ -632,14 +646,14 @@ class TestTheRefusalSaysWhereTheMetalIs(_Base):
 			text,
 		)
 
-	def test_the_ceiling_adds_what_the_source_holds_and_rounds_down(self):
+	def test_the_ceiling_adds_what_the_source_holds_and_converts_it_whole(self):
 		# 0.5 g of -02 is already in Central RM, so 3.0 g is short. 1 g of 22KT is
-		# 0.9175 g of 24KT: rounded up to 0.918, Settle would need 1.001 g of a 1 g batch,
-		# so the ceiling rounds down to 0.917 and the row to 0.5 + 0.917.
+		# 0.9175 g of 24KT: the whole gram converts, rounded to 0.918, so the row can reach
+		# 0.5 + 0.918.
 		text = self._refusal({(R02, CENTRAL): 0.5, (R02_A, WAXING): 1.0})
 
 		self.assertIn(
-			f"at most 1.417 of {ITEM} now: reduce its quantity to that.", text
+			f"at most 1.418 of {ITEM} now: reduce its quantity to that.", text
 		)
 		self.assertNotIn("Outside Raw Material warehouses", text)
 
@@ -962,12 +976,22 @@ class TestCoveringARowFromSeveralHoldings(_Base):
 		self.assertEqual(allocated, {})
 
 	def test_a_conversion_never_consumes_more_than_is_free(self):
-		for thousandths in range(1000, 3000):
+		for thousandths in range(1, 3001):
 			free = thousandths / 1000
 			take, need = cg_settle._conversion_take(free, 10.0, 91.75, 1.0)
-			self.assertLessEqual(need, free, msg=free)
-			# What it makes needs no more than it consumes, by pure weight.
-			self.assertLessEqual(take, need * 0.9175 + 0.0005, msg=free)
+			# Asked for more than it makes, the whole holding goes: no thousandth is left
+			# behind in the batch (MR-04011).
+			self.assertEqual(need, free, msg=free)
+			# What it makes is its pure weight, rounded to the thousandth.
+			self.assertAlmostEqual(take, free * 0.9175, delta=0.0005 + 1e-9, msg=free)
+			# Asked for less, it consumes no more than is free.
+			part = flt(take - 0.001, 3)
+			if part > 0:
+				self.assertLessEqual(
+					cg_settle._conversion_take(free, part, 91.75, 1.0)[1],
+					free,
+					msg=free,
+				)
 
 
 class TestTakingTheBatchBackFromAWorkOrder(_Base):
@@ -1599,15 +1623,119 @@ class TestTheCustomersMetalLossScrap(_Base):
 		self.assertFalse(cg_settle._converts_into("ML-G-14KT-58.5-Y", ITEM))
 		self.assertFalse(cg_settle._converts_into("ML-S-92.5-Y", ITEM))
 
-	def test_rounding_steps_down_only_when_the_source_would_not_fit(self):
+	def test_a_whole_holding_converts_whole(self):
 		# MR-04004's first part: rounded, not truncated -- 7.009, consuming all 7.639 g.
 		self.assertEqual(
 			cg_settle._conversion_take(7.639, 7.257, 91.75, 1.0), (7.009, 7.639)
 		)
-		# 1 g makes 0.9175 g: 0.918 would need 1.001 g, so it steps down to 0.917.
+		# 1 g makes 0.9175 g, rounded to 0.918: the whole gram, not 0.917 from 0.999.
 		self.assertEqual(
-			cg_settle._conversion_take(1.0, 10.0, 91.75, 1.0), (0.917, 0.999)
+			cg_settle._conversion_take(1.0, 10.0, 91.75, 1.0), (0.918, 1.0)
 		)
+		# MR-04011's scrap: 0.03 g makes 0.028 from all of it, not 0.027 from 0.029.
+		self.assertEqual(
+			cg_settle._conversion_take(0.03, 0.046, 91.75, 1.0), (0.028, 0.03)
+		)
+		# Asked for less than it makes: only that, from the source it needs.
+		self.assertEqual(
+			cg_settle._conversion_take(0.03, 0.01, 91.75, 1.0), (0.01, 0.011)
+		)
+
+
+class TestTheLastThousandth(_Base):
+	"""MR-04011: 2.881 g of -08 asked from Central RM. 3.09 g of 22KT (-08-A) is free in Waxing
+	RM -- 2.835 g of 24KT -- and the customer's metal-loss scrap holds 0.03 g (-08-A-B) and
+	0.02 g (-08-A-A): 0.028 + 0.018. Together exactly 2.881 g. The request's transfer is
+	batch-strict, so a thousandth short is short."""
+
+	LINEAGE = {R08, R08_A, R08_AA, R08_AB}
+	LEDGER = {
+		(R08_A, WAXING): 3.09,
+		(R08_AB, DIAMOND_SCRAP): 0.03,
+		(R08_AA, WAXING_SCRAP): 0.02,
+	}
+
+	@staticmethod
+	def _row(**fields):
+		values = {
+			"qty": 2.881,
+			"custom_pure_qty": 2.881,
+			"batch_no": R08,
+			"customer": CUSTOMER_03997,
+		}
+		values.update(fields)
+		return _row(**values)
+
+	def _settle(self, ledger):
+		mr = _mr([self._row()], name="KGJPL-MR-MT-26-04011")
+		with _world(dict(ledger), lineage=self.LINEAGE, mr=mr) as w:
+			result = cg_settle.settle_material_request(mr.name)
+		parts = [
+			(
+				p["level"],
+				p["src"]["batch_no"],
+				p["src"]["warehouse"],
+				p["src"]["qty"],
+				p["shortfall"],
+			)
+			for p in w.execute.call_args.args[1]
+		]
+		return parts, result
+
+	def _refusal(self, ledger):
+		mr = _mr([self._row()], name="KGJPL-MR-MT-26-04011")
+		with _world(dict(ledger), lineage=self.LINEAGE, mr=mr) as w, self.assertRaises(
+			frappe.ValidationError
+		) as raised:
+			cg_settle.settle_material_request(mr.name)
+		w.execute.assert_not_called()
+		return _text(str(raised.exception))
+
+	def test_mr_04011_converts_each_scrap_holding_whole(self):
+		parts, result = self._settle(self.LEDGER)
+
+		# Each holding consumed whole, so nothing is left in the scrap batches.
+		self.assertEqual(
+			parts,
+			[
+				(cg_settle.LEVEL_CONVERT, R08_A, WAXING, 3.09, 2.835),
+				(cg_settle.LEVEL_CONVERT, R08_AB, DIAMOND_SCRAP, 0.03, 0.028),
+				(cg_settle.LEVEL_CONVERT, R08_AA, WAXING_SCRAP, 0.02, 0.018),
+			],
+		)
+		self.assertEqual(flt(sum(p[4] for p in parts), 3), 2.881)
+		self.assertEqual(result["settled"], [1])
+
+	def test_a_thousandth_short_is_settled_from_what_is_left(self):
+		# MR-04011 as the old rounding left it: -08 holds 2.88 in Central RM and 0.001 g of
+		# the scrap is still in -08-A-B. Not "already there": the transfer needs 2.881.
+		parts, result = self._settle(
+			{(R08, CENTRAL): 2.88, (R08_AB, DIAMOND_SCRAP): 0.001}
+		)
+
+		self.assertEqual(
+			parts, [(cg_settle.LEVEL_CONVERT, R08_AB, DIAMOND_SCRAP, 0.001, 0.001)]
+		)
+		self.assertEqual(result["settled"], [1])
+
+	def test_a_thousandth_short_with_nothing_left_is_refused(self):
+		text = self._refusal({(R08, CENTRAL): 2.88})
+
+		self.assertIn(f"at most 2.88 of {ITEM} now: reduce its quantity to that.", text)
+
+	def test_parts_a_thousandth_short_are_refused(self):
+		# 0.019 g of scrap makes 0.017: 2.835 + 0.028 + 0.017 is 2.880 of the 2.881.
+		text = self._refusal({**self.LEDGER, (R08_AA, WAXING_SCRAP): 0.019})
+
+		self.assertIn(f"at most 2.88 of {ITEM} now: reduce its quantity to that.", text)
+
+	def test_a_thousandth_in_a_batch_is_a_holding(self):
+		with patch.object(frappe.db, "sql", return_value=[]) as sql, patch(
+			f"{_C}.now_datetime", return_value="2026-10-26 12:00:00"
+		):
+			cg_settle._fetch_lineage_holdings([R08_AB])
+
+		self.assertLess(sql.call_args.args[1]["negligible"], 0.001)
 
 
 class TestWorkOrderLegs(_Base):
