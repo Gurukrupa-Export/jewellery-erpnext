@@ -61,7 +61,10 @@
   "wax_to_gold_22",
   "wax_to_gold_24",
   "wax_to_silver",
-  "wax_to_22kt_silver_ratio"
+  "wax_to_22kt_silver_ratio",
+  "pmo_material_request_section",
+  "pmo_material_request_roles",
+  "column_break_bxzg"
  ],
  "fields": [
   {
@@ -362,12 +365,28 @@
    "fieldname": "wax_to_22kt_silver_ratio",
    "fieldtype": "Float",
    "label": "Wax To 22KT Silver Ratio"
+  },
+  {
+   "fieldname": "pmo_material_request_section",
+   "fieldtype": "Section Break",
+   "label": "PMO Material Request"
+  },
+  {
+   "description": "Users with any of these roles see Create Material Request on a submitted Parent Manufacturing Order. Leave empty and only System Manager can. Administrator and System Manager always can.",
+   "fieldname": "pmo_material_request_roles",
+   "fieldtype": "Table MultiSelect",
+   "label": "Roles Allowed to Create Material Request",
+   "options": "Has Role"
+  },
+  {
+   "fieldname": "column_break_bxzg",
+   "fieldtype": "Column Break"
   }
  ],
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2023-09-01 13:13:08.327656",
+ "modified": "2026-10-23 12:33:25.696609",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Jewellery Settings",

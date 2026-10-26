@@ -119,6 +119,13 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		if (frm.doc.docstatus == 1 && frappe.user.has_role("System Manager")) {
 			frm.page.add_menu_item(__("Hybrid Cancel"), () => confirm_cancel_all_linked(frm));
 		}
+		// Set by the server's onload: submitted, not on Hold or Closed, and the user holds a
+		// role from Jewellery Settings. The server methods check the role again.
+		if (frm.doc.docstatus == 1 && frm.doc.__onload?.can_create_material_request) {
+			frm.add_custom_button(__("Create Material Request"), () =>
+				create_material_request_for_pending_raw_materials(frm)
+			);
+		}
 	},
 
 	customer(frm) {
@@ -297,6 +304,36 @@ function start_cancel_all_linked(frm) {
 			if (!r.exc) {
 				frappe.show_alert({ message: __("Cancelling in background…"), indicator: "blue" });
 			}
+		},
+	});
+}
+
+const PMO_METHOD =
+	"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order";
+
+// Requests every raw material of the updated BOM still pending, at its full pending qty. The
+// server works the pending qty out afresh and says so when nothing is left.
+function create_material_request_for_pending_raw_materials(frm) {
+	frappe.call({
+		method: `${PMO_METHOD}.create_pmo_material_request`,
+		args: { pmo_name: frm.doc.name },
+		freeze: true,
+		freeze_message: __("Creating Material Request..."),
+		callback: (r) => {
+			if (r.exc) return;
+			// One request per item type, as on PMO submit, so there can be several.
+			const links = r.message
+				.map((name) => frappe.utils.get_form_link("Material Request", name, true))
+				.join(", ");
+			// Reload first so the PMO already lists the request under Connections, and the
+			// reload cannot clear the message.
+			frm.reload_doc().then(() =>
+				frappe.msgprint({
+					title: __("Material Request Created"),
+					message: __("{0} created for the pending raw materials of this PMO.", [links]),
+					indicator: "green",
+				})
+			);
 		},
 	});
 }
