@@ -187,6 +187,8 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_cancel",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_submit",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_update_after_submit",
+		# After save, submit and update-after-submit alike.
+		"on_change": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.sync_customer_material_weights",
 	},
 	"Work Order": {
 		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.work_order.before_save",
