@@ -1461,8 +1461,6 @@ def update_new_serial_no(self):
 	customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
 	)
-	if customer:
-		new_sn_doc.customer = customer
 	existing_huid = []
 	existing_certification = []
 
@@ -1508,6 +1506,11 @@ def update_new_serial_no(self):
 	# cascade needs and is released on the commit that immediately follows.
 	set_stamping_no(new_sn_doc)
 	new_sn_doc.save()
+
+	# Customer is a stock-managed Serial No field since ERPNext #60162: a doc save that
+	# changes it throws, so it is written directly once the save is done.
+	if customer and new_sn_doc.customer != customer:
+		new_sn_doc.db_set("customer", customer, update_modified=False)
 
 	if self.serial_no and self.fg_details and self.fg_details[0].serial_no:
 		serial_doc = frappe.get_doc("Serial No", self.fg_details[0].serial_no)
