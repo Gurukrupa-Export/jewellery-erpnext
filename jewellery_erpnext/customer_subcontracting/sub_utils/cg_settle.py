@@ -15,12 +15,31 @@ exactly the way the ``Create SNC`` flow settles borrowed gold:
     physically balanced, then the Case 2 transfer + reverse.
 
 Batch scope. When the Material Request row names a batch -- the incoming batch of the
-receipt being returned -- Settle works on that batch alone. "Already there" counts only
+receipt being returned -- Settle works on that batch first. "Already there" counts only
 that batch in ``set_from_warehouse`` (the request's transfer is batch-strict), and the
-shortfall is sourced only from the batch itself or metal produced from it
-(``customer_gold_trace.discover_scope``). Another receipt's batch of the same customer
-never counts and is never used. A row without a batch keeps the customer-wide behaviour.
-The request's own target warehouse is never a source.
+shortfall is sourced from the batch itself or metal produced from it
+(``customer_gold_trace.discover_scope``). Only once that runs out -- the rest gone into
+finished goods -- does it take the same customer's other batches, never another
+customer's and never what another open request is waiting for
+(_fetch_customer_other_holdings); every part still lands in the request's batch. A row
+without a batch keeps the customer-wide behaviour.
+The request's own target warehouse is never a source. When no single holding of the batch
+covers a row -- part of it converted, part left as it was -- Settle combines its holdings,
+each part settled the way a single source is (_plan_parts). The customer's metal-loss
+scrap (an ML batch in a Scrap warehouse) is one of them, converted back last.
+
+Part of the batch's metal may have been issued to a work order. When the Raw Material
+warehouses fall short and that order is a company-gold one whose operation has not
+started, Settle takes the metal back first -- the same borrow it makes from any other
+warehouse: the customer's batch comes out and an equal weight of Regular Stock goes in, so
+the work order ends whole -- and settles from Raw Material as usual. That holds while the
+work order's IR moves still wait for the end-of-day sync: the pull is written into them, so
+the sync moves the regular batch on instead. When the lineage still
+cannot cover a batch row, the refusal lists where the batch's metal is and how much the row
+can be settled for.
+
+Nothing is posted when a conversion would produce customer metal of an item without the
+Customer Goods flag: the Batch guard would refuse that batch inside the first submit.
 
 Scope is deliberately narrow (confirmed with the user): Settle ONLY tops up
 ``set_from_warehouse``. It does not submit the Material Request and does not create the
@@ -34,8 +53,12 @@ allocation guard) and the pre-submit consumable-balance assertion.
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
+	CUSTOMER_GOODS_FLAG_LABEL,
+	can_be_customer_goods,
+)
 from jewellery_erpnext.customer_subcontracting.sub_utils.snc import (
 	PURITY_PRIORITY,
 	_append_item,
@@ -44,6 +67,7 @@ from jewellery_erpnext.customer_subcontracting.sub_utils.snc import (
 	_get_item_purity,
 	_get_purity_label,
 	_get_raw_material_warehouses,
+	_mwo_needs_settlement,
 	_submit_consuming_stock_entry,
 	find_owner_rm_warehouse,
 )
@@ -64,14 +88,40 @@ REGULAR_STOCK = "Regular Stock"
 # add_to_transit = 0, giving the direct one-shot transfer.
 TRANSFER_SE_TYPE = "Material Transfer"
 REPACK_SE_TYPE = "Repack-Metal Conversion"
+# The type a work-order issue is booked under. Settle's leg into a work order uses it,
+# naming the work order and its operation, so it is found with the work order's issues.
+WORK_ORDER_SE_TYPE = "Material Transfer (WORK ORDER)"
+# The type a work order's metal comes back under (Make Receive): Settle's leg out of a work
+# order, the customer's batch received back.
+WORK_ORDER_RECEIVE_SE_TYPE = "Material Receive (WORK ORDER)"
+
+# The customer's metal lost in production: a metal-loss (ML) item batch in a Scrap
+# warehouse, still the customer's. Settle converts it back like any other purity, last.
+METAL_LOSS_PREFIX = "ML-G-"
+# Customer goods that are not the customer's gold deposit and never settle a return.
+NOT_RETURNABLE_GOODS = ("Customer Repair", "Customer Sample Goods")
+SCRAP_WAREHOUSE_TYPE = "Scrap"
 
 TOLERANCE = 0.001
+# Quantities are kept to 3 decimals: under half a thousandth is rounding noise. A thousandth
+# is real metal the request's batch-strict transfer needs, so what is left to source, and
+# what a part or holding is worth, is judged against this, not TOLERANCE.
+NEGLIGIBLE = 0.0005
 
 # Sourcing outcomes recorded per row (for the response / logging).
 LEVEL_AVAILABLE = "Available"
 LEVEL_CONVERT_IN_PLACE = "ConvertInPlace"
 LEVEL_SAME_PURITY = "SamePurity"
 LEVEL_CONVERT = "Convert"
+# The batch's metal sits in a work order: take it back first, then settle as above.
+LEVEL_WORK_ORDER = "WorkOrder"
+# Another of the customer's batches of the request's item, already in the source warehouse:
+# relabelled in place into the request's batch.
+LEVEL_RELABEL = "Relabel"
+
+# The one operation state Settle takes metal back from: issued to the operation, nobody
+# working on it yet, so the metal still sits in the department's work-order warehouse.
+OPERATION_NOT_STARTED = "Not Started"
 
 
 @frappe.whitelist()
@@ -90,15 +140,37 @@ def settle_material_request(mr_name):
 			"message": _("Source warehouse already holds enough — nothing to settle."),
 		}
 
-	_execute(mr, actionable)
+	_check_customer_goods_flag(actionable)
+	# A row settled in parts appears once per part.
+	settled = list(dict.fromkeys(p["row"] for p in actionable))
+
+	pulled = []
+	if any(p["level"] == LEVEL_WORK_ORDER for p in actionable):
+		# Take the batch's metal back from the work orders first, then plan again on the
+		# ledger as it now stands: the rows settle exactly as if the metal had been in Raw
+		# Material all along. The second plan never takes from a work order again.
+		pulled = _pull_from_work_orders(mr, actionable)
+		plan = _build_plan(mr, from_work_orders=False)
+		actionable = [p for p in plan if p["level"] != LEVEL_AVAILABLE]
+		_check_customer_goods_flag(actionable)
+
+	if actionable:
+		_execute(mr, actionable)
 
 	frappe.logger().info(
-		f"cg_settle: settled {len(actionable)} row(s) on {mr.name} "
-		f"({', '.join(str(p['row']) for p in actionable)})"
+		f"cg_settle: settled {len(settled)} row(s) on {mr.name} "
+		f"({', '.join(str(row) for row in settled)}), "
+		f"{len(pulled)} holding(s) taken back from work orders"
 	)
+	if pulled:
+		frappe.msgprint(_pull_summary(pulled), title=_("Taken Back from Work Order"))
 	return {
-		"settled": [p["row"] for p in actionable],
-		"message": _("Settled {0} row(s).").format(len(actionable)),
+		"settled": settled,
+		"pulled": [
+			{"work_order": p.work_order, "batch_no": p.batch_no, "qty": p.qty}
+			for p in pulled
+		],
+		"message": _("Settled {0} row(s).").format(len(settled)),
 	}
 
 
@@ -119,7 +191,9 @@ def _validate_settleable(mr):
 # ---------------------------------------------------------------------------
 
 
-def _build_plan(mr):
+def _build_plan(mr, from_work_orders=True):
+	"""``from_work_orders`` -- whether a batch row the Raw Material warehouses cannot cover
+	may be planned to take its metal back from a work order (LEVEL_WORK_ORDER)."""
 	company = mr.company
 	all_rm = _get_raw_material_warehouses(company)
 
@@ -134,15 +208,32 @@ def _build_plan(mr):
 
 	plan = []
 	for row in mr.items:
-		plan.append(
-			_plan_row(
-				row, mr, company, all_rm, allocated, consumed_target, lineage_cache
-			)
+		planned = _plan_row(
+			row,
+			mr,
+			company,
+			all_rm,
+			allocated,
+			consumed_target,
+			lineage_cache,
+			from_work_orders,
 		)
+		# A row covered from several of its batch's holdings comes back as one entry per
+		# part, each a single-source settle _execute runs as it is.
+		plan.extend(planned if isinstance(planned, list) else [planned])
 	return plan
 
 
-def _plan_row(row, mr, company, all_rm, allocated, consumed_target, lineage_cache):
+def _plan_row(
+	row,
+	mr,
+	company,
+	all_rm,
+	allocated,
+	consumed_target,
+	lineage_cache,
+	from_work_orders=True,
+):
 	target = row.get("from_warehouse") or mr.get("set_from_warehouse")
 	if not target:
 		frappe.throw(
@@ -192,7 +283,7 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target, lineage_cach
 		"mr_batch": mr_batch,
 	}
 
-	if shortfall <= TOLERANCE:
+	if shortfall <= NEGLIGIBLE:
 		# Case 1 — enough of the customer's material already in the target warehouse.
 		_claim_have(
 			consumed_target, customer, item, target, mr_batch, min(required, have)
@@ -261,7 +352,80 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target, lineage_cach
 		)
 
 	if mr_batch:
-		_throw_batch_unavailable(row, mr_batch, item, shortfall, target, dest)
+		holdings = _fetch_lineage_holdings(lineage)
+		# No single holding covers the row: combine the batch's holdings in Raw Material,
+		# each part settled the way a single source is.
+		parts = _plan_parts(
+			row, base, item, shortfall, target, others, company, allocated, [holdings]
+		)
+		if parts:
+			return parts
+		# Only once the batch's own metal runs out: the same customer's other batches,
+		# never another customer's -- netted of what other open requests still need.
+		other = _fetch_customer_other_holdings(mr, mr_batch, lineage, item)
+		other_coverable = (
+			_summarise_holdings(
+				other,
+				mr_batch,
+				item,
+				target,
+				dest,
+				_pure_per_unit(row, item),
+				set(all_rm),
+			).coverable
+			if other
+			else 0.0
+		)
+		# The batch's own metal is short in Raw Material. Part of it may sit in a work
+		# order: take that back first -- the work order gets Regular Stock in its place --
+		# the same borrow Settle makes from any other warehouse (_pull_from_work_order).
+		work_orders = (
+			_judge_work_order_holdings(lineage, company, holdings, all_rm, dest)
+			if from_work_orders
+			else []
+		)
+		pulls = _plan_work_order_pull(
+			row,
+			mr_batch,
+			item,
+			shortfall,
+			target,
+			dest,
+			all_rm,
+			company,
+			allocated,
+			holdings,
+			work_orders,
+			extra_coverable=other_coverable,
+		)
+		if pulls:
+			return dict(base, level=LEVEL_WORK_ORDER, pulls=pulls)
+		if other:
+			parts = _plan_parts(
+				row,
+				base,
+				item,
+				shortfall,
+				target,
+				others,
+				company,
+				allocated,
+				[holdings, other],
+			)
+			if parts:
+				return parts
+		_throw_batch_unavailable(
+			row,
+			mr_batch,
+			item,
+			shortfall,
+			target,
+			dest,
+			holdings,
+			all_rm,
+			work_orders,
+			other,
+		)
 	frappe.throw(
 		_(
 			"Row {0}: need {1} of {2} for customer {3}, but it is not available in the "
@@ -279,6 +443,15 @@ def _pure_weight(row, item, shortfall, required):
 	return flt(shortfall * flt(_get_item_purity(item)) / 100, 3)
 
 
+def _pure_per_unit(row, item):
+	"""Pure weight per unit of the row's item, unrounded: _pure_weight's basis."""
+	required = flt(row.qty, 3)
+	pure_row = flt(row.get("custom_pure_qty") or 0, 3)
+	if pure_row and required:
+		return pure_row / required
+	return flt(_get_item_purity(item)) / 100
+
+
 def _reserve_regular(item, qty, company, target, allocated, row_idx):
 	"""Reserve regular (company) gold of ``item`` in the target warehouse for a reverse
 	leg. Missing regular gold fails the whole Settle rather than leaving a source
@@ -294,6 +467,237 @@ def _reserve_regular(item, qty, company, target, allocated, row_idx):
 			).format(row_idx, qty, item, target)
 		)
 	return reg
+
+
+def _plan_parts(row, base, item, shortfall, target, others, company, allocated, tiers):
+	"""Cover ``shortfall`` from several holdings when no single one covers it: one plan
+	entry per part, or None.
+
+	``tiers`` are lists of holdings used strictly in order -- the batch's own lineage, then
+	the same customer's other batches (_fetch_customer_other_holdings) -- a tier only once
+	the one before it is exhausted. Within a tier, in Settle's order of preference, largest
+	holding first so the parts are few:
+
+	0. the request's item in another batch already in the source warehouse, relabelled in
+	   place into the request's batch (nothing moves, so nothing is borrowed);
+	1. other purities already in the source warehouse, converted in place (one part per
+	   item, across its batches);
+	2. the same item in another Raw Material warehouse (one part per batch and warehouse);
+	3. another purity in another Raw Material warehouse, converted there; then the
+	   customer's metal-loss scrap, converted back in its Scrap warehouse -- last.
+
+	Each part is one of Settle's single-source settles -- _execute runs it as it is -- and
+	lands in the request's batch. Only what is free is taken: the ledger, net of
+	reservations (get_batch_qty) and of what this run has already claimed. The claims, and
+	the Regular Stock each borrowing part reserves, are made on a copy of ``allocated`` and
+	kept only when the parts cover the whole shortfall.
+	"""
+	pure_per_unit = _pure_per_unit(row, item)
+	if not pure_per_unit:
+		return None
+	trial = dict(allocated)
+	remaining = flt(shortfall, 3)
+	parts = []
+	mr_batch = base.get("mr_batch")
+
+	def free(holding):
+		key = (holding.batch_no, holding.warehouse)
+		qty = min(
+			flt(holding.qty, 3),
+			flt(
+				get_batch_qty(
+					batch_no=holding.batch_no,
+					warehouse=holding.warehouse,
+					item_code=holding.item_code,
+				),
+				3,
+			),
+		)
+		return max(flt(qty - flt(trial.get(key, 0), 3), 3), 0.0)
+
+	def claim(batch_no, warehouse, qty):
+		trial[(batch_no, warehouse)] = flt(trial.get((batch_no, warehouse), 0) + qty, 3)
+
+	def convertible(holding):
+		return holding.item_code != item and _converts_into(holding.item_code, item)
+
+	def add(level, take, src, **extra):
+		nonlocal remaining
+		parts.append(dict(base, level=level, src=src, shortfall=take, **extra))
+		remaining = flt(remaining - take, 3)
+
+	def plan_tier(holdings):
+		# 0. The request's item in another batch already in the source warehouse.
+		for h in sorted(
+			(
+				h
+				for h in holdings
+				if h.warehouse == target
+				and h.item_code == item
+				and h.batch_no != mr_batch
+			),
+			key=lambda h: flt(h.qty),
+			reverse=True,
+		):
+			if remaining <= NEGLIGIBLE:
+				return
+			take = flt(min(free(h), remaining), 3)
+			if take <= NEGLIGIBLE:
+				continue
+			claim(h.batch_no, target, take)
+			add(
+				LEVEL_RELABEL,
+				take,
+				{
+					"batch_no": h.batch_no,
+					"item_code": item,
+					"warehouse": target,
+					"qty": take,
+				},
+			)
+
+		# 1. Other purities in the source warehouse, converted in place, one item at a time.
+		in_source = {}
+		for h in holdings:
+			if h.warehouse == target and convertible(h):
+				in_source.setdefault(h.item_code, []).append(h)
+		for item_code, group in sorted(
+			in_source.items(),
+			key=lambda kv: sum(flt(h.qty) for h in kv[1]),
+			reverse=True,
+		):
+			purity = flt(_get_item_purity(item_code))
+			if remaining <= NEGLIGIBLE:
+				return
+			if not purity:
+				continue
+			frees = [
+				(h, free(h))
+				for h in sorted(group, key=lambda h: flt(h.qty), reverse=True)
+			]
+			take, need = _conversion_take(
+				sum(q for _h, q in frees), remaining, purity, pure_per_unit
+			)
+			if take <= NEGLIGIBLE:
+				continue
+			rows = []
+			for h, q in frees:
+				use = flt(min(q, need - sum(r["qty"] for r in rows)), 3)
+				if use > NEGLIGIBLE:
+					rows.append({"batch_no": h.batch_no, "qty": use})
+					claim(h.batch_no, target, use)
+			add(
+				LEVEL_CONVERT_IN_PLACE,
+				take,
+				{
+					"item_code": item_code,
+					"purity": purity,
+					"warehouse": target,
+					"rows": rows,
+				},
+				pure_short=flt(take * pure_per_unit, 3),
+			)
+
+		# 2. The same item in another Raw Material warehouse.
+		for h in sorted(
+			(h for h in holdings if h.item_code == item and h.warehouse in others),
+			key=lambda h: flt(h.qty),
+			reverse=True,
+		):
+			if remaining <= NEGLIGIBLE:
+				return
+			available = free(h)
+			take = flt(min(available, remaining), 3)
+			if take <= NEGLIGIBLE:
+				continue
+			claim(h.batch_no, h.warehouse, take)
+			add(
+				LEVEL_SAME_PURITY,
+				take,
+				{
+					"batch_no": h.batch_no,
+					"item_code": item,
+					"warehouse": h.warehouse,
+					"qty": take,
+					"available_qty": available,
+				},
+			)
+
+		# 3. Another purity in another Raw Material warehouse, converted there; then the
+		#    customer's metal-loss scrap, converted back in its Scrap warehouse -- last,
+		#    after the metal itself.
+		for h in sorted(
+			(
+				h
+				for h in holdings
+				if (h.warehouse in others or _is_scrap_source(h)) and convertible(h)
+			),
+			key=lambda h: (_is_scrap_source(h), -_equivalent(h, item, pure_per_unit)),
+		):
+			purity = flt(_get_item_purity(h.item_code))
+			if remaining <= NEGLIGIBLE:
+				return
+			if not purity:
+				continue
+			take, need = _conversion_take(free(h), remaining, purity, pure_per_unit)
+			if take <= NEGLIGIBLE:
+				continue
+			claim(h.batch_no, h.warehouse, need)
+			add(
+				LEVEL_CONVERT,
+				take,
+				{
+					"batch_no": h.batch_no,
+					"item_code": h.item_code,
+					"warehouse": h.warehouse,
+					"qty": need,
+				},
+				pure_short=flt(take * pure_per_unit, 3),
+			)
+
+	for holdings in tiers:
+		if remaining <= NEGLIGIBLE:
+			break
+		plan_tier(holdings or [])
+
+	if not parts or remaining > NEGLIGIBLE:
+		return None
+	# Covered: each borrowing part's balancing Regular Stock, then keep the claims. A
+	# relabel moves nothing, so it borrows nothing.
+	for part in parts:
+		if part["level"] != LEVEL_RELABEL:
+			part["regular"] = _reserve_regular(
+				item, part["shortfall"], company, target, trial, row.idx
+			)
+	allocated.update(trial)
+	return parts
+
+
+def _conversion_take(free_qty, remaining, purity, pure_per_unit):
+	"""How much of the request's item ``free_qty`` of a ``purity`` metal makes towards
+	``remaining``, and the source it consumes: ``(take, need)``.
+
+	When ``remaining`` reaches all the holding makes, the whole holding is consumed and makes
+	its own weight rounded to 3 decimals (0.030 g of 22KT -> 0.028 g): re-deriving the source
+	from the rounded take (0.031 g) would not fit, and stepping down left a thousandth behind
+	in the batch, short of the row (MR-04011). Otherwise ``take`` is ``remaining`` and
+	``need`` its source, rounded the same way. Rounding rather than truncating keeps parts
+	that together cover a row from each losing a thousandth (7.009 + 0.248, not 7.008 + 0.247).
+	"""
+	free_qty = flt(free_qty, 3)
+	whole = flt(free_qty * purity / 100 / pure_per_unit, 3)
+	if flt(remaining, 3) >= whole:
+		return whole, free_qty
+	take = flt(remaining, 3)
+	return take, min(flt(take * pure_per_unit / (purity / 100), 3), free_qty)
+
+
+def _is_scrap_source(holding):
+	"""The customer's metal-loss scrap Settle may convert back: an ML item in a Scrap
+	warehouse."""
+	return (holding.item_code or "").startswith(METAL_LOSS_PREFIX) and holding.get(
+		"warehouse_type"
+	) == SCRAP_WAREHOUSE_TYPE
 
 
 def _owner_qty_in_warehouse(customer, item, warehouse, consumed_target):
@@ -401,33 +805,462 @@ def _batch_lineage(batch_no, customer, cache):
 	return lineage
 
 
-def _throw_batch_unavailable(row, batch_no, item, shortfall, target, dest):
-	"""Nothing in the batch's own lineage covers the shortfall. When the batch already sits
-	in the request's destination, say so: then there is nothing to transfer."""
-	message = _(
-		"Row {0}: batch {1} needs {2} more of {3} in {4}, but neither the batch nor metal "
-		"made from it is free in another Raw Material warehouse. Settle uses only this "
-		"batch's own metal; the customer's other batches are left alone."
-	).format(
-		row.idx,
-		frappe.bold(batch_no),
-		shortfall,
-		frappe.bold(item),
-		frappe.bold(target),
+def _throw_batch_unavailable(
+	row,
+	batch_no,
+	item,
+	shortfall,
+	target,
+	dest,
+	holdings,
+	sources,
+	work_orders=(),
+	other=(),
+):
+	"""Nothing in the batch's own lineage covers the shortfall in one go: say what there is,
+	where, and how much this row can be settled for, instead of leaving the user to meet it
+	later as negative stock on the request's own transfer.
+
+	``holdings`` are the lineage's -- the batch and every batch made from it -- in every
+	warehouse (_fetch_lineage_holdings): free in ``sources`` (the company's Raw Material
+	warehouses), outside them (a work order's Manufacturing warehouse, transit...), and the
+	batch already in the request's target. Another purity is also shown in the request item's
+	units. ``work_orders`` (_judge_work_order_holdings) name the work order behind each
+	holding in one and say whether Settle may take it back; the ceiling counts what it may.
+	``other`` -- the same customer's other batches (_fetch_customer_other_holdings), used once
+	this batch's own metal runs out -- are listed and counted too.
+	"""
+	sources = set(sources)
+	pure_per_unit = _pure_per_unit(row, item)
+	summary = _summarise_holdings(
+		holdings, batch_no, item, target, dest, pure_per_unit, sources
 	)
-	if dest and dest != target:
-		at_dest = flt(
-			_consumable_batch_qty_map([batch_no], item, [dest]).get(
-				(batch_no, dest), 0
-			),
-			3,
+	takeable = [h for h in work_orders if not h.reason]
+	ceiling = summary.coverable
+	if takeable:
+		ceiling = _summarise_holdings(
+			_moved(holdings, takeable),
+			batch_no,
+			item,
+			target,
+			dest,
+			pure_per_unit,
+			sources,
+		).coverable
+	other_summary = (
+		_summarise_holdings(other, batch_no, item, target, dest, pure_per_unit, sources)
+		if other
+		else None
+	)
+	if other_summary:
+		ceiling = flt(ceiling + other_summary.coverable, 3)
+	# The request's own batch taken back into the source warehouse is on hand there.
+	landed = sum(
+		flt(h.qty) for h in takeable if h.batch_no == batch_no and h.landing == target
+	)
+	lines = [
+		_(
+			"Row {0}: batch {1} needs {2} more of {3} in {4}. Settle uses this batch's own "
+			"metal first -- the batch and metal made from it -- then the customer's other "
+			"batches; never another customer's."
+		).format(
+			row.idx,
+			frappe.bold(batch_no),
+			shortfall,
+			frappe.bold(item),
+			frappe.bold(target),
 		)
-		if at_dest > TOLERANCE:
-			message += " " + _(
-				"{0} of it is already in {1}, this request's target warehouse, so it does "
-				"not need to be transferred."
-			).format(at_dest, frappe.bold(dest))
-	frappe.throw(message, title=_("Batch Not Available"))
+	]
+	if summary.free:
+		lines.append(
+			_("Free in Raw Material warehouses:") + _holding_list(summary.free, item)
+		)
+	if summary.outside:
+		lines.append(
+			_(
+				"Outside Raw Material warehouses -- Settle takes metal back only from a "
+				"company-gold work order whose operation has not started:"
+			)
+			+ _holding_list(
+				summary.outside,
+				item,
+				with_type=True,
+				notes=_work_order_notes(work_orders),
+			)
+		)
+	if summary.at_dest:
+		lines.append(
+			_(
+				"This much is already in {0}, this request's target warehouse, so it does "
+				"not need to be transferred:"
+			).format(frappe.bold(dest))
+			+ _holding_list(summary.at_dest, item)
+		)
+	if summary.scrap:
+		lines.append(
+			_("The customer's metal-loss scrap, which Settle converts back:")
+			+ _holding_list(summary.scrap, item, with_type=True)
+		)
+	if not (summary.free or summary.outside or summary.at_dest or summary.scrap):
+		lines.append(_("None of this batch's metal is left in any warehouse."))
+	if other_summary and (other_summary.free or other_summary.scrap):
+		lines.append(
+			_(
+				"The customer's other batches, used once this batch's own metal runs out "
+				"(less what other open requests still need):"
+			)
+			+ _holding_list(
+				other_summary.free + other_summary.scrap, item, with_type=True
+			)
+		)
+
+	# What the source warehouse already holds of the batch, plus what Settle can bring in.
+	reach = flt(flt(row.qty, 3) - shortfall + ceiling + landed, 3)
+	if ceiling + landed >= shortfall - NEGLIGIBLE:
+		# The ledger shows enough, but the finder saw less: Stock Reservation Entries
+		# (get_batch_qty) or an earlier row of this run took part of it.
+		lines.append(
+			_(
+				"Settle could not use it: part of it is reserved, or earlier rows of this "
+				"request already take it."
+			)
+		)
+	elif reach > NEGLIGIBLE and summary.outside:
+		lines.append(
+			_(
+				"This row can be settled for at most {0} of {1} now: reduce its quantity to "
+				"that, or bring the metal outside Raw Material warehouses back to one first."
+			).format(reach, frappe.bold(item))
+		)
+	elif reach > NEGLIGIBLE:
+		lines.append(
+			_(
+				"This row can be settled for at most {0} of {1} now: reduce its quantity to "
+				"that."
+			).format(reach, frappe.bold(item))
+		)
+	frappe.throw("<br>".join(lines), title=_("Batch Not Available"))
+
+
+def _fetch_lineage_holdings(batch_nos):
+	"""Every positive holding of ``batch_nos`` in any warehouse, with the warehouse's type:
+	one row per (batch, item, warehouse). The same balance _consumable_batch_qty_map reads --
+	submitted bundle rows up to now, no future-dated ones. A thousandth counts: it is what a
+	row can still be short of."""
+	if not batch_nos:
+		return []
+	return frappe.db.sql(
+		"""
+		select sbe.batch_no, sbe.item_code, sbe.warehouse, wh.warehouse_type,
+			sum(sbe.qty) as qty
+		from `tabSerial and Batch Entry` sbe
+		left join `tabWarehouse` wh on wh.name = sbe.warehouse
+		where sbe.batch_no in %(batch_nos)s and sbe.docstatus = 1
+			and sbe.type_of_transaction in ('Inward', 'Outward')
+			and sbe.posting_datetime <= %(now)s
+		group by sbe.batch_no, sbe.item_code, sbe.warehouse, wh.warehouse_type
+		having sum(sbe.qty) > %(negligible)s
+		""",
+		{
+			"batch_nos": tuple(batch_nos),
+			"now": now_datetime(),
+			"negligible": NEGLIGIBLE,
+		},
+		as_dict=True,
+	)
+
+
+def _fetch_customer_other_holdings(mr, mr_batch, lineage, item):
+	"""The same customer's metal in their OTHER batches -- never another customer's -- for
+	Settle to use once the request batch's own metal runs out.
+
+	Batches owned by the request batch's own customer and end customer
+	(``custom_ref_customer``), outside its lineage, of the request's item or one Settle
+	converts (another gold purity, metal-loss scrap), and neither repair nor sample goods.
+	Their holdings are read as _fetch_lineage_holdings reads them, less what other open
+	Material Requests still need from the same batch and warehouse (_open_request_claims): a
+	batch settled for another request waits there for that request's own transfer.
+	"""
+	owner_fields = ["custom_customer"]
+	if frappe.db.has_column("Batch", "custom_ref_customer"):
+		owner_fields.append("custom_ref_customer")
+	owner = frappe.db.get_value("Batch", mr_batch, owner_fields, as_dict=True)
+	if not owner or not owner.custom_customer:
+		return []
+
+	filters = {
+		"custom_customer": owner.custom_customer,
+		"disabled": 0,
+		"item": ["like", "%-" + (item or "").split("-")[-1]],
+	}
+	if "custom_ref_customer" in owner_fields:
+		filters["custom_ref_customer"] = owner.custom_ref_customer or ["is", "not set"]
+	if lineage:
+		filters["name"] = ["not in", sorted(lineage)]
+	if frappe.db.has_column("Batch", "custom_customer_voucher_type"):
+		filters["custom_customer_voucher_type"] = ["not in", list(NOT_RETURNABLE_GOODS)]
+	batches = [
+		b.name
+		for b in frappe.get_all("Batch", filters=filters, fields=["name", "item"])
+		if b.item == item or _converts_into(b.item, item)
+	]
+
+	holdings = []
+	for start in range(0, len(batches), 500):
+		holdings.extend(_fetch_lineage_holdings(batches[start : start + 500]))
+	claims = _open_request_claims(
+		sorted({h.batch_no for h in holdings}), mr.get("name")
+	)
+	kept = []
+	for h in holdings:
+		h.qty = flt(flt(h.qty) - flt(claims.get((h.batch_no, h.warehouse), 0)), 3)
+		if h.qty > NEGLIGIBLE:
+			kept.append(h)
+	return kept
+
+
+def _open_request_claims(batch_nos, exclude):
+	"""{(batch, warehouse): qty} other open Material Transfer requests still need from these
+	batches: what each has left to send (qty - ordered_qty) from its source warehouse.
+	``exclude`` is the request being settled."""
+	if not batch_nos:
+		return {}
+	rows = frappe.db.sql(
+		"""
+		select mri.batch_no,
+			coalesce(nullif(mri.from_warehouse, ''), mr.set_from_warehouse) as warehouse,
+			sum(mri.qty - mri.ordered_qty) as qty
+		from `tabMaterial Request Item` mri
+		join `tabMaterial Request` mr on mr.name = mri.parent
+		where mri.batch_no in %(batch_nos)s and mr.name != %(exclude)s
+			and mr.docstatus < 2 and mr.material_request_type = 'Material Transfer'
+			and mr.status not in ('Stopped', 'Cancelled', 'Transferred')
+			and mri.qty > mri.ordered_qty
+		group by mri.batch_no, warehouse
+		""",
+		{"batch_nos": tuple(batch_nos), "exclude": exclude or ""},
+		as_dict=True,
+	)
+	return {(row.batch_no, row.warehouse): flt(row.qty, 3) for row in rows}
+
+
+def _summarise_holdings(rows, batch_no, item, target, dest, pure_per_unit, sources):
+	"""Sort a lineage's holdings by what Settle may do with them.
+
+	* ``at_dest`` -- the request's batch already in the request's target: nothing to move.
+	* ``free`` -- ``sources``, the company's enabled Raw Material warehouses: Settle's only
+	  sources (_build_plan's ``all_rm``). A holding Settle still cannot use carries a
+	  ``note`` saying why.
+	* ``scrap`` -- the customer's metal-loss scrap in Scrap warehouses, converted back.
+	* ``outside`` -- every other warehouse (Manufacturing, Transit...): Settle does not take
+	  metal from these (a work order's is judged separately, _judge_work_order_holdings).
+
+	``coverable`` is the most one Settle run can bring in: every holding it may use adds up
+	(_plan_parts combines them) -- other purities in the source warehouse converted in place,
+	the same item or another purity elsewhere, the scrap. Each counts what _conversion_take
+	would source from it, so a request for exactly that much is sourced in full.
+	"""
+	free, at_dest, outside, scrap = [], [], [], []
+	coverable = 0.0
+	for row in rows:
+		if row.batch_no == batch_no and row.warehouse == target:
+			# The request's own batch in the source warehouse is already counted as on hand.
+			continue
+		holding = frappe._dict(row)
+		holding.equivalent = _equivalent(row, item, pure_per_unit)
+		if row.batch_no == batch_no and row.warehouse == dest:
+			at_dest.append(holding)
+			continue
+		if row.warehouse not in sources:
+			if _is_scrap_source(row) and _converts_into(row.item_code, item):
+				scrap.append(holding)
+				coverable += _usable_qty(holding, item, pure_per_unit)
+			else:
+				outside.append(holding)
+			continue
+		free.append(holding)
+		holding.note = _unusable_reason(row, item, target, dest)
+		if not holding.note:
+			coverable += _usable_qty(holding, item, pure_per_unit)
+	return frappe._dict(
+		free=free,
+		at_dest=at_dest,
+		outside=outside,
+		scrap=scrap,
+		coverable=flt(coverable, 3),
+	)
+
+
+def _usable_qty(holding, item, pure_per_unit):
+	"""What ``holding`` brings in of the request's item: the same item 1:1, another purity
+	what _conversion_take sources from it."""
+	if holding.item_code == item:
+		return flt(holding.qty, 3)
+	purity = flt(_get_item_purity(holding.item_code))
+	if not purity or not pure_per_unit:
+		return 0.0
+	return _conversion_take(
+		holding.qty, flt(holding.equivalent) + 1, purity, pure_per_unit
+	)[0]
+
+
+def _unusable_reason(holding, item, target, dest):
+	"""Why Settle cannot use a free holding of the lineage, or None when it can."""
+	if holding.warehouse == dest:
+		return _("Settle never takes metal from the request's target warehouse")
+	if holding.item_code == item:
+		# Another batch already in the source warehouse is relabelled in place.
+		return None
+	if not _converts_into(holding.item_code, item):
+		return _("Settle does not convert this item into {0}").format(item)
+	return None
+
+
+def _converts_into(source_item, item):
+	"""Whether Settle converts ``source_item`` into ``item``: a gold item of another purity
+	in PURITY_PRIORITY and the same colour -- the candidates _get_gold_items_for_purity
+	offers both conversion paths -- or the customer's metal-loss scrap (ML) of the same
+	colour, at any of those purities, its own included."""
+	label = _get_purity_label(source_item)
+	same_colour = source_item.split("-")[-1] == (item or "").split("-")[-1]
+	if source_item.startswith(METAL_LOSS_PREFIX):
+		return label in PURITY_PRIORITY and same_colour
+	return (
+		source_item.startswith("M-G-")
+		and label in PURITY_PRIORITY
+		and label != _get_purity_label(item)
+		and same_colour
+	)
+
+
+def _equivalent(holding, item, pure_per_unit):
+	"""``holding``'s quantity in the request item's units, unrounded: the same item 1:1, a
+	purity Settle converts by pure weight on the row's own pure basis (_pure_weight's), and
+	anything else 0."""
+	qty = flt(holding.qty, 3)
+	if holding.item_code == item:
+		return qty
+	if not pure_per_unit or not _converts_into(holding.item_code, item):
+		return 0.0
+	return qty * flt(_get_item_purity(holding.item_code)) / 100 / pure_per_unit
+
+
+def _holding_list(holdings, item, with_type=False, notes=None):
+	"""The holdings as an HTML list for the refusal. ``notes`` -- {(batch, warehouse):
+	[text]} -- adds what is known about a holding there (_work_order_notes)."""
+	lines = []
+	for h in holdings:
+		line = _("{0} of {1} (batch {2}) in {3}").format(
+			flt(h.qty, 3),
+			frappe.bold(h.item_code),
+			h.batch_no,
+			frappe.bold(h.warehouse),
+		)
+		if with_type and h.warehouse_type:
+			line += f" ({_(h.warehouse_type)})"
+		if h.item_code != item and h.equivalent:
+			line += " = " + _("{0} of {1}").format(flt(h.equivalent, 3), item)
+		for note in [h.get("note"), *(notes or {}).get((h.batch_no, h.warehouse), [])]:
+			if note:
+				line += f" -- {note}"
+		lines.append(f"<li>{line}</li>")
+	return "<ul>" + "".join(lines) + "</ul>"
+
+
+def _work_order_notes(work_orders):
+	"""{(batch, warehouse): [text]}: the work order holding the batch there, and whether
+	Settle may take it back or why not."""
+	notes = {}
+	for h in work_orders:
+		if h.reason:
+			text = _("work order {0}: not taken back, {1}").format(
+				frappe.bold(h.work_order), h.reason
+			)
+		else:
+			text = _("work order {0}: Settle can take it back").format(
+				frappe.bold(h.work_order)
+			)
+		notes.setdefault((h.batch_no, h.warehouse), []).append(text)
+	return notes
+
+
+def _check_customer_goods_flag(actionable):
+	"""Refuse before anything is posted when a planned conversion would land customer metal
+	in a batch the Batch guard refuses (update_inventory_dimentions): a Customer Goods batch
+	of an item without the Customer Goods flag.
+
+	ConvertInPlace, Convert, and a SamePurity that relabels another batch into the request's
+	all produce customer metal of the request's item, into the request's batch or a new
+	one. update_parent_batch_id re-saves that batch on submit and the guard throws there,
+	deep inside the first Stock Entry. Asking the guard's own questions here names the Item
+	up front instead.
+	"""
+	for entry in actionable:
+		if not _repacks_customer_metal(entry):
+			continue
+		if can_be_customer_goods(entry["item"]):
+			continue
+		mr_batch = entry.get("mr_batch")
+		if mr_batch and _guard_spares(mr_batch):
+			continue
+		frappe.throw(
+			_(
+				"Row {0}: Settle would produce the customer's metal into {1} of {2}, but "
+				"Item {2} does not have '{3}' ticked. Tick it on the Item, then Settle again."
+			).format(
+				entry["row"],
+				_("batch {0}").format(frappe.bold(mr_batch))
+				if mr_batch
+				else _("a new customer batch"),
+				frappe.bold(entry["item"]),
+				_(CUSTOMER_GOODS_FLAG_LABEL),
+			),
+			title=_("Item Not Allowed as Customer Goods"),
+		)
+
+
+def _repacks_customer_metal(entry):
+	"""Whether the planned settle of ``entry`` produces customer metal in a Repack (see
+	_check_customer_goods_flag); a plain transfer of the request's own batch does not."""
+	if entry["level"] in (LEVEL_CONVERT_IN_PLACE, LEVEL_CONVERT):
+		return True
+	if entry["level"] == LEVEL_SAME_PURITY:
+		mr_batch = entry.get("mr_batch")
+		return bool(mr_batch) and entry["src"]["batch_no"] != mr_batch
+	if entry["level"] == LEVEL_RELABEL:
+		return True
+	if entry["level"] == LEVEL_WORK_ORDER:
+		# Once taken back, the row settles from the pulled batch: a conversion or a relabel
+		# into the request's batch, unless the pulled batch is the request's own.
+		return any(pull.batch_no != entry.get("mr_batch") for pull in entry["pulls"])
+	return False
+
+
+def _guard_spares(batch_no):
+	"""Whether the Batch guard re-saves the existing ``batch_no`` without the Item's flag.
+
+	The guard judges a batch by the entry that minted it, not by the Repack re-saving it:
+	it skips a batch that is not customer inventory, and one minted by a flow it exempts
+	(subcontracting repack, process loss, repair unpack, an SNC settlement)."""
+	from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
+		is_process_loss_repack,
+		is_repair_unpack,
+		is_snc_settlement_conversion,
+		is_subcontracting_gold_repack,
+	)
+
+	batch = frappe.get_doc("Batch", batch_no)
+	if batch.get("custom_inventory_type") not in ("Customer Goods", "Customer Stock"):
+		return True
+	return any(
+		exempt(batch)
+		for exempt in (
+			is_subcontracting_gold_repack,
+			is_snc_settlement_conversion,
+			is_process_loss_repack,
+			is_repair_unpack,
+		)
+	)
 
 
 def _gather_convertible(
@@ -529,6 +1362,356 @@ def _accumulate_batches(
 
 
 # ---------------------------------------------------------------------------
+# Planning, work orders (read-only): the batch's metal issued to a work order.
+#
+# The batch scope keeps Settle to the batch's own metal, and part of it can sit in a work
+# order the customer's gold was issued to. Settle takes that back the way it borrows from
+# any other warehouse: the customer's batch comes out, an equal weight of Regular Stock
+# goes in, so the work order ends whole -- only from a company-gold order, where the
+# customer's metal does not belong, and only from an operation nobody has started.
+# ---------------------------------------------------------------------------
+
+
+def _judge_work_order_holdings(lineage, company, holdings, sources, dest):
+	"""Every work order holding the lineage's metal, with the Raw Material warehouse it
+	would go back to (``landing``) and, when Settle may not take it, why (``reason``)."""
+	sources = set(sources)
+	judged = []
+	for holding in _fetch_work_order_holdings(lineage, company):
+		holding = frappe._dict(holding)
+		holding.landing = _landing_warehouse(holding, holdings, sources, dest)
+		holding.reason = _why_not_taken(holding)
+		judged.append(holding)
+	return judged
+
+
+def _fetch_work_order_holdings(lineage, company):
+	"""The lineage's metal reserved in work-order warehouses: one row per reservation row,
+	from the Stock Reservation Entries a work-order issue makes (``batch_no`` is indexed),
+	with everything _why_not_taken reads -- the order's ownership, the work order's current
+	operation and its MOP Log balance for the batch, pending end-of-day syncs, draft IRs,
+	the batch's stock in that warehouse -- and the department's Raw Material warehouse."""
+	if not lineage:
+		return []
+	rows = frappe.db.sql(
+		"""
+		select sre.name as reservation, sb.batch_no, sre.item_code, sre.warehouse,
+			sb.qty - sb.delivered_qty as qty, sre.manufacturing_work_order as work_order,
+			mwo.docstatus as work_order_docstatus, mwo.manufacturing_operation as operation,
+			mwo.manufacturing_order,
+			mop.status as operation_status, mop.department_ir_status, mop.department,
+			ifnull(pmo.is_customer_gold, 0) as customer_gold
+		from `tabSerial and Batch Entry` sb
+		join `tabStock Reservation Entry` sre on sre.name = sb.parent
+		join `tabManufacturing Work Order` mwo on mwo.name = sre.manufacturing_work_order
+		left join `tabManufacturing Operation` mop
+			on mop.name = mwo.manufacturing_operation
+		left join `tabParent Manufacturing Order` pmo on pmo.name = mwo.manufacturing_order
+		where sb.batch_no in %(lineage)s and sb.parenttype = 'Stock Reservation Entry'
+			and sre.docstatus = 1 and sre.status not in ('Cancelled', 'Delivered')
+			and sre.company = %(company)s and sb.qty - sb.delivered_qty > %(tolerance)s
+		""",
+		{"lineage": tuple(lineage), "company": company, "tolerance": TOLERANCE},
+		as_dict=True,
+	)
+	for row in rows:
+		row.qty = flt(row.qty, 3)
+		# Moves an IR logged that the end-of-day sync has not posted yet.
+		pending = frappe.get_all(
+			"MOP Log",
+			filters={
+				"manufacturing_work_order": row.work_order,
+				"is_cancelled": 0,
+				"is_synced": 0,
+			},
+			fields=[
+				"manufacturing_operation",
+				"to_warehouse",
+				"flow_index",
+				"creation",
+			],
+		)
+		row.pending_elsewhere = _pending_on_another_open_operation(
+			pending, row.operation
+		)
+		row.eod_target = (
+			_eod_target(pending, row.operation, row.department) if pending else None
+		)
+		row.draft_ir = any(
+			frappe.db.exists(
+				doctype, {"manufacturing_work_order": row.work_order, "docstatus": 0}
+			)
+			for doctype in ("Employee IR Operation", "Department IR Operation")
+		)
+		row.operation_balance = _operation_batch_balance(
+			row.operation, row.item_code, row.batch_no
+		)
+		row.in_warehouse = flt(
+			_consumable_batch_qty_map(
+				[row.batch_no], row.item_code, [row.warehouse]
+			).get((row.batch_no, row.warehouse), 0),
+			3,
+		)
+		row.department_rm = row.department and frappe.db.get_value(
+			"Warehouse",
+			{
+				"warehouse_type": "Raw Material",
+				"department": row.department,
+				"company": company,
+				"disabled": 0,
+			},
+			"name",
+		)
+	return rows
+
+
+def _pending_on_another_open_operation(pending, operation):
+	"""Whether a pending log sits on an open operation other than the work order's current
+	one: the end-of-day sync holds such a work order (_open_non_pointer_operations), so its
+	metal cannot be followed. Pending logs on a finished predecessor are the normal IR
+	audit copies."""
+	from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+		is_open_operation,
+	)
+
+	others = {
+		log.manufacturing_operation
+		for log in pending
+		if log.manufacturing_operation and log.manufacturing_operation != operation
+	}
+	if not others:
+		return False
+	return any(
+		is_open_operation(op.status, op.department_ir_status)
+		for op in frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", sorted(others)]},
+			fields=["status", "department_ir_status"],
+		)
+	)
+
+
+def _eod_target(pending, operation, department):
+	"""Where the end-of-day sync will move the work order's metal: the latest pending
+	``to_warehouse`` on the current operation, else on the work order, else the
+	department's Manufacturing warehouse -- the sync's own rule (_plan_mwo_group)."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+		_get_t_warehouse_from_logs,
+		_resolve_department_warehouse,
+	)
+
+	return (
+		_get_t_warehouse_from_logs(
+			[log for log in pending if log.manufacturing_operation == operation]
+		)
+		or _get_t_warehouse_from_logs(pending)
+		or _resolve_department_warehouse({"department": department})
+	)
+
+
+def _operation_batch_balance(operation, item_code, batch_no):
+	"""The operation's MOP Log balance for (item, batch): its latest row's batch figure."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_current_mop_balance_rows,
+	)
+
+	if not operation:
+		return 0.0
+	for log in get_current_mop_balance_rows(operation, keys=[(item_code, batch_no)]):
+		if log.get("item_code") == item_code and log.get("batch_no") == batch_no:
+			return flt(log.get("qty_after_transaction_batch_based"), 3)
+	return 0.0
+
+
+def _why_not_taken(holding):
+	"""Why Settle may not take ``holding`` back from its work order, or None when it may.
+
+	Only from a company-gold order, whose operation is the work order's current one and not
+	started, with no draft IR about to carry the batch forward. IR moves still waiting for the
+	end-of-day sync are followed (_log_on_operation writes the pull into them), unless they
+	sit on another open operation, which the sync holds. The reservation and the ledger must
+	hold what is taken, and the operation's MOP Log exactly that, so the batch ends at 0.
+	"""
+	if holding.customer_gold:
+		return _("it is a customer-gold order")
+	if holding.work_order_docstatus != 1:
+		return _("the work order is not submitted")
+	if holding.operation_status != OPERATION_NOT_STARTED:
+		return _("its operation {0} is {1}").format(
+			holding.operation or "-", holding.operation_status or _("missing")
+		)
+	if holding.department_ir_status == "In-Transit":
+		return _("its operation is In-Transit")
+	if holding.pending_elsewhere:
+		return _(
+			"its MOP Logs waiting for the end-of-day sync sit on another open operation"
+		)
+	if holding.draft_ir:
+		return _("a draft Employee IR or Department IR holds it")
+	if (
+		abs(flt(holding.operation_balance) - flt(holding.qty)) > TOLERANCE
+		or flt(holding.in_warehouse) < flt(holding.qty) - TOLERANCE
+	):
+		return _(
+			"its operation's MOP Log shows {0} and {1} holds {2}, not the {3} reserved"
+		).format(
+			flt(holding.operation_balance, 3),
+			holding.warehouse,
+			flt(holding.in_warehouse, 3),
+			holding.qty,
+		)
+	if not holding.landing:
+		return _("no Raw Material warehouse to take it back to")
+	return None
+
+
+def _landing_warehouse(holding, holdings, sources, dest):
+	"""Where ``holding`` goes back to: the Raw Material warehouse already holding the most of
+	the same batch, so the two add up for one conversion; else the operation's department
+	Raw Material warehouse. Never the request's destination, which Settle never draws from."""
+	same = [
+		h
+		for h in holdings
+		if h.batch_no == holding.batch_no
+		and h.warehouse in sources
+		and h.warehouse != dest
+	]
+	if same:
+		return max(same, key=lambda h: flt(h.qty)).warehouse
+	if holding.department_rm in sources and holding.department_rm != dest:
+		return holding.department_rm
+	return None
+
+
+def _plan_work_order_pull(
+	row,
+	mr_batch,
+	item,
+	shortfall,
+	target,
+	dest,
+	sources,
+	company,
+	allocated,
+	holdings,
+	work_orders,
+	extra_coverable=0.0,
+):
+	"""The work-order holdings to take back so the batch's own metal covers the row, or None.
+
+	``extra_coverable`` -- what the customer's other batches can add once the batch's own
+	metal runs out: the pulls are planned when, with it, the row is covered, so the batch's
+	work-order metal is still taken before any other batch.
+
+	Largest first, stopping as soon as the lineage -- each pulled holding counted at its
+	landing -- covers the shortfall by Settle's own sourcing rules (_summarise_holdings).
+	Each pull reserves the Regular Stock that goes back to its work order; nothing stays
+	reserved when the pulls cannot cover the row.
+	"""
+	eligible = sorted(
+		(h for h in work_orders if not h.reason),
+		key=lambda h: flt(h.qty),
+		reverse=True,
+	)
+	if not eligible:
+		return None
+
+	sources = set(sources)
+	pure_per_unit = _pure_per_unit(row, item)
+	trial = dict(allocated)
+	pulls = []
+	for holding in eligible:
+		regular = _regular_to_put_back(holding, company, trial)
+		if not regular:
+			holding.reason = _(
+				"no free Regular Stock of {0} in {1} to put back"
+			).format(holding.item_code, holding.landing)
+			continue
+		pulls.append(frappe._dict(holding, regular=regular))
+		after = _summarise_holdings(
+			_moved(holdings, pulls),
+			mr_batch,
+			item,
+			target,
+			dest,
+			pure_per_unit,
+			sources,
+		)
+		landed = sum(
+			flt(p.qty) for p in pulls if p.batch_no == mr_batch and p.landing == target
+		)
+		if after.coverable + landed + flt(extra_coverable) >= shortfall - NEGLIGIBLE:
+			allocated.update(trial)
+			return pulls
+	return None
+
+
+def _regular_to_put_back(holding, company, trial):
+	"""The Regular Stock batch that goes into the work order in place of the customer's,
+	claimed in ``trial``.
+
+	With moves waiting for the end-of-day sync, never a batch the sync's target already holds
+	enough of: the sync would take it as already there and leave it where Settle put it.
+	"""
+	probe = dict(trial)
+	for _attempt in range(5):
+		regular = find_owner_rm_warehouse(
+			None,
+			holding.item_code,
+			holding.qty,
+			company=company,
+			warehouses=[holding.landing],
+			allocated=probe,
+			reserve=False,
+		)
+		if not regular:
+			return None
+		key = (regular["batch_no"], holding.landing)
+		already_there = (
+			holding.eod_target
+			and flt(
+				_consumable_batch_qty_map(
+					[regular["batch_no"]], holding.item_code, [holding.eod_target]
+				).get((regular["batch_no"], holding.eod_target), 0)
+			)
+			>= flt(holding.qty) - TOLERANCE
+		)
+		if not already_there:
+			trial[key] = flt(trial.get(key, 0) + holding.qty, 3)
+			return regular
+		# Counted as fully taken, so the finder offers the next batch.
+		probe[key] = float("inf")
+	return None
+
+
+def _moved(holdings, pulls):
+	"""``holdings`` as they stand once ``pulls`` are taken back: each pulled holding leaves
+	its work-order warehouse for its landing, merged with the batch's metal already there."""
+	totals = {}
+	types = {}
+	for h in holdings:
+		key = (h.batch_no, h.item_code, h.warehouse)
+		totals[key] = totals.get(key, 0.0) + flt(h.qty)
+		types[h.warehouse] = h.warehouse_type
+	for p in pulls:
+		out_key = (p.batch_no, p.item_code, p.warehouse)
+		totals[out_key] = totals.get(out_key, 0.0) - flt(p.qty)
+		in_key = (p.batch_no, p.item_code, p.landing)
+		totals[in_key] = totals.get(in_key, 0.0) + flt(p.qty)
+	return [
+		frappe._dict(
+			batch_no=batch_no,
+			item_code=item_code,
+			warehouse=warehouse,
+			warehouse_type=types.get(warehouse),
+			qty=flt(qty, 3),
+		)
+		for (batch_no, item_code, warehouse), qty in totals.items()
+		if qty > NEGLIGIBLE
+	]
+
+
+# ---------------------------------------------------------------------------
 # Execution (writes): mint + submit the Stock Entries the plan calls for.
 # ---------------------------------------------------------------------------
 
@@ -554,6 +1737,8 @@ def _execute(mr, actionable):
 			_settle_same_purity(mr, entry)
 		elif entry["level"] == LEVEL_CONVERT:
 			_settle_convert(mr, entry)
+		elif entry["level"] == LEVEL_RELABEL:
+			_settle_relabel(mr, entry)
 
 
 def _bin_pairs(actionable):
@@ -567,6 +1752,24 @@ def _bin_pairs(actionable):
 			pairs.append((src["item_code"], src["warehouse"]))
 			pairs.append((src["item_code"], target))
 	return pairs
+
+
+def _settle_relabel(mr, entry):
+	"""Another of the customer's batches of the request's item, already in the source
+	warehouse: relabel it in place into the request's batch -- one same-item repack. Nothing
+	moves between warehouses, so no Regular Stock leg balances it."""
+	src = entry["src"]
+	_convert(
+		mr,
+		source_item=entry["item"],
+		source_qty=entry["shortfall"],
+		source_batch=src["batch_no"],
+		target_item=entry["item"],
+		target_qty=entry["shortfall"],
+		warehouse=entry["target"],
+		customer=entry["customer"],
+		target_batch=entry.get("mr_batch"),
+	)
 
 
 def _settle_convert_in_place(mr, entry):
@@ -701,6 +1904,207 @@ def _settle_convert(mr, entry):
 	_transfer(mr, item2, source_qty, produced_item2_batch, target, W, None)
 
 
+def _pull_from_work_orders(mr, actionable):
+	"""Take back every holding the plan pulls, once each however many rows planned it.
+
+	Pins the naming series and every Bin the run touches first, in canonical order (RULE B),
+	as _execute does: the pulls, and the settle that follows them on the same items and
+	warehouses (the pulled metal is converted or moved from its landing to the target).
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_bins,
+		preallocate_series_for_docs,
+		series_stubs,
+	)
+
+	pulls = {}
+	pairs = _bin_pairs([e for e in actionable if e["level"] != LEVEL_WORK_ORDER])
+	for entry in actionable:
+		if entry["level"] != LEVEL_WORK_ORDER:
+			continue
+		for pull in entry["pulls"]:
+			pulls.setdefault(
+				(pull.reservation, pull.batch_no),
+				frappe._dict(pull, customer=entry["customer"]),
+			)
+			for item_code in (entry["item"], pull.item_code):
+				for warehouse in (entry["target"], pull.landing, pull.warehouse):
+					pairs.append((item_code, warehouse))
+
+	preallocate_series_for_docs(
+		*series_stubs(
+			mr.company,
+			TRANSFER_SE_TYPE,
+			REPACK_SE_TYPE,
+			WORK_ORDER_SE_TYPE,
+			WORK_ORDER_RECEIVE_SE_TYPE,
+		)
+	)
+	lock_bins(pairs)
+	return [_pull_from_work_order(mr, pull) for pull in pulls.values()]
+
+
+def _pull_from_work_order(mr, pull):
+	"""Take ``pull`` -- the batch's holding in a company-gold work order -- back to Raw
+	Material, the same borrow _settle_same_purity makes from any other warehouse: the
+	customer's batch comes out and an equal weight of Regular Stock goes in, so the work
+	order ends whole.
+
+	The work order's own bookkeeping moves with the metal, or the moves are refused or
+	break it later:
+
+	* its Stock Reservation Entry is re-pointed at the regular batch -- ERPNext will not
+	  move a reserved batch out (validate_reserved_batches, "Reserved Batch Conflict");
+	* its operation's MOP Log gets +qty for the regular batch and -qty for the customer's
+	  -- otherwise the next IR copies the stale batch forward and the end-of-day sync,
+	  unable to find it, holds the work order;
+	* its SNC requirement is stamped again from what it now holds -- stamp_snc_requirement
+	  only runs for WORK ORDER transfers, and a stale "Need" blocks its finished-goods
+	  submit (validate_snc_before_submit) with no borrowed gold left to settle.
+	"""
+	qty = flt(pull.qty, 3)
+	regular_batch = pull.regular["batch_no"]
+	# Regular Stock in first: the re-pointed reservation must find the batch there.
+	regular_entry = _work_order_transfer(
+		mr, pull, qty, regular_batch, pull.landing, pull.warehouse, None
+	)
+	reservation = _move_reservation(pull.reservation, pull.batch_no, regular_batch)
+	customer_entry = _work_order_transfer(
+		mr,
+		pull,
+		qty,
+		pull.batch_no,
+		pull.warehouse,
+		pull.landing,
+		pull.customer,
+		outward=True,
+	)
+	# Both rows at the operation's highest flow index, so readers ordering by it -- the
+	# end-of-day sync, the finished-goods receive -- take them as the latest.
+	flow_index = _highest_flow_index(pull.operation)
+	_log_on_operation(regular_entry, pull, outward=False, flow_index=flow_index)
+	_log_on_operation(customer_entry, pull, outward=True, flow_index=flow_index)
+	_restamp_snc_requirement(pull.work_order)
+	return frappe._dict(
+		pull,
+		regular_entry=regular_entry,
+		customer_entry=customer_entry,
+		new_reservation=reservation,
+	)
+
+
+def _move_reservation(reservation, from_batch, to_batch):
+	"""Re-point a work order's Stock Reservation Entry from ``from_batch`` to ``to_batch``:
+	the same sales order line, quantity and warehouse, one batch swapped. Cancelled and
+	rebuilt, the way Make Receive replaces a reservation (_build_replacement_sre)."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+		_build_replacement_sre,
+	)
+
+	original = frappe.get_doc("Stock Reservation Entry", reservation)
+	remaining = {}
+	for sb in frappe.get_all(
+		"Serial and Batch Entry",
+		filters={"parent": original.name, "parenttype": "Stock Reservation Entry"},
+		fields=["batch_no", "qty", "delivered_qty"],
+		order_by="idx asc",
+	):
+		left = flt(sb.qty) - flt(sb.delivered_qty)
+		if left <= TOLERANCE:
+			continue
+		batch_no = to_batch if sb.batch_no == from_batch else sb.batch_no
+		remaining[batch_no] = flt(remaining.get(batch_no, 0) + left, 3)
+	original.flags.ignore_permissions = True
+	original.cancel()
+	return _build_replacement_sre(
+		original,
+		flt(sum(remaining.values()), 3),
+		sb_remaining=[{"batch_no": b, "qty": q} for b, q in remaining.items()],
+	)
+
+
+def _highest_flow_index(operation):
+	"""The highest flow index on the operation's live MOP Log rows (0 when none)."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_last_mop_index,
+	)
+
+	return cint(get_last_mop_index(operation))
+
+
+def _log_on_operation(entry_name, pull, outward, flow_index):
+	"""Record one leg of a pull on the work order's operation, as a WORK ORDER entry's own
+	submit would (create_mop_log_for_stock_transfer_to_mo). The direction is passed, not read
+	off the entry type, though the two agree: out is a Receive, in a Transfer.
+
+	With IR moves still waiting for the end-of-day sync (``pull.eod_target``), the rows join
+	them: unsynced, bound for the sync's target. The sync then moves the regular batch -- the
+	customer's ends at 0 and is skipped -- and marks them all synced. Written synced, the
+	pending chain would still move the customer's batch, which is gone: "batch short", and
+	the work order held every night.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		create_mop_log_for_stock_transfer_to_mo,
+	)
+
+	entry = frappe.get_doc("Stock Entry", entry_name)
+	row = entry.items[0]
+	pending = bool(pull.get("eod_target"))
+	create_mop_log_for_stock_transfer_to_mo(
+		frappe._dict(
+			doctype=entry.doctype,
+			name=entry.name,
+			stock_entry_type=entry.stock_entry_type,
+			manufacturing_work_order=pull.work_order,
+		),
+		frappe._dict(
+			item_code=row.item_code,
+			qty=row.qty,
+			# Gold is weighed, not counted: no pieces move with it.
+			pcs=0,
+			batch_no=row.batch_no,
+			s_warehouse=row.s_warehouse,
+			t_warehouse=pull.eod_target if pending else row.t_warehouse,
+			manufacturing_operation=pull.operation,
+			name=row.name,
+			serial_and_batch_bundle=row.serial_and_batch_bundle,
+		),
+		is_synced=not pending,
+		outward=outward,
+		flow_index=flow_index,
+	)
+
+
+def _restamp_snc_requirement(work_order):
+	"""Stamp the work order's SNC requirement from what it holds now, as
+	stamp_snc_requirement does after a WORK ORDER transfer."""
+	needs = _mwo_needs_settlement(work_order)
+	values = {"snc_requirement": "Need" if needs else "Not Need"}
+	if needs:
+		values["snc_done"] = 0
+	frappe.db.set_value("Manufacturing Work Order", work_order, values)
+
+
+def _pull_summary(pulled):
+	"""What was taken back from which work order, and what replaced it there."""
+	return "<br>".join(
+		_(
+			"Took {0} of {1} (batch {2}) back from work order {3} into {4}, and gave the "
+			"work order {0} of Regular Stock (batch {5}) in its place: {6}, {7}."
+		).format(
+			p.qty,
+			frappe.bold(p.item_code),
+			p.batch_no,
+			frappe.bold(p.work_order),
+			frappe.bold(p.landing),
+			p.regular["batch_no"],
+			p.regular_entry,
+			p.customer_entry,
+		)
+		for p in pulled
+	)
+
+
 # ---------------------------------------------------------------------------
 # Stock Entry builders
 # ---------------------------------------------------------------------------
@@ -740,6 +2144,48 @@ def _transfer(mr, item, qty, batch, from_wh, to_wh, customer):
 			"t_warehouse": to_wh,
 			"inventory_type": inv,
 			"customer": customer,
+		},
+	)
+	se.insert(ignore_permissions=True)
+	_submit_consuming_stock_entry(se)
+	return se.name
+
+
+def _work_order_transfer(mr, pull, qty, batch, from_wh, to_wh, customer, outward=False):
+	"""One leg of a pull, naming the work order, its operation and its order, so the move
+	is found with the work order's own entries: into the work order a Material Transfer
+	(WORK ORDER), as its issues are booked; ``outward`` -- the customer's batch coming back
+	out -- a Material Receive (WORK ORDER), as Make Receive books it.
+
+	Settle writes the leg's reservation and MOP Log rows itself (_move_reservation,
+	_log_on_operation), so the generic bridge stays out (``skip_mwo_reservation``, the
+	opt-out creates_mwo_reservation offers such producers): it would reserve the leg in, and
+	write a second MOP Log row for the leg out.
+	"""
+	inv = CUSTOMER_GOODS if customer else REGULAR_STOCK
+	se_type = WORK_ORDER_RECEIVE_SE_TYPE if outward else WORK_ORDER_SE_TYPE
+	se = _new_se(mr, se_type, "Material Transfer", from_wh, to_wh, customer)
+	se.update(
+		{
+			"manufacturing_order": pull.manufacturing_order,
+			"manufacturing_work_order": pull.work_order,
+			"manufacturing_operation": pull.operation,
+		}
+	)
+	se.flags.skip_mwo_reservation = True
+	_append_item(
+		se,
+		{
+			"item_code": pull.item_code,
+			"qty": flt(qty, 3),
+			"batch_no": batch,
+			"s_warehouse": from_wh,
+			"t_warehouse": to_wh,
+			"inventory_type": inv,
+			"customer": customer,
+			"manufacturing_operation": pull.operation,
+			"custom_manufacturing_work_order": pull.work_order,
+			"custom_parent_manufacturing_order": pull.manufacturing_order,
 		},
 	)
 	se.insert(ignore_permissions=True)
