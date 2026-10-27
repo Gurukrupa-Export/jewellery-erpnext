@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.customer_product_tolerance_master import (
 	CustomerProductToleranceMaster,
@@ -34,9 +35,22 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	ParentManufacturingOrder,
+	_get_chain_finding_rows,
+	_get_grade_free_key,
+	_get_requested_qty_by_item,
+	_requirement_key,
+	_validate_chain_findings_are_manufacturing_items,
+	add_material_request_comment,
+	can_create_pmo_material_request,
+	check_pmo_material_request_role,
+	check_tracking_bom_is_draft,
+	create_pmo_material_request,
 	get_item_code,
+	get_pending_raw_materials,
 	set_diamond_tolerance_table,
 	set_metal_tolerance_table,
+	tracking_bom_is_draft,
+	validate_material_request_items,
 	validate_mfg_date,
 )
 
@@ -3587,3 +3601,1909 @@ class TestCancelAllLinked(UnitTestCase):
 				frappe.PermissionError, cancel_all.get_cancel_preview, "PMO1"
 			)
 		enqueue.assert_not_called()
+
+
+def _bom_raw_material(item_code, qty, **kwargs):
+	row = {
+		"item_code": item_code,
+		"qty": qty,
+		"from_warehouse": "RM-WH",
+		"warehouse": "DEPT-WH",
+		"is_customer_item": 0,
+		"sub_setting_type": None,
+		"pcs": None,
+	}
+	row.update(kwargs)
+	return row
+
+
+class TestPendingRawMaterials(UnitTestCase):
+	"""Pending qty for the Create Material Request button: BOM requirement less what the
+	PMO's non-cancelled Material Requests already cover, so nothing is requested twice."""
+
+	# Template plus every attribute except Diamond Grade, as _get_grade_free_key builds it.
+	GRADE_FREE_KEYS = {
+		"D-NT-RO-7-+8-8.5": ("D", "Natural", "Round", "+8-8.5"),
+		"D-NT-RO-6B-+8-8.5": ("D", "Natural", "Round", "+8-8.5"),
+		"D-NT-RO-6B-+9-9.5": ("D", "Natural", "Round", "+9-9.5"),
+	}
+
+	def _run_rows(self, bom, requested, pmo_qty=1, grade_free_key=None):
+		"""``requested`` is keyed like _get_requested_qty_by_item; a bare item code stands
+		for a company-owned line with no sub setting type."""
+		doc = SimpleNamespace(
+			name="PMO-TEST-0001",
+			qty=pmo_qty,
+			manufacturer="MNF",
+			get_bom_raw_materials=lambda: bom,
+		)
+		requested = {
+			key if isinstance(key, tuple) else (key, 0, ""): qty
+			for key, qty in requested.items()
+		}
+		with (
+			patch(
+				f"{PMO_MODULE}._get_requested_qty_by_item",
+				return_value=requested,
+			),
+			patch(
+				f"{PMO_MODULE}._get_grade_free_key",
+				side_effect=grade_free_key or self.GRADE_FREE_KEYS.get,
+			),
+			patch(f"{PMO_MODULE}.frappe.get_precision", return_value=3),
+		):
+			return get_pending_raw_materials(doc)
+
+	def _run(self, bom, requested, pmo_qty=1, grade_free_key=None):
+		rows = self._run_rows(bom, requested, pmo_qty, grade_free_key)
+		return {row["item_code"]: row for row in rows}
+
+	# One item on several BOM rows (review finding: matching by item code alone).
+
+	def test_request_covers_the_row_it_was_raised_for_not_the_first_row(self):
+		"""Customer and company rows of one stone; only the company request remains."""
+		customer_row, company_row = self._run_rows(
+			{
+				"gemstone_item": [
+					_bom_raw_material("G-RUBY", 5, is_customer_item=1),
+					_bom_raw_material("G-RUBY", 5, is_customer_item=0),
+				]
+			},
+			{("G-RUBY", 0, ""): 5},
+		)
+		self.assertQty(customer_row, 5, 0, 5)
+		self.assertQty(company_row, 5, 5, 0)
+
+	def test_rows_of_one_item_in_two_settings_are_kept_apart(self):
+		open_row, close_row = self._run_rows(
+			{
+				"gemstone_item": [
+					_bom_raw_material("G-RUBY", 0.4, sub_setting_type="Open"),
+					_bom_raw_material("G-RUBY", 0.6, sub_setting_type="Close"),
+				]
+			},
+			{("G-RUBY", 0, "Close"): 0.6},
+		)
+		self.assertQty(open_row, 0.4, 0, 0.4)
+		self.assertQty(close_row, 0.6, 0.6, 0)
+
+	def test_line_edited_to_other_ownership_still_counts_by_item(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 2.0)]},
+			{("M-G-22KT", 1, ""): 2.0},
+		)
+		self.assertQty(rows["M-G-22KT"], 2.0, 2.0, 0)
+
+	def test_exact_row_match_comes_before_item_code_match(self):
+		"""Leftover by item code fills only what exact matches did not."""
+		customer_row, company_row = self._run_rows(
+			{
+				"gemstone_item": [
+					_bom_raw_material("G-RUBY", 5, is_customer_item=1),
+					_bom_raw_material("G-RUBY", 5, is_customer_item=0),
+				]
+			},
+			{("G-RUBY", 0, ""): 5, ("G-RUBY", 1, "Bezel"): 2},
+		)
+		self.assertQty(customer_row, 5, 2, 3)
+		self.assertQty(company_row, 5, 5, 0)
+
+	def assertQty(self, row, required, requested, pending):
+		self.assertEqual(
+			(row["required_qty"], row["requested_qty"], row["pending_qty"]),
+			(required, requested, pending),
+		)
+
+	def test_fully_requested_item_has_nothing_pending(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 9.351)]},
+			{"M-G-22KT": 9.351},
+		)
+		self.assertQty(rows["M-G-22KT"], 9.351, 9.351, 0)
+
+	def test_partly_requested_item_keeps_the_remainder(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 2.0)]},
+			{"M-G-22KT": 1.2},
+		)
+		self.assertQty(rows["M-G-22KT"], 2.0, 1.2, 0.8)
+
+	def test_item_added_to_the_bom_later_is_fully_pending(self):
+		rows = self._run(
+			{
+				"metal_item": [_bom_raw_material("M-G-22KT", 2.0)],
+				"finding_item": [_bom_raw_material("F-SCREW", 1.1)],
+			},
+			{"M-G-22KT": 2.0},
+		)
+		self.assertQty(rows["M-G-22KT"], 2.0, 2.0, 0)
+		self.assertQty(rows["F-SCREW"], 1.1, 0, 1.1)
+
+	def test_required_qty_is_bom_qty_times_pmo_qty(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 1.25)]},
+			{"M-G-22KT": 1.0},
+			pmo_qty=3,
+		)
+		self.assertQty(rows["M-G-22KT"], 3.75, 1.0, 2.75)
+
+	def test_zero_qty_bom_row_is_left_out(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 0)]},
+			{},
+		)
+		self.assertEqual(rows, {})
+
+	def test_request_above_the_requirement_never_goes_negative(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 2.0)]},
+			{"M-G-22KT": 5.0},
+		)
+		self.assertQty(rows["M-G-22KT"], 2.0, 2.0, 0)
+
+	def test_regraded_diamond_counts_as_requested(self):
+		"""The reported case: BOM resolves grade 7, the user regraded the request to 6B."""
+		rows = self._run(
+			{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.78)]},
+			{"D-NT-RO-6B-+8-8.5": 0.78},
+		)
+		self.assertQty(rows["D-NT-RO-7-+8-8.5"], 0.78, 0.78, 0)
+
+	def test_exact_grade_match_is_taken_before_the_regrade_fallback(self):
+		rows = self._run(
+			{
+				"diamond_item": [
+					_bom_raw_material("D-NT-RO-7-+8-8.5", 0.78),
+					_bom_raw_material("D-NT-RO-6B-+8-8.5", 0.5),
+				]
+			},
+			{"D-NT-RO-6B-+8-8.5": 0.5},
+		)
+		self.assertQty(rows["D-NT-RO-6B-+8-8.5"], 0.5, 0.5, 0)
+		self.assertQty(rows["D-NT-RO-7-+8-8.5"], 0.78, 0, 0.78)
+
+	def test_only_the_leftover_after_exact_match_is_regraded(self):
+		rows = self._run(
+			{
+				"diamond_item": [
+					_bom_raw_material("D-NT-RO-7-+8-8.5", 0.78),
+					_bom_raw_material("D-NT-RO-6B-+8-8.5", 0.5),
+				]
+			},
+			{"D-NT-RO-6B-+8-8.5": 0.9},
+		)
+		self.assertQty(rows["D-NT-RO-6B-+8-8.5"], 0.5, 0.5, 0)
+		self.assertQty(rows["D-NT-RO-7-+8-8.5"], 0.78, 0.4, 0.38)
+
+	def test_different_sieve_size_is_not_matched(self):
+		rows = self._run(
+			{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.78)]},
+			{"D-NT-RO-6B-+9-9.5": 0.78},
+		)
+		self.assertQty(rows["D-NT-RO-7-+8-8.5"], 0.78, 0, 0.78)
+
+	def test_regrade_fallback_is_only_for_diamonds(self):
+		rows = self._run(
+			{"metal_item": [_bom_raw_material("M-NEW", 2.0)]},
+			{"M-OLD": 2.0},
+			grade_free_key=lambda item_code: ("M", "same"),
+		)
+		self.assertQty(rows["M-NEW"], 2.0, 0, 2.0)
+
+
+class TestRequestedQtyByItem(UnitTestCase):
+	"""What the PMO's Material Requests already cover, per BOM row requirement
+	(item, ownership, sub setting type), in stock UOM."""
+
+	def _run(self, lines, default_gemstone_item="G-PER-DUM-PRE-CC", for_update=False):
+		doc = SimpleNamespace(name="PMO-TEST-0001", manufacturer="MNF")
+		lines = [
+			frappe._dict(
+				{"custom_is_customer_item": 0, "custom_sub_setting_type": None, **line}
+			)
+			for line in lines
+		]
+		with (
+			patch.object(frappe.db, "sql", return_value=lines) as sql,
+			patch.object(frappe.db, "get_value", return_value=default_gemstone_item),
+		):
+			requested = _get_requested_qty_by_item(doc, for_update=for_update)
+		# Only lines of this PMO's draft and submitted Material Requests are read.
+		query, params = str(sql.call_args.args[0]), sql.call_args.args[1]
+		self.assertIn("`manufacturing_order`=%(param1)s", query)
+		self.assertEqual(params["param1"], "PMO-TEST-0001")
+		self.assertIn("`docstatus`<2", query)
+		self.last_query = query
+		return requested
+
+	def test_lines_of_the_same_item_are_summed(self):
+		requested = self._run(
+			[
+				{"item_code": "M-G-22KT", "description": "M", "stock_qty": 1.5},
+				{"item_code": "M-G-22KT", "description": "M", "stock_qty": 0.5},
+				{"item_code": "F-SCREW", "description": "F", "stock_qty": 1.1},
+			]
+		)
+		self.assertEqual(requested, {("M-G-22KT", 0, ""): 2.0, ("F-SCREW", 0, ""): 1.1})
+
+	def test_gemstone_line_counts_against_the_bom_item_in_its_description(self):
+		requested = self._run(
+			[
+				{
+					"item_code": "G-PER-DUM-PRE-CC",
+					"description": "<p>G-RUBY</p>",
+					"stock_qty": 0.38,
+				}
+			]
+		)
+		self.assertEqual(requested, {("G-RUBY", 0, ""): 0.38})
+
+	def test_without_default_gemstone_item_lines_keep_their_item_code(self):
+		requested = self._run(
+			[
+				{
+					"item_code": "G-PER-DUM-PRE-CC",
+					"description": "G-RUBY",
+					"stock_qty": 0.38,
+				}
+			],
+			default_gemstone_item=None,
+		)
+		self.assertEqual(requested, {("G-PER-DUM-PRE-CC", 0, ""): 0.38})
+
+	def test_ownership_and_sub_setting_type_keep_lines_apart(self):
+		requested = self._run(
+			[
+				{"item_code": "D-A", "description": "D", "stock_qty": 1.0},
+				{
+					"item_code": "D-A",
+					"description": "D",
+					"stock_qty": 0.5,
+					"custom_is_customer_item": 1,
+				},
+				{
+					"item_code": "D-A",
+					"description": "D",
+					"stock_qty": 0.2,
+					"custom_sub_setting_type": "Open",
+				},
+			]
+		)
+		self.assertEqual(
+			requested,
+			{("D-A", 0, ""): 1.0, ("D-A", 1, ""): 0.5, ("D-A", 0, "Open"): 0.2},
+		)
+
+	def test_stock_uom_quantity_is_counted(self):
+		"""A line in another UOM counts by its stock qty, the unit the BOM uses."""
+		requested = self._run(
+			[{"item_code": "M-G-22KT", "description": "M", "qty": 2, "stock_qty": 2000}]
+		)
+		self.assertEqual(requested, {("M-G-22KT", 0, ""): 2000})
+		self.assertIn("`stock_qty`", self.last_query)
+
+	def test_creation_reads_the_requests_with_a_locking_read(self):
+		self._run([], for_update=True)
+		self.assertIn("FOR UPDATE", self.last_query)
+
+	def test_plain_reads_take_no_lock(self):
+		self._run([])
+		self.assertNotIn("FOR UPDATE", self.last_query)
+
+
+class TestGradeFreeKey(UnitTestCase):
+	"""Two diamonds share a key only when they differ in Diamond Grade alone."""
+
+	ATTRIBUTES = {
+		"D-NT-RO-7-+8-8.5": [
+			("Diamond Type", "Natural"),
+			("Stone Shape", "Round"),
+			("Diamond Grade", "7"),
+			("Diamond Sieve Size", "+8-8.5"),
+		],
+		"D-NT-RO-6B-+8-8.5": [
+			("Diamond Type", "Natural"),
+			("Stone Shape", "Round"),
+			("Diamond Grade", "6B"),
+			("Diamond Sieve Size", "+8-8.5"),
+		],
+		"D-NT-RO-6B-+9-9.5": [
+			("Diamond Type", "Natural"),
+			("Stone Shape", "Round"),
+			("Diamond Grade", "6B"),
+			("Diamond Sieve Size", "+9-9.5"),
+		],
+		"M-G-22KT": [("Metal Type", "Gold"), ("Metal Touch", "22KT")],
+	}
+
+	def _key(self, item_code, variant_of="D"):
+		attributes = [
+			frappe._dict(attribute=a, attribute_value=v)
+			for a, v in self.ATTRIBUTES.get(item_code, [])
+		]
+		with (
+			patch(f"{PMO_MODULE}.frappe.db.get_value", return_value=variant_of),
+			patch(f"{PMO_MODULE}.frappe.get_all", return_value=attributes),
+		):
+			return _get_grade_free_key(item_code)
+
+	def test_same_diamond_in_another_grade_shares_the_key(self):
+		self.assertEqual(self._key("D-NT-RO-7-+8-8.5"), self._key("D-NT-RO-6B-+8-8.5"))
+
+	def test_another_sieve_size_gets_another_key(self):
+		self.assertNotEqual(
+			self._key("D-NT-RO-6B-+8-8.5"), self._key("D-NT-RO-6B-+9-9.5")
+		)
+
+	def test_variant_without_diamond_grade_has_no_key(self):
+		self.assertIsNone(self._key("M-G-22KT", variant_of="M"))
+
+	def test_item_that_is_not_a_variant_has_no_key(self):
+		self.assertIsNone(self._key("D-NT-RO-7-+8-8.5", variant_of=None))
+
+
+class TestTrackingBomIsDraft(UnitTestCase):
+	"""Only a draft Tracking BOM can still change; a submitted one means the item is made."""
+
+	def _is_draft(self, tracking_bom, docstatus=None):
+		doc = SimpleNamespace(custom_tracking_bom=tracking_bom)
+		with patch(
+			f"{PMO_MODULE}.frappe.db.get_value", return_value=docstatus
+		) as get_value:
+			return tracking_bom_is_draft(doc), get_value
+
+	def test_draft_tracking_bom(self):
+		is_draft, get_value = self._is_draft("TB-0001", docstatus=0)
+		self.assertTrue(is_draft)
+		get_value.assert_called_once_with("Tracking Bom", "TB-0001", "docstatus")
+
+	def test_submitted_or_cancelled_tracking_bom(self):
+		self.assertFalse(self._is_draft("TB-0001", docstatus=1)[0])
+		self.assertFalse(self._is_draft("TB-0001", docstatus=2)[0])
+
+	def test_pmo_without_tracking_bom(self):
+		is_draft, get_value = self._is_draft(None)
+		self.assertFalse(is_draft)
+		get_value.assert_not_called()
+
+	def test_check_refuses_a_submitted_tracking_bom(self):
+		with patch(f"{PMO_MODULE}.tracking_bom_is_draft", return_value=False):
+			with self.assertRaises(frappe.ValidationError) as caught:
+				check_tracking_bom_is_draft(
+					SimpleNamespace(custom_tracking_bom="TB-0001")
+				)
+		self.assertIn("already manufactured", str(caught.exception))
+
+
+class TestGetBomRawMaterials(UnitTestCase):
+	def test_missing_tracking_bom_is_refused(self):
+		doc = SimpleNamespace(custom_tracking_bom=None)
+		self.assertRaises(
+			frappe.ValidationError, ParentManufacturingOrder.get_bom_raw_materials, doc
+		)
+
+	# The Tracking BOM read that PMO submit and the button share.
+
+	ITEM_TYPES = {
+		"M-1": "metal_item",
+		"D-1": "diamond_item",
+		"F-1": "finding_item",
+		"G-1": "gemstone_item",
+		"O-1": "other_item",
+	}
+
+	def _read(
+		self, rows_by_table, warehouse_variants=("M", "D", "F", "G", "O"), resolve=None
+	):
+		pmo = SimpleNamespace(
+			custom_tracking_bom="TB-0001", manufacturer="MNF", diamond_grade="7"
+		)
+		warehouses = [
+			frappe._dict(
+				variant=variant,
+				department=f"DEPT-{variant}",
+				target_warehouse=f"TGT-{variant}",
+			)
+			for variant in warehouse_variants
+		]
+
+		def get_all(doctype, filters=None, fields=None, **kwargs):
+			return [frappe._dict(row) for row in rows_by_table.get(doctype, [])]
+
+		with (
+			patch.object(frappe.db, "get_all", return_value=warehouses),
+			patch.object(frappe.db, "has_column", return_value=True),
+			patch(f"{PMO_MODULE}.frappe.get_all", side_effect=get_all),
+			patch(
+				f"{PMO_MODULE}._get_raw_material_warehouse",
+				side_effect=lambda department: f"{department}-RM",
+			),
+			patch(
+				f"{PMO_MODULE}._resolve_existing_variant_item_code",
+				side_effect=resolve
+				or (
+					lambda row, table, grade: row.get("item_variant")
+					or row.get("item_code")
+				),
+			),
+			patch(f"{PMO_MODULE}._validate_non_template_item"),
+			patch(f"{PMO_MODULE}._validate_item_exists"),
+			patch(f"{PMO_MODULE}._validate_metal_item_attributes"),
+			patch(
+				f"{PMO_MODULE}.get_item_type",
+				side_effect=lambda item_code: self.ITEM_TYPES[item_code],
+			),
+		):
+			return ParentManufacturingOrder.get_bom_raw_materials(pmo)
+
+	def test_rows_are_bucketed_by_item_type_with_their_warehouses(self):
+		items = self._read(
+			{
+				"BOM Metal Detail": [
+					{"item_variant": "M-1", "quantity": 2.0, "is_customer_item": 0}
+				],
+				"BOM Diamond Detail": [
+					{
+						"item_variant": "D-1",
+						"quantity": 0.5,
+						"pcs": 10,
+						"is_customer_item": 1,
+						"sub_setting_type": "Open",
+					}
+				],
+				"BOM Finding Detail": [
+					{
+						"item_variant": "F-1",
+						"quantity": 1.1,
+						"qty": 2,
+						"is_customer_item": 0,
+					}
+				],
+				"BOM Gemstone Detail": [
+					{
+						"item_variant": "G-1",
+						"quantity": 0.4,
+						"pcs": 3,
+						"is_customer_item": 0,
+					}
+				],
+				"BOM Other Detail": [{"item_code": "O-1", "quantity": 5, "qty": 1}],
+			}
+		)
+		self.assertEqual(
+			{
+				bucket: [row["item_code"] for row in rows]
+				for bucket, rows in items.items()
+			},
+			{
+				"metal_item": ["M-1"],
+				"diamond_item": ["D-1"],
+				"finding_item": ["F-1"],
+				"gemstone_item": ["G-1"],
+				"other_item": ["O-1"],
+			},
+		)
+		diamond = items["diamond_item"][0]
+		self.assertEqual(
+			(
+				diamond["qty"],
+				diamond["pcs"],
+				diamond["is_customer_item"],
+				diamond["sub_setting_type"],
+				diamond["from_warehouse"],
+				diamond["warehouse"],
+			),
+			(0.5, 10, 1, "Open", "DEPT-D-RM", "TGT-D"),
+		)
+
+	def test_pcs_come_from_qty_for_findings_and_other_items(self):
+		items = self._read(
+			{
+				"BOM Finding Detail": [
+					{
+						"item_variant": "F-1",
+						"quantity": 1.1,
+						"qty": 2,
+						"is_customer_item": 0,
+					}
+				],
+				"BOM Other Detail": [{"item_code": "O-1", "quantity": 5, "qty": 7}],
+			}
+		)
+		self.assertEqual(items["finding_item"][0]["pcs"], 2)
+		self.assertEqual(items["other_item"][0]["pcs"], 7)
+
+	def test_other_items_are_never_customer_items(self):
+		items = self._read(
+			{
+				"BOM Other Detail": [
+					{"item_code": "O-1", "quantity": 5, "is_customer_item": 1}
+				]
+			}
+		)
+		self.assertEqual(items["other_item"][0]["is_customer_item"], "0")
+
+	def test_empty_tables_give_empty_buckets(self):
+		items = self._read({})
+		self.assertEqual(
+			items,
+			{
+				"metal_item": [],
+				"diamond_item": [],
+				"finding_item": [],
+				"gemstone_item": [],
+				"other_item": [],
+			},
+		)
+
+	def test_item_type_without_manufacturer_warehouse_is_refused(self):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._read(
+				{"BOM Metal Detail": [{"item_variant": "M-1", "quantity": 2.0}]},
+				warehouse_variants=("D", "F", "G", "O"),
+			)
+		self.assertIn(
+			"Please mention warehouse details in Manufacturer", str(caught.exception)
+		)
+
+	def test_row_without_an_item_code_is_refused(self):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._read(
+				{"BOM Metal Detail": [{"quantity": 2.0}]},
+				resolve=lambda row, table, grade: None,
+			)
+		self.assertIn(
+			"item_variant is missing in BOM Metal Detail", str(caught.exception)
+		)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._read(
+				{"BOM Other Detail": [{"quantity": 2.0}]},
+				resolve=lambda row, table, grade: None,
+			)
+		self.assertIn("item_code is missing in BOM Other Detail", str(caught.exception))
+
+
+def _pending_row(
+	item_code, required_qty, pending_qty, item_type="diamond_item", **kwargs
+):
+	row = {
+		"item_type": item_type,
+		"item_code": item_code,
+		"required_qty": required_qty,
+		"requested_qty": required_qty - pending_qty,
+		"pending_qty": pending_qty,
+		"pcs": 70,
+		"from_warehouse": "RM-WH",
+		"warehouse": "DEPT-WH",
+		"is_customer_item": 0,
+		"sub_setting_type": None,
+	}
+	row.update(kwargs)
+	return row
+
+
+class TestValidateMaterialRequestItems(UnitTestCase):
+	"""The dialog's selection is checked against the pending qty worked out afresh on the
+	server, never against what the dialog showed."""
+
+	PENDING = [
+		_pending_row("D-NT-RO-7-+8-8.5", 1.736, 1.736),
+		_pending_row("M-G-22KT", 2.0, 0.8, item_type="metal_item", pcs=None),
+		_pending_row("F-SCREW", 1.1, 0, item_type="finding_item"),
+	]
+
+	def _run(
+		self, items, pending=None, docstatus=1, blocked=False, tracking_bom_draft=True
+	):
+		doc = SimpleNamespace(name="PMO-TEST-0001", docstatus=docstatus)
+
+		def refuse_while_blocked(pmo_name, what):
+			if blocked:
+				frappe.throw(f"{pmo_name} is on Hold. {what}")
+
+		with (
+			patch(
+				f"{PMO_MODULE}.get_pending_raw_materials",
+				return_value=[
+					dict(row) for row in (self.PENDING if pending is None else pending)
+				],
+			),
+			patch(
+				f"{PMO_MODULE}.refuse_while_blocked", side_effect=refuse_while_blocked
+			),
+			patch(
+				f"{PMO_MODULE}.tracking_bom_is_draft", return_value=tracking_bom_draft
+			),
+			patch(f"{PMO_MODULE}.frappe.get_precision", return_value=3),
+		):
+			return validate_material_request_items(doc, items)
+
+	def test_submitted_tracking_bom_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0.8}],
+			"only while the PMO's Tracking BOM is in draft",
+			tracking_bom_draft=False,
+		)
+
+	def assertRefused(self, items, message, **kwargs):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(items, **kwargs)
+		self.assertIn(message, str(caught.exception))
+		return str(caught.exception)
+
+	def test_draft_pmo_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0.8}],
+			"only for a submitted PMO",
+			docstatus=0,
+		)
+
+	def test_pmo_on_hold_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0.8}],
+			"No Material Request can be created for it.",
+			blocked=True,
+		)
+
+	def test_nothing_pending_shows_the_no_pending_message(self):
+		self.assertRefused(
+			[{"item_code": "F-SCREW", "qty": 1}],
+			"No pending raw materials are available for Material Request creation.",
+			pending=[_pending_row("F-SCREW", 1.1, 0)],
+		)
+
+	def test_empty_selection_is_refused(self):
+		self.assertRefused([], "Please select at least one raw material.")
+
+	def test_item_not_pending_in_the_bom_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "F-SCREW", "qty": 0.5}], "is not pending in the BOM"
+		)
+		self.assertRefused(
+			[{"item_code": "NOT-IN-BOM", "qty": 0.5}], "is not pending in the BOM"
+		)
+
+	def test_zero_or_negative_qty_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0}], "must be greater than 0"
+		)
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": -1}], "must be greater than 0"
+		)
+
+	def test_qty_above_pending_is_refused(self):
+		self.assertRefused(
+			[{"item_code": "M-G-22KT", "qty": 0.801}],
+			"exceeds the pending quantity (0.8)",
+		)
+
+	def test_same_item_selected_twice_is_summed_against_pending(self):
+		self.assertRefused(
+			[
+				{"item_code": "M-G-22KT", "qty": 0.5},
+				{"item_code": "M-G-22KT", "qty": 0.5},
+			],
+			"(1.0) exceeds the pending quantity (0.8)",
+		)
+
+	def test_every_problem_is_reported_at_once(self):
+		message = self.assertRefused(
+			[
+				{"item_code": "NOT-IN-BOM", "qty": 1},
+				{"item_code": "M-G-22KT", "qty": 5},
+				{"item_code": "D-NT-RO-7-+8-8.5", "qty": 0},
+			],
+			"is not pending in the BOM",
+		)
+		self.assertIn("exceeds the pending quantity", message)
+		self.assertIn("must be greater than 0", message)
+
+	def test_exactly_the_pending_qty_is_accepted(self):
+		selected = self._run([{"item_code": "M-G-22KT", "qty": "0.8"}])
+		self.assertEqual(selected["metal_item"][0]["qty"], 0.8)
+
+	def test_selection_is_bucketed_with_the_bom_row_details(self):
+		selected = self._run(
+			[
+				{"item_code": "D-NT-RO-7-+8-8.5", "qty": 1.736},
+				{"item_code": "M-G-22KT", "qty": 0.5},
+			]
+		)
+		self.assertEqual(
+			selected,
+			{
+				"diamond_item": [
+					{
+						"item_code": "D-NT-RO-7-+8-8.5",
+						"qty": 1.736,
+						"from_warehouse": "RM-WH",
+						"warehouse": "DEPT-WH",
+						"is_customer_item": 0,
+						"sub_setting_type": None,
+						"pcs": 70,
+					}
+				],
+				"metal_item": [
+					{
+						"item_code": "M-G-22KT",
+						"qty": 0.5,
+						"from_warehouse": "RM-WH",
+						"warehouse": "DEPT-WH",
+						"is_customer_item": 0,
+						"sub_setting_type": None,
+						"pcs": None,
+					}
+				],
+			},
+		)
+
+	def test_bom_pcs_are_dropped_for_part_of_a_row(self):
+		selected = self._run([{"item_code": "D-NT-RO-7-+8-8.5", "qty": 1.0}])
+		self.assertIsNone(selected["diamond_item"][0]["pcs"])
+
+	def test_qty_the_first_bom_row_covers_leaves_the_next_row_alone(self):
+		selected = self._run(
+			[{"item_code": "D-NT-RO-7-+8-8.5", "qty": 0.3}],
+			pending=[
+				_pending_row("D-NT-RO-7-+8-8.5", 0.5, 0.5, sub_setting_type="Open"),
+				_pending_row("D-NT-RO-7-+8-8.5", 0.4, 0.4, sub_setting_type="Close"),
+			],
+		)
+		self.assertEqual(
+			[(row["qty"], row["sub_setting_type"]) for row in selected["diamond_item"]],
+			[(0.3, "Open")],
+		)
+
+	def test_qty_is_spread_over_bom_rows_of_the_same_item(self):
+		selected = self._run(
+			[{"item_code": "D-NT-RO-7-+8-8.5", "qty": 0.7}],
+			pending=[
+				_pending_row("D-NT-RO-7-+8-8.5", 0.5, 0.5, sub_setting_type="Open"),
+				_pending_row("D-NT-RO-7-+8-8.5", 0.4, 0.4, sub_setting_type="Close"),
+			],
+		)
+		self.assertEqual(
+			[(row["qty"], row["sub_setting_type"]) for row in selected["diamond_item"]],
+			[(0.5, "Open"), (0.2, "Close")],
+		)
+
+
+class TestCreatePMOMaterialRequest(UnitTestCase):
+	"""The dialog's Create action: validate, create through the existing logic, note it."""
+
+	SELECTED = {"metal_item": [{"item_code": "M-G-22KT", "qty": 0.8}]}
+
+	def test_pmo_is_locked_before_anything_is_read(self):
+		"""Review finding: two calls for one PMO must not both see the same pending qty.
+		The PMO row lock comes first, and pending is then read with a locking read."""
+		calls = MagicMock()
+		doc = MagicMock()
+		doc.make_material_requests.return_value = ["MR-0001"]
+		calls.get_doc.return_value = doc
+		calls.pending.return_value = [_pending_row("M-G-22KT", 0.8, 0.8)]
+		with (
+			patch.object(frappe.db, "get_value", calls.lock),
+			patch(f"{PMO_MODULE}.frappe.get_doc", calls.get_doc),
+			patch(f"{PMO_MODULE}.get_pending_raw_materials", calls.pending),
+			patch(
+				f"{PMO_MODULE}.validate_material_request_items",
+				return_value=self.SELECTED,
+			),
+			patch(f"{PMO_MODULE}.add_material_request_comment"),
+			patch(f"{PMO_MODULE}.check_pmo_material_request_role"),
+		):
+			create_pmo_material_request("PMO-TEST-0001")
+
+		self.assertEqual(
+			[name for name, _args, _kwargs in calls.mock_calls if "." not in name][:3],
+			["lock", "get_doc", "pending"],
+		)
+		self.assertEqual(
+			calls.lock.call_args,
+			(
+				("Parent Manufacturing Order", "PMO-TEST-0001", "name"),
+				{"for_update": True},
+			),
+		)
+		self.assertEqual(calls.pending.call_args.kwargs, {"for_update": True})
+
+	def test_validated_selection_is_created_without_pmo_qty_multiplier(self):
+		doc = MagicMock()
+		doc.make_material_requests.return_value = ["MR-0001"]
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=doc),
+			patch(
+				f"{PMO_MODULE}.validate_material_request_items",
+				return_value=self.SELECTED,
+			) as validate,
+			patch(f"{PMO_MODULE}.add_material_request_comment") as comment,
+		):
+			created = create_pmo_material_request(
+				"PMO-TEST-0001", '[{"item_code": "M-G-22KT", "qty": 0.8}]'
+			)
+
+		self.assertEqual(created, ["MR-0001"])
+		doc.check_permission.assert_called_once_with("read")
+		validate.assert_called_once_with(doc, [{"item_code": "M-G-22KT", "qty": 0.8}])
+		doc.make_material_requests.assert_called_once_with(self.SELECTED, 1)
+		comment.assert_called_once_with(doc, ["MR-0001"])
+
+	def test_nothing_is_created_when_validation_fails(self):
+		doc = MagicMock()
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=doc),
+			patch(
+				f"{PMO_MODULE}.validate_material_request_items",
+				side_effect=frappe.ValidationError,
+			),
+		):
+			self.assertRaises(
+				frappe.ValidationError,
+				create_pmo_material_request,
+				"PMO-TEST-0001",
+				"[]",
+			)
+		doc.make_material_requests.assert_not_called()
+
+	def _run_without_items(self, pending):
+		doc = MagicMock()
+		doc.make_material_requests.return_value = ["MR-0001"]
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=doc),
+			patch(f"{PMO_MODULE}.get_pending_raw_materials", return_value=pending),
+			patch(
+				f"{PMO_MODULE}.validate_material_request_items",
+				return_value=self.SELECTED,
+			) as validate,
+			patch(f"{PMO_MODULE}.add_material_request_comment"),
+		):
+			create_pmo_material_request("PMO-TEST-0001")
+		return doc, validate.call_args.args[1]
+
+	def test_button_requests_every_pending_item_at_its_full_pending_qty(self):
+		_doc, items = self._run_without_items(
+			[
+				_pending_row("M-G-22KT", 2.0, 0.8, item_type="metal_item"),
+				_pending_row("F-SCREW", 1.1, 0, item_type="finding_item"),
+				_pending_row("D-NT-RO-7-+8-8.5", 1.736, 1.736),
+			]
+		)
+		self.assertEqual(
+			items,
+			[
+				{"item_code": "M-G-22KT", "qty": 0.8},
+				{"item_code": "D-NT-RO-7-+8-8.5", "qty": 1.736},
+			],
+		)
+
+	def test_button_with_nothing_pending_sends_nothing_to_validation(self):
+		"""Validation then refuses with "No pending raw materials are available..."."""
+		_doc, items = self._run_without_items(
+			[_pending_row("F-SCREW", 1.1, 0, item_type="finding_item")]
+		)
+		self.assertEqual(items, [])
+
+
+class TestMakeMaterialRequests(UnitTestCase):
+	"""The creation loop shared by PMO submit and the Create Material Request button."""
+
+	def _run(
+		self,
+		items,
+		qty_multiplier,
+		customer=None,
+		customer_owned=False,
+		default_gemstone_item="G-PER-DUM-PRE-CC",
+	):
+		pmo = SimpleNamespace(
+			name="PMO-TEST-0001",
+			manufacturer="MNF",
+			company="CO",
+			item_code="RI00650",
+			customer=customer,
+		)
+		created = []
+		real_get_value = frappe.db.get_value
+		fake_values = {
+			"Manufacturing Setting": default_gemstone_item,
+			"Warehouse": "Test_Department",
+		}
+
+		def get_value(doctype, *args, **kwargs):
+			if doctype in fake_values:
+				return fake_values[doctype]
+			return real_get_value(doctype, *args, **kwargs)
+
+		def new_doc(doctype):
+			mr = MagicMock(name="mr")
+			mr.name = f"MR-{len(created) + 1:04d}"
+			created.append(mr)
+			return mr
+
+		with (
+			patch(f"{PMO_MODULE}.frappe.new_doc", side_effect=new_doc),
+			patch(f"{PMO_MODULE}.frappe.get_value", return_value="LH"),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch(
+				f"{PMO_MODULE}.pmo_expects_customer_goods", return_value=customer_owned
+			),
+		):
+			names = ParentManufacturingOrder.make_material_requests(
+				pmo, items, qty_multiplier
+			)
+		return names, created
+
+	def _rows(self, mr):
+		return [c.args[1] for c in mr.append.call_args_list]
+
+	def test_qty_is_multiplied_and_one_request_per_item_type(self):
+		names, created = self._run(
+			{
+				"metal_item": [_bom_raw_material("M-G-22KT", 0.5)],
+				"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25, pcs=10)],
+			},
+			qty_multiplier=3,
+		)
+		self.assertEqual(names, ["MR-0001", "MR-0002"])
+		self.assertEqual(created[0].manufacturing_order, "PMO-TEST-0001")
+		self.assertEqual(self._rows(created[0])[0]["qty"], 1.5)
+		self.assertEqual(self._rows(created[1])[0]["qty"], 0.75)
+		self.assertEqual(self._rows(created[1])[0]["pcs"], 10)
+		for mr in created:
+			mr.save.assert_called_once()
+
+	def test_gemstone_is_requested_as_the_default_item_with_bom_item_in_description(
+		self,
+	):
+		_names, created = self._run(
+			{"gemstone_item": [_bom_raw_material("G-RUBY", 0.38)]}, qty_multiplier=1
+		)
+		row = self._rows(created[0])[0]
+		self.assertEqual(
+			(row["item_code"], row["description"], row["qty"]),
+			("G-PER-DUM-PRE-CC", "G-RUBY", 0.38),
+		)
+
+	# Existing PMO submit behaviour, unchanged by moving the loop into this method.
+
+	def test_request_header_is_filled_as_on_pmo_submit(self):
+		_names, created = self._run(
+			{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25)]},
+			qty_multiplier=1,
+		)
+		mr = created[0]
+		self.assertEqual(
+			(
+				mr.title,
+				mr.company,
+				mr.material_request_type,
+				mr.manufacturing_order,
+				mr.custom_manufacturer,
+				mr.custom_department,
+			),
+			(
+				"MRD-LH-(RI00650)-1",
+				"CO",
+				"Manufacture",
+				"PMO-TEST-0001",
+				"MNF",
+				"Test_Department",
+			),
+		)
+		self.assertEqual(mr.schedule_date, frappe.utils.nowdate())
+
+	def test_request_titles_are_numbered_per_item_type(self):
+		_names, created = self._run(
+			{
+				"metal_item": [_bom_raw_material("M-G-22KT", 0.5)],
+				"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25)],
+				"finding_item": [],
+				"gemstone_item": [_bom_raw_material("G-RUBY", 0.38)],
+			},
+			qty_multiplier=1,
+		)
+		self.assertEqual(
+			[mr.title for mr in created],
+			["MRM-LH-(RI00650)-1", "MRD-LH-(RI00650)-2", "MRG-LH-(RI00650)-3"],
+		)
+
+	def test_rows_of_one_item_type_go_on_one_request(self):
+		_names, created = self._run(
+			{
+				"diamond_item": [
+					_bom_raw_material(
+						"D-NT-RO-7-+8-8.5", 0.25, sub_setting_type="Open"
+					),
+					_bom_raw_material(
+						"D-NT-RO-7-+9-9.5", 0.1, sub_setting_type="Close"
+					),
+				]
+			},
+			qty_multiplier=2,
+		)
+		self.assertEqual(len(created), 1)
+		self.assertEqual(
+			[
+				(row["item_code"], row["qty"], row["custom_sub_setting_type"])
+				for row in self._rows(created[0])
+			],
+			[("D-NT-RO-7-+8-8.5", 0.5, "Open"), ("D-NT-RO-7-+9-9.5", 0.2, "Close")],
+		)
+
+	def test_company_owned_rows_carry_no_ownership_stamp(self):
+		_names, created = self._run(
+			{"metal_item": [_bom_raw_material("M-G-22KT", 0.5)]}, qty_multiplier=1
+		)
+		row = self._rows(created[0])[0]
+		self.assertEqual((row["inventory_type"], row["customer"]), (None, None))
+
+	def test_customer_owned_request_is_stamped_on_header_and_rows(self):
+		_names, created = self._run(
+			{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25)]},
+			qty_multiplier=1,
+			customer="CUST-1",
+			customer_owned=True,
+		)
+		mr = created[0]
+		row = self._rows(mr)[0]
+		self.assertEqual((mr.customer, mr.inventory_type), ("CUST-1", "Customer Goods"))
+		self.assertEqual(
+			(row["inventory_type"], row["customer"]), ("Customer Goods", "CUST-1")
+		)
+
+	def test_customer_item_row_is_stamped_even_without_the_pmo_flag(self):
+		_names, created = self._run(
+			{
+				"diamond_item": [
+					_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25, is_customer_item=1)
+				]
+			},
+			qty_multiplier=1,
+			customer="CUST-1",
+		)
+		row = self._rows(created[0])[0]
+		self.assertEqual(
+			(row["inventory_type"], row["customer"]), ("Customer Goods", "CUST-1")
+		)
+
+	def test_customer_owned_rows_without_a_customer_are_refused(self):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(
+				{"diamond_item": [_bom_raw_material("D-NT-RO-7-+8-8.5", 0.25)]},
+				qty_multiplier=1,
+				customer_owned=True,
+			)
+		self.assertIn("the order has no Customer", str(caught.exception))
+
+	def test_zero_qty_bom_row_is_refused(self):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(
+				{"metal_item": [_bom_raw_material("M-G-22KT", 0)]}, qty_multiplier=1
+			)
+		self.assertIn("Please Check BOM Table", str(caught.exception))
+
+	def test_gemstone_without_default_gemstone_item_is_refused(self):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(
+				{"gemstone_item": [_bom_raw_material("G-RUBY", 0.38)]},
+				qty_multiplier=1,
+				default_gemstone_item=None,
+			)
+		self.assertIn("Default Gemstone Item is not set", str(caught.exception))
+
+
+class TestCreateMaterialRequestsOnSubmit(UnitTestCase):
+	"""PMO submit still requests the whole Tracking BOM x PMO qty, as before the refactor."""
+
+	def _pmo(self, bom="TB-0001", qty=3):
+		pmo = MagicMock()
+		pmo.custom_tracking_bom = bom
+		pmo.qty = qty
+		pmo.get_bom_raw_materials.return_value = {"metal_item": ["row"]}
+		return pmo
+
+	def test_whole_bom_is_requested_times_pmo_qty(self):
+		pmo = self._pmo()
+		bom_doc = MagicMock()
+		bom_doc.get.return_value = "Fixed"
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=bom_doc),
+			patch(f"{PMO_MODULE}.frappe.msgprint") as msgprint,
+		):
+			ParentManufacturingOrder.create_material_requests(pmo)
+
+		pmo.make_material_requests.assert_called_once_with({"metal_item": ["row"]}, 3)
+		msgprint.assert_called_once_with("Material Request Created !!")
+		bom_doc.save.assert_not_called()
+
+	def test_template_bom_gets_its_variants_set_before_it_is_read(self):
+		pmo = self._pmo()
+		bom_doc = MagicMock()
+		bom_doc.get.return_value = "Template"
+		order = MagicMock()
+		order.attach_mock(bom_doc.save, "bom_save")
+		order.attach_mock(pmo.get_bom_raw_materials, "read_bom")
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=bom_doc),
+			patch(f"{PMO_MODULE}.set_item_variant") as set_item_variant,
+			patch(f"{PMO_MODULE}.frappe.msgprint"),
+		):
+			ParentManufacturingOrder.create_material_requests(pmo)
+
+		set_item_variant.assert_called_once_with(bom_doc)
+		self.assertEqual([c[0] for c in order.mock_calls], ["bom_save", "read_bom"])
+
+	def test_missing_tracking_bom_is_refused_before_anything_is_created(self):
+		pmo = self._pmo(bom=None)
+		self.assertRaises(
+			frappe.ValidationError,
+			ParentManufacturingOrder.create_material_requests,
+			pmo,
+		)
+		pmo.make_material_requests.assert_not_called()
+
+
+class TestAddMaterialRequestComment(UnitTestCase):
+	def test_new_requests_are_noted_on_the_pmo_timeline(self):
+		doc = MagicMock()
+		with patch(
+			f"{PMO_MODULE}.get_link_to_form",
+			side_effect=lambda doctype, name: f"<a>{name}</a>",
+		):
+			add_material_request_comment(doc, ["MR-0001", "MR-0002"])
+		comment_type, content = doc.add_comment.call_args.args
+		self.assertEqual(comment_type, "Info")
+		self.assertIn("<a>MR-0001</a>, <a>MR-0002</a>", content)
+
+	def test_no_comment_without_requests(self):
+		doc = MagicMock()
+		add_material_request_comment(doc, [])
+		doc.add_comment.assert_not_called()
+
+
+class TestPMOMaterialRequestRole(UnitTestCase):
+	"""Create Material Request is for Administrator, System Manager and the roles listed
+	in Jewellery Settings; the server refuses everyone else, whatever the form shows."""
+
+	def _can(self, user_roles, allowed_roles=(), user="someone@example.com"):
+		with (
+			patch(f"{PMO_MODULE}.frappe.get_roles", return_value=list(user_roles)),
+			patch(
+				f"{PMO_MODULE}.frappe.get_all", return_value=list(allowed_roles)
+			) as get_all,
+		):
+			result = can_create_pmo_material_request(user)
+		return result, get_all
+
+	def test_administrator_is_always_allowed(self):
+		result, _get_all = self._can([], user="Administrator")
+		self.assertTrue(result)
+
+	def test_system_manager_is_always_allowed(self):
+		result, get_all = self._can(["System Manager"])
+		self.assertTrue(result)
+		get_all.assert_not_called()
+
+	def test_holder_of_a_listed_role_is_allowed(self):
+		result, get_all = self._can(
+			["Stock User", "Manufacturing Manager"],
+			allowed_roles=["Manufacturing Manager", "PPC"],
+		)
+		self.assertTrue(result)
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"],
+			{
+				"parenttype": "Jewellery Settings",
+				"parentfield": "pmo_material_request_roles",
+			},
+		)
+
+	def test_user_without_a_listed_role_is_refused(self):
+		result, _get_all = self._can(["Stock User"], allowed_roles=["PPC"])
+		self.assertFalse(result)
+
+	def test_no_role_listed_means_nobody_else_is_allowed(self):
+		result, _get_all = self._can(["Stock User"])
+		self.assertFalse(result)
+
+	def test_blank_role_row_grants_nothing(self):
+		result, _get_all = self._can(["Stock User"], allowed_roles=[None, ""])
+		self.assertFalse(result)
+
+	def test_check_raises_permission_error(self):
+		with patch(f"{PMO_MODULE}.can_create_pmo_material_request", return_value=False):
+			self.assertRaises(frappe.PermissionError, check_pmo_material_request_role)
+
+	def test_endpoint_refuses_before_the_pmo_is_loaded(self):
+		with (
+			patch(f"{PMO_MODULE}.can_create_pmo_material_request", return_value=False),
+			patch(f"{PMO_MODULE}.frappe.get_doc") as get_doc,
+		):
+			self.assertRaises(
+				frappe.PermissionError,
+				create_pmo_material_request,
+				"PMO-TEST-0001",
+				'[{"item_code": "M-G-22KT", "qty": 0.8}]',
+			)
+		get_doc.assert_not_called()
+
+	def _onload(self, docstatus, allowed, blocking_state=None, tracking_bom_draft=True):
+		pmo = MagicMock(docstatus=docstatus)
+		with (
+			patch(
+				f"{PMO_MODULE}.can_create_pmo_material_request", return_value=allowed
+			),
+			patch(f"{PMO_MODULE}.pmo_blocking_state", return_value=blocking_state),
+			patch(
+				f"{PMO_MODULE}.tracking_bom_is_draft", return_value=tracking_bom_draft
+			),
+		):
+			ParentManufacturingOrder.onload(pmo)
+		key, value = pmo.set_onload.call_args.args
+		self.assertEqual(key, "can_create_material_request")
+		return value
+
+	def test_form_shows_the_button_on_a_submitted_pmo_to_an_allowed_user(self):
+		self.assertTrue(self._onload(docstatus=1, allowed=True))
+
+	def test_form_hides_the_button_from_a_user_without_the_role(self):
+		self.assertFalse(self._onload(docstatus=1, allowed=False))
+
+	def test_form_hides_the_button_on_a_draft_or_cancelled_pmo(self):
+		self.assertFalse(self._onload(docstatus=0, allowed=True))
+		self.assertFalse(self._onload(docstatus=2, allowed=True))
+
+	def test_form_hides_the_button_on_a_pmo_on_hold_or_closed(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			CLOSED_STATE,
+			HOLD_STATE,
+		)
+
+		for state in (HOLD_STATE, CLOSED_STATE):
+			self.assertFalse(
+				self._onload(docstatus=1, allowed=True, blocking_state=state), state
+			)
+
+	def test_form_hides_the_button_once_the_tracking_bom_is_submitted(self):
+		self.assertFalse(
+			self._onload(docstatus=1, allowed=True, tracking_bom_draft=False)
+		)
+
+
+class TestPMOCreateMaterialRequestFlow(IntegrationTestCase):
+	"""End to end on a real submitted PMO: whatever its Tracking BOM needs beyond the
+	Material Requests it already has is requested by Create Material Request, and
+	nothing is requested twice.
+
+	One PMO is built and submitted for the class; each test runs inside a savepoint that
+	tearDown rolls back, so every test starts from the PMO as submit left it -- its
+	Tracking BOM fully covered by the Material Requests submit created.
+	"""
+
+	SAVEPOINT = "pmo_create_material_request"
+
+	@classmethod
+	def setUpClass(cls):
+		# No super(), like the other integration classes here: IntegrationTestCase would
+		# generate test records for every doctype the PMO links to, which runs ERPNext's
+		# _Test Company bootstrap and fails on this app's site. The CI test data
+		# (Test_Company, Test_Department, ...) is what create_man_plan builds on.
+		cls.pmo_name = cls.make_submitted_pmo()
+
+	@classmethod
+	def make_submitted_pmo(cls):
+		cls.department = frappe.get_value(
+			"Department", {"department_name": "Test_Department"}, "name"
+		)
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		man_plan = create_man_plan(cls)
+		pmo = frappe.get_doc(
+			"Parent Manufacturing Order", {"manufacturing_plan": man_plan.name}
+		)
+		pmo.diamond_department = cls.department
+		pmo.gemstone_department = cls.department
+		pmo.manufacturer = "Shubh"
+		pmo.save()
+		pmo.submit()
+		return pmo.name
+
+	def setUp(self):
+		super().setUp()
+		frappe.set_user("Administrator")
+		frappe.db.savepoint(self.SAVEPOINT)
+		if not tracking_bom_is_draft(
+			self.pmo()
+		) and not self._testMethodName.startswith("test_submitted_tracking_bom"):
+			self.skipTest(
+				"the PMO's Tracking BOM is submitted; the feature leaves it alone"
+			)
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback(save_point=self.SAVEPOINT)
+		frappe.local.message_log = []
+		super().tearDown()
+
+	# helpers
+
+	def pmo(self):
+		return frappe.get_doc("Parent Manufacturing Order", self.pmo_name)
+
+	def tracking_bom(self):
+		return frappe.get_doc("Tracking Bom", self.pmo().custom_tracking_bom)
+
+	def raise_first_row_qty(self, bom, table, by):
+		bom.get(table)[0].quantity = flt(bom.get(table)[0].quantity) + by
+		self.save_tracking_bom(bom)
+
+	def add_row(self, bom, table, values):
+		bom.append(table, values)
+		self.save_tracking_bom(bom)
+
+	def save_tracking_bom(self, bom):
+		# As submit_bom does: the edit under test is the raw material, not the pricing.
+		bom.flags.ignore_validations = True
+		bom.save()
+
+	def bom_rows(self, item_type=None):
+		return [
+			row
+			for row in get_pending_raw_materials(self.pmo())
+			if item_type is None or row["item_type"] == item_type
+		]
+
+	def pending(self):
+		return {
+			row["item_code"]: row["pending_qty"]
+			for row in get_pending_raw_materials(self.pmo())
+			if row["pending_qty"] > 0
+		}
+
+	def requested_lines(self, material_requests):
+		return [
+			(row.item_code, row.qty)
+			for name in material_requests
+			for row in frappe.get_doc("Material Request", name).items
+		]
+
+	def material_requests_of_pmo(self, docstatus=None):
+		filters = {"manufacturing_order": self.pmo_name}
+		if docstatus is not None:
+			filters["docstatus"] = docstatus
+		return frappe.get_all("Material Request", filters, pluck="name")
+
+	def first_bom_table_with_rows(self):
+		bom = self.tracking_bom()
+		for table, item_type in (
+			("metal_detail", "metal_item"),
+			("diamond_detail", "diamond_item"),
+			("finding_detail", "finding_item"),
+		):
+			if bom.get(table):
+				return bom, table, item_type
+		self.skipTest("Tracking BOM has no metal, diamond or finding rows")
+
+	def assertNothingPending(self):
+		self.assertEqual(self.pending(), {})
+		with self.assertRaises(frappe.ValidationError) as caught:
+			create_pmo_material_request(self.pmo_name)
+		self.assertIn(
+			"No pending raw materials are available for Material Request creation.",
+			str(caught.exception),
+		)
+
+	# flows
+
+	def test_nothing_is_pending_right_after_submit(self):
+		self.assertTrue(self.material_requests_of_pmo(), "submit raised no requests")
+		self.assertNothingPending()
+
+	def test_higher_bom_qty_requests_only_the_extra(self):
+		bom, table, item_type = self.first_bom_table_with_rows()
+		self.raise_first_row_qty(bom, table, by=1)
+		extra = flt(1 * self.pmo().qty, 3)
+		item_code = self.bom_rows(item_type)[0]["item_code"]
+
+		self.assertEqual(self.pending(), {item_code: extra})
+		created = create_pmo_material_request(self.pmo_name)
+
+		self.assertEqual(self.requested_lines(created), [(item_code, extra)])
+		self.assertNothingPending()
+
+	def test_row_added_to_the_tracking_bom_is_requested(self):
+		bom, table, item_type = self.first_bom_table_with_rows()
+		row = {
+			key: value
+			for key, value in bom.get(table)[0].as_dict().items()
+			if key
+			not in ("name", "idx", "parent", "parentfield", "parenttype", "doctype")
+		}
+		row["quantity"] = 0.2
+		self.add_row(bom, table, row)
+		item_code = self.bom_rows(item_type)[-1]["item_code"]
+
+		created = create_pmo_material_request(self.pmo_name)
+
+		self.assertEqual(
+			self.requested_lines(created), [(item_code, flt(0.2 * self.pmo().qty, 3))]
+		)
+		material_request = frappe.get_doc("Material Request", created[0])
+		self.assertEqual(material_request.docstatus, 0)
+		self.assertEqual(material_request.material_request_type, "Manufacture")
+		self.assertEqual(material_request.manufacturing_order, self.pmo_name)
+		self.assertTrue(
+			frappe.db.exists(
+				"Comment",
+				{
+					"reference_doctype": "Parent Manufacturing Order",
+					"reference_name": self.pmo_name,
+					"comment_type": "Info",
+					"content": ["like", f"%{created[0]}%"],
+				},
+			)
+		)
+		self.assertNothingPending()
+
+	def test_material_request_missing_since_submit_is_requested_again(self):
+		drafts = self.material_requests_of_pmo(docstatus=0)
+		if not drafts:
+			self.skipTest("submit left no draft Material Request to remove")
+		removed = frappe.get_doc("Material Request", drafts[0])
+		removed_items = sorted(row.item_code for row in removed.items)
+		frappe.delete_doc("Material Request", removed.name, force=True)
+
+		created = create_pmo_material_request(self.pmo_name)
+
+		self.assertEqual(
+			sorted(item_code for item_code, _qty in self.requested_lines(created)),
+			removed_items,
+		)
+		self.assertNothingPending()
+
+	def test_cancelled_material_request_no_longer_counts(self):
+		name = self.material_requests_of_pmo()[0]
+		frappe.db.set_value("Material Request", name, "docstatus", 2)
+
+		self.assertTrue(self.pending())
+
+	def test_part_then_the_remainder_and_never_more(self):
+		bom, table, item_type = self.first_bom_table_with_rows()
+		self.raise_first_row_qty(bom, table, by=1)
+		extra = flt(1 * self.pmo().qty, 3)
+		part = flt(extra / 4, 3)
+		item_code = self.bom_rows(item_type)[0]["item_code"]
+
+		create_pmo_material_request(
+			self.pmo_name, frappe.as_json([{"item_code": item_code, "qty": part}])
+		)
+		self.assertEqual(self.pending(), {item_code: flt(extra - part, 3)})
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			create_pmo_material_request(
+				self.pmo_name, frappe.as_json([{"item_code": item_code, "qty": extra}])
+			)
+		self.assertIn("exceeds the pending quantity", str(caught.exception))
+
+		created = create_pmo_material_request(self.pmo_name)
+		self.assertEqual(
+			self.requested_lines(created), [(item_code, flt(extra - part, 3))]
+		)
+		self.assertNothingPending()
+
+	def test_gemstones_are_matched_through_the_description(self):
+		rows = self.bom_rows("gemstone_item")
+		if not rows:
+			self.skipTest("Tracking BOM has no gemstone rows")
+		default_gemstone_item = frappe.db.get_value(
+			"Manufacturing Setting",
+			{"manufacturer": self.pmo().manufacturer},
+			"default_gemstone_item",
+		)
+		gemstone_lines = [
+			row
+			for name in self.material_requests_of_pmo()
+			for row in frappe.get_doc("Material Request", name).items
+			if row.item_code == default_gemstone_item
+		]
+		self.assertTrue(gemstone_lines)
+		for row in rows:
+			self.assertEqual(row["pending_qty"], 0, row["item_code"])
+
+	def test_regraded_diamond_counts_as_requested(self):
+		rows = self.bom_rows("diamond_item")
+		if not rows:
+			self.skipTest("Tracking BOM has no diamond rows")
+		bom_item = rows[0]["item_code"]
+		key = _get_grade_free_key(bom_item)
+		# The request line for this diamond, in whatever grade it was requested.
+		line = next(
+			(
+				line
+				for line in frappe.get_all(
+					"Material Request Item",
+					{"parent": ["in", self.material_requests_of_pmo()]},
+					["name", "item_code"],
+				)
+				if _get_grade_free_key(line.item_code) == key
+			),
+			None,
+		)
+		self.assertTrue(line, f"no request line for {bom_item}")
+		other_grade = next(
+			(
+				item_code
+				for item_code in frappe.get_all(
+					"Item",
+					{"variant_of": frappe.db.get_value("Item", bom_item, "variant_of")},
+					pluck="name",
+				)
+				if item_code not in (bom_item, line.item_code)
+				and _get_grade_free_key(item_code) == key
+			),
+			None,
+		)
+		if not other_grade:
+			self.skipTest(f"no other grade of {bom_item} to regrade to")
+		frappe.db.set_value(
+			"Material Request Item", line.name, "item_code", other_grade
+		)
+
+		self.assertNothingPending()
+
+	def test_editing_the_template_bom_leaves_the_requirement_alone(self):
+		master_bom = self.pmo().master_bom
+		row = frappe.get_all(
+			"BOM Metal Detail", {"parent": master_bom}, ["name", "quantity"], limit=1
+		)
+		if not row:
+			self.skipTest("Master BOM has no metal row")
+		frappe.db.set_value(
+			"BOM Metal Detail", row[0].name, "quantity", flt(row[0].quantity) + 5
+		)
+
+		self.assertNothingPending()
+
+	def test_only_allowed_roles_get_the_button_and_the_endpoint(self):
+		settings = frappe.get_single("Jewellery Settings")
+		settings.set("pmo_material_request_roles", [{"role": "Manufacturing Manager"}])
+		settings.flags.ignore_mandatory = True
+		settings.save(ignore_permissions=True)
+		allowed = self._make_user("pmo-mr-allowed@example.com", "Manufacturing Manager")
+		refused = self._make_user("pmo-mr-refused@example.com", "Stock User")
+
+		self.assertTrue(can_create_pmo_material_request(allowed))
+		self.assertFalse(can_create_pmo_material_request(refused))
+
+		frappe.set_user(refused)
+		pmo = frappe.get_doc("Parent Manufacturing Order", self.pmo_name)
+		pmo.run_method("onload")
+		self.assertFalse(pmo.get_onload().get("can_create_material_request"))
+		self.assertRaises(
+			frappe.PermissionError, create_pmo_material_request, self.pmo_name
+		)
+
+		frappe.set_user(allowed)
+		pmo = frappe.get_doc("Parent Manufacturing Order", self.pmo_name)
+		pmo.run_method("onload")
+		self.assertTrue(pmo.get_onload().get("can_create_material_request"))
+
+	def _make_user(self, email, role):
+		if not frappe.db.exists("User", email):
+			frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": email,
+					"first_name": email.split("@")[0],
+					"send_welcome_email": 0,
+					"roles": [{"role": role}],
+				}
+			).insert(ignore_permissions=True)
+		return email
+
+	def test_pmo_on_hold_or_closed_is_refused(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			CLOSED_STATE,
+			HOLD_STATE,
+		)
+
+		if not frappe.get_meta("Parent Manufacturing Order").has_field(
+			"workflow_state"
+		):
+			self.skipTest("no PMO workflow on this site")
+		for state in (HOLD_STATE, CLOSED_STATE):
+			frappe.db.set_value(
+				"Parent Manufacturing Order", self.pmo_name, "workflow_state", state
+			)
+			pmo = frappe.get_doc("Parent Manufacturing Order", self.pmo_name)
+			pmo.run_method("onload")
+			self.assertFalse(pmo.get_onload().get("can_create_material_request"), state)
+			with self.assertRaises(frappe.ValidationError) as caught:
+				create_pmo_material_request(self.pmo_name)
+			self.assertIn(
+				"No Material Request can be created for it.", str(caught.exception)
+			)
+
+	def test_draft_pmo_is_refused(self):
+		frappe.db.set_value("Parent Manufacturing Order", self.pmo_name, "docstatus", 0)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			create_pmo_material_request(self.pmo_name)
+		self.assertIn("only for a submitted PMO", str(caught.exception))
+
+	def test_submitted_tracking_bom_is_left_alone(self):
+		"""Submitted means the finished item is made: no button, nothing requested."""
+		bom = self.tracking_bom()
+		if bom.docstatus == 0:
+			# Leave something pending, so only the submitted state can stop the request.
+			self.raise_first_row_qty(*self.first_bom_table_with_rows()[:2], by=1)
+			frappe.db.set_value("Tracking Bom", bom.name, "docstatus", 1)
+
+		pmo = self.pmo()
+		pmo.run_method("onload")
+		self.assertFalse(pmo.get_onload().get("can_create_material_request"))
+		with self.assertRaises(frappe.ValidationError) as caught:
+			create_pmo_material_request(self.pmo_name)
+		self.assertIn("already manufactured", str(caught.exception))
+
+
+class _FindingQB:
+	"""frappe.qb stand-in whose BOM Finding Detail query returns the given rows."""
+
+	def __init__(self, rows):
+		self._rows = rows
+
+	def DocType(self, _name):
+		return SimpleNamespace(parent="parent")
+
+	def from_(self, _table):
+		return self
+
+	def select(self, *_cols):
+		return self
+
+	def where(self, *_args):
+		return self
+
+	def run(self, **_kwargs):
+		return [frappe._dict(row) for row in self._rows]
+
+
+def _finding_row(
+	category="Chains", item="F", item_variant=None, parentfield="finding_detail"
+):
+	return {
+		"item": item,
+		"item_variant": item_variant,
+		"finding_category": category,
+		"finding_type": "Box Chain",
+		"finding_size": "1.00 INCH",
+		"parentfield": parentfield,
+	}
+
+
+class TestChainFindingRows(UnitTestCase):
+	"""_get_chain_finding_rows(): the rows create_manufacturing_work_order() raises a
+	Finding Manufacturing Work Order for, each with its variant resolved."""
+
+	def _rows(self, rows, ignore_wo=()):
+		pmo = frappe._dict(custom_tracking_bom="TB-1", diamond_grade="EF-VVS")
+
+		def get_value(doctype, name, fieldname):
+			if fieldname == "custom_ignore_work_order":
+				return 1 if name in ignore_wo else 0
+			return None
+
+		with (
+			patch.object(frappe, "qb", _FindingQB(rows)),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+			patch(
+				f"{PMO_MODULE}._resolve_existing_variant_item_code",
+				side_effect=lambda row, table, grade: f"{row.item}-{row.finding_size}",
+			),
+		):
+			return _get_chain_finding_rows(pmo)
+
+	def test_only_chains_rows_are_returned_with_their_variant(self):
+		rows = self._rows([_finding_row(), _finding_row(category="Screws")])
+		self.assertEqual([row.item_variant for row in rows], ["F-1.00 INCH"])
+
+	def test_a_stored_variant_is_kept(self):
+		rows = self._rows([_finding_row(item_variant="F-G-22KT-CHA-BC-1.00 INCH")])
+		self.assertEqual(
+			[row.item_variant for row in rows], ["F-G-22KT-CHA-BC-1.00 INCH"]
+		)
+
+	def test_chains_outside_finding_detail_are_skipped(self):
+		self.assertEqual(self._rows([_finding_row(parentfield="other_detail")]), [])
+
+	def test_ignore_work_order_template_is_skipped(self):
+		self.assertEqual(self._rows([_finding_row()], ignore_wo={"F"}), [])
+
+
+class TestChainFindingsMustBeManufacturingItems(UnitTestCase):
+	"""PMO submit is refused when a chain's variant is not ticked Is Manufacturing Item:
+	create_finding_mwo() would skip it and the PMO would go on without its Finding MWO."""
+
+	def _validate(
+		self,
+		rows,
+		ticked=(),
+		pmo_type="Manufacturing",
+		variant_of="EA",
+		tracking_bom="TB-1",
+	):
+		pmo = frappe._dict(
+			custom_tracking_bom=tracking_bom, type=pmo_type, item_code="ITEM"
+		)
+
+		def get_value(doctype, name, fieldname):
+			if fieldname == "custom_is_manufacturing_item":
+				return 1 if name in ticked else 0
+			return None
+
+		with (
+			patch(
+				f"{PMO_MODULE}._get_chain_finding_rows",
+				return_value=[frappe._dict(item_variant=v) for v in rows],
+			) as get_rows,
+			patch.object(frappe, "get_cached_value", return_value=variant_of),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+		):
+			_validate_chain_findings_are_manufacturing_items(pmo)
+		return get_rows
+
+	def test_unticked_chain_variant_blocks_submit_and_is_named(self):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._validate(
+				["F-BC-1.00 INCH", "F-BC-1.50 INCH"], ticked={"F-BC-1.50 INCH"}
+			)
+		self.assertIn("F-BC-1.00 INCH", str(ctx.exception))
+		self.assertNotIn("F-BC-1.50 INCH", str(ctx.exception))
+
+	def test_ticked_chain_variants_pass(self):
+		self._validate(["F-BC-1.00 INCH"], ticked={"F-BC-1.00 INCH"})
+
+	def test_no_chains_pass(self):
+		self._validate([])
+
+	def test_no_tracking_bom_is_not_checked(self):
+		get_rows = self._validate(["F-BC-1.00 INCH"], tracking_bom=None)
+		get_rows.assert_not_called()
+
+	def test_finding_manufacturing_pmo_of_a_non_f_item_is_not_checked(self):
+		get_rows = self._validate(
+			["F-BC-1.00 INCH"], pmo_type="Finding Manufacturing", variant_of="EA"
+		)
+		get_rows.assert_not_called()
+
+	def test_finding_manufacturing_pmo_of_an_f_item_is_checked(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(
+				["F-BC-1.00 INCH"], pmo_type="Finding Manufacturing", variant_of="F"
+			)
+
+
+class TestPMOMaterialRequestEdgeCases(UnitTestCase):
+	"""Behaviour around the edges that the main classes do not pin down."""
+
+	def test_requirement_key_reads_ownership_whatever_its_type(self):
+		for owned in (0, "0", None, "", False):
+			self.assertEqual(
+				_requirement_key("M", owned, None), ("M", 0, ""), repr(owned)
+			)
+		for owned in (1, "1", True):
+			self.assertEqual(
+				_requirement_key("M", owned, "Open"), ("M", 1, "Open"), repr(owned)
+			)
+
+	def test_pending_asks_for_a_locking_read_only_when_told_to(self):
+		doc = SimpleNamespace(
+			name="PMO-TEST-0001",
+			qty=1,
+			manufacturer="MNF",
+			get_bom_raw_materials=lambda: {},
+		)
+		for for_update in (True, False):
+			with (
+				patch(
+					f"{PMO_MODULE}._get_requested_qty_by_item", return_value={}
+				) as requested,
+				patch(f"{PMO_MODULE}.frappe.get_precision", return_value=3),
+			):
+				get_pending_raw_materials(doc, for_update=for_update)
+			requested.assert_called_once_with(doc, for_update=for_update)
+
+	def _create_failing_with(self, error):
+		doc = MagicMock()
+		doc.make_material_requests.side_effect = error
+		with (
+			patch(f"{PMO_MODULE}.check_pmo_material_request_role"),
+			patch.object(frappe.db, "get_value"),
+			patch(f"{PMO_MODULE}.frappe.get_doc", return_value=doc),
+			patch(
+				f"{PMO_MODULE}.validate_material_request_items",
+				return_value={"metal_item": [{"item_code": "M-1", "qty": 1}]},
+			),
+			patch(f"{PMO_MODULE}.add_material_request_comment") as comment,
+		):
+			with self.assertRaises(Exception) as caught:
+				create_pmo_material_request("PMO-TEST-0001", "[]")
+		# A failed creation never announces requests on the PMO's timeline.
+		comment.assert_not_called()
+		return caught.exception
+
+	def test_user_who_cannot_create_material_requests_gets_the_permission_error(self):
+		"""The role setting gates the button, not ERPNext's own permission: a user allowed
+		by the setting whose roles cannot create a Material Request is stopped by the
+		save, and nothing is left behind -- no request, no timeline comment."""
+		raised = self._create_failing_with(frappe.PermissionError())
+		self.assertIsInstance(raised, frappe.PermissionError)
+
+	def test_a_failure_part_way_through_leaves_no_timeline_comment(self):
+		"""Requests are saved one by one in one transaction; Frappe rolls the lot back when
+		the call fails, and the comment must not announce requests that no longer exist."""
+		raised = self._create_failing_with(
+			frappe.ValidationError("second request failed")
+		)
+		self.assertIn("second request failed", str(raised))
+
+	def test_lock_wait_timeout_and_deadlock_read_as_try_again(self):
+		"""Another session holding the PMO or one of its requests past the lock wait used to
+		surface as the raw "(1205, 'Lock wait timeout exceeded; ...')" database error."""
+		for error in (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
+			raised = self._create_failing_with(
+				error("(1205, 'Lock wait timeout exceeded')")
+			)
+			self.assertIsInstance(raised, frappe.ValidationError, error.__name__)
+			self.assertIn("Another change to this PMO's Material Requests", str(raised))
+			self.assertNotIn("1205", str(raised))
+
+	def test_other_errors_are_not_mistaken_for_a_lock_wait(self):
+		raised = self._create_failing_with(
+			frappe.ValidationError("Item X is not pending")
+		)
+		self.assertIn("Item X is not pending", str(raised))
+		self.assertNotIn("Another change", str(raised))
+
+	def test_jewellery_settings_keeps_the_role_field(self):
+		"""The roles are read from this field; losing it from the DocType JSON (a desk
+		re-export, a bad merge) would leave only System Manager able to use the button."""
+		import json
+
+		path = frappe.get_app_path(
+			"jewellery_erpnext",
+			"jewellery_erpnext",
+			"doctype",
+			"jewellery_settings",
+			"jewellery_settings.json",
+		)
+		with open(path) as f:
+			doctype = json.load(f)
+		fields = {field["fieldname"]: field for field in doctype["fields"]}
+		role_field = fields["pmo_material_request_roles"]
+		self.assertEqual(role_field["fieldtype"], "Table MultiSelect")
+		self.assertEqual(role_field["options"], "Has Role")
+		self.assertIn("pmo_material_request_roles", doctype["field_order"])
+		self.assertEqual(
+			fields["pmo_material_request_section"]["fieldtype"], "Section Break"
+		)

@@ -3823,3 +3823,115 @@ class TestTreeLossCap(IntegrationTestCase):
 		with patch.object(frappe, "has_permission", return_value=True), self._cap(7.0):
 			_run(tree.submit_tree)
 		self.assertEqual(tree.status, "Submitted")
+
+
+class TestThrowTreeShortfall(IntegrationTestCase):
+	"""``_throw_tree_shortfall`` -- the message must say what IS available and which metal at the
+	warehouse belongs to someone else, so a short Receive is not mistaken for missing stock."""
+
+	MSL = "EMP-MSL"
+	REG = ("Regular Stock", None)
+	CUST1 = ("Customer Goods", "CUST-1")
+
+	def _throw(self, pool, warehouse, issued, need=10.0, shortfall=4.0):
+		"""``warehouse`` is ``{batch: (qty, ownership)}``; ``issued`` the tree's own batches."""
+
+		def _priority(batch_nos, with_no_wastage=False):
+			return {
+				b: frappe._dict(
+					inventory_type=warehouse[b][1][0],
+					customer=warehouse[b][1][1],
+					creation="",
+					no_wastage=False,
+				)
+				for b in batch_nos or []
+			}
+
+		rows = [frappe._dict(batch_no=b, qty=q) for b, (q, _o) in warehouse.items()]
+		with (
+			patch.object(tse, "_tree_issued_batches", return_value=list(issued)),
+			patch.object(tse, "_pending_eps", return_value=0.0005),
+			patch.object(tse, "batch_priority_map", side_effect=_priority),
+			patch.object(frappe.db, "sql", return_value=rows),
+		):
+			with self.assertRaises(ValidationError) as ctx:
+				tse._throw_tree_shortfall(
+					SimpleNamespace(name="TREE-1"),
+					"GOLD-22KT",
+					self.MSL,
+					need,
+					shortfall,
+					pool,
+					3,
+				)
+		return str(ctx.exception)
+
+	def test_message_states_the_available_qty_and_the_other_owner_batch(self):
+		msg = self._throw(
+			pool=[("B-OWN", 6.0)],
+			warehouse={"B-OWN": (6.0, self.REG), "B-CUST": (50.0, self.CUST1)},
+			issued=["B-OWN"],
+		)
+		self.assertIn("short by 4.0", msg)
+		self.assertIn("Only 6.0 of metal", msg)
+		self.assertIn("B-OWN: 6.0", msg)
+		self.assertIn("B-CUST: 50.0 (Customer Goods / CUST-1)", msg)
+		self.assertNotIn("already been consumed", msg)
+
+	def test_same_ownership_batch_is_not_called_a_different_ownership(self):
+		"""A batch of the tree's own tier that the pool left out is reported as such -- never as
+		foreign, and never hidden behind "nothing of this tree's ownership is left"."""
+		msg = self._throw(
+			pool=[("B-OWN", 6.0)],
+			warehouse={"B-OWN": (6.0, self.REG), "B-SAME": (9.0, self.REG)},
+			issued=["B-OWN"],
+		)
+		self.assertNotIn("different ownership", msg)
+		self.assertNotIn("No further metal", msg)
+		self.assertIn("of this tree's ownership that could not be allocated", msg)
+		self.assertIn("B-SAME: 9.0 (Regular Stock)", msg)
+
+	def test_other_and_same_owner_batches_are_listed_separately(self):
+		msg = self._throw(
+			pool=[("B-OWN", 6.0)],
+			warehouse={
+				"B-OWN": (6.0, self.REG),
+				"B-SAME": (9.0, self.REG),
+				"B-CUST": (50.0, self.CUST1),
+			},
+			issued=["B-OWN"],
+		)
+		other = msg.index("different ownership")
+		same = msg.index("could not be allocated")
+		self.assertLess(other, msg.index("B-CUST"))
+		self.assertLess(msg.index("B-CUST"), same)
+		self.assertLess(same, msg.index("B-SAME"))
+
+	def test_nothing_else_in_the_warehouse(self):
+		msg = self._throw(
+			pool=[("B-OWN", 6.0)],
+			warehouse={"B-OWN": (6.0, self.REG)},
+			issued=["B-OWN"],
+		)
+		self.assertNotIn("different ownership", msg)
+		self.assertIn("No further metal of this tree's ownership", msg)
+
+	def test_unknown_tree_ownership_lists_nothing(self):
+		"""No issue entries to read the tier from: say nothing rather than guess a difference."""
+		msg = self._throw(
+			pool=[],
+			warehouse={"B-CUST": (50.0, self.CUST1)},
+			issued=[],
+		)
+		self.assertNotIn("B-CUST", msg)
+		self.assertNotIn("No further metal", msg)
+		self.assertIn("Only 0.0 of metal", msg)
+
+	def test_batch_names_are_html_escaped(self):
+		msg = self._throw(
+			pool=[("B<1>", 6.0)],
+			warehouse={"B<1>": (6.0, self.REG)},
+			issued=["B<1>"],
+		)
+		self.assertIn("B&lt;1&gt;: 6.0", msg)
+		self.assertNotIn("B<1>", msg)

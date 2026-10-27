@@ -4254,7 +4254,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 		)
 
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
-	tolerance = _float_tolerance(precision)
+	tolerance = _receive_tolerance(precision)
 
 	# MWO-scoped fetch: every active SRE under this Manufacturing Work
 	# Order, regardless of which MOP it was created against. ERPNext's SRE
@@ -4732,12 +4732,29 @@ def _float_tolerance(precision=None):
 	return 10**-precision if precision else 0.0001
 
 
+def _receive_tolerance(precision=None):
+	"""Tolerance for the Make Receive Entry quantity checks: half a unit at the
+	float precision (0.0005 at precision 3).
+
+	``_float_tolerance`` is a FULL unit, which equals the smallest quantity the
+	system can hold, so a real 0.001 g reservation compared as zero
+	(``0.001 <= 0.001``) and the popup silently dropped it ("no receivable MOP
+	balance"), the validator accepted a 0.001 over-receive, and a 0.001 leftover
+	got no replacement SRE. Half a unit still absorbs binary float noise.
+	Employee IR loss handling keeps ``_float_tolerance``: its one-unit slack is
+	intentional.
+	"""
+	if precision is None:
+		precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
+	return 0.5 * 10**-precision if precision else 0.0001
+
+
 def _is_positive_qty(qty, tolerance=None):
 	"""True iff qty is strictly greater than the float tolerance.
 	Centralised so every zero-or-near-zero check uses the same rule and
 	never falls into the "Available Qty to Reserve is required" trap."""
 	if tolerance is None:
-		tolerance = _float_tolerance()
+		tolerance = _receive_tolerance()
 	return flt(qty) > tolerance
 
 
@@ -4766,7 +4783,7 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 		get_available_qty_to_reserve,
 	)
 
-	tolerance = _float_tolerance()
+	tolerance = _receive_tolerance()
 
 	# Filter batch rows once; we use the filtered list for both the SRE check
 	# and the actual append loop to keep them in lockstep.
@@ -4932,7 +4949,7 @@ def create_mr_wo_stock_entry(
 		frappe.throw(_("No warehouse found for warehouse type Raw Material"))
 
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
-	tolerance = _float_tolerance(precision)
+	tolerance = _receive_tolerance(precision)
 
 	# ONE MWO-wide balance map shared by every row, built exactly the way
 	# `get_make_receive_entry_rows` builds the popup's — same function, same
