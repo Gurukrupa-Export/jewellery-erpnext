@@ -59,7 +59,11 @@ def _missing_fields(doctype):
 
 	fields = []
 	for fieldname, fieldtype, label in WEIGHT_FIELDS:
-		if frappe.db.exists("Custom Field", {"dt": doctype, "fieldname": fieldname}):
+		# meta also covers standard fields, which have no Custom Field row; adding one
+		# with the same name would create a duplicate.
+		if meta.has_field(fieldname) or frappe.db.exists(
+			"Custom Field", {"dt": doctype, "fieldname": fieldname}
+		):
 			continue
 
 		field = {
