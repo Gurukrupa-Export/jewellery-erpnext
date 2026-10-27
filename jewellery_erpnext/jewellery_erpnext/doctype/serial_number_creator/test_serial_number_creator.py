@@ -1300,17 +1300,19 @@ class TestSncWithoutSourceRows(IntegrationTestCase):
 				self._doc(docstatus=1).on_submit()
 		cascade.assert_not_called()
 
+	def test_validate_qty_refuses_an_empty_source_for_a_job(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "Source Table is empty"):
+			validate_qty(self._doc(docstatus=1))
+
 	@patch(f"{_SNC_MODULE}.split_source_rows_by_reservation")
-	@patch(f"{_SNC_MODULE}.validate_not_metal_only")
 	@patch(f"{_SNC_MODULE}.SerialNumberCreator._compute_total_weight")
 	@patch(f"{_SNC_MODULE}.SerialNumberCreator._render_fg_details")
-	def test_an_empty_draft_is_rendered_on_save(
-		self, render, _weight, metal_only, _split
-	):
+	def test_an_empty_draft_is_rendered_on_save(self, render, weight, _split):
 		self._doc().validate()
 
 		render.assert_called_once()
-		metal_only.assert_called_once()
+		# The operation still has no balance, so nothing came back to weigh.
+		weight.assert_not_called()
 
 	@patch(f"{_SNC_MODULE}.split_source_rows_by_reservation")
 	@patch(f"{_SNC_MODULE}.SerialNumberCreator._render_fg_details")

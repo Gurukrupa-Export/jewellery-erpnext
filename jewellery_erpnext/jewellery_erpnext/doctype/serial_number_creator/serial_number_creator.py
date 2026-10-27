@@ -26,21 +26,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 
 class SerialNumberCreator(Document):
 	def validate(self):
-		# An SNC is inserted at MWO submit (create_snc_from_mwo_submit) or from the operation
-		# (get_operation_details) even when its Manufacturing Operation has no balance yet, and
-		# before_insert then renders nothing. Render again on each draft save until the operation
-		# has its materials, so the operator sees the rows before submitting.
-		if (
-			self.docstatus == 0
-			and self.manufacturing_operation
-			and not (self.fg_details or self.source_table)
-		):
-			self._render_fg_details()
-			self._compute_total_weight()
-			validate_not_metal_only(self)
-
 		# Runs on draft save AND on submit (_submit -> save), so a document created
 		# before this existed repairs itself the next time it is saved or submitted.
+		self._render_pending_source_rows()
 		split_source_rows_by_reservation(self)
 
 	def before_insert(self):
@@ -52,17 +40,6 @@ class SerialNumberCreator(Document):
 	# 		self.load_raw_materials()
 
 	def on_submit(self):
-		# With no source rows nothing is consumed and no finished-good serial is made, and the
-		# submit used to die later on get_doc("Serial No", None).
-		if not self.source_table:
-			frappe.throw(
-				_(
-					"Source Table is empty. Manufacturing Operation {0} had no balance when this "
-					"document was created. Save it again to load the operation's materials, check "
-					"them, then submit."
-				).format(self.manufacturing_operation or "-")
-			)
-
 		validate_qty(self)
 		calulate_id_wise_sum_up(self)
 
@@ -75,6 +52,30 @@ class SerialNumberCreator(Document):
 		# retry kept in the codebase is bounded_retry on idempotent *background* jobs.
 		to_prepare_data_for_make_mnf_stock_entry(self)
 		update_new_serial_no(self)
+
+	def _render_pending_source_rows(self):
+		"""Fill a draft that was created before its Manufacturing Operation had a balance.
+
+		``_render_fg_details`` runs only in ``before_insert``, and
+		``create_snc_from_mwo_submit`` returns the existing document rather than rebuilding
+		it -- so a Serial Number Creator auto-created at Work Order submit BEFORE its operation
+		had any balance would keep both tables empty for good, and its submit died on
+		``get_doc("Serial No", None)``. There was no way back.
+
+		Only a draft with BOTH tables empty is touched: that shape is never something an
+		operator meant, because clearing one table leaves the other populated. A draft the
+		operator has actually edited is left alone.
+		"""
+		if self.docstatus != 0:
+			return
+		if self.fg_details or self.source_table:
+			return
+		if not self.manufacturing_operation:
+			return
+
+		self._render_fg_details()
+		if self.source_table:
+			self._compute_total_weight()
 
 	def _render_fg_details(self):
 		"""Build source_table (batch-wise) and fg_details (aggregated) from MOP Log."""
@@ -1324,6 +1325,18 @@ def validate_not_metal_only(doc):
 
 
 def validate_qty(self):
+	# With no source rows nothing is consumed and no finished-good serial is made, and the
+	# submit used to die later on get_doc("Serial No", None).
+	job = self.parent_manufacturing_order or self.manufacturing_work_order
+	if not self.source_table and job:
+		frappe.throw(
+			_(
+				"Source Table is empty. Manufacturing Operation {0} had no balance when this "
+				"document was created. Save it again to load the operation's materials, check "
+				"them, then submit."
+			).format(self.manufacturing_operation or "-")
+		)
+
 	for row in self.source_table:
 		if row.qty <= 0:
 			frappe.throw(_("Source Table Quantity Zero or Negative Not Allowed"))
