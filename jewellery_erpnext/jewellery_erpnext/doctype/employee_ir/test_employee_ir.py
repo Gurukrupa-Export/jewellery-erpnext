@@ -11,6 +11,9 @@ from frappe.utils import add_to_date, now_datetime
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.test_department_ir import (
 	mo_creation,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_utils import (
+	get_summary_data,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_employee_ir_receive_delay,
 )
@@ -332,6 +335,42 @@ class TestManufacturingOperationBalance(IntegrationTestCase):
 		# the same ledger; both now derive it through carat_to_gram.
 		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.202, places=3)
 		self.assertAlmostEqual(out["gross_wt"], 0.432, places=3)
+
+
+class TestEmployeeIRSummaryReceivedGrossWt(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_received_gross_wt_includes_findings(self):
+		doc = FrappeDict(
+			{
+				"employee_ir_operations": [
+					FrappeDict(
+						{
+							"received_gross_wt": 10.1234,
+							"finding_wt1": 0.5,
+							"finding_wt2": 0.25,
+						}
+					),
+					FrappeDict(
+						{
+							"received_gross_wt": 2,
+							"finding_wt1": None,
+							"finding_wt2": None,
+						}
+					),
+				]
+			}
+		)
+
+		# Each term is rounded to 3 decimals before summing: 10.123 + 0.5 + 0.25 + 2.
+		self.assertEqual(get_summary_data(doc)[0]["received_gross_wt"], 12.873)
+
+	def test_empty_table_is_zero(self):
+		doc = FrappeDict({"employee_ir_operations": []})
+
+		self.assertEqual(get_summary_data(doc)[0]["received_gross_wt"], 0)
 
 
 class TestEmployeeIR(IntegrationTestCase):
