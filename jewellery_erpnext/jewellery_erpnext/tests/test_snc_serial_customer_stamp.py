@@ -143,6 +143,21 @@ class TestSerialNumberCreatorStampsTheOrdersCustomer(IntegrationTestCase):
 
 		self.assertFalse(serial.customer)
 
+	def test_a_site_that_fetches_the_customer_from_a_bom_with_a_customer(self):
+		"""GEPL: the FG BOM carries the order's customer and the serial is linked to it with its
+		own customer still empty. The save fetches the BOM's customer, so it must already be on
+		the serial; leaving the column empty is what failed on gepl-prod (SNC 3j4quhkl5v)."""
+		serial_no = self._new_serial()
+		bom = _bom(self.item)
+		frappe.db.set_value("BOM", bom, "customer", self.customer)
+		frappe.db.set_value("Serial No", serial_no, "custom_bom_no", bom)
+		customer_field = frappe.get_meta("Serial No").get_field("customer")
+		with patch.object(customer_field, "fetch_from", "custom_bom_no.customer"):
+			serial = self._run_snc(serial_no, self.pmo_with_customer)
+
+		self.assertEqual(serial.customer, self.customer)
+		self.assertIn(HUID, [row.huid for row in serial.huid])
+
 	def test_a_site_that_fetches_the_customer_but_has_no_bom_still_stamps_it(self):
 		"""The fetch only runs when the serial is linked to a BOM. Without one, as on CI's site for
 		a serial no SNC has linked yet, the order's customer is stamped."""
