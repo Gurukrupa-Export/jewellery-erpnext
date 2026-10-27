@@ -1193,19 +1193,26 @@ def stock_reservation_entry_for_mwo(self):
         """,
 		(self.manufacturing_order,),
 	)
-	base_mr_voucher_qty = None
+	pmo_mr_qty = None
+	mr_qty_by_item = {}
+	tolerance_pct = 0.0
 	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
-		base_mr_voucher_qty = flt(voucher_qty_row[0][0])
+		pmo_mr_qty = flt(voucher_qty_row[0][0])
+		# ERPNext checks voucher_qty against this item's reserved total across the whole
+		# Sales Order line -- every PMO (piece) on it -- while pmo_mr_qty covers one PMO only.
+		# On a line of three or more pieces the second figure outgrows the first and the
+		# next piece is refused ("Cannot reserve more than Allowed Qty"). The line-wide qty
+		# of this item only ever raises the limit (see the max below), never lowers it.
+		mr_qty_by_item = _mr_voucher_qty_by_item(
+			self.manufacturing_order, sales_order, sales_order_item
+		)
 		addition_maximum_item__tolerance_percentage = frappe.db.get_value(
 			"Manufacturing Setting",
 			self.manufacturer or manufacturer,
 			"addition_maximum_item__tolerance_percentage",
 		)
 		if addition_maximum_item__tolerance_percentage:
-			base_mr_voucher_qty = base_mr_voucher_qty + (
-				base_mr_voucher_qty
-				* (flt(addition_maximum_item__tolerance_percentage) / 100)
-			)
+			tolerance_pct = flt(addition_maximum_item__tolerance_percentage) / 100
 
 	# RULE B (canonical lock order): pre-lock every inbound Bin this reservation will
 	# touch, in sorted (item_code, warehouse) order, so concurrent Stock Entry submits
@@ -1267,6 +1274,12 @@ def stock_reservation_entry_for_mwo(self):
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
 			row.item_code, "Sales Order", sales_order, sales_order_item
 		)
+		base_mr_voucher_qty = None
+		if pmo_mr_qty is not None:
+			base_mr_voucher_qty = max(
+				pmo_mr_qty, flt(mr_qty_by_item.get(row.item_code))
+			)
+			base_mr_voucher_qty += base_mr_voucher_qty * tolerance_pct
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
 		)
@@ -1315,6 +1328,29 @@ def stock_reservation_entry_for_mwo(self):
 		new_stock_reservation_entries_mwo.insert(ignore_links=1)
 		new_stock_reservation_entries_mwo.submit()
 		create_mop_log(self, row, is_synced=True)
+
+
+def _mr_voucher_qty_by_item(manufacturing_order, sales_order, sales_order_item):
+	"""Requested stock qty per item, over every non-cancelled Material Request of every PMO on
+	the Sales Order line -- the scope ERPNext sums reservations over. Keyed by the item the
+	Stock Entry actually moves (the alternative item when one is set). Falls back to this PMO's
+	requests alone when the PMO is not tied to a Sales Order line."""
+	if sales_order and sales_order_item:
+		scope_condition = "pmo.sales_order = %(so)s AND pmo.sales_order_item = %(soi)s"
+	else:
+		scope_condition = "pmo.name = %(pmo)s"
+	rows = frappe.db.sql(
+		f"""
+		SELECT COALESCE(NULLIF(mri.custom_alternative_item, ''), mri.item_code), SUM(mri.stock_qty)
+		FROM `tabMaterial Request Item` mri
+		JOIN `tabMaterial Request` mr ON mr.name = mri.parent
+		JOIN `tabParent Manufacturing Order` pmo ON pmo.name = mr.manufacturing_order
+		WHERE {scope_condition} AND mr.docstatus != 2
+		GROUP BY 1
+		""",
+		{"so": sales_order, "soi": sales_order_item, "pmo": manufacturing_order},
+	)
+	return {item_code: flt(qty) for item_code, qty in rows or () if item_code}
 
 
 def validate_items(self):
