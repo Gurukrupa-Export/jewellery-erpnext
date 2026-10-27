@@ -734,30 +734,88 @@ def _warn_tree_customer_loss(customer_loss, prec):
 	)
 
 
+def _other_ownership_stock(item_code, msl_wh, own_batches, prec):
+	"""``[(batch_no, qty, owner label)]`` of metal at ``msl_wh`` this tree may NOT draw on.
+
+	Only used to explain a shortfall: Stock Balance shows the whole warehouse, so an operator sees
+	plenty of stock and has no way to tell that it is held under another ownership tier. Same
+	``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``.
+	"""
+	eps = _pending_eps()
+	rows = frappe.db.sql(
+		"""
+		SELECT sbe.batch_no, SUM(sbe.qty) AS qty
+		FROM `tabSerial and Batch Entry` sbe
+		WHERE sbe.docstatus = 1
+		  AND sbe.item_code = %(item_code)s
+		  AND sbe.warehouse = %(warehouse)s
+		  AND sbe.type_of_transaction IN ('Inward', 'Outward')
+		  AND sbe.voucher_type != 'Pick List'
+		  AND IFNULL(sbe.batch_no, '') != ''
+		GROUP BY sbe.batch_no
+		""",
+		{"item_code": item_code, "warehouse": msl_wh},
+		as_dict=True,
+	)
+	rows = [
+		r for r in rows if flt(r.qty, prec) > eps and r.batch_no not in set(own_batches)
+	]
+	if not rows:
+		return []
+
+	ranks = batch_priority_map([r.batch_no for r in rows])
+	out = []
+	for r in rows:
+		meta = ranks.get(r.batch_no)
+		inv, cust = normalize_ownership(
+			meta.inventory_type if meta else None,
+			meta.customer if meta else None,
+			batch_no=r.batch_no,
+			item_code=item_code,
+		)
+		out.append((r.batch_no, flt(r.qty, prec), f"{inv} / {cust}" if cust else inv))
+	return out
+
+
 def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 	"""Fail fast once even same-ownership-tier metal cannot cover the need.
 
 	The tree's own issued batches are drawn first, and substitutes are confined to the same
 	``(inventory_type, customer)`` (``_tree_fallback_batches``). Reaching here means the warehouse
-	holds no metal this tree is entitled to at all — returning anything else would cross an
+	holds no more metal this tree is entitled to -- returning anything else would cross an
 	ownership boundary, which is the defect this whole restriction exists to prevent.
+
+	The message says how much IS available and lists the metal that is held under another owner,
+	because the warehouse total on Stock Balance is larger than what this tree may take and the
+	old wording ("already been consumed") read as if the stock were simply gone.
 	"""
-	frappe.throw(
-		_(
-			"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. The batches this tree "
-			"issued have already been consumed there, and no remaining batch at that warehouse "
-			"shares this tree's ownership, so none may stand in for them. Available to this "
-			"tree: {5}."
-		).format(
-			tree.name,
-			item_code,
-			flt(need, prec),
-			msl_wh,
-			flt(shortfall, prec),
-			", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing"),
-		),
-		title=_("Tree Material Not Available"),
+	available = flt(sum(flt(q) for _b, q in pool), prec)
+	others = _other_ownership_stock(item_code, msl_wh, [b for b, _q in pool], prec)
+
+	msg = _(
+		"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. Only {5} of metal this "
+		"tree is entitled to is available there ({6})."
+	).format(
+		tree.name,
+		item_code,
+		flt(need, prec),
+		msl_wh,
+		flt(shortfall, prec),
+		available,
+		", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing"),
 	)
+	if others:
+		msg += "<br><br>" + _(
+			"The warehouse also holds metal under a different ownership, which cannot be used for "
+			"this tree: {0}."
+		).format(", ".join(f"{b}: {q} ({owner})" for b, q, owner in others))
+	else:
+		msg += "<br><br>" + _(
+			"The remaining metal this tree issued has been consumed there (for example by work "
+			"order transfers) and no other metal of the same ownership is in the warehouse."
+		)
+
+	frappe.throw(msg, title=_("Tree Material Not Available"))
 
 
 def _ledger_row(tree, item_code):
