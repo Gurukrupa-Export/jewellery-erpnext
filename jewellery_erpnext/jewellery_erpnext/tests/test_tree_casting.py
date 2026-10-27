@@ -3879,15 +3879,33 @@ class TestThrowTreeShortfall(IntegrationTestCase):
 		self.assertNotIn("already been consumed", msg)
 
 	def test_same_ownership_batch_is_not_called_a_different_ownership(self):
-		"""A batch of the tree's own tier that the pool left out must not be listed as foreign."""
+		"""A batch of the tree's own tier that the pool left out is reported as such -- never as
+		foreign, and never hidden behind "nothing of this tree's ownership is left"."""
 		msg = self._throw(
 			pool=[("B-OWN", 6.0)],
 			warehouse={"B-OWN": (6.0, self.REG), "B-SAME": (9.0, self.REG)},
 			issued=["B-OWN"],
 		)
-		self.assertNotIn("B-SAME", msg)
 		self.assertNotIn("different ownership", msg)
-		self.assertIn("No further metal of this tree's ownership", msg)
+		self.assertNotIn("No further metal", msg)
+		self.assertIn("of this tree's ownership that could not be allocated", msg)
+		self.assertIn("B-SAME: 9.0 (Regular Stock)", msg)
+
+	def test_other_and_same_owner_batches_are_listed_separately(self):
+		msg = self._throw(
+			pool=[("B-OWN", 6.0)],
+			warehouse={
+				"B-OWN": (6.0, self.REG),
+				"B-SAME": (9.0, self.REG),
+				"B-CUST": (50.0, self.CUST1),
+			},
+			issued=["B-OWN"],
+		)
+		other = msg.index("different ownership")
+		same = msg.index("could not be allocated")
+		self.assertLess(other, msg.index("B-CUST"))
+		self.assertLess(msg.index("B-CUST"), same)
+		self.assertLess(same, msg.index("B-SAME"))
 
 	def test_nothing_else_in_the_warehouse(self):
 		msg = self._throw(
@@ -3906,4 +3924,14 @@ class TestThrowTreeShortfall(IntegrationTestCase):
 			issued=[],
 		)
 		self.assertNotIn("B-CUST", msg)
+		self.assertNotIn("No further metal", msg)
 		self.assertIn("Only 0.0 of metal", msg)
+
+	def test_batch_names_are_html_escaped(self):
+		msg = self._throw(
+			pool=[("B<1>", 6.0)],
+			warehouse={"B<1>": (6.0, self.REG)},
+			issued=["B<1>"],
+		)
+		self.assertIn("B&lt;1&gt;: 6.0", msg)
+		self.assertNotIn("B<1>", msg)
