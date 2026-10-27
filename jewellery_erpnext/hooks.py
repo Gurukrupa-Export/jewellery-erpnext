@@ -200,6 +200,10 @@ doc_events = {
 	},
 	"Stock Entry": {
 		"validate": [
+			# No stock moves for a PMO on Hold or Closed. First, so nothing else runs for an
+			# entry that is refused anyway; validate never sees a cancel, so a Close's cancels
+			# go through.
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.refuse_stock_entry_while_blocked",
 			# Fills to_<dimension> from <dimension> on every row. Must be at `validate`, not
 			# `before_validate`: StockEntry.validate_warehouse() has not yet resolved
 			# t_warehouse there, and validate_customer_gold_receipt (last before_validate
@@ -345,10 +349,15 @@ doc_events = {
 	},
 	"Material Request": {
 		"before_validate": [
+			# A Material Request of a PMO on Hold or Closed cannot be saved or moved on.
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.refuse_material_request_while_blocked",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.guard_non_system_manager_field_edits",
 		],
-		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_update_after_submit",
+		"before_update_after_submit": [
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.refuse_material_request_while_blocked",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_update_after_submit",
+		],
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.create_stock_entry",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.on_submit",
 	},
