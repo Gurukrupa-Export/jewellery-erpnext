@@ -56,6 +56,8 @@ from frappe.utils import flt
 from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
 	EVENT_RECEIPT,
 	EVENT_RETURN,
+	EVENT_REVALUATION,
+	EVENT_REVERSAL,
 	LEDGER_DOCTYPE,
 	STAGE_RM,
 	_write_event,
@@ -112,6 +114,38 @@ def get_booked_rate(company, customer, batch_no):
 		return 0.0 if any(r.cg_currency for r in rows) else None
 
 	return value / qty
+
+
+def has_live_revaluation(company, customer, batch_no):
+	"""Whether this batch has a Revaluation still in force: written, and not since reversed.
+
+	Revalued metal stays with the company and carries the restated rate by design (the SOP's
+	Example E, ``customer_gold_revaluation``), so the booked rate is no longer the yardstick for
+	it. Neither Settle's conversions nor the receipt drift check in ``_check_plans`` hold such a
+	batch to that rate.
+	"""
+	revaluations = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters={
+			"company": company,
+			"customer": customer,
+			"batch_no": batch_no,
+			"cg_event_kind": EVENT_REVALUATION,
+		},
+		pluck="name",
+	)
+	if not revaluations:
+		return False
+
+	reversed_ = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters={
+			"cg_event_kind": EVENT_REVERSAL,
+			"cg_reversal_of": ["in", revaluations],
+		},
+		pluck="cg_reversal_of",
+	)
+	return bool(set(revaluations) - set(reversed_))
 
 
 def get_returnable_qty(company, customer, batch_no, warehouse, item_code):
@@ -324,12 +358,16 @@ def _receipt_names(receipts):
 def _build_return_entry(
 	company, customer, batch_no, qty, warehouse, item_code, booked_rate, posting_date
 ):
-	"""The outgoing Stock Entry, valued at the booked rate.
+	"""The outgoing Stock Entry, with the booked rate stamped on its row.
 
-	``set_basic_rate_manually`` is what makes the booked rate survive: erpnext's loop at
-	``stock_entry.py:1615-1619`` takes ``continue`` for such a row, so the rate is not
-	recalculated from the batch's current valuation. Same mechanism the nominal receipt relies on,
-	used in the opposite direction.
+	The stamp is the intent, not a guarantee. ``set_basic_rate_manually`` keeps a rate on an
+	INCOMING row, which is how the nominal receipt books it; it does nothing for an outgoing one.
+	``set_rate_for_outgoing_items`` (``stock_entry.py``) re-prices every row with a source warehouse
+	from the batch's own valuation, so what leaves -- and what the liability leg posts -- is the
+	batch's carrying rate. That is the booked rate only while the batch still carries it: Settle
+	prices its conversions into the receipt's batch at it, and ``_check_plans`` holds a return
+	whose batch has drifted. The stored row shows it: ``set_basic_rate_manually = 1`` beside the
+	batch's rate, not the booked one.
 	"""
 	settings = get_customer_gold_settings()
 	entry_type = settings.get("customer_gold_return_stock_entry_type")
@@ -402,6 +440,14 @@ def _build_return_entry(
 #: percents. 0.05% separates the two with room to spare, and anything beyond it is a valuation
 #: question (decision D08) rather than a return.
 DESCENDANT_RATE_TOLERANCE = 0.0005
+
+#: How far, in rupees released, a receipt's OWN batch may sit from the rate its receipt booked. The
+#: batch is priced from that receipt, so honest drift is rounding alone: the receipt's value is held
+#: to the paisa, a half-paisa either side. Anything beyond a paisa is value carried into the batch
+#: from elsewhere -- company alloy, another receipt's rate -- which is a valuation question
+#: (decision D08) rather than a return. Absolute, not relative: a relative band lets 0.05% through,
+#: which on a 3 g return at Rs.14,622.50 is about Rs.22.
+RECEIPT_VALUE_TOLERANCE = 0.01
 
 
 def _applies(doc):
@@ -658,12 +704,28 @@ def _check_plans(doc, plans, for_update):
 			)
 
 	for plan in plans:
-		if plan.kind != "descendant" or plan.booked_rate is None:
+		if plan.booked_rate is None:
 			continue
 		actual = _batch_rate(plan.batch_no, plan.warehouse)
-		if actual is None or abs(actual - plan.booked_rate) > abs(
-			plan.booked_rate * DESCENDANT_RATE_TOLERANCE
-		):
+		if plan.kind == "descendant":
+			drifted = actual is None or abs(actual - plan.booked_rate) > abs(
+				plan.booked_rate * DESCENDANT_RATE_TOLERANCE
+			)
+		else:
+			# The receipt's own batch is held to the booked rate too, in rupees released. The stock
+			# credit posts the batch's carrying rate against the liability (erpnext re-prices an
+			# outgoing row from its batch), so a batch that has drifted -- Settle once converted scrap
+			# back into it at the scrap's value, alloy and rounding included -- releases more or less
+			# than the receipt booked. Not judged: a batch booked at zero, one with no balance to read
+			# a rate from, or one revalued on purpose. A batch fed by receipts at different rates is
+			# ``_check_shared_batch_rates``'s, below.
+			drifted = (
+				bool(plan.booked_rate)
+				and actual is not None
+				and abs(actual - plan.booked_rate) * plan.qty > RECEIPT_VALUE_TOLERANCE
+				and not has_live_revaluation(doc.company, plan.customer, plan.batch_no)
+			)
+		if drifted:
 			frappe.throw(
 				frappe._(
 					"Row {0}: the batch is carried at {1} per unit, but receipt {2} booked "
@@ -895,6 +957,9 @@ def prepare_return_entry(doc, method=None):
 			# receipt row -- erpnext picks by FIFO at submit, whichever customer's metal is oldest.
 			row.use_serial_batch_fields = 1
 		if nominal and plan.booked_rate:
+			# Intent only: erpnext re-prices an outgoing row from its batch at validate (see
+			# ``_build_return_entry``). The contra account below is what takes effect; the amount
+			# is the batch's rate, which ``_check_plans`` holds to this one.
 			row.basic_rate = plan.booked_rate
 			row.set_basic_rate_manually = 1
 			row.allow_zero_valuation_rate = 0
@@ -1003,6 +1068,10 @@ def _released_per_row(doc, plans):
 	other side of a half-paisa often enough to leave the ledger, the allocation and the GL a paisa
 	apart (0.5 g at Rs.7,164.83: GL 3,582.41, recomputed 3,582.42). Any residual against the GL
 	debit on the liability account lands on the largest row, so the rows sum to the GL exactly.
+
+	The posted value is the batch's carrying rate times the quantity, so it is the booked value
+	only while the batch carries the booked rate. ``_check_plans`` holds every tracked batch to
+	it before submit -- the receipt's own to a paisa, a descendant to ``DESCENDANT_RATE_TOLERANCE``.
 	"""
 	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
 		_row_carrying_value,
