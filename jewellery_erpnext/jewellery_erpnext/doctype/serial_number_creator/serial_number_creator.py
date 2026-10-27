@@ -26,6 +26,19 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 
 class SerialNumberCreator(Document):
 	def validate(self):
+		# An SNC is inserted at MWO submit (create_snc_from_mwo_submit) or from the operation
+		# (get_operation_details) even when its Manufacturing Operation has no balance yet, and
+		# before_insert then renders nothing. Render again on each draft save until the operation
+		# has its materials, so the operator sees the rows before submitting.
+		if (
+			self.docstatus == 0
+			and self.manufacturing_operation
+			and not (self.fg_details or self.source_table)
+		):
+			self._render_fg_details()
+			self._compute_total_weight()
+			validate_not_metal_only(self)
+
 		# Runs on draft save AND on submit (_submit -> save), so a document created
 		# before this existed repairs itself the next time it is saved or submitted.
 		split_source_rows_by_reservation(self)
@@ -39,6 +52,17 @@ class SerialNumberCreator(Document):
 	# 		self.load_raw_materials()
 
 	def on_submit(self):
+		# With no source rows nothing is consumed and no finished-good serial is made, and the
+		# submit used to die later on get_doc("Serial No", None).
+		if not self.source_table:
+			frappe.throw(
+				_(
+					"Source Table is empty. Manufacturing Operation {0} had no balance when this "
+					"document was created. Save it again to load the operation's materials, check "
+					"them, then submit."
+				).format(self.manufacturing_operation or "-")
+			)
+
 		validate_qty(self)
 		calulate_id_wise_sum_up(self)
 
@@ -1468,25 +1492,34 @@ def _save_refetches(doc, fieldname):
 	return bool(doc.get(df.fetch_from.split(".", 1)[0]))
 
 
+def _fetched_value(doc, fieldname):
+	"""The value doc.save() fetches into `fieldname` through its fetch_from link."""
+	link_fieldname, source_fieldname = doc.meta.get_field(fieldname).fetch_from.split(
+		".", 1
+	)
+	link_doctype = doc.meta.get_field(link_fieldname).options
+	return frappe.db.get_value(link_doctype, doc.get(link_fieldname), source_fieldname)
+
+
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
 	customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
 	)
-	if (
-		customer
-		and new_sn_doc.customer != customer
-		and not _save_refetches(new_sn_doc, "customer")
-	):
-		# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
-		# customer; only the stock ledger may, and it writes the column directly. The order's
-		# customer is written the same way, so the save below sees it unchanged.
-		#
-		# A site that fetches the customer from the serial's linked BOM (a Property Setter with
-		# fetch_from custom_bom_no.customer, as the CI fixtures have) gets it from there on the
-		# save below, as it always did; stamping the order's customer first would make that
-		# fetch look like a change. A serial with no BOM linked is not re-fetched, so it is
-		# stamped.
+	# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
+	# customer; only the stock ledger may, and it writes the column directly. The customer is
+	# written the same way, so the save below sees it unchanged.
+	if _save_refetches(new_sn_doc, "customer"):
+		# A site that fetches the customer from the serial's linked BOM (GEPL: a Property Setter
+		# with fetch_from custom_bom_no.customer) has the save put the BOM's customer back over
+		# whatever is set, so the BOM's customer is what the serial ends up with, as it always
+		# did. Write that value, empty or not: the FG BOM carries the order's customer on GEPL,
+		# and leaving the column empty made the fetch itself the refused change.
+		bom_customer = _fetched_value(new_sn_doc, "customer")
+		if new_sn_doc.customer != bom_customer:
+			new_sn_doc.db_set("customer", bom_customer, update_modified=False)
+	elif customer and new_sn_doc.customer != customer:
+		# No fetch (or no BOM linked yet, so nothing to fetch from): stamp the order's customer.
 		new_sn_doc.db_set("customer", customer, update_modified=False)
 	existing_huid = []
 	existing_certification = []
