@@ -65,6 +65,7 @@
   "subcategory",
   "section_break_15",
   "diamond_sieve_size",
+  "gemstone_type",
   "not_allowed_details_section",
   "not_allowed_attribute_values"
  ],
@@ -415,7 +416,13 @@
 "fieldname": "is_making_component",
 "fieldtype": "Check",
 "label": "is Making Component"
-}
+},
+  {
+   "fieldname": "gemstone_type",
+   "fieldtype": "Table",
+   "label": "Gemstone Type",
+   "options": "Attribute Value Gemstone Type"
+  }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
