@@ -29,6 +29,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority 
 	loss_rank,
 	tiered_allocate,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
 	get_blocked_finding_batches,
 	is_customer_goods_finding_blocked,
@@ -126,6 +130,7 @@ class EmployeeIR(Document):
 			},
 			["name", "gross_wt"],
 		)
+		records = without_closed_mwo_operations(records)
 		self.employee_ir_operations = []
 		if records:
 			for row in records:
@@ -218,6 +223,7 @@ class EmployeeIR(Document):
 		validate_duplication_and_gr_wt(self)
 
 	def validate(self):
+		block_closed_mwo_operations(self, "employee_ir_operations")
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()

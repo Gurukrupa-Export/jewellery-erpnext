@@ -123,6 +123,13 @@ class ManufacturingOperation(Document):
 		if self.is_new():
 			return
 
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			validate_operation_hold,
+		)
+
+		# Hold here is the PMO's (Hold / Open / Close), not the timer's "On Hold".
+		validate_operation_hold(self)
+
 		self.set_start_finish_time()
 		# self.sync_weights_from_mop_log()
 		# self.validate_loss()
