@@ -18,18 +18,21 @@
   "amended_from",
   "section_break_tkb7i",
   "select_manufacture_order",
-  "setting_type",
   "is_subcontracting",
+  "setting_type",
   "supplier",
-  "estimated_date",
   "purchase_type",
-  "order_type",
-  "sales_type",
-  "flow_type",
-  "design_type",
-  "get_mwo",
+  "estimated_date",
+  "estimated_delivery_date",
   "get_sales_order",
   "get_repair_order",
+  "get_mwo",
+  "column_break_5wdau",
+  "flow_type",
+  "order_type",
+  "sales_type",
+  "design_type",
+  "section_break_edsf8",
   "manufacturing_plan_table",
   "section_break_cjenr",
   "total_planned_qty",
@@ -205,6 +208,19 @@
    "fieldname": "get_mwo",
    "fieldtype": "Button",
    "label": "Get MWO"
+  },
+  {
+   "fieldname": "estimated_delivery_date",
+   "fieldtype": "Date",
+   "label": "Estimated Delivery Date"
+  },
+  {
+   "fieldname": "column_break_5wdau",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_edsf8",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
@@ -220,8 +236,8 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2026-07-29 17:37:27.667668",
- "modified_by": "Administrator",
+ "modified": "2026-10-23 12:00:00.000000",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",
  "naming_rule": "Expression",
