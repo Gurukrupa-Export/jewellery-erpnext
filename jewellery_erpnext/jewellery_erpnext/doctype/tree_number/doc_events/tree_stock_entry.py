@@ -54,7 +54,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import escape_html, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
 	capped_auto_batch_nos,
@@ -698,14 +698,46 @@ def _allocate_tree_legs(se, tree, item_code, msl_wh, recv, loss):
 	return recv_alloc, loss_alloc, ranks
 
 
-def _other_ownership_stock(item_code, msl_wh, own_batches, prec):
-	"""``[(batch_no, qty, owner label)]`` of metal at ``msl_wh`` this tree may NOT draw on.
+def _tree_issued_batches(tree, item_code, msl_wh):
+	"""Distinct batches this tree's own Stock Entries ever moved INTO ``msl_wh``.
+
+	Unlike ``_tree_netted_owed`` this ignores what has since been drawn back out, so it still
+	says which ownership the tree holds after every one of its batches has been consumed.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT DISTINCT sed.batch_no
+		FROM `tabStock Entry Detail` sed
+		JOIN `tabStock Entry` se ON se.name = sed.parent
+		WHERE se.custom_tree_number = %(tree)s
+		  AND se.docstatus = 1
+		  AND sed.item_code = %(item_code)s
+		  AND sed.t_warehouse = %(msl)s
+		  AND IFNULL(sed.batch_no, '') != ''
+		""",
+		{"tree": tree.name, "item_code": item_code, "msl": msl_wh},
+		as_dict=True,
+	)
+	return [r.batch_no for r in rows]
+
+
+def _other_ownership_stock(tree, item_code, msl_wh, own_batches, prec):
+	"""``[(batch_no, qty, owner label)]`` of metal at ``msl_wh`` held under a DIFFERENT ownership.
 
 	Only used to explain a shortfall: Stock Balance shows the whole warehouse, so an operator sees
-	plenty of stock and has no way to tell that it is held under another ownership tier. Same
-	``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``.
+	plenty of stock and has no way to tell that it belongs to another ownership tier. Batches of
+	the tree's own tier are excluded -- they are what the allocation already offered -- and when the
+	tree's tier cannot be determined nothing is listed, rather than claiming a difference that was
+	never checked. Same ``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``.
 	"""
+	tiers = _tree_issued_tiers(
+		{b: 1 for b in _tree_issued_batches(tree, item_code, msl_wh)}
+	)
+	if not tiers:
+		return []
+
 	eps = _pending_eps()
+	own = set(own_batches)
 	rows = frappe.db.sql(
 		"""
 		SELECT sbe.batch_no, SUM(sbe.qty) AS qty
@@ -721,9 +753,7 @@ def _other_ownership_stock(item_code, msl_wh, own_batches, prec):
 		{"item_code": item_code, "warehouse": msl_wh},
 		as_dict=True,
 	)
-	rows = [
-		r for r in rows if flt(r.qty, prec) > eps and r.batch_no not in set(own_batches)
-	]
+	rows = [r for r in rows if flt(r.qty, prec) > eps and r.batch_no not in own]
 	if not rows:
 		return []
 
@@ -737,6 +767,8 @@ def _other_ownership_stock(item_code, msl_wh, own_batches, prec):
 			batch_no=r.batch_no,
 			item_code=item_code,
 		)
+		if (inv, cust) in tiers:
+			continue
 		out.append((r.batch_no, flt(r.qty, prec), f"{inv} / {cust}" if cust else inv))
 	return out
 
@@ -749,12 +781,14 @@ def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 	holds no more metal this tree is entitled to -- returning anything else would cross an
 	ownership boundary, which is the defect this whole restriction exists to prevent.
 
-	The message says how much IS available and lists the metal that is held under another owner,
+	The message says how much IS available and lists the metal held under another ownership,
 	because the warehouse total on Stock Balance is larger than what this tree may take and the
 	old wording ("already been consumed") read as if the stock were simply gone.
 	"""
 	available = flt(sum(flt(q) for _b, q in pool), prec)
-	others = _other_ownership_stock(item_code, msl_wh, [b for b, _q in pool], prec)
+	others = _other_ownership_stock(
+		tree, item_code, msl_wh, [b for b, _q in pool], prec
+	)
 
 	msg = _(
 		"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. Only {5} of metal this "
@@ -766,17 +800,18 @@ def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 		msl_wh,
 		flt(shortfall, prec),
 		available,
-		", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing"),
+		escape_html(", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing")),
 	)
 	if others:
 		msg += "<br><br>" + _(
 			"The warehouse also holds metal under a different ownership, which cannot be used for "
 			"this tree: {0}."
-		).format(", ".join(f"{b}: {q} ({owner})" for b, q, owner in others))
+		).format(
+			escape_html(", ".join(f"{b}: {q} ({owner})" for b, q, owner in others))
+		)
 	else:
 		msg += "<br><br>" + _(
-			"The remaining metal this tree issued has been consumed there (for example by work "
-			"order transfers) and no other metal of the same ownership is in the warehouse."
+			"No further metal of this tree's ownership is left in this warehouse."
 		)
 
 	frappe.throw(msg, title=_("Tree Material Not Available"))
