@@ -235,6 +235,9 @@ frappe.ui.form.on("Sales Order", {
 	onload_post_render(frm) {
 		filter_customer(frm);
 		set_company_address_from_branch(frm);
+		// An order mapped from a Quotation opens with the customer already set,
+		// so the customer trigger never fires for it.
+		if (frm.is_new()) set_precision_from_customer(frm);
 	},
 	sales_type(frm) {
 		filter_customer(frm);
@@ -243,6 +246,7 @@ frappe.ui.form.on("Sales Order", {
 	},
 	customer(frm) {
 		get_sales_type(frm);
+		set_precision_from_customer(frm);
 	},
 	branch(frm) {
 		set_company_address_from_branch(frm);
@@ -263,6 +267,26 @@ function set_company_address_from_branch(frm) {
 		if (branch_address && branch_address !== frm.doc.company_address) {
 			frm.set_value("company_address", branch_address);
 		}
+	});
+}
+
+// Customer "Consider 2 Digit for ..." checkbox -> Sales Order precision checkbox.
+// Only a default: the user can still change the Sales Order checkboxes afterwards.
+const CUSTOMER_PRECISION_FIELDS = {
+	custom_consider_2_digit_for_bom: "custom_precision",
+	custom_consider_2_digit_for_diamond: "custom_precision_for_stone",
+	custom_consider_2_digit_for_gemstone: "custom_precision_for_gemstone",
+};
+
+function set_precision_from_customer(frm) {
+	if (!frm.doc.customer || frm.doc.docstatus !== 0) return;
+	frappe.db.get_value("Customer", frm.doc.customer, Object.keys(CUSTOMER_PRECISION_FIELDS)).then((r) => {
+		const customer = r.message || {};
+		const values = {};
+		for (const [customer_field, so_field] of Object.entries(CUSTOMER_PRECISION_FIELDS)) {
+			values[so_field] = cint(customer[customer_field]);
+		}
+		frm.set_value(values);
 	});
 }
 

@@ -404,7 +404,7 @@
    "fieldtype": "Check",
    "insert_after": "precision",
    "is_system_generated": 1,
-   "label": "Precision For Metal(2 Digit)",
+   "label": "Precision For BOM(2 Digit)",
    "module": "Jewellery Erpnext"
   },
   
@@ -414,7 +414,7 @@
    "fieldtype": "Check",
    "insert_after": "custom_precision",
    "is_system_generated": 1,
-   "label": "Precision For Stone(2 Digit)",
+   "label": "Precision For Diamond(2 Digit)",
    "module": "Jewellery Erpnext"
   },
   {

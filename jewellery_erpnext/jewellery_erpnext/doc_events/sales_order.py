@@ -2661,6 +2661,11 @@ def create_serial_no_bom(self, row, ctx=None):
 		doc.hallmarking_amount = 0
 		doc.certification_amount = 0
 	doc.gold_rate_with_gst = self.gold_rate_with_gst
+	# The order's Diamond Quality wins; without one, the row takes the BOM's.
+	if self.custom_diamond_quality:
+		row.diamond_quality = self.custom_diamond_quality
+	elif doc.get("diamond_quality"):
+		row.diamond_quality = doc.diamond_quality
 	if hasattr(doc, "diamond_detail"):
 		for diamond in doc.diamond_detail or []:
 			diamond.quality = row.diamond_quality
