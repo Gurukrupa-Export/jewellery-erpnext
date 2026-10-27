@@ -49,6 +49,7 @@
   "scan_mwo",
   "section_break_shn6x",
   "employee_ir_operations",
+  "parent_manufacturing_order_count",
   "summary",
   "fg_bom_fields_section",
   "refresh_fg_bom_fields",
@@ -215,6 +216,13 @@
    "label": "Employee IR Operations",
    "no_copy": 1,
    "options": "Employee IR Operation"
+  },
+  {
+   "fieldname": "parent_manufacturing_order_count",
+   "fieldtype": "Int",
+   "label": "Parent Manufacturing Order Count",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fieldname": "previous_operation",
@@ -445,7 +453,7 @@
    "link_fieldname": "employee_ir"
   }
  ],
- "modified": "2026-09-17 10:00:00.000000",
+ "modified": "2026-10-23 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR",
