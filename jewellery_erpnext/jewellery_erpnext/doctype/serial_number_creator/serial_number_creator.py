@@ -26,9 +26,6 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import set_stampin
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance import (
 	validate_snc_design_tolerance,
 )
-from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-	get_current_mop_balance_rows,
-)
 
 
 class SerialNumberCreator(Document):
@@ -1610,25 +1607,34 @@ def _save_refetches(doc, fieldname):
 	return bool(doc.get(df.fetch_from.split(".", 1)[0]))
 
 
+def _fetched_value(doc, fieldname):
+	"""The value doc.save() fetches into `fieldname` through its fetch_from link."""
+	link_fieldname, source_fieldname = doc.meta.get_field(fieldname).fetch_from.split(
+		".", 1
+	)
+	link_doctype = doc.meta.get_field(link_fieldname).options
+	return frappe.db.get_value(link_doctype, doc.get(link_fieldname), source_fieldname)
+
+
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
 	customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
 	)
-	if (
-		customer
-		and new_sn_doc.customer != customer
-		and not _save_refetches(new_sn_doc, "customer")
-	):
-		# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
-		# customer; only the stock ledger may, and it writes the column directly. The order's
-		# customer is written the same way, so the save below sees it unchanged.
-		#
-		# A site that fetches the customer from the serial's linked BOM (a Property Setter with
-		# fetch_from custom_bom_no.customer, as the CI fixtures have) gets it from there on the
-		# save below, as it always did; stamping the order's customer first would make that
-		# fetch look like a change. A serial with no BOM linked is not re-fetched, so it is
-		# stamped.
+	# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
+	# customer; only the stock ledger may, and it writes the column directly. The customer is
+	# written the same way, so the save below sees it unchanged.
+	if _save_refetches(new_sn_doc, "customer"):
+		# A site that fetches the customer from the serial's linked BOM (GEPL: a Property Setter
+		# with fetch_from custom_bom_no.customer) has the save put the BOM's customer back over
+		# whatever is set, so the BOM's customer is what the serial ends up with, as it always
+		# did. Write that value, empty or not: the FG BOM carries the order's customer on GEPL,
+		# and leaving the column empty made the fetch itself the refused change.
+		bom_customer = _fetched_value(new_sn_doc, "customer")
+		if new_sn_doc.customer != bom_customer:
+			new_sn_doc.db_set("customer", bom_customer, update_modified=False)
+	elif customer and new_sn_doc.customer != customer:
+		# No fetch (or no BOM linked yet, so nothing to fetch from): stamp the order's customer.
 		new_sn_doc.db_set("customer", customer, update_modified=False)
 	existing_huid = []
 	existing_certification = []
@@ -2240,14 +2246,17 @@ def _linked_remaining_pcs(rows, parts_by_row, by_name, mwo_names):
 				if part["sed"] in by_name:
 					seds[part["sed"]] = by_name[part["sed"]]
 					remaining += flt(part["qty"])
-		moved_in = sum(flt(sed.get("transfer_qty") or sed.get("qty")) for sed in seds.values())
+		moved_in = sum(
+			flt(sed.get("transfer_qty") or sed.get("qty")) for sed in seds.values()
+		)
 		taken_out = flt(moved_in - remaining, 3)
 
 		if taken_out <= _PCS_QTY_TOLERANCE:
 			for row in batch_rows:
 				key = _row_key(row)
 				out[key] = sum(
-					flt(sed.pcs) for sed in _distinct_linked_seds(parts_by_row[key], by_name)
+					flt(sed.pcs)
+					for sed in _distinct_linked_seds(parts_by_row[key], by_name)
 				)
 			continue
 
@@ -2291,7 +2300,9 @@ def _linked_remaining_pcs(rows, parts_by_row, by_name, mwo_names):
 def _consuming_rows(item_code, batch_no, mwo_names, seds):
 	"""Submitted Make Receive / Process Loss rows that took this batch out of the job, after the
 	earliest linked movement brought it in."""
-	since = min((sed.get("creation") for sed in seds if sed.get("creation")), default=None)
+	since = min(
+		(sed.get("creation") for sed in seds if sed.get("creation")), default=None
+	)
 	sed = frappe.qb.DocType("Stock Entry Detail")
 	se = frappe.qb.DocType("Stock Entry")
 	query = (
@@ -2308,8 +2319,10 @@ def _consuming_rows(item_code, batch_no, mwo_names, seds):
 			& (sed.s_warehouse != "")
 		)
 	)
-	query = query.where(sed.batch_no == batch_no) if batch_no else query.where(
-		sed.batch_no.isnull() | (sed.batch_no == "")
+	query = (
+		query.where(sed.batch_no == batch_no)
+		if batch_no
+		else query.where(sed.batch_no.isnull() | (sed.batch_no == ""))
 	)
 	if since:
 		query = query.where(sed.creation >= since)

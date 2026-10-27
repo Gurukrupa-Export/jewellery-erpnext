@@ -2577,7 +2577,9 @@ class TestMixedProvenanceAndRemainingStones(IntegrationTestCase):
 	def test_a_partly_consumed_batch_split_over_warehouses_is_refused(self):
 		rows = [
 			self._row([{"sre": "s1", "sed": "sedA", "qty": 0.5}], warehouse=_WAXING),
-			self._row([{"sre": "s2", "sed": "sedA", "qty": 0.5}], warehouse=_MODEL_MAKING),
+			self._row(
+				[{"sre": "s2", "sed": "sedA", "qty": 0.5}], warehouse=_MODEL_MAKING
+			),
 		]
 		with self.assertRaises(frappe.ValidationError):
 			self._attrs(rows, linked=[self._sed("sedA", 4, 2.0)])
@@ -2594,3 +2596,58 @@ class TestMixedProvenanceAndRemainingStones(IntegrationTestCase):
 		)
 		consuming.assert_not_called()
 		self.assertIn((metal, "MB-1", _WAXING), attrs)
+
+
+class TestSncWithoutSourceRows(IntegrationTestCase):
+	"""An SNC inserted before anything was reserved against its job renders no rows.
+
+	It is filled on the next draft save, and a submit with no source rows stops at
+	validate_qty instead of making a Manufacture entry that consumes nothing.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _doc(self, docstatus=0):
+		doc = frappe.new_doc("Serial Number Creator")
+		doc.manufacturing_work_order = "MWO-TEST-001"
+		doc.manufacturing_operation = "MOP-TEST-001"
+		doc.docstatus = docstatus
+		return doc
+
+	def test_submit_without_source_rows_is_refused(self):
+		with patch(
+			f"{_SNC_MODULE}.to_prepare_data_for_make_mnf_stock_entry"
+		) as cascade:
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "No reserved material found"
+			):
+				self._doc(docstatus=1).on_submit()
+		cascade.assert_not_called()
+
+	@patch(f"{_SNC_MODULE}.split_source_rows_by_reservation")
+	@patch(f"{_SNC_MODULE}.SerialNumberCreator._compute_total_weight")
+	@patch(f"{_SNC_MODULE}.SerialNumberCreator._render_fg_details")
+	def test_an_empty_draft_is_rendered_on_save(self, render, weight, _split):
+		self._doc().validate()
+
+		render.assert_called_once()
+		# Nothing is reserved yet, so nothing came back to weigh.
+		weight.assert_not_called()
+
+	@patch(f"{_SNC_MODULE}.split_source_rows_by_reservation")
+	@patch(f"{_SNC_MODULE}.SerialNumberCreator._render_fg_details")
+	def test_a_submit_does_not_render(self, render, _split):
+		self._doc(docstatus=1).validate()
+
+		render.assert_not_called()
+
+	@patch(f"{_SNC_MODULE}.split_source_rows_by_reservation")
+	@patch(f"{_SNC_MODULE}.SerialNumberCreator._render_fg_details")
+	def test_a_draft_with_rows_is_not_rendered_again(self, render, _split):
+		doc = self._doc()
+		doc.append("source_table", {"row_material": _LIVE_ITEM, "qty": 1})
+		doc.validate()
+
+		render.assert_not_called()
