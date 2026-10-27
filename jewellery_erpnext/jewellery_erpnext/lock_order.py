@@ -147,6 +147,119 @@ def lock_bins_for_rows(rows, *warehouse_attrs):
 	return lock_bins(pairs)
 
 
+MANUFACTURING_OPERATION_LOCK_FIELDS = (
+	"name",
+	"manufacturing_work_order",
+	"company",
+	"department",
+	"status",
+	"department_ir_status",
+	"operation",
+	"employee",
+	"subcontractor",
+	"for_subcontracting",
+	"department_issue_id",
+	"department_receive_id",
+	"employee_ir",
+	"previous_mop",
+	# compared with the transaction's snapshot after the wait: a row changed meanwhile means the
+	# snapshot the side effects read from is older than the decision (see the guard's
+	# _refuse_if_snapshot_older)
+	"modified",
+	# the material on the operation: a PMO Close needs it to be 0
+	"gross_wt",
+)
+
+WORK_ORDER_LOCK_FIELDS = (
+	"name",
+	"docstatus",
+	"status",
+	"company",
+	"manufacturing_operation",
+	"department",
+	"gross_wt",
+)
+
+# What a PMO Hold / Open / Close decides from and writes: the request's place in its
+# workflow, and whether its transfer-from-reserve job is still running.
+MATERIAL_REQUEST_LOCK_FIELDS = (
+	"name",
+	"docstatus",
+	"workflow_state",
+	"custom_transfer_se_state",
+)
+
+
+def _lock_wait_clause(wait):
+	"""SQL suffix for a locking read: ``None`` = server default, ``0`` = NOWAIT, ``n`` = WAIT n."""
+	if wait is None:
+		return ""
+	wait = int(wait)
+	return " NOWAIT" if wait <= 0 else f" WAIT {wait}"
+
+
+def _lock_rows_by_name(table, fields, names, wait):
+	"""Lock each named row of ``table`` with a primary-key ``SELECT ... FOR UPDATE``, one
+	statement per row in sorted order, and return ``{name: row}`` from those locking reads.
+
+	Primary-key equality on an existing row takes a record lock only (no gap lock). The rows
+	returned ARE the locking reads, so they show the latest committed values even when the
+	transaction's REPEATABLE READ snapshot is older -- callers must decide from these rows,
+	never from a plain re-read. Missing names are simply absent from the result.
+
+	``wait``: ``None`` (the server default), seconds (``0`` = NOWAIT), or a callable returning one
+	of those for EACH statement -- how several statements share one deadline (the guard's lock
+	budget, RULE E).
+
+	A failed statement (lock wait timeout, NOWAIT conflict, deadlock) is re-raised with the name
+	it was waiting for in ``exc.lock_row_name``, so the caller can say WHICH row is busy.
+	"""
+	columns = ", ".join(f"`{f}`" for f in fields)
+	locked = {}
+	for name in sorted({n for n in names if n}):
+		suffix = _lock_wait_clause(wait() if callable(wait) else wait)
+		try:
+			rows = frappe.db.sql(
+				f"SELECT {columns} FROM `{table}` WHERE name = %s FOR UPDATE{suffix}",
+				(name,),
+				as_dict=True,
+			)
+		except Exception as exc:
+			try:
+				exc.lock_row_name = name
+			except Exception:
+				pass  # no instance __dict__: the caller then names every candidate instead
+			raise
+		if rows:
+			locked[name] = rows[0]
+	return locked
+
+
+def lock_manufacturing_operations(names, *, wait=None):
+	"""Lock Manufacturing Operation rows (RULE D/E phase one) and return their fresh state."""
+	return _lock_rows_by_name(
+		"tabManufacturing Operation", MANUFACTURING_OPERATION_LOCK_FIELDS, names, wait
+	)
+
+
+def lock_work_orders(names, *, wait=None):
+	"""Lock Manufacturing Work Order rows (RULE D/E phase two) and return their fresh state."""
+	return _lock_rows_by_name(
+		"tabManufacturing Work Order", WORK_ORDER_LOCK_FIELDS, names, wait
+	)
+
+
+def lock_material_requests(names, *, wait=None, fields=MATERIAL_REQUEST_LOCK_FIELDS):
+	"""Lock Material Request rows and return their fresh state.
+
+	A request's own transitions hold its row before ``tabBin`` and the operation / work order
+	(its controller's check_if_latest), so it comes before them in a block that takes both.
+	``fields`` must name real columns: ``workflow_state`` exists only where the Material
+	Request workflow does.
+	"""
+	return _lock_rows_by_name("tabMaterial Request", fields, names, wait)
+
+
 def lock_items(item_codes):
 	"""EXPERIMENTAL (F-004, opt-in): serialize concurrent Stock Entry submits that touch
 	the same item by acquiring a ``FOR UPDATE`` lock on each distinct ``tabItem`` row, in

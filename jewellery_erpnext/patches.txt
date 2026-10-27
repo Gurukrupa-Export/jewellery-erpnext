@@ -113,4 +113,7 @@ jewellery_erpnext.patches.rename_diamond_conversion_sieve_type
 jewellery_erpnext.patches.move_item_customer_items_to_sales
 jewellery_erpnext.patches.add_serial_and_batch_bundle_item_index
 jewellery_erpnext.patches.audit_pmo_row_ownership
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-21 PMO Submit/Hold/Open/Close workflow
+jewellery_erpnext.patches.add_mr_hold_closed_workflow_states
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only
 jewellery_erpnext.patches.move_manufacturing_plan_layout_to_core
