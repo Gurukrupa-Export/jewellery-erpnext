@@ -757,20 +757,25 @@ def _tree_issued_batches(tree, item_code, msl_wh):
 	return [r.batch_no for r in rows]
 
 
-def _other_ownership_stock(tree, item_code, msl_wh, own_batches, prec):
-	"""``[(batch_no, qty, owner label)]`` of metal at ``msl_wh`` held under a DIFFERENT ownership.
+def _stock_outside_pool(tree, item_code, msl_wh, own_batches, prec):
+	"""Metal at ``msl_wh`` that the allocation did NOT offer, split by ownership.
+
+	Returns ``(other_owner, same_owner)`` -- each ``[(batch_no, qty, owner label)]`` -- or ``None``
+	when the tree's own ownership tier cannot be read from its issue entries, so the caller says
+	nothing rather than claiming a difference it never checked.
 
 	Only used to explain a shortfall: Stock Balance shows the whole warehouse, so an operator sees
-	plenty of stock and has no way to tell that it belongs to another ownership tier. Batches of
-	the tree's own tier are excluded -- they are what the allocation already offered -- and when the
-	tree's tier cannot be determined nothing is listed, rather than claiming a difference that was
-	never checked. Same ``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``.
+	plenty of stock and cannot tell that it belongs to another owner. ``same_owner`` is normally
+	empty -- the fallback already offers every same-tier batch -- but the ledger read here is not
+	bounded by posting time the way the allocation's is, so it is reported rather than hidden, and
+	the message never claims the tree's metal is gone while the ledger still shows some. Same
+	``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``.
 	"""
 	tiers = _tree_issued_tiers(
 		{b: 1 for b in _tree_issued_batches(tree, item_code, msl_wh)}
 	)
 	if not tiers:
-		return []
+		return None
 
 	eps = _pending_eps()
 	own = set(own_batches)
@@ -791,10 +796,10 @@ def _other_ownership_stock(tree, item_code, msl_wh, own_batches, prec):
 	)
 	rows = [r for r in rows if flt(r.qty, prec) > eps and r.batch_no not in own]
 	if not rows:
-		return []
+		return [], []
 
 	ranks = batch_priority_map([r.batch_no for r in rows])
-	out = []
+	other_owner, same_owner = [], []
 	for r in rows:
 		meta = ranks.get(r.batch_no)
 		inv, cust = normalize_ownership(
@@ -803,10 +808,9 @@ def _other_ownership_stock(tree, item_code, msl_wh, own_batches, prec):
 			batch_no=r.batch_no,
 			item_code=item_code,
 		)
-		if (inv, cust) in tiers:
-			continue
-		out.append((r.batch_no, flt(r.qty, prec), f"{inv} / {cust}" if cust else inv))
-	return out
+		entry = (r.batch_no, flt(r.qty, prec), f"{inv} / {cust}" if cust else inv)
+		(same_owner if (inv, cust) in tiers else other_owner).append(entry)
+	return other_owner, same_owner
 
 
 def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
@@ -817,14 +821,15 @@ def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 	holds no more metal this tree is entitled to -- returning anything else would cross an
 	ownership boundary, which is the defect this whole restriction exists to prevent.
 
-	The message says how much IS available and lists the metal held under another ownership,
-	because the warehouse total on Stock Balance is larger than what this tree may take and the
-	old wording ("already been consumed") read as if the stock were simply gone.
+	The message says how much IS available and lists the metal it could not use, because the
+	warehouse total on Stock Balance is larger than what this tree may take and the old wording
+	("already been consumed") read as if the stock were simply gone.
 	"""
 	available = flt(sum(flt(q) for _b, q in pool), prec)
-	others = _other_ownership_stock(
-		tree, item_code, msl_wh, [b for b, _q in pool], prec
-	)
+	outside = _stock_outside_pool(tree, item_code, msl_wh, [b for b, _q in pool], prec)
+
+	def _listing(entries):
+		return escape_html(", ".join(f"{b}: {q} ({owner})" for b, q, owner in entries))
 
 	msg = _(
 		"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. Only {5} of metal this "
@@ -838,17 +843,22 @@ def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 		available,
 		escape_html(", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing")),
 	)
-	if others:
-		msg += "<br><br>" + _(
-			"The warehouse also holds metal under a different ownership, which cannot be used for "
-			"this tree: {0}."
-		).format(
-			escape_html(", ".join(f"{b}: {q} ({owner})" for b, q, owner in others))
-		)
-	else:
-		msg += "<br><br>" + _(
-			"No further metal of this tree's ownership is left in this warehouse."
-		)
+	if outside is not None:
+		other_owner, same_owner = outside
+		if other_owner:
+			msg += "<br><br>" + _(
+				"The warehouse also holds metal under a different ownership, which cannot be used "
+				"for this tree: {0}."
+			).format(_listing(other_owner))
+		if same_owner:
+			msg += "<br><br>" + _(
+				"The warehouse ledger also shows metal of this tree's ownership that could not be "
+				"allocated at this posting time: {0}. Check these batches before retrying."
+			).format(_listing(same_owner))
+		if not other_owner and not same_owner:
+			msg += "<br><br>" + _(
+				"No further metal of this tree's ownership is left in this warehouse."
+			)
 
 	frappe.throw(msg, title=_("Tree Material Not Available"))
 
