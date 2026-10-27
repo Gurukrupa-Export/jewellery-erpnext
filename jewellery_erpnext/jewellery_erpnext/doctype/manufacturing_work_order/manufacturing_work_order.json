@@ -499,7 +499,7 @@
    "fieldtype": "Select",
    "in_preview": 1,
    "label": "Status",
-   "options": "\nDraft\nNot Started\nIn Process\nCompleted\nStopped\nClosed\nCancelled",
+   "options": "\nDraft\nNot Started\nIn Process\nCompleted\nStopped\nHold\nClosed\nCancelled",
    "read_only": 1
   },
   {
@@ -762,7 +762,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-07-03 16:00:00.000000",
+ "modified": "2026-10-21 12:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

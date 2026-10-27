@@ -11,6 +11,10 @@ from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
 	WEIGHT_FIELDS,
 	get_summary_data,
@@ -90,12 +94,16 @@ class DepartmentIR(Document):
 			["name", "gross_wt"],
 			order_by="creation asc",
 		)
+		records = without_closed_mwo_operations(records)
 		self.department_ir_operation = []
 		if records:
 			for row in records:
 				self.append(
 					"department_ir_operation", {"manufacturing_operation": row.name}
 				)
+
+	def validate(self):
+		block_closed_mwo_operations(self, "department_ir_operation")
 
 	def before_save(self):
 		self.set_parent_manufacturing_order_count()
