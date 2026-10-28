@@ -17,6 +17,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.be
 	get_variant_warehouse_map,
 	set_reservation_warehouse,
 	update_pure_qty,
+	validate_alternative_item_warehouse,
 	validate_warehouse,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.prefetch import (
@@ -117,6 +118,7 @@ def before_validate(self, method):
 	# keep seeing the pre-fill value for a Manufacture request to land on "Transfer to Reserve"
 	# rather than the branch-comparison path.
 	set_reservation_warehouse(self)
+	validate_alternative_item_warehouse(self)
 
 	update_pure_qty(self)
 	validate_target_item(self)

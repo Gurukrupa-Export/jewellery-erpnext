@@ -1,6 +1,13 @@
 frappe.ui.form.on("Material Request", {
 	refresh(frm) {
 		patch_barcode_scanner_for_serial_no_rows(frm);
+		// Set Warehouse of a Manufacture request is derived from the reservation table; only
+		// System Manager may override it.
+		frm.set_df_property(
+			"set_warehouse",
+			"read_only",
+			frm.doc.material_request_type === "Manufacture" && !frappe.user.has_role("System Manager") ? 1 : 0
+		);
 		frm.trigger("get_items_from_customer_goods");
 		frm.trigger("manufacturing_operation_query");
 		if (frm.doc.material_request_type === "Material Transfer") {
@@ -371,6 +378,21 @@ frappe.ui.form.on("Material Request", {
 });
 
 frappe.ui.form.on("Material Request Item", {
+	custom_alternative_item: function (frm) {
+		// The alternative item's variant decides the warehouse; the server owns that rule.
+		if (frm.doc.material_request_type !== "Manufacture") return;
+
+		frappe
+			.call({
+				method: "jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate.get_reservation_warehouse",
+				args: { doc: frm.doc },
+			})
+			.then((r) => {
+				if (r.message && r.message !== frm.doc.set_warehouse) {
+					frm.set_value("set_warehouse", r.message);
+				}
+			});
+	},
 	custom_scan_alternate_item: function (frm, cdt, cdn) {
 		let d = locals[cdt][cdn];
 		if (d.custom_scan_alternate_item) {
@@ -544,7 +566,7 @@ function get_reservation_warehouses(frm, manufacturer) {
 
 	return frappe
 		.call({
-			method: "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.get_reservation_warehouses",
+			method: "jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate.get_reservation_warehouses",
 			args: { manufacturer: manufacturer },
 		})
 		.then((r) => {
