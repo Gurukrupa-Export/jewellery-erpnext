@@ -20,6 +20,7 @@ frappe.ui.form.on("Tree Number", {
 			frm.add_custom_button(__("Receive Material"), () => receive_material_dialog(frm), __("Material"));
 		}
 		render_balance_summary(frm);
+		render_batch_balance(frm);
 		// Submit Tree: manual finalize once the tree has had some receive activity (Received or
 		// Partially Received). Locks the tree at "Submitted" — no further Issue/Receive
 		// (server-enforced). A Partially Received tree writes off its remaining pending as loss first.
@@ -227,6 +228,25 @@ function render_balance_summary(frm) {
 		</table></div>`,
 		__("Material Balance")
 	);
+}
+
+function render_batch_balance(frm) {
+	// Per batch: what this tree moved in and out of its MSL warehouse and what the warehouse holds,
+	// plus whether it holds enough for every open tree there. Rendered server-side
+	// (tree_batch_balance.py) -- the same table the Receive shortfall error shows. Only where
+	// Receive can still run; the server returns nothing for other trees either.
+	if (!["Issued", "Partially Received"].includes(frm.doc.status) || !frm.doc.msl_warehouse) {
+		return;
+	}
+	if (tree_pending(frm) <= 0) return;
+	frappe
+		.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_number.get_batch_balance",
+			args: { tree_number: frm.doc.name },
+		})
+		.then((r) => {
+			if (r.message) frm.dashboard.add_section(r.message, __("Batch-wise Balance"));
+		});
 }
 
 function issue_material_dialog(frm) {
