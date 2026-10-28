@@ -145,3 +145,4 @@ jewellery_erpnext.patches.restore_missing_perf_indexes
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only
 jewellery_erpnext.patches.move_manufacturing_plan_layout_to_core
 jewellery_erpnext.patches.backfill_chain_finding_mwo
+jewellery_erpnext.patches.clear_kggk_source_on_non_template_bom #2026-10-28 clear inherited KGGK source fields on non-Template BOMs
