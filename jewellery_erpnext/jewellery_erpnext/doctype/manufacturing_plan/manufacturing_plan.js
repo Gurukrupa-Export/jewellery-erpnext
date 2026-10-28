@@ -159,6 +159,15 @@ function apply_manufacture_order_options(frm) {
 	const current = frm.doc.select_manufacture_order;
 	if (current && !options.includes(current)) options.push(current);
 	frm.set_df_property("select_manufacture_order", "options", options.join("\n"));
+	// Set on every refresh: the form clears its intro message each time it renders.
+	if (frm.is_new() && !frm.allowed_manufacture_orders.length) {
+		frm.set_intro(
+			__(
+				"No Select Manufacture Order option is open to your roles. Ask a System Manager to set its roles in Manufacturing Setting."
+			),
+			"orange"
+		);
+	}
 }
 
 function set_user_department(frm) {

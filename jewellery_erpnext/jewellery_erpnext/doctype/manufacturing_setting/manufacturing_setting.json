@@ -414,7 +414,7 @@
    "options": "Refining Variant Restriction"
   },
   {
-   "description": "Roles allowed to pick each Select Manufacture Order option on Manufacturing Plan. An option left empty is open to everyone.",
+   "description": "Only users holding one of the listed roles see that Select Manufacture Order option on Manufacturing Plan. An option with no roles is hidden from everyone.",
    "fieldname": "manufacturing_plan_section",
    "fieldtype": "Section Break",
    "label": "Manufacturing Plan"
@@ -450,7 +450,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-28 12:00:00.000000",
+ "modified": "2026-10-28 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Setting",

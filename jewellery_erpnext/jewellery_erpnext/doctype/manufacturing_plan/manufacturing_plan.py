@@ -209,14 +209,24 @@ class ManufacturingPlan(Document):
 		self.purchase_type = None
 
 	def validate_manufacture_order_permission(self):
-		"""Refuse a mode the user's roles do not allow (Manufacturing Setting > Manufacture
-		Order Roles). The form only offers the allowed modes, but a REST write or a stale form
-		reaches save without passing through it. Checked only when the mode is set or changed,
-		so a draft someone else submits later is not re-judged against the submitter's roles."""
-		if not self.has_value_changed("select_manufacture_order"):
+		"""Refuse a mode the user's roles do not allow (Manufacturing Setting > Manufacturing
+		Plan role fields); a mode with no roles set is closed to everyone. The form only offers
+		the allowed modes, but a REST write or a stale form reaches save without passing
+		through it. Checked only when the mode is set or changed, so a draft someone else
+		submits later is not re-judged against the submitter's roles."""
+		if not self.select_manufacture_order or not self.has_value_changed(
+			"select_manufacture_order"
+		):
 			return
 		roles = get_manufacture_order_roles().get(self.select_manufacture_order)
-		if not roles or roles & set(frappe.get_roles()):
+		if not roles:
+			frappe.throw(
+				_(
+					"No role may create a {0} plan yet. Ask a System Manager to set its roles in Manufacturing Setting."
+				).format(frappe.bold(self.select_manufacture_order)),
+				frappe.PermissionError,
+			)
+		if roles & set(frappe.get_roles()):
 			return
 		frappe.throw(
 			_("You are not permitted to create a {0} plan. Allowed roles: {1}").format(
@@ -860,7 +870,7 @@ def validate_finding_without_so_context(mp_context):
 def get_manufacture_order_roles():
 	"""{Select Manufacture Order option: roles allowed to pick it}, from the per-option role
 	fields (MANUFACTURE_ORDER_ROLE_FIELDS) of the user's manufacturer's Manufacturing Setting.
-	An option whose field is empty is absent from the map, i.e. open to everyone."""
+	An option whose field is empty is absent from the map, i.e. closed to everyone."""
 	manufacturer = frappe.defaults.get_user_default("manufacturer")
 	if not manufacturer:
 		return {}
@@ -889,8 +899,9 @@ def get_manufacture_order_roles():
 
 @frappe.whitelist()
 def get_allowed_manufacture_orders():
-	"""The Select Manufacture Order options the session user may pick. Manufacturing Setting is
-	readable by System Manager only, so the form asks here instead of reading the table."""
+	"""The Select Manufacture Order options the session user may pick: those whose roles in
+	Manufacturing Setting include one of the user's. Manufacturing Setting is readable by
+	System Manager only, so the form asks here instead of reading the table."""
 	option_roles = get_manufacture_order_roles()
 	user_roles = set(frappe.get_roles())
 	options = frappe.get_meta("Manufacturing Plan").get_options(
@@ -899,8 +910,7 @@ def get_allowed_manufacture_orders():
 	return [
 		option
 		for option in options.split("\n")
-		if option
-		and (not option_roles.get(option) or option_roles[option] & user_roles)
+		if option and option_roles.get(option, set()) & user_roles
 	]
 
 

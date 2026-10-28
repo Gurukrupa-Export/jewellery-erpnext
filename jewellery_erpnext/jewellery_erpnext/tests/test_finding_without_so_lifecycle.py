@@ -367,12 +367,18 @@ class TestManufactureOrderRoles(IntegrationTestCase):
 				self._plan(FINDING_WITHOUT_SO)
 			)
 
-	@patch(f"{MP}.frappe.get_roles", return_value=["Manufacturing User"])
+	@patch(f"{MP}.frappe.get_roles", return_value=["System Manager", "Administrator"])
 	@patch(f"{MP}.get_manufacture_order_roles", return_value=ROLES)
-	def test_unlisted_mode_is_open_to_everyone(self, _roles, _user_roles):
-		ManufacturingPlan.validate_manufacture_order_permission(
-			self._plan("Manufacturing")
-		)
+	def test_mode_without_roles_is_closed_to_everyone(self, _roles, _user_roles):
+		with self.assertRaises(frappe.PermissionError):
+			ManufacturingPlan.validate_manufacture_order_permission(
+				self._plan("Manufacturing")
+			)
+
+	@patch(f"{MP}.get_manufacture_order_roles")
+	def test_blank_mode_is_left_to_the_mandatory_check(self, mock_roles):
+		ManufacturingPlan.validate_manufacture_order_permission(self._plan(None))
+		mock_roles.assert_not_called()
 
 	@patch(f"{MP}.get_manufacture_order_roles", return_value=ROLES)
 	def test_unchanged_mode_is_not_rechecked(self, mock_roles):
@@ -383,20 +389,26 @@ class TestManufactureOrderRoles(IntegrationTestCase):
 		mock_roles.assert_not_called()
 
 	@patch(f"{MP}.frappe.get_meta")
-	@patch(f"{MP}.frappe.get_roles", return_value=["Manufacturing User"])
-	@patch(f"{MP}.get_manufacture_order_roles", return_value=ROLES)
-	def test_form_offers_only_allowed_modes(self, _roles, _user_roles, mock_meta):
+	@patch(f"{MP}.frappe.get_roles", return_value=["Finding Planner"])
+	@patch(
+		f"{MP}.get_manufacture_order_roles",
+		return_value={**ROLES, "Repair": {"Repair Planner"}},
+	)
+	def test_form_offers_only_modes_listing_a_user_role(
+		self, _roles, _user_roles, mock_meta
+	):
+		"""Repair lists another role and Manufacturing lists none: both stay hidden."""
 		mock_meta.return_value.get_options.return_value = (
 			"\nManufacturing\nRepair\nFinding Manufacturing\n" + FINDING_WITHOUT_SO
 		)
-		self.assertEqual(
-			get_allowed_manufacture_orders(),
-			["Manufacturing", "Repair", "Finding Manufacturing"],
-		)
+		self.assertEqual(get_allowed_manufacture_orders(), [FINDING_WITHOUT_SO])
 
+	@patch(f"{MP}.frappe.get_meta")
 	@patch(f"{MP}.frappe.defaults.get_user_default", return_value=None)
-	def test_user_without_manufacturer_has_no_restrictions(self, _mock):
+	def test_user_without_manufacturer_sees_no_modes(self, _default, mock_meta):
+		mock_meta.return_value.get_options.return_value = "\nManufacturing\nRepair"
 		self.assertEqual(get_manufacture_order_roles(), {})
+		self.assertEqual(get_allowed_manufacture_orders(), [])
 
 	def test_roles_are_grouped_per_mode(self):
 		"""Each mode's roles come from its own Table MultiSelect, told apart by parentfield."""
