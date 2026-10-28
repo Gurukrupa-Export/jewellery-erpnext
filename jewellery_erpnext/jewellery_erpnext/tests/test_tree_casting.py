@@ -3756,6 +3756,9 @@ class TestThrowTreeShortfall(IntegrationTestCase):
 			patch.object(tse, "_pending_eps", return_value=0.0005),
 			patch.object(tse, "batch_priority_map", side_effect=_priority),
 			patch.object(frappe.db, "sql", return_value=rows),
+			# The batch-wise table has its own suite (test_tree_batch_balance); the blanket sql
+			# patch above would feed it warehouse rows for every query it makes.
+			patch.object(tse, "_batch_wise_section", return_value=""),
 		):
 			with self.assertRaises(ValidationError) as ctx:
 				tse._throw_tree_shortfall(
