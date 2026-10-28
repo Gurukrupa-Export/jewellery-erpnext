@@ -9,6 +9,9 @@ defaults used when the BOM is (re)built during Sales Order validation
   - custom_precision_for_gemstone -> when ticked, forces gemstone_precision = 2
     (gemstones only; custom_precision_for_stone still covers gemstones too)
 
+They are read-only: the form copies them from the Customer's
+"Consider 2 Digit for ..." checkboxes.
+
 They are declared only in custom_fields/sales_order.json, but this app's
 custom_fields/*.json are dead config on real and CI sites: the after_migrate
 hook that would sync them is disabled (hooks.py), and install-app marks patches
@@ -32,6 +35,7 @@ def execute():
 				"fieldname": "custom_precision",
 				"fieldtype": "Check",
 				"label": "Precision For BOM(2 Digit)",
+				"read_only": 1,
 				"insert_after": "precision",
 				"is_system_generated": 1,
 				"module": "Jewellery Erpnext",
@@ -40,6 +44,7 @@ def execute():
 				"fieldname": "custom_precision_for_stone",
 				"fieldtype": "Check",
 				"label": "Precision For Diamond(2 Digit)",
+				"read_only": 1,
 				"insert_after": "custom_precision",
 				"is_system_generated": 1,
 				"module": "Jewellery Erpnext",
@@ -48,6 +53,7 @@ def execute():
 				"fieldname": "custom_precision_for_gemstone",
 				"fieldtype": "Check",
 				"label": "Precision For Gemstone(2 Digit)",
+				"read_only": 1,
 				"insert_after": "custom_precision_for_stone",
 				"is_system_generated": 1,
 				"module": "Jewellery Erpnext",
