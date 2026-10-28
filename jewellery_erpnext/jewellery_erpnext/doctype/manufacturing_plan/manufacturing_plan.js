@@ -10,6 +10,14 @@ frappe.ui.form.on("Manufacturing Plan", {
 				apply_manufacture_order_options(frm);
 			},
 		});
+		// A Duplicate or route option can open a new plan already in Without-SO mode.
+		if (
+			frm.is_new() &&
+			frm.doc.select_manufacture_order === "Finding Manufacturing - Without SO" &&
+			!frm.doc.department
+		) {
+			set_user_department(frm);
+		}
 	},
 	refresh(frm) {
 		apply_manufacture_order_options(frm);
@@ -56,13 +64,7 @@ frappe.ui.form.on("Manufacturing Plan", {
 			if (frm.doc.department) frm.set_value("department", null);
 			return;
 		}
-		if (frm.doc.department) return;
-		frappe.call({
-			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_user_department",
-			callback: function (r) {
-				if (r.message) frm.set_value("department", r.message);
-			},
-		});
+		if (!frm.doc.department) set_user_department(frm);
 	},
 	get_sales_order(frm) {
 		map_current_doc({
@@ -157,6 +159,28 @@ function apply_manufacture_order_options(frm) {
 	const current = frm.doc.select_manufacture_order;
 	if (current && !options.includes(current)) options.push(current);
 	frm.set_df_property("select_manufacture_order", "options", options.join("\n"));
+}
+
+function set_user_department(frm) {
+	// Department is read-only, and the desk hides an empty read-only field, so a user with no
+	// Employee department is told why here instead of only failing on Save.
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_user_department",
+		callback: function (r) {
+			const mode = frm.doc.select_manufacture_order;
+			if (mode !== "Finding Manufacturing - Without SO") return;
+			if (r.message) {
+				frm.set_value("department", r.message);
+				return;
+			}
+			frappe.msgprint(
+				__("Link an active Employee with a Department to user {0} to create a {1} plan.", [
+					frappe.utils.bold(frappe.session.user),
+					frappe.utils.bold(mode),
+				])
+			);
+		},
+	});
 }
 
 function show_cad_item_select_dialog(frm, item_codes) {

@@ -53,6 +53,19 @@ def keyed(real, answers):
 	return side_effect
 
 
+def doctype_fields(doctype):
+	"""{fieldname: field} as the doctype's JSON on disk declares it, i.e. what migrate syncs."""
+	path = frappe.get_app_path(
+		"jewellery_erpnext",
+		"jewellery_erpnext",
+		"doctype",
+		frappe.scrub(doctype),
+		f"{frappe.scrub(doctype)}.json",
+	)
+	with open(path) as f:
+		return {df["fieldname"]: df for df in json.load(f)["fields"]}
+
+
 class TestDeleteWithoutSoDrafts(IntegrationTestCase):
 	@patch(f"{FINDING_MWO}.frappe.delete_doc")
 	@patch(f"{FINDING_MWO}.frappe.get_all", return_value=["PMO-1", "PMO-2"])
@@ -289,7 +302,7 @@ class TestWithoutSoRepackNeedsFindingDetails(IntegrationTestCase):
 
 
 class TestPlanDepartment(IntegrationTestCase):
-	"""Department is the Without-SO mode's only, filled once from the creator's Employee."""
+	"""Department is the Without-SO mode's only, defaulted from the creator's Employee."""
 
 	def _plan(self, mode, department=None):
 		return frappe._dict(select_manufacture_order=mode, department=department)
@@ -319,6 +332,14 @@ class TestPlanDepartment(IntegrationTestCase):
 		ManufacturingPlan.set_department(plan)
 		self.assertIsNone(plan.department)
 		mock_department.assert_not_called()
+
+	def test_department_is_fetched_not_picked(self):
+		"""The user's Employee department is fetched, never picked; a Duplicate fetches the
+		duplicating user's own instead of carrying the original creator's."""
+		department = doctype_fields("Manufacturing Plan")["department"]
+		self.assertTrue(department.get("read_only"))
+		self.assertTrue(department.get("no_copy"))
+		self.assertIn(FINDING_WITHOUT_SO, department["mandatory_depends_on"])
 
 
 class TestManufactureOrderRoles(IntegrationTestCase):
@@ -405,23 +426,12 @@ class TestManufactureOrderRoles(IntegrationTestCase):
 
 	def test_every_mode_has_a_role_field(self):
 		"""A mode added to the plan without its own role field could never be restricted."""
-
-		def fields(doctype):
-			path = frappe.get_app_path(
-				"jewellery_erpnext",
-				"jewellery_erpnext",
-				"doctype",
-				frappe.scrub(doctype),
-				f"{frappe.scrub(doctype)}.json",
-			)
-			with open(path) as f:
-				return {df["fieldname"]: df for df in json.load(f)["fields"]}
-
-		modes = fields("Manufacturing Plan")["select_manufacture_order"]["options"]
+		plan = doctype_fields("Manufacturing Plan")
+		modes = plan["select_manufacture_order"]["options"]
 		self.assertEqual(
 			set(MANUFACTURE_ORDER_ROLE_FIELDS), {m for m in modes.split("\n") if m}
 		)
-		setting = fields("Manufacturing Setting")
+		setting = doctype_fields("Manufacturing Setting")
 		for fieldname in MANUFACTURE_ORDER_ROLE_FIELDS.values():
 			self.assertEqual(setting[fieldname]["fieldtype"], "Table MultiSelect")
 			self.assertEqual(setting[fieldname]["options"], "Manufacture Order Role")

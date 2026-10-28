@@ -140,6 +140,7 @@
    "fieldtype": "Link",
    "label": "Department",
    "mandatory_depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
+   "no_copy": 1,
    "options": "Department",
    "read_only": 1
   },
@@ -252,7 +253,7 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2026-10-28 00:00:00.000000",
+ "modified": "2026-10-28 14:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",
