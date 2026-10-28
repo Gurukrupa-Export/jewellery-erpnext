@@ -363,18 +363,31 @@ def _new_repack(eir, mwo, mop):
 
 
 def _repack_finding_batches(mwo):
+	"""Finding batches produced for a work order, by either repack.
+
+	* the Without-SO repack: header carries the work order, no Employee IR row;
+	* the normal Finding Repack (``finding_repack.create_finding_repack_for_row``, on
+	  finding-repack operations such as Casting): header carries the Employee IR row
+	  (``custom_eir_operation_row``) and no work order, so it is matched through that row."""
 	return frappe.db.sql_list(
 		"""
 		SELECT DISTINCT sed.batch_no
 		FROM `tabStock Entry Detail` sed
 		JOIN `tabStock Entry` se ON se.name = sed.parent
-		WHERE se.manufacturing_work_order = %(mwo)s
-			AND se.stock_entry_type = %(type)s
+		WHERE se.stock_entry_type = %(type)s
 			AND se.auto_created = 1
 			AND se.docstatus = 1
-			AND IFNULL(se.custom_eir_operation_row, '') = ''
 			AND IFNULL(sed.t_warehouse, '') != ''
 			AND IFNULL(sed.batch_no, '') != ''
+			AND (
+				(se.manufacturing_work_order = %(mwo)s
+					AND IFNULL(se.custom_eir_operation_row, '') = '')
+				OR se.custom_eir_operation_row IN (
+					SELECT eio.name
+					FROM `tabEmployee IR Operation` eio
+					WHERE eio.manufacturing_work_order = %(mwo)s
+				)
+			)
 		""",
 		{"mwo": mwo, "type": REPACK},
 	)

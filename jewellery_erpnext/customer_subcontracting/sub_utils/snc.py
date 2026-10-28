@@ -626,6 +626,10 @@ def create_material_transfer_work_order(
 				"manufacturing_operation": mwo.manufacturing_operation,
 			},
 		)
+	# Each row puts back what the Make Receive just drew from that warehouse, which can be a
+	# karigar's holding a stale reservation (MAT-STE-72278 -> 72279), so the operation need not be
+	# issued to them. See validate_work_order_transfer_destination.
+	se.flags.restores_withdrawn_stock = True
 	se.insert(ignore_permissions=True)
 	_submit_consuming_stock_entry(se)
 	return se.name

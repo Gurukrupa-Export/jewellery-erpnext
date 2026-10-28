@@ -468,6 +468,153 @@ def validate_mop_is_current(self):
 		)
 
 
+class WorkOrderDestinationError(frappe.ValidationError):
+	"""A WORK ORDER transfer row puts material in a worker's warehouse its operation was not issued to."""
+
+
+def validate_work_order_transfer_destination(self, method=None):
+	"""Material reaches a worker's warehouse through a WORK ORDER transfer only once the operation is issued to them.
+
+	The form routes the entry from the operation (``manufacturing_operation`` in
+	public/js/doctype_js/stock_entry.js): a Not Started operation to its department's Manufacturing
+	warehouse, a WIP one to its employee's. It sets the HEADER only, and ERPNext's validate_warehouse
+	copies the header into a row only when the row is blank, so a row target edited by hand used to
+	post as typed. MAT-STE-72835 sent 0.2 g into a casting karigar's main-slip warehouse for an
+	operation nobody had been issued, with the header still on Waxing WO.
+
+	A row whose target belongs to an employee or a subcontractor must therefore name an operation
+	that is WIP for that same worker, and the target must be their Manufacturing warehouse -- where
+	the Employee IR issue books the operation's stock (its MOP Logs) and where the form and the
+	Material Request "Transfer to MOP" builder send it. Department and store targets are not this
+	rule's concern: the Employee IR receive injection, for one, sends a still-WIP operation's metal to
+	the department.
+
+	A ``validate`` hook, so it sees the rows after update_batches rebuilt them and validate_warehouse
+	filled the blank ones, and it runs again on submit and in the Submission Queue worker: a draft
+	saved while the operation was issued is re-read against the operation as it is now.
+
+	Not waived for ``auto_created``. The only waiver is ``flags.restores_withdrawn_stock``, which
+	flags cannot carry in from a request (frappe's RESERVED_KEYWORDS). The SNC and Customer Gold
+	settle builders set it: each puts an equal weight back into the warehouse its own Make Receive
+	leg just drew from (MAT-STE-72278 -> 72279), which can be a worker's warehouse holding a stale
+	reservation.
+	"""
+	if self.get("stock_entry_type") != "Material Transfer (WORK ORDER)":
+		return
+	if self.flags.get("restores_withdrawn_stock"):
+		return
+
+	rows = [row for row in self.get("items") or () if row.get("t_warehouse")]
+	warehouses = _by_casefold(
+		bulk_map(
+			"Warehouse",
+			[row.t_warehouse for row in rows],
+			["employee", "subcontractor", "warehouse_type"],
+		)
+	)
+	header_mop = cstr(self.get("manufacturing_operation")).strip()
+	worker_rows = [
+		(row, warehouse, cstr(row.get("manufacturing_operation")).strip() or header_mop)
+		for row in rows
+		if (warehouse := warehouses.get(cstr(row.t_warehouse).strip().casefold()))
+		and (warehouse.employee or warehouse.subcontractor)
+	]
+	if not worker_rows:
+		return
+
+	mops = _by_casefold(
+		bulk_map(
+			"Manufacturing Operation",
+			[mop_name for _row, _warehouse, mop_name in worker_rows],
+			[
+				"status",
+				"employee",
+				"subcontractor",
+				"for_subcontracting",
+				"department",
+				"company",
+			],
+		)
+	)
+
+	routing = {}
+	problems = []
+	for row, warehouse, mop_name in worker_rows:
+		mop = mops.get(mop_name.casefold())
+		if mop and _issued_to(mop, warehouse):
+			continue
+		problems.append(_destination_problem(row, mop_name, mop, warehouse, routing))
+
+	if problems:
+		frappe.throw(
+			"<br>".join(problems),
+			title=_("Work Order Transfer Destination"),
+			exc=WorkOrderDestinationError,
+		)
+
+
+def _by_casefold(mapping):
+	"""``bulk_map`` keyed the way MariaDB compares names; row values are not always normalised."""
+	return {cstr(name).casefold(): value for name, value in mapping.items()}
+
+
+def _assignee(mop):
+	"""Who ``mop`` is issued to: its employee, or its subcontractor on a subcontracted operation."""
+	if mop.status != "WIP":
+		return None
+	return mop.employee or (mop.subcontractor if cint(mop.for_subcontracting) else None)
+
+
+def _issued_to(mop, warehouse):
+	if warehouse.warehouse_type != "Manufacturing":
+		return False
+	return same(_assignee(mop), warehouse.employee or warehouse.subcontractor)
+
+
+def _destination_problem(row, mop_name, mop, warehouse, routing):
+	owner = warehouse.employee or warehouse.subcontractor
+	lead = _("Row #{0}: {1} is the warehouse of {2}").format(
+		row.idx, bold(row.t_warehouse), bold(owner)
+	)
+	if not mop:
+		missing = (
+			_("Manufacturing Operation {0} does not exist").format(bold(mop_name))
+			if mop_name
+			else _("the row names no Manufacturing Operation")
+		)
+		return lead + _(
+			", but {0}. Material goes to a worker's warehouse only for an operation issued to that worker."
+		).format(missing)
+
+	department_warehouse, assignee_warehouse = get_warehouse_details(mop, routing)
+	assignee = _assignee(mop)
+	if assignee:
+		send_to = (
+			bold(assignee_warehouse)
+			if assignee_warehouse
+			else _("the Manufacturing warehouse of {0}").format(bold(assignee))
+		)
+		if same(assignee, owner):
+			return lead + _(
+				", not their Manufacturing warehouse. Material for Manufacturing Operation {0} goes to {1}."
+			).format(bold(mop_name), send_to)
+		return lead + _(
+			", but Manufacturing Operation {0} is issued to {1}. Send the material to {2}."
+		).format(bold(mop_name), bold(assignee), send_to)
+	if mop.status == "Not Started":
+		send_to = (
+			bold(department_warehouse)
+			if department_warehouse
+			else _("the Manufacturing warehouse of {0}").format(bold(mop.department))
+		)
+		return lead + _(
+			", but Manufacturing Operation {0} is Not Started and has not been issued to anyone. Send the material to {1}, or issue the operation to {2} through an Employee IR first."
+		).format(bold(mop_name), send_to, bold(owner))
+	return lead + _(
+		", but Manufacturing Operation {0} is {1}, not issued to {2}, so material cannot go to their warehouse."
+	).format(bold(mop_name), bold(mop.status), bold(owner))
+
+
 def validate_ir(self):
 	if self.auto_created == 0:
 		if self.stock_entry_type in [
@@ -2061,8 +2208,12 @@ def get_warehouse_details(
 
 		e_warehouse = warehouse_data[mop_employee]
 
-	if not mop_employee:
-		mop_subcontractor = mop_doc.subcontractor or se_subcontractor
+	mop_subcontractor = (
+		None if mop_employee else mop_doc.subcontractor or se_subcontractor
+	)
+	# An operation issued to nobody has no worker warehouse; looking one up by a blank
+	# subcontractor would match any Manufacturing warehouse without one.
+	if mop_subcontractor:
 		if not warehouse_data.get(mop_subcontractor):
 			warehouse_data[mop_subcontractor] = frappe.db.get_value(
 				"Warehouse",
