@@ -237,6 +237,9 @@ doc_events = {
 			_EOD_LOCK_VALIDATOR,
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins",
+			# After prelock_bins, so the Bin it reads is already held: a manual entry may not take
+			# metal open Tree Numbers are still owed out of their MSL warehouse.
+			"jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_pool_guard.guard_tree_pool",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_child_batches",
@@ -257,6 +260,8 @@ doc_events = {
 			# F-002/F-012: pre-order this SE's Bins on cancel too, matching every other
 			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
+			# Same rule as guard_tree_pool for the reversal of a manual move INTO an MSL warehouse.
+			"jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_pool_guard.guard_tree_pool_on_cancel",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
