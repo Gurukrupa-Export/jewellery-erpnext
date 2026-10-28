@@ -852,15 +852,17 @@ def _get_bom_context(self):
 			"custom_precision_for_gross_weight",
 		],
 	)
+	# A ticked "(2 Digit)" box forces 2, matching the Customer's "Consider 2 Digit for ..."
+	# that the form copies into it.
 	if self.get("custom_precision"):
-		metal_precision = 3
-	# Stone covers diamonds and gemstones; Gemstone overrides gemstones alone.
+		metal_precision = 2
+	# Diamond covers diamonds and gemstones; Gemstone overrides gemstones alone.
 	gemstone_precision = stone_precision
 	if self.get("custom_precision_for_stone"):
-		stone_precision = 3
-		gemstone_precision = 3
+		stone_precision = 2
+		gemstone_precision = 2
 	if self.get("custom_precision_for_gemstone"):
-		gemstone_precision = 3
+		gemstone_precision = 2
 	return frappe._dict(
 		gold_gst_rate=gold_gst_rate,
 		customer_group=customer_group,
@@ -2661,6 +2663,11 @@ def create_serial_no_bom(self, row, ctx=None):
 		doc.hallmarking_amount = 0
 		doc.certification_amount = 0
 	doc.gold_rate_with_gst = self.gold_rate_with_gst
+	# The order's Diamond Quality wins; without one, the row takes the BOM's.
+	if self.custom_diamond_quality:
+		row.diamond_quality = self.custom_diamond_quality
+	elif doc.get("diamond_quality"):
+		row.diamond_quality = doc.diamond_quality
 	if hasattr(doc, "diamond_detail"):
 		for diamond in doc.diamond_detail or []:
 			diamond.quality = row.diamond_quality

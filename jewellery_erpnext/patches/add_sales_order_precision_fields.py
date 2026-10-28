@@ -6,7 +6,7 @@ defaults used when the BOM is (re)built during Sales Order validation
 (_get_bom_context in doc_events/sales_order.py):
   - custom_precision            -> when ticked, forces metal_precision = 2
   - custom_precision_for_stone  -> when ticked, forces stone_precision = 2
-  - custom_precision_for_gemstone -> when ticked, forces gemstone_precision = 3
+  - custom_precision_for_gemstone -> when ticked, forces gemstone_precision = 2
     (gemstones only; custom_precision_for_stone still covers gemstones too)
 
 They are declared only in custom_fields/sales_order.json, but this app's
@@ -31,7 +31,7 @@ def execute():
 			{
 				"fieldname": "custom_precision",
 				"fieldtype": "Check",
-				"label": "Precision For Metal(2 Digit)",
+				"label": "Precision For BOM(2 Digit)",
 				"insert_after": "precision",
 				"is_system_generated": 1,
 				"module": "Jewellery Erpnext",
@@ -39,7 +39,7 @@ def execute():
 			{
 				"fieldname": "custom_precision_for_stone",
 				"fieldtype": "Check",
-				"label": "Precision For Stone(2 Digit)",
+				"label": "Precision For Diamond(2 Digit)",
 				"insert_after": "custom_precision",
 				"is_system_generated": 1,
 				"module": "Jewellery Erpnext",
