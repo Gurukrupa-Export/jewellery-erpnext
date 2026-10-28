@@ -2,7 +2,17 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("Manufacturing Plan", {
+	onload(frm) {
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_allowed_manufacture_orders",
+			callback: function (r) {
+				frm.allowed_manufacture_orders = r.message || [];
+				apply_manufacture_order_options(frm);
+			},
+		});
+	},
 	refresh(frm) {
+		apply_manufacture_order_options(frm);
 		if (frm.doc.docstatus == 1) frm.trigger("show_progress");
 		if (frm.doc.docstatus == 1) {
 			frm.add_custom_button(__("Create CAD MWO"), function () {
@@ -39,6 +49,20 @@ frappe.ui.form.on("Manufacturing Plan", {
 		var parent_fields = [["diamond_quality", "Diamond Quality"]];
 		set_item_attribute_filters_on_fields_in_child_doctype(frm, parent_fields);
 		set_finding_detail_filters(frm);
+	},
+	select_manufacture_order(frm) {
+		// Department belongs to the Without-SO mode only, and is the user's Employee department.
+		if (frm.doc.select_manufacture_order !== "Finding Manufacturing - Without SO") {
+			if (frm.doc.department) frm.set_value("department", null);
+			return;
+		}
+		if (frm.doc.department) return;
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_user_department",
+			callback: function (r) {
+				if (r.message) frm.set_value("department", r.message);
+			},
+		});
 	},
 	get_sales_order(frm) {
 		map_current_doc({
@@ -124,6 +148,16 @@ frappe.ui.form.on("Manufacturing Plan", {
 		frm.dashboard.add_progress(__("Status"), bars, message);
 	},
 });
+
+// Offer only the modes the user's roles allow (Manufacturing Setting > Manufacture Order Roles),
+// keeping the plan's current mode so a draft raised by someone else still shows it.
+function apply_manufacture_order_options(frm) {
+	if (!frm.allowed_manufacture_orders) return;
+	const options = ["", ...frm.allowed_manufacture_orders];
+	const current = frm.doc.select_manufacture_order;
+	if (current && !options.includes(current)) options.push(current);
+	frm.set_df_property("select_manufacture_order", "options", options.join("\n"));
+}
 
 function show_cad_item_select_dialog(frm, item_codes) {
 	let rows_html = item_codes

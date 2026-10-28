@@ -50,7 +50,8 @@ def create_finding_without_so_mwo(self):
 	no Tracking BOM row to read the item and metal off, so they come from the PMO, which the
 	Manufacturing Plan stamped from its Finding Details row. One PMO is one finding piece, so
 	it gets exactly one MWO. Left in Draft like every other auto-created MWO; submitting it is
-	what raises the Manufacturing Operation."""
+	what raises the Manufacturing Operation. Its department is the PMO's, i.e. the plan's,
+	not the Manufacturing Setting default."""
 	if frappe.db.exists(
 		"Manufacturing Work Order",
 		{"manufacturing_order": self.name, "docstatus": ["<", 2]},
@@ -78,11 +79,7 @@ def create_finding_without_so_mwo(self):
 	mwo_doc.is_finding_mwo = 1
 	mwo_doc.is_without_so = 1
 	mwo_doc.auto_created = 1
-	mwo_doc.department = frappe.db.get_value(
-		"Manufacturing Setting",
-		{"manufacturer": self.manufacturer},
-		"default_department",
-	)
+	mwo_doc.department = self.department
 	mwo_doc.save()
 	return mwo_doc
 

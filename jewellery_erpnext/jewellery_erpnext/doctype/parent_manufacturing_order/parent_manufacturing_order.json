@@ -329,7 +329,7 @@
    "fieldname": "diamond_quality",
    "fieldtype": "Link",
    "label": "Diamond Quality",
-   "mandatory_depends_on": "eval: doc.type != \"Finding Manufacturing\";",
+   "mandatory_depends_on": "eval: ![\"Finding Manufacturing\", \"Finding Manufacturing - Without SO\"].includes(doc.type)",
    "options": "Attribute Value"
   },
   {
@@ -664,7 +664,7 @@
    "fieldtype": "Link",
    "ignore_user_permissions": 1,
    "label": "Diamond Department",
-   "mandatory_depends_on": "eval: doc.type != \"Finding Manufacturing\"",
+   "mandatory_depends_on": "eval: ![\"Finding Manufacturing\", \"Finding Manufacturing - Without SO\"].includes(doc.type)",
    "options": "Department"
   },
   {
@@ -672,7 +672,7 @@
    "fieldtype": "Link",
    "ignore_user_permissions": 1,
    "label": "Gemstone Department",
-   "mandatory_depends_on": "eval: doc.type != \"Finding Manufacturing\"",
+   "mandatory_depends_on": "eval: ![\"Finding Manufacturing\", \"Finding Manufacturing - Without SO\"].includes(doc.type)",
    "options": "Department"
   },
   {
@@ -811,7 +811,7 @@
    "fieldname": "type",
    "fieldtype": "Select",
    "label": "Type",
-   "options": "\nManufacturing\nRepair\nFinding Manufacturing"
+   "options": "\nManufacturing\nRepair\nFinding Manufacturing\nFinding Manufacturing - Without SO"
   },
   {
    "collapsible": 1,
@@ -1031,7 +1031,7 @@
    "link_fieldname": "manufacturing_order"
   }
  ],
- "modified": "2026-10-21 23:50:00.000000",
+ "modified": "2026-10-28 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Parent Manufacturing Order",

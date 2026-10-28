@@ -13,11 +13,11 @@
   "posting_date",
   "column_break_ymty6",
   "branch",
-  "department",
   "abbr",
   "amended_from",
   "section_break_tkb7i",
   "select_manufacture_order",
+  "department",
   "is_subcontracting",
   "setting_type",
   "supplier",
@@ -134,9 +134,12 @@
    "label": "Company Details"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
+   "description": "The logged-in user's Employee department. The Parent Manufacturing Orders and Work Orders this plan raises start here.",
    "fieldname": "department",
    "fieldtype": "Link",
    "label": "Department",
+   "mandatory_depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
    "options": "Department",
    "read_only": 1
   },
@@ -249,7 +252,7 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2026-10-23 12:00:00.000000",
+ "modified": "2026-10-28 00:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",
