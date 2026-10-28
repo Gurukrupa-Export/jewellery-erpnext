@@ -322,7 +322,7 @@ class TestSalesOrderPrecisionFields(IntegrationTestCase):
 		self.assertEqual(ctx.stone_precision, 6)
 		self.assertEqual(ctx.gemstone_precision, 6)
 
-	def test_bom_context_override_collapses_to_3(self):
+	def test_bom_context_override_forces_2(self):
 		so = frappe._dict(
 			customer="Test", custom_precision=1, custom_precision_for_stone=1
 		)
@@ -334,10 +334,10 @@ class TestSalesOrderPrecisionFields(IntegrationTestCase):
 		):
 			ctx = _get_bom_context(so)
 
-		# Checkbox on -> forced 3 regardless of the Customer value.
-		self.assertEqual(ctx.metal_precision, 3)
-		self.assertEqual(ctx.stone_precision, 3)
-		self.assertEqual(ctx.gemstone_precision, 3)
+		# Checkbox on -> forced 2 regardless of the Customer value.
+		self.assertEqual(ctx.metal_precision, 2)
+		self.assertEqual(ctx.stone_precision, 2)
+		self.assertEqual(ctx.gemstone_precision, 2)
 
 	def test_bom_context_gemstone_override_leaves_diamond_alone(self):
 		so = frappe._dict(customer="Test", custom_precision_for_gemstone=1)
@@ -349,7 +349,7 @@ class TestSalesOrderPrecisionFields(IntegrationTestCase):
 		):
 			ctx = _get_bom_context(so)
 
-		self.assertEqual(ctx.gemstone_precision, 3)
+		self.assertEqual(ctx.gemstone_precision, 2)
 		self.assertEqual(ctx.stone_precision, 6)
 
 	def test_bom_context_does_not_raise_when_field_absent(self):
