@@ -2102,5 +2102,171 @@ class TestMopLogDirection(_Base):
 		self.assertEqual(self._logged("Material Transfer", last_index=3).flow_index, 0)
 
 
+_FULFILMENT = "jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment"
+_RETURN = "jewellery_erpnext.customer_subcontracting.customer_gold_return"
+_SETTINGS = (
+	"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings."
+	"subcontracting_settings"
+)
+
+#: KGJPL-SE-CGR-26-00052's batch, booked at 14,622.50 a gram, and the metal-loss scrap made from
+#: it (0.225 g of 22KT, carrying 3,019.558) that Settle converted back for the return.
+R46 = "GJCU0009-2F10-M-G-24KT-99.9-Y-46"
+R46_AA = "GJCU0009-2F10-ML-G-22KT-91.75-Y-46-A-A"
+
+
+class TestConversionsIntoAReceiptBatchAreBookedAtItsRate(_Base):
+	"""Settle converted the scrap back into -46 as 0.206 g of fine at 14,658.05 a gram -- the
+	scrap's value over the fine it made -- against the 14,622.50 the receipt booked. The return
+	then released 39,575.81 from the Customer Gold Liability for 2.706 g booked at 39,568.49
+	(KGJPL-SE-CGI-26-00029). Under Nominal the produced metal is priced at the booked rate."""
+
+	def _rate(
+		self,
+		sources=(R46_AA,),
+		customer=CUSTOMER_03997,
+		target=R46,
+		nominal=True,
+		enabled=True,
+		ready=True,
+		lineage=frozenset({R46, R46_AA}),
+		revalued=False,
+		booked=14622.5,
+	):
+		rows = [{"batch_no": batch, "qty": 0.225} for batch in sources]
+		with patch(f"{_SETTINGS}.is_nominal_valuation", return_value=nominal), patch(
+			f"{_SETTINGS}.is_customer_gold_enabled", return_value=enabled
+		), patch(f"{_FULFILMENT}.is_ledger_schema_ready", return_value=ready), patch(
+			f"{_C}._batch_lineage", return_value=set(lineage)
+		) as scope, patch(
+			f"{_RETURN}.has_live_revaluation", return_value=revalued
+		), patch(f"{_RETURN}.get_booked_rate", return_value=booked) as get_booked:
+			rate = cg_settle._booked_rate_for_conversion(_mr(), rows, customer, target)
+		return rate, scope, get_booked
+
+	def test_scrap_made_from_the_batch_comes_back_at_the_booked_rate(self):
+		rate, scope, get_booked = self._rate()
+
+		self.assertEqual(rate, 14622.5)
+		self.assertEqual(scope.call_args.args[:2], (R46, CUSTOMER_03997))
+		self.assertEqual(
+			get_booked.call_args.args,
+			("KG GK Jewellers Private Limited", CUSTOMER_03997, R46),
+		)
+
+	def test_the_difference_is_the_scraps_rounding_and_alloy_not_the_customers(self):
+		rate, _, _ = self._rate()
+
+		# 0.206 g at the booked rate is 3,012.235; the scrap carried 3,019.558.
+		self.assertAlmostEqual(0.206 * rate, 3012.235, places=6)
+		self.assertAlmostEqual(3019.558 - 0.206 * rate, 7.323, places=6)
+
+	def test_the_zero_value_policy_leaves_the_pricing_alone(self):
+		rate, scope, get_booked = self._rate(nominal=False)
+
+		self.assertIsNone(rate)
+		scope.assert_not_called()
+		get_booked.assert_not_called()
+
+	def test_the_flow_off_or_an_unreadable_ledger_leaves_the_pricing_alone(self):
+		for flags in ({"enabled": False}, {"ready": False}):
+			with self.subTest(flags):
+				rate, _, get_booked = self._rate(**flags)
+
+				self.assertIsNone(rate)
+				get_booked.assert_not_called()
+
+	def test_a_source_outside_the_batchs_lineage_leaves_the_pricing_alone(self):
+		# Another receipt's metal carries that receipt's rate: no booked rate is right for it.
+		rate, _, get_booked = self._rate(
+			sources=(R46_AA, "GJCU0009-2F10-M-G-24KT-99.9-Y-47")
+		)
+
+		self.assertIsNone(rate)
+		get_booked.assert_not_called()
+
+	def test_a_new_child_batch_and_company_stock_are_not_priced(self):
+		for kwargs in ({"target": None}, {"customer": None}):
+			with self.subTest(kwargs):
+				rate, scope, get_booked = self._rate(**kwargs)
+
+				self.assertIsNone(rate)
+				scope.assert_not_called()
+				get_booked.assert_not_called()
+
+	def test_a_revalued_batch_carries_the_restated_rate_by_design(self):
+		rate, _, get_booked = self._rate(revalued=True)
+
+		self.assertIsNone(rate)
+		get_booked.assert_not_called()
+
+	def test_a_batch_without_a_booked_value_is_left_alone(self):
+		for booked in (None, 0.0):
+			with self.subTest(booked=booked):
+				self.assertIsNone(self._rate(booked=booked)[0])
+
+
+class TestConvertMultiPricesTheProducedRow(_Base):
+	"""Only the produced row takes the booked rate, and only as a manual one: erpnext skips
+	such a row when it derives a Repack's rate and the lane pricer leaves it alone, while the
+	consumed rows keep the batch's own rate."""
+
+	def _convert(self, booked, target_batch=R46):
+		se = SimpleNamespace(flags=frappe._dict(), insert=MagicMock(), name="SE-REPACK")
+		rows = []
+		sources = [{"batch_no": R46_AA, "qty": 0.225}]
+		mr = _mr()
+		with patch(f"{_C}._new_se", return_value=se), patch(
+			f"{_C}._append_item", side_effect=lambda doc, row: rows.append(row)
+		), patch(f"{_C}._submit_consuming_stock_entry"), patch(
+			f"{_C}._booked_rate_for_conversion", return_value=booked
+		) as rate, patch.object(frappe.db, "get_value", return_value="NEW-CHILD"):
+			result = cg_settle._convert_multi(
+				mr,
+				source_item=ITEM_22KT_ML,
+				source_rows=sources,
+				target_item=ITEM,
+				target_qty=0.206,
+				warehouse=WAXING_SCRAP,
+				customer=CUSTOMER_03997,
+				target_batch=target_batch,
+			)
+		rate.assert_called_once_with(mr, sources, CUSTOMER_03997, target_batch)
+		return rows, result
+
+	def test_the_produced_row_is_booked_at_the_rate_as_a_manual_one(self):
+		rows, result = self._convert(14622.5)
+
+		consumed, produced = rows
+		self.assertEqual(result, R46)
+		self.assertEqual(
+			(
+				produced["item_code"],
+				produced["batch_no"],
+				produced["t_warehouse"],
+				produced["basic_rate"],
+				produced["set_basic_rate_manually"],
+			),
+			(ITEM, R46, WAXING_SCRAP, 14622.5, 1),
+		)
+		self.assertNotIn("basic_rate", consumed)
+		self.assertNotIn("set_basic_rate_manually", consumed)
+
+	def test_without_a_booked_rate_the_row_is_left_to_the_lane_pricer(self):
+		for booked in (None, 0.0):
+			with self.subTest(booked=booked):
+				_, produced = self._convert(booked)[0]
+
+				self.assertNotIn("basic_rate", produced)
+				self.assertNotIn("set_basic_rate_manually", produced)
+
+	def test_a_new_child_batch_is_named_by_the_entry_and_not_priced(self):
+		rows, result = self._convert(None, target_batch=None)
+
+		self.assertEqual(result, "NEW-CHILD")
+		self.assertNotIn("batch_no", rows[1])
+		self.assertNotIn("basic_rate", rows[1])
+
+
 if __name__ == "__main__":
 	unittest.main()
