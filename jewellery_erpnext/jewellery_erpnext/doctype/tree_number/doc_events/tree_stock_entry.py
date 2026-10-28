@@ -721,6 +721,30 @@ def _tree_issued_batches(tree, item_code, msl_wh):
 	return [r.batch_no for r in rows]
 
 
+def _warehouse_batch_balances(item_code, warehouse):
+	"""``[{batch_no, qty}]`` -- every batch's ledger balance of ``item_code`` at ``warehouse``.
+
+	Same ``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``, read for the whole
+	warehouse at once and not bounded by posting time. Unfiltered: zero and negative balances come
+	back too, and each caller drops what it does not show.
+	"""
+	return frappe.db.sql(
+		"""
+		SELECT sbe.batch_no, SUM(sbe.qty) AS qty
+		FROM `tabSerial and Batch Entry` sbe
+		WHERE sbe.docstatus = 1
+		  AND sbe.item_code = %(item_code)s
+		  AND sbe.warehouse = %(warehouse)s
+		  AND sbe.type_of_transaction IN ('Inward', 'Outward')
+		  AND sbe.voucher_type != 'Pick List'
+		  AND IFNULL(sbe.batch_no, '') != ''
+		GROUP BY sbe.batch_no
+		""",
+		{"item_code": item_code, "warehouse": warehouse},
+		as_dict=True,
+	)
+
+
 def _stock_outside_pool(tree, item_code, msl_wh, own_batches, prec):
 	"""Metal at ``msl_wh`` that the allocation did NOT offer, split by ownership.
 
@@ -743,22 +767,11 @@ def _stock_outside_pool(tree, item_code, msl_wh, own_batches, prec):
 
 	eps = _pending_eps()
 	own = set(own_batches)
-	rows = frappe.db.sql(
-		"""
-		SELECT sbe.batch_no, SUM(sbe.qty) AS qty
-		FROM `tabSerial and Batch Entry` sbe
-		WHERE sbe.docstatus = 1
-		  AND sbe.item_code = %(item_code)s
-		  AND sbe.warehouse = %(warehouse)s
-		  AND sbe.type_of_transaction IN ('Inward', 'Outward')
-		  AND sbe.voucher_type != 'Pick List'
-		  AND IFNULL(sbe.batch_no, '') != ''
-		GROUP BY sbe.batch_no
-		""",
-		{"item_code": item_code, "warehouse": msl_wh},
-		as_dict=True,
-	)
-	rows = [r for r in rows if flt(r.qty, prec) > eps and r.batch_no not in own]
+	rows = [
+		r
+		for r in _warehouse_batch_balances(item_code, msl_wh)
+		if flt(r.qty, prec) > eps and r.batch_no not in own
+	]
 	if not rows:
 		return [], []
 
@@ -824,7 +837,26 @@ def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 				"No further metal of this tree's ownership is left in this warehouse."
 			)
 
+	msg += "<br><br>" + _batch_wise_section(tree, item_code, msl_wh, pool)
 	frappe.throw(msg, title=_("Tree Material Not Available"))
+
+
+def _batch_wise_section(tree, item_code, msl_wh, pool):
+	"""The Tree Number form's Batch-wise Balance table, with "usable" taken from the allocation.
+
+	The lines above say what this tree could not get. The table puts it next to what the tree moved
+	per batch and what the warehouse holds against every open tree there, which is what shows
+	whether the metal is under another owner or simply missing from the warehouse.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
+		tree_batch_balance,
+	)
+
+	return tree_batch_balance.render_html(
+		tree_batch_balance.batch_balance(
+			tree, item_code, msl_wh, usable={b: q for b, q in pool}
+		)
+	)
 
 
 def _ledger_row(tree, item_code):
