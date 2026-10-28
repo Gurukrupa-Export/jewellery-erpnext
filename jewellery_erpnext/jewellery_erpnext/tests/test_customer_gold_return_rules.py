@@ -798,3 +798,151 @@ class TestConvertedMetalRevaluationIsRefusedByName(unittest.TestCase):
 
 		self.assertEqual(titles[-1], "Partial Revaluation Not Supported")
 		reject_partial.assert_called_once()
+
+
+class TestHasLiveRevaluation(unittest.TestCase):
+	"""A Revaluation restates the batch's rate on purpose, so a batch carrying one in force is
+	not held to the booked rate. One that was reversed no longer counts."""
+
+	def _live(self, revaluations, reversed_originals=()):
+		def ledger(doctype, *args, filters=None, **kwargs):
+			if filters["cg_event_kind"] == cgr.EVENT_REVALUATION:
+				return list(revaluations)
+			self.assertEqual(filters["cg_event_kind"], cgr.EVENT_REVERSAL)
+			asked = filters["cg_reversal_of"][1]
+			return [name for name in reversed_originals if name in asked]
+
+		with patch.object(
+			cgr.frappe,
+			"get_all",
+			side_effect=_owning({cgr.LEDGER_DOCTYPE}, ledger, _REAL_GET_ALL),
+		):
+			return cgr.has_live_revaluation("C", "CUST", "B1")
+
+	def test_a_batch_never_revalued_has_none(self):
+		self.assertFalse(self._live([]))
+
+	def test_a_revaluation_in_force_counts(self):
+		self.assertTrue(self._live(["EV-1"]))
+
+	def test_a_reversed_revaluation_no_longer_counts(self):
+		self.assertFalse(self._live(["EV-1"], reversed_originals=["EV-1"]))
+
+	def test_one_reversed_of_two_still_leaves_one_in_force(self):
+		self.assertTrue(self._live(["EV-1", "EV-2"], reversed_originals=["EV-1"]))
+
+
+class TestReceiptBatchDriftIsHeld(unittest.TestCase):
+	"""The return releases the batch's carrying rate from the Customer Gold Liability, so a
+	receipt's own batch that no longer carries the rate its receipt booked is held.
+
+	Shaped on KGJPL-SE-CGI-26-00029: 2.706 g of batch -46, booked at 14,622.50 and carried at
+	14,625.206 after Settle converted 0.225 g of metal-loss scrap back into it at the scrap's
+	value -- Rs.7.32 more released from the liability than the receipt booked."""
+
+	BOOKED = 14622.5
+	CARRIED = 14625.206208426
+
+	class _Passed(Exception):
+		"""Raised by the stage after the drift check: the check let the return through."""
+
+	def _run(
+		self, kind="receipt", booked=BOOKED, actual=CARRIED, qty=2.706, revalued=False
+	):
+		receipt = frappe._dict(
+			name="EV-A",
+			reference_docname="KGJPL-SE-CGR-26-00052",
+			cg_source_row="R1",
+			batch_no="B1",
+		)
+		plan = frappe._dict(
+			row=_row(idx=1),
+			batch_no="B1",
+			warehouse="W",
+			customer="CUST",
+			receipt=receipt,
+			kind=kind,
+			booked_rate=booked,
+			qty=qty,
+		)
+		with patch(
+			"erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=100.0
+		), patch.object(
+			cgr, "_batch_rate", return_value=actual
+		) as batch_rate, patch.object(
+			cgr, "has_live_revaluation", return_value=revalued
+		) as live, patch.object(
+			cgr, "_check_shared_batch_rates", side_effect=self._Passed
+		):
+			self.batch_rate, self.live = batch_rate, live
+			cgr._check_plans(_doc(), [plan], for_update=False)
+
+	def _held(self, **kwargs):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(**kwargs)
+		return str(caught.exception)
+
+	def _passes(self, **kwargs):
+		with self.assertRaises(self._Passed):
+			self._run(**kwargs)
+
+	def test_a_receipt_batch_carried_above_its_booked_rate_is_held(self):
+		message = self._held()
+
+		for fragment in ("D08", "KGJPL-SE-CGR-26-00052", "14625.21", "14622.5"):
+			self.assertIn(fragment, message)
+
+	def test_a_receipt_batch_carried_below_its_booked_rate_is_held(self):
+		self._held(actual=self.BOOKED - 2.706208426)
+
+	def test_rounding_inside_a_paisa_passes(self):
+		# 0.003 a gram over 2.706 g is Rs.0.008 released.
+		self._passes(actual=self.BOOKED + 0.003)
+
+	def test_just_over_a_paisa_is_held(self):
+		# 0.005 a gram over 2.706 g is Rs.0.0135 released.
+		self._held(actual=self.BOOKED + 0.005)
+
+	def test_the_paisa_is_in_rupees_released_not_in_rate(self):
+		# The same drift on a milligram misreleases Rs.0.0027.
+		self._passes(qty=0.001)
+
+	def test_a_batch_on_its_booked_rate_passes_without_a_revaluation_lookup(self):
+		self._passes(actual=self.BOOKED)
+
+		self.live.assert_not_called()
+
+	def test_a_batch_revalued_on_purpose_is_not_held(self):
+		self._passes(revalued=True)
+
+		self.live.assert_called_once()
+
+	def test_a_batch_booked_at_zero_is_not_judged(self):
+		self._passes(booked=0.0, actual=5.0)
+
+	def test_a_batch_with_no_balance_to_read_a_rate_from_is_not_judged(self):
+		self._passes(actual=None)
+
+	def test_without_a_booked_value_no_rate_is_read(self):
+		# Zero Value policy: the plan carries no booked rate at all.
+		self._passes(booked=None)
+
+		self.batch_rate.assert_not_called()
+
+	def test_a_descendant_keeps_its_relative_band(self):
+		self._passes(kind="descendant", actual=self.BOOKED * 1.0004)
+		self._held(kind="descendant", actual=self.BOOKED * 1.0006)
+
+	def test_a_descendant_with_no_rate_to_read_is_still_held(self):
+		self._held(kind="descendant", actual=None)
+
+	def test_a_descendant_is_not_excused_by_a_revaluation(self):
+		self._held(kind="descendant", actual=self.BOOKED * 1.001, revalued=True)
+
+		self.live.assert_not_called()
+
+	def test_the_descendant_band_would_not_have_caught_the_receipt_case(self):
+		# 2.706 a gram is 0.019%: inside the descendant's 0.05% band, which is why the receipt's
+		# own batch needs the absolute paisa check.
+		self._passes(kind="descendant")
+		self._held(kind="receipt")

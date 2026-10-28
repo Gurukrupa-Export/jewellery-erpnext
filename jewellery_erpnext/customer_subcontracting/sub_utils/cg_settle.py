@@ -2223,6 +2223,55 @@ def _convert(
 	)
 
 
+def _booked_rate_for_conversion(mr, source_rows, customer, target_batch):
+	"""The rate to book a conversion's produced metal at, or None to leave it to the lane pricer.
+
+	Under Nominal, a receipt's batch goes back out at the rate its receipt booked, and the return
+	releases the Customer Gold Liability at the batch's carrying rate. So metal produced into that
+	batch has to come in at the booked rate. The lane pricer gives the produced row the value its
+	sources gave up instead: converting the customer's metal-loss scrap back brought the scrap's
+	rounding and the company's alloy into the batch (0.225 g of scrap carrying 3,019.56 made
+	0.206 g of fine at 14,658.05 against 14,622.50 booked), and the return of KGJPL-SE-CGR-26-00052
+	released 39,575.81 for the 39,568.49 its 2.706 g were booked at. Priced at the booked rate, the
+	difference posts to Stock Adjustment -- the company's own, as the alloy always was.
+
+	Only when every source is the batch's own metal (``_batch_lineage``). Metal drawn from another
+	receipt carries that receipt's rate and has no right answer here, so it keeps today's pricing
+	and the return's drift check (``_check_plans``) holds the result. Also left alone: a batch with
+	a Revaluation in force, which carries the restated rate by design.
+	"""
+	from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
+		is_ledger_schema_ready,
+	)
+	from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+		get_booked_rate,
+		has_live_revaluation,
+	)
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		is_customer_gold_enabled,
+		is_nominal_valuation,
+	)
+
+	if not (customer and target_batch):
+		return None
+	# The same gates the return applies (customer_gold_return._applies): off, or a ledger that
+	# cannot be read, and there is no booked rate to price at.
+	if not (
+		is_nominal_valuation()
+		and is_customer_gold_enabled()
+		and is_ledger_schema_ready()
+	):
+		return None
+
+	lineage = _batch_lineage(target_batch, customer, {})
+	if any(row["batch_no"] not in lineage for row in source_rows):
+		return None
+	if has_live_revaluation(mr.company, customer, target_batch):
+		return None
+
+	return get_booked_rate(mr.company, customer, target_batch) or None
+
+
 def _convert_multi(
 	mr,
 	source_item,
@@ -2238,6 +2287,10 @@ def _convert_multi(
 
 	See ``_convert`` for the ``target_batch`` semantics. Multiple source rows let a
 	conversion draw the requirement from several batches when it is spread across them.
+
+	Under Nominal, metal produced into a receipt's own batch from that batch's own lineage is
+	priced at the receipt's booked rate (``_booked_rate_for_conversion``), not at the value of what
+	was consumed.
 	"""
 	from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
 		lane_tag,
@@ -2273,6 +2326,13 @@ def _convert_multi(
 	}
 	if target_batch:
 		produced_row["batch_no"] = target_batch
+	booked_rate = _booked_rate_for_conversion(mr, source_rows, customer, target_batch)
+	if booked_rate:
+		# A manual rate: erpnext skips such a row when it derives a Repack's rate, and the lane
+		# pricer leaves it alone (loss_valuation._owns_produce_row), so the batch comes in at
+		# the rate it was booked at and the Repack's value difference posts to Stock Adjustment.
+		produced_row["basic_rate"] = booked_rate
+		produced_row["set_basic_rate_manually"] = 1
 	_append_item(se, produced_row)
 	se.insert(ignore_permissions=True)
 	_submit_consuming_stock_entry(se)
