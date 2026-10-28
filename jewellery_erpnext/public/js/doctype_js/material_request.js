@@ -1,8 +1,9 @@
 frappe.ui.form.on("Material Request", {
 	refresh(frm) {
 		patch_barcode_scanner_for_serial_no_rows(frm);
-		// Set Warehouse of a Manufacture request is derived from the reservation table; only
-		// System Manager may override it.
+		// Set Warehouse of a Manufacture request is derived from the reservation table.
+		// Picking an Alternative Item sets it; a value that does not match the Alternative
+		// Item is refused on save (validate_alternative_item_warehouse) unless System Manager.
 		frm.set_df_property(
 			"set_warehouse",
 			"read_only",
@@ -566,7 +567,7 @@ function get_reservation_warehouses(frm, manufacturer) {
 
 	return frappe
 		.call({
-			method: "jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate.get_reservation_warehouses",
+			method: "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.get_reservation_warehouses",
 			args: { manufacturer: manufacturer },
 		})
 		.then((r) => {

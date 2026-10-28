@@ -199,7 +199,7 @@ def set_reservation_warehouse(self):
 
 def validate_alternative_item_warehouse(self):
 	"""Once a row has an Alternative Item, ``set_warehouse`` must be the reservation warehouse
-	of that item's variant. Only a *change* of the warehouse is checked, so a request saved
+	of that item's variant, except for System Manager. Only a *change* of the warehouse is checked, so a request saved
 	earlier with some other warehouse is not suddenly refused on its next save."""
 	if self.material_request_type != "Manufacture":
 		return
@@ -217,6 +217,10 @@ def validate_alternative_item_warehouse(self):
 	if not before or (before.set_warehouse or None) == (self.set_warehouse or None):
 		return
 
+	# The form leaves the field editable for System Manager, so they may override it.
+	if "System Manager" in frappe.get_roles():
+		return
+
 	target = get_reservation_target(self)
 	if target and self.set_warehouse != target:
 		frappe.throw(
@@ -231,7 +235,9 @@ def get_reservation_warehouse(doc):
 	"""The warehouse the reservation table gives this unsaved request, for the desk form's
 	Alternative Item trigger. Unlike ``set_reservation_warehouse`` it replaces a warehouse
 	already there: picking the alternative is what decides the routing."""
-	doc = frappe.get_doc(json.loads(doc) if isinstance(doc, str) else doc)
+	frappe.has_permission("Material Request", "read", throw=True)
+	doc = json.loads(doc) if isinstance(doc, str) else doc
+	doc = frappe.get_doc({**doc, "doctype": "Material Request"})
 	return get_reservation_target(doc)
 
 

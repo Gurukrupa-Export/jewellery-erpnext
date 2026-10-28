@@ -1185,7 +1185,14 @@ class TestValidateAlternativeItemWarehouse(IntegrationTestCase):
 	def test_throws_on_mismatching_change(self, *mocks):
 		mr = self._mr("Diamond Setting RSV - GEPL", "Waxing RSV - GEPL")
 
-		with self.assertRaises(frappe.ValidationError):
+		with patch("frappe.get_roles", return_value=["Stock User"]):
+			with self.assertRaises(frappe.ValidationError):
+				mr_before_validate.validate_alternative_item_warehouse(mr)
+
+	def test_system_manager_may_override(self, *mocks):
+		mr = self._mr("Diamond Setting RSV - GEPL", "Waxing RSV - GEPL")
+
+		with patch("frappe.get_roles", return_value=["System Manager"]):
 			mr_before_validate.validate_alternative_item_warehouse(mr)
 
 	def test_allows_the_matching_warehouse(self, *mocks):
