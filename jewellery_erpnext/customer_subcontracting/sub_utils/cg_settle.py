@@ -2173,6 +2173,9 @@ def _work_order_transfer(mr, pull, qty, batch, from_wh, to_wh, customer, outward
 		}
 	)
 	se.flags.skip_mwo_reservation = True
+	# The inward leg puts back the weight the outward leg takes out of the same warehouse (the work
+	# order's reservation), whoever holds it. See validate_work_order_transfer_destination.
+	se.flags.restores_withdrawn_stock = True
 	_append_item(
 		se,
 		{
