@@ -27,8 +27,12 @@ STAMP = {
 }
 
 
-def _stamped_template():
-	return frappe.get_doc({"doctype": "BOM", "bom_type": "Template", **STAMP})
+class _Bom(dict):
+	"""Stands in for a BOM: the helper only needs ``set``. Independent of the site's BOM meta,
+	because the three Source fields are Custom Fields that not every site (CI's) has."""
+
+	def set(self, key, value):
+		self[key] = value
 
 
 class TestClearKggkSource(IntegrationTestCase):
@@ -37,19 +41,31 @@ class TestClearKggkSource(IntegrationTestCase):
 		pass
 
 	def test_copy_doc_carries_the_stamp(self):
-		# The reason the clear exists: the clone keeps all three values.
-		clone = frappe.copy_doc(_stamped_template())
+		# The reason the clear exists: the clone keeps all three values. Only meaningful on a site
+		# that has the Custom Fields; elsewhere copy_doc has nowhere to keep them.
+		meta = frappe.get_meta("BOM")
+		if not all(meta.has_field(f) for f in KGGK_SOURCE_FIELDS):
+			self.skipTest("BOM has no KGGK source Custom Fields on this site")
+
+		template = frappe.get_doc({"doctype": "BOM", "bom_type": "Template", **STAMP})
+		clone = frappe.copy_doc(template)
 		self.assertEqual({f: clone.get(f) for f in KGGK_SOURCE_FIELDS}, STAMP)
 
-	def test_clear_blanks_all_three_on_a_clone(self):
-		clone = frappe.copy_doc(_stamped_template())
-		clear_kggk_source(clone)
-		self.assertEqual([clone.get(f) for f in KGGK_SOURCE_FIELDS], [None, None, None])
+	def test_clear_blanks_all_three(self):
+		bom = _Bom(STAMP)
+		clear_kggk_source(bom)
+		self.assertEqual([bom[f] for f in KGGK_SOURCE_FIELDS], [None, None, None])
+
+	def test_clear_leaves_other_fields_alone(self):
+		bom = _Bom({**STAMP, "bom_type": "Finish Goods"})
+		clear_kggk_source(bom)
+		self.assertEqual(bom["bom_type"], "Finish Goods")
 
 	def test_the_template_itself_is_untouched(self):
-		template = _stamped_template()
-		clear_kggk_source(frappe.copy_doc(template))
-		self.assertEqual({f: template.get(f) for f in KGGK_SOURCE_FIELDS}, STAMP)
+		template = _Bom(STAMP)
+		clone = _Bom(template)
+		clear_kggk_source(clone)
+		self.assertEqual({f: template[f] for f in KGGK_SOURCE_FIELDS}, STAMP)
 
 	def test_every_bom_clone_site_clears_the_stamp(self):
 		for fn in (
