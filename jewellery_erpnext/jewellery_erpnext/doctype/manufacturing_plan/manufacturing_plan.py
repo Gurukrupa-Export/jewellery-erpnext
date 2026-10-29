@@ -238,8 +238,9 @@ class ManufacturingPlan(Document):
 	def set_department(self):
 		"""Department belongs to the Without-SO mode only: its PMOs, their Work Orders and the
 		first Manufacturing Operation start there instead of in the Manufacturing Setting
-		defaults. It is the creator's Employee department, filled once while blank, so a later
-		editor or submitter does not move the plan into their own department."""
+		defaults. It defaults to the creator's Employee department and is filled only while
+		blank, so a department picked by a user with no Employee department is kept, and a
+		later editor or submitter does not move the plan into their own department."""
 		if self.select_manufacture_order != FINDING_WITHOUT_SO:
 			self.department = None
 			return
@@ -248,7 +249,7 @@ class ManufacturingPlan(Document):
 		if not self.department:
 			frappe.throw(
 				_(
-					"Link an active Employee with a Department to user {0} to create a {1} plan."
+					"Set the Department, or link an active Employee with a Department to user {0}, to create a {1} plan."
 				).format(
 					frappe.bold(frappe.session.user), frappe.bold(FINDING_WITHOUT_SO)
 				)

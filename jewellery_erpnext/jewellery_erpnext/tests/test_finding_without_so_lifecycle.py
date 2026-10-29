@@ -322,7 +322,13 @@ class TestPlanDepartment(IntegrationTestCase):
 		mock_department.assert_not_called()
 
 	@patch(f"{MP}.get_user_department", return_value=None)
-	def test_user_without_employee_department_blocks(self, _mock):
+	def test_user_without_employee_department_keeps_picked_one(self, _mock):
+		plan = self._plan(FINDING_WITHOUT_SO, "Central - T")
+		ManufacturingPlan.set_department(plan)
+		self.assertEqual(plan.department, "Central - T")
+
+	@patch(f"{MP}.get_user_department", return_value=None)
+	def test_no_picked_and_no_employee_department_blocks(self, _mock):
 		with self.assertRaises(frappe.ValidationError):
 			ManufacturingPlan.set_department(self._plan(FINDING_WITHOUT_SO))
 
@@ -333,11 +339,12 @@ class TestPlanDepartment(IntegrationTestCase):
 		self.assertIsNone(plan.department)
 		mock_department.assert_not_called()
 
-	def test_department_is_fetched_not_picked(self):
-		"""The user's Employee department is fetched, never picked; a Duplicate fetches the
-		duplicating user's own instead of carrying the original creator's."""
+	def test_department_can_be_picked_when_not_fetched(self):
+		"""The form locks Department only once it is fetched: the desk hides an empty read-only
+		field, so a user with no Employee department could not pick it. A Duplicate fetches
+		the duplicating user's own instead of carrying the original creator's."""
 		department = doctype_fields("Manufacturing Plan")["department"]
-		self.assertTrue(department.get("read_only"))
+		self.assertFalse(department.get("read_only"))
 		self.assertTrue(department.get("no_copy"))
 		self.assertIn(FINDING_WITHOUT_SO, department["mandatory_depends_on"])
 
