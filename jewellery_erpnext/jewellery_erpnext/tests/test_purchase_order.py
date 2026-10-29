@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import purchase_order as po_events
 
@@ -24,6 +24,7 @@ class DummyPO:
 		self.ref_customer = kwargs.get("ref_customer", "Customer X")
 		self._is_new = kwargs.get("is_new", False)
 		self.calculate_taxes_and_totals = MagicMock()
+		self.set_total_in_words = MagicMock()
 
 		for k, v in kwargs.items():
 			if k != "is_new":
@@ -39,6 +40,16 @@ class DummyPO:
 
 	def is_new(self):
 		return self._is_new
+
+
+PO_EVENTS = "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order"
+
+
+class DummyPOItem(frappe._dict):
+	"""A Purchase Order Item row: update_rate rounds the rate to the field's precision."""
+
+	def precision(self, fieldname):
+		return 2
 
 
 class DummyQuotation:
@@ -149,13 +160,12 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		self.assertEqual(po.items[0].sgst_rate, 1.5)
 		self.assertEqual(po.items[0].igst_rate, 0.0)
 
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_value"
-	)
-	def test_update_rate(self, mock_get_value):
+	@patch(f"{PO_EVENTS}._quotation_rates", return_value={})
+	@patch(f"{PO_EVENTS}._get_bom_state")
+	def test_update_rate(self, mock_get_value, _quotation_rates):
 		po = DummyPO(
 			purchase_type="FG Purchase",
-			items=[frappe._dict(manufacturing_bom="BOM-1", metal_amount=1000)],
+			items=[DummyPOItem(manufacturing_bom="BOM-1", metal_amount=1000)],
 		)
 		mock_get_value.return_value = frappe._dict(
 			making_fg_purchase=100,
@@ -166,11 +176,15 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			freight_amount=15,
 			hallmarking_amount=20,
 			custom_duty_amount=0,
+			bom_type="Manufacturing Process",
+			docstatus=0,
 		)
 		po_events.update_rate(po)
 		item = po.items[0]
 		self.assertEqual(item.making_amount, 100)
-		self.assertEqual(item.rate, 1000 + 100 + 50 + 200 + 10 + 5 + 15 + 20 + 0)
+		# FG Purchase amounts only: the BOM's metal and finding values are selling figures.
+		self.assertEqual(item.rate, 100 + 200 + 10 + 5 + 15 + 20 + 0)
+		po.calculate_taxes_and_totals.assert_called_once()
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
@@ -213,6 +227,58 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		mock_new_doc.return_value = mock_po
 		po_events.make_subcontracting_order(doc)
 		self.assertEqual(mock_new_doc.call_count, 2)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_single_value"
+	)
+	def test_make_subcontracting_order_stamps_order_dimensions(
+		self, mock_get_single_value, mock_new_doc
+	):
+		"""Every Purchase Order raised from a plan carries the plan's four order dimensions."""
+		mock_get_single_value.return_value = "Subcontracting Service"
+		doc = frappe._dict(
+			name="MPLAN-4",
+			company="Test Company",
+			order_type="Sales",
+			sales_type="Regular",
+			flow_type="MTO",
+			design_type="Fancy",
+			manufacturing_plan_table=[
+				frappe._dict(
+					supplier=supplier,
+					customer="Customer X",
+					purchase_type="Subcontracting",
+					customer_po="PO-1",
+					item_code="Item 1",
+					subcontracting_qty=1,
+					estimated_delivery_date="2026-08-10",
+					child_po="CPO-1",
+					name=f"MP-Det-{supplier}",
+				)
+				for supplier in ("Supplier A", "Supplier B")
+			],
+		)
+		po_docs = [MagicMock(), MagicMock()]
+		mock_new_doc.side_effect = po_docs
+		po_events.make_subcontracting_order(doc)
+
+		expected = {
+			"custom_order_type": "Sales",
+			"custom_sales_type": "Regular",
+			"custom_flow_type": "MTO",
+			"custom_design_type": "Fancy",
+		}
+		for po_doc in po_docs:
+			stamped = {
+				call.args[0]: call.args[1]
+				for call in po_doc.set.call_args_list
+				if call.args[0] in expected
+			}
+			self.assertEqual(stamped, expected)
+			po_doc.save.assert_called_once()
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.get_doc"
@@ -546,10 +612,29 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		po_events.on_cancel(frappe._dict())
 		self.assertTrue(True)
 
-	def test_update_rate_is_new(self):
-		po = DummyPO(purchase_type="FG Purchase", is_new=True)
+	@patch(f"{PO_EVENTS}._quotation_rates", return_value={})
+	@patch(f"{PO_EVENTS}._get_bom_state")
+	def test_update_rate_is_new(self, mock_get_value, _quotation_rates):
+		# The order a Manufacturing Plan raises is created by one save, so new orders are rated too.
+		po = DummyPO(
+			purchase_type="FG Purchase",
+			is_new=True,
+			items=[DummyPOItem(manufacturing_bom="BOM-1")],
+		)
+		mock_get_value.return_value = frappe._dict(
+			making_fg_purchase=100,
+			finding_bom_amount=50,
+			diamond_fg_purchase=200,
+			gemstone_fg_purchase=10,
+			certification_amount=5,
+			freight_amount=15,
+			hallmarking_amount=20,
+			custom_duty_amount=0,
+			bom_type="Manufacturing Process",
+			docstatus=0,
+		)
 		po_events.update_rate(po)
-		self.assertTrue(True)
+		self.assertEqual(po.items[0].rate, 350)
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_value"
@@ -635,15 +720,16 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		po_events.set_gst_details(po)
 		self.assertEqual(po.items[0].cgst_rate, 0.0)
 
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_value"
-	)
-	def test_update_rate_multiple_items_same_bom(self, mock_get_value):
+	@patch(f"{PO_EVENTS}._quotation_rates", return_value={})
+	@patch(f"{PO_EVENTS}._get_bom_state")
+	def test_update_rate_multiple_items_same_bom(
+		self, mock_get_value, _quotation_rates
+	):
 		po = DummyPO(
 			purchase_type="FG Purchase",
 			items=[
-				frappe._dict(manufacturing_bom="BOM-1", metal_amount=1000),
-				frappe._dict(manufacturing_bom="BOM-1", metal_amount=2000),
+				DummyPOItem(manufacturing_bom="BOM-1", metal_amount=1000),
+				DummyPOItem(manufacturing_bom="BOM-1", metal_amount=2000),
 			],
 		)
 		mock_get_value.return_value = frappe._dict(
@@ -655,11 +741,13 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			freight_amount=15,
 			hallmarking_amount=20,
 			custom_duty_amount=0,
+			bom_type="Manufacturing Process",
+			docstatus=0,
 		)
 		po_events.update_rate(po)
 		mock_get_value.assert_called_once()
-		self.assertEqual(po.items[0].rate, 1000 + 400)
-		self.assertEqual(po.items[1].rate, 2000 + 400)
+		self.assertEqual(po.items[0].rate, 350)
+		self.assertEqual(po.items[1].rate, 350)
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
@@ -1034,3 +1122,86 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			mock_get_taxes.return_value = {}
 			res = po_events.make_quotation("PO-3", None)
 			self.assertEqual(len(res.items), 0)
+
+
+class TestSubcontractingOrderCopyBom(UnitTestCase):
+	"""The Purchase Order a Manufacturing Plan raises carries each row's Copy BOM.
+
+	KGGK's Quotation from the mirrored PO refuses a row without `custom_copy_bom`
+	("Copy BOM is not set on Purchase Order"), so both kinds of PO row must have it.
+	"""
+
+	def _po_rows(self, plan_rows):
+		pos = []
+
+		def new_po(doctype):
+			po = MagicMock()
+			pos.append(po)
+			return po
+
+		doc = frappe._dict(
+			name="MPLAN-1", company="Test Company", manufacturing_plan_table=plan_rows
+		)
+		with (
+			patch.object(po_events.frappe, "new_doc", side_effect=new_po),
+			patch.object(
+				po_events.frappe.db,
+				"get_single_value",
+				return_value="Subcontracting Service",
+			),
+		):
+			po_events.make_subcontracting_order(doc)
+
+		return [call.args[1] for po in pos for call in po.append.call_args_list]
+
+	def _plan_row(self, **kwargs):
+		row = frappe._dict(
+			supplier="Supplier A",
+			customer="Customer X",
+			customer_po="PO-1",
+			item_code="Item 1",
+			subcontracting_qty=2,
+			manufacturing_bom="BOM-MFG-1",
+			copy_bom="BOM-COPY-1",
+			diamond_quality="VVS",
+			estimated_delivery_date="2026-10-20",
+			child_po="CPO-1",
+			name="MP-Det-1",
+		)
+		row.update(kwargs)
+		return row
+
+	def test_fg_purchase_row_carries_copy_bom(self):
+		(item,) = self._po_rows([self._plan_row(purchase_type="FG Purchase")])
+		self.assertEqual(item["custom_copy_bom"], "BOM-COPY-1")
+		self.assertEqual(item["manufacturing_bom"], "BOM-MFG-1")
+
+	def test_subcontracting_row_carries_copy_bom_of_the_fg_item(self):
+		(item,) = self._po_rows([self._plan_row(purchase_type="Subcontracting")])
+		self.assertEqual(item["item_code"], "Subcontracting Service")
+		self.assertEqual(item["fg_item"], "Item 1")
+		self.assertEqual(item["custom_copy_bom"], "BOM-COPY-1")
+
+	def test_each_row_keeps_its_own_copy_bom(self):
+		items = self._po_rows(
+			[
+				self._plan_row(purchase_type="FG Purchase", copy_bom="BOM-COPY-1"),
+				self._plan_row(
+					purchase_type="FG Purchase",
+					item_code="Item 2",
+					copy_bom="BOM-COPY-2",
+					name="MP-Det-2",
+				),
+			]
+		)
+		self.assertEqual(
+			{i["item_code"]: i["custom_copy_bom"] for i in items},
+			{"Item 1": "BOM-COPY-1", "Item 2": "BOM-COPY-2"},
+		)
+
+	def test_manufacturing_plan_row_stores_copy_bom(self):
+		field = frappe.get_meta("Manufacturing Plan Table").get_field("copy_bom")
+		self.assertIsNotNone(field)
+		self.assertEqual(
+			(field.fieldtype, field.options, field.read_only), ("Link", "BOM", 1)
+		)

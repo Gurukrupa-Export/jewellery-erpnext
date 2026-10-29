@@ -89,19 +89,30 @@ class TestMoveManufacturingPlanLayoutPatch(IntegrationTestCase):
 		# Other site customisations on the doctype are not the patch's to touch.
 		self.assertEqual(self._setters(field_name="get_mwo"), [keep.name])
 
-	def test_keeps_the_estimated_delivery_date_column(self):
+	def test_keeps_the_estimated_delivery_date_data(self):
 		self._seed_old_site_rows()
-		self.assertTrue(frappe.db.has_column(DOCTYPE, "estimated_delivery_date"))
+		# A plan row written straight to the table, as an old site holds them: if the patch
+		# went through Custom Field's on_trash the value would go with the field.
+		frappe.db.sql(
+			"""insert into `tabManufacturing Plan`
+			(name, creation, modified, owner, modified_by, docstatus, estimated_delivery_date)
+			values (%s, now(), now(), 'Administrator', 'Administrator', 0, '2026-12-31')""",
+			("MP-PATCH-TEST",),
+		)
 
 		patch.execute()
 
-		self.assertTrue(frappe.db.has_column(DOCTYPE, "estimated_delivery_date"))
+		self.assertEqual(
+			str(frappe.db.get_value(DOCTYPE, "MP-PATCH-TEST", "estimated_delivery_date")), "2026-12-31"
+		)
 
 	def test_a_second_run_changes_nothing(self):
 		self._seed_old_site_rows()
 		patch.execute()
+		after_first = (self._custom_field_names(), self._setters())
 		patch.execute()
-		self.assertEqual(self._custom_field_names(), [])
+		self.assertEqual((self._custom_field_names(), self._setters()), after_first)
+		self.assertEqual(after_first[0], [])
 
 	def test_doctype_json_owns_the_layout_the_patch_hands_over(self):
 		# Read from the JSON, not the site's meta: the patch runs before/after a sync and the

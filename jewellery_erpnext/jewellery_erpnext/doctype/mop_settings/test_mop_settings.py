@@ -6845,17 +6845,41 @@ class TestBuildAndSubmitMwoSre(IntegrationTestCase):
 
 
 class TestWMopEodSyncErrorHandling(IntegrationTestCase):
+	"""sync_mop_logs error paths.
+
+	set_eod_sync_running is patched as well as release_eod_sync_lock: the real one
+	commits a 4-hour EOD lock, and with release mocked nothing would clear it, so every
+	later Stock Entry, Employee IR, Department IR, MOP Log and Stock Reconciliation on
+	the site would be refused by the EOD guard.
+	"""
+
 	@classmethod
 	def setUpClass(cls):
 		pass
 
+	@staticmethod
+	def _eod_lock_state():
+		return frappe.db.get_value(
+			"MOP Settings",
+			"MOP Settings",
+			["eod_sync_running", "eod_sync_lock_until"],
+			as_dict=True,
+		)
+
+	@patch(f"{_MOD}.set_eod_sync_running")
 	@patch(f"{_MOD}._resolve_run_range", return_value=(None, None))
 	@patch(f"{_MOD}._create_consolidated_error_log", return_value="ERROR-LOG-001")
 	@patch(f"{_MOD}.frappe.logger")
 	@patch(f"{_MOD}.frappe.new_doc")
 	@patch(f"{_MOD}.release_eod_sync_lock")
 	def test_no_sync_log_failure(
-		self, mock_release, mock_new_doc, mock_logger, mock_create_err, mock_resolve_run
+		self,
+		mock_release,
+		mock_new_doc,
+		mock_logger,
+		mock_create_err,
+		mock_resolve_run,
+		mock_set_running,
 	):
 		def _new_doc(doctype, *args, **kwargs):
 			if doctype == "MOP EOD Sync Log":
@@ -6863,10 +6887,14 @@ class TestWMopEodSyncErrorHandling(IntegrationTestCase):
 			return MagicMock()
 
 		mock_new_doc.side_effect = _new_doc
+		before = self._eod_lock_state()
 		result = sync_mop_logs()
 		self.assertEqual(result["processed"], 0)
+		mock_set_running.assert_called_once()
 		mock_release.assert_called_once()
+		self.assertEqual(self._eod_lock_state(), before)
 
+	@patch(f"{_MOD}.set_eod_sync_running")
 	@patch(f"{_MOD}._resolve_run_range", return_value=(None, None))
 	@patch(f"{_MOD}.frappe.logger")
 	@patch(f"{_MOD}._get_unsynced_mop_groups")
@@ -6879,12 +6907,16 @@ class TestWMopEodSyncErrorHandling(IntegrationTestCase):
 		mock_get_groups,
 		mock_logger,
 		mock_resolve_run,
+		mock_set_running,
 	):
 		mock_get_groups.side_effect = Exception("Unexpected error")
+		before = self._eod_lock_state()
 		sync_mop_logs(sync_log_name="LOG-TEST-001")
+		mock_set_running.assert_called_once()
 		mock_release.assert_called_once()
 		self.assertFalse(mock_release.call_args[1].get("success"))
 		mock_create_err.assert_called_once()
+		self.assertEqual(self._eod_lock_state(), before)
 
 	@patch(f"{_MOD}.frappe.db", new_callable=MagicMock)
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
