@@ -76,6 +76,8 @@ class _LineageCase(unittest.TestCase):
 	batch_item = {}
 	#: (customer, source batch) -> booked rate per source gram
 	booked = {}
+	#: batches a Customer Gold receipt created. No other batch is one.
+	receipt_batches = frozenset()
 
 	def setUp(self):
 		self.graph = dict(self.graph)
@@ -101,6 +103,11 @@ class _LineageCase(unittest.TestCase):
 				cgc,
 				"_recorded_components",
 				side_effect=lambda b: list(self.graph.get(b, [])),
+			),
+			patch.object(
+				cgc,
+				"_is_customer_receipt_batch",
+				side_effect=lambda b: b in self.receipt_batches,
 			),
 			patch.object(
 				cgc, "produced_qty", side_effect=lambda b: self.produced.get(b, 0.0)
@@ -259,6 +266,72 @@ class TestTwoReceiptLayers(_LineageCase):
 		share = self.share("FG-2", 1)
 		self.assertIsNone(share.value)
 		self.assertIn("RCPT-B", share.reason)
+
+
+class TestReceiptBatchRewrittenByConversionBack(_LineageCase):
+	"""kggk-uat KGGK-DIN-26-00047: the delivery released 1.545 g of the 1.835 g in the piece.
+
+	Settle had converted scrap back INTO the receipt batch, which replaced that batch's component
+	table with the scrap's mix (0.421 g customer + 0.079 g alloy). A serial-only piece is
+	rebuilt from the batches its Manufacture entry consumed, and the 22KT batch it drew on
+	names the receipt batch as its 5.000 g of customer gold -- which the delivery then split
+	again by the rewritten table, calling 0.290 g of the customer's gold company alloy.
+	"""
+
+	graph = {
+		# The 22KT batch Settle made from the 5.000 g receipt and 0.449 g of alloy.
+		"G22": [
+			_component(5.0, GOLD_24, customer=CUSTOMER, source_batch="RCPT-A"),
+			_component(0.449, ALLOY, source_batch="AL-1"),
+		],
+		"RCPT-A": [
+			_component(0.421, GOLD_24, customer=CUSTOMER, source_batch="RCPT-A"),
+			_component(0.079, ALLOY, source_batch="AL-1"),
+		],
+	}
+	produced = {"G22": 5.449}
+	batch_item = {"G22": GOLD_22, "RCPT-A": GOLD_24}
+	booked = {(CUSTOMER, "RCPT-A"): RATE_A}
+	receipt_batches = frozenset({"RCPT-A"})
+
+	def setUp(self):
+		super().setUp()
+		patches = [
+			patch.object(
+				cgc,
+				"serial_production",
+				return_value=frappe._dict(
+					voucher_no="SE-1",
+					finished_row="FG-1",
+					produced=1.0,
+					share=1.0,
+					consumed_rows=["RM-1"],
+				),
+			),
+			# 2.0 g of the 22KT batch went into the piece.
+			patch.object(cgc, "_consumed_batches", return_value=[("G22", -2.0)]),
+		]
+		for p in patches:
+			p.start()
+			self.addCleanup(p.stop)
+
+	def delivery(self):
+		return cgf._serial_customer_share(
+			frappe._dict(company=COMPANY), "SER-1", CUSTOMER, 1, True
+		)
+
+	def test_the_delivery_releases_all_of_the_customers_gold_in_the_piece(self):
+		share = self.delivery()
+
+		# 2.0 g x 5.000 / 5.449 = 1.835 g of the customer's 24KT, at the receipt's booked rate.
+		self.assertAlmostEqual(share.value, round(1.835 * RATE_A, 2), places=2)
+		self.assertAlmostEqual(share.fine, round(1.835 * 99.9 / 100, 3), places=3)
+
+	def test_the_release_is_allocated_to_the_receipt_batch_alone(self):
+		share = self.delivery()
+
+		self.assertEqual([part[0] for part in share.parts], ["RCPT-A"])
+		self.assertAlmostEqual(share.parts[0][1], 1.835, places=3)
 
 
 class TestInstalmentsUseTheProducedQuantity(_LineageCase):
