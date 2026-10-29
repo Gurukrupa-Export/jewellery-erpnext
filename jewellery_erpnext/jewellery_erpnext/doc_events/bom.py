@@ -665,20 +665,45 @@ def set_specifications_for_modified_bom(self, fields_list):
 	self.modified_specifications = modified_specifications
 
 
+# @frappe.whitelist()
+# def check_diamond_sieve_size_tolerance_value_exist(filters):
+# 	result = frappe.get_all(
+# 		"Attribute Value Diamond Sieve Size",
+# 		fields=[
+# 			"diamond_quality",
+# 			"diamond_shape",
+# 			"from_weight",
+# 			"to_weight",
+# 			"for_universal_value",
+# 		],
+# 		filters=filters,
+# 	)
+# 	return result
+
 @frappe.whitelist()
 def check_diamond_sieve_size_tolerance_value_exist(filters):
-	result = frappe.get_all(
-		"Attribute Value Diamond Sieve Size",
-		fields=[
-			"diamond_quality",
-			"diamond_shape",
-			"from_weight",
-			"to_weight",
-			"for_universal_value",
-		],
-		filters=filters,
-	)
-	return result
+    if isinstance(filters, str):
+        filters = frappe.parse_json(filters)
+
+    result = frappe.get_all(
+        "Attribute Value Diamond Sieve Size",
+        filters=filters,
+        fields=[
+            "name",
+            "parent",
+            "diamond_shape",
+            "diamond_quality",
+            "from_weight",
+            "to_weight",
+            "for_universal_value",
+        ],
+    )
+
+    return {
+        "site": frappe.local.site,
+        "filters_received": filters,
+        "result": result,
+    }
 
 
 @frappe.whitelist()
@@ -758,7 +783,11 @@ def update_totals(parent_doctype, parent_doctype_name):
 	for row in self.metal_detail + self.finding_detail:
 		metal_purity = frappe.db.get_value(
 			"Metal Criteria",
-			{"parent": self.customer, "metal_touch": row.metal_touch},
+			{
+				"parent": self.customer,
+				"metal_type": row.metal_type,
+				"metal_touch": row.metal_touch,
+			},
 			"metal_purity",
 		)
 		company_metal_purity = row.purity_percentage or 0

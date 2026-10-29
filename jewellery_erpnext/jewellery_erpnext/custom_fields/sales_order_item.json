@@ -814,9 +814,25 @@
   },
   {
    "dt": "Sales Order Item",
-   "fieldname": "custom_gemstone_weight",
+   "fieldname": "custom_chain_finding_weight",
    "fieldtype": "Float",
    "insert_after": "custom_finding_weight",
+   "label": "Chain Finding",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_other_finding_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_chain_finding_weight",
+   "label": "Other Finding",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_gemstone_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_other_finding_weight",
    "label": "Gemstone Weight",
    "module": "Jewellery Erpnext"
   },
@@ -859,7 +875,42 @@
    "insert_after": "custom_gemstone_pcs",
    "label": "Gross Weight",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0",
+   "dt": "Sales Order Item",
+   "fieldname": "custom_customer_gold_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "insert_after": "custom_company_rm_weight",
+   "label": "Customer Gold (gms)",
+   "module": "Jewellery Erpnext",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "dt": "Sales Order Item",
+   "fieldname": "custom_customer_diamond_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "insert_after": "custom_customer_gold_weight",
+   "label": "Customer Diamond (cts)",
+   "module": "Jewellery Erpnext",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "dt": "Sales Order Item",
+   "fieldname": "custom_customer_stone_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "insert_after": "custom_customer_diamond_weight",
+   "label": "Customer Stone (cts)",
+   "module": "Jewellery Erpnext",
+   "precision": "3",
+   "read_only": 1
   }
-  
  ]
 }

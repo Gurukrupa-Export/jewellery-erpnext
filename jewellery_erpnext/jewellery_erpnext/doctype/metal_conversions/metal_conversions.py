@@ -8,8 +8,26 @@ from erpnext.controllers.queries import get_batch_no
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.chain_subcontracting import (
+	after_validate as after_chain_validate,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.chain_subcontracting import (
+	cancel_chain,
+	chain_issued,
+	get_department_chain_flags,
+	guard_trash,
+	is_chain,
+	run_receive,
+	set_issue_warehouses,
+	set_to_warehouse,
+	validate_chain,
+	validate_receive,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.lanes import (
 	REGULAR_STOCK,
 	apportion,
@@ -28,6 +46,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 	update_batch_details,
 	update_source_betch,
 )
+
+CONVERSION_SE_TYPE = "Repack-Metal Conversion"
 
 # Remark sentences offered by the Remarks dropdown. Add a sentence here and it shows up
 # in the form with no other change; use "{percentage}" where the document's Percentage
@@ -66,7 +86,18 @@ def template_index(remark):
 
 
 class MetalConversions(Document):
+	def before_submit(self):
+		if is_chain(self):
+			# Only the workflow's Receive action may submit a chain conversion.
+			validate_receive(self)
+
 	def on_submit(self):
+		if is_chain(self):
+			# Receive: Repack and Process Loss with the employee or supplier, then the
+			# return to the department (chain_subcontracting.run_receive). The target was
+			# typed in, so the purity check and the alloy balance do not apply.
+			run_receive(self)
+			return
 		if self.get("is_melting_loss"):
 			# Pure loss-recording mode: book ONLY the Loss Qty as a Process Loss SE
 			# (RM -> Scrap). No conversion Stock Entry is created.
@@ -107,9 +138,16 @@ class MetalConversions(Document):
 		# Melting-loss guards + conversion-field clearing MUST run first so the
 		# downstream alloy / batch helpers see the cleared state.
 		validate_melting_loss(self)
+		# Chain fields are resolved before the allocation, which reads source_warehouse.
+		validate_chain(self)
 		update_alloy_betch(self)
-		update_source_betch(self)
+		# Once Issue has moved the metal to the supplier the allocation is a record, not a
+		# plan: re-allocating against the department warehouse would find nothing there.
+		if not chain_issued(self):
+			update_source_betch(self)
 		self.set_remarks()
+		# Last: the Issue action books its transfer and PO from the finished allocation.
+		after_chain_validate(self)
 
 	def set_remarks(self):
 		"""Guard Remarks and keep it in step with Percentage.
@@ -145,9 +183,25 @@ class MetalConversions(Document):
 		return render_remark_options(self.percentage, self.precision("percentage"))
 
 	def on_cancel(self):
+		if is_chain(self):
+			# Final transfer, Process Loss, Repack, then Issue -- see cancel_chain.
+			cancel_chain(self)
+			return
 		# Scoped cascade: cancels only auto-created Process Loss SEs owned by this
 		# document; a no-op for conversion-mode documents.
 		cancel_melting_loss_stock_entries(self)
+
+	def on_trash(self):
+		guard_trash(self)
+
+	@frappe.whitelist()
+	def refresh_chain_details(self):
+		"""Fill the To Employee's or the Supplier's warehouse for the form."""
+		# After Issue the work warehouse holds the metal and is frozen.
+		if not is_chain(self) or chain_issued(self):
+			return
+		set_to_warehouse(self)
+		set_issue_warehouses(self)
 
 	@frappe.whitelist()
 	def clear_fields(self):
@@ -269,7 +323,7 @@ class MetalConversions(Document):
 			{"disabled": 0, "department": dpt, "warehouse_type": "Raw Material"},
 			"name",
 		)
-		if not mnf:
+		if not s_wh:
 			errors.append("Warehouse Missing Warehouse Master Department Not Set")
 		if errors:
 			frappe.throw("<br>".join(errors))
@@ -279,6 +333,14 @@ class MetalConversions(Document):
 			self.manufacturer = mnf
 			self.source_warehouse = s_wh
 			self.target_warehouse = s_wh
+			# Chain Manufacturing is offered only where the department allows it.
+			manufacturing, subcontracting = get_department_chain_flags(dpt)
+			self.dept_is_chain_manufacturing = cint(manufacturing)
+			self.dept_is_chain_subcontracting = cint(subcontracting)
+			if not manufacturing:
+				self.is_chain_manufacturing = "No"
+			if not (manufacturing and subcontracting):
+				self.is_chain_subcontracting = 0
 
 	@frappe.whitelist()
 	def calculate_metal_conversion(self):
@@ -613,6 +675,140 @@ def make_metal_stock_entry(self):
 	self.stock_entry = se.name
 
 
+def _conversion_header(doc, lanes):
+	"""The Stock Entry header for a conversion voucher built from ``lanes``.
+
+	The header can only describe an unambiguous voucher. ``inventory_type`` is set only
+	when every lane has ONE ownership -- a customer's two batches are two lanes but still
+	one owner. ``_customer`` opens create_child_batches' gate (which is row-aware) and is
+	left blank when no lane is customer-owned, so that path is skipped entirely for an
+	all-Regular conversion.
+	"""
+	ownerships = {(lane["inventory_type"], lane["customer"]) for lane in lanes}
+	return {
+		"doctype": "Stock Entry",
+		"stock_entry_type": CONVERSION_SE_TYPE,
+		"purpose": "Repack",
+		"company": doc.company,
+		"custom_metal_conversion_reference": doc.name,
+		"inventory_type": lanes[0]["inventory_type"] if len(ownerships) == 1 else None,
+		"_customer": next(
+			(lane["customer"] for lane in lanes if lane["customer"]), None
+		),
+		"auto_created": 1,
+		"branch": doc.branch,
+	}
+
+
+def _append_lane_rows(
+	se,
+	lane,
+	tag,
+	common,
+	*,
+	source_item,
+	source_wh,
+	alloy_item,
+	alloy_rows,
+	target_item,
+	target_wh,
+	precision,
+):
+	"""Append one lane's rows -- its sources, the alloy it consumes, its target -- and
+	return the target qty booked.
+
+	Every row carries ``tag``: provenance (``update_parent_batch_id``), child-batch naming
+	(``create_child_batches``) and the Customer Gold ledger all read the lane from it, and
+	the rows stay contiguous so the lane pricer values the lane on its own.
+	"""
+	lane_inv_type = lane["inventory_type"] or REGULAR_STOCK
+
+	for allocation in lane["batches"]:
+		se.append(
+			"items",
+			dict(
+				common,
+				item_code=allocation.get("item_code") or source_item,
+				qty=flt(allocation["qty"], precision),
+				inventory_type=lane_inv_type,
+				customer=lane["customer"],
+				batch_no=allocation["batch"],
+				s_warehouse=source_wh,
+				custom_conversion_lane=tag,
+				use_serial_batch_fields=True,
+			),
+		)
+
+	# Alloy stays "Regular Stock" -- it IS company stock being consumed -- but it is
+	# tagged to the lane it funds so its origin entries and Batch Rate contribution
+	# can be attributed to the right target batch.
+	for allocation in alloy_rows:
+		se.append(
+			"items",
+			dict(
+				common,
+				item_code=alloy_item,
+				qty=flt(allocation["qty"], precision),
+				inventory_type=REGULAR_STOCK,
+				batch_no=allocation["batch"],
+				s_warehouse=source_wh,
+				custom_conversion_lane=tag,
+				use_serial_batch_fields=True,
+			),
+		)
+
+	target_qty = flt(lane["target_qty"], precision)
+	se.append(
+		"items",
+		dict(
+			common,
+			item_code=target_item,
+			qty=target_qty,
+			inventory_type=lane_inv_type,
+			customer=lane["customer"],
+			t_warehouse=target_wh,
+			custom_conversion_lane=tag,
+		),
+	)
+	return target_qty
+
+
+def _check_lane_owners(lanes):
+	"""A customer-owned lane must name its customer.
+
+	Its target batch is minted for that customer. With none, ``create_child_batches``
+	falls back to the voucher's first customer and would hand this batch's metal to
+	another owner, so the conversion is refused rather than guessed: the batch master
+	needs its customer first.
+	"""
+	for lane in lanes:
+		if lane["inventory_type"] in CUSTOMER_INVENTORY_TYPES and not lane["customer"]:
+			frappe.throw(
+				_(
+					"Batch {0} is {1} but names no customer, so its converted metal would "
+					"have no owner. Set the customer on the batch, then convert it."
+				).format(frappe.bold(lane.get("batch") or ""), lane["inventory_type"])
+			)
+
+
+def _qty_precision():
+	"""Decimals a conversion posts its quantities at: the Stock Entry row's ``transfer_qty``.
+
+	ERPNext rounds each row's ``transfer_qty`` at that field's own precision
+	(``StockEntry.set_transfer_qty``), so the builder rounds exactly as the posting will. It
+	used the conversion's float precision instead: on gk (2) a 0.477 g source row became 0.48 g
+	and overdrew its batch, although the row posts at 3 there -- the app's Property Setter
+	(``property_setter_guard``) pins ``transfer_qty`` at 3, and kg-gk's float precision is 3.
+	"""
+	return cint(frappe.get_precision("Stock Entry Detail", "transfer_qty")) or 3
+
+
+def _qty_unit(precision):
+	"""One unit at ``precision``, plus float slack: the most two correct figures -- the form's
+	round() and the server's Banker's flt() -- can differ by on a rounding tie."""
+	return 1.0 / (10**precision) + 1e-9
+
+
 def _allocations_by_lane(self):
 	"""``{lane key: [{batch, qty}]}`` for the whole allocation, in FIFO order.
 
@@ -799,3 +995,25 @@ def lane_tag(inventory_type, customer):
 	``update_parent_batch_id`` key off it.
 	"""
 	return f"{inventory_type or REGULAR_STOCK}|{customer or ''}"
+
+
+def cancel_conversion_stock_entries(doc):
+	"""Cancel the conversion Stock Entry this document generated, through its controller.
+
+	Found by the reverse link every generated entry carries
+	(``custom_metal_conversion_reference``), so conversions submitted before the forward
+	``stock_entry`` link was saved are covered too. ERPNext refuses the cancel when an
+	output batch has already been used, and that refusal blocks this cancellation as a
+	whole: a conversion is never left half-cancelled.
+	"""
+	for se_name in frappe.db.get_all(
+		"Stock Entry",
+		{
+			"custom_metal_conversion_reference": doc.name,
+			"stock_entry_type": CONVERSION_SE_TYPE,
+			"auto_created": 1,
+			"docstatus": 1,
+		},
+		pluck="name",
+	):
+		frappe.get_doc("Stock Entry", se_name).cancel()

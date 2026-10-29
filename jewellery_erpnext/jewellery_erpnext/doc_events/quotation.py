@@ -779,12 +779,14 @@ def create_tracking_bom_directly(self):
 		frappe.get_list(
 			"Metal Criteria",
 			{"parent": self.party_name},
-			["metal_touch", "metal_purity"],
+			["metal_type", "metal_touch", "metal_purity"],
 			ignore_permissions=1,
 		)
 		or {}
 	)
-	metal_criteria = {row.metal_touch: row.metal_purity for row in metal_criteria}
+	metal_criteria = {
+		(row.metal_type, row.metal_touch): row.metal_purity for row in metal_criteria
+	}
 	error_logs = []
 	self.custom_bom_creation_logs = None
 	attribute_data = frappe._dict()

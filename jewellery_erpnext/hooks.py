@@ -52,7 +52,6 @@ doctype_js = {
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Supplier Quotation": "public/js/doctype_js/supplier_quotation.js",
-	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
 	"Payment Entry": "public/js/doctype_js/payment_entry.js",
 	"Warehouse": "public/js/doctype_js/warehouse.js",
 }
@@ -132,6 +131,11 @@ doc_events = {
 		"before_submit": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 	},
+	# Queue the KGGK item/BOM push for the plan's subcontracting rows. The push itself is a
+	# background job in gke_customization; submitting is never blocked by it.
+	"Manufacturing Plan": {
+		"on_submit": "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.add_item_bom_to_kggk",
+	},
 	"Quotation": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.quotation.quotation.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.validate",
@@ -183,6 +187,8 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_cancel",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_submit",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.on_update_after_submit",
+		# After save, submit and update-after-submit alike.
+		"on_change": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.sync_customer_material_weights",
 	},
 	"Work Order": {
 		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.work_order.before_save",
@@ -224,6 +230,10 @@ doc_events = {
 			# after the stock had already moved. Restored here rather than by un-commenting
 			# its old call site, so the ordering against the other row rewriters is explicit.
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.validate_inventory_dimention",
+			# Hybrid orders: a finding listed in Subcontracting Settings must draw a Customer Goods
+			# batch of the order's Ref Customer. At `validate` so it sees the batches
+			# before_validate's update_batches filled; no-op while that table is empty.
+			"jewellery_erpnext.customer_subcontracting.hybrid_findings.validate_hybrid_finding_batches",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
