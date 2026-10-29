@@ -342,6 +342,8 @@ doc_events = {
 			"jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.record_stock_movement",
 			# The Return event and its receipt allocation, for the configured return type.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_return.record_return",
+			# Central submitting a Refining Entry's draft hand-back marks the entry Transferred.
+			"jewellery_erpnext.refining.doc_events.stock_entry.on_submit",
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,
@@ -359,7 +361,10 @@ doc_events = {
 			# Mirrors record_receipt. Guarded on schema, NOT on the feature flag, so a receipt
 			# posted while Customer Gold was on stays reversible after it is switched off.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.reverse_receipt",
+			# Central cancelling a Refining Entry's hand-back takes the entry back to Completed.
+			"jewellery_erpnext.refining.doc_events.stock_entry.on_cancel",
 		],
+		"on_trash": "jewellery_erpnext.refining.doc_events.stock_entry.on_trash",
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},
