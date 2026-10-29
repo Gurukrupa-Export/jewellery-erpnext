@@ -35,6 +35,34 @@ class MOPSettings(Document):
 		self._validate_eod_sync_time_permission()
 		self._validate_eod_sync_window()
 		self._log_casting_reissue_toggle()
+		self._validate_pmo_close_hold_department()
+
+	def _validate_pmo_close_hold_department(self):
+		"""The department a PMO's work orders go back to during a Close / Hold request.
+
+		The FRD keeps that metal out of the Central Department: a Manufacturer's
+		custom_central_department is the hub its approval transfers go through.
+		"""
+		department = self.get("pmo_close_hold_department")
+		if not department:
+			return
+		if frappe.db.get_value("Department", department, "is_group"):
+			frappe.throw(
+				_("Close / Hold Request Department {0} is a group department.").format(
+					frappe.bold(department)
+				)
+			)
+		central = frappe.get_all(
+			"Manufacturer",
+			filters={"custom_central_department": department},
+			pluck="name",
+		)
+		if central:
+			frappe.throw(
+				_(
+					"Close / Hold Request Department {0} is the Central Department of {1}; choose another department."
+				).format(frappe.bold(department), ", ".join(central))
+			)
 
 	def _validate_reservation_types(self):
 		rows = self.get("stock_entry_type_to_reservation") or []
