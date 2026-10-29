@@ -28,6 +28,7 @@ from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
 	carry_rates_from_source_batches,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import clear_kggk_source
 from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
 	bold,
 	enforcing,
@@ -1837,15 +1838,6 @@ def _stone_se_rate(consumed_rate, item_valuation_rate):
 	return flt(consumed_rate) or flt(item_valuation_rate)
 
 
-# Where a Template BOM was replicated from. ``copy_doc`` copies these ``no_copy`` fields, but
-# they belong on the Template only, never on an as-built FG BOM.
-KGGK_SOURCE_FIELDS = (
-	"custom_kggk_source_doctype",
-	"custom_kggk_source_site",
-	"custom_kggk_source_name",
-)
-
-
 def _keep_as_built_bom_off_default(bom):
 	"""An as-built FG BOM describes one piece; it must never become the item's default (F21).
 
@@ -1996,8 +1988,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.gold_rate_with_gst = flt(gold_rate_with_gst)
 	new_bom.is_active = 1
 	_keep_as_built_bom_off_default(new_bom)
-	for fieldname in KGGK_SOURCE_FIELDS:
-		new_bom.set(fieldname, None)
+	clear_kggk_source(new_bom)
 	new_bom.custom_creation_doctype = self.doctype
 	new_bom.custom_creation_docname = self.name
 	new_bom.company = self.company

@@ -4,9 +4,9 @@ import frappe
 def execute():
 	"""Blank the inherited Source DocType/Site/Name on non-Template BOMs.
 
-	A Source Site on a non-Template BOM was copied from its Template (see
-	``doc_events.bom.clear_inherited_kggk_source``). Product Return Order BOMs have no site
-	and are untouched.
+	A Source Site on a non-Template BOM was copied from its Template by ``frappe.copy_doc``
+	(new clones are cleared by ``bom_utils.clear_kggk_source``). Product Return Order BOMs have
+	no site and are untouched.
 	"""
 	if not frappe.db.has_column("BOM", "custom_kggk_source_site"):
 		return
