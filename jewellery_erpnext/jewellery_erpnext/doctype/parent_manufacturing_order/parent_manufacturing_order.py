@@ -299,7 +299,6 @@ class ParentManufacturingOrder(Document):
 			"Item", self.item_code, "has_batch_no"
 		):
 			frappe.throw(_("Diamond Grade is not mentioned in customer"))
-		self.metal_details()
 
 	def before_submit(self):
 		# frappe runs validate + before_submit on submit and skips before_save, so the grade has
@@ -419,14 +418,22 @@ class ParentManufacturingOrder(Document):
 			self.diamond_grade = grade
 
 	def metal_details(self):
-		if self.custom_tracking_bom:
-			metal_purity = frappe.db.get_value(
-				"Metal Criteria",
-				{"parent": self.manufacturer, "metal_touch": self.metal_touch},
-				["metal_purity"],
-			)
-			if metal_purity:
-				self.metal_purity = metal_purity
+		if not (self.manufacturer and self.metal_type and self.metal_touch):
+			return
+
+		metal_purity = frappe.db.get_value(
+			"Metal Criteria",
+			{
+				"parent": self.manufacturer,
+				"parenttype": "Manufacturer",
+				"parentfield": "metal_criteria",
+				"metal_type": self.metal_type,
+				"metal_touch": self.metal_touch,
+			},
+			"metal_purity",
+		)
+		if metal_purity:
+			self.metal_purity = metal_purity
 
 	def after_insert(self):
 		if self.custom_tracking_bom:
@@ -455,9 +462,10 @@ class ParentManufacturingOrder(Document):
 		# Also above it: the grade a PMO carries has to be legitimate from the moment it is
 		# created, and validate is the only hook frappe runs on both save and submit.
 		self._validate_diamond_grade_policy()
+		# Resolve derived purity on insert and automated saves as well as submission.
+		self.metal_details()
 		if self.is_new() or self.flags.ignore_validations:
 			return
-		self.metal_details()
 		validate_mfg_date(self)
 		if not self.manufacturer:
 			return
