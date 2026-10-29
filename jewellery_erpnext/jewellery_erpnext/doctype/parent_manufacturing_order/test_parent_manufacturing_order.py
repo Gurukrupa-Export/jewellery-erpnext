@@ -20,6 +20,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_mast
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufacturing_plan import (
 	create_sales_order,
 	manufacturing_plan_creation,
+	open_manufacture_orders,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
 	custom_override_grades,
@@ -528,7 +529,8 @@ def create_man_plan(self):
 	if man_plan.setting_type:
 		man_plan.setting_type = "Nova Glow"
 	man_plan.is_subcontracting = "No"
-	man_plan.save()
+	with open_manufacture_orders():
+		man_plan.save()
 	man_plan.submit()
 	return man_plan
 

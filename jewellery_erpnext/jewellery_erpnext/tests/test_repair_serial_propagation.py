@@ -25,6 +25,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturin
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufacturing_plan import (
 	create_repair_sales_order,
+	open_manufacture_orders,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
 	ManufacturingWorkOrder,
@@ -243,7 +244,10 @@ class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
 
 	def test_the_serials_own_bom_no_wins_over_a_tagged_bom(self):
 		written = self._run(
-			"SN-1", "BOM-DESIGN-FROM-ROW", "BOM-FROM-TAG", serial_custom_bom="BOM-AS-BUILT"
+			"SN-1",
+			"BOM-DESIGN-FROM-ROW",
+			"BOM-FROM-TAG",
+			serial_custom_bom="BOM-AS-BUILT",
 		)
 		self.assertEqual(written.get("serial_id_bom"), "BOM-AS-BUILT")
 
@@ -476,7 +480,8 @@ class TestRepairLineageReachesPMO(IntegrationTestCase):
 			man_plan.setting_type = "Nova Glow"
 		man_plan.is_subcontracting = "No"
 		self.assertTrue(man_plan.manufacturing_plan_table)
-		man_plan.save()
+		with open_manufacture_orders():
+			man_plan.save()
 		man_plan.submit()
 
 		pmos = frappe.get_all(
@@ -537,4 +542,3 @@ class TestGetSerialBom(IntegrationTestCase):
 
 		self.assertIsNone(get_serial_bom(None))
 		self.assertIsNone(self._bom(None, None)[0])
-
