@@ -4,6 +4,18 @@ from frappe.query_builder.custom import ConstantColumn
 from frappe.query_builder.functions import Count
 from frappe.utils import flt
 
+KGGK_SOURCE_FIELDS = (
+	"custom_kggk_source_doctype",
+	"custom_kggk_source_site",
+	"custom_kggk_source_name",
+)
+
+
+def clear_kggk_source(bom):
+	"""Blank the replication identity on a freshly cloned BOM."""
+	for fieldname in KGGK_SOURCE_FIELDS:
+		bom.set(fieldname, None)
+
 
 def update_serial_details(self):
 	if not self.tag_no:

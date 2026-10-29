@@ -23,6 +23,7 @@ from frappe.utils import (
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
 	carry_rates_from_source_batches,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import clear_kggk_source
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_current_mop_balance_rows,
@@ -1822,6 +1823,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		)
 
 	new_bom = frappe.copy_doc(bom_doc)
+	clear_kggk_source(new_bom)
 	new_bom.gold_rate_with_gst = flt(gold_rate_with_gst)
 	new_bom.is_active = 1
 	new_bom.custom_creation_doctype = self.doctype
