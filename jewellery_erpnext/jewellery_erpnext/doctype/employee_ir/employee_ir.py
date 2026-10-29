@@ -303,8 +303,14 @@ class EmployeeIR(Document):
 		validate_duplication_and_gr_wt(self)
 
 	def validate(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			refuse_employee_ir_while_requested,
+		)
+
 		validate_no_reverted_operations(self, "employee_ir_operations")
 		block_closed_mwo_operations(self, "employee_ir_operations")
+		# A PMO with a Close / Hold request: its work orders are not issued to an employee.
+		refuse_employee_ir_while_requested(self, "employee_ir_operations")
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()

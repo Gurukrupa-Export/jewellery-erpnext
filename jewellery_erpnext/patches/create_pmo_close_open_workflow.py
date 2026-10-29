@@ -23,6 +23,24 @@ PMOs are moved off states the new workflow does not have -- "Open" to Submitted,
 
 The roles are a starting point; the server checks transitions, not roles, so they can be
 changed on the Workflow form.
+
+Close / Hold requests (2026-10-29). A submitted PMO whose work orders are still in other
+departments, in progress, or carrying metal cannot be held or closed yet; it can be put in
+a request state instead, which restricts what moves for it until the work comes back
+(doc_events/close_open.py):
+
+    Submitted       -- Request Close    --> Close Requested
+    Submitted       -- Request Hold     --> Hold Requested
+    Close Requested -- Close            --> Closed
+    Close Requested -- Hold             --> Hold
+    Close Requested -- Withdraw Request --> Submitted
+    Hold Requested  -- Hold             --> Hold
+    Hold Requested  -- Withdraw Request --> Submitted
+
+Close Requested -> Hold is also the Hold a queued Close (enqueue_close) applies before it
+cancels Stock Entries. The Order Department requests and does the Close, the Hold Team
+the Hold and Open; System Manager keeps every transition. A transition row names one
+role, so a transition open to several roles has one row per role.
 """
 
 import frappe
@@ -30,6 +48,9 @@ import frappe
 WORKFLOW = "Parent Manufacturing Order"
 DOCTYPE = "Parent Manufacturing Order"
 SM = "System Manager"
+ORDER_DEPARTMENT = "Order Department"
+HOLD_TEAM = "Hold Team"
+ROLES = (ORDER_DEPARTMENT, HOLD_TEAM)
 
 # (state, doc_status, allow_edit, style for a Workflow State created here)
 STATES = (
@@ -40,6 +61,8 @@ STATES = (
 	("Closed (Draft)", "0", SM, "Danger"),
 	("Hold", "1", "All", "Warning"),
 	("Closed", "1", SM, "Danger"),
+	("Close Requested", "1", "All", "Info"),
+	("Hold Requested", "1", "All", "Warning"),
 )
 
 # (state, action, next_state, allowed)
@@ -50,14 +73,38 @@ TRANSITIONS = (
 	("Hold (Draft)", "Submit", "Submitted", SM),
 	("Hold (Draft)", "Close", "Closed (Draft)", SM),
 	("Submitted", "Hold", "Hold", SM),
+	("Submitted", "Hold", "Hold", HOLD_TEAM),
 	("Submitted", "Close", "Closed", SM),
+	("Submitted", "Close", "Closed", ORDER_DEPARTMENT),
 	("Submitted", "Cancel", "Cancelled", "All"),
 	("Hold", "Open", "Submitted", SM),
+	("Hold", "Open", "Submitted", HOLD_TEAM),
 	("Hold", "Close", "Closed", SM),
+	("Hold", "Close", "Closed", ORDER_DEPARTMENT),
+	("Submitted", "Request Close", "Close Requested", SM),
+	("Submitted", "Request Close", "Close Requested", ORDER_DEPARTMENT),
+	("Submitted", "Request Hold", "Hold Requested", SM),
+	("Submitted", "Request Hold", "Hold Requested", HOLD_TEAM),
+	("Close Requested", "Close", "Closed", SM),
+	("Close Requested", "Close", "Closed", ORDER_DEPARTMENT),
+	("Close Requested", "Hold", "Hold", SM),
+	("Close Requested", "Hold", "Hold", HOLD_TEAM),
+	("Close Requested", "Withdraw Request", "Submitted", SM),
+	("Close Requested", "Withdraw Request", "Submitted", ORDER_DEPARTMENT),
+	("Hold Requested", "Hold", "Hold", SM),
+	("Hold Requested", "Hold", "Hold", HOLD_TEAM),
+	("Hold Requested", "Withdraw Request", "Submitted", SM),
+	("Hold Requested", "Withdraw Request", "Submitted", HOLD_TEAM),
 )
 
 
 def execute():
+	for role in ROLES:
+		if not frappe.db.exists("Role", role):
+			frappe.get_doc(
+				{"doctype": "Role", "role_name": role, "desk_access": 1}
+			).insert(ignore_permissions=True)
+
 	for state, _doc_status, _allow_edit, style in STATES:
 		if not frappe.db.exists("Workflow State", state):
 			frappe.get_doc(

@@ -13,8 +13,18 @@ on_update_after_submit (a submitted PMO's):
   cancelled: enqueue_close puts the PMO on Hold and cancels them in a background job first.
 
 Hold and Close are refused unless every open work order is still in planning -- in the
-department a Split is allowed in (SPLIT_ALLOWED_DEPARTMENT), with nothing in progress or in
-transit -- and Close also needs no material on a work order or its current operation.
+department a Split is allowed in (SPLIT_ALLOWED_DEPARTMENT) or the Close / Hold Request
+Department of MOP Settings, with nothing in progress or in transit -- and Close also needs
+no material on a work order or its current operation and no draft transaction for them.
+
+Close / Hold requests. When the only reason a Close or Hold is refused is that the work
+orders are not back yet (elsewhere, in progress or in transit, still carrying metal, draft
+transactions), the PMO can be put in Close Requested / Hold Requested instead: nothing of
+it is written, the departments holding those work orders are alerted, and until the request
+is done or withdrawn its work orders can only be transferred to the Close / Hold Request
+Department -- never issued to an employee -- and no raw material moves to them (Material
+Requests and the Stock Entry types MOP Settings lists). The normal Close / Hold then runs,
+with all of its checks, once the work is back.
 
 Rows are locked NOWAIT before anything is decided (lock_order RULE D/E): the PMO's Material
 Requests, then the operations to write, then the work orders. The decisions come from those
@@ -61,6 +71,20 @@ CLOSED_STATES = (CLOSED_STATE, CLOSED_DRAFT_STATE)
 BLOCKING_STATES = (*HOLD_STATES, *CLOSED_STATES)
 HOLD, OPEN, CLOSE = "Hold", "Open", "Close"
 
+# The request states: submitted, not blocked -- the work orders keep moving, but only back.
+CLOSE_REQUESTED = "Close Requested"
+HOLD_REQUESTED = "Hold Requested"
+REQUESTED_STATES = (CLOSE_REQUESTED, HOLD_REQUESTED)
+REQUEST_CLOSE, REQUEST_HOLD, WITHDRAW = (
+	"Request Close",
+	"Request Hold",
+	"Withdraw Request",
+)
+REQUEST_ACTIONS = (REQUEST_CLOSE, REQUEST_HOLD)
+# The request a refused Close / Hold offers, and the action a request waits to do.
+REQUEST_OF = {CLOSE: REQUEST_CLOSE, HOLD: REQUEST_HOLD}
+TARGET_OF = {REQUEST_CLOSE: CLOSE, REQUEST_HOLD: HOLD}
+
 # What the PMO's documents are set to: the work order and operation status, and the Material
 # Request's workflow state.
 HOLD_STATUS = "Hold"
@@ -83,12 +107,36 @@ CANCEL_ALL_JOB_ID = "pmo_cancel_all::{0}"
 # The actions that take a reason, the reasons MOP Settings offers for each (its table of status
 # and reason), and the flags that carry the chosen reason through apply_workflow. The internal
 # flag marks enqueue_close's own Hold, which is part of the Close.
-REASON_ACTIONS = (HOLD, OPEN, CLOSE)
+REASON_ACTIONS = (HOLD, OPEN, CLOSE, REQUEST_CLOSE, REQUEST_HOLD, WITHDRAW)
 REASONS_DOCTYPE = "PMO Action Reason"
 REASONS_SETTINGS = "MOP Settings"
 REASONS_FIELD = "pmo_action_reasons"
 REASON_FLAG = "pmo_action_reason"
 INTERNAL_FLAG = "pmo_internal_action"
+# MOP Settings keeps reasons per Hold / Open / Close: a request takes those of the action it
+# waits for, and a withdrawal those of Open (normal work resumes).
+REASON_LIST_OF = {REQUEST_CLOSE: CLOSE, REQUEST_HOLD: HOLD, WITHDRAW: OPEN}
+
+# MOP Settings: where a requested PMO's work orders may go, and which Stock Entry types move
+# raw material to them.
+CLOSE_HOLD_DEPARTMENT_FIELD = "pmo_close_hold_department"
+BLOCKED_TYPES_DOCTYPE = "PMO Request Blocked Stock Entry Type"
+BLOCKED_TYPES_FIELD = "pmo_request_blocked_stock_entry_types"
+
+# Why a Hold / Close cannot go ahead, by kind. The work-order kinds clear once the work
+# orders are back with no metal and no drafts -- what a request waits for; the others refuse.
+PROBLEM_DEPARTMENT = "department"
+PROBLEM_IN_PROGRESS = "in_progress"
+PROBLEM_TRANSFER = "transfer_pending"
+PROBLEM_WEIGHT = "weight"
+PROBLEM_DRAFTS = "drafts"
+PROBLEM_STOCK = "stock"
+REQUESTABLE_PROBLEMS = (
+	PROBLEM_DEPARTMENT,
+	PROBLEM_IN_PROGRESS,
+	PROBLEM_WEIGHT,
+	PROBLEM_DRAFTS,
+)
 
 
 def on_workflow_state_change(pmo):
@@ -115,6 +163,11 @@ def on_workflow_state_change(pmo):
 		_hold(pmo, reason)
 	elif current in CLOSED_STATES:
 		_close(pmo, reason)
+	elif current in REQUESTED_STATES:
+		_request(pmo, action, reason)
+	elif previous in REQUESTED_STATES:
+		# Withdraw Request (Close Requested / Hold Requested -> Submitted).
+		_withdraw(pmo, previous, reason)
 	elif previous in HOLD_STATES:
 		# Open (Hold -> Submitted), or the submit of a draft that was held.
 		_open(pmo, reason)
@@ -123,12 +176,18 @@ def on_workflow_state_change(pmo):
 
 
 def _action_of(previous, current):
-	"""The action a transition is: Hold, Open, Close, or None (a Submit, even from Hold
-	(Draft), takes no reason)."""
+	"""The action a transition is: Hold, Open, Close, a request or its withdrawal, or None
+	(a Submit, even from Hold (Draft), takes no reason)."""
 	if current in HOLD_STATES:
 		return HOLD
 	if current in CLOSED_STATES:
 		return CLOSE
+	if current == CLOSE_REQUESTED:
+		return REQUEST_CLOSE
+	if current == HOLD_REQUESTED:
+		return REQUEST_HOLD
+	if previous in REQUESTED_STATES and current == SUBMITTED:
+		return WITHDRAW
 	if previous == HOLD_STATE and current == SUBMITTED:
 		return OPEN
 	return None
@@ -170,6 +229,161 @@ def _record_reason(pmo, action, reason):
 
 def _with_reason(message, reason):
 	return f"{message} {_('Reason: {0}').format(reason)}" if reason else message
+
+
+def _request(pmo, action, reason=None):
+	"""Close Requested / Hold Requested: the Close / Hold has to wait for the work orders.
+
+	Nothing of the PMO's is written -- the work orders keep moving, but only back (see the
+	refuse_*_while_requested guards). The departments holding the ones that are not back yet
+	are alerted, and the requester is told which they are.
+	"""
+	plan = _request_plan(pmo, action)
+	department, waiting = plan["department"], plan["pending"]
+	_notify_request(pmo, action, reason, department, waiting)
+	pmo.add_comment(
+		"Info",
+		_with_reason(
+			_("{0}: {1} work orders have to come back to {2} first ({3}).").format(
+				_(CLOSE_REQUESTED if action == REQUEST_CLOSE else HOLD_REQUESTED),
+				len(waiting),
+				department,
+				", ".join(sorted({w.department or _("no department") for w in waiting}))
+				or _("none outstanding"),
+			),
+			reason,
+		),
+	)
+
+
+def _withdraw(pmo, previous, reason=None):
+	pmo.add_comment(
+		"Info",
+		_with_reason(
+			_("{0} withdrawn: the work orders can move freely again.").format(
+				_(previous)
+			),
+			reason,
+		),
+	)
+
+
+def _work_orders_to_return(target, docs):
+	"""The submitted work orders that keep ``target`` (Hold / Close) from going ahead: not in
+	planning or the Close / Hold Request Department, in progress or in transit, or -- for a
+	Close -- still carrying metal. Where each one is: its current operation's department."""
+	submitted = [r for r in docs.mwos.values() if cint(r.docstatus) == 1]
+	allowed = _planning_departments({r.department for r in submitted if r.department})
+	waiting = []
+	for r in submitted:
+		operation = docs.mops.get(r.manufacturing_operation)
+		weight = flt(r.gross_wt, 3) or (flt(operation.gross_wt, 3) if operation else 0)
+		if (
+			r.department in allowed
+			and not (operation and _in_progress(operation))
+			and not (target == CLOSE and weight)
+		):
+			continue
+		waiting.append(
+			frappe._dict(
+				work_order=r.name,
+				department=(operation.department if operation else None)
+				or r.department,
+				status=operation.status if operation else None,
+				in_transit=bool(
+					operation and operation.department_ir_status == IN_TRANSIT
+				),
+				employee=operation.get("employee") if operation else None,
+				weight=weight,
+			)
+		)
+	return sorted(waiting, key=lambda w: (w.department or "", w.work_order))
+
+
+def _notify_request(pmo, action, reason, department, waiting):
+	"""Alert only the departments holding the work orders that are not back yet (their active
+	Employees with a login), and tell the requester which departments were alerted."""
+	by_department = {}
+	for w in waiting:
+		if w.department:
+			by_department.setdefault(w.department, []).append(w)
+	users = _department_users(list(by_department))
+	what = _("closing") if action == REQUEST_CLOSE else _("Hold")
+	requester = frappe.session.user
+	alerted = []
+	for dept, rows in sorted(by_department.items()):
+		recipients = sorted(users.get(dept, set()) - {requester})
+		if not recipients:
+			continue
+		alerted.append(dept)
+		enqueue_create_notification(
+			recipients,
+			{
+				"type": "Alert",
+				"document_type": PMO,
+				"document_name": pmo.name,
+				"from_user": requester,
+				"subject": _(
+					"{0}: Parent Manufacturing Order {1} has been requested for {2}. Transfer its work orders in {3} to {4}."
+				).format(_(action), pmo.name, what, dept, department),
+				"email_content": _with_reason(
+					_(
+						"Work orders in {0}: {1}. Review their production status, reconcile the metal and transfer them to {2}; until then they cannot go to any other department or employee, and no raw material can be transferred to them."
+					).format(
+						dept,
+						", ".join(f"{w.work_order} ({w.weight} g)" for w in rows),
+						department,
+					),
+					reason,
+				),
+			},
+		)
+	enqueue_create_notification(
+		requester,
+		{
+			"type": "Alert",
+			"document_type": PMO,
+			"document_name": pmo.name,
+			"subject": _(
+				"{0} for {1}: {2} work orders to come back; alerted {3}."
+			).format(
+				_(action),
+				pmo.name,
+				len(waiting),
+				", ".join(alerted)
+				or _("no department (nothing outstanding, or no users)"),
+			),
+		},
+	)
+
+
+def _department_users(departments):
+	"""{department: {user}}: the enabled login users of each department's active Employees."""
+	if not departments:
+		return {}
+	rows = frappe.get_all(
+		"Employee",
+		filters={
+			"department": ["in", sorted(departments)],
+			"status": "Active",
+			"user_id": ["is", "set"],
+		},
+		fields=["department", "user_id"],
+	)
+	enabled = set(
+		frappe.get_all(
+			"User",
+			filters={"name": ["in", sorted({r.user_id for r in rows})], "enabled": 1},
+			pluck="name",
+		)
+		if rows
+		else []
+	)
+	users = {}
+	for r in rows:
+		if r.user_id in enabled:
+			users.setdefault(r.department, set()).add(r.user_id)
+	return users
 
 
 def _hold(pmo, reason=None):
@@ -407,49 +621,50 @@ def _refuse_unless_ready(pmo_name, action, docs, stock=True):
 
 def _problems(pmo_name, action, docs, stock=True):
 	"""Why ``action`` (Hold / Close) cannot go ahead, one paragraph per rule."""
-	from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
-		SPLIT_ALLOWED_DEPARTMENT,
-	)
+	return [
+		message for _kind, message in _problem_list(pmo_name, action, docs, stock=stock)
+	]
 
+
+def _problem_list(pmo_name, action, docs, stock=True):
+	"""``_problems`` with the kind of each (PROBLEM_*): a request is offered only when every
+	one of them is a kind the work orders' return clears (REQUESTABLE_PROBLEMS)."""
 	verb = _("placed on Hold") if action == HOLD else _("closed")
 	submitted = [r for r in docs.mwos.values() if cint(r.docstatus) == 1]
 	problems = []
 
-	departments = sorted({r.department for r in submitted if r.department})
-	department_names = (
-		dict(
-			frappe.get_all(
-				"Department",
-				filters={"name": ["in", departments]},
-				fields=["name", "department_name"],
-				as_list=True,
-			)
-		)
-		if departments
-		else {}
-	)
-	elsewhere = [
-		r
-		for r in submitted
-		if department_names.get(r.department) != SPLIT_ALLOWED_DEPARTMENT
-	]
+	allowed = _planning_departments({r.department for r in submitted if r.department})
+	elsewhere = [r for r in submitted if r.department not in allowed]
 	if elsewhere:
+		message = _(
+			"PMO cannot be {0} because all linked Manufacturing Work Orders must be in the Manufacturing Plan and Management Department."
+		).format(verb)
+		department = close_hold_department()
+		if department and not _is_planning_department(department):
+			message += " " + _(
+				"{0}, the Close / Hold Request Department, is accepted too."
+			).format(frappe.bold(department))
 		problems.append(
-			_(
-				"PMO cannot be {0} because all linked Manufacturing Work Orders must be in the Manufacturing Plan and Management Department."
-			).format(verb)
-			+ _bullets(
-				f"{r.name} ({r.department or _('no department')})" for r in elsewhere
+			(
+				PROBLEM_DEPARTMENT,
+				message
+				+ _bullets(
+					f"{r.name} ({r.department or _('no department')})"
+					for r in elsewhere
+				),
 			)
 		)
 
 	busy = _operations_in_progress([r.name for r in submitted], docs.mops)
 	if busy:
 		problems.append(
-			_(
-				"PMO cannot be {0} while these operations are in progress or in transit:"
-			).format(verb)
-			+ _bullets(f"{o.name} ({o.manufacturing_work_order})" for o in busy)
+			(
+				PROBLEM_IN_PROGRESS,
+				_(
+					"PMO cannot be {0} while these operations are in progress or in transit:"
+				).format(verb)
+				+ _bullets(f"{o.name} ({o.manufacturing_work_order})" for o in busy),
+			)
 		)
 
 	pending = sorted(
@@ -459,10 +674,13 @@ def _problems(pmo_name, action, docs, stock=True):
 	)
 	if pending:
 		problems.append(
-			_(
-				"PMO cannot be {0} while these Material Requests are still transferring their stock from reserve. Try again once they are done:"
-			).format(verb)
-			+ _bullets(pending)
+			(
+				PROBLEM_TRANSFER,
+				_(
+					"PMO cannot be {0} while these Material Requests are still transferring their stock from reserve. Try again once they are done:"
+				).format(verb)
+				+ _bullets(pending),
+			)
 		)
 
 	if action == CLOSE:
@@ -475,24 +693,120 @@ def _problems(pmo_name, action, docs, stock=True):
 				flt(operation.gross_wt, 3) if operation else 0
 			)
 			if weight:
-				heavy.append(f"{r.name} ({weight})")
+				heavy.append((r.name, weight))
 		if heavy:
 			problems.append(
-				_(
-					"PMO cannot be closed because the Gross Weight of every linked Manufacturing Work Order must be 0."
+				(
+					PROBLEM_WEIGHT,
+					_(
+						"PMO cannot be closed because the Gross Weight of every linked Manufacturing Work Order must be 0."
+					)
+					+ _bullets(f"{name} ({weight})" for name, weight in heavy)
+					+ "<br>"
+					+ _(
+						"Outstanding metal: {0} g. Transfer it back or adjust it first."
+					).format(flt(sum(weight for _name, weight in heavy), 3)),
 				)
-				+ _bullets(heavy)
+			)
+		drafts = _draft_transactions(pmo_name, sorted(docs.mwos))
+		if drafts:
+			problems.append(
+				(
+					PROBLEM_DRAFTS,
+					_(
+						"PMO cannot be closed while these transactions of its work orders are still drafts. Submit or delete them first:"
+					)
+					+ _bullets(drafts),
+				)
 			)
 		if stock:
 			entries = _close_stock_plan(list(docs.mrs)).entries
 			if entries:
 				problems.append(
-					_(
-						"PMO cannot be closed while its Material Requests still have submitted Stock Entries. Close it from the Close action, which cancels them first:"
+					(
+						PROBLEM_STOCK,
+						_(
+							"PMO cannot be closed while its Material Requests still have submitted Stock Entries. Close it from the Close action, which cancels them first:"
+						)
+						+ _bullets(entries),
 					)
-					+ _bullets(entries)
 				)
 	return problems
+
+
+def _planning_departments(departments):
+	"""Those of ``departments`` a Hold / Close accepts: the planning department (by its name,
+	whatever the company suffix) and the Close / Hold Request Department of MOP Settings."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
+		SPLIT_ALLOWED_DEPARTMENT,
+	)
+
+	departments = sorted(d for d in departments if d)
+	allowed = set()
+	if departments:
+		names = dict(
+			frappe.get_all(
+				"Department",
+				filters={"name": ["in", departments]},
+				fields=["name", "department_name"],
+				as_list=True,
+			)
+		)
+		allowed = {d for d in departments if names.get(d) == SPLIT_ALLOWED_DEPARTMENT}
+	department = close_hold_department()
+	if department:
+		allowed.add(department)
+	return allowed
+
+
+def _is_planning_department(department):
+	from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
+		SPLIT_ALLOWED_DEPARTMENT,
+	)
+
+	return (
+		frappe.db.get_value("Department", department, "department_name")
+		== SPLIT_ALLOWED_DEPARTMENT
+	)
+
+
+def _draft_transactions(pmo_name, mwos):
+	"""Draft Stock Entries, Department IRs and Employee IRs of the PMO or its work orders:
+	a Close needs every stock transaction of the order submitted (or deleted) first.
+
+	Read from the draft parents: the child tables are large and Employee IR Operation has no
+	index on its work order."""
+	found = set(
+		frappe.get_all(
+			"Stock Entry",
+			filters={"docstatus": 0, "manufacturing_order": pmo_name},
+			pluck="name",
+		)
+	)
+	if mwos:
+		found.update(
+			frappe.get_all(
+				"Stock Entry",
+				filters={"docstatus": 0, "manufacturing_work_order": ["in", mwos]},
+				pluck="name",
+			)
+		)
+	labels = [f"{name} ({_('Stock Entry')})" for name in sorted(found)]
+	if mwos:
+		for parent, child in (
+			("Department IR", "Department IR Operation"),
+			("Employee IR", "Employee IR Operation"),
+		):
+			names = frappe.db.sql(
+				f"""SELECT DISTINCT p.name FROM `tab{parent}` p
+				JOIN `tab{child}` r ON r.parent = p.name AND r.parenttype = %(parent)s
+				WHERE p.docstatus = 0 AND r.manufacturing_work_order IN %(mwos)s
+				ORDER BY p.name""",
+				{"parent": parent, "mwos": tuple(mwos)},
+				pluck=True,
+			)
+			labels.extend(f"{name} ({_(parent)})" for name in names)
+	return labels
 
 
 def _operations_in_progress(mwos, fresh_operations):
@@ -584,6 +898,11 @@ def check_action(pmo, action):
 	it also returns the Stock Entries that have to be cancelled first (latest first) and the
 	Stopped requests that have to be re-opened for that; with any entries the form offers
 	enqueue_close instead of closing straight away.
+
+	A Close / Hold that is refused only because the work orders are not back yet returns a
+	``request`` instead (Request Close / Request Hold, with its reasons and the work orders it
+	waits for) when the user may make that request here. A request action itself returns the
+	Close / Hold Request Department and the work orders to come back (``pending``).
 	"""
 	doc = frappe.get_doc(PMO, pmo)
 	_require_action(doc, action)
@@ -593,8 +912,15 @@ def check_action(pmo, action):
 	if action == OPEN:
 		_refuse_open_after_close_started(doc.name, _snapshot(doc))
 		return {"reasons": reasons}
+	if action == WITHDRAW:
+		return {"reasons": reasons}
 	_refuse_while_job_runs(doc.name)
+	if action in REQUEST_ACTIONS:
+		return {"reasons": reasons, **_request_plan(doc, action)}
 	docs = _pmo_documents(doc.name, action, lock=False)
+	offer = _request_offer(doc, action, docs)
+	if offer:
+		return {"reasons": reasons, "request": offer}
 	_refuse_unless_ready(doc.name, action, docs, stock=False)
 	if action != CLOSE:
 		return {"reasons": reasons}
@@ -618,9 +944,56 @@ def check_action(pmo, action):
 	}
 
 
+def _request_plan(doc, action, docs=None):
+	"""What a Request Close / Request Hold waits for: refused while a transfer-from-reserve
+	job runs (try again) or without a Close / Hold Request Department."""
+	target = TARGET_OF[action]
+	department = _required_close_hold_department()
+	docs = docs or _pmo_documents(doc.name, target, lock=False)
+	transfers = [
+		message
+		for kind, message in _problem_list(doc.name, target, docs, stock=False)
+		if kind == PROBLEM_TRANSFER
+	]
+	if transfers:
+		frappe.throw(
+			"<br><br>".join(transfers), title=_("{0} Refused").format(_(action))
+		)
+	return {"department": department, "pending": _work_orders_to_return(target, docs)}
+
+
+def _request_offer(doc, action, docs):
+	"""The request to offer instead of refusing ``action`` (Close / Hold), or None.
+
+	Offered only when the user may make that request in the PMO's state, a Close / Hold
+	Request Department is set, and every problem is one the work orders' return clears; a
+	pending transfer, Stock Entries to cancel and the like keep the normal refusal."""
+	request = REQUEST_OF.get(action)
+	if not request or request not in _available_actions(doc):
+		return None
+	department = close_hold_department()
+	if not department:
+		return None
+	problems = _problem_list(doc.name, action, docs, stock=False)
+	if not problems or any(kind not in REQUESTABLE_PROBLEMS for kind, _m in problems):
+		return None
+	return {
+		"action": request,
+		"problems": [message for _kind, message in problems],
+		"reasons": _configured_reasons(request),
+		"department": department,
+		"pending": _work_orders_to_return(action, docs),
+	}
+
+
+def _available_actions(doc):
+	return {t.get("action") for t in get_transitions(doc)}
+
+
 @frappe.whitelist()
 def apply_action(pmo, action, reason):
-	"""Do the workflow ``action`` (Hold / Open / Close) with the reason chosen for it.
+	"""Do the workflow ``action`` (Hold / Open / Close, Request Close / Request Hold,
+	Withdraw Request) with the reason chosen for it.
 
 	The reason travels with the transition: apply_workflow reloads the PMO from the database
 	but keeps its flags, and the action's own handler adds the reason row in the same
@@ -637,14 +1010,15 @@ def apply_action(pmo, action, reason):
 
 
 def action_reasons(action):
-	"""The reasons MOP Settings offers for ``action``, in its table's order."""
+	"""The reasons MOP Settings offers for ``action``, in its table's order. A request takes
+	the reasons of the action it waits for, a withdrawal those of Open (REASON_LIST_OF)."""
 	return frappe.get_all(
 		REASONS_DOCTYPE,
 		filters={
 			"parenttype": REASONS_SETTINGS,
 			"parent": REASONS_SETTINGS,
 			"parentfield": REASONS_FIELD,
-			"status": action,
+			"status": REASON_LIST_OF.get(action, action),
 		},
 		pluck="reason",
 		order_by="idx asc",
@@ -657,7 +1031,7 @@ def _configured_reasons(action):
 		frappe.throw(
 			_(
 				"There are no reasons for {0} yet: add them in MOP Settings, under PMO Hold / Open / Close Reasons."
-			).format(frappe.bold(_(action)))
+			).format(frappe.bold(_(REASON_LIST_OF.get(action, action))))
 		)
 	return reasons
 
@@ -704,10 +1078,7 @@ def enqueue_close(pmo, reason):
 	_check_close_rights(plan)
 
 	if doc.workflow_state != HOLD_STATE:
-		doc.flags[INTERNAL_FLAG] = True
-		apply_workflow(doc, HOLD)
-		doc.flags.pop(INTERNAL_FLAG, None)
-		doc.reload()
+		_hold_for_close(doc)
 	snapshot = _snapshot(doc)
 	snapshot["close"] = {
 		"requested_by": frappe.session.user,
@@ -738,6 +1109,27 @@ def enqueue_close(pmo, reason):
 	message += " " + _("It closes once they are all cancelled; you will be notified.")
 	doc.add_comment("Info", _with_reason(message, reason))
 	frappe.msgprint(message, title=_("Close Queued"), indicator="blue")
+
+
+def _hold_for_close(doc):
+	"""The Hold a queued Close starts with -- part of the Close, so it takes no reason row.
+
+	Through the workflow when the user may Hold the PMO in its state, as before. The Order
+	Department may Close but need not hold the Hold Team role, so for them the same Hold is
+	applied directly: the state written as the workflow would, then _hold with all its checks
+	and writes (enqueue_close has already found the PMO ready to Close, which covers Hold).
+	"""
+	doc.flags[INTERNAL_FLAG] = True
+	try:
+		if HOLD in _available_actions(doc):
+			apply_workflow(doc, HOLD)
+		else:
+			doc.db_set("workflow_state", HOLD_STATE)
+			_hold(doc)
+			doc.add_comment("Workflow", _(HOLD_STATE))
+	finally:
+		doc.flags.pop(INTERNAL_FLAG, None)
+	doc.reload()
 
 
 def _require_action(doc, action):
@@ -999,13 +1391,23 @@ def pmo_blocking_state(pmo_name):
 
 def blocked_pmos(pmo_names):
 	"""{pmo: state} for those of ``pmo_names`` that are on Hold or Closed."""
+	return _pmo_states(pmo_names, BLOCKING_STATES)
+
+
+def requested_pmos(pmo_names):
+	"""{pmo: state} for those of ``pmo_names`` that have a Close or Hold request."""
+	return _pmo_states(pmo_names, REQUESTED_STATES)
+
+
+def _pmo_states(pmo_names, states):
+	"""{pmo: state} for those of ``pmo_names`` whose stored state is one of ``states``."""
 	names = sorted({n for n in pmo_names if n})
 	if not names or not _has_workflow_state():
 		return {}
 	return dict(
 		frappe.get_all(
 			PMO,
-			filters={"name": ["in", names], "workflow_state": ["in", BLOCKING_STATES]},
+			filters={"name": ["in", names], "workflow_state": ["in", states]},
 			fields=["name", "workflow_state"],
 			as_list=True,
 		)
@@ -1037,10 +1439,21 @@ def refuse_material_request_while_blocked(doc, method=None):
 	state directly, and the Stock Entry cancels of a Close release their stamps with
 	set_value, so neither passes through here.
 	"""
+	pmo = doc.get("manufacturing_order")
 	refuse_while_blocked(
-		doc.get("manufacturing_order"),
+		pmo,
 		_("Material Request {0} cannot be changed.").format(doc.name or _("New")),
 	)
+	# A Close / Hold request: no raw material moves to its work orders any more.
+	state = pmo_request_state(pmo)
+	if state:
+		frappe.throw(
+			f"{request_message(pmo, state)} "
+			+ _(
+				"Material Request {0} cannot be changed: no raw material can be transferred for it until the request is done or withdrawn."
+			).format(doc.name or _("New")),
+			title=_("Parent Manufacturing Order Restricted"),
+		)
 
 
 def refuse_stock_entry_while_blocked(doc, method=None):
@@ -1096,7 +1509,9 @@ def refuse_stock_entry_while_blocked(doc, method=None):
 				pluck="manufacturing_order",
 			)
 		)
-	blocked = blocked_pmos(pmos)
+	# One read for both: blocked (nothing moves) and requested (no raw material moves).
+	states = _pmo_states(pmos, (*BLOCKING_STATES, *REQUESTED_STATES))
+	blocked = {p: s for p, s in states.items() if s in BLOCKING_STATES}
 	if blocked:
 		frappe.throw(
 			" ".join(
@@ -1106,6 +1521,142 @@ def refuse_stock_entry_while_blocked(doc, method=None):
 			+ _("No stock can move for it."),
 			title=_("Parent Manufacturing Order Blocked"),
 		)
+	requested = {p: s for p, s in states.items() if s in REQUESTED_STATES}
+	# An End Transit receipt completes a transfer issued before the request: it goes through.
+	if (
+		requested
+		and not doc.get("outgoing_stock_entry")
+		and doc.get("stock_entry_type") in blocked_request_stock_entry_types()
+	):
+		frappe.throw(
+			" ".join(
+				request_message(pmo, state) for pmo, state in sorted(requested.items())
+			)
+			+ " "
+			+ _(
+				"No raw material can be transferred to its work orders: {0} Stock Entries are blocked until the request is done or withdrawn."
+			).format(frappe.bold(doc.stock_entry_type)),
+			title=_("Parent Manufacturing Order Restricted"),
+		)
+
+
+# --------------------------------------------------------------------------------------------
+# guards: a PMO with a Close or Hold request -- its work orders only come back
+# --------------------------------------------------------------------------------------------
+
+
+def pmo_request_state(pmo_name):
+	"""The PMO's Close Requested / Hold Requested state as stored, or None."""
+	if not pmo_name or not _has_workflow_state():
+		return None
+	state = frappe.db.get_value(PMO, pmo_name, "workflow_state")
+	return state if state in REQUESTED_STATES else None
+
+
+def request_message(pmo_name, state):
+	if state == HOLD_REQUESTED:
+		return _("Parent Manufacturing Order {0} has a Hold request.").format(
+			frappe.bold(pmo_name)
+		)
+	return _("Parent Manufacturing Order {0} has a Close request.").format(
+		frappe.bold(pmo_name)
+	)
+
+
+def close_hold_department():
+	"""MOP Settings > Close / Hold Request Department: where a requested PMO's work orders may
+	be transferred, and where a Hold / Close accepts them besides planning."""
+	return frappe.db.get_single_value(REASONS_SETTINGS, CLOSE_HOLD_DEPARTMENT_FIELD)
+
+
+def _required_close_hold_department():
+	department = close_hold_department()
+	if not department:
+		frappe.throw(
+			_(
+				"Set the Close / Hold Request Department in MOP Settings (PMO Hold / Open / Close Reasons) first: a request sends the work orders there."
+			),
+			title=_("Close / Hold Request Department Missing"),
+		)
+	return department
+
+
+def blocked_request_stock_entry_types():
+	"""MOP Settings > Stock Entry Types Blocked During a Request."""
+	return set(
+		frappe.get_all(
+			BLOCKED_TYPES_DOCTYPE,
+			filters={
+				"parenttype": REASONS_SETTINGS,
+				"parent": REASONS_SETTINGS,
+				"parentfield": BLOCKED_TYPES_FIELD,
+			},
+			pluck="stock_entry_type",
+		)
+	)
+
+
+def _row_pmos(doc, table):
+	"""The PMOs of an IR's rows: each row's operation's order, plus a row's own PMO link."""
+	rows = doc.get(table) or []
+	pmos = {r.get("parent_manufacturing_order") for r in rows}
+	operations = sorted({r.get("manufacturing_operation") for r in rows} - {None, ""})
+	if operations:
+		pmos.update(
+			frappe.get_all(
+				MOP,
+				filters={"name": ["in", operations]},
+				pluck="manufacturing_order",
+			)
+		)
+	return pmos
+
+
+def refuse_department_ir_while_requested(doc, table="department_ir_operation"):
+	"""Department IR validate: a requested PMO's work orders are issued only to the Close /
+	Hold Request Department. A Receive (taking them in) always goes through."""
+	if doc.get("type") != "Issue" or cint(doc.docstatus) == 2:
+		return
+	requested = requested_pmos(_row_pmos(doc, table))
+	if not requested:
+		return
+	department = close_hold_department()
+	if department and doc.get("next_department") == department:
+		return
+	frappe.throw(
+		" ".join(request_message(p, s) for p, s in sorted(requested.items()))
+		+ " "
+		+ _("Its work orders can be transferred only to {0}, not to {1}.").format(
+			frappe.bold(
+				department or _("the Close / Hold Request Department of MOP Settings")
+			),
+			frappe.bold(doc.get("next_department") or _("(blank)")),
+		),
+		title=_("Transfer Restricted"),
+	)
+
+
+def refuse_employee_ir_while_requested(doc, table="employee_ir_operations"):
+	"""Employee IR validate: a requested PMO's work orders are not issued to an employee. A
+	Receive (handing them back) always goes through."""
+	if doc.get("type") != "Issue" or cint(doc.docstatus) == 2:
+		return
+	requested = requested_pmos(_row_pmos(doc, table))
+	if not requested:
+		return
+	frappe.throw(
+		" ".join(request_message(p, s) for p, s in sorted(requested.items()))
+		+ " "
+		+ _(
+			"Its work orders cannot be issued to an employee; transfer them to {0} with a Department IR."
+		).format(
+			frappe.bold(
+				close_hold_department()
+				or _("the Close / Hold Request Department of MOP Settings")
+			)
+		),
+		title=_("Transfer Restricted"),
+	)
 
 
 def validate_operation_hold(mop):

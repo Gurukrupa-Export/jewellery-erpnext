@@ -48,7 +48,9 @@
   "msl_pending_gate_enforce_from",
   "pmo_action_reasons_section",
   "pmo_action_reasons_help",
-  "pmo_action_reasons"
+  "pmo_action_reasons",
+  "pmo_close_hold_department",
+  "pmo_request_blocked_stock_entry_types"
  ],
  "fields": [
   {
@@ -311,20 +313,34 @@
    "fieldname": "pmo_action_reasons_help",
    "fieldtype": "HTML",
    "label": "PMO Action Reasons Help",
-   "options": "<div class='alert alert-info' style='font-size:13px;'>The reasons offered when a Parent Manufacturing Order is put on <b>Hold</b>, <b>Open</b>ed or <b>Close</b>d. Each action lists only the reasons of its own status, and the one chosen is recorded on the order with who chose it and when. An action with no reasons here cannot be done.</div>"
+   "options": "<div class='alert alert-info' style='font-size:13px;'>The reasons offered when a Parent Manufacturing Order is put on <b>Hold</b>, <b>Open</b>ed or <b>Close</b>d. Each action lists only the reasons of its own status, and the one chosen is recorded on the order with who chose it and when. An action with no reasons here cannot be done.<br><br><b>Close / Hold requests.</b> When a Close or Hold is refused because the order's work orders are still in other departments, in progress, or still carry metal, the order can be put in <b>Close Requested</b> or <b>Hold Requested</b> instead. <b>Request Close</b> uses the Close reasons, <b>Request Hold</b> the Hold reasons and <b>Withdraw Request</b> the Open reasons. The departments holding its work orders are alerted. While the request is open its work orders can be transferred only to the <b>Close / Hold Request Department</b> (never to an employee), and Material Requests and the Stock Entry types listed below cannot be made for it. The order closes or goes on Hold with the normal action once its work orders are back and, for a Close, carry no metal.</div>"
   },
   {
    "fieldname": "pmo_action_reasons",
    "fieldtype": "Table",
    "label": "PMO Action Reasons",
    "options": "PMO Action Reason"
+  },
+  {
+   "description": "While a Parent Manufacturing Order has a Close or Hold request, its work orders can be transferred only to this department. It cannot be a Manufacturer's Central Department.",
+   "fieldname": "pmo_close_hold_department",
+   "fieldtype": "Link",
+   "label": "Close / Hold Request Department",
+   "options": "Department"
+  },
+  {
+   "description": "Stock Entries of these types cannot be made for an order with a Close or Hold request: they move raw material to its work orders.",
+   "fieldname": "pmo_request_blocked_stock_entry_types",
+   "fieldtype": "Table MultiSelect",
+   "label": "Stock Entry Types Blocked During a Request",
+   "options": "PMO Request Blocked Stock Entry Type"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-21 18:00:00.000000",
+ "modified": "2026-10-29 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "MOP Settings",

@@ -576,6 +576,60 @@ class TestPurgedEodErrorLog(IntegrationTestCase):
 		db_exists.assert_not_called()
 
 
+class TestPmoCloseHoldDepartment(IntegrationTestCase):
+	"""MOP Settings > Close / Hold Request Department: where a requested PMO's work orders go.
+	The FRD keeps that metal out of a Manufacturer's Central Department."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _validate(self, department, is_group=0, central_of=()):
+		doc = _bare_settings(pmo_close_hold_department=department)
+		real_get_value, real_get_all = frappe.db.get_value, frappe.get_all
+
+		# Keyed stubs that forward every other call verbatim (meta loading, translations).
+		def _get_value(*args, **kwargs):
+			if tuple(args[:3]) == ("Department", department, "is_group"):
+				return is_group
+			return real_get_value(*args, **kwargs)
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "Manufacturer":
+				return list(central_of)
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch(f"{_SETTINGS_MOD}.frappe.db.get_value", side_effect=_get_value),
+			patch(f"{_SETTINGS_MOD}.frappe.get_all", side_effect=_get_all) as get_all,
+		):
+			doc._validate_pmo_close_hold_department()
+		return get_all
+
+	def test_a_plain_department_is_accepted(self):
+		get_all = self._validate("Returns - T")
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"],
+			{"custom_central_department": "Returns - T"},
+		)
+
+	def test_a_central_department_is_refused(self):
+		with self.assertRaisesRegex(
+			frappe.ValidationError, "Central Department of Labh"
+		):
+			self._validate("Central - T", central_of=("Labh",))
+
+	def test_a_group_department_is_refused(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "group department"):
+			self._validate("All Departments", is_group=1)
+
+	def test_no_department_reads_nothing(self):
+		doc = _bare_settings(pmo_close_hold_department=None)
+		with patch(f"{_SETTINGS_MOD}.frappe.get_all") as get_all:
+			doc._validate_pmo_close_hold_department()
+		get_all.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Sync behavior: draft SE preserved on submit failure
 # ---------------------------------------------------------------------------

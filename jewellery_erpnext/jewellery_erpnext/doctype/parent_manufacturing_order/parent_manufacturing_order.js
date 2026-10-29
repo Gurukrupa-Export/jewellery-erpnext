@@ -8,8 +8,12 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		// MOP Settings lists for the action. The action runs through apply_action, which records
 		// the reason with it, so Frappe's own workflow call is always cancelled (rejected). A
 		// Close whose Material Requests moved stock is queued instead (enqueue_close).
+		// A Close / Hold refused only because the work orders are not back yet comes back with
+		// a request to make instead (Request Close / Request Hold); the request actions and
+		// Withdraw Request use the same dialog.
 		const action = frm.selected_workflow_action;
-		if (!["Hold", "Open", "Close"].includes(action)) return;
+		if (!["Hold", "Open", "Close", "Request Close", "Request Hold", "Withdraw Request"].includes(action))
+			return;
 		// handle_workflow_action freezes the screen before calling this and only unfreezes
 		// once apply_workflow settles, so a rejection here would leave the page frozen and
 		// the freeze overlay sits over any dialog opened meanwhile. Lift it for the checks
@@ -24,10 +28,19 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 				callback: (r) => {
 					if (r.exc) return reject();
 					const plan = r.message || {};
+					if (plan.request) {
+						return ask_reason(
+							frm,
+							plan.request.action,
+							plan.request.reasons || [],
+							reject,
+							plan.request
+						);
+					}
 					if (action === "Close" && (plan.entries || []).length) {
 						return ask_close_with_stock(frm, plan, reject);
 					}
-					ask_reason(frm, action, plan.reasons || [], reject);
+					ask_reason(frm, action, plan.reasons || [], reject, plan);
 				},
 			});
 		});
@@ -490,19 +503,79 @@ function reason_field(reasons) {
 	};
 }
 
-function action_message(frm, action) {
+function action_message(frm, action, detail) {
 	if (action === "Hold") return hold_message(frm);
 	if (action === "Open") return open_message();
+	if (action === "Request Close" || action === "Request Hold") return request_message(action, detail);
+	if (action === "Withdraw Request") return withdraw_message(frm);
 	return close_message(frm);
 }
 
-function ask_reason(frm, action, reasons, reject) {
+function request_message(action, detail) {
+	const what = action === "Request Close" ? __("closed") : __("put on Hold");
+	const department = frappe.utils.escape_html(
+		(detail && detail.department) || __("the Close / Hold Request Department")
+	);
+	return __(
+		"Request this Parent Manufacturing Order to be {0}? It stays open: the departments holding its work orders are alerted, its work orders can then be transferred only to {1} (never to an employee), and no raw material can be transferred to them. Use the normal action once they are back.",
+		[what, `<b>${department}</b>`]
+	);
+}
+
+function withdraw_message(frm) {
+	return __(
+		"Withdraw the {0} of this Parent Manufacturing Order? Its work orders can move to any department or employee again.",
+		[__(frm.doc.workflow_state)]
+	);
+}
+
+function request_detail_html(detail) {
+	// Why the Close / Hold has to wait (server messages) and the work orders it waits for.
+	if (!detail) return "";
+	let html = "";
+	if ((detail.problems || []).length) {
+		html += `<div class="alert alert-warning small">${detail.problems.join("<br><br>")}</div>`;
+	}
+	const pending = detail.pending || [];
+	if (pending.length) {
+		const rows = pending
+			.map((w) => {
+				const where = w.in_transit
+					? __("In Transit")
+					: w.employee
+					? __("With {0}", [frappe.utils.escape_html(w.employee)])
+					: "";
+				return (
+					`<tr><td>${frappe.utils.get_form_link(
+						"Manufacturing Work Order",
+						w.work_order,
+						true
+					)}</td>` +
+					`<td>${frappe.utils.escape_html(w.department || "")}</td>` +
+					`<td>${frappe.utils.escape_html(w.status || "")} ${where}</td>` +
+					`<td class="text-right">${w.weight || 0}</td></tr>`
+				);
+			})
+			.join("");
+		html +=
+			`<p>${__("Work orders to come back:")}</p>` +
+			`<table class="table table-bordered table-condensed"><thead><tr>` +
+			`<th>${__("Work Order")}</th><th>${__("Department")}</th><th>${__("Status")}</th>` +
+			`<th class="text-right">${__("Gross Wt (g)")}</th></tr></thead><tbody>${rows}</tbody></table>`;
+	}
+	return html;
+}
+
+function ask_reason(frm, action, reasons, reject, detail) {
 	// The workflow action itself never runs from here (the promise is always rejected):
 	// apply_action does it, so the reason row is written with it or not at all.
 	const dialog = new frappe.ui.Dialog({
 		title: __(action),
 		fields: [
-			{ fieldtype: "HTML", options: `<p>${action_message(frm, action)}</p>` },
+			{
+				fieldtype: "HTML",
+				options: `<p>${action_message(frm, action, detail)}</p>${request_detail_html(detail)}`,
+			},
 			reason_field(reasons),
 		],
 		primary_action_label: __("Yes"),
