@@ -72,3 +72,11 @@ class TestClearKggkSource(unittest.TestCase):
 			sales_order.create_sales_order_bom,
 		):
 			self.assertIn("clear_kggk_source(", inspect.getsource(fn), fn.__name__)
+
+	def test_fg_clear_runs_after_the_dynamic_field_mapping(self):
+		source = inspect.getsource(manufacturing_operation.create_finished_goods_bom)
+		self.assertGreater(
+			source.index("clear_kggk_source("),
+			source.index("_apply_fg_bom_dynamic_fields("),
+			"a dynamic mapping could restore the Source fields after the clear",
+		)

@@ -1823,7 +1823,6 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		)
 
 	new_bom = frappe.copy_doc(bom_doc)
-	clear_kggk_source(new_bom)
 	new_bom.gold_rate_with_gst = flt(gold_rate_with_gst)
 	new_bom.is_active = 1
 	new_bom.custom_creation_doctype = self.doctype
@@ -3510,6 +3509,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	# Copy subcategory-driven values captured on the Employee IR Receive into the
 	# configured BOM fields (Dynamic FG BOM Field Mapping).
 	_apply_fg_bom_dynamic_fields(new_bom, self)
+	# Last writer wins: a dynamic mapping may target the Source fields, so blank them after it.
+	clear_kggk_source(new_bom)
 
 	new_bom.flags.ignore_links = True
 
