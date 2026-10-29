@@ -10,11 +10,10 @@ frappe.ui.form.on("Manufacturing Plan", {
 				apply_manufacture_order_options(frm);
 			},
 		});
-		// A Duplicate or route option can open a new plan already in Without-SO mode.
+		// A draft, Duplicate or route option can open a plan already in Without-SO mode.
 		if (
-			frm.is_new() &&
-			frm.doc.select_manufacture_order === "Finding Manufacturing - Without SO" &&
-			!frm.doc.department
+			frm.doc.docstatus === 0 &&
+			frm.doc.select_manufacture_order === "Finding Manufacturing - Without SO"
 		) {
 			set_user_department(frm);
 		}
@@ -59,12 +58,12 @@ frappe.ui.form.on("Manufacturing Plan", {
 		set_finding_detail_filters(frm);
 	},
 	select_manufacture_order(frm) {
-		// Department belongs to the Without-SO mode only, and is the user's Employee department.
+		// Department belongs to the Without-SO mode only, and defaults to the user's Employee department.
 		if (frm.doc.select_manufacture_order !== "Finding Manufacturing - Without SO") {
 			if (frm.doc.department) frm.set_value("department", null);
 			return;
 		}
-		if (!frm.doc.department) set_user_department(frm);
+		set_user_department(frm);
 	},
 	get_sales_order(frm) {
 		map_current_doc({
@@ -171,23 +170,14 @@ function apply_manufacture_order_options(frm) {
 }
 
 function set_user_department(frm) {
-	// Department is read-only, and the desk hides an empty read-only field, so a user with no
-	// Employee department is told why here instead of only failing on Save.
+	// A user with an Employee department gets it filled in and locked; a user without one picks
+	// it. A saved department is kept either way.
 	frappe.call({
 		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_user_department",
 		callback: function (r) {
-			const mode = frm.doc.select_manufacture_order;
-			if (mode !== "Finding Manufacturing - Without SO") return;
-			if (r.message) {
-				frm.set_value("department", r.message);
-				return;
-			}
-			frappe.msgprint(
-				__("Link an active Employee with a Department to user {0} to create a {1} plan.", [
-					frappe.utils.bold(frappe.session.user),
-					frappe.utils.bold(mode),
-				])
-			);
+			if (frm.doc.select_manufacture_order !== "Finding Manufacturing - Without SO") return;
+			frm.set_df_property("department", "read_only", r.message ? 1 : 0);
+			if (r.message && !frm.doc.department) frm.set_value("department", r.message);
 		},
 	});
 }

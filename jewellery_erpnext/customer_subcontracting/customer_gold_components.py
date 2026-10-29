@@ -186,6 +186,36 @@ def _recorded_components(batch_no):
 		return []
 
 
+def _is_customer_receipt_batch(batch_no):
+	"""Whether a Customer Gold receipt put metal into ``batch_no`` -- where the gold ENTERED.
+
+	True for an effective Receipt event only (no Reversal undid it), the test
+	``customer_gold_allocations.effective_receipt_events`` applies everywhere else, so a
+	cancelled receipt does not leave its batch looking like a root.
+
+	Fails CLOSED to ``False`` on a site whose ledger schema has not caught up, the direction
+	``_recorded_components`` takes and for the same reason: this is asked on the path of every
+	Manufacture and Repack submit.
+	"""
+	if not batch_no:
+		return False
+
+	# Deferred: customer_gold_allocations imports customer_gold_fulfilment at module level, and
+	# fulfilment reaches back into this module.
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		effective_receipt_events,
+	)
+
+	try:
+		return bool(effective_receipt_events({"batch_no": batch_no}))
+	except (
+		frappe.DoesNotExistError,
+		frappe.db.TableMissingError,
+		frappe.db.InvalidColumnName,
+	):
+		return False
+
+
 def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 	"""What ``drawn_qty`` taken out of ``batch_no`` is actually made of.
 
@@ -215,6 +245,11 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 		# coarser answer that terminates beats a precise one that does not.
 		return [_atomic_component(batch_no, drawn_qty)]
 
+	# A draw made DIRECTLY on a customer's receipt batch takes the gold as it was received, not
+	# as a later conversion-back left its component table. See the note on the nested case below.
+	if _is_customer_receipt_batch(batch_no):
+		return [_atomic_component(batch_no, drawn_qty)]
+
 	components = _recorded_components(batch_no)
 	if not components:
 		return [_atomic_component(batch_no, drawn_qty)]
@@ -242,6 +277,13 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 		# component's owner is decided once, at mixing, and is immutable history) in the exact
 		# direction that matters: a customer's metal reverts to company stock as soon as the
 		# source batch is re-tagged or consumed. The unit suite caught this.
+		#
+		# A customer's RECEIPT batch is the one source that is never followed, whatever rows it
+		# carries. Settle converts metal back INTO the receipt batch, and the table is REPLACED on
+		# every such production, so its rows describe the last top-up and not what the batch held
+		# when this component drew on it. Following them split a draw by that mix: 1.835 g of a
+		# 5.000 g receipt came out as 1.545 g customer and 0.290 g company alloy, and the delivery
+		# released the smaller figure. The row that names the receipt batch is already the leaf.
 		source_batch = component.get("source_batch")
 		deeper = []
 		if (
@@ -249,6 +291,7 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 			and source_batch not in seen
 			and depth + 1 < MAX_DEPTH
 			and _recorded_components(source_batch)
+			and not _is_customer_receipt_batch(source_batch)
 		):
 			deeper = resolve_components(
 				source_batch, share, depth + 1, seen | {batch_no}

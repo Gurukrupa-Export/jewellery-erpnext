@@ -150,3 +150,4 @@ jewellery_erpnext.patches.add_customer_serial_print_with_hallmarking
 jewellery_erpnext.patches.clear_kggk_source_on_non_template_bom #2026-10-28 clear inherited KGGK source fields on non-Template BOMs
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Close / Hold requests, Order Department and Hold Team
 jewellery_erpnext.patches.seed_pmo_request_blocked_stock_entry_types
+jewellery_erpnext.patches.add_item_catalogue_image_fields #2026-10-29 Item gold/silver catalogue image fields
