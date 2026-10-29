@@ -1098,6 +1098,152 @@ def _doc(percentage=None, remarks=None, precision=3):
 	return doc
 
 
+class _FakeMCDocAlloy:
+	"""Stand-in Metal Conversions doc for update_alloy_betch (reassigns and appends to
+	``alloy_batch_details`` like the real document)."""
+
+	def __init__(self, **fields):
+		self.alloy_batch_details = []
+		self.source_batch_details = []
+		for key, value in fields.items():
+			setattr(self, key, value)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+	def append(self, table, row):
+		getattr(self, table).append(frappe._dict(row))
+
+
+class TestUpdateAlloyBatch(IntegrationTestCase):
+	"""update_alloy_betch must not call enough stock "not available" because float sums drift.
+
+	The quantities of two or more batches were summed as floats and compared with ``!=``
+	to the alloy qty: 67.279 + 22.639 is 89.91799999999999, so the save threw as soon as
+	the alloy ran into a second batch. A single batch never did, and neither did the
+	source table in the same document.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		if not hasattr(frappe, "db") or not frappe.db:
+			frappe.db = MagicMock()
+		self._patches = [patch.object(utils, "flt", _det_flt)]
+		for p in self._patches:
+			p.start()
+
+	def tearDown(self):
+		for p in self._patches:
+			p.stop()
+
+	def _doc(self, source_alloy_qty):
+		return _FakeMCDocAlloy(
+			source_alloy="M-Genia-221",
+			source_alloy_qty=source_alloy_qty,
+			source_alloy_batch=None,
+			source_warehouse="Waxing RM - KGJPL",
+			date="2026-10-28",
+			posting_time="10:00:00",
+		)
+
+	def _run(self, source_alloy_qty, batch_qtys):
+		batches = [
+			frappe._dict(batch_no=f"AB-{n}", qty=qty, warehouse="Waxing RM - KGJPL")
+			for n, qty in enumerate(batch_qtys, start=1)
+		]
+		doc = self._doc(source_alloy_qty)
+		with patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=batches):
+			utils.update_alloy_betch(doc)
+		return [(r["batch"], r["qty"]) for r in doc.alloy_batch_details]
+
+	def test_alloy_running_into_a_second_batch_is_allocated(self):
+		# MCON00651's own figures: the float sum is 89.91799999999999.
+		self.assertNotEqual(67.279 + 22.639, 89.918)
+		self.assertEqual(
+			self._run("89.918", [67.279, 22.639]),
+			[("AB-1", 67.279), ("AB-2", 22.639)],
+		)
+
+	def test_a_later_batch_gives_only_what_is_still_needed(self):
+		self.assertEqual(
+			self._run("89.918", [67.279, 500.0]),
+			[("AB-1", 67.279), ("AB-2", 22.639)],
+		)
+
+	def test_three_batches(self):
+		self.assertEqual(
+			self._run("198.679", [89.579, 50.1, 400.0]),
+			[("AB-1", 89.579), ("AB-2", 50.1), ("AB-3", 59.0)],
+		)
+
+	def test_alloy_filling_a_batch_exactly_takes_no_further_batch(self):
+		self.assertEqual(self._run("10", [4.0, 6.0, 8.0]), [("AB-1", 4.0), ("AB-2", 6.0)])
+
+	def test_one_batch_is_unchanged(self):
+		self.assertEqual(self._run("12.345", [20.0]), [("AB-1", 12.345)])
+
+	def test_a_real_shortfall_still_refuses(self):
+		with self.assertRaisesRegex(ValidationError, "source quantity is not available"):
+			self._run("89.918", [67.279, 20.0])
+
+	def test_every_drifting_two_batch_split_is_allocated(self):
+		# A sweep over splits whose float sum is off, so the fix is not tied to one figure.
+		for need, first in (("360.67", 11.518), ("175.717", 87.374), ("305.746", 78.359)):
+			rows = self._run(need, [first, 1000.0])
+			self.assertEqual(round(sum(q for _b, q in rows), 3), float(need))
+
+
+class TestUpdateSourceBatchFloatTotals(IntegrationTestCase):
+	"""The source table shares the exact float compare; a drifting split must not throw."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		if not hasattr(frappe, "db") or not frappe.db:
+			frappe.db = MagicMock()
+		self._patches = [
+			patch.object(utils, "flt", _det_flt),
+			patch(f"{_UTILS_PATH}.get_batch_lane_map", return_value={}),
+			patch(f"{_UTILS_PATH}.get_sample_batches", return_value=set()),
+		]
+		for p in self._patches:
+			p.start()
+
+	def tearDown(self):
+		for p in self._patches:
+			p.stop()
+
+	def test_covers_required_qty_ignores_float_drift(self):
+		self.assertTrue(utils.covers_required_qty(67.279 + 22.639, 89.918))
+		self.assertFalse(utils.covers_required_qty(89.917, 89.918))
+
+	def test_source_split_whose_running_sum_drifts_is_allocated(self):
+		# 84.042 + (341.723 - 84.042) is 341.72300000000007, not 341.723.
+		need, first = 341.723, 84.042
+		self.assertNotEqual(first + (need - first), need)
+		batches = [
+			frappe._dict(batch_no="S1", qty=first, warehouse="WH"),
+			frappe._dict(batch_no="S2", qty=1000.0, warehouse="WH"),
+		]
+		doc = _FakeMCDocUSB(
+			is_melting_loss=0,
+			source_qty=need,
+			loss_qty=0,
+			source_item="M-G-22KT-91.75-Y",
+			source_warehouse="WH",
+			date="2026-10-28",
+			posting_time="10:00:00",
+		)
+		with patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=batches):
+			utils.update_source_betch(doc)
+		self.assertEqual([r["batch"] for r in doc.source_batch_details], ["S1", "S2"])
+
+
 class TestRemarksFieldConfiguration(IntegrationTestCase):
 	"""The two DocType JSON facts the feature rests on.
 

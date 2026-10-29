@@ -16,8 +16,29 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	update_serial_details,
 )
 
+KGGK_SOURCE_FIELDS = (
+	"custom_kggk_source_doctype",
+	"custom_kggk_source_site",
+	"custom_kggk_source_name",
+)
+
+
+def clear_inherited_kggk_source(self):
+	"""Source DocType/Site/Name describe where a Template BOM was replicated from.
+
+	``frappe.copy_doc`` copies ``no_copy`` fields, so every BOM cloned from a Template (FG,
+	Manufacturing Process, ...) inherited them. A Source Site on a non-Template BOM is always
+	such an inherited value. Product Return Order BOMs carry a Source DocType/Name but no site,
+	and ``BOM Before Validate`` relies on that to link ``Product Return Order.new_bom``, so
+	they are left alone.
+	"""
+	if self.bom_type != "Template" and self.get("custom_kggk_source_site"):
+		for fieldname in KGGK_SOURCE_FIELDS:
+			self.set(fieldname, None)
+
 
 def before_validate(self, method):
+	clear_inherited_kggk_source(self)
 	validate_rating(self)
 	validate_weight(self)
 	if self.bom_type == "Quotation" or self.docstatus == 1:

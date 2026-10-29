@@ -66,6 +66,7 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_unpack_repair_bom
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_conversion_lane_downstream
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_move_manufacturing_plan_layout_patch
           # Added 2026-10-12: Metal Conversions Chain Subcontracting (Issue/Receive workflow,
           # Chain SC transfers, draft PO, Repack + Process Loss at the supplier). Pure-logic.
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_metal_conversion_chain_sc

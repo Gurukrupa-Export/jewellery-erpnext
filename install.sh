@@ -79,6 +79,42 @@ find "$GITHUB_WORKSPACE/fixture_source" -type d -name fixtures
 cp -rf \
 "$GITHUB_WORKSPACE/fixture_source/jewellery_erpnext/fixtures/"* \
 "$HOME/frappe-bench/apps/jewellery_erpnext/jewellery_erpnext/fixtures/"
+
+# git_action_v16 can still carry a Custom Field this branch has made a standard field (e.g.
+# Manufacturing Plan estimated_delivery_date); Frappe refuses to insert it and the install
+# stops. Drop those, and the field_order setters of the same DocTypes, from the copy.
+python3 - "$HOME/frappe-bench/apps/jewellery_erpnext/jewellery_erpnext" <<'PY'
+import glob, json, os, sys
+
+app = sys.argv[1]
+standard = {}
+for path in glob.glob(os.path.join(app, "**", "doctype", "*", "*.json"), recursive=True):
+	try:
+		doc = json.load(open(path))
+	except Exception:
+		continue
+	if isinstance(doc, dict) and doc.get("doctype") == "DocType":
+		standard[doc["name"]] = {f.get("fieldname") for f in doc.get("fields", [])}
+
+cf_path = os.path.join(app, "fixtures", "custom_field.json")
+ps_path = os.path.join(app, "fixtures", "property_setter.json")
+moved = set()
+if os.path.exists(cf_path):
+	fields = json.load(open(cf_path))
+	keep = [f for f in fields if f.get("fieldname") not in standard.get(f.get("dt"), ())]
+	for f in fields:
+		if f not in keep:
+			moved.add(f["dt"])
+			print(f"Skipping fixture Custom Field {f['name']}: now a standard field")
+	json.dump(keep, open(cf_path, "w"), indent=4, ensure_ascii=False)
+if moved and os.path.exists(ps_path):
+	setters = json.load(open(ps_path))
+	keep = [
+		s for s in setters
+		if not (s.get("doc_type") in moved and s.get("property") == "field_order")
+	]
+	json.dump(keep, open(ps_path, "w"), indent=1, sort_keys=True, ensure_ascii=False)
+PY
 echo "::endgroup::"
 
 echo "::group::Install Apps"
