@@ -513,12 +513,15 @@ function action_message(frm, action, detail) {
 
 function request_message(action, detail) {
 	const what = action === "Request Close" ? __("closed") : __("put on Hold");
-	const department = frappe.utils.escape_html(
-		(detail && detail.department) || __("the Close / Hold Request Department")
+	const departments = ((detail && detail.departments) || []).map(
+		(d) => `<b>${frappe.utils.escape_html(d)}</b>`
 	);
+	const destination = departments.length
+		? frappe.utils.comma_or(departments)
+		: `<b>${__("a Close / Hold Request Department")}</b>`;
 	return __(
 		"Request this Parent Manufacturing Order to be {0}? It stays open: the departments holding its work orders are alerted, its work orders can then be transferred only to {1} (never to an employee), and no raw material can be transferred to them. Use the normal action once they are back.",
-		[what, `<b>${department}</b>`]
+		[what, destination]
 	);
 }
 

@@ -665,7 +665,7 @@ class TestProblems(_Base):
 		busy=(),
 		moved=(),
 		stock=True,
-		department=None,
+		departments=(),
 		drafts=(),
 		kinds=False,
 	):
@@ -680,7 +680,7 @@ class TestProblems(_Base):
 			patch.object(
 				frappe, "get_system_settings", return_value="Banker's Rounding"
 			),
-			patch(f"{CO}.close_hold_department", return_value=department),
+			patch(f"{CO}.close_hold_departments", return_value=list(departments)),
 			patch(f"{CO}._is_planning_department", return_value=False),
 			patch(f"{CO}._draft_transactions", return_value=list(drafts)),
 			patch(
@@ -1576,9 +1576,23 @@ class TestRequestReadiness(_Base):
 
 	def test_the_close_hold_department_counts_as_back(self):
 		docs = _docs(mwos=[_mwo("MWO-1", department="Returns - T")])
-		self.assertEqual(self._problems("Hold", docs, department="Returns - T"), [])
+		self.assertEqual(self._problems("Hold", docs, departments=["Returns - T"]), [])
 		problems = self._problems("Hold", docs)
 		self.assertIn("MWO-1 (Returns - T)", problems[0])
+
+	def test_a_work_order_in_any_request_department_counts_as_back(self):
+		docs = _docs(
+			mwos=[
+				_mwo("MWO-1", department="Returns - T"),
+				_mwo("MWO-2", department="Repair - T"),
+			]
+		)
+		both = ["Returns - T", "Repair - T"]
+		self.assertEqual(self._problems("Hold", docs, departments=both), [])
+		(problem,) = self._problems("Hold", docs, departments=["Returns - T"])
+		self.assertIn("MWO-2 (Repair - T)", problem)
+		self.assertNotIn("MWO-1", problem)
+		self.assertIn("accepted too: <strong>Returns - T</strong>", problem)
 
 	def test_draft_transactions_block_a_close_only(self):
 		docs = _docs(mwos=[_mwo("MWO-1")])
@@ -1608,7 +1622,7 @@ class TestRequestReadiness(_Base):
 		)
 
 	def _offer(
-		self, problems, actions=("Close", "Request Close"), department="Returns - T"
+		self, problems, actions=("Close", "Request Close"), departments=("Returns - T",)
 	):
 		doc = _FakePMO(state="Submitted")
 		with (
@@ -1616,7 +1630,7 @@ class TestRequestReadiness(_Base):
 				f"{CO}.get_transitions",
 				return_value=[{"action": a} for a in actions],
 			),
-			patch(f"{CO}.close_hold_department", return_value=department),
+			patch(f"{CO}.close_hold_departments", return_value=list(departments)),
 			patch(f"{CO}._problem_list", return_value=problems),
 			patch(f"{CO}.action_reasons", return_value=["Customer request"]),
 			patch(
@@ -1631,7 +1645,7 @@ class TestRequestReadiness(_Base):
 		self.assertEqual(offer["action"], "Request Close")
 		self.assertEqual(offer["problems"], ["elsewhere"])
 		self.assertEqual(offer["reasons"], ["Customer request"])
-		self.assertEqual(offer["department"], "Returns - T")
+		self.assertEqual(offer["departments"], ["Returns - T"])
 		self.assertEqual(offer["pending"][0].work_order, "MWO-1")
 
 	def test_no_offer_when_it_cannot_be_requested(self):
@@ -1646,7 +1660,7 @@ class TestRequestReadiness(_Base):
 				problems=[(close_open.PROBLEM_WEIGHT, "metal")], actions=("Close",)
 			),
 			"no request department": dict(
-				problems=[(close_open.PROBLEM_WEIGHT, "metal")], department=None
+				problems=[(close_open.PROBLEM_WEIGHT, "metal")], departments=()
 			),
 			"nothing to wait for": dict(problems=[]),
 		}
@@ -1685,13 +1699,13 @@ class TestRequestAction(_Base):
 			],
 		)
 
-	def _request(self, department="Returns - T", users=None):
+	def _request(self, departments=("Returns - T",), users=None):
 		pmo = _FakePMO(state="Close Requested")
 		with (
 			patch.object(
 				frappe, "get_system_settings", return_value="Banker's Rounding"
 			),
-			patch(f"{CO}.close_hold_department", return_value=department),
+			patch(f"{CO}.close_hold_departments", return_value=list(departments)),
 			patch(f"{CO}._pmo_documents", return_value=self._docs()),
 			patch(f"{CO}._problem_list", return_value=[]),
 			patch(
@@ -1741,12 +1755,12 @@ class TestRequestAction(_Base):
 		with self.assertRaisesRegex(
 			frappe.ValidationError, "Close / Hold Request Department"
 		):
-			self._request(department=None)
+			self._request(departments=())
 
 	def test_refused_while_a_transfer_from_reserve_runs(self):
 		pmo = _FakePMO(state="Close Requested")
 		with (
-			patch(f"{CO}.close_hold_department", return_value="Returns - T"),
+			patch(f"{CO}.close_hold_departments", return_value=["Returns - T"]),
 			patch(f"{CO}._pmo_documents", return_value=_docs()),
 			patch(
 				f"{CO}._problem_list",
@@ -1772,10 +1786,10 @@ class TestRequestRestrictions(_Base):
 			}
 		)
 
-	def _patched(self, state="Close Requested", department="Returns - T"):
+	def _patched(self, state="Close Requested", departments=("Returns - T",)):
 		return (
 			patch(f"{CO}._has_workflow_state", return_value=True),
-			patch(f"{CO}.close_hold_department", return_value=department),
+			patch(f"{CO}.close_hold_departments", return_value=list(departments)),
 			patch(
 				"frappe.get_all",
 				side_effect=_keyed_get_all(
@@ -1802,6 +1816,61 @@ class TestRequestRestrictions(_Base):
 					self._ir("Issue", "Waxing - T")
 				)
 			close_open.refuse_department_ir_while_requested(self._ir("Receive"))
+
+	def test_department_ir_issue_to_any_of_several_request_departments(self):
+		p = self._patched(departments=("Returns - T", "Repair - T"))
+		with p[0], p[1], p[2]:
+			close_open.refuse_department_ir_while_requested(
+				self._ir("Issue", "Repair - T")
+			)
+			for next_department in ("Waxing - T", None):
+				with self.subTest(next_department=next_department):
+					with self.assertRaisesRegex(
+						frappe.ValidationError,
+						"only to <strong>Returns - T</strong> or <strong>Repair - T</strong>",
+					):
+						close_open.refuse_department_ir_while_requested(
+							self._ir("Issue", next_department)
+						)
+
+	def test_department_ir_issue_is_refused_without_request_departments(self):
+		p = self._patched(departments=())
+		with p[0], p[1], p[2]:
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "only to.*a Close / Hold Request Department"
+			):
+				close_open.refuse_department_ir_while_requested(
+					self._ir("Issue", "Returns - T")
+				)
+
+	def test_employee_ir_refusal_names_every_request_department(self):
+		p = self._patched(departments=("Returns - T", "Repair - T"))
+		with p[0], p[1], p[2]:
+			with self.assertRaisesRegex(
+				frappe.ValidationError,
+				"transfer them to <strong>Returns - T</strong> or <strong>Repair - T</strong>",
+			):
+				close_open.refuse_employee_ir_while_requested(
+					self._ir("Issue", table="employee_ir_operations")
+				)
+
+	def test_the_request_departments_are_read_in_their_order(self):
+		with patch(
+			"frappe.get_all", return_value=["Returns - T", "Repair - T"]
+		) as get_all:
+			self.assertEqual(
+				close_open.close_hold_departments(), ["Returns - T", "Repair - T"]
+			)
+		get_all.assert_called_once_with(
+			"PMO Close Hold Department",
+			filters={
+				"parenttype": "MOP Settings",
+				"parent": "MOP Settings",
+				"parentfield": "pmo_close_hold_departments",
+			},
+			order_by="idx asc",
+			pluck="department",
+		)
 
 	def test_department_ir_of_a_pmo_without_a_request_goes_through(self):
 		p = self._patched(state=None)

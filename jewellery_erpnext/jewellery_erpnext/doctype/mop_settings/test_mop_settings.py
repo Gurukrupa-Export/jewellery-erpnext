@@ -577,57 +577,72 @@ class TestPurgedEodErrorLog(IntegrationTestCase):
 
 
 class TestPmoCloseHoldDepartment(IntegrationTestCase):
-	"""MOP Settings > Close / Hold Request Department: where a requested PMO's work orders go.
+	"""MOP Settings > Close / Hold Request Departments: where a requested PMO's work orders go.
 	The FRD keeps that metal out of a Manufacturer's Central Department."""
 
 	@classmethod
 	def setUpClass(cls):
 		pass
 
-	def _validate(self, department, is_group=0, central_of=()):
-		doc = _bare_settings(pmo_close_hold_department=department)
-		real_get_value, real_get_all = frappe.db.get_value, frappe.get_all
+	@staticmethod
+	def _rows(*departments):
+		return [frappe._dict(department=d) for d in departments]
 
-		# Keyed stubs that forward every other call verbatim (meta loading, translations).
-		def _get_value(*args, **kwargs):
-			if tuple(args[:3]) == ("Department", department, "is_group"):
-				return is_group
-			return real_get_value(*args, **kwargs)
+	def _validate(self, departments, groups=(), central=()):
+		doc = _bare_settings(pmo_close_hold_departments=self._rows(*departments))
+		real_get_all = frappe.get_all
 
+		# A keyed stub that forwards every other call verbatim (meta loading, translations).
 		def _get_all(doctype, *args, **kwargs):
+			if doctype == "Department":
+				return list(groups)
 			if doctype == "Manufacturer":
-				return list(central_of)
+				return [
+					frappe._dict(name=name, custom_central_department=department)
+					for name, department in central
+				]
 			return real_get_all(doctype, *args, **kwargs)
 
-		with (
-			patch(f"{_SETTINGS_MOD}.frappe.db.get_value", side_effect=_get_value),
-			patch(f"{_SETTINGS_MOD}.frappe.get_all", side_effect=_get_all) as get_all,
-		):
-			doc._validate_pmo_close_hold_department()
+		with patch(f"{_SETTINGS_MOD}.frappe.get_all", side_effect=_get_all) as get_all:
+			doc._validate_pmo_close_hold_departments()
 		return get_all
 
-	def test_a_plain_department_is_accepted(self):
-		get_all = self._validate("Returns - T")
+	def test_plain_departments_are_accepted_in_one_query_per_rule(self):
+		get_all = self._validate(["Returns - T", "Repair - T", "Returns - T"])
+		department_call, manufacturer_call = get_all.call_args_list
 		self.assertEqual(
-			get_all.call_args.kwargs["filters"],
-			{"custom_central_department": "Returns - T"},
+			department_call.kwargs["filters"],
+			{"name": ["in", ["Repair - T", "Returns - T"]], "is_group": 1},
+		)
+		self.assertEqual(
+			manufacturer_call.kwargs["filters"],
+			{"custom_central_department": ["in", ["Repair - T", "Returns - T"]]},
 		)
 
-	def test_a_central_department_is_refused(self):
+	def test_a_central_department_among_several_is_refused(self):
 		with self.assertRaisesRegex(
-			frappe.ValidationError, "Central Department of Labh"
-		):
-			self._validate("Central - T", central_of=("Labh",))
+			frappe.ValidationError, "Central - T.*Central Department of Labh"
+		) as caught:
+			self._validate(
+				["Returns - T", "Central - T"], central=(("Labh", "Central - T"),)
+			)
+		self.assertNotIn("Returns - T", str(caught.exception))
 
 	def test_a_group_department_is_refused(self):
-		with self.assertRaisesRegex(frappe.ValidationError, "group department"):
-			self._validate("All Departments", is_group=1)
+		with self.assertRaisesRegex(
+			frappe.ValidationError, "group departments.*All Departments"
+		):
+			self._validate(
+				["Returns - T", "All Departments"], groups=("All Departments",)
+			)
 
-	def test_no_department_reads_nothing(self):
-		doc = _bare_settings(pmo_close_hold_department=None)
-		with patch(f"{_SETTINGS_MOD}.frappe.get_all") as get_all:
-			doc._validate_pmo_close_hold_department()
-		get_all.assert_not_called()
+	def test_no_departments_read_nothing(self):
+		for rows in (None, [], self._rows(None, "")):
+			with self.subTest(rows=rows):
+				doc = _bare_settings(pmo_close_hold_departments=rows)
+				with patch(f"{_SETTINGS_MOD}.frappe.get_all") as get_all:
+					doc._validate_pmo_close_hold_departments()
+				get_all.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -35,33 +35,52 @@ class MOPSettings(Document):
 		self._validate_eod_sync_time_permission()
 		self._validate_eod_sync_window()
 		self._log_casting_reissue_toggle()
-		self._validate_pmo_close_hold_department()
+		self._validate_pmo_close_hold_departments()
 
-	def _validate_pmo_close_hold_department(self):
-		"""The department a PMO's work orders go back to during a Close / Hold request.
+	def _validate_pmo_close_hold_departments(self):
+		"""The departments a PMO's work orders go back to during a Close / Hold request.
 
 		The FRD keeps that metal out of the Central Department: a Manufacturer's
 		custom_central_department is the hub its approval transfers go through.
 		"""
-		department = self.get("pmo_close_hold_department")
-		if not department:
+		departments = sorted(
+			{
+				r.department
+				for r in self.get("pmo_close_hold_departments") or []
+				if r.get("department")
+			}
+		)
+		if not departments:
 			return
-		if frappe.db.get_value("Department", department, "is_group"):
+		groups = frappe.get_all(
+			"Department",
+			filters={"name": ["in", departments], "is_group": 1},
+			pluck="name",
+		)
+		if groups:
 			frappe.throw(
-				_("Close / Hold Request Department {0} is a group department.").format(
-					frappe.bold(department)
-				)
+				_(
+					"Close / Hold Request Departments cannot be group departments: {0}."
+				).format(", ".join(frappe.bold(d) for d in sorted(groups)))
 			)
 		central = frappe.get_all(
 			"Manufacturer",
-			filters={"custom_central_department": department},
-			pluck="name",
+			filters={"custom_central_department": ["in", departments]},
+			fields=["name", "custom_central_department"],
+			order_by="name asc",
 		)
 		if central:
 			frappe.throw(
 				_(
-					"Close / Hold Request Department {0} is the Central Department of {1}; choose another department."
-				).format(frappe.bold(department), ", ".join(central))
+					"A Close / Hold Request Department cannot be a Central Department; choose other departments:"
+				)
+				+ "<br>"
+				+ "<br>".join(
+					_("{0} is the Central Department of {1}.").format(
+						frappe.bold(r.custom_central_department), r.name
+					)
+					for r in central
+				)
 			)
 
 	def _validate_reservation_types(self):

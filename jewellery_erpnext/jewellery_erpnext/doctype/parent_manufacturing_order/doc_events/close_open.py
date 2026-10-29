@@ -13,7 +13,7 @@ on_update_after_submit (a submitted PMO's):
   cancelled: enqueue_close puts the PMO on Hold and cancels them in a background job first.
 
 Hold and Close are refused unless every open work order is still in planning -- in the
-department a Split is allowed in (SPLIT_ALLOWED_DEPARTMENT) or the Close / Hold Request
+department a Split is allowed in (SPLIT_ALLOWED_DEPARTMENT) or a Close / Hold Request
 Department of MOP Settings, with nothing in progress or in transit -- and Close also needs
 no material on a work order or its current operation and no draft transaction for them.
 
@@ -21,7 +21,7 @@ Close / Hold requests. When the only reason a Close or Hold is refused is that t
 orders are not back yet (elsewhere, in progress or in transit, still carrying metal, draft
 transactions), the PMO can be put in Close Requested / Hold Requested instead: nothing of
 it is written, the departments holding those work orders are alerted, and until the request
-is done or withdrawn its work orders can only be transferred to the Close / Hold Request
+is done or withdrawn its work orders can only be transferred to a Close / Hold Request
 Department -- never issued to an employee -- and no raw material moves to them (Material
 Requests and the Stock Entry types MOP Settings lists). The normal Close / Hold then runs,
 with all of its checks, once the work is back.
@@ -43,7 +43,7 @@ from frappe.desk.doctype.notification_log.notification_log import (
 	enqueue_create_notification,
 )
 from frappe.model.workflow import apply_workflow, get_transitions
-from frappe.utils import cint, flt, now_datetime, strip_html
+from frappe.utils import cint, comma_or, flt, now_datetime, strip_html
 from frappe.utils.background_jobs import is_job_enqueued
 
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
@@ -119,7 +119,8 @@ REASON_LIST_OF = {REQUEST_CLOSE: CLOSE, REQUEST_HOLD: HOLD, WITHDRAW: OPEN}
 
 # MOP Settings: where a requested PMO's work orders may go, and which Stock Entry types move
 # raw material to them.
-CLOSE_HOLD_DEPARTMENT_FIELD = "pmo_close_hold_department"
+CLOSE_HOLD_DEPARTMENTS_DOCTYPE = "PMO Close Hold Department"
+CLOSE_HOLD_DEPARTMENTS_FIELD = "pmo_close_hold_departments"
 BLOCKED_TYPES_DOCTYPE = "PMO Request Blocked Stock Entry Type"
 BLOCKED_TYPES_FIELD = "pmo_request_blocked_stock_entry_types"
 
@@ -239,15 +240,15 @@ def _request(pmo, action, reason=None):
 	are alerted, and the requester is told which they are.
 	"""
 	plan = _request_plan(pmo, action)
-	department, waiting = plan["department"], plan["pending"]
-	_notify_request(pmo, action, reason, department, waiting)
+	departments, waiting = plan["departments"], plan["pending"]
+	_notify_request(pmo, action, reason, departments, waiting)
 	pmo.add_comment(
 		"Info",
 		_with_reason(
 			_("{0}: {1} work orders have to come back to {2} first ({3}).").format(
 				_(CLOSE_REQUESTED if action == REQUEST_CLOSE else HOLD_REQUESTED),
 				len(waiting),
-				department,
+				comma_or(departments, add_quotes=False),
 				", ".join(sorted({w.department or _("no department") for w in waiting}))
 				or _("none outstanding"),
 			),
@@ -270,7 +271,7 @@ def _withdraw(pmo, previous, reason=None):
 
 def _work_orders_to_return(target, docs):
 	"""The submitted work orders that keep ``target`` (Hold / Close) from going ahead: not in
-	planning or the Close / Hold Request Department, in progress or in transit, or -- for a
+	planning or a Close / Hold Request Department, in progress or in transit, or -- for a
 	Close -- still carrying metal. Where each one is: its current operation's department."""
 	submitted = [r for r in docs.mwos.values() if cint(r.docstatus) == 1]
 	allowed = _planning_departments({r.department for r in submitted if r.department})
@@ -300,9 +301,10 @@ def _work_orders_to_return(target, docs):
 	return sorted(waiting, key=lambda w: (w.department or "", w.work_order))
 
 
-def _notify_request(pmo, action, reason, department, waiting):
+def _notify_request(pmo, action, reason, departments, waiting):
 	"""Alert only the departments holding the work orders that are not back yet (their active
 	Employees with a login), and tell the requester which departments were alerted."""
+	destination = comma_or(departments, add_quotes=False)
 	by_department = {}
 	for w in waiting:
 		if w.department:
@@ -325,14 +327,14 @@ def _notify_request(pmo, action, reason, department, waiting):
 				"from_user": requester,
 				"subject": _(
 					"{0}: Parent Manufacturing Order {1} has been requested for {2}. Transfer its work orders in {3} to {4}."
-				).format(_(action), pmo.name, what, dept, department),
+				).format(_(action), pmo.name, what, dept, destination),
 				"email_content": _with_reason(
 					_(
 						"Work orders in {0}: {1}. Review their production status, reconcile the metal and transfer them to {2}; until then they cannot go to any other department or employee, and no raw material can be transferred to them."
 					).format(
 						dept,
 						", ".join(f"{w.work_order} ({w.weight} g)" for w in rows),
-						department,
+						destination,
 					),
 					reason,
 				),
@@ -639,11 +641,11 @@ def _problem_list(pmo_name, action, docs, stock=True):
 		message = _(
 			"PMO cannot be {0} because all linked Manufacturing Work Orders must be in the Manufacturing Plan and Management Department."
 		).format(verb)
-		department = close_hold_department()
-		if department and not _is_planning_department(department):
+		extra = [d for d in close_hold_departments() if not _is_planning_department(d)]
+		if extra:
 			message += " " + _(
-				"{0}, the Close / Hold Request Department, is accepted too."
-			).format(frappe.bold(department))
+				"The Close / Hold Request Departments are accepted too: {0}."
+			).format(", ".join(frappe.bold(d) for d in extra))
 		problems.append(
 			(
 				PROBLEM_DEPARTMENT,
@@ -736,7 +738,7 @@ def _problem_list(pmo_name, action, docs, stock=True):
 
 def _planning_departments(departments):
 	"""Those of ``departments`` a Hold / Close accepts: the planning department (by its name,
-	whatever the company suffix) and the Close / Hold Request Department of MOP Settings."""
+	whatever the company suffix) and the Close / Hold Request Departments of MOP Settings."""
 	from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
 		SPLIT_ALLOWED_DEPARTMENT,
 	)
@@ -753,9 +755,7 @@ def _planning_departments(departments):
 			)
 		)
 		allowed = {d for d in departments if names.get(d) == SPLIT_ALLOWED_DEPARTMENT}
-	department = close_hold_department()
-	if department:
-		allowed.add(department)
+	allowed.update(close_hold_departments())
 	return allowed
 
 
@@ -902,7 +902,7 @@ def check_action(pmo, action):
 	A Close / Hold that is refused only because the work orders are not back yet returns a
 	``request`` instead (Request Close / Request Hold, with its reasons and the work orders it
 	waits for) when the user may make that request here. A request action itself returns the
-	Close / Hold Request Department and the work orders to come back (``pending``).
+	Close / Hold Request Departments and the work orders to come back (``pending``).
 	"""
 	doc = frappe.get_doc(PMO, pmo)
 	_require_action(doc, action)
@@ -948,7 +948,7 @@ def _request_plan(doc, action, docs=None):
 	"""What a Request Close / Request Hold waits for: refused while a transfer-from-reserve
 	job runs (try again) or without a Close / Hold Request Department."""
 	target = TARGET_OF[action]
-	department = _required_close_hold_department()
+	departments = _required_close_hold_departments()
 	docs = docs or _pmo_documents(doc.name, target, lock=False)
 	transfers = [
 		message
@@ -959,7 +959,7 @@ def _request_plan(doc, action, docs=None):
 		frappe.throw(
 			"<br><br>".join(transfers), title=_("{0} Refused").format(_(action))
 		)
-	return {"department": department, "pending": _work_orders_to_return(target, docs)}
+	return {"departments": departments, "pending": _work_orders_to_return(target, docs)}
 
 
 def _request_offer(doc, action, docs):
@@ -971,8 +971,8 @@ def _request_offer(doc, action, docs):
 	request = REQUEST_OF.get(action)
 	if not request or request not in _available_actions(doc):
 		return None
-	department = close_hold_department()
-	if not department:
+	departments = close_hold_departments()
+	if not departments:
 		return None
 	problems = _problem_list(doc.name, action, docs, stock=False)
 	if not problems or any(kind not in REQUESTABLE_PROBLEMS for kind, _m in problems):
@@ -981,7 +981,7 @@ def _request_offer(doc, action, docs):
 		"action": request,
 		"problems": [message for _kind, message in problems],
 		"reasons": _configured_reasons(request),
-		"department": department,
+		"departments": departments,
 		"pending": _work_orders_to_return(action, docs),
 	}
 
@@ -1563,22 +1563,39 @@ def request_message(pmo_name, state):
 	)
 
 
-def close_hold_department():
-	"""MOP Settings > Close / Hold Request Department: where a requested PMO's work orders may
-	be transferred, and where a Hold / Close accepts them besides planning."""
-	return frappe.db.get_single_value(REASONS_SETTINGS, CLOSE_HOLD_DEPARTMENT_FIELD)
+def close_hold_departments():
+	"""MOP Settings > Close / Hold Request Departments, in their order there: where a requested
+	PMO's work orders may be transferred, and where a Hold / Close accepts them besides
+	planning."""
+	return frappe.get_all(
+		CLOSE_HOLD_DEPARTMENTS_DOCTYPE,
+		filters={
+			"parenttype": REASONS_SETTINGS,
+			"parent": REASONS_SETTINGS,
+			"parentfield": CLOSE_HOLD_DEPARTMENTS_FIELD,
+		},
+		order_by="idx asc",
+		pluck="department",
+	)
 
 
-def _required_close_hold_department():
-	department = close_hold_department()
-	if not department:
+def _required_close_hold_departments():
+	departments = close_hold_departments()
+	if not departments:
 		frappe.throw(
 			_(
-				"Set the Close / Hold Request Department in MOP Settings (PMO Hold / Open / Close Reasons) first: a request sends the work orders there."
+				"Set the Close / Hold Request Departments in MOP Settings (PMO Hold / Open / Close Reasons) first: a request sends the work orders there."
 			),
-			title=_("Close / Hold Request Department Missing"),
+			title=_("Close / Hold Request Departments Missing"),
 		)
-	return department
+	return departments
+
+
+def _destination(departments):
+	"""The Close / Hold Request Departments for a message: "A, B or C" in bold."""
+	if not departments:
+		return frappe.bold(_("a Close / Hold Request Department of MOP Settings"))
+	return comma_or([frappe.bold(d) for d in departments], add_quotes=False)
 
 
 def blocked_request_stock_entry_types():
@@ -1613,23 +1630,21 @@ def _row_pmos(doc, table):
 
 
 def refuse_department_ir_while_requested(doc, table="department_ir_operation"):
-	"""Department IR validate: a requested PMO's work orders are issued only to the Close /
+	"""Department IR validate: a requested PMO's work orders are issued only to a Close /
 	Hold Request Department. A Receive (taking them in) always goes through."""
 	if doc.get("type") != "Issue" or cint(doc.docstatus) == 2:
 		return
 	requested = requested_pmos(_row_pmos(doc, table))
 	if not requested:
 		return
-	department = close_hold_department()
-	if department and doc.get("next_department") == department:
+	departments = close_hold_departments()
+	if doc.get("next_department") and doc.get("next_department") in departments:
 		return
 	frappe.throw(
 		" ".join(request_message(p, s) for p, s in sorted(requested.items()))
 		+ " "
 		+ _("Its work orders can be transferred only to {0}, not to {1}.").format(
-			frappe.bold(
-				department or _("the Close / Hold Request Department of MOP Settings")
-			),
+			_destination(departments),
 			frappe.bold(doc.get("next_department") or _("(blank)")),
 		),
 		title=_("Transfer Restricted"),
@@ -1649,12 +1664,7 @@ def refuse_employee_ir_while_requested(doc, table="employee_ir_operations"):
 		+ " "
 		+ _(
 			"Its work orders cannot be issued to an employee; transfer them to {0} with a Department IR."
-		).format(
-			frappe.bold(
-				close_hold_department()
-				or _("the Close / Hold Request Department of MOP Settings")
-			)
-		),
+		).format(_destination(close_hold_departments())),
 		title=_("Transfer Restricted"),
 	)
 
