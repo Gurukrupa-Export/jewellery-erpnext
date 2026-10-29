@@ -15,6 +15,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
 	DepartmentIR,
+	_link_stock_entries_to_operation,
 	add_time_log_optimize,
 	department_receive_query,
 	fetch_and_update,
@@ -377,6 +378,64 @@ class TestDepartmentIR(IntegrationTestCase):
 		)
 
 		self.assertEqual(mock_get_all.call_args.kwargs.get("order_by"), "creation asc")
+
+
+class TestLinkStockEntriesToOperation(UnitTestCase):
+	"""The bulk stamp must leave every Stock Entry and every one of its rows exactly as
+	the old per-entry loop did, in one read and two UPDATEs."""
+
+	def setUp(self):
+		self.stock_entries = frappe.get_all(
+			"Stock Entry",
+			{"docstatus": 1},
+			pluck="name",
+			limit=2,
+			order_by="creation desc",
+		)
+		if len(self.stock_entries) < 2:
+			self.skipTest("needs two submitted Stock Entries")
+
+	def tearDown(self):
+		frappe.db.rollback()
+
+	def test_stamps_headers_and_rows(self):
+		doc = FakeDepartmentIR(doctype="Department IR", name="DIR-BULK-TEST")
+		_link_stock_entries_to_operation(doc, self.stock_entries, "MOP-BULK-TEST")
+
+		for se in self.stock_entries:
+			self.assertEqual(
+				frappe.db.get_value(
+					"Stock Entry", se, ["manufacturing_operation", "department_ir"]
+				),
+				("MOP-BULK-TEST", "DIR-BULK-TEST"),
+			)
+			self.assertEqual(
+				set(
+					frappe.get_all(
+						"Stock Entry Detail",
+						{"parent": se},
+						pluck="manufacturing_operation",
+					)
+				),
+				{"MOP-BULK-TEST"},
+			)
+
+	def test_does_not_touch_other_stock_entries(self):
+		doc = FakeDepartmentIR(doctype="Department IR", name="DIR-BULK-TEST")
+		_link_stock_entries_to_operation(doc, self.stock_entries[:1], "MOP-BULK-TEST")
+
+		self.assertNotEqual(
+			frappe.db.get_value("Stock Entry", self.stock_entries[1], "department_ir"),
+			"DIR-BULK-TEST",
+		)
+
+	def test_empty_list_is_a_noop(self):
+		doc = FakeDepartmentIR(doctype="Department IR", name="DIR-BULK-TEST")
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir.frappe.db.set_value"
+		) as setv:
+			_link_stock_entries_to_operation(doc, [], "MOP-BULK-TEST")
+		setv.assert_not_called()
 
 
 def mo_creation():
