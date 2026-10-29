@@ -1837,6 +1837,15 @@ def _stone_se_rate(consumed_rate, item_valuation_rate):
 	return flt(consumed_rate) or flt(item_valuation_rate)
 
 
+# Where a Template BOM was replicated from. ``copy_doc`` copies these ``no_copy`` fields, but
+# they belong on the Template only, never on an as-built FG BOM.
+KGGK_SOURCE_FIELDS = (
+	"custom_kggk_source_doctype",
+	"custom_kggk_source_site",
+	"custom_kggk_source_name",
+)
+
+
 def _keep_as_built_bom_off_default(bom):
 	"""An as-built FG BOM describes one piece; it must never become the item's default (F21).
 
@@ -1987,6 +1996,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.gold_rate_with_gst = flt(gold_rate_with_gst)
 	new_bom.is_active = 1
 	_keep_as_built_bom_off_default(new_bom)
+	for fieldname in KGGK_SOURCE_FIELDS:
+		new_bom.set(fieldname, None)
 	new_bom.custom_creation_doctype = self.doctype
 	new_bom.custom_creation_docname = self.name
 	new_bom.company = self.company
@@ -4745,7 +4756,9 @@ def _receive_tolerance(precision=None):
 	intentional.
 	"""
 	if precision is None:
-		precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
+		precision = cint(
+			frappe.db.get_single_value("System Settings", "float_precision")
+		)
 	return 0.5 * 10**-precision if precision else 0.0001
 
 
