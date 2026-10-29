@@ -23,6 +23,7 @@ from frappe.utils import (
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
 	carry_rates_from_source_batches,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import clear_kggk_source
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_current_mop_balance_rows,
@@ -3508,6 +3509,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	# Copy subcategory-driven values captured on the Employee IR Receive into the
 	# configured BOM fields (Dynamic FG BOM Field Mapping).
 	_apply_fg_bom_dynamic_fields(new_bom, self)
+	# Last writer wins: a dynamic mapping may target the Source fields, so blank them after it.
+	clear_kggk_source(new_bom)
 
 	new_bom.flags.ignore_links = True
 

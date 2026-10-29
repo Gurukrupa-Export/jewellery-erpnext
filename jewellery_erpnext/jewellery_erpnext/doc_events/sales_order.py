@@ -9,6 +9,7 @@ from frappe.utils import flt
 from frappe.utils.background_jobs import is_job_enqueued
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
+	clear_kggk_source,
 	set_bom_item_details,
 )
 
@@ -2577,6 +2578,7 @@ def create_serial_no_bom(self, row, ctx=None):
 			"Customer", self.customer, "custom_ignore_po_creation_for_certification"
 		)
 	doc = frappe.copy_doc(bom_doc)
+	clear_kggk_source(doc)
 	doc.customer = self.customer
 	if product_certification:
 		doc.hallmarking_amount = 0
@@ -3199,6 +3201,7 @@ def create_boms_in_background(sales_order, user=None):
 
 def create_sales_order_bom(self, row, diamond_grade_data):
 	doc = frappe.copy_doc(frappe.get_doc("BOM", row.quotation_bom))
+	clear_kggk_source(doc)
 	# doc = get_mapped_doc(
 	# 	"BOM",
 	# 	row.quotation_bom,
