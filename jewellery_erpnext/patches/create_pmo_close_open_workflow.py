@@ -38,7 +38,18 @@ a request state instead, which restricts what moves for it until the work comes 
     Hold Requested  -- Withdraw Request --> Submitted
 
 Close Requested -> Hold is also the Hold a queued Close (enqueue_close) applies before it
-cancels Stock Entries. The Order Department requests and does the Close, the Hold Team
+cancels Stock Entries.
+
+Hold during a Close request (2026-10-29, FRD 3.5). The Hold Team may Hold a Close Requested
+PMO (once its work is back) or Request Hold for it (before). The Close request is kept:
+close_open stores RESUME_KEY in hold_snapshot, and conditional transitions send Open and
+Withdraw Request back to Close Requested instead of Submitted:
+
+    Close Requested -- Request Hold     --> Hold Requested
+    Hold            -- Open             --> Close Requested   (Close request pending)
+    Hold Requested  -- Withdraw Request --> Close Requested   (Close request pending)
+
+Only one of each pair passes its condition, so the form still shows a single button. The Order Department requests and does the Close, the Hold Team
 the Hold and Open; System Manager keeps every transition. A transition row names one
 role, so a transition open to several roles has one row per role.
 """
@@ -65,7 +76,12 @@ STATES = (
 	("Hold Requested", "1", "All", "Warning"),
 )
 
-# (state, action, next_state, allowed)
+# close_open.RESUME_CLOSE_KEY: hold_snapshot carries it while a Close request is pending.
+RESUME_KEY = "resume_close_request"
+RESUMES = f"'{RESUME_KEY}' in (doc.hold_snapshot or '')"
+NO_RESUME = f"'{RESUME_KEY}' not in (doc.hold_snapshot or '')"
+
+# (state, action, next_state, allowed[, condition])
 TRANSITIONS = (
 	("Draft", "Submit", "Submitted", "All"),
 	("Draft", "Hold", "Hold (Draft)", SM),
@@ -77,8 +93,10 @@ TRANSITIONS = (
 	("Submitted", "Close", "Closed", SM),
 	("Submitted", "Close", "Closed", ORDER_DEPARTMENT),
 	("Submitted", "Cancel", "Cancelled", "All"),
-	("Hold", "Open", "Submitted", SM),
-	("Hold", "Open", "Submitted", HOLD_TEAM),
+	("Hold", "Open", "Submitted", SM, NO_RESUME),
+	("Hold", "Open", "Submitted", HOLD_TEAM, NO_RESUME),
+	("Hold", "Open", "Close Requested", SM, RESUMES),
+	("Hold", "Open", "Close Requested", HOLD_TEAM, RESUMES),
 	("Hold", "Close", "Closed", SM),
 	("Hold", "Close", "Closed", ORDER_DEPARTMENT),
 	("Submitted", "Request Close", "Close Requested", SM),
@@ -89,12 +107,16 @@ TRANSITIONS = (
 	("Close Requested", "Close", "Closed", ORDER_DEPARTMENT),
 	("Close Requested", "Hold", "Hold", SM),
 	("Close Requested", "Hold", "Hold", HOLD_TEAM),
+	("Close Requested", "Request Hold", "Hold Requested", SM),
+	("Close Requested", "Request Hold", "Hold Requested", HOLD_TEAM),
 	("Close Requested", "Withdraw Request", "Submitted", SM),
 	("Close Requested", "Withdraw Request", "Submitted", ORDER_DEPARTMENT),
 	("Hold Requested", "Hold", "Hold", SM),
 	("Hold Requested", "Hold", "Hold", HOLD_TEAM),
-	("Hold Requested", "Withdraw Request", "Submitted", SM),
-	("Hold Requested", "Withdraw Request", "Submitted", HOLD_TEAM),
+	("Hold Requested", "Withdraw Request", "Submitted", SM, NO_RESUME),
+	("Hold Requested", "Withdraw Request", "Submitted", HOLD_TEAM, NO_RESUME),
+	("Hold Requested", "Withdraw Request", "Close Requested", SM, RESUMES),
+	("Hold Requested", "Withdraw Request", "Close Requested", HOLD_TEAM, RESUMES),
 )
 
 
@@ -145,8 +167,9 @@ def execute():
 				"action": action,
 				"next_state": next_state,
 				"allowed": allowed,
+				"condition": condition[0] if condition else None,
 			}
-			for state, action, next_state, allowed in TRANSITIONS
+			for state, action, next_state, allowed, *condition in TRANSITIONS
 		],
 	)
 	workflow.save(ignore_permissions=True)

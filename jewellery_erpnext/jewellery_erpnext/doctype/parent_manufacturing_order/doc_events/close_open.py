@@ -84,6 +84,13 @@ REQUEST_ACTIONS = (REQUEST_CLOSE, REQUEST_HOLD)
 # The request a refused Close / Hold offers, and the action a request waits to do.
 REQUEST_OF = {CLOSE: REQUEST_CLOSE, HOLD: REQUEST_HOLD}
 TARGET_OF = {REQUEST_CLOSE: CLOSE, REQUEST_HOLD: HOLD}
+# A Hold (or Hold request) made while a Close request is pending keeps that Close request:
+# the key in hold_snapshot sends Open (and Withdraw Request) back to Close Requested. The
+# workflow's conditional transitions read it (patches/create_pmo_close_open_workflow.py).
+RESUME_CLOSE_KEY = "resume_close_request"
+STATUS_REASONS_DOCTYPE = "PMO Status Reason"
+# Stock Entry validate -> on_submit: the requested PMOs the entry moves stock for.
+REQUESTED_PMOS_FLAG = "pmo_requested_pmos"
 
 # What the PMO's documents are set to: the work order and operation status, and the Material
 # Request's workflow state.
@@ -161,11 +168,17 @@ def on_workflow_state_change(pmo):
 	action = _action_of(previous, current)
 	reason = _action_reason(pmo, action)
 	if current in HOLD_STATES:
-		_hold(pmo, reason)
+		_hold(pmo, reason, previous)
 	elif current in CLOSED_STATES:
 		_close(pmo, reason)
+	elif previous in HOLD_STATES and current == CLOSE_REQUESTED:
+		# Open of a Hold made during a Close request: the Close request carries on.
+		_open(pmo, reason, resumed=True)
+	elif previous == HOLD_REQUESTED and current == CLOSE_REQUESTED:
+		# Withdraw Request of a Hold request made during a Close request.
+		_withdraw(pmo, previous, reason, resumed=True)
 	elif current in REQUESTED_STATES:
-		_request(pmo, action, reason)
+		_request(pmo, action, reason, previous)
 	elif previous in REQUESTED_STATES:
 		# Withdraw Request (Close Requested / Hold Requested -> Submitted).
 		_withdraw(pmo, previous, reason)
@@ -183,6 +196,10 @@ def _action_of(previous, current):
 		return HOLD
 	if current in CLOSED_STATES:
 		return CLOSE
+	if previous == HOLD_STATE and current == CLOSE_REQUESTED:
+		return OPEN
+	if previous == HOLD_REQUESTED and current == CLOSE_REQUESTED:
+		return WITHDRAW
 	if current == CLOSE_REQUESTED:
 		return REQUEST_CLOSE
 	if current == HOLD_REQUESTED:
@@ -232,14 +249,17 @@ def _with_reason(message, reason):
 	return f"{message} {_('Reason: {0}').format(reason)}" if reason else message
 
 
-def _request(pmo, action, reason=None):
+def _request(pmo, action, reason=None, previous=None):
 	"""Close Requested / Hold Requested: the Close / Hold has to wait for the work orders.
 
 	Nothing of the PMO's is written -- the work orders keep moving, but only back (see the
 	refuse_*_while_requested guards). The departments holding the ones that are not back yet
-	are alerted, and the requester is told which they are.
+	are alerted, and the requester is told which they are. A Hold request made during a Close
+	request keeps the Close request (RESUME_CLOSE_KEY).
 	"""
 	plan = _request_plan(pmo, action)
+	if previous == CLOSE_REQUESTED:
+		_set_resume_close(pmo, True)
 	departments, waiting = plan["departments"], plan["pending"]
 	_notify_request(pmo, action, reason, departments, waiting)
 	pmo.add_comment(
@@ -257,16 +277,35 @@ def _request(pmo, action, reason=None):
 	)
 
 
-def _withdraw(pmo, previous, reason=None):
-	pmo.add_comment(
-		"Info",
-		_with_reason(
-			_("{0} withdrawn: the work orders can move freely again.").format(
-				_(previous)
-			),
-			reason,
-		),
+def _withdraw(pmo, previous, reason=None, resumed=False):
+	_set_resume_close(pmo, False)
+	if resumed:
+		message = _(
+			"{0} withdrawn: the Close request continues, so the work orders still only come back."
+		).format(_(previous))
+	else:
+		message = _("{0} withdrawn: the work orders can move freely again.").format(
+			_(previous)
+		)
+	pmo.add_comment("Info", _with_reason(message, reason))
+	_notify_pmo(
+		pmo,
+		_("Parent Manufacturing Order {0}: {1}").format(pmo.name, message),
+		_holding_departments(_pmo_documents(pmo.name, HOLD, lock=False)),
+		reason,
 	)
+
+
+def _set_resume_close(pmo, resume):
+	"""Remember (or forget) a pending Close request in the PMO's hold_snapshot."""
+	snapshot = _snapshot(pmo)
+	if bool(snapshot.get(RESUME_CLOSE_KEY)) == resume:
+		return
+	if resume:
+		snapshot[RESUME_CLOSE_KEY] = 1
+	else:
+		snapshot.pop(RESUME_CLOSE_KEY, None)
+	_store_snapshot(pmo, snapshot)
 
 
 def _work_orders_to_return(target, docs):
@@ -388,8 +427,69 @@ def _department_users(departments):
 	return users
 
 
-def _hold(pmo, reason=None):
+def _holding_departments(docs):
+	"""Where the PMO's open work orders are: each one's current operation's department."""
+	departments = set()
+	for r in docs.mwos.values():
+		if cint(r.docstatus) == 2:
+			continue
+		operation = docs.mops.get(r.manufacturing_operation)
+		departments.add((operation.department if operation else None) or r.department)
+	return sorted(d for d in departments if d)
+
+
+def _latest_request(pmo_name):
+	"""The PMO's latest Request Close / Request Hold row (who asked and when), or None."""
+	rows = frappe.get_all(
+		STATUS_REASONS_DOCTYPE,
+		filters={
+			"parenttype": PMO,
+			"parent": pmo_name,
+			"parentfield": "status_reasons",
+			"status": ["in", REQUEST_ACTIONS],
+		},
+		fields=["status", "action_by", "action_on"],
+		order_by="idx desc",
+		limit=1,
+	)
+	return rows[0] if rows else None
+
+
+def _notify_pmo(pmo, subject, departments, reason=None):
+	"""Alert the departments holding the PMO's work orders and whoever raised its latest
+	Close / Hold request about a Hold, Open, Close or withdrawal -- never the user who did
+	it. Queued after commit, so an action that is rolled back alerts nobody."""
+	actor = frappe.session.user
+	users = set()
+	for department_users in _department_users(departments).values():
+		users |= department_users
+	request = _latest_request(pmo.name)
+	if request and request.action_by:
+		users.add(request.action_by)
+	users.discard(actor)
+	if not users:
+		return
+	enqueue_create_notification(
+		sorted(users),
+		{
+			"type": "Alert",
+			"document_type": PMO,
+			"document_name": pmo.name,
+			"from_user": actor,
+			"subject": _with_reason(subject, reason),
+		},
+	)
+
+
+def _hold(pmo, reason=None, previous=None):
 	snapshot = _snapshot(pmo)
+	internal = bool(pmo.flags.get(INTERNAL_FLAG))
+	# A Hold during a Close request keeps it -- not enqueue_close's own Hold, which is the
+	# Close itself.
+	if internal:
+		snapshot.pop(RESUME_CLOSE_KEY, None)
+	elif previous == CLOSE_REQUESTED:
+		snapshot[RESUME_CLOSE_KEY] = 1
 	docs = _pmo_documents(pmo.name, HOLD)
 	_refuse_unless_ready(pmo.name, HOLD, docs)
 
@@ -415,18 +515,24 @@ def _hold(pmo, reason=None):
 	_set(MR, mrs, "workflow_state", HOLD_STATUS)
 	snapshot.update({"mwo": mwos, "mop": mops, "mr": mrs})
 	_store_snapshot(pmo, snapshot)
-	pmo.add_comment(
-		"Info",
-		_with_reason(
+	message = _(
+		"Put on Hold: {0} work orders, {1} operations and {2} Material Requests set to Hold."
+	).format(len(mwos), len(mops), len(mrs))
+	if snapshot.get(RESUME_CLOSE_KEY):
+		message += " " + _("The Close request carries on once it is opened.")
+	pmo.add_comment("Info", _with_reason(message, reason))
+	if not internal:
+		_notify_pmo(
+			pmo,
 			_(
-				"Put on Hold: {0} work orders, {1} operations and {2} Material Requests set to Hold."
-			).format(len(mwos), len(mops), len(mrs)),
+				"Parent Manufacturing Order {0} has been put on Hold: its work orders are frozen until it is opened."
+			).format(pmo.name),
+			_holding_departments(docs),
 			reason,
-		),
-	)
+		)
 
 
-def _open(pmo, reason=None):
+def _open(pmo, reason=None, resumed=False):
 	snapshot = _snapshot(pmo)
 	_refuse_open_after_close_started(pmo.name, snapshot)
 	docs = _pmo_documents(pmo.name, OPEN, extra_operations=snapshot.get("mop"))
@@ -455,15 +561,32 @@ def _open(pmo, reason=None):
 	_restore(MOP, mops, "status")
 	_restore(MR, mrs, "workflow_state")
 	_store_snapshot(pmo, None)
-	if mwos or mops or mrs or reason:
+	resumed_note = (
+		" " + _("The Close request carries on: its work orders still only come back.")
+		if resumed
+		else ""
+	)
+	if mwos or mops or mrs or reason or resumed:
 		pmo.add_comment(
 			"Info",
 			_with_reason(
 				_(
 					"Opened: {0} work orders, {1} operations and {2} Material Requests put back as they were."
-				).format(len(mwos), len(mops), len(mrs)),
+				).format(len(mwos), len(mops), len(mrs))
+				+ resumed_note,
 				reason,
 			),
+		)
+	# An Open always carries a reason; the submit of a held draft takes none and alerts nobody.
+	if reason or resumed:
+		_notify_pmo(
+			pmo,
+			_(
+				"Parent Manufacturing Order {0} has been opened: its work orders can move again."
+			).format(pmo.name)
+			+ resumed_note,
+			_holding_departments(docs),
+			reason,
 		)
 
 
@@ -500,6 +623,14 @@ def _close(pmo, reason=None):
 			).format(len(mwos), len(mops), len(mrs)),
 			reason,
 		),
+	)
+	_notify_pmo(
+		pmo,
+		_(
+			"Parent Manufacturing Order {0} has been closed: {1} work orders closed."
+		).format(pmo.name, len(mwos)),
+		_holding_departments(docs),
+		reason,
 	)
 
 
@@ -1522,6 +1653,8 @@ def refuse_stock_entry_while_blocked(doc, method=None):
 			title=_("Parent Manufacturing Order Blocked"),
 		)
 	requested = {p: s for p, s in states.items() if s in REQUESTED_STATES}
+	# Validate runs on submit too: on_submit (queue_ready_check_after_stock_entry) reuses it.
+	doc.flags[REQUESTED_PMOS_FLAG] = sorted(requested)
 	# An End Transit receipt completes a transfer issued before the request: it goes through.
 	if (
 		requested
@@ -1667,6 +1800,68 @@ def refuse_employee_ir_while_requested(doc, table="employee_ir_operations"):
 		).format(_destination(close_hold_departments())),
 		title=_("Transfer Restricted"),
 	)
+
+
+# --------------------------------------------------------------------------------------------
+# a requested PMO whose work is back: tell the requester it can be closed / held now
+# --------------------------------------------------------------------------------------------
+
+
+def queue_ready_check_after_transfer(doc, table):
+	"""Department IR / Employee IR on_submit: a transfer may have brought a requested PMO's
+	last work order back (or its metal), so check its PMOs once the submit commits."""
+	enqueue_ready_check(requested_pmos(_row_pmos(doc, table)))
+
+
+def queue_ready_check_after_stock_entry(doc, method=None):
+	"""Stock Entry on_submit: the requested PMOs refuse_stock_entry_while_blocked found at
+	validate (a metal return or adjustment may have cleared the last of their metal)."""
+	enqueue_ready_check(doc.flags.get(REQUESTED_PMOS_FLAG) or ())
+
+
+def enqueue_ready_check(pmo_names):
+	names = sorted({n for n in pmo_names if n})
+	if not names:
+		return
+	frappe.enqueue(
+		notify_ready_requests,
+		queue="short",
+		enqueue_after_commit=True,
+		pmo_names=names,
+	)
+
+
+def notify_ready_requests(pmo_names):
+	"""Background job: for each PMO still in Close Requested / Hold Requested with nothing
+	left to wait for -- its work orders back, no metal or drafts for a Close -- alert the user
+	who raised the request, once per request."""
+	for name, state in sorted(requested_pmos(pmo_names).items()):
+		target = CLOSE if state == CLOSE_REQUESTED else HOLD
+		if _problem_list(
+			name, target, _pmo_documents(name, target, lock=False), stock=False
+		):
+			continue
+		request = _latest_request(name)
+		if not request or not request.action_by:
+			continue
+		if target == CLOSE:
+			message = _(
+				"Parent Manufacturing Order {0} is ready to Close: its work orders are back with no metal and no draft transactions (Close request of {1})."
+			)
+		else:
+			message = _(
+				"Parent Manufacturing Order {0} is ready for Hold: its work orders are back (Hold request of {1})."
+			)
+		enqueue_create_notification(
+			request.action_by,
+			{
+				"type": "Alert",
+				"document_type": PMO,
+				"document_name": name,
+				"subject": message.format(name, request.action_on),
+			},
+			dedupe_on=["document_type", "document_name", "subject"],
+		)
 
 
 def validate_operation_hold(mop):

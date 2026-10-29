@@ -240,10 +240,17 @@ class DepartmentIR(Document):
 				)
 
 	def on_submit(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			queue_ready_check_after_transfer,
+		)
+
 		if self.type == "Issue":
 			self.on_submit_issue_new()
 		else:
 			self.on_submit_receive()
+			# A Receive may bring back the last work order of a PMO with a Close / Hold
+			# request: its requester is told once the submit commits.
+			queue_ready_check_after_transfer(self, "department_ir_operation")
 		# Last statement: a hit here rolls the whole submit back.
 		current_operation_guard.final_draft_check(self)
 

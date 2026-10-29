@@ -225,6 +225,10 @@ class EmployeeIR(Document):
 			validate_employee_ir_receive_delay(self)
 
 	def on_submit(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			queue_ready_check_after_transfer,
+		)
+
 		# Runs before validate_loss_tables_required so that when the blanket
 		# per-material flags are what emptied the automatic loss table, the operator
 		# gets a message naming the flag instead of the generic "no loss details
@@ -255,6 +259,9 @@ class EmployeeIR(Document):
 			# cost includes this operation.
 			stamp_without_so_worker_cost(self)
 			self._announce_customer_loss_posted()
+			# A Receive may hand back the last work order of a PMO with a Close / Hold
+			# request: its requester is told once the submit commits.
+			queue_ready_check_after_transfer(self, "employee_ir_operations")
 		# Last statement: a hit here rolls the whole submit back.
 		current_operation_guard.final_draft_check(self)
 

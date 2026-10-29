@@ -322,7 +322,7 @@
    "options": "PMO Action Reason"
   },
   {
-   "description": "While a Parent Manufacturing Order has a Close or Hold request, its work orders can be transferred only to these departments. None of them can be a Manufacturer's Central Department.",
+   "description": "While a Parent Manufacturing Order has a Close or Hold request, its work orders can be transferred only to these departments.",
    "fieldname": "pmo_close_hold_departments",
    "fieldtype": "Table MultiSelect",
    "label": "Close / Hold Request Departments",
@@ -340,7 +340,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-29 18:00:00.000000",
+ "modified": "2026-10-29 19:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "MOP Settings",

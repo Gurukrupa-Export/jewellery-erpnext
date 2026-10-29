@@ -1993,17 +1993,24 @@ class TestDepartmentIRCurrentOperationWiring(IntegrationTestCase):
 	def test_submit_ends_with_the_terminal_draft_check(self):
 		for kind, expected in (
 			("Issue", ["issue", "final draft check"]),
-			("Receive", ["receive", "final draft check"]),
+			("Receive", ["receive", "ready check", "final draft check"]),
 		):
 			with self.subTest(kind=kind):
 				calls = []
 				doc = _guard_dir(kind, docstatus=1)
 				doc.on_submit_issue_new = _record(calls, "issue")
 				doc.on_submit_receive = _record(calls, "receive")
-				with patch.object(
-					guard,
-					"final_draft_check",
-					side_effect=_record(calls, "final draft check"),
+				with (
+					# A Receive queues the PMO Close / Hold request ready check.
+					patch(
+						"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.queue_ready_check_after_transfer",
+						side_effect=_record(calls, "ready check"),
+					),
+					patch.object(
+						guard,
+						"final_draft_check",
+						side_effect=_record(calls, "final draft check"),
+					),
 				):
 					DepartmentIR.on_submit(doc)
 				self.assertEqual(calls, expected)

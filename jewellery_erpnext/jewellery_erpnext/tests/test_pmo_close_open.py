@@ -224,11 +224,60 @@ class TestWorkOrderSubmitUnderBlockedPmo(_Base):
 				blocking.assert_called_once_with("PMO-1")
 				mwo.validate_photoshop_images.assert_not_called()
 
+	@patch(f"{MWO_MOD}.pmo_request_state", return_value=None)
 	@patch(f"{MWO_MOD}.pmo_blocking_state", return_value=None)
-	def test_submit_goes_on_when_the_pmo_is_open(self, _blocking):
+	def test_submit_goes_on_when_the_pmo_is_open(self, _blocking, _requested):
 		mwo = self._mwo()
 		ManufacturingWorkOrder.before_submit(mwo)
 		mwo.validate_photoshop_images.assert_called_once_with()
+
+	@patch(f"{MWO_MOD}.pmo_blocking_state", return_value=None)
+	def test_submit_is_refused_while_the_pmo_has_a_request(self, _blocking):
+		for state, text in (
+			("Close Requested", "Close request"),
+			("Hold Requested", "Hold request"),
+		):
+			with self.subTest(state=state):
+				mwo = self._mwo()
+				with patch(f"{MWO_MOD}.pmo_request_state", return_value=state):
+					with self.assertRaisesRegex(
+						frappe.ValidationError, f"PMO-1.*{text}.*cannot be submitted"
+					):
+						ManufacturingWorkOrder.before_submit(mwo)
+				mwo.validate_photoshop_images.assert_not_called()
+
+	def test_split_is_refused_while_the_pmo_has_a_request(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
+			_validate_split_basics,
+		)
+
+		row = frappe._dict(
+			docstatus=1,
+			status="Not Started",
+			has_split_mwo=0,
+			department=MPM,
+			gross_wt=0,
+			manufacturing_operation=None,
+			manufacturing_order="PMO-1",
+		)
+		real = frappe.db.get_value
+
+		def _get_value(*args, **kwargs):
+			if args[:2] == ("Manufacturing Work Order", "MWO-1"):
+				return row
+			return real(*args, **kwargs)
+
+		with (
+			patch(f"{MWO_MOD}.frappe.db.get_value", side_effect=_get_value),
+			patch(
+				f"{MWO_MOD}.pmo_request_state", return_value="Close Requested"
+			) as requested,
+		):
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "PMO-1.*Close request.*MWO-1 cannot be split"
+			):
+				_validate_split_basics("MWO-1")
+		requested.assert_called_once_with("PMO-1")
 
 
 class TestPmoBlockingState(_Base):
@@ -325,7 +374,9 @@ class TestDispatch(_Base):
 				reason = self.REASON if action else None
 				for name, mock in ran.items():
 					if name == expected:
-						mock.assert_called_once_with(pmo, reason)
+						# _hold also gets the state it came from (a Close request is kept).
+						args = (previous,) if name == "_hold" else ()
+						mock.assert_called_once_with(pmo, reason, *args)
 					else:
 						mock.assert_not_called()
 				if action:
@@ -357,15 +408,62 @@ class TestDispatch(_Base):
 		pmo, ran, record = self._dispatch(
 			"Submitted", "Hold", flags={close_open.INTERNAL_FLAG: True}
 		)
-		ran["_hold"].assert_called_once_with(pmo, None)
+		ran["_hold"].assert_called_once_with(pmo, None, "Submitted")
 		record.assert_not_called()
 
 	def test_the_reason_is_trimmed(self):
 		pmo, ran, record = self._dispatch(
 			"Submitted", "Hold", flags={close_open.REASON_FLAG: "  Customer request "}
 		)
-		ran["_hold"].assert_called_once_with(pmo, "Customer request")
+		ran["_hold"].assert_called_once_with(pmo, "Customer request", "Submitted")
 		record.assert_called_once_with(pmo, "Hold", "Customer request")
+
+	def test_a_close_request_resumes_after_its_hold(self):
+		"""FRD 3.5: Open of a Hold made during a Close request, and Withdraw of a Hold request
+		made during one, go back to Close Requested -- neither is a new request."""
+		cases = (
+			("Hold", "_open", "Open", {"resumed": True}),
+			("Hold Requested", "_withdraw", "Withdraw Request", {"resumed": True}),
+		)
+		for previous, handler, action, kwargs in cases:
+			with self.subTest(previous=previous):
+				pmo = _FakePMO(
+					state="Close Requested",
+					before=frappe._dict(workflow_state=previous),
+					flags={close_open.REASON_FLAG: self.REASON},
+				)
+				with (
+					patch(f"{CO}._open") as open_,
+					patch(f"{CO}._withdraw") as withdraw,
+					patch(f"{CO}._request") as request,
+					patch(f"{CO}._record_reason") as record,
+				):
+					close_open.on_workflow_state_change(pmo)
+				ran = {"_open": open_, "_withdraw": withdraw}[handler]
+				args = (
+					(pmo, self.REASON)
+					if handler == "_open"
+					else (pmo, previous, self.REASON)
+				)
+				ran.assert_called_once_with(*args, **kwargs)
+				request.assert_not_called()
+				record.assert_called_once_with(pmo, action, self.REASON)
+
+	def test_a_hold_request_during_a_close_request_passes_the_close_request_on(self):
+		pmo = _FakePMO(
+			state="Hold Requested",
+			before=frappe._dict(workflow_state="Close Requested"),
+			flags={close_open.REASON_FLAG: self.REASON},
+		)
+		with (
+			patch(f"{CO}._request") as request,
+			patch(f"{CO}._record_reason") as record,
+		):
+			close_open.on_workflow_state_change(pmo)
+		request.assert_called_once_with(
+			pmo, "Request Hold", self.REASON, "Close Requested"
+		)
+		record.assert_called_once_with(pmo, "Request Hold", self.REASON)
 
 	def test_a_refused_action_records_no_reason(self):
 		pmo = _FakePMO(
@@ -434,17 +532,44 @@ class TestDispatch(_Base):
 
 
 class TestHold(_Base):
-	def _hold(self, docs, reason="Awaiting customer approval"):
-		pmo = _FakePMO(state="Hold")
+	def _hold(self, docs, reason="Awaiting customer approval", previous=None, pmo=None):
+		pmo = pmo or _FakePMO(state="Hold")
 		with (
 			patch(f"{CO}._pmo_documents", return_value=docs) as documents,
 			patch(f"{CO}._refuse_unless_ready") as refuse,
 			patch(f"{CO}.set_values_in_bulk") as bulk,
+			patch(f"{CO}._notify_pmo") as notify,
 		):
-			close_open._hold(pmo, reason)
+			close_open._hold(pmo, reason, previous)
 		documents.assert_called_once_with("PMO-1", "Hold")
 		refuse.assert_called_once_with("PMO-1", "Hold", docs)
+		self.notify = notify
 		return pmo, bulk
+
+	def test_the_departments_holding_its_work_orders_are_alerted(self):
+		docs = _docs(mwos=[_mwo("MWO-1"), _mwo("MWO-2", department="Waxing - T")])
+		pmo, _bulk = self._hold(docs)
+		self.notify.assert_called_once()
+		args = self.notify.call_args.args
+		self.assertIs(args[0], pmo)
+		self.assertIn("PMO-1 has been put on Hold", args[1])
+		self.assertEqual(args[2], [MPM, "Waxing - T"])
+		self.assertEqual(args[3], "Awaiting customer approval")
+
+	def test_a_hold_during_a_close_request_keeps_the_close_request(self):
+		pmo, _bulk = self._hold(_docs(mwos=[_mwo("MWO-1")]), previous="Close Requested")
+		self.assertEqual(_stored_snapshot(pmo)[close_open.RESUME_CLOSE_KEY], 1)
+		self.assertIn("Close request carries on", pmo.add_comment.call_args.args[1])
+
+	def test_the_hold_of_a_queued_close_keeps_no_request_and_alerts_nobody(self):
+		pmo = _FakePMO(
+			state="Hold",
+			snapshot={close_open.RESUME_CLOSE_KEY: 1},
+			flags={close_open.INTERNAL_FLAG: True},
+		)
+		self._hold(_docs(mwos=[_mwo("MWO-1")]), None, "Close Requested", pmo=pmo)
+		self.assertNotIn(close_open.RESUME_CLOSE_KEY, _stored_snapshot(pmo))
+		self.notify.assert_not_called()
 
 	def test_holds_work_orders_current_operations_and_requests_and_keeps_what_they_were(
 		self,
@@ -542,8 +667,11 @@ class TestOpen(_Base):
 			patch(f"{CO}._pmo_documents", return_value=docs) as documents,
 			patch(f"{CO}.is_job_enqueued", return_value=False),
 			patch(f"{CO}.set_values_in_bulk") as bulk,
+			patch(f"{CO}._notify_pmo") as notify,
 		):
 			close_open._open(pmo)
+		# No reason: a held draft's submit, which alerts nobody.
+		notify.assert_not_called()
 		documents.assert_called_once_with(
 			"PMO-1", "Open", extra_operations=self.SNAPSHOT["mop"]
 		)
@@ -589,6 +717,7 @@ class TestOpen(_Base):
 					patch(f"{CO}._pmo_documents", return_value=_docs()),
 					patch(f"{CO}.is_job_enqueued", return_value=False),
 					patch(f"{CO}.set_values_in_bulk") as bulk,
+					patch(f"{CO}._notify_pmo") as notify,
 				):
 					close_open._open(pmo, reason)
 				bulk.assert_not_called()
@@ -596,8 +725,29 @@ class TestOpen(_Base):
 					self.assertIn(
 						"Reason: Customer approved", pmo.add_comment.call_args.args[1]
 					)
+					self.assertIn("has been opened", notify.call_args.args[1])
 				else:
 					pmo.add_comment.assert_not_called()
+					notify.assert_not_called()
+
+	def test_an_open_that_resumes_a_close_request_says_so(self):
+		pmo = _FakePMO(
+			state="Close Requested",
+			snapshot={close_open.RESUME_CLOSE_KEY: 1, "mwo": {}},
+		)
+		docs = _docs(mwos=[_mwo("MWO-1", department="Returns - T")])
+		with (
+			patch(f"{CO}._pmo_documents", return_value=docs),
+			patch(f"{CO}.is_job_enqueued", return_value=False),
+			patch(f"{CO}.set_values_in_bulk"),
+			patch(f"{CO}._notify_pmo") as notify,
+		):
+			close_open._open(pmo, "Hold cleared", resumed=True)
+		self.assertIsNone(_stored_snapshot(pmo))
+		self.assertIn("Close request carries on", pmo.add_comment.call_args.args[1])
+		subject, departments = notify.call_args.args[1:3]
+		self.assertIn("Close request carries on", subject)
+		self.assertEqual(departments, ["Returns - T"])
 
 
 class TestClose(_Base):
@@ -628,8 +778,15 @@ class TestClose(_Base):
 			patch(f"{CO}._pmo_documents", return_value=docs) as documents,
 			patch(f"{CO}._refuse_unless_ready") as refuse,
 			patch(f"{CO}.set_values_in_bulk") as bulk,
+			patch(f"{CO}._notify_pmo") as notify,
 		):
 			close_open._close(pmo, "Customer cancelled")
+		notify.assert_called_once_with(
+			pmo,
+			"Parent Manufacturing Order PMO-1 has been closed: 2 work orders closed.",
+			[MPM],
+			"Customer cancelled",
+		)
 		documents.assert_called_once_with("PMO-1", "Close")
 		refuse.assert_called_once_with("PMO-1", "Close", docs)
 		self.assertCountEqual(
@@ -1336,6 +1493,7 @@ class TestGuards(_Base):
 				"manufacturing_operation": None,
 				"outgoing_stock_entry": None,
 				"items": [],
+				"flags": frappe._dict(),
 				**fields,
 			}
 		)
@@ -1912,6 +2070,7 @@ class TestRequestRestrictions(_Base):
 				"manufacturing_operation": None,
 				"outgoing_stock_entry": None,
 				"items": [],
+				"flags": frappe._dict(),
 				**fields,
 			}
 		)
@@ -1950,6 +2109,14 @@ class TestRequestRestrictions(_Base):
 			)
 		)
 
+	def test_the_requested_pmos_found_at_validate_are_kept_for_on_submit(self):
+		doc = self._stock_entry("Material Transfer to Department")
+		self._guard_stock_entry(doc)
+		self.assertEqual(doc.flags[close_open.REQUESTED_PMOS_FLAG], ["PMO-1"])
+		with patch(f"{CO}.enqueue_ready_check") as ready:
+			close_open.queue_ready_check_after_stock_entry(doc)
+		ready.assert_called_once_with(["PMO-1"])
+
 
 class TestHoldForClose(_Base):
 	"""The Hold a queued Close starts with, for a user who may Close but not Hold."""
@@ -1980,3 +2147,237 @@ class TestHoldForClose(_Base):
 		self.assertEqual(doc.add_comment.call_args.args[0], "Workflow")
 		doc.reload.assert_called_once_with()
 		self.assertNotIn(close_open.INTERNAL_FLAG, doc.flags)
+
+
+class TestRequestNotifications(_Base):
+	"""Hold, Open, Close and withdrawals alert the departments and the requester (FRD 6)."""
+
+	def test_departments_and_the_requester_are_alerted_never_the_actor(self):
+		me = frappe.session.user
+		with (
+			patch(
+				f"{CO}._department_users",
+				return_value={"Waxing - T": {"waxer@example.com", me}},
+			) as users,
+			patch(
+				f"{CO}._latest_request",
+				return_value=frappe._dict(action_by="order@example.com"),
+			),
+			patch(f"{CO}.enqueue_create_notification") as notify,
+		):
+			close_open._notify_pmo(
+				_FakePMO(), "PMO-1 is on Hold.", ["Waxing - T"], "Why"
+			)
+		users.assert_called_once_with(["Waxing - T"])
+		recipients, alert = notify.call_args.args
+		self.assertEqual(recipients, ["order@example.com", "waxer@example.com"])
+		self.assertEqual(alert["subject"], "PMO-1 is on Hold. Reason: Why")
+		self.assertEqual(alert["document_name"], "PMO-1")
+		self.assertEqual(alert["from_user"], me)
+
+	def test_nobody_to_alert_sends_nothing(self):
+		with (
+			patch(f"{CO}._department_users", return_value={}),
+			patch(f"{CO}._latest_request", return_value=None),
+			patch(f"{CO}.enqueue_create_notification") as notify,
+		):
+			close_open._notify_pmo(_FakePMO(), "PMO-1 is on Hold.", [])
+		notify.assert_not_called()
+
+	def test_the_latest_request_row_is_read(self):
+		row = frappe._dict(status="Request Close", action_by="order@example.com")
+		with patch("frappe.get_all", return_value=[row]) as get_all:
+			self.assertIs(close_open._latest_request("PMO-1"), row)
+		self.assertEqual(get_all.call_args.args[0], "PMO Status Reason")
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"],
+			{
+				"parenttype": "Parent Manufacturing Order",
+				"parent": "PMO-1",
+				"parentfield": "status_reasons",
+				"status": ["in", ("Request Close", "Request Hold")],
+			},
+		)
+		self.assertEqual(get_all.call_args.kwargs["order_by"], "idx desc")
+
+	def test_holding_departments_come_from_the_current_operations(self):
+		docs = _docs(
+			mops=[frappe._dict(name="MOP-1", department="Polish - T")],
+			mwos=[
+				_mwo("MWO-1", pointer="MOP-1", department="Waxing - T"),
+				_mwo("MWO-2", department="Waxing - T"),
+				_mwo("MWO-3", docstatus=2, department="Gone - T"),
+			],
+		)
+		self.assertEqual(
+			close_open._holding_departments(docs), ["Polish - T", "Waxing - T"]
+		)
+
+	def _withdraw(self, snapshot, resumed=False):
+		pmo = _FakePMO(state="Submitted", snapshot=snapshot)
+		docs = _docs(mwos=[_mwo("MWO-1", department="Waxing - T")])
+		with (
+			patch(f"{CO}._pmo_documents", return_value=docs) as documents,
+			patch(f"{CO}._notify_pmo") as notify,
+		):
+			close_open._withdraw(
+				pmo, "Hold Requested", "Customer changed mind", resumed
+			)
+		documents.assert_called_once_with("PMO-1", "Hold", lock=False)
+		return pmo, notify
+
+	def test_a_withdrawal_alerts_and_frees_the_work_orders(self):
+		pmo, notify = self._withdraw(None)
+		pmo.db_set.assert_not_called()
+		subject, departments, reason = notify.call_args.args[1:]
+		self.assertIn("can move freely again", subject)
+		self.assertEqual(departments, ["Waxing - T"])
+		self.assertEqual(reason, "Customer changed mind")
+
+	def test_withdrawing_a_hold_request_resumes_the_close_request(self):
+		pmo, notify = self._withdraw({close_open.RESUME_CLOSE_KEY: 1}, resumed=True)
+		self.assertIsNone(_stored_snapshot(pmo))
+		self.assertIn("Close request continues", notify.call_args.args[1])
+		self.assertIn("Close request continues", pmo.add_comment.call_args.args[1])
+
+	def test_a_hold_request_during_a_close_request_keeps_it(self):
+		pmo = _FakePMO(state="Hold Requested")
+		with (
+			patch(
+				f"{CO}._request_plan",
+				return_value={"departments": ["Returns - T"], "pending": []},
+			),
+			patch(f"{CO}._notify_request"),
+		):
+			close_open._request(
+				pmo, "Request Hold", "Stone shortage", "Close Requested"
+			)
+		self.assertEqual(_stored_snapshot(pmo), {close_open.RESUME_CLOSE_KEY: 1})
+
+	def test_a_plain_request_stores_nothing(self):
+		pmo = _FakePMO(state="Close Requested")
+		with (
+			patch(
+				f"{CO}._request_plan",
+				return_value={"departments": ["Returns - T"], "pending": []},
+			),
+			patch(f"{CO}._notify_request"),
+		):
+			close_open._request(pmo, "Request Close", "Customer cancelled", "Submitted")
+		pmo.db_set.assert_not_called()
+
+
+class TestReadyCheck(_Base):
+	"""The requester hears when a requested PMO's work is back (FRD 6, transfer completed)."""
+
+	def _notify_ready(self, problems, request):
+		with (
+			patch(
+				f"{CO}.requested_pmos",
+				return_value={"PMO-1": "Close Requested", "PMO-2": "Hold Requested"},
+			),
+			patch(f"{CO}._pmo_documents", return_value=_docs()) as documents,
+			patch(f"{CO}._problem_list", side_effect=lambda n, *a, **k: problems[n]),
+			patch(f"{CO}._latest_request", return_value=request),
+			patch(f"{CO}.enqueue_create_notification") as notify,
+		):
+			close_open.notify_ready_requests(["PMO-1", "PMO-2"])
+		return documents, notify
+
+	def test_only_a_pmo_with_nothing_left_alerts_its_requester_once(self):
+		request = frappe._dict(
+			action_by="order@example.com", action_on="2026-10-29 12:00:00"
+		)
+		documents, notify = self._notify_ready(
+			{"PMO-1": [], "PMO-2": [("department", "elsewhere")]}, request
+		)
+		self.assertEqual(
+			documents.call_args_list,
+			[call("PMO-1", "Close", lock=False), call("PMO-2", "Hold", lock=False)],
+		)
+		(alert_call,) = notify.call_args_list
+		self.assertEqual(alert_call.args[0], "order@example.com")
+		alert = alert_call.args[1]
+		self.assertEqual(alert["document_name"], "PMO-1")
+		self.assertIn("PMO-1 is ready to Close", alert["subject"])
+		self.assertIn("2026-10-29 12:00:00", alert["subject"])
+		self.assertEqual(
+			alert_call.kwargs["dedupe_on"],
+			["document_type", "document_name", "subject"],
+		)
+
+	def test_no_requester_no_alert(self):
+		_documents, notify = self._notify_ready({"PMO-1": [], "PMO-2": []}, None)
+		notify.assert_not_called()
+
+	def test_queued_after_commit_once_per_pmo(self):
+		with patch("frappe.enqueue") as enqueue:
+			close_open.enqueue_ready_check([None, "PMO-1", "", "PMO-1"])
+			close_open.enqueue_ready_check([])
+		enqueue.assert_called_once_with(
+			close_open.notify_ready_requests,
+			queue="short",
+			enqueue_after_commit=True,
+			pmo_names=["PMO-1"],
+		)
+
+	def test_an_ir_submit_queues_its_requested_pmos(self):
+		doc = frappe._dict(department_ir_operation=[])
+		with (
+			patch(f"{CO}._row_pmos", return_value={"PMO-1", "PMO-9"}) as rows,
+			patch(
+				f"{CO}.requested_pmos", return_value={"PMO-1": "Close Requested"}
+			) as requested,
+			patch(f"{CO}.enqueue_ready_check") as ready,
+		):
+			close_open.queue_ready_check_after_transfer(doc, "department_ir_operation")
+		rows.assert_called_once_with(doc, "department_ir_operation")
+		requested.assert_called_once_with({"PMO-1", "PMO-9"})
+		ready.assert_called_once_with({"PMO-1": "Close Requested"})
+
+
+class TestWorkflowPatch(_Base):
+	"""The workflow patch's transitions agree with the flow (FRD 3.5 conditions)."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		from jewellery_erpnext.patches import create_pmo_close_open_workflow
+
+		cls.wf = create_pmo_close_open_workflow
+
+	def test_every_reason_action_is_recognised_by_the_flow(self):
+		for state, action, next_state, _allowed, *_condition in self.wf.TRANSITIONS:
+			if action not in close_open.REASON_ACTIONS:
+				continue
+			with self.subTest(state=state, action=action, next_state=next_state):
+				self.assertEqual(close_open._action_of(state, next_state), action)
+
+	def test_exactly_one_open_and_withdraw_passes_for_each_snapshot(self):
+		self.assertEqual(self.wf.RESUME_KEY, close_open.RESUME_CLOSE_KEY)
+		snapshots = {
+			"Close Requested": json.dumps(
+				{close_open.RESUME_CLOSE_KEY: 1, "mwo": {}}, sort_keys=True
+			),
+			"Submitted": json.dumps({"mwo": {"MWO-1": "Not Started"}}, sort_keys=True),
+			"Submitted ": None,
+		}
+		for state, action in (("Hold", "Open"), ("Hold Requested", "Withdraw Request")):
+			rows = [
+				t
+				for t in self.wf.TRANSITIONS
+				if t[0] == state and t[1] == action and t[3] == self.wf.HOLD_TEAM
+			]
+			for expected, snapshot in snapshots.items():
+				with self.subTest(state=state, snapshot=snapshot):
+					doc = frappe._dict(hold_snapshot=snapshot)
+					passing = [
+						t[2] for t in rows if frappe.safe_eval(t[4], None, {"doc": doc})
+					]
+					self.assertEqual(passing, [expected.strip()])
+
+	def test_the_hold_team_may_request_hold_during_a_close_request(self):
+		self.assertIn(
+			("Close Requested", "Request Hold", "Hold Requested", self.wf.HOLD_TEAM),
+			self.wf.TRANSITIONS,
+		)

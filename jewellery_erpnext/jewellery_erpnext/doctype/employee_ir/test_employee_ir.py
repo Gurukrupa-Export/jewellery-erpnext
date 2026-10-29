@@ -4126,7 +4126,7 @@ class TestEmployeeIRCurrentOperationWiring(IntegrationTestCase):
 			(
 				"Receive",
 				"No",
-				["receive", "customer loss note", "final draft check"],
+				["receive", "customer loss note", "ready check", "final draft check"],
 			),
 		):
 			with self.subTest(kind=kind, subcontracting=subcontracting):
@@ -4144,6 +4144,11 @@ class TestEmployeeIRCurrentOperationWiring(IntegrationTestCase):
 					patch(f"{_EIR_MODULE}.validate_loss_rows_against_material_gate"),
 					patch(f"{_EIR_MODULE}.validate_customer_goods_finding_loss_rows"),
 					patch(f"{_EIR_MODULE}.validate_qc"),
+					# A Receive queues the PMO Close / Hold request ready check.
+					patch(
+						"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.queue_ready_check_after_transfer",
+						side_effect=_rec(calls, "ready check"),
+					),
 					patch.object(
 						guard,
 						"final_draft_check",
