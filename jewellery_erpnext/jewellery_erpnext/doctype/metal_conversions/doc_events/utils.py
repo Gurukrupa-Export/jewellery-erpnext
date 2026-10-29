@@ -99,19 +99,19 @@ def update_alloy_betch(self):
 		self.alloy_batch_details = []
 		# batch_data = batch_data[0]
 		if batch_data:
-			remaining_qty = 0
+			required_qty = flt(self.source_alloy_qty)
 			total_qty = 0
 			for i in batch_data:
-				qty = 0
-				if flt(self.source_alloy_qty) > i.qty:
-					qty = i.qty
-					remaining_qty += i.qty
-					total_qty += qty
-				else:
-					qty = flt(self.source_alloy_qty) - remaining_qty
-					total_qty += qty
+				still_needed = required_qty - total_qty
+				if still_needed <= _QTY_TOLERANCE:
+					break
+				# Each batch gives what is still needed, at most what it holds.
+				qty = min(flt(i.qty), still_needed)
+				if qty <= 0:
+					continue
+				total_qty += qty
 				self.append("alloy_batch_details", {"qty": qty, "batch": i.batch_no})
-			if total_qty != flt(self.source_alloy_qty):
+			if abs(total_qty - required_qty) > _QTY_TOLERANCE:
 				frappe.throw(
 					_(
 						"The source quantity is not available for the given warehouse. The available quantity is {}.".format(

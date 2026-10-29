@@ -146,4 +146,5 @@ jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/O
 jewellery_erpnext.patches.move_manufacturing_plan_layout_to_core
 jewellery_erpnext.patches.backfill_chain_finding_mwo
 jewellery_erpnext.patches.set_without_so_pmo_type
+jewellery_erpnext.patches.add_customer_serial_print_with_hallmarking
 jewellery_erpnext.patches.clear_kggk_source_on_non_template_bom #2026-10-28 clear inherited KGGK source fields on non-Template BOMs

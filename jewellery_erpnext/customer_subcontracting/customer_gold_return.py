@@ -672,6 +672,16 @@ def _batch_rate(batch_no, warehouse):
 	return (flt(value) / flt(qty)) if flt(qty) > 0 else None
 
 
+def _qty_precision():
+	"""Decimals a return row's quantity posts at: the Stock Entry row's ``transfer_qty``, by the
+	same rule Metal Conversions builds its rows to."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
+		_qty_precision,
+	)
+
+	return _qty_precision()
+
+
 def _check_plans(doc, plans, for_update):
 	"""Quantity, entitlement and valuation checks. Called twice: at validate for an early,
 	readable answer, and again at before_submit under a lock for the one that counts."""
@@ -757,9 +767,15 @@ def _check_plans(doc, plans, for_update):
 		for_update=for_update,
 		replay=replay,
 	)
+	precision = _qty_precision()
 	for name, (receipt, qty) in by_receipt.items():
 		left = remaining.get(name, 0.0)
-		if qty > left + 1e-6:
+		# ``left`` is traced in fine gold and divided back by the receipt's fine per unit, so it
+		# carries digits a stock quantity cannot have -- 5.137766 owed for a batch Settle filled to
+		# 5.138 (KGJPL-SE-CGR-26-00055). Quantities are kept, offered (Create > Issue) and shown at
+		# ``precision``, so the entitlement is judged there too: a difference below the last kept
+		# decimal never blocks.
+		if flt(qty, precision) > flt(left, precision):
 			frappe.throw(
 				frappe._(
 					"Receipt {0} row {1} has {2} left to return; this entry returns {3}. The "
@@ -767,8 +783,8 @@ def _check_plans(doc, plans, for_update):
 				).format(
 					frappe.bold(receipt.reference_docname),
 					receipt.cg_source_row,
-					frappe.bold(flt(max(left, 0), 3)),
-					frappe.bold(flt(qty, 3)),
+					frappe.bold(flt(max(left, 0), precision)),
+					frappe.bold(flt(qty, precision)),
 				),
 				title=frappe._("Customer Gold Return Exceeds Receipt"),
 			)
