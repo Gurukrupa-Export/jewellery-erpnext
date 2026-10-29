@@ -4747,9 +4747,7 @@ def _receive_tolerance(precision=None):
 	intentional.
 	"""
 	if precision is None:
-		precision = cint(
-			frappe.db.get_single_value("System Settings", "float_precision")
-		)
+		precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	return 0.5 * 10**-precision if precision else 0.0001
 
 
