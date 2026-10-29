@@ -17,6 +17,7 @@
   "posting_date",
   "column_break_general",
   "department",
+  "refinery_flow",
   "refining_department",
   "warehouse",
   "refining_warehouse",
@@ -159,6 +160,15 @@
    "fieldtype": "Link",
    "label": "Source Department",
    "options": "Department"
+  },
+  {
+   "default": "0",
+   "fetch_from": "department.custom_enable_refinery_flow",
+   "fieldname": "refinery_flow",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Refinery Flow Enabled",
+   "read_only": 1
   },
   {
    "fieldname": "refining_department",
@@ -636,7 +646,7 @@
    "link_fieldname": "refining_entry"
   }
  ],
- "modified": "2026-07-31 20:57:25.521868",
+ "modified": "2026-10-29 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Refining",
  "name": "Refining Entry",

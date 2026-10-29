@@ -60,3 +60,29 @@ SOURCE_TYPE_BOM_COMPONENT = "BOM Component"
 #: ``Batch.custom_batch_type`` marker stamped on material returned from production
 #: (the "Receive Unused/Loose Material" Manufacturing Operation action). Was "Scrap".
 BATCH_TYPE_UNUSED = "Unused/Loose Material"
+
+#: Companies that refine externally only: Refining Entry's "Is External Refining" is ticked
+#: (and locked) for them. Every other company keeps the checkbox as the operator sets it.
+EXTERNAL_REFINING_COMPANIES = ("KG GK Jewellers Private Limited",)
+
+#: Source warehouse (Warehouse.warehouse_type of the Source Department) each refining type
+#: draws from. Work Order material sits in the department's Work Order warehouse, which is
+#: the Manufacturing-type "<Dept> WO" warehouse.
+SOURCE_WAREHOUSE_TYPE = {
+	REFINING_TYPE_SCRAP: "Scrap",
+	REFINING_TYPE_SERIAL: "Raw Material",
+	REFINING_TYPE_UNUSED: "Raw Material",
+	REFINING_TYPE_WORK_ORDER: "Manufacturing",
+}
+
+#: Refining types whose material is consolidated into one batch per item on its way to the
+#: refinery, and whose refined material is handed back to Central as a draft transfer.
+CONSOLIDATED_REFINING_TYPES = (REFINING_TYPE_SCRAP, REFINING_TYPE_UNUSED)
+
+#: Tracking types of ``Refining Batch Tracking`` rows.
+TRACKING_CONSOLIDATION = "Consolidation"
+TRACKING_RECOVERY = "Recovery"
+
+#: Item groups of the refining consumables (Napkin/Buff Waste, Vacuum Bag Dust, Ultra
+#: Liquid, ...) that travel to the refinery on the same Scrap Refining entry.
+REFINING_CONSUMABLE_ITEM_GROUPS = ("Refining Scrap", "Refining Chemical")
