@@ -2246,6 +2246,7 @@ def _customer_gold_issue_plan(source_name):
 		_receipt_settings,
 	)
 	from jewellery_erpnext.customer_subcontracting.customer_gold_return import (
+		_qty_precision,
 		receipt_remaining,
 	)
 	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
@@ -2283,6 +2284,8 @@ def _customer_gold_issue_plan(source_name):
 		(frappe.flags.args or {}).get("receipt_row") if frappe.flags.args else None
 	)
 
+	# The precision the return's entitlement check judges at, so what is offered here passes it.
+	precision = _qty_precision()
 	left = {}
 	for event in events:
 		qty = max(flt(remaining.get(event.name)), 0.0)
@@ -2290,7 +2293,7 @@ def _customer_gold_issue_plan(source_name):
 			qty = 0.0
 		elif requested:
 			qty = min(qty, requested)
-		left[event.cg_source_row] = flt(qty, 3)
+		left[event.cg_source_row] = flt(qty, precision)
 	return return_type, left
 
 
