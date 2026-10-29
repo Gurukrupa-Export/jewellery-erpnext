@@ -1085,7 +1085,8 @@ def make_finding_without_so_order(source_doc, row, mp_context=None):
 	other two paths read off those comes from the row itself. ``row.item_code`` is the finding
 	variant the plan resolved from the row's attributes on validate. Setting Type goes to
 	``finding_setting_type`` because ``setting_type`` is fetched from the item, and finding
-	items carry none.
+	items carry none. Department and Type are the plan's: its creator's Employee department,
+	and the plan's own mode.
 	"""
 	mp_context = mp_context or {}
 	manufacturer = mp_context.get("manufacturer") or frappe.defaults.get_user_default(
@@ -1097,8 +1098,8 @@ def make_finding_without_so_order(source_doc, row, mp_context=None):
 	doc.branch = source_doc.branch
 	if manufacturer:
 		doc.manufacturer = manufacturer
-	doc.department = mp_context.get("finding_default_department")
-	doc.type = "Finding Manufacturing"
+	doc.department = source_doc.department
+	doc.type = source_doc.select_manufacture_order
 	doc.is_without_so = 1
 	doc.item_code = row.item_code
 	doc.metal_type = row.metal_type

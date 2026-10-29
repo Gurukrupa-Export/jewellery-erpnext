@@ -1262,6 +1262,13 @@ def create_manufacturing_operation(doc):
 		# New Status
 		status = "Finished"
 
+	if doc.is_without_so and doc.department != department:
+		# A Without-SO order starts in its plan's department, where the default operation
+		# does not belong; the Employee IR issue picks the operation, as after a Department
+		# IR receive.
+		department = doc.department
+		operation = None
+
 	if doc.split_from:
 		department = doc.department
 		operation = None

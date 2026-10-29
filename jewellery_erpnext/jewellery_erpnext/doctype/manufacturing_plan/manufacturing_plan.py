@@ -49,6 +49,16 @@ ORDER_DIMENSION_MAP = {
 # Order or existing Manufacturing Work Order behind them.
 FINDING_WITHOUT_SO = "Finding Manufacturing - Without SO"
 
+# Select Manufacture Order option -> the Manufacturing Setting Table MultiSelect holding the
+# roles allowed to pick it. All four share the Manufacture Order Role child doctype, so a row
+# tells which option it belongs to only by its parentfield.
+MANUFACTURE_ORDER_ROLE_FIELDS = {
+	"Manufacturing": "manufacturing_roles",
+	"Repair": "repair_roles",
+	"Finding Manufacturing": "finding_manufacturing_roles",
+	FINDING_WITHOUT_SO: "finding_without_so_roles",
+}
+
 
 def is_subcontracting_selected(value):
 	"""True only when the plan is actually flagged for subcontracting.
@@ -173,6 +183,8 @@ class ManufacturingPlan(Document):
 
 	def validate(self):
 		self.clear_references_for_finding_without_so()
+		self.validate_manufacture_order_permission()
+		self.set_department()
 		self.validate_finding_details()
 		self.validate_qty_with_bom_creation()
 		self.refresh_mould_ids()
@@ -195,6 +207,52 @@ class ManufacturingPlan(Document):
 		self.supplier = None
 		self.estimated_date = None
 		self.purchase_type = None
+
+	def validate_manufacture_order_permission(self):
+		"""Refuse a mode the user's roles do not allow (Manufacturing Setting > Manufacturing
+		Plan role fields); a mode with no roles set is closed to everyone. The form only offers
+		the allowed modes, but a REST write or a stale form reaches save without passing
+		through it. Checked only when the mode is set or changed, so a draft someone else
+		submits later is not re-judged against the submitter's roles."""
+		if not self.select_manufacture_order or not self.has_value_changed(
+			"select_manufacture_order"
+		):
+			return
+		roles = get_manufacture_order_roles().get(self.select_manufacture_order)
+		if not roles:
+			frappe.throw(
+				_(
+					"No role may create a {0} plan yet. Ask a System Manager to set its roles in Manufacturing Setting."
+				).format(frappe.bold(self.select_manufacture_order)),
+				frappe.PermissionError,
+			)
+		if roles & set(frappe.get_roles()):
+			return
+		frappe.throw(
+			_("You are not permitted to create a {0} plan. Allowed roles: {1}").format(
+				frappe.bold(self.select_manufacture_order), ", ".join(sorted(roles))
+			),
+			frappe.PermissionError,
+		)
+
+	def set_department(self):
+		"""Department belongs to the Without-SO mode only: its PMOs, their Work Orders and the
+		first Manufacturing Operation start there instead of in the Manufacturing Setting
+		defaults. It is the creator's Employee department, filled once while blank, so a later
+		editor or submitter does not move the plan into their own department."""
+		if self.select_manufacture_order != FINDING_WITHOUT_SO:
+			self.department = None
+			return
+		if not self.department:
+			self.department = get_user_department()
+		if not self.department:
+			frappe.throw(
+				_(
+					"Link an active Employee with a Department to user {0} to create a {1} plan."
+				).format(
+					frappe.bold(frappe.session.user), frappe.bold(FINDING_WITHOUT_SO)
+				)
+			)
 
 	def validate_finding_details(self):
 		"""Each Finding Details row raises one Parent Manufacturing Order per unit of Qty, so
@@ -800,18 +858,68 @@ def finding_attribute_query(doctype, txt, searchfield, start, page_len, filters)
 
 
 def validate_finding_without_so_context(mp_context):
-	"""A Without-SO plan raises PMOs that need a manufacturer and its default department to
-	make their work order, so stop the submit before any PMO is made without them."""
+	"""A Without-SO plan raises PMOs that need a manufacturer to make their work order, so stop
+	the submit before any PMO is made without one. Their department is the plan's own
+	(ManufacturingPlan.set_department), not the Manufacturing Setting default."""
 	if not mp_context.get("manufacturer"):
 		frappe.throw(
 			_("Set a default Manufacturer for your user before submitting this plan.")
 		)
-	if not mp_context.get("finding_default_department"):
-		frappe.throw(
-			_(
-				"Set Default Department in Manufacturing Setting for Manufacturer {0}."
-			).format(frappe.bold(mp_context.get("manufacturer")))
-		)
+
+
+def get_manufacture_order_roles():
+	"""{Select Manufacture Order option: roles allowed to pick it}, from the per-option role
+	fields (MANUFACTURE_ORDER_ROLE_FIELDS) of the user's manufacturer's Manufacturing Setting.
+	An option whose field is empty is absent from the map, i.e. closed to everyone."""
+	manufacturer = frappe.defaults.get_user_default("manufacturer")
+	if not manufacturer:
+		return {}
+	setting = frappe.db.get_value(
+		"Manufacturing Setting", {"manufacturer": manufacturer}, "name"
+	)
+	if not setting:
+		return {}
+
+	option_by_field = {
+		fieldname: option for option, fieldname in MANUFACTURE_ORDER_ROLE_FIELDS.items()
+	}
+	option_roles = {}
+	for row in frappe.get_all(
+		"Manufacture Order Role",
+		filters={
+			"parenttype": "Manufacturing Setting",
+			"parent": setting,
+			"parentfield": ["in", list(option_by_field)],
+		},
+		fields=["parentfield", "role"],
+	):
+		option_roles.setdefault(option_by_field[row.parentfield], set()).add(row.role)
+	return option_roles
+
+
+@frappe.whitelist()
+def get_allowed_manufacture_orders():
+	"""The Select Manufacture Order options the session user may pick: those whose roles in
+	Manufacturing Setting include one of the user's. Manufacturing Setting is readable by
+	System Manager only, so the form asks here instead of reading the table."""
+	option_roles = get_manufacture_order_roles()
+	user_roles = set(frappe.get_roles())
+	options = frappe.get_meta("Manufacturing Plan").get_options(
+		"select_manufacture_order"
+	)
+	return [
+		option
+		for option in options.split("\n")
+		if option and option_roles.get(option, set()) & user_roles
+	]
+
+
+@frappe.whitelist()
+def get_user_department():
+	"""Department of the session user's active Employee: where a Without-SO plan's orders start."""
+	return frappe.db.get_value(
+		"Employee", {"user_id": frappe.session.user, "status": "Active"}, "department"
+	)
 
 
 def get_mp_context():
