@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import frappe
+from frappe.utils import flt
 
 from jewellery_erpnext.customer_subcontracting import customer_gold_return as cgr
 
@@ -946,3 +947,84 @@ class TestReceiptBatchDriftIsHeld(unittest.TestCase):
 		# own batch needs the absolute paisa check.
 		self._passes(kind="descendant")
 		self._held(kind="receipt")
+
+
+class TestEntitlementIsJudgedAtQtyPrecision(unittest.TestCase):
+	"""What a receipt has left is traced in fine gold, so it carries digits no stock quantity has.
+	It is judged at the precision quantities post at -- the one Create > Issue offers it in.
+
+	Shaped on KGJPL-SE-CGR-26-00055: Settle converted 0.15 g of 22KT scrap back into the receipt's
+	batch as 0.138 g of 24KT (0.137763 exactly), so the batch held 5.138 g against 5.137766 owed,
+	and returning it whole was refused as "5.138 left to return; this entry returns 5.138"."""
+
+	class _Passed(Exception):
+		"""Raised by the stage after the entitlement check: the check let the return through."""
+
+	def _run(self, left, qty):
+		receipt = frappe._dict(
+			name="EV-A",
+			reference_docname="KGJPL-SE-CGR-26-00055",
+			cg_source_row="af9cuffpoc",
+			batch_no="B1",
+		)
+		plan = frappe._dict(
+			row=_row(idx=1),
+			batch_no="B1",
+			warehouse="W",
+			customer="CUST",
+			receipt=receipt,
+			kind="receipt",
+			booked_rate=None,
+			qty=qty,
+		)
+		with patch(
+			"erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=100.0
+		), patch(
+			"jewellery_erpnext.customer_subcontracting.customer_gold_trace.trace",
+			return_value=(None, None, None),
+		), patch.object(cgr, "_check_shared_batch_rates"), patch.object(
+			cgr, "receipt_remaining", return_value={"EV-A": left}
+		), patch.object(cgr, "_qty_precision", return_value=3), patch.object(
+			cgr, "_check_receipt_share", side_effect=self._Passed
+		):
+			cgr._check_plans(_doc(), [plan], for_update=False)
+
+	def _refused(self, left, qty):
+		with self.assertRaises(frappe.ValidationError) as caught:
+			self._run(left, qty)
+		return str(caught.exception)
+
+	def _passes(self, left, qty):
+		with self.assertRaises(self._Passed):
+			self._run(left, qty)
+
+	def test_the_whole_batch_is_returned_against_what_rounds_to_it(self):
+		self._passes(left=5.137766, qty=5.138)
+
+	def test_a_thousandth_more_than_is_left_is_refused(self):
+		message = self._refused(left=5.137766, qty=5.139)
+
+		for fragment in ("left to return", "KGJPL-SE-CGR-26-00055", "5.138", "5.139"):
+			self.assertIn(fragment, message)
+
+	def test_the_last_thousandth_can_still_be_returned(self):
+		# Returning 5.137 of the batch above leaves 0.001 g against 0.000766 owed.
+		self._passes(left=0.000766, qty=0.001)
+
+	def test_under_half_a_thousandth_left_is_not_a_thousandth_to_return(self):
+		self._refused(left=0.0004, qty=0.001)
+
+	def test_whole_grams_beyond_the_entitlement_are_still_refused(self):
+		self._refused(left=2.0, qty=3.0)
+
+	def test_what_create_issue_offers_is_accepted(self):
+		# ``_customer_gold_issue_plan`` maps ``flt(left, _qty_precision())``.
+		for left in (5.137766, 2.0005, 0.9996):
+			with self.subTest(left=left):
+				self._passes(left=left, qty=flt(left, 3))
+
+	def test_the_precision_is_the_stock_entry_rows_transfer_qty(self):
+		with patch("frappe.get_precision", return_value=2) as get_precision:
+			self.assertEqual(cgr._qty_precision(), 2)
+
+		get_precision.assert_called_once_with("Stock Entry Detail", "transfer_qty")
