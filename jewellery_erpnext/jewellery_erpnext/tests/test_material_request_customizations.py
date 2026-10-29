@@ -846,8 +846,12 @@ def _reservation_mr(**kwargs):
 	return SimpleNamespace(**doc)
 
 
-def _reservation_row(variant, warehouse=None):
-	return SimpleNamespace(custom_variant_of=variant, warehouse=warehouse)
+def _reservation_row(variant, warehouse=None, alternative=None):
+	return SimpleNamespace(
+		custom_variant_of=variant,
+		warehouse=warehouse,
+		custom_alternative_item=alternative,
+	)
 
 
 @patch("frappe.get_cached_value", return_value=_GEPL)
@@ -1114,3 +1118,97 @@ class TestGuardNonSystemManagerFieldEdits(IntegrationTestCase):
 		with self.assertRaises(frappe.PermissionError) as ctx:
 			mr_mod.guard_non_system_manager_field_edits(mr)
 		self.assertIn("deleted", str(ctx.exception))
+
+
+@patch("frappe.get_cached_value", return_value=_GEPL)
+@patch(
+	f"{_MR_BV}.get_variant_warehouse_map",
+	return_value={"G": "Diamond Setting RSV - GEPL"},
+)
+class TestReservationWarehouseFromAlternativeItem(IntegrationTestCase):
+	@patch("frappe.db.get_all", return_value=[["STONE-1", "G"]])
+	def test_alternative_item_variant_routes_the_dummy_row(
+		self, mock_items, mock_map, mock_cached
+	):
+		mr = _reservation_mr(items=[_reservation_row(None, alternative="STONE-1")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertEqual(mr.set_warehouse, "Diamond Setting RSV - GEPL")
+		self.assertEqual(mr.items[0].warehouse, "Diamond Setting RSV - GEPL")
+
+	def test_dummy_row_without_alternative_is_left_alone(self, mock_map, mock_cached):
+		mr = _reservation_mr(items=[_reservation_row(None)])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+
+	@patch("frappe.db.get_all", return_value=[["STONE-1", None]])
+	def test_alternative_without_variant_is_left_alone(
+		self, mock_items, mock_map, mock_cached
+	):
+		mr = _reservation_mr(items=[_reservation_row(None, alternative="STONE-1")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+
+	@patch("frappe.db.get_all", return_value=[["STONE-1", "G"]])
+	def test_target_replaces_an_existing_warehouse(
+		self, mock_items, mock_map, mock_cached
+	):
+		# What the desk form's Alternative Item trigger relies on.
+		mr = _reservation_mr(
+			set_warehouse="Waxing RSV - GEPL",
+			items=[_reservation_row(None, alternative="STONE-1")],
+		)
+
+		self.assertEqual(
+			mr_before_validate.get_reservation_target(mr), "Diamond Setting RSV - GEPL"
+		)
+
+
+@patch("frappe.get_cached_value", return_value=_GEPL)
+@patch(
+	f"{_MR_BV}.get_variant_warehouse_map",
+	return_value={"G": "Diamond Setting RSV - GEPL"},
+)
+@patch("frappe.db.get_all", return_value=[["STONE-1", "G"]])
+class TestValidateAlternativeItemWarehouse(IntegrationTestCase):
+	def _mr(self, before_warehouse, warehouse, alternative="STONE-1", is_new=False):
+		mr = _reservation_mr(
+			set_warehouse=warehouse,
+			items=[_reservation_row(None, alternative=alternative)],
+		)
+		mr.is_new = lambda: is_new
+		mr.get_doc_before_save = lambda: SimpleNamespace(set_warehouse=before_warehouse)
+		return mr
+
+	def test_throws_on_mismatching_change(self, *mocks):
+		mr = self._mr("Diamond Setting RSV - GEPL", "Waxing RSV - GEPL")
+
+		with patch("frappe.get_roles", return_value=["Stock User"]):
+			with self.assertRaises(frappe.ValidationError):
+				mr_before_validate.validate_alternative_item_warehouse(mr)
+
+	def test_system_manager_may_override(self, *mocks):
+		mr = self._mr("Diamond Setting RSV - GEPL", "Waxing RSV - GEPL")
+
+		with patch("frappe.get_roles", return_value=["System Manager"]):
+			mr_before_validate.validate_alternative_item_warehouse(mr)
+
+	def test_allows_the_matching_warehouse(self, *mocks):
+		mr = self._mr("Waxing RSV - GEPL", "Diamond Setting RSV - GEPL")
+		mr_before_validate.validate_alternative_item_warehouse(mr)
+
+	def test_unchanged_warehouse_is_not_checked(self, *mocks):
+		mr = self._mr("Waxing RSV - GEPL", "Waxing RSV - GEPL")
+		mr_before_validate.validate_alternative_item_warehouse(mr)
+
+	def test_no_alternative_item_is_not_checked(self, *mocks):
+		mr = self._mr(
+			"Diamond Setting RSV - GEPL", "Waxing RSV - GEPL", alternative=None
+		)
+		mr_before_validate.validate_alternative_item_warehouse(mr)
+
+	def test_new_request_is_not_checked(self, *mocks):
+		mr = self._mr(None, "Waxing RSV - GEPL", is_new=True)
+		mr_before_validate.validate_alternative_item_warehouse(mr)
