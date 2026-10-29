@@ -115,3 +115,7 @@ jewellery_erpnext.patches.add_purchase_order_order_dimension_fields
 jewellery_erpnext.patches.add_serial_and_batch_bundle_item_index
 jewellery_erpnext.patches.audit_pmo_row_ownership
 jewellery_erpnext.patches.move_manufacturing_plan_layout_to_core
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-21 PMO Submit/Hold/Open/Close workflow
+jewellery_erpnext.patches.add_mr_hold_closed_workflow_states
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only
+jewellery_erpnext.patches.clear_kggk_source_on_non_template_bom #2026-10-28 clear inherited KGGK source fields on non-Template BOMs

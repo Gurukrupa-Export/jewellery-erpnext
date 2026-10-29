@@ -1,0 +1,57 @@
+{
+ "actions": [],
+ "creation": "2026-10-21 18:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "status",
+  "reason",
+  "action_by",
+  "action_on"
+ ],
+ "fields": [
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "action_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "action_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "On",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-21 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "PMO Status Reason",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": []
+}
