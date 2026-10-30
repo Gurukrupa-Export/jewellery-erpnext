@@ -2936,15 +2936,18 @@ class TestDustShortfallFloatResidue(IntegrationTestCase):
 		from unittest.mock import MagicMock
 
 		return SimpleNamespace(
-			name="RFN-SCP-TEST",
-			company="Test_Company",
-			refining_type=REFINING_TYPE_SCRAP,
-			warehouse="Pre Polish Scrap - T",
-			refining_warehouse="Refining RM - T",
-			supplier="Refinery Supplier - T",
-			manufacturer="Shubh",
-			db_set=MagicMock(),
-			**attrs,
+			**{
+				"name": "RFN-SCP-TEST",
+				"company": "Test_Company",
+				"refining_type": REFINING_TYPE_SCRAP,
+				"is_external": 0,
+				"warehouse": "Pre Polish Scrap - T",
+				"refining_warehouse": "Refining RM - T",
+				"supplier": "Refinery Supplier - T",
+				"manufacturer": "Shubh",
+				"db_set": MagicMock(),
+				**attrs,
+			}
 		)
 
 	def _transfer(self, qty, allocations):
