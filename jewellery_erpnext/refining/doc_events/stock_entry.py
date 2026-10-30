@@ -1,6 +1,6 @@
 """Stock Entry hooks for the Refining Entry's draft hand-back to Central.
 
-Scrap and Unused/Loose Material refining hand the refined material back as a DRAFT
+External Scrap and Unused/Loose Material refining hand the refined material back as a DRAFT
 transfer into Central Transit (``RefiningEntry._create_central_transit_draft``), linked as
 the entry's ``transfer_se``. The stock moves only when Central submits that draft, so the
 entry's status follows the draft: Transferred on submit, back to Completed on cancel. If
@@ -15,7 +15,12 @@ def _handed_back_entry(doc):
 	refining_entry = doc.get("custom_refining_entry")
 	if not refining_entry:
 		return None
-	if frappe.db.get_value("Refining Entry", refining_entry, "transfer_se") != doc.name:
+	entry = frappe.db.get_value(
+		"Refining Entry", refining_entry, ["transfer_se", "is_external"], as_dict=True
+	)
+	# Only external refining hands back through a Central draft; an internal entry's transfer
+	# to Central RM is submitted by the entry itself and keeps its own lifecycle.
+	if not entry or not entry.is_external or entry.transfer_se != doc.name:
 		return None
 	return refining_entry
 

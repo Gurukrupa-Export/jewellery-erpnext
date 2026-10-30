@@ -214,24 +214,15 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(se3.items[-1].item_code, "M-G-24KT-99.9-Y")
 		self.assertEqual(se3.items[-1].qty, dre.actual_recovery)
 
-		# Scrap hands the refined material back on completion, as a DRAFT into Central
-		# Transit that Central submits.
-		dre.reload()
-		self.assertEqual(dre.status, "Completed")
+		dre.transfer_recovered_materials()
+
 		se4 = frappe.get_doc("Stock Entry", dre.transfer_se)
-		self.assertEqual(se4.docstatus, 0)
 		self.assertEqual(se4.stock_entry_type, "Material Transfer")
-		self.assertTrue(se4.add_to_transit)
 		self.assertEqual(se4.custom_refining_entry, dre.name)
 		self.assertEqual(se4.items[0].s_warehouse, "Refining RM - T")
-		self.assertEqual(se4.items[0].t_warehouse, "Central Transit - T")
+		self.assertEqual(se4.items[0].t_warehouse, "Central RM - T")
 		self.assertEqual(se4.items[0].item_code, "M-G-24KT-99.9-Y")
 		self.assertEqual(se4.items[0].qty, dre.actual_recovery)
-
-		se4.submit()
-		self.assertEqual(
-			frappe.db.get_value("Refining Entry", dre.name, "status"), "Transferred"
-		)
 
 	def test_work_order_refining(self):
 		mwo = mwo_semi_finished_goods(self)
@@ -568,17 +559,15 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(se2.items[-2].item_code, "M-G-24KT-99.9-Y")
 		self.assertEqual(se2.items[-2].qty, dre.actual_recovery)
 
-		dre.reload()
+		dre.transfer_recovered_materials()
+
 		self.assertIsNotNone(dre.transfer_se)
 
-		# Unused/Loose Material hands back as a draft into Central Transit.
 		se4 = frappe.get_doc("Stock Entry", dre.transfer_se)
-		self.assertEqual(se4.docstatus, 0)
 		self.assertEqual(se4.stock_entry_type, "Material Transfer")
-		self.assertTrue(se4.add_to_transit)
 		self.assertEqual(se4.custom_refining_entry, dre.name)
 		self.assertEqual(se4.items[0].s_warehouse, "Refining RM - T")
-		self.assertEqual(se4.items[0].t_warehouse, "Central Transit - T")
+		self.assertEqual(se4.items[0].t_warehouse, "Central RM - T")
 		self.assertEqual(se4.items[0].item_code, "M-G-24KT-99.9-Y")
 		self.assertEqual(se4.items[0].qty, dre.actual_recovery)
 		self.assertEqual(se4.items[1].item_code, "D-NT-RO-6B-+9-9.5")
@@ -3874,8 +3863,11 @@ class TestRefineryFlow(IntegrationTestCase):
 		self.addCleanup(frappe.db.set_value, "Department", "Waxing - T", before)
 
 	def _scrap_entry(self):
+		"""An external Scrap entry: everything this class covers is external refining's."""
 		re = frappe.new_doc("Refining Entry")
 		re.refining_type = REFINING_TYPE_SCRAP
+		re.is_external = 1
+		re.supplier = "Test_Supplier"
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.refining_department = "Refinery - T"
@@ -3909,6 +3901,7 @@ class TestRefineryFlow(IntegrationTestCase):
 
 	def test_refinery_department_is_the_companys_refinery(self):
 		re = frappe.new_doc("Refining Entry")
+		re.is_external = 1
 		re.refining_type = REFINING_TYPE_UNUSED
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
@@ -3918,6 +3911,7 @@ class TestRefineryFlow(IntegrationTestCase):
 
 	def test_a_warehouse_of_another_department_is_refused(self):
 		re = frappe.new_doc("Refining Entry")
+		re.is_external = 1
 		re.refining_type = REFINING_TYPE_SERIAL
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
@@ -4000,7 +3994,7 @@ class TestRefineryFlow(IntegrationTestCase):
 				flt(
 					get_batch_qty(
 						batch_no=output_batch,
-						warehouse="Refining RM - T",
+						warehouse=re.supplier_warehouse,
 						item_code=sources[0].source_item,
 					),
 					3,
@@ -4105,6 +4099,26 @@ class TestRefineryFlow(IntegrationTestCase):
 		rows["ML-G-22KT-91.9-Y"].qty = 0
 		with self.assertRaisesRegex(frappe.ValidationError, "ML-G-22KT-91.9-Y"):
 			re.validate_refinery_flow()
+
+	def test_internal_refining_keeps_its_old_behaviour(self):
+		"""The Refinery Flow, consolidation and the fetched defaults are external refining's.
+		An internal Scrap entry from a Refinery Flow department keeps its filters, may send part
+		of the scrap, and its Source Warehouse is not re-fetched."""
+		loss_entry()
+		self._set_department(custom_enable_refinery_flow=1)
+		re = self._scrap_entry()
+		re.is_external = 0
+		re.supplier = None
+		re.date_from = today()
+		re.date_to = today()
+		re.save()
+
+		self.assertFalse(re.is_external)
+		self.assertEqual(str(re.date_from), today())  # the flow would have cleared it
+		self.assertTrue(re.material_items)
+		re.material_items[0].qty = flt(re.material_items[0].qty) - 0.5
+		re.validate_refinery_flow()  # no all-scrap rule for internal refining
+		self.assertEqual(re.warehouse, "Waxing Scrap - T")
 
 	def test_split_rounded_adds_up_to_its_total(self):
 		"""Review GK-JPR1586-LOSS-ROUNDING-002: 0.002 split three ways is not 3 x 0.001."""
