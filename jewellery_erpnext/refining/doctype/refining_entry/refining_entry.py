@@ -109,6 +109,31 @@ def _default_receiving_warehouse(company):
 	)
 
 
+def split_rounded(total, weights, precision=3):
+	"""Split ``total`` over ``weights`` (``{key: weight}``) into shares rounded to
+	``precision`` that add up exactly to ``total`` rounded the same way.
+
+	Each key first gets its floor in units of 10**-precision; the units left over go to the
+	largest remainders, earlier keys first on a tie. No share is negative, and a zero total or
+	zero weights give all zeros. Rounding every share on its own instead can store 3 x 0.001
+	for a 0.002 loss split three ways.
+	"""
+	keys = list(weights)
+	scale = 10**precision
+	units = int(round(flt(total, precision) * scale))
+	clean = {k: max(flt(weights[k]), 0.0) for k in keys}
+	weight_sum = sum(clean.values())
+	if units <= 0 or not weight_sum:
+		return {k: 0.0 for k in keys}
+	exact = {k: units * clean[k] / weight_sum for k in keys}
+	shares = {k: int(exact[k]) for k in keys}
+	position = {k: i for i, k in enumerate(keys)}
+	leftover = units - sum(shares.values())
+	for k in sorted(keys, key=lambda k: (shares[k] - exact[k], position[k]))[:leftover]:
+		shares[k] += 1
+	return {k: shares[k] / scale for k in keys}
+
+
 def is_external_refining_company(company):
 	return bool(company) and company in EXTERNAL_REFINING_COMPANIES
 
@@ -1338,34 +1363,75 @@ class RefiningEntry(Document):
 
 	def validate_refinery_flow(self):
 		"""Refinery Flow departments must transfer all the scrap in their Scrap warehouse
-		before (on the same entry as) the refining consumables. Thrown at submit when the
-		Scrap rows fall short of the warehouse balance."""
+		before (on the same entry as) the refining consumables. Checked at submit item by item,
+		in each item's stock UOM: an excess of one item cannot stand in for another left in the
+		warehouse (the transfer would only receipt the excess as an opening, and the other item
+		would stay behind). Rows from another warehouse, consumables, and items the warehouse
+		does not hold (a physical opening) are not part of the requirement."""
 		if not self.refinery_flow or self.refining_type != REFINING_TYPE_SCRAP:
 			return
 		precision = 3
-		balance = flt(self._dust_available_qty(self.warehouse), precision)
-		sent = flt(
-			sum(
-				flt(row.qty)
-				for row in self.material_items
-				if row.get("source_type") == SOURCE_TYPE_SCRAP
-				and not row.get("is_consumable")
-			),
-			precision,
-		)
-		if flt(balance - sent, precision) >= 0.001:
+		required = self._scrap_balance_by_item(self.warehouse)
+		sent = {}
+		for row in self.material_items:
+			if (
+				row.get("source_type") != SOURCE_TYPE_SCRAP
+				or row.get("is_consumable")
+				or row.item_code not in required
+				or (row.get("warehouse") or self.warehouse) != self.warehouse
+			):
+				continue
+			sent[row.item_code] = sent.get(row.item_code, 0.0) + self._stock_uom_qty(
+				row
+			)
+		short = [
+			_("{0}: {1} in the warehouse, {2} on this entry").format(
+				frappe.bold(item_code),
+				flt(qty, precision),
+				flt(sent.get(item_code), precision),
+			)
+			for item_code, qty in sorted(required.items())
+			if flt(qty - flt(sent.get(item_code)), precision) >= 0.001
+		]
+		if short:
 			frappe.throw(
 				_(
-					"Refinery Flow is enabled for department {0}: all the scrap in {1} ({2}) "
-					"must be transferred before the consumables, but this entry carries {3}. "
-					"Fetch the scrap materials again."
+					"Refinery Flow is enabled for department {0}: all the scrap in {1} must be "
+					"transferred before the consumables. Short:<br>{2}<br>Fetch the scrap "
+					"materials again."
 				).format(
 					frappe.bold(self.department),
 					frappe.bold(self.warehouse),
-					balance,
-					sent,
+					"<br>".join(short),
 				)
 			)
+
+	def _scrap_balance_by_item(self, warehouse):
+		"""``{item_code: qty}`` in stock UOM of everything ``warehouse`` holds, leaving out
+		variants restricted for this refining type (the scrap fetch leaves them out too)."""
+		if not warehouse:
+			return {}
+		bins = frappe.db.get_all(
+			"Bin",
+			filters={"warehouse": warehouse, "actual_qty": [">", 0]},
+			fields=["item_code", "actual_qty"],
+		)
+		restricted = self._blocked_item_codes(b.item_code for b in bins)
+		return {
+			b.item_code: flt(b.actual_qty)
+			for b in bins
+			if b.item_code not in restricted and flt(b.actual_qty, 3) > 0
+		}
+
+	def _stock_uom_qty(self, row):
+		"""A material row's qty in its item's stock UOM."""
+		stock_uom = frappe.get_cached_value("Item", row.item_code, "stock_uom")
+		if not row.get("uom") or row.uom == stock_uom:
+			return flt(row.qty)
+		from erpnext.stock.get_item_details import get_conversion_factor
+
+		factor = get_conversion_factor(row.item_code, row.uom).get("conversion_factor")
+		return flt(row.qty) * flt(factor)
 
 	def validate_quantities(self):
 		# Applies to external dust refining too: the physical count is what actually
@@ -2965,6 +3031,12 @@ class RefiningEntry(Document):
 		]
 
 	def _throw_if_central_transfer_open(self):
+		# Re-read under a row lock: two requests that loaded the same entry would otherwise both
+		# see no hand-back and each insert one. The second now waits for the first's commit and
+		# finds its draft.
+		self.transfer_se = frappe.db.get_value(
+			"Refining Entry", self.name, "transfer_se", for_update=True
+		)
 		if self.transfer_se and frappe.db.exists(
 			"Stock Entry", {"name": self.transfer_se, "docstatus": ["<", 2]}
 		):
@@ -4299,47 +4371,42 @@ class RefiningEntry(Document):
 			pct = flt(d.purity_percentage, 3)
 			loss_by_pct[pct] = loss_by_pct.get(pct, 0.0) + flt(d.loss_weight)
 
+		# Every split goes through split_rounded, so the stored shares add up exactly to their
+		# parent at both levels: purity loss -> consolidated batches -> source rows.
 		shares = {}
 		for pct, loss in loss_by_pct.items():
-			members = [(b, q) for b, q, p in batches if p == pct and q > 0]
-			total_qty = sum(q for _b, q in members)
-			for batch_no, qty in members:
-				shares[batch_no] = shares.get(batch_no, 0.0) + loss * qty / total_qty
+			members = {b: q for b, q, p in batches if p == pct and q > 0}
+			if members:
+				for batch_no, share in split_rounded(loss, members, precision).items():
+					shares[batch_no] = flt(shares.get(batch_no, 0.0) + share, precision)
 		if not shares:
 			weights = (
 				{b: q * p / 100.0 for b, q, p in batches}
 				if any(p for _b, _q, p in batches)
 				else {b: q for b, q, _p in batches}
 			)
-			total_weight = sum(weights.values())
-			if total_weight:
-				shares = {
-					b: flt(self.refining_loss) * w / total_weight
-					for b, w in weights.items()
-				}
+			shares = split_rounded(self.refining_loss, weights, precision)
 
 		if frappe.get_meta("Batch").has_field("custom_refining_loss"):
 			for batch_no, loss in shares.items():
 				frappe.db.set_value(
 					"Batch", batch_no, "custom_refining_loss", flt(loss, precision)
 				)
+		sources = {}
 		for row in self.batch_tracking:
 			if (
-				row.get("tracking_type") != TRACKING_CONSOLIDATION
-				or row.output_batch not in shares
-				or not flt(row.output_qty)
+				row.get("tracking_type") == TRACKING_CONSOLIDATION
+				and row.output_batch in shares
 			):
-				continue
-			row.db_set(
-				"refining_loss",
-				flt(
-					shares[row.output_batch]
-					* flt(row.source_qty)
-					/ flt(row.output_qty),
-					precision,
-				),
-				update_modified=False,
+				sources.setdefault(row.output_batch, []).append(row)
+		for batch_no, rows in sources.items():
+			split = split_rounded(
+				shares[batch_no],
+				{row.name: flt(row.source_qty) for row in rows},
+				precision,
 			)
+			for row in rows:
+				row.db_set("refining_loss", split[row.name], update_modified=False)
 
 	def cancel_linked_stock_entries(self):
 		# Newest first: the consolidation Repacks consume what the transfer brought in, and the

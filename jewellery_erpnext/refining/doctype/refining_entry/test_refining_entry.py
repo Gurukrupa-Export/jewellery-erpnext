@@ -57,6 +57,7 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
 	PURE_LOSS_ITEM,
 	resolve_refining_defaults,
+	split_rounded,
 )
 from jewellery_erpnext.unused_loose_audit import run_unused_loose_audit
 
@@ -4037,7 +4038,8 @@ class TestRefineryFlow(IntegrationTestCase):
 			flt(frappe.db.get_value("Batch", batch, "custom_refining_loss"))
 			for batch in outputs
 		)
-		self.assertAlmostEqual(booked, flt(re.refining_loss), places=2)
+		# Exactly, at the stored precision: shares are split so they add up to the parent.
+		self.assertEqual(flt(booked, 3), flt(re.refining_loss, 3))
 
 	def test_hand_back_draft_follows_central(self):
 		re = TestRefiningEntry._external_unused_material_entry(self)
@@ -4070,3 +4072,120 @@ class TestRefineryFlow(IntegrationTestCase):
 			),
 			{"status": "Completed", "transfer_se": None},
 		)
+
+	def test_one_items_excess_cannot_stand_in_for_another(self):
+		"""Review GK-JPR1586-ALL-SCRAP-GRAIN-001: the all-scrap check is per item. Moving one
+		item's quantity onto another keeps the entry total equal to the warehouse total but
+		leaves the first item behind, so it is refused."""
+		loss_entry()
+		self._set_department(
+			custom_enable_refinery_flow=1, custom_refinery_department="Refinery - T"
+		)
+		re = self._scrap_entry()
+		re.save()
+		rows = {row.item_code: row for row in re.material_items}
+		self.assertIn("ML-G-18KT-75.4-P", rows)
+		self.assertIn("ML-G-22KT-91.9-Y", rows)
+
+		# The whole warehouse, plus an item it does not hold (a physical opening) and a row
+		# from another warehouse: neither is part of the requirement, so it still passes.
+		re.append(
+			"material_items",
+			{"item_code": "Cap", "qty": 1.0, "source_type": "Scrap"},
+		)
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-22KT-91.9-Y",
+				"qty": 1.0,
+				"source_type": "Scrap",
+				"warehouse": "Waxing RM - T",
+			},
+		)
+		re.validate_refinery_flow()
+
+		# Same total, item by item wrong: 22KT's quantity moved onto the 18KT row.
+		moved = flt(rows["ML-G-22KT-91.9-Y"].qty)
+		rows["ML-G-18KT-75.4-P"].qty = flt(rows["ML-G-18KT-75.4-P"].qty) + moved
+		rows["ML-G-22KT-91.9-Y"].qty = 0
+		with self.assertRaisesRegex(frappe.ValidationError, "ML-G-22KT-91.9-Y"):
+			re.validate_refinery_flow()
+
+	def test_split_rounded_adds_up_to_its_total(self):
+		"""Review GK-JPR1586-LOSS-ROUNDING-002: 0.002 split three ways is not 3 x 0.001."""
+		self.assertEqual(
+			split_rounded(0.002, {"a": 1, "b": 1, "c": 1}),
+			{"a": 0.001, "b": 0.001, "c": 0.0},
+		)
+		shares = split_rounded(0.17, {"a": 0.628, "b": 7.75, "c": 29.068, "d": 42.639})
+		self.assertEqual(flt(sum(shares.values()), 3), 0.17)
+		self.assertTrue(all(v >= 0 for v in shares.values()))
+		self.assertEqual(split_rounded(0, {"a": 1}), {"a": 0.0})
+		self.assertEqual(split_rounded(1.0, {"a": 0, "b": 0}), {"a": 0.0, "b": 0.0})
+
+	def test_stored_loss_shares_add_up_at_both_levels(self):
+		"""0.002 g over three equal consolidated batches, each of three equal sources: the
+		batch shares add up to 0.002 and each batch's source shares to that batch's share."""
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.refining_loss = 0.002
+		re.append(
+			"material_items",
+			{"item_code": "ML-G-18KT-75.4-P", "qty": 9.0, "purity": "75.4"},
+		)
+		re.append(
+			"gold_recovery_details",
+			{"purity_percentage": 75.4, "loss_weight": 0.002},
+		)
+		for batch in ("CB-1", "CB-2", "CB-3"):
+			for i in range(3):
+				re.append(
+					"batch_tracking",
+					{
+						"name": f"{batch}-{i}",
+						"tracking_type": "Consolidation",
+						"source_batch": f"{batch}-SRC-{i}",
+						"source_qty": 1.0,
+						"output_batch": batch,
+						"output_item": "ML-G-18KT-75.4-P",
+						"output_qty": 3.0,
+					},
+				)
+
+		batch_loss = {}
+		row_loss = {}
+		real_get_value = frappe.db.get_value
+
+		def get_value(doctype, *args, **kwargs):
+			if doctype == "Attribute Value":
+				return 75.4
+			return real_get_value(doctype, *args, **kwargs)
+
+		def set_value(doctype, name, field, value, *args, **kwargs):
+			self.assertEqual((doctype, field), ("Batch", "custom_refining_loss"))
+			batch_loss[name] = value
+
+		def db_set(row, field, value, *args, **kwargs):
+			row_loss[row.name] = (row.output_batch, value)
+
+		with (
+			patch.object(re_module.frappe.db, "get_value", side_effect=get_value),
+			patch.object(re_module.frappe.db, "set_value", side_effect=set_value),
+			patch(
+				"frappe.model.document.Document.db_set",
+				autospec=True,
+				side_effect=db_set,
+			),
+		):
+			re._record_loss_on_consolidated_batches()
+
+		self.assertEqual(flt(sum(batch_loss.values()), 3), 0.002)
+		for batch, loss in batch_loss.items():
+			sources = [v for b, v in row_loss.values() if b == batch]
+			self.assertEqual(len(sources), 3)
+			self.assertEqual(flt(sum(sources), 3), flt(loss, 3))
+			self.assertTrue(all(v >= 0 for v in sources))
