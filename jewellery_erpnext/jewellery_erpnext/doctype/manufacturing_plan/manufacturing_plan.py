@@ -732,7 +732,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 		if bom_details:
 			# Update dictionary values using subscript notation
 			so_det["metal_type"] = bom_details.get("metal_type_") or so_det.get(
-				"metal_type_"
+				"metal_type"
 			)
 			so_det["metal_colour"] = bom_details.get("metal_colour") or so_det.get(
 				"metal_colour"
