@@ -1138,6 +1138,19 @@ class TestRefiningEntry(IntegrationTestCase):
 		)
 		re.save()
 
+		# The supplier warehouse is shared across the whole test suite, so earlier
+		# tests may have left stock behind.  Snapshot the bin BEFORE the submit so
+		# assertions below check the delta, not an absolute qty that depends on
+		# execution order.
+		supplier_wh = re._get_supplier_warehouse()
+		supplier_qty_before = flt(
+			frappe.db.get_value(
+				"Bin",
+				{"item_code": "ML-G-18KT-75.4-P", "warehouse": supplier_wh},
+				"actual_qty",
+			)
+		)
+
 		apply_workflow(re, "Submit")
 		re.reload()
 
@@ -1179,7 +1192,7 @@ class TestRefiningEntry(IntegrationTestCase):
 			{"item_code": "ML-G-18KT-75.4-P", "warehouse": re.supplier_warehouse},
 			"actual_qty",
 		)
-		self.assertEqual(flt(supplier_qty_after_send, self.flt_pre), 5.0)
+		self.assertEqual(flt(supplier_qty_after_send, self.flt_pre), flt(supplier_qty_before + 5.0, self.flt_pre))
 
 		# Receive: single Manufacture SE, no second Refining Entry. Recovery weight (3.6)
 		# is chosen below the item's actual pure content (5.0 * 75.4% = 3.77) so the
@@ -1239,7 +1252,9 @@ class TestRefiningEntry(IntegrationTestCase):
 			{"item_code": "ML-G-18KT-75.4-P", "warehouse": re.supplier_warehouse},
 			"actual_qty",
 		)
-		self.assertEqual(flt(supplier_qty_after_receive, self.flt_pre), 0.0)
+		# The 5 g sent to the supplier warehouse was consumed by the Manufacture SE,
+		# so the bin must be back to whatever it was before this test's transfer.
+		self.assertEqual(flt(supplier_qty_after_receive, self.flt_pre), flt(supplier_qty_before, self.flt_pre))
 
 		# A second receive attempt against the same entry must be rejected.
 		self.assertRaises(
