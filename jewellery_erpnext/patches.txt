@@ -151,3 +151,4 @@ jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Close / Hol
 jewellery_erpnext.patches.seed_pmo_request_blocked_stock_entry_types
 jewellery_erpnext.patches.add_item_catalogue_image_fields #2026-10-29 Item gold/silver catalogue image fields
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Hold during a Close request keeps it (conditional Open / Withdraw)
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-30 Only Hold, Open and Close buttons; Close makes the Close request
