@@ -23,7 +23,6 @@ from jewellery_erpnext.refining.constants import (
 	SOURCE_TYPE_UNUSED,
 	SOURCE_WAREHOUSE_TYPE,
 	TRACKING_CONSOLIDATION,
-	TRACKING_RECOVERY,
 )
 from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
 	build_refinery_price_index,
@@ -155,6 +154,26 @@ def get_source_warehouse(department, refining_type):
 	)
 
 
+def get_refinery_department(company):
+	"""The company's Refinery department: its one enabled leaf Department named like "Refin%"
+	(e.g. "Refinery - KGJPL"), found the way _get_central_rm_warehouse finds Central. None when
+	the company has none or more than one, so the operator picks it."""
+	if not company:
+		return None
+	names = frappe.get_all(
+		"Department",
+		filters={
+			"company": company,
+			"is_group": 0,
+			"disabled": 0,
+			"name": ["like", "Refin%"],
+		},
+		pluck="name",
+		limit=2,
+	)
+	return names[0] if len(names) == 1 else None
+
+
 @frappe.whitelist()
 def resolve_refining_defaults(company=None, department=None, refining_type=None):
 	"""What a Refining Entry fetches from its company, Source Department and type.
@@ -163,30 +182,24 @@ def resolve_refining_defaults(company=None, department=None, refining_type=None)
 	(which stays authoritative):
 
 	* ``is_external`` — ticked for EXTERNAL_REFINING_COMPANIES, else None (leave it as set).
-	* ``refining_department`` — the Source Department's configured Refinery Department.
+	* ``refining_department`` — the company's Refinery department (get_refinery_department).
 	* ``refinery_flow`` — whether that department runs the Refinery Flow.
 	* ``warehouse`` / ``warehouse_type`` — the Source Department's warehouse for the type.
 	"""
 	out = {
 		"is_external": 1 if is_external_refining_company(company) else None,
-		"refining_department": None,
+		"refining_department": get_refinery_department(company),
 		"refinery_flow": 0,
 		"warehouse": None,
 		"warehouse_type": SOURCE_WAREHOUSE_TYPE.get(refining_type),
 	}
 	if department:
-		dept = (
-			frappe.db.get_value(
-				"Department",
-				department,
-				["custom_refinery_department", "custom_enable_refinery_flow"],
-				as_dict=True,
+		out["refinery_flow"] = cint(
+			frappe.get_meta("Department").has_field("custom_enable_refinery_flow")
+			and frappe.db.get_value(
+				"Department", department, "custom_enable_refinery_flow"
 			)
-			if frappe.get_meta("Department").has_field("custom_refinery_department")
-			else None
-		) or {}
-		out["refining_department"] = dept.get("custom_refinery_department")
-		out["refinery_flow"] = cint(dept.get("custom_enable_refinery_flow"))
+		)
 		out["warehouse"] = get_source_warehouse(department, refining_type)
 	return out
 
@@ -312,8 +325,6 @@ class RefiningEntry(Document):
 
 		if self.refining_type == "Scrap Refining":
 			self.create_dust_opening_receipt_se()
-
-		self.consolidate_refinery_batches(self.refining_warehouse)
 
 	def on_cancel(self):
 		# External shares this path: cancel_linked_stock_entries catches its repack_se
@@ -1108,8 +1119,9 @@ class RefiningEntry(Document):
 		also drives the source warehouse via validate_warehouse. A manually chosen
 		department is preserved and a missing Employee record is not an error.
 
-		Serial Number Refining takes the user's department too; the department of the
-		warehouse the scanned serials sit in is only the fallback for a user with no
+		Serial Number Refining derives it from the scanned serials instead (refinery staff
+		refine serials that sit in another department). External refining takes the user's
+		department for every type, and falls back to the serials only for a user with no
 		Employee department. Only on the original entry, not the processing duplicate.
 
 		IMPORTANT: only derive from serials when the department is not already set. After
@@ -1119,16 +1131,18 @@ class RefiningEntry(Document):
 		"""
 		if self.department:
 			return
-		dept = frappe.db.get_value(
-			"Employee", {"user_id": frappe.session.user}, "department"
-		)
-		if dept:
-			self.department = dept
-			return
-		if (
+		from_serials = (
 			self.refining_type == "Serial Number Refining"
 			and not self.parent_refining_entry
-		):
+		)
+		if cint(self.is_external) or not from_serials:
+			dept = frappe.db.get_value(
+				"Employee", {"user_id": frappe.session.user}, "department"
+			)
+			if dept:
+				self.department = dept
+				return
+		if from_serials:
 			for row in self.serial_no_details:
 				if not row.serial_number:
 					continue
@@ -1240,25 +1254,29 @@ class RefiningEntry(Document):
 		return wh
 
 	def validate_warehouse(self):
-		# Draft original entries fetch the Refinery Department and Source Warehouse from the
-		# Source Department (resolve_refining_defaults). The processing duplicate and a
-		# submitted entry keep what the original was submitted with.
-		if not self.parent_refining_entry and self.docstatus == 0:
-			self.set_refining_defaults()
-
-		if self.refining_department and (
-			not self.refining_warehouse
-			or frappe.db.get_value("Warehouse", self.refining_warehouse, "department")
-			!= self.refining_department
-		):
-			self.refining_warehouse = frappe.db.get_value(
-				"Warehouse",
-				{
-					"department": self.refining_department,
-					"warehouse_type": "Raw Material",
-				},
-				"name",
-			)
+		if cint(self.is_external):
+			# External: draft original entries fetch the Refinery Department and Source
+			# Warehouse (set_refining_defaults). The processing duplicate and a submitted entry
+			# keep what the original was submitted with.
+			if not self.parent_refining_entry and self.docstatus == 0:
+				self.set_refining_defaults()
+			if self.refining_department and (
+				not self.refining_warehouse
+				or frappe.db.get_value(
+					"Warehouse", self.refining_warehouse, "department"
+				)
+				!= self.refining_department
+			):
+				self.refining_warehouse = frappe.db.get_value(
+					"Warehouse",
+					{
+						"department": self.refining_department,
+						"warehouse_type": "Raw Material",
+					},
+					"name",
+				)
+		else:
+			self._set_internal_warehouses()
 
 		# Auto-resolve the Refining Scrap Warehouse where leftover dust is moved
 		# after refining (Refining Scrap Warehouse per SOP). Prefer a Scrap-type
@@ -1285,8 +1303,46 @@ class RefiningEntry(Document):
 					"name",
 				)
 
+	def _set_internal_warehouses(self):
+		"""Internal refining's warehouses, as before the external-only defaults."""
+		if self.refining_department and not self.refining_warehouse:
+			self.refining_warehouse = frappe.db.get_value(
+				"Warehouse",
+				{
+					"department": self.refining_department,
+					"warehouse_type": "Raw Material",
+				},
+				"name",
+			)
+
+		if self.department:
+			is_final_polish = "Final Polish" in self.department
+			if not self.warehouse or is_final_polish:
+				# Scrap refining sources from the department Scrap warehouse; Unused/Loose Material
+				# is received into the department RM warehouse as a designated item (per the
+				# Refinery Change SOP) so it sources from RM; MWO and Serial source from
+				# Manufacturing.
+				if self.refining_type == "Scrap Refining":
+					wh_type = "Scrap"
+				elif self.refining_type == "Unused/Loose Material Refining":
+					wh_type = "Raw Material"
+				else:
+					wh_type = "Manufacturing"
+
+				if is_final_polish and self.refining_type not in (
+					"Work Order Refining",
+					"Unused/Loose Material Refining",
+				):
+					wh_type = "Scrap"
+
+				self.warehouse = frappe.db.get_value(
+					"Warehouse",
+					{"department": self.department, "warehouse_type": wh_type},
+					"name",
+				)
+
 	def set_refining_defaults(self):
-		"""Refinery Department and Source Warehouse from the Source Department.
+		"""The company's Refinery Department, and the Source Warehouse from the Source Department.
 
 		The Source Warehouse follows the refining type (SOURCE_WAREHOUSE_TYPE): Scrap from
 		the department's Scrap warehouse, Serial Number and Unused/Loose Material from its
@@ -1295,7 +1351,9 @@ class RefiningEntry(Document):
 		alike, and a warehouse of another department is refused. Multiple-department scrap
 		reads each department's warehouse instead, so it has none of its own."""
 		defaults = resolve_refining_defaults(
-			department=self.department, refining_type=self.refining_type
+			company=self.company,
+			department=self.department,
+			refining_type=self.refining_type,
 		)
 		if defaults["refining_department"]:
 			self.refining_department = defaults["refining_department"]
@@ -1349,6 +1407,7 @@ class RefiningEntry(Document):
 		)
 		if (
 			not self.refinery_flow
+			or not cint(self.is_external)
 			or self.refining_type != REFINING_TYPE_SCRAP
 			or self.docstatus != 0
 			or self.parent_refining_entry
@@ -1368,7 +1427,11 @@ class RefiningEntry(Document):
 		warehouse (the transfer would only receipt the excess as an opening, and the other item
 		would stay behind). Rows from another warehouse, consumables, and items the warehouse
 		does not hold (a physical opening) are not part of the requirement."""
-		if not self.refinery_flow or self.refining_type != REFINING_TYPE_SCRAP:
+		if (
+			not self.refinery_flow
+			or not cint(self.is_external)
+			or self.refining_type != REFINING_TYPE_SCRAP
+		):
 			return
 		precision = 3
 		required = self._scrap_balance_by_item(self.warehouse)
@@ -2769,13 +2832,8 @@ class RefiningEntry(Document):
 		# If there is refining loss, convert to dust and move to scrap warehouse
 		if self.refining_loss > 0:
 			self.create_scrap_transfer_se()
-		self._record_loss_on_consolidated_batches()
 
 		self.db_set("status", "Completed")
-		# Scrap / Unused/Loose Material: the refined material goes back to Central at once,
-		# as the draft Central reviews and submits.
-		if self.refining_type in CONSOLIDATED_REFINING_TYPES:
-			self.transfer_recovered_materials(auto=True)
 		frappe.publish_progress(
 			100,
 			title="Completing Refining",
@@ -2783,53 +2841,30 @@ class RefiningEntry(Document):
 		)
 
 	@frappe.whitelist()
-	def transfer_recovered_materials(self, auto=False):
-		"""Send the recovered gold, diamonds and gemstones to Central.
-
-		Scrap and Unused/Loose Material hand them back as a DRAFT transfer into Central
-		Transit (_create_central_transit_draft): the stock only moves when Central submits
-		it, and that submit marks this entry Transferred. Work Order and Serial Number still
-		transfer straight into Central RM here.
-
-		``auto`` is the call complete_refining makes: nothing recovered is then not an
-		error, so a nil recovery still completes."""
+	def transfer_recovered_materials(self):
+		"""Internal refining: send the recovered gold, diamonds and gemstones to Central RM.
+		External refining hands them back from receive_from_supplier instead."""
 		if self.status != "Completed":
 			frappe.throw(_("Can only transfer if Completed."))
-		self._throw_if_central_transfer_open()
 
-		hand_back = self.refining_type in CONSOLIDATED_REFINING_TYPES
 		frappe.publish_progress(
 			10,
 			title="Transferring Materials",
-			description="Finding Central Warehouse...",
+			description="Finding Central RM Warehouse...",
 		)
-		if hand_back:
-			target_warehouse = self._get_central_transit_warehouse()
-		else:
-			# Recovered materials go to the Central RM warehouse
-			target_warehouse = self._get_central_rm_warehouse()
-			if not target_warehouse:
-				frappe.throw(
-					_(
-						"Cannot determine Central RM Warehouse. Please ensure a warehouse with "
-						"warehouse_type 'Raw Material' exists for the Central department."
-					)
+		# Always transfer recovered materials to Central RM warehouse
+		target_warehouse = self._get_central_rm_warehouse()
+		if not target_warehouse:
+			frappe.throw(
+				_(
+					"Cannot determine Central RM Warehouse. Please ensure a warehouse with "
+					"warehouse_type 'Raw Material' exists for the Central department."
 				)
+			)
 
 		rows = self._recovered_transfer_rows()
 		if not rows:
-			if auto:
-				return None
 			frappe.throw(_("No recovered material to transfer."))
-
-		if hand_back:
-			self._create_central_transit_draft(rows, target_warehouse)
-			frappe.publish_progress(
-				100,
-				title="Transferring Materials",
-				description="Draft transfer created for Central",
-			)
-			return self.transfer_se
 
 		se = frappe.new_doc("Stock Entry")
 		se.stock_entry_type = "Material Transfer"
@@ -2988,8 +3023,10 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def create_central_transfer(self):
-		"""(Re)create the draft hand-back to Central Transit for a Completed Scrap or
+		"""(Re)create the draft hand-back to Central Transit for a Completed external Scrap or
 		Unused/Loose Material entry, e.g. after Central deleted the previous draft."""
+		if not cint(self.is_external):
+			frappe.throw(_("Only external refining hands back to Central Transit."))
 		if self.refining_type not in CONSOLIDATED_REFINING_TYPES:
 			frappe.throw(
 				_("Only Scrap and Unused/Loose Material refining hand back to Central.")
@@ -2997,8 +3034,6 @@ class RefiningEntry(Document):
 		if self.status != "Completed":
 			frappe.throw(_("Can only transfer if Completed."))
 		self._throw_if_central_transfer_open()
-		if not cint(self.is_external):
-			return self.transfer_recovered_materials()
 		rows = self._received_transfer_rows()
 		if not rows:
 			frappe.throw(_("No received material to transfer."))
@@ -3693,7 +3728,8 @@ class RefiningEntry(Document):
 			# they arrive here with no valuation history, and their gold is only known once
 			# refined, so they come in at zero rather than failing the submit.
 			if (
-				frappe.db.get_value("Item", sf["item_code"], "item_group")
+				cint(self.is_external)
+				and frappe.db.get_value("Item", sf["item_code"], "item_group")
 				in REFINING_CONSUMABLE_ITEM_GROUPS
 			):
 				row["allow_zero_valuation_rate"] = 1
@@ -3771,21 +3807,8 @@ class RefiningEntry(Document):
 					"Item", item.item_code, "has_batch_no"
 				)
 
-		# Get brought in batches pool. Batches consolidated on the way in no longer exist in
-		# the refining warehouse; their consolidated batch stands in for them.
+		# Get brought in batches pool
 		brought_in_batches = {}
-		consolidated_sources = {
-			row.source_batch
-			for row in self.batch_tracking
-			if row.get("tracking_type") == TRACKING_CONSOLIDATION and row.source_batch
-		}
-		for item_code, batches in self._consolidated_batches().items():
-			for batch_no, qty in batches:
-				brought_in_batches.setdefault(item_code, []).append(
-					frappe._dict(
-						item_code=item_code, batch_no=batch_no, qty=qty, serial_no=None
-					)
-				)
 		se_names = [self.material_transfer_se, getattr(self, "receiving_se", None)]
 		for se_name in filter(None, se_names):
 			for d in frappe.get_all(
@@ -3793,8 +3816,6 @@ class RefiningEntry(Document):
 				filters={"parent": se_name, "t_warehouse": self.refining_warehouse},
 				fields=["item_code", "batch_no", "qty", "serial_no"],
 			):
-				if d.batch_no and d.batch_no in consolidated_sources:
-					continue
 				brought_in_batches.setdefault(d.item_code, []).append(d)
 
 		# Running per-(item, batch) tally of what THIS repack SE has already booked.
@@ -4113,10 +4134,7 @@ class RefiningEntry(Document):
 
 		# Persist batch_tracking rows via direct DB insert
 		for bt in batch_tracking_rows:
-			child = self.append(
-				"batch_tracking",
-				{**bt, "tracking_type": TRACKING_RECOVERY, "stock_entry_out": se.name},
-			)
+			child = self.append("batch_tracking", bt)
 			child.db_insert()
 
 	def consolidate_refinery_batches(self, target_warehouse):
@@ -4133,7 +4151,8 @@ class RefiningEntry(Document):
 		consolidated pairs are kept as Consolidation rows in Batch Tracking, which the
 		repack and the supplier receipt read to consume the consolidated batch."""
 		if (
-			self.refining_type not in CONSOLIDATED_REFINING_TYPES
+			not cint(self.is_external)
+			or self.refining_type not in CONSOLIDATED_REFINING_TYPES
 			or self.parent_refining_entry
 			or not target_warehouse
 		):
