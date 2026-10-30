@@ -147,4 +147,7 @@ jewellery_erpnext.patches.move_manufacturing_plan_layout_to_core
 jewellery_erpnext.patches.backfill_chain_finding_mwo
 jewellery_erpnext.patches.set_without_so_pmo_type
 jewellery_erpnext.patches.add_customer_serial_print_with_hallmarking
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Close / Hold requests, Order Department and Hold Team
+jewellery_erpnext.patches.seed_pmo_request_blocked_stock_entry_types
 jewellery_erpnext.patches.add_item_catalogue_image_fields #2026-10-29 Item gold/silver catalogue image fields
+jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Hold during a Close request keeps it (conditional Open / Withdraw)
