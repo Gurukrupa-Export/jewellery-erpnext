@@ -344,6 +344,9 @@ doc_events = {
 			"jewellery_erpnext.customer_subcontracting.customer_gold_return.record_return",
 			# Central submitting a Refining Entry's draft hand-back marks the entry Transferred.
 			"jewellery_erpnext.refining.doc_events.stock_entry.on_submit",
+			# A metal return or adjustment for a PMO with a Close / Hold request: its requester
+			# is told once the last of the work is back (queued after commit; no-op otherwise).
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.queue_ready_check_after_stock_entry",
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,

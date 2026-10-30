@@ -30,6 +30,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	CLOSED_STATE,
 	HOLD_DRAFT_STATE,
 	HOLD_STATE,
+	REQUESTED_STATES,
 	on_workflow_state_change,
 	pmo_blocking_state,
 	refuse_while_blocked,
@@ -579,6 +580,13 @@ class ParentManufacturingOrder(Document):
 			)
 		if self.get("workflow_state") == CLOSED_STATE:
 			frappe.throw(_("{0} is Closed and cannot be cancelled.").format(self.name))
+		# A Close / Hold request keeps the order and its trail until it is done or withdrawn.
+		if self.get("workflow_state") in REQUESTED_STATES:
+			frappe.throw(
+				_("{0} is {1}: withdraw the request before cancelling.").format(
+					self.name, _(self.get("workflow_state"))
+				)
+			)
 
 	def on_submit(self):
 		if self.is_without_so:
