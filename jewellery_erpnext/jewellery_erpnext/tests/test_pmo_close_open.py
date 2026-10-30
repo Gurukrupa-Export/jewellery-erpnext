@@ -858,18 +858,18 @@ class TestProblems(_Base):
 				return close_open._problem_list("PMO-1", action, docs, stock=stock)
 			return close_open._problems("PMO-1", action, docs, stock=stock)
 
-	def test_a_work_order_outside_planning_blocks_hold_and_close(self):
+	def test_a_work_order_outside_planning_blocks_close_only(self):
+		"""A Close needs the work orders in Manufacturing Plan & Management; a Hold may freeze
+		them in any department."""
 		docs = _docs(mwos=[_mwo("MWO-1", department="Waxing - T"), _mwo("MWO-2")])
-		for action, verb in (("Hold", "placed on Hold"), ("Close", "closed")):
-			with self.subTest(action=action):
-				problems = self._problems(action, docs)
-				self.assertEqual(len(problems), 1)
-				self.assertIn(
-					f"PMO cannot be {verb} because all linked Manufacturing Work Orders must be in the Manufacturing Plan and Management Department.",
-					problems[0],
-				)
-				self.assertIn("MWO-1", problems[0])
-				self.assertNotIn("MWO-2", problems[0])
+		self.assertEqual(self._problems("Hold", docs), [])
+		(problem,) = self._problems("Close", docs)
+		self.assertIn(
+			"PMO cannot be closed because all linked Manufacturing Work Orders must be in the Manufacturing Plan and Management Department.",
+			problem,
+		)
+		self.assertIn("MWO-1", problem)
+		self.assertNotIn("MWO-2", problem)
 
 	def test_draft_work_orders_are_not_checked(self):
 		docs = _docs(mwos=[_mwo("MWO-1", status="Draft", docstatus=0, department=None)])
@@ -1790,25 +1790,49 @@ class TestRequestReadiness(_Base):
 	DEPARTMENTS = TestProblems.DEPARTMENTS
 	_problems = TestProblems._problems
 
-	def test_the_close_hold_department_counts_as_back(self):
-		docs = _docs(mwos=[_mwo("MWO-1", department="Returns - T")])
-		self.assertEqual(self._problems("Hold", docs, departments=["Returns - T"]), [])
-		problems = self._problems("Hold", docs)
-		self.assertIn("MWO-1 (Returns - T)", problems[0])
+	def test_a_request_department_does_not_count_as_planning_for_a_close(self):
+		"""PMO-KGJPL-RI03278-006-0001: its work order sat in Central (a request department)
+		with no metal and the PMO closed. A Close needs Manufacturing Plan & Management."""
+		docs = _docs(mwos=[_mwo("MWO-1", department="Central - T")])
+		(problem,) = self._problems("Close", docs, departments=["Central - T", MPM])
+		self.assertIn("must be in the Manufacturing Plan and Management", problem)
+		self.assertIn("MWO-1 (Central - T)", problem)
+		self.assertNotIn("accepted too", problem)
 
-	def test_a_work_order_in_any_request_department_counts_as_back(self):
+	def test_a_hold_is_allowed_in_any_department(self):
 		docs = _docs(
 			mwos=[
-				_mwo("MWO-1", department="Returns - T"),
-				_mwo("MWO-2", department="Repair - T"),
+				_mwo("MWO-1", department="Central - T"),
+				_mwo("MWO-2", department="Waxing - T", gross_wt=2.5),
 			]
 		)
-		both = ["Returns - T", "Repair - T"]
-		self.assertEqual(self._problems("Hold", docs, departments=both), [])
-		(problem,) = self._problems("Hold", docs, departments=["Returns - T"])
-		self.assertIn("MWO-2 (Repair - T)", problem)
-		self.assertNotIn("MWO-1", problem)
-		self.assertIn("accepted too: <strong>Returns - T</strong>", problem)
+		self.assertEqual(self._problems("Hold", docs), [])
+
+	def test_a_close_from_planning_with_no_metal_goes_ahead(self):
+		docs = _docs(mwos=[_mwo("MWO-1"), _mwo("MWO-2")])
+		self.assertEqual(self._problems("Close", docs), [])
+
+	def test_what_a_hold_request_waits_for_is_work_in_progress_only(self):
+		docs = _docs(
+			mops=[_mop("MOP-1", "MWO-1", status="WIP")],
+			mwos=[
+				_mwo("MWO-1", pointer="MOP-1", department="Waxing - T"),
+				_mwo("MWO-2", department="Central - T", gross_wt=1.0),
+			],
+		)
+		with (
+			patch.object(
+				frappe, "get_system_settings", return_value="Banker's Rounding"
+			),
+			patch(
+				"frappe.get_all",
+				side_effect=_keyed_get_all({"Department": self.DEPARTMENTS}),
+			),
+		):
+			hold = close_open._work_orders_to_return("Hold", docs)
+			close = close_open._work_orders_to_return("Close", docs)
+		self.assertEqual([w.work_order for w in hold], ["MWO-1"])
+		self.assertEqual(sorted(w.work_order for w in close), ["MWO-1", "MWO-2"])
 
 	def test_draft_transactions_block_a_close_only(self):
 		docs = _docs(mwos=[_mwo("MWO-1")])
@@ -2010,6 +2034,7 @@ class TestRequestRestrictions(_Base):
 				"frappe.get_all",
 				side_effect=_keyed_get_all(
 					{
+						"Department": [(MPM, "Manufacturing Plan & Management")],
 						"Manufacturing Operation": ["PMO-1"],
 						"Parent Manufacturing Order": [("PMO-1", state)]
 						if state
@@ -2043,17 +2068,34 @@ class TestRequestRestrictions(_Base):
 				with self.subTest(next_department=next_department):
 					with self.assertRaisesRegex(
 						frappe.ValidationError,
-						"only to <strong>Returns - T</strong> or <strong>Repair - T</strong>",
+						"only to <strong>Returns - T</strong>, <strong>Repair - T</strong>,? or <strong>Manufacturing Plan & Management</strong>",
 					):
 						close_open.refuse_department_ir_while_requested(
 							self._ir("Issue", next_department)
 						)
 
+	def test_department_ir_issue_to_planning_is_always_allowed(self):
+		"""A Close needs the work orders in Manufacturing Plan & Management, so it is a valid
+		destination even when MOP Settings does not list it."""
+		p = self._patched(departments=("Central - T",))
+		with p[0], p[1], p[2]:
+			close_open.refuse_department_ir_while_requested(self._ir("Issue", MPM))
+			close_open.refuse_department_ir_while_requested(
+				self._ir("Issue", "Central - T")
+			)
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "not to <strong>Waxing - T"
+			):
+				close_open.refuse_department_ir_while_requested(
+					self._ir("Issue", "Waxing - T")
+				)
+
 	def test_department_ir_issue_is_refused_without_request_departments(self):
 		p = self._patched(departments=())
 		with p[0], p[1], p[2]:
 			with self.assertRaisesRegex(
-				frappe.ValidationError, "only to.*a Close / Hold Request Department"
+				frappe.ValidationError,
+				"only to <strong>Manufacturing Plan & Management</strong>",
 			):
 				close_open.refuse_department_ir_while_requested(
 					self._ir("Issue", "Returns - T")
@@ -2064,7 +2106,7 @@ class TestRequestRestrictions(_Base):
 		with p[0], p[1], p[2]:
 			with self.assertRaisesRegex(
 				frappe.ValidationError,
-				"transfer them to <strong>Returns - T</strong> or <strong>Repair - T</strong>",
+				"transfer them to <strong>Returns - T</strong>, <strong>Repair - T</strong>,? or <strong>Manufacturing Plan & Management</strong>",
 			):
 				close_open.refuse_employee_ir_while_requested(
 					self._ir("Issue", table="employee_ir_operations")
@@ -2377,6 +2419,7 @@ class TestRequestNotifications(_Base):
 				f"{CO}._request_plan",
 				return_value={"departments": ["Returns - T"], "pending": []},
 			),
+			patch(f"{CO}._planning_departments", return_value=set()),
 			patch(f"{CO}._notify_request"),
 		):
 			close_open._request(
@@ -2391,6 +2434,7 @@ class TestRequestNotifications(_Base):
 				f"{CO}._request_plan",
 				return_value={"departments": ["Returns - T"], "pending": []},
 			),
+			patch(f"{CO}._planning_departments", return_value=set()),
 			patch(f"{CO}._notify_request"),
 		):
 			close_open._request(pmo, "Request Close", "Customer cancelled", "Submitted")
