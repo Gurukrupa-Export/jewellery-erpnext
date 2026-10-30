@@ -145,9 +145,10 @@ frappe.ui.form.on("Refining Entry", {
 	},
 
 	apply_refining_defaults(frm) {
-		// Source Warehouse, Refinery Department and the External checkbox follow the
-		// company, Source Department and refining type (resolve_refining_defaults, which
-		// validate applies authoritatively). Only on draft original entries.
+		// External refining: Source Warehouse, Refinery Department and the External checkbox
+		// follow the company, Source Department and refining type (resolve_refining_defaults,
+		// which validate applies authoritatively). Internal refining keeps its own warehouse
+		// rule (set_internal_warehouse). Only on draft original entries.
 		if (frm.doc.docstatus !== 0 || frm.doc.parent_refining_entry) return;
 		frappe
 			.call({
@@ -164,7 +165,7 @@ frappe.ui.form.on("Refining Entry", {
 				frm.__defaults_lock_only = false;
 				if (lock_only) {
 					frm.__external_locked = !!d.is_external;
-					frm.__refinery_dept_locked = !!d.refining_department;
+					frm.__refinery_dept_locked = !!(frm.doc.is_external && d.refining_department);
 					frm.trigger("set_field_visibility");
 					return;
 				}
@@ -178,6 +179,13 @@ frappe.ui.form.on("Refining Entry", {
 				} else if (!d.is_external && (frm.__external_auto || was_locked) && frm.doc.is_external) {
 					frm.set_value("is_external", 0);
 					frm.__external_auto = false;
+				}
+				if (!(d.is_external || frm.doc.is_external)) {
+					// Internal refining: nothing fetched or locked beyond what it always had.
+					frm.__refinery_dept_locked = false;
+					frm.trigger("set_internal_warehouse");
+					frm.trigger("set_field_visibility");
+					return;
 				}
 				frm.__refinery_dept_locked = !!d.refining_department;
 				if (d.refining_department && frm.doc.refining_department !== d.refining_department) {
@@ -223,6 +231,7 @@ frappe.ui.form.on("Refining Entry", {
 	},
 
 	is_external(frm) {
+		frm.trigger("apply_refining_defaults");
 		frm.trigger("set_field_visibility");
 		frm.trigger("add_action_buttons");
 		if (!frm.doc.is_external) {
@@ -281,9 +290,27 @@ frappe.ui.form.on("Refining Entry", {
 	},
 
 	department(frm) {
-		// The Source Warehouse (by refining type, internal and external alike) and the
-		// company's Refinery Department are fetched.
 		frm.trigger("apply_refining_defaults");
+	},
+
+	set_internal_warehouse(frm) {
+		// Internal refining's Source Warehouse, by refining type, as it always was.
+		if (frm.doc.is_external || !frm.doc.department) return;
+		let wh_type = "Scrap";
+		if (frm.doc.refining_type === "Unused/Loose Material Refining") {
+			wh_type = "Raw Material";
+		} else if (frm.doc.refining_type === "Work Order Refining") {
+			wh_type = "Manufacturing";
+		} else if (frm.doc.refining_type === "Serial Number Refining") {
+			wh_type = ["in", ["Finished Goods", "Transit of Tagging", "Product Certification"]];
+		}
+		frappe.db
+			.get_value("Warehouse", { department: frm.doc.department, warehouse_type: wh_type }, "name")
+			.then((r) => {
+				if (r.message && r.message.name) {
+					frm.set_value("warehouse", r.message.name);
+				}
+			});
 	},
 
 	set_recovery_grid_editability(frm) {
@@ -558,18 +585,22 @@ frappe.ui.form.on("Refining Entry", {
 		// Unused/Loose Material
 		frm.toggle_display("scan_scrap_qr", type === "Unused/Loose Material Refining");
 
-		// Fetched, never picked: the Source Warehouse follows the Source Department and
-		// refining type, internal and external alike, and the Source Department is the
-		// user's own. The Refinery Department and the External checkbox are locked when
-		// they come from configuration (see apply_refining_defaults).
+		// The Source Warehouse is never picked by hand (external: by refining type; internal:
+		// its own rule). For external refining the Source Department is the user's own and the
+		// Refinery Department is the company's, both locked; the External checkbox is locked
+		// for the external-only companies (see apply_refining_defaults).
 		frm.set_df_property("warehouse", "read_only", 1);
-		frm.set_df_property("department", "read_only", frm.__employee_department ? 1 : 0);
+		frm.set_df_property(
+			"department",
+			"read_only",
+			frm.doc.is_external && frm.__employee_department ? 1 : 0
+		);
 		frm.set_df_property("refining_department", "read_only", frm.__refinery_dept_locked ? 1 : 0);
 		frm.set_df_property("is_external", "read_only", frm.__external_locked ? 1 : 0);
 
 		// Refinery Flow departments send ALL their scrap, so the narrowing filters are off.
 		// Un-hiding leaves the fields to their own depends_on.
-		const all_scrap = is_dust && !!frm.doc.refinery_flow;
+		const all_scrap = is_dust && !!frm.doc.is_external && !!frm.doc.refinery_flow;
 		[
 			"employee",
 			"operation",
@@ -629,7 +660,7 @@ frappe.ui.form.on("Refining Entry", {
 		// Refining consumables (REF-* items) travel to the refinery on the same Scrap entry.
 		// A Refinery Flow department sends its whole scrap first, so the button waits for
 		// the scrap rows there; validate_refinery_flow enforces it at submit.
-		if (show_dust_btn && !frm.doc.parent_refining_entry) {
+		if (show_dust_btn && frm.doc.is_external && !frm.doc.parent_refining_entry) {
 			frm.add_custom_button(__("Add Consumables"), () => {
 				const has_scrap = (frm.doc.material_items || []).some(
 					(r) => r.source_type === "Scrap" && !r.is_consumable
@@ -971,12 +1002,7 @@ frappe.ui.form.on("Refining Entry", {
 				btn.addClass("btn-primary");
 			}
 
-			const hand_back = ["Scrap Refining", "Unused/Loose Material Refining"].includes(
-				frm.doc.refining_type
-			);
-			if (hand_back || frm.doc.transfer_se) {
-				frm.trigger("add_central_transfer_buttons");
-			} else if (status === "Completed") {
+			if (status === "Completed") {
 				let btn = frm.add_custom_button(
 					__("Transfer to Department"),
 					() => {
