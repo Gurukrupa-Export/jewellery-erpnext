@@ -580,12 +580,12 @@ class ParentManufacturingOrder(Document):
 			)
 		if self.get("workflow_state") == CLOSED_STATE:
 			frappe.throw(_("{0} is Closed and cannot be cancelled.").format(self.name))
-		# A Close / Hold request keeps the order and its trail until it is done or withdrawn.
+		# A Close request keeps the order and its trail until it is closed or dropped (Open).
 		if self.get("workflow_state") in REQUESTED_STATES:
 			frappe.throw(
-				_("{0} is {1}: withdraw the request before cancelling.").format(
-					self.name, _(self.get("workflow_state"))
-				)
+				_(
+					"{0} is {1}: Open it to drop the Close request before cancelling."
+				).format(self.name, _(self.get("workflow_state")))
 			)
 
 	def on_submit(self):

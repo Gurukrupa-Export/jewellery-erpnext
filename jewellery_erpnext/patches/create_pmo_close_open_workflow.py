@@ -24,34 +24,31 @@ PMOs are moved off states the new workflow does not have -- "Open" to Submitted,
 The roles are a starting point; the server checks transitions, not roles, so they can be
 changed on the Workflow form.
 
-Close / Hold requests (2026-10-29). A submitted PMO whose work orders are still in other
-departments, in progress, or carrying metal cannot be held or closed yet; it can be put in
-a request state instead, which restricts what moves for it until the work comes back
-(doc_events/close_open.py):
+Close requests (2026-10-29, simplified 2026-10-30). The buttons are only Hold, Open and
+Close. A Close refused because the work orders are not back yet (elsewhere, in progress or
+in transit, carrying metal, drafts) offers to put the PMO in Close Requested instead: the
+form's Close dialog calls close_open.apply_action("Request Close"), which writes the state
+directly -- there is no Request Close button. While Close Requested the work orders only
+come back (doc_events/close_open.py), and Close closes it once they are back:
 
-    Submitted       -- Request Close    --> Close Requested
-    Submitted       -- Request Hold     --> Hold Requested
-    Close Requested -- Close            --> Closed
-    Close Requested -- Hold             --> Hold
-    Close Requested -- Withdraw Request --> Submitted
-    Hold Requested  -- Hold             --> Hold
-    Hold Requested  -- Withdraw Request --> Submitted
+    Submitted       -- (Close, not ready)   --> Close Requested
+    Close Requested -- Close                --> Closed
+    Close Requested -- Hold                 --> Hold   (the Close request is kept)
+    Close Requested -- Open                 --> Submitted   (the Close request is dropped)
+    Hold            -- Open                 --> Close Requested   (Close request pending)
 
 Close Requested -> Hold is also the Hold a queued Close (enqueue_close) applies before it
-cancels Stock Entries.
+cancels Stock Entries. close_open keeps RESUME_KEY in hold_snapshot while a Close request is
+pending under a Hold; the conditional Open rows read it, and only one of each pair passes
+its condition, so the form shows a single Open.
 
-Hold during a Close request (2026-10-29, FRD 3.5). The Hold Team may Hold a Close Requested
-PMO (once its work is back) or Request Hold for it (before). The Close request is kept:
-close_open stores RESUME_KEY in hold_snapshot, and conditional transitions send Open and
-Withdraw Request back to Close Requested instead of Submitted:
+The earlier Request Hold / Hold Requested and the Request Close / Withdraw Request buttons
+are gone: a PMO still in Hold Requested goes back to Close Requested when a Close request
+was pending under it, otherwise to Submitted.
 
-    Close Requested -- Request Hold     --> Hold Requested
-    Hold            -- Open             --> Close Requested   (Close request pending)
-    Hold Requested  -- Withdraw Request --> Close Requested   (Close request pending)
-
-Only one of each pair passes its condition, so the form still shows a single button. The Order Department requests and does the Close, the Hold Team
-the Hold and Open; System Manager keeps every transition. A transition row names one
-role, so a transition open to several roles has one row per role.
+The Order Department does the Close (and drops a Close request with Open), the Hold Team the
+Hold and Open; System Manager keeps every transition. A transition row names one role, so a
+transition open to several roles has one row per role.
 """
 
 import frappe
@@ -73,8 +70,9 @@ STATES = (
 	("Hold", "1", "All", "Warning"),
 	("Closed", "1", SM, "Danger"),
 	("Close Requested", "1", "All", "Info"),
-	("Hold Requested", "1", "All", "Warning"),
 )
+# A state of the earlier request workflow, moved off by execute().
+HOLD_REQUESTED = "Hold Requested"
 
 # close_open.RESUME_CLOSE_KEY: hold_snapshot carries it while a Close request is pending.
 RESUME_KEY = "resume_close_request"
@@ -99,24 +97,12 @@ TRANSITIONS = (
 	("Hold", "Open", "Close Requested", HOLD_TEAM, RESUMES),
 	("Hold", "Close", "Closed", SM),
 	("Hold", "Close", "Closed", ORDER_DEPARTMENT),
-	("Submitted", "Request Close", "Close Requested", SM),
-	("Submitted", "Request Close", "Close Requested", ORDER_DEPARTMENT),
-	("Submitted", "Request Hold", "Hold Requested", SM),
-	("Submitted", "Request Hold", "Hold Requested", HOLD_TEAM),
 	("Close Requested", "Close", "Closed", SM),
 	("Close Requested", "Close", "Closed", ORDER_DEPARTMENT),
 	("Close Requested", "Hold", "Hold", SM),
 	("Close Requested", "Hold", "Hold", HOLD_TEAM),
-	("Close Requested", "Request Hold", "Hold Requested", SM),
-	("Close Requested", "Request Hold", "Hold Requested", HOLD_TEAM),
-	("Close Requested", "Withdraw Request", "Submitted", SM),
-	("Close Requested", "Withdraw Request", "Submitted", ORDER_DEPARTMENT),
-	("Hold Requested", "Hold", "Hold", SM),
-	("Hold Requested", "Hold", "Hold", HOLD_TEAM),
-	("Hold Requested", "Withdraw Request", "Submitted", SM, NO_RESUME),
-	("Hold Requested", "Withdraw Request", "Submitted", HOLD_TEAM, NO_RESUME),
-	("Hold Requested", "Withdraw Request", "Close Requested", SM, RESUMES),
-	("Hold Requested", "Withdraw Request", "Close Requested", HOLD_TEAM, RESUMES),
+	("Close Requested", "Open", "Submitted", SM),
+	("Close Requested", "Open", "Submitted", ORDER_DEPARTMENT),
 )
 
 
@@ -177,6 +163,17 @@ def execute():
 	# The workflow state field is created with the workflow.
 	if not frappe.db.has_column(DOCTYPE, "workflow_state"):
 		return
+	# Hold Requested is gone: back to the Close request pending under it, else Submitted, and
+	# the pending-Close mark it carried is dropped with it.
+	frappe.db.sql(
+		"""UPDATE `tabParent Manufacturing Order`
+		SET workflow_state = IF(
+				IFNULL(hold_snapshot, '') LIKE %(resume)s, 'Close Requested', 'Submitted'
+			),
+			hold_snapshot = NULL
+		WHERE docstatus = 1 AND workflow_state = %(state)s""",
+		{"resume": f"%{RESUME_KEY}%", "state": HOLD_REQUESTED},
+	)
 	valid = {}
 	for state, doc_status, _allow_edit, _style in STATES:
 		valid[int(doc_status)] = (*valid.get(int(doc_status), ()), state)
