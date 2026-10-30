@@ -282,7 +282,7 @@ frappe.ui.form.on("Refining Entry", {
 
 	department(frm) {
 		// The Source Warehouse (by refining type, internal and external alike) and the
-		// configured Refinery Department are fetched from the department.
+		// company's Refinery Department are fetched.
 		frm.trigger("apply_refining_defaults");
 	},
 

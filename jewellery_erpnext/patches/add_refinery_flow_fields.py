@@ -4,8 +4,9 @@
   process on: a Scrap Refining entry from this department must carry ALL the scrap in its
   Scrap warehouse, and the refining consumables travel on that same entry
   (``RefiningEntry.validate_refinery_flow``). Off = today's behaviour.
-- ``Department.custom_refinery_department`` — the Refinery Department this department's
-  material is sent to; Refining Entry fetches it as ``refining_department``.
+- The Refinery Department is not configured per department: Refining Entry takes the
+  company's Refinery department (``get_refinery_department``). An earlier version of this
+  patch added ``Department.custom_refinery_department``; it is removed where it exists.
 - ``Batch.custom_refining_entry`` / ``Batch.custom_refining_loss`` — stamped on the one
   batch per item that ``RefiningEntry.consolidate_refinery_batches`` mints from every batch
   sent for refining, and the share of the refining loss booked against it.
@@ -44,16 +45,6 @@ def execute():
 					"warehouse, with the refining consumables on the same entry."
 				),
 			},
-			{
-				"fieldname": "custom_refinery_department",
-				"fieldtype": "Link",
-				"label": "Refinery Department",
-				"options": "Department",
-				"insert_after": "custom_enable_refinery_flow",
-				"mandatory_depends_on": "eval:doc.custom_enable_refinery_flow",
-				"module": "Jewellery Erpnext",
-				"description": "Refining Entries from this department are sent to this Refinery Department.",
-			},
 		],
 		"Batch": [
 			{
@@ -79,6 +70,12 @@ def execute():
 	}
 
 	create_custom_fields(custom_fields, ignore_validate=True)
+	if frappe.db.exists("Custom Field", "Department-custom_refinery_department"):
+		frappe.delete_doc(
+			"Custom Field",
+			"Department-custom_refinery_department",
+			ignore_permissions=True,
+		)
 	frappe.logger().info(
 		"add_refinery_flow_fields: ensured Department refinery flow and Batch refining fields"
 	)
