@@ -180,6 +180,31 @@ def next_stamping_sequence(prefix):
 	return (highest or 0) + 1
 
 
+def stamp_fetched_customer(serial_doc):
+	"""Write the customer ``serial_doc.save()`` is about to fetch straight to the column.
+
+	ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's customer:
+	only the stock ledger may change it. A site that fetches the customer from the serial's
+	BOM (GEPL: a Property Setter with fetch_from custom_bom_no.customer) has every save put the
+	BOM's customer back, so a save that touches nothing else -- Product Certification adding a
+	HUID row -- fails with "Customer cannot be changed for Serial No." whenever the two differ.
+	Writing the fetched value first makes the save see it unchanged, and the serial ends up with
+	the BOM's customer, as it always did. A no-op where the customer is not fetched, where it is
+	fetch_if_empty, or where the serial has no BOM to fetch from.
+	"""
+	df = serial_doc.meta.get_field("customer")
+	if not df or not df.fetch_from or df.fetch_if_empty:
+		return
+	link_fieldname, source_fieldname = df.fetch_from.split(".", 1)
+	link_value = serial_doc.get(link_fieldname)
+	link_df = serial_doc.meta.get_field(link_fieldname)
+	if not link_value or not link_df:
+		return
+	fetched = frappe.db.get_value(link_df.options, link_value, source_fieldname)
+	if (serial_doc.get("customer") or None) != (fetched or None):
+		serial_doc.db_set("customer", fetched, update_modified=False)
+
+
 def update_table(self, method):
 	# serial_numbers = frappe.get_all("Serial No",filters={"name": self.name},fields={"*"})
 	existing_serial_record = frappe.get_all(
