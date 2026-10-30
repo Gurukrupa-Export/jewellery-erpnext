@@ -134,7 +134,7 @@
    "reqd": 1
   },
   {
-   "default": "gms",
+   "default": "Gram",
    "fieldname": "stock_uom",
    "fieldtype": "Link",
    "hidden": 1,
@@ -253,8 +253,8 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-03-31 15:10:37.902320",
- "modified_by": "shruti_b@gkexport.com",
+ "modified": "2026-10-30 11:26:35.216623",
+ "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "BOM Finding Detail",
  "owner": "Administrator",
