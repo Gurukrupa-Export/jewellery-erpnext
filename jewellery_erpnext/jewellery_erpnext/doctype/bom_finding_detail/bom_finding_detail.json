@@ -134,7 +134,7 @@
    "reqd": 1
   },
   {
-   "default": "gms",
+   "default": "Gram",
    "fieldname": "stock_uom",
    "fieldtype": "Link",
    "hidden": 1,

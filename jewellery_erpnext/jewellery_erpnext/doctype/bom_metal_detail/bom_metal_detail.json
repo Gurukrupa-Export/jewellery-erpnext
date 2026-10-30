@@ -133,7 +133,7 @@
    "label": "Making Amount"
   },
   {
-   "default": "gms",
+   "default": "Gram",
    "fieldname": "stock_uom",
    "fieldtype": "Link",
    "hidden": 1,
