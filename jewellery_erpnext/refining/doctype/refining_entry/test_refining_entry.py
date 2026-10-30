@@ -56,6 +56,8 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 )
 from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
 	PURE_LOSS_ITEM,
+	resolve_refining_defaults,
+	split_rounded,
 )
 from jewellery_erpnext.unused_loose_audit import run_unused_loose_audit
 
@@ -212,15 +214,24 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(se3.items[-1].item_code, "M-G-24KT-99.9-Y")
 		self.assertEqual(se3.items[-1].qty, dre.actual_recovery)
 
-		dre.transfer_recovered_materials()
-
+		# Scrap hands the refined material back on completion, as a DRAFT into Central
+		# Transit that Central submits.
+		dre.reload()
+		self.assertEqual(dre.status, "Completed")
 		se4 = frappe.get_doc("Stock Entry", dre.transfer_se)
+		self.assertEqual(se4.docstatus, 0)
 		self.assertEqual(se4.stock_entry_type, "Material Transfer")
+		self.assertTrue(se4.add_to_transit)
 		self.assertEqual(se4.custom_refining_entry, dre.name)
 		self.assertEqual(se4.items[0].s_warehouse, "Refining RM - T")
-		self.assertEqual(se4.items[0].t_warehouse, "Central RM - T")
+		self.assertEqual(se4.items[0].t_warehouse, "Central Transit - T")
 		self.assertEqual(se4.items[0].item_code, "M-G-24KT-99.9-Y")
 		self.assertEqual(se4.items[0].qty, dre.actual_recovery)
+
+		se4.submit()
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", dre.name, "status"), "Transferred"
+		)
 
 	def test_work_order_refining(self):
 		mwo = mwo_semi_finished_goods(self)
@@ -557,15 +568,17 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(se2.items[-2].item_code, "M-G-24KT-99.9-Y")
 		self.assertEqual(se2.items[-2].qty, dre.actual_recovery)
 
-		dre.transfer_recovered_materials()
-
+		dre.reload()
 		self.assertIsNotNone(dre.transfer_se)
 
+		# Unused/Loose Material hands back as a draft into Central Transit.
 		se4 = frappe.get_doc("Stock Entry", dre.transfer_se)
+		self.assertEqual(se4.docstatus, 0)
 		self.assertEqual(se4.stock_entry_type, "Material Transfer")
+		self.assertTrue(se4.add_to_transit)
 		self.assertEqual(se4.custom_refining_entry, dre.name)
 		self.assertEqual(se4.items[0].s_warehouse, "Refining RM - T")
-		self.assertEqual(se4.items[0].t_warehouse, "Central RM - T")
+		self.assertEqual(se4.items[0].t_warehouse, "Central Transit - T")
 		self.assertEqual(se4.items[0].item_code, "M-G-24KT-99.9-Y")
 		self.assertEqual(se4.items[0].qty, dre.actual_recovery)
 		self.assertEqual(se4.items[1].item_code, "D-NT-RO-6B-+9-9.5")
@@ -1187,7 +1200,17 @@ class TestRefiningEntry(IntegrationTestCase):
 
 		self.assertEqual(re.received_weight, 3.6)
 		self.assertEqual(re.repack_se, se_name)
-		self.assertEqual(re.status, "Transferred")
+		# Unused/Loose Material waits for Central to submit the draft hand-back.
+		self.assertEqual(re.status, "Completed")
+		hand_back = frappe.get_doc("Stock Entry", re.transfer_se)
+		self.assertEqual(hand_back.docstatus, 0)
+		self.assertTrue(hand_back.add_to_transit)
+		self.assertEqual(
+			{row.t_warehouse for row in hand_back.items}, {"Central Transit - T"}
+		)
+		self.assertEqual(
+			{row.s_warehouse for row in hand_back.items}, {"Waxing RM - T"}
+		)
 
 		# Recovery Summary and Gold Recovery Details are populated by reusing
 		# generate_recovery_table() — the same proportional-by-pure-content
@@ -3052,6 +3075,8 @@ class TestSubmitWriteBudget(IntegrationTestCase):
 			parent_refining_entry=None,
 			on_submit_external=record,
 			create_material_transfer_se=record,
+			consolidate_refinery_batches=lambda *args, **kwargs: None,
+			refining_warehouse=None,
 			**attrs,
 		)
 		with patch.object(frappe.db, "MAX_WRITES_PER_TRANSACTION", 200_000):
@@ -3830,3 +3855,337 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 
 	def test_stone_rate_is_zero_when_nothing_is_known(self):
 		self.assertEqual(self._stone_rate(0, 0, None), 0)
+
+
+class TestRefineryFlow(IntegrationTestCase):
+	"""Auto-fetched refining fields, the department Refinery Flow, the one consolidated batch
+	per item sent for refining, and the draft hand-back of the refined material to Central."""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _set_department(self, **values):
+		"""Set Department fields on Waxing - T for this test only."""
+		before = frappe.db.get_value(
+			"Department", "Waxing - T", list(values), as_dict=True
+		)
+		frappe.db.set_value("Department", "Waxing - T", values)
+		self.addCleanup(frappe.db.set_value, "Department", "Waxing - T", before)
+
+	def _scrap_entry(self):
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.physical_quantity = PLACEHOLDER_PHYSICAL_QTY
+		return re
+
+	def test_external_only_company_ticks_external_refining(self):
+		re = frappe.new_doc("Refining Entry")
+		re.company = "KG GK Jewellers Private Limited"
+		re.set_external_from_company()
+		self.assertEqual(re.is_external, 1)
+
+		other = frappe.new_doc("Refining Entry")
+		other.company = "Test_Company"
+		other.set_external_from_company()
+		self.assertFalse(other.is_external)
+
+	def test_source_warehouse_follows_the_refining_type(self):
+		expected = {
+			REFINING_TYPE_SCRAP: "Waxing Scrap - T",
+			REFINING_TYPE_SERIAL: "Waxing RM - T",
+			REFINING_TYPE_UNUSED: "Waxing RM - T",
+			REFINING_TYPE_WORK_ORDER: "Waxing WO - T",
+		}
+		for refining_type, warehouse in expected.items():
+			defaults = resolve_refining_defaults(
+				department="Waxing - T", refining_type=refining_type
+			)
+			self.assertEqual(defaults["warehouse"], warehouse, refining_type)
+
+	def test_refinery_department_comes_from_the_source_department(self):
+		self._set_department(custom_refinery_department="Refinery - T")
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_UNUSED
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.set_refining_defaults()
+		self.assertEqual(re.refining_department, "Refinery - T")
+		self.assertEqual(re.warehouse, "Waxing RM - T")
+
+	def test_a_warehouse_of_another_department_is_refused(self):
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SERIAL
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.warehouse = "Tagging FG - T"
+		self.assertRaises(frappe.ValidationError, re.set_refining_defaults)
+
+	def test_refinery_flow_sends_all_the_scrap(self):
+		loss_entry()
+		self._set_department(
+			custom_enable_refinery_flow=1, custom_refinery_department="Refinery - T"
+		)
+		re = self._scrap_entry()
+		re.multiple_operation = 1
+		re.save()
+
+		self.assertTrue(re.refinery_flow)
+		self.assertFalse(re.multiple_operation)
+		self.assertTrue(re.material_items)
+		# The whole Scrap warehouse was fetched, so it passes...
+		re.validate_refinery_flow()
+		# ...and anything short of it is refused.
+		re.material_items[0].qty = flt(re.material_items[0].qty) - 0.5
+		self.assertRaises(frappe.ValidationError, re.validate_refinery_flow)
+
+	def test_scrap_is_consolidated_into_one_batch_per_item_at_the_weighted_rate(self):
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+		loss_entry()
+		loss_entry()
+		re = self._scrap_entry()
+		re.save()
+		re.physical_quantity = re.system_quantity
+		re.save()
+
+		# Distinct Batch Rates on every scrap batch about to be sent.
+		for i, item_code in enumerate(
+			sorted({row.item_code for row in re.material_items})
+		):
+			for j, row in enumerate(
+				get_batch_qty(warehouse="Waxing Scrap - T", item_code=item_code) or []
+			):
+				frappe.db.set_value(
+					"Batch", row.batch_no, "custom_metal_rate", 1000 + 100 * i + 250 * j
+				)
+
+		apply_workflow(re, "Send for Verification")
+		apply_workflow(re, "Submit")
+		re.reload()
+
+		rows = [r for r in re.batch_tracking if r.tracking_type == "Consolidation"]
+		self.assertTrue(rows)
+		self.assertEqual(
+			len({r.source_batch for r in rows}), len(rows), "a source batch twice"
+		)
+		for output_batch in {r.output_batch for r in rows}:
+			sources = [r for r in rows if r.output_batch == output_batch]
+			self.assertEqual(len({r.source_item for r in sources}), 1)
+			total = sum(flt(r.source_qty) for r in sources)
+			expected_rate = (
+				sum(
+					flt(
+						frappe.db.get_value(
+							"Batch", r.source_batch, "custom_metal_rate"
+						)
+					)
+					* flt(r.source_qty)
+					for r in sources
+				)
+				/ total
+			)
+			batch = frappe.db.get_value(
+				"Batch",
+				output_batch,
+				["custom_metal_rate", "custom_refining_entry"],
+				as_dict=True,
+			)
+			self.assertAlmostEqual(
+				flt(batch.custom_metal_rate), expected_rate, places=2
+			)
+			self.assertEqual(batch.custom_refining_entry, re.name)
+			self.assertEqual(
+				flt(
+					get_batch_qty(
+						batch_no=output_batch,
+						warehouse="Refining RM - T",
+						item_code=sources[0].source_item,
+					),
+					3,
+				),
+				flt(total, 3),
+			)
+			repack = frappe.get_doc("Stock Entry", sources[0].stock_entry_out)
+			self.assertEqual(repack.stock_entry_type, "Repack")
+			self.assertEqual(repack.docstatus, 1)
+
+	def test_external_receipt_draws_the_consolidated_batch_and_books_its_loss(self):
+		re = TestRefiningEntry._external_unused_material_entry(self)
+		outputs = {
+			r.output_batch
+			for r in re.batch_tracking
+			if r.tracking_type == "Consolidation"
+		}
+		self.assertTrue(outputs)
+
+		re.receive_from_supplier(recovery_weight=3.6)
+		re.reload()
+		repack = frappe.get_doc("Stock Entry", re.repack_se)
+		consumed = {
+			row.batch_no
+			for row in repack.items
+			if row.s_warehouse and row.item_code == "ML-G-18KT-75.4-P"
+		}
+		self.assertTrue(outputs <= consumed)
+
+		self.assertGreater(flt(re.refining_loss), 0)
+		booked = sum(
+			flt(frappe.db.get_value("Batch", batch, "custom_refining_loss"))
+			for batch in outputs
+		)
+		# Exactly, at the stored precision: shares are split so they add up to the parent.
+		self.assertEqual(flt(booked, 3), flt(re.refining_loss, 3))
+
+	def test_hand_back_draft_follows_central(self):
+		re = TestRefiningEntry._external_unused_material_entry(self)
+		re.receive_from_supplier(recovery_weight=3.6)
+		re.reload()
+		first = re.transfer_se
+
+		# Central rejects the draft by deleting it: the entry lets go and can make another.
+		# (Deleting the newest entry reverts the naming series, so the new draft may reuse
+		# the deleted one's name.)
+		frappe.delete_doc("Stock Entry", first)
+		self.assertFalse(frappe.db.get_value("Refining Entry", re.name, "transfer_se"))
+		re.reload()
+		second = re.create_central_transfer()
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", re.name, "transfer_se"), second
+		)
+
+		draft = frappe.get_doc("Stock Entry", second)
+		draft.submit()
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", re.name, "status"), "Transferred"
+		)
+		# Central can cancel its receipt even though the submitted entry links it; the entry
+		# goes back to Completed, free to hand back again.
+		draft.cancel()
+		self.assertEqual(
+			frappe.db.get_value(
+				"Refining Entry", re.name, ["status", "transfer_se"], as_dict=True
+			),
+			{"status": "Completed", "transfer_se": None},
+		)
+
+	def test_one_items_excess_cannot_stand_in_for_another(self):
+		"""Review GK-JPR1586-ALL-SCRAP-GRAIN-001: the all-scrap check is per item. Moving one
+		item's quantity onto another keeps the entry total equal to the warehouse total but
+		leaves the first item behind, so it is refused."""
+		loss_entry()
+		self._set_department(
+			custom_enable_refinery_flow=1, custom_refinery_department="Refinery - T"
+		)
+		re = self._scrap_entry()
+		re.save()
+		rows = {row.item_code: row for row in re.material_items}
+		self.assertIn("ML-G-18KT-75.4-P", rows)
+		self.assertIn("ML-G-22KT-91.9-Y", rows)
+
+		# The whole warehouse, plus an item it does not hold (a physical opening) and a row
+		# from another warehouse: neither is part of the requirement, so it still passes.
+		re.append(
+			"material_items",
+			{"item_code": "Cap", "qty": 1.0, "source_type": "Scrap"},
+		)
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-22KT-91.9-Y",
+				"qty": 1.0,
+				"source_type": "Scrap",
+				"warehouse": "Waxing RM - T",
+			},
+		)
+		re.validate_refinery_flow()
+
+		# Same total, item by item wrong: 22KT's quantity moved onto the 18KT row.
+		moved = flt(rows["ML-G-22KT-91.9-Y"].qty)
+		rows["ML-G-18KT-75.4-P"].qty = flt(rows["ML-G-18KT-75.4-P"].qty) + moved
+		rows["ML-G-22KT-91.9-Y"].qty = 0
+		with self.assertRaisesRegex(frappe.ValidationError, "ML-G-22KT-91.9-Y"):
+			re.validate_refinery_flow()
+
+	def test_split_rounded_adds_up_to_its_total(self):
+		"""Review GK-JPR1586-LOSS-ROUNDING-002: 0.002 split three ways is not 3 x 0.001."""
+		self.assertEqual(
+			split_rounded(0.002, {"a": 1, "b": 1, "c": 1}),
+			{"a": 0.001, "b": 0.001, "c": 0.0},
+		)
+		shares = split_rounded(0.17, {"a": 0.628, "b": 7.75, "c": 29.068, "d": 42.639})
+		self.assertEqual(flt(sum(shares.values()), 3), 0.17)
+		self.assertTrue(all(v >= 0 for v in shares.values()))
+		self.assertEqual(split_rounded(0, {"a": 1}), {"a": 0.0})
+		self.assertEqual(split_rounded(1.0, {"a": 0, "b": 0}), {"a": 0.0, "b": 0.0})
+
+	def test_stored_loss_shares_add_up_at_both_levels(self):
+		"""0.002 g over three equal consolidated batches, each of three equal sources: the
+		batch shares add up to 0.002 and each batch's source shares to that batch's share."""
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.refining_loss = 0.002
+		re.append(
+			"material_items",
+			{"item_code": "ML-G-18KT-75.4-P", "qty": 9.0, "purity": "75.4"},
+		)
+		re.append(
+			"gold_recovery_details",
+			{"purity_percentage": 75.4, "loss_weight": 0.002},
+		)
+		for batch in ("CB-1", "CB-2", "CB-3"):
+			for i in range(3):
+				re.append(
+					"batch_tracking",
+					{
+						"name": f"{batch}-{i}",
+						"tracking_type": "Consolidation",
+						"source_batch": f"{batch}-SRC-{i}",
+						"source_qty": 1.0,
+						"output_batch": batch,
+						"output_item": "ML-G-18KT-75.4-P",
+						"output_qty": 3.0,
+					},
+				)
+
+		batch_loss = {}
+		row_loss = {}
+		real_get_value = frappe.db.get_value
+
+		def get_value(doctype, *args, **kwargs):
+			if doctype == "Attribute Value":
+				return 75.4
+			return real_get_value(doctype, *args, **kwargs)
+
+		def set_value(doctype, name, field, value, *args, **kwargs):
+			self.assertEqual((doctype, field), ("Batch", "custom_refining_loss"))
+			batch_loss[name] = value
+
+		def db_set(row, field, value, *args, **kwargs):
+			row_loss[row.name] = (row.output_batch, value)
+
+		with (
+			patch.object(re_module.frappe.db, "get_value", side_effect=get_value),
+			patch.object(re_module.frappe.db, "set_value", side_effect=set_value),
+			patch(
+				"frappe.model.document.Document.db_set",
+				autospec=True,
+				side_effect=db_set,
+			),
+		):
+			re._record_loss_on_consolidated_batches()
+
+		self.assertEqual(flt(sum(batch_loss.values()), 3), 0.002)
+		for batch, loss in batch_loss.items():
+			sources = [v for b, v in row_loss.values() if b == batch]
+			self.assertEqual(len(sources), 3)
+			self.assertEqual(flt(sum(sources), 3), flt(loss, 3))
+			self.assertTrue(all(v >= 0 for v in sources))
