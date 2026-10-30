@@ -155,6 +155,26 @@ def get_source_warehouse(department, refining_type):
 	)
 
 
+def get_refinery_department(company):
+	"""The company's Refinery department: its one enabled leaf Department named like "Refin%"
+	(e.g. "Refinery - KGJPL"), found the way _get_central_rm_warehouse finds Central. None when
+	the company has none or more than one, so the operator picks it."""
+	if not company:
+		return None
+	names = frappe.get_all(
+		"Department",
+		filters={
+			"company": company,
+			"is_group": 0,
+			"disabled": 0,
+			"name": ["like", "Refin%"],
+		},
+		pluck="name",
+		limit=2,
+	)
+	return names[0] if len(names) == 1 else None
+
+
 @frappe.whitelist()
 def resolve_refining_defaults(company=None, department=None, refining_type=None):
 	"""What a Refining Entry fetches from its company, Source Department and type.
@@ -163,30 +183,24 @@ def resolve_refining_defaults(company=None, department=None, refining_type=None)
 	(which stays authoritative):
 
 	* ``is_external`` — ticked for EXTERNAL_REFINING_COMPANIES, else None (leave it as set).
-	* ``refining_department`` — the Source Department's configured Refinery Department.
+	* ``refining_department`` — the company's Refinery department (get_refinery_department).
 	* ``refinery_flow`` — whether that department runs the Refinery Flow.
 	* ``warehouse`` / ``warehouse_type`` — the Source Department's warehouse for the type.
 	"""
 	out = {
 		"is_external": 1 if is_external_refining_company(company) else None,
-		"refining_department": None,
+		"refining_department": get_refinery_department(company),
 		"refinery_flow": 0,
 		"warehouse": None,
 		"warehouse_type": SOURCE_WAREHOUSE_TYPE.get(refining_type),
 	}
 	if department:
-		dept = (
-			frappe.db.get_value(
-				"Department",
-				department,
-				["custom_refinery_department", "custom_enable_refinery_flow"],
-				as_dict=True,
+		out["refinery_flow"] = cint(
+			frappe.get_meta("Department").has_field("custom_enable_refinery_flow")
+			and frappe.db.get_value(
+				"Department", department, "custom_enable_refinery_flow"
 			)
-			if frappe.get_meta("Department").has_field("custom_refinery_department")
-			else None
-		) or {}
-		out["refining_department"] = dept.get("custom_refinery_department")
-		out["refinery_flow"] = cint(dept.get("custom_enable_refinery_flow"))
+		)
 		out["warehouse"] = get_source_warehouse(department, refining_type)
 	return out
 
@@ -1286,7 +1300,7 @@ class RefiningEntry(Document):
 				)
 
 	def set_refining_defaults(self):
-		"""Refinery Department and Source Warehouse from the Source Department.
+		"""The company's Refinery Department, and the Source Warehouse from the Source Department.
 
 		The Source Warehouse follows the refining type (SOURCE_WAREHOUSE_TYPE): Scrap from
 		the department's Scrap warehouse, Serial Number and Unused/Loose Material from its
@@ -1295,7 +1309,9 @@ class RefiningEntry(Document):
 		alike, and a warehouse of another department is refused. Multiple-department scrap
 		reads each department's warehouse instead, so it has none of its own."""
 		defaults = resolve_refining_defaults(
-			department=self.department, refining_type=self.refining_type
+			company=self.company,
+			department=self.department,
+			refining_type=self.refining_type,
 		)
 		if defaults["refining_department"]:
 			self.refining_department = defaults["refining_department"]

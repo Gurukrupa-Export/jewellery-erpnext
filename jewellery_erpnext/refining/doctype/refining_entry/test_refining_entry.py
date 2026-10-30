@@ -3907,8 +3907,7 @@ class TestRefineryFlow(IntegrationTestCase):
 			)
 			self.assertEqual(defaults["warehouse"], warehouse, refining_type)
 
-	def test_refinery_department_comes_from_the_source_department(self):
-		self._set_department(custom_refinery_department="Refinery - T")
+	def test_refinery_department_is_the_companys_refinery(self):
 		re = frappe.new_doc("Refining Entry")
 		re.refining_type = REFINING_TYPE_UNUSED
 		re.company = "Test_Company"
@@ -3927,9 +3926,7 @@ class TestRefineryFlow(IntegrationTestCase):
 
 	def test_refinery_flow_sends_all_the_scrap(self):
 		loss_entry()
-		self._set_department(
-			custom_enable_refinery_flow=1, custom_refinery_department="Refinery - T"
-		)
+		self._set_department(custom_enable_refinery_flow=1)
 		re = self._scrap_entry()
 		re.multiple_operation = 1
 		re.save()
@@ -4078,9 +4075,7 @@ class TestRefineryFlow(IntegrationTestCase):
 		item's quantity onto another keeps the entry total equal to the warehouse total but
 		leaves the first item behind, so it is refused."""
 		loss_entry()
-		self._set_department(
-			custom_enable_refinery_flow=1, custom_refinery_department="Refinery - T"
-		)
+		self._set_department(custom_enable_refinery_flow=1)
 		re = self._scrap_entry()
 		re.save()
 		rows = {row.item_code: row for row in re.material_items}
