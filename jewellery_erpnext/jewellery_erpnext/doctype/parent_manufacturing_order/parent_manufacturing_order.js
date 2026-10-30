@@ -507,7 +507,7 @@ function action_message(frm, action, detail) {
 	if (action === "Hold") return hold_message(frm);
 	if (action === "Open") return open_message();
 	if (action === "Request Close" || action === "Request Hold") return request_message(action, detail);
-	if (action === "Withdraw Request") return withdraw_message(frm);
+	if (action === "Withdraw Request") return withdraw_message(frm, detail);
 	return close_message(frm);
 }
 
@@ -525,7 +525,13 @@ function request_message(action, detail) {
 	);
 }
 
-function withdraw_message(frm) {
+function withdraw_message(frm, detail) {
+	if (detail && detail.resumes_close) {
+		return __(
+			"Withdraw the {0} of this Parent Manufacturing Order? Its Close request continues: its work orders can still only come back to a Close / Hold Request Department.",
+			[__(frm.doc.workflow_state)]
+		);
+	}
 	return __(
 		"Withdraw the {0} of this Parent Manufacturing Order? Its work orders can move to any department or employee again.",
 		[__(frm.doc.workflow_state)]

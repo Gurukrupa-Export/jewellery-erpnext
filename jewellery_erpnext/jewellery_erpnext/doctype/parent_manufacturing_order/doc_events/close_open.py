@@ -438,34 +438,51 @@ def _holding_departments(docs):
 	return sorted(d for d in departments if d)
 
 
-def _latest_request(pmo_name):
-	"""The PMO's latest Request Close / Request Hold row (who asked and when), or None."""
+def _active_requests(pmo_name):
+	"""{Request Close / Request Hold: its row (who asked and when)} for the PMO's requests still
+	pending, replayed from its Hold / Open / Close Reasons in order.
+
+	The latest request row is not enough: a Hold request made during a Close request and then
+	withdrawn (or held and opened) leaves the Close request pending under a later Hold row. A
+	request is pending from its row until it is withdrawn (the newest one goes), a Hold
+	fulfils a pending Hold request, or a Close ends them all."""
 	rows = frappe.get_all(
 		STATUS_REASONS_DOCTYPE,
 		filters={
 			"parenttype": PMO,
 			"parent": pmo_name,
 			"parentfield": "status_reasons",
-			"status": ["in", REQUEST_ACTIONS],
 		},
 		fields=["status", "action_by", "action_on"],
-		order_by="idx desc",
-		limit=1,
+		order_by="idx asc",
 	)
-	return rows[0] if rows else None
+	pending = []
+	for row in rows:
+		if row.status in REQUEST_ACTIONS:
+			pending = [r for r in pending if r.status != row.status] + [row]
+		elif row.status == WITHDRAW:
+			pending = pending[:-1]
+		elif row.status == HOLD:
+			if pending and pending[-1].status == REQUEST_HOLD:
+				pending.pop()
+		elif row.status == CLOSE:
+			pending = []
+	return {r.status: r for r in pending}
 
 
 def _notify_pmo(pmo, subject, departments, reason=None):
-	"""Alert the departments holding the PMO's work orders and whoever raised its latest
-	Close / Hold request about a Hold, Open, Close or withdrawal -- never the user who did
-	it. Queued after commit, so an action that is rolled back alerts nobody."""
+	"""Alert the departments holding the PMO's work orders and whoever raised its pending
+	Close / Hold requests about a Hold, Open, Close or withdrawal -- never the user who did
+	it. Called before the action's own row is recorded, so a request the action ends or
+	withdraws still counts. Queued after commit, so an action that is rolled back alerts
+	nobody."""
 	actor = frappe.session.user
 	users = set()
 	for department_users in _department_users(departments).values():
 		users |= department_users
-	request = _latest_request(pmo.name)
-	if request and request.action_by:
-		users.add(request.action_by)
+	users.update(
+		r.action_by for r in _active_requests(pmo.name).values() if r.action_by
+	)
 	users.discard(actor)
 	if not users:
 		return
@@ -1044,7 +1061,11 @@ def check_action(pmo, action):
 		_refuse_open_after_close_started(doc.name, _snapshot(doc))
 		return {"reasons": reasons}
 	if action == WITHDRAW:
-		return {"reasons": reasons}
+		# A Hold request made during a Close request goes back to Close Requested.
+		return {
+			"reasons": reasons,
+			"resumes_close": bool(_snapshot(doc).get(RESUME_CLOSE_KEY)),
+		}
 	_refuse_while_job_runs(doc.name)
 	if action in REQUEST_ACTIONS:
 		return {"reasons": reasons, **_request_plan(doc, action)}
@@ -1206,7 +1227,7 @@ def enqueue_close(pmo, reason):
 				"{0} has no Stock Entries to cancel: close it with the Close action."
 			).format(doc.name)
 		)
-	_check_close_rights(plan)
+	_check_close_rights(doc, plan)
 
 	if doc.workflow_state != HOLD_STATE:
 		_hold_for_close(doc)
@@ -1342,13 +1363,18 @@ def _close_stock_plan(material_requests):
 	)
 
 
-def _check_close_rights(plan):
+def _check_close_rights(doc, plan):
 	"""Everything the job will need, before the first change: a missing right must not
-	surface half-way through the chain. Frappe's cancel needs both write and cancel."""
+	surface half-way through the chain. Frappe's cancel needs both write and cancel.
+
+	PMO write first: the final apply_workflow(Close) saves the PMO and checks it, but the
+	Hold before it (written directly for a user without the Hold transition) and the
+	cancellations would already be done by then."""
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 		validate_not_eod_sync_locked,
 	)
 
+	doc.check_permission("write")
 	for se in plan.entries:
 		for ptype in ("write", "cancel"):
 			frappe.has_permission("Stock Entry", ptype, se, throw=True)
@@ -1382,6 +1408,9 @@ def _close_with_stock(pmo, requested_by):
 				pmo, requested_by, _("{0} is already Closed.").format(pmo), ok=True
 			)
 			return
+		# Re-checked for the job: a right taken away since the Close was queued stops it before
+		# the first reopen or cancel.
+		doc.check_permission("write")
 		_refuse_unless_ready(
 			pmo, CLOSE, _pmo_documents(pmo, CLOSE, lock=False), stock=False
 		)
@@ -1764,7 +1793,13 @@ def _row_pmos(doc, table):
 
 def refuse_department_ir_while_requested(doc, table="department_ir_operation"):
 	"""Department IR validate: a requested PMO's work orders are issued only to a Close /
-	Hold Request Department. A Receive (taking them in) always goes through."""
+	Hold Request Department. A Receive (taking them in) always goes through.
+
+	The cutoff is the request's commit: an Issue that passed validation before it is not
+	refused afterwards (like an End Transit receipt of a transfer issued before it). Nothing
+	is frozen by a request, so that work order simply counts as not back yet --
+	notify_ready_requests waits for it -- and has to come back like any other. No PMO lock is
+	taken here: IR submits lock MOP -> MWO first, and a late PMO lock would invert the order."""
 	if doc.get("type") != "Issue" or cint(doc.docstatus) == 2:
 		return
 	requested = requested_pmos(_row_pmos(doc, table))
@@ -1841,7 +1876,11 @@ def notify_ready_requests(pmo_names):
 			name, target, _pmo_documents(name, target, lock=False), stock=False
 		):
 			continue
-		request = _latest_request(name)
+		# The request this state waits on: a Close request that resumed after a Hold request
+		# belongs to whoever made the Close request, not the later Hold request.
+		request = _active_requests(name).get(
+			REQUEST_CLOSE if target == CLOSE else REQUEST_HOLD
+		)
 		if not request or not request.action_by:
 			continue
 		if target == CLOSE:

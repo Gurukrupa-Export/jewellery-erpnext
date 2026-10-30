@@ -136,6 +136,7 @@ class _FakePMO(frappe._dict):
 		)
 		self.flags = frappe._dict(flags or {})
 		self.db_set = MagicMock()
+		self.check_permission = MagicMock()
 		self.add_comment = MagicMock()
 		self.reload = MagicMock()
 		self.get_doc_before_save = lambda: before
@@ -1287,7 +1288,7 @@ class TestCheckActionAndEnqueue(_Base):
 			patch("frappe.msgprint"),
 		):
 			close_open.enqueue_close("PMO-1", " Customer cancelled ")
-		rights.assert_called_once_with(self.PLAN)
+		rights.assert_called_once_with(doc, self.PLAN)
 		# Its own Hold is part of the Close: marked internal, so it takes no reason or row.
 		apply.assert_called_once_with(doc, "Hold")
 		self.assertEqual(internal, [True])
@@ -1329,6 +1330,48 @@ class TestCheckActionAndEnqueue(_Base):
 		self.assertEqual(_stored_snapshot(doc)["close"]["cancelled"], ["SE-9"])
 
 
+class TestClosePermission(_Base):
+	"""PMO write is checked before the queued Close changes anything (review finding 003)."""
+
+	def test_a_user_who_cannot_write_the_pmo_is_refused_before_the_hold(self):
+		doc = _FakePMO(state="Close Requested")
+		doc.check_permission.side_effect = frappe.PermissionError("no write")
+		plan = frappe._dict(entries=["SE-3"], stopped=[])
+		with (
+			patch(f"{CO}.frappe.has_permission") as has_permission,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.validate_not_eod_sync_locked"
+			),
+		):
+			with self.assertRaises(frappe.PermissionError):
+				close_open._check_close_rights(doc, plan)
+		doc.check_permission.assert_called_once_with("write")
+		has_permission.assert_not_called()
+
+	def test_enqueue_close_refused_without_pmo_write_changes_nothing(self):
+		doc = _FakePMO(state="Close Requested")
+		doc.check_permission.side_effect = frappe.PermissionError("no write")
+		with (
+			patch("frappe.get_doc", return_value=doc),
+			patch(f"{CO}._valid_reason", return_value="Customer cancelled"),
+			patch(f"{CO}._require_action"),
+			patch(f"{CO}._refuse_while_job_runs"),
+			patch(f"{CO}._pmo_documents", return_value=_docs()),
+			patch(f"{CO}._refuse_unless_ready"),
+			patch(
+				f"{CO}._close_stock_plan",
+				return_value=frappe._dict(entries=["SE-3"], stopped=[]),
+			),
+			patch(f"{CO}._hold_for_close") as hold,
+			patch("frappe.enqueue") as enqueue,
+		):
+			with self.assertRaises(frappe.PermissionError):
+				close_open.enqueue_close("PMO-1", "Customer cancelled")
+		hold.assert_not_called()
+		enqueue.assert_not_called()
+		doc.db_set.assert_not_called()
+
+
 class TestCloseJob(_Base):
 	def _run(self, doc, steps, cancel_error=None):
 		request, entry = MagicMock(), MagicMock()
@@ -1363,6 +1406,21 @@ class TestCloseJob(_Base):
 			commit=commit,
 			rollback=rollback,
 		)
+
+	def test_a_write_right_revoked_after_queueing_stops_before_any_change(self):
+		doc = _FakePMO(
+			state="Hold", snapshot={"close": {"reason": "Customer cancelled"}}
+		)
+		doc.check_permission.side_effect = frappe.PermissionError("no write")
+		r = self._run(doc, [("reopen", "MR-2"), ("cancel", "SE-3"), None])
+		r.request.update_status.assert_not_called()
+		r.entry.cancel.assert_not_called()
+		r.record.assert_not_called()
+		r.apply.assert_not_called()
+		r.commit.assert_not_called()
+		message = r.report.call_args.args[2]
+		self.assertIn("stopped before changing anything", message)
+		self.assertFalse(r.report.call_args.kwargs["ok"])
 
 	def test_reopens_then_cancels_one_per_transaction_then_closes(self):
 		doc = _FakePMO(
@@ -2160,8 +2218,10 @@ class TestRequestNotifications(_Base):
 				return_value={"Waxing - T": {"waxer@example.com", me}},
 			) as users,
 			patch(
-				f"{CO}._latest_request",
-				return_value=frappe._dict(action_by="order@example.com"),
+				f"{CO}._active_requests",
+				return_value={
+					"Request Close": frappe._dict(action_by="order@example.com")
+				},
 			),
 			patch(f"{CO}.enqueue_create_notification") as notify,
 		):
@@ -2178,16 +2238,20 @@ class TestRequestNotifications(_Base):
 	def test_nobody_to_alert_sends_nothing(self):
 		with (
 			patch(f"{CO}._department_users", return_value={}),
-			patch(f"{CO}._latest_request", return_value=None),
+			patch(f"{CO}._active_requests", return_value={}),
 			patch(f"{CO}.enqueue_create_notification") as notify,
 		):
 			close_open._notify_pmo(_FakePMO(), "PMO-1 is on Hold.", [])
 		notify.assert_not_called()
 
-	def test_the_latest_request_row_is_read(self):
-		row = frappe._dict(status="Request Close", action_by="order@example.com")
-		with patch("frappe.get_all", return_value=[row]) as get_all:
-			self.assertIs(close_open._latest_request("PMO-1"), row)
+	def _replay(self, *rows):
+		"""_active_requests over real reason rows: (status, action_by, action_on)."""
+		history = [
+			frappe._dict(status=status, action_by=user, action_on=on)
+			for status, user, on in rows
+		]
+		with patch("frappe.get_all", return_value=history) as get_all:
+			active = close_open._active_requests("PMO-1")
 		self.assertEqual(get_all.call_args.args[0], "PMO Status Reason")
 		self.assertEqual(
 			get_all.call_args.kwargs["filters"],
@@ -2195,10 +2259,76 @@ class TestRequestNotifications(_Base):
 				"parenttype": "Parent Manufacturing Order",
 				"parent": "PMO-1",
 				"parentfield": "status_reasons",
-				"status": ["in", ("Request Close", "Request Hold")],
 			},
 		)
-		self.assertEqual(get_all.call_args.kwargs["order_by"], "idx desc")
+		self.assertEqual(get_all.call_args.kwargs["order_by"], "idx asc")
+		return {action: (r.action_by, r.action_on) for action, r in active.items()}
+
+	def test_a_close_request_survives_a_withdrawn_hold_request(self):
+		"""A asks to Close, B asks to Hold and withdraws: the Close request is still A's."""
+		self.assertEqual(
+			self._replay(
+				("Request Close", "a@example.com", "10:00"),
+				("Request Hold", "b@example.com", "10:05"),
+				("Withdraw Request", "b@example.com", "10:10"),
+			),
+			{"Request Close": ("a@example.com", "10:00")},
+		)
+
+	def test_a_close_request_survives_a_hold_and_its_open(self):
+		self.assertEqual(
+			self._replay(
+				("Request Close", "a@example.com", "10:00"),
+				("Request Hold", "b@example.com", "10:05"),
+				("Hold", "b@example.com", "10:20"),
+				("Open", "b@example.com", "11:00"),
+			),
+			{"Request Close": ("a@example.com", "10:00")},
+		)
+
+	def test_a_hold_request_is_pending_until_the_hold(self):
+		self.assertEqual(
+			self._replay(
+				("Request Close", "a@example.com", "10:00"),
+				("Request Hold", "b@example.com", "10:05"),
+			),
+			{
+				"Request Close": ("a@example.com", "10:00"),
+				"Request Hold": ("b@example.com", "10:05"),
+			},
+		)
+
+	def test_finished_requests_leave_nothing(self):
+		cases = {
+			"withdrawn": (
+				("Request Close", "a@example.com", "10:00"),
+				("Withdraw Request", "a@example.com", "10:05"),
+				("Hold", "c@example.com", "12:00"),
+			),
+			"closed": (
+				("Request Close", "a@example.com", "10:00"),
+				("Request Hold", "b@example.com", "10:05"),
+				("Hold", "b@example.com", "10:20"),
+				("Close", "a@example.com", "12:00"),
+			),
+			"no request ever": (
+				("Hold", "c@example.com", "09:00"),
+				("Open", "c@example.com", "09:30"),
+			),
+		}
+		for label, rows in cases.items():
+			with self.subTest(label):
+				self.assertEqual(self._replay(*rows), {})
+
+	def test_a_newer_close_request_replaces_an_older_one(self):
+		self.assertEqual(
+			self._replay(
+				("Request Close", "a@example.com", "10:00"),
+				("Withdraw Request", "a@example.com", "10:05"),
+				("Request Close", "c@example.com", "11:00"),
+			),
+			{"Request Close": ("c@example.com", "11:00")},
+		)
 
 	def test_holding_departments_come_from_the_current_operations(self):
 		docs = _docs(
@@ -2278,7 +2408,7 @@ class TestReadyCheck(_Base):
 			),
 			patch(f"{CO}._pmo_documents", return_value=_docs()) as documents,
 			patch(f"{CO}._problem_list", side_effect=lambda n, *a, **k: problems[n]),
-			patch(f"{CO}._latest_request", return_value=request),
+			patch(f"{CO}._active_requests", return_value=request),
 			patch(f"{CO}.enqueue_create_notification") as notify,
 		):
 			close_open.notify_ready_requests(["PMO-1", "PMO-2"])
@@ -2289,7 +2419,8 @@ class TestReadyCheck(_Base):
 			action_by="order@example.com", action_on="2026-10-29 12:00:00"
 		)
 		documents, notify = self._notify_ready(
-			{"PMO-1": [], "PMO-2": [("department", "elsewhere")]}, request
+			{"PMO-1": [], "PMO-2": [("department", "elsewhere")]},
+			{"Request Close": request},
 		)
 		self.assertEqual(
 			documents.call_args_list,
@@ -2307,8 +2438,35 @@ class TestReadyCheck(_Base):
 		)
 
 	def test_no_requester_no_alert(self):
-		_documents, notify = self._notify_ready({"PMO-1": [], "PMO-2": []}, None)
+		_documents, notify = self._notify_ready({"PMO-1": [], "PMO-2": []}, {})
 		notify.assert_not_called()
+
+	def test_a_resumed_close_alerts_the_close_requester_not_the_hold_requester(self):
+		"""A asks to Close, B asks to Hold and withdraws: PMO-1 is ready -> A, with A's time.
+		PMO-2 (Hold Requested) has only the Hold request pending -> B."""
+		history = [
+			frappe._dict(status=s, action_by=u, action_on=t)
+			for s, u, t in (
+				("Request Close", "a@example.com", "2026-10-29 10:00:00"),
+				("Request Hold", "b@example.com", "2026-10-29 10:05:00"),
+				("Withdraw Request", "b@example.com", "2026-10-29 10:10:00"),
+			)
+		]
+		with (
+			patch(f"{CO}.requested_pmos", return_value={"PMO-1": "Close Requested"}),
+			patch(f"{CO}._pmo_documents", return_value=_docs()),
+			patch(f"{CO}._problem_list", return_value=[]),
+			patch(
+				"frappe.get_all",
+				side_effect=_keyed_get_all({"PMO Status Reason": history}),
+			),
+			patch(f"{CO}.enqueue_create_notification") as notify,
+		):
+			close_open.notify_ready_requests(["PMO-1"])
+		(alert_call,) = notify.call_args_list
+		self.assertEqual(alert_call.args[0], "a@example.com")
+		self.assertIn("2026-10-29 10:00:00", alert_call.args[1]["subject"])
+		self.assertNotIn("10:05", alert_call.args[1]["subject"])
 
 	def test_queued_after_commit_once_per_pmo(self):
 		with patch("frappe.enqueue") as enqueue:
@@ -2381,3 +2539,24 @@ class TestWorkflowPatch(_Base):
 			("Close Requested", "Request Hold", "Hold Requested", self.wf.HOLD_TEAM),
 			self.wf.TRANSITIONS,
 		)
+
+
+class TestWithdrawDialog(_Base):
+	"""check_action(Withdraw Request) tells the form whether the Close request resumes."""
+
+	def test_resumes_close_follows_the_snapshot(self):
+		for snapshot, expected in (
+			({close_open.RESUME_CLOSE_KEY: 1}, True),
+			(None, False),
+		):
+			with self.subTest(snapshot=snapshot):
+				doc = _FakePMO(state="Hold Requested", snapshot=snapshot)
+				with (
+					patch("frappe.get_doc", return_value=doc),
+					patch(f"{CO}._require_action"),
+					patch(f"{CO}._configured_reasons", return_value=["Changed plan"]),
+				):
+					plan = close_open.check_action("PMO-1", "Withdraw Request")
+				self.assertEqual(
+					plan, {"reasons": ["Changed plan"], "resumes_close": expected}
+				)
