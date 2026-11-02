@@ -490,8 +490,17 @@ function set_html(frm) {
 	});
 }
 
-function reason_field(reasons) {
-	// The reasons MOP Settings lists for the action; one has to be chosen.
+function reason_field(reasons, request_reason) {
+	// The reasons MOP Settings lists for the action; one has to be chosen. A Close of a Close
+	// Requested PMO takes its Close request's reason instead: shown, nothing to choose.
+	if (request_reason) {
+		return {
+			fieldtype: "HTML",
+			options: `<p><b>${__("Reason")}:</b> ${frappe.utils.escape_html(
+				request_reason
+			)} <span class="text-muted">(${__("from the Close request")})</span></p>`,
+		};
+	}
 	return {
 		fieldname: "reason",
 		fieldtype: "Select",
@@ -569,7 +578,7 @@ function ask_reason(frm, action, reasons, reject, detail) {
 				fieldtype: "HTML",
 				options: `<p>${action_message(frm, action, detail)}</p>${request_detail_html(detail)}`,
 			},
-			reason_field(reasons),
+			reason_field(reasons, detail && detail.request_reason),
 		],
 		primary_action_label: __("Yes"),
 		primary_action(values) {
@@ -654,7 +663,7 @@ function ask_close_with_stock(frm, plan, reject) {
 						"It is on Hold until then. If a cancel fails it stays on Hold with what was done, and Close carries on from there."
 					)}</p>`,
 			},
-			reason_field(plan.reasons || []),
+			reason_field(plan.reasons || [], plan.request_reason),
 		],
 		primary_action_label: __("Cancel Entries and Close"),
 		primary_action(values) {

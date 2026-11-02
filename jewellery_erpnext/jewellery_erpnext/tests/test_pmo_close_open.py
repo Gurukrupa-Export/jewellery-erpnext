@@ -804,6 +804,7 @@ class TestProblems(_Base):
 		departments=(),
 		drafts=(),
 		kinds=False,
+		held=None,
 	):
 		def _stock_entry(*args, **kwargs):
 			if "outgoing_stock_entry" in (kwargs.get("filters") or {}):
@@ -819,6 +820,7 @@ class TestProblems(_Base):
 			patch(f"{CO}.close_hold_departments", return_value=list(departments)),
 			patch(f"{CO}._is_planning_department", return_value=False),
 			patch(f"{CO}._draft_transactions", return_value=list(drafts)),
+			patch(f"{CO}._held_statuses", return_value=dict(held or {})),
 			patch(
 				"frappe.get_all",
 				side_effect=_keyed_get_all(
@@ -860,7 +862,9 @@ class TestProblems(_Base):
 			mops=[_mop("MOP-1", "MWO-1", status="WIP")],
 			mwos=[_mwo("MWO-1", pointer="MOP-1")],
 		)
-		problems = self._problems("Hold", docs)
+		# A Hold freezes it as it is; a Close waits for it.
+		self.assertEqual(self._problems("Hold", docs), [])
+		problems = self._problems("Close", docs)
 		self.assertTrue(any("MOP-1 (MWO-1)" in p for p in problems), problems)
 		# The plain read still says WIP, the locked row says Finished: not in progress.
 		docs = _docs(
@@ -868,25 +872,33 @@ class TestProblems(_Base):
 			mwos=[_mwo("MWO-1", pointer="MOP-1")],
 		)
 		busy = [{"name": "MOP-1", "manufacturing_work_order": "MWO-1"}]
-		self.assertEqual(self._problems("Hold", docs, busy=busy), [])
+		self.assertEqual(self._problems("Close", docs, busy=busy), [])
 
-	def test_a_held_operation_is_not_in_progress_but_in_transit_is(self):
+	def test_a_held_operation_is_judged_by_its_status_before_the_hold(self):
 		docs = _docs(
 			mops=[_mop("MOP-1", "MWO-1", status="Hold")],
 			mwos=[_mwo("MWO-1", status="Hold", pointer="MOP-1")],
 		)
-		self.assertEqual(self._problems("Close", docs), [])
+		# Held while idle: not in progress.
+		self.assertEqual(
+			self._problems("Close", docs, held={"MOP-1": "Not Started"}), []
+		)
+		# Held while WIP: still in progress for a Close until it is opened and finished.
+		problems = self._problems("Close", docs, held={"MOP-1": "WIP"})
+		self.assertTrue(any("MOP-1 (MWO-1)" in p for p in problems), problems)
 		docs = _docs(
 			mops=[_mop("MOP-1", "MWO-1", department_ir_status="In-Transit")],
 			mwos=[_mwo("MWO-1", pointer="MOP-1")],
 		)
-		self.assertTrue(self._problems("Hold", docs))
+		self.assertEqual(self._problems("Hold", docs), [])
+		self.assertTrue(self._problems("Close", docs))
 
-	def test_a_pending_transfer_job_blocks(self):
+	def test_a_pending_transfer_job_blocks_a_close_not_a_hold(self):
 		docs = _docs(
 			mrs=[_mr("MR-1", "Material Transferred", docstatus=1, transfer="Pending")]
 		)
-		problems = self._problems("Hold", docs)
+		self.assertEqual(self._problems("Hold", docs), [])
+		problems = self._problems("Close", docs)
 		self.assertTrue(
 			any("MR-1" in p and "from reserve" in p for p in problems), problems
 		)
@@ -1242,7 +1254,9 @@ class TestCheckActionAndEnqueue(_Base):
 				frappe.ValidationError, "Choose one of the reasons"
 			):
 				close_open.enqueue_close("PMO-1", "Typed in by hand")
-		get_doc.assert_not_called()
+		# The PMO is read (a Close Requested one takes its request's reason), nothing changes.
+		get_doc.assert_called_once_with("Parent Manufacturing Order", "PMO-1")
+		doc.db_set.assert_not_called()
 		enqueue.assert_not_called()
 
 	def test_enqueue_close_holds_a_submitted_pmo_and_queues_the_job(self):
@@ -1333,6 +1347,7 @@ class TestClosePermission(_Base):
 		doc.check_permission.side_effect = frappe.PermissionError("no write")
 		with (
 			patch("frappe.get_doc", return_value=doc),
+			patch(f"{CO}._close_request_reason", return_value=None),
 			patch(f"{CO}._valid_reason", return_value="Customer cancelled"),
 			patch(f"{CO}._require_action"),
 			patch(f"{CO}._refuse_while_job_runs"),
@@ -2723,3 +2738,295 @@ class TestLegacyHoldRequestMigration(_Base):
 			wf._end_legacy_hold_requests()
 		sql.assert_not_called()
 		get_doc.assert_not_called()
+
+
+class TestBulkAction(_Base):
+	"""The list's Hold / Open / Close: one reason, the form's flow for each PMO."""
+
+	def _run(self, action, pmos, plans=None, refuse=None):
+		applied, queued = [], []
+		plans = plans or {}
+
+		def _apply(pmo, act, reason):
+			if refuse and pmo in refuse:
+				raise frappe.ValidationError(refuse[pmo])
+			applied.append((pmo, act, reason))
+
+		with (
+			patch(f"{CO}.action_reasons", return_value=["Customer cancelled"]),
+			patch(f"{CO}.apply_action", side_effect=_apply),
+			patch(
+				f"{CO}.check_action", side_effect=lambda pmo, act: plans.get(pmo, {})
+			),
+			patch(
+				f"{CO}.enqueue_close",
+				side_effect=lambda pmo, reason: queued.append((pmo, reason)),
+			),
+			patch("frappe.db.commit") as commit,
+			patch("frappe.db.rollback") as rollback,
+			patch("frappe.utils.get_link_to_form", side_effect=lambda dt, n: n),
+		):
+			result = close_open.apply_bulk_action(pmos, action, "Customer cancelled")
+		return result, applied, queued, commit, rollback
+
+	def test_close_runs_the_forms_path_for_each_pmo(self):
+		plans = {
+			"PMO-REQ": {"request": {"action": "Request Close"}},
+			"PMO-SE": {"entries": [frappe._dict(name="SE-1")]},
+		}
+		result, applied, queued, commit, _rollback = self._run(
+			"Close", ["PMO-OK", "PMO-REQ", "PMO-SE"], plans
+		)
+		self.assertEqual(
+			applied,
+			[
+				("PMO-OK", "Close", "Customer cancelled"),
+				("PMO-REQ", "Request Close", "Customer cancelled"),
+			],
+		)
+		self.assertEqual(queued, [("PMO-SE", "Customer cancelled")])
+		self.assertEqual(result["done"], ["PMO-OK"])
+		self.assertEqual(result["requested"], ["PMO-REQ"])
+		self.assertEqual(result["queued"], ["PMO-SE"])
+		self.assertEqual(commit.call_count, 3)
+		self.assertIn("1 Close Requested", result["summary"])
+
+	def test_hold_applies_once_per_pmo_with_the_same_reason(self):
+		result, applied, queued, _commit, _rollback = self._run(
+			"Hold", ["PMO-1", "PMO-2", "PMO-1"]
+		)
+		self.assertEqual(
+			applied,
+			[
+				("PMO-1", "Hold", "Customer cancelled"),
+				("PMO-2", "Hold", "Customer cancelled"),
+			],
+		)
+		self.assertEqual(queued, [])
+		self.assertEqual(result["done"], ["PMO-1", "PMO-2"])
+
+	def test_a_refused_pmo_is_rolled_back_and_the_others_still_go_through(self):
+		result, applied, _queued, commit, rollback = self._run(
+			"Hold",
+			["PMO-1", "PMO-2", "PMO-3"],
+			refuse={"PMO-2": "PMO-2 is Closed."},
+		)
+		self.assertEqual([a[0] for a in applied], ["PMO-1", "PMO-3"])
+		self.assertEqual(result["failed"], {"PMO-2": "PMO-2 is Closed."})
+		self.assertEqual(commit.call_count, 2)
+		rollback.assert_called_once_with()
+		self.assertIn("PMO-2 is Closed.", result["summary"])
+		self.assertFalse(frappe.flags.mute_messages)
+
+	def test_more_than_twenty_run_in_the_background(self):
+		pmos = [f"PMO-{i}" for i in range(21)]
+		with (
+			patch(f"{CO}.action_reasons", return_value=["Customer cancelled"]),
+			patch(f"{CO}._run_bulk_action") as run_now,
+			patch("frappe.enqueue") as enqueue,
+		):
+			result = close_open.apply_bulk_action(pmos, "Close", "Customer cancelled")
+		run_now.assert_not_called()
+		self.assertEqual(result, {"background": True, "count": 21})
+		kwargs = enqueue.call_args.kwargs
+		self.assertEqual(kwargs["pmos"], pmos)
+		self.assertEqual(kwargs["reason"], "Customer cancelled")
+		self.assertTrue(kwargs["enqueue_after_commit"])
+
+	def test_refused_over_the_limit_without_a_reason_or_for_another_action(self):
+		with patch(f"{CO}.action_reasons", return_value=["Customer cancelled"]):
+			with self.assertRaisesRegex(frappe.ValidationError, "at most 500"):
+				close_open.apply_bulk_action(
+					[f"PMO-{i}" for i in range(501)], "Hold", "Customer cancelled"
+				)
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "Choose one of the reasons"
+			):
+				close_open.apply_bulk_action(["PMO-1"], "Hold", "Something else")
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "cannot be done for several"
+			):
+				close_open.apply_bulk_action(
+					["PMO-1"], "Request Close", "Customer cancelled"
+				)
+		with patch(f"{CO}.action_reasons", return_value=[]):
+			with self.assertRaisesRegex(frappe.ValidationError, "There are no reasons"):
+				close_open.bulk_action_reasons("Hold")
+
+
+class TestHoldInProgress(_Base):
+	"""Hold has no readiness check: a WIP operation is frozen and put back by Open."""
+
+	def test_a_wip_operation_is_held_and_its_status_kept(self):
+		docs = _docs(
+			mops=[_mop("MOP-1", "MWO-1", status="WIP")],
+			mwos=[_mwo("MWO-1", pointer="MOP-1", department="Waxing - T")],
+		)
+		pmo = _FakePMO(state="Hold")
+		with (
+			patch(f"{CO}._pmo_documents", return_value=docs),
+			patch(f"{CO}.set_values_in_bulk") as bulk,
+			patch(f"{CO}._notify_pmo"),
+		):
+			close_open._hold(pmo, "Customer on hold")
+		self.assertIn(
+			call("Manufacturing Operation", ["MOP-1"], {"status": "Hold"}),
+			bulk.call_args_list,
+		)
+		self.assertEqual(_stored_snapshot(pmo)["mop"], {"MOP-1": "WIP"})
+
+	def test_held_statuses_come_from_the_snapshot_only_when_something_is_held(self):
+		held = {"MOP-1": _mop("MOP-1", "MWO-1", status="Hold")}
+		snapshot = json.dumps({"mop": {"MOP-1": "WIP"}})
+		with patch("frappe.db.get_value", return_value=snapshot) as get_value:
+			self.assertEqual(close_open._held_statuses("PMO-1", held), {"MOP-1": "WIP"})
+		get_value.assert_called_once_with(
+			"Parent Manufacturing Order", "PMO-1", "hold_snapshot"
+		)
+		idle = {"MOP-1": _mop("MOP-1", "MWO-1", status="WIP")}
+		with patch("frappe.db.get_value") as get_value:
+			self.assertEqual(close_open._held_statuses("PMO-1", idle), {})
+		get_value.assert_not_called()
+
+
+class TestCloseTakesTheRequestReason(_Base):
+	"""A Close of a Close Requested PMO finishes its request: the request's reason, no dialog
+	choice."""
+
+	REQUEST = frappe._dict(
+		status="Request Close", reason="close 1", action_by="a@example.com"
+	)
+
+	def test_the_close_request_reason_is_read_from_the_pending_request(self):
+		requested = _FakePMO(state="Close Requested")
+		with patch(
+			f"{CO}._active_requests", return_value={"Request Close": self.REQUEST}
+		):
+			self.assertEqual(close_open._close_request_reason(requested), "close 1")
+		with patch(f"{CO}._active_requests") as active:
+			self.assertIsNone(close_open._close_request_reason(_FakePMO()))
+		active.assert_not_called()
+
+	def test_the_history_reason_is_read(self):
+		with patch("frappe.get_all", return_value=[self.REQUEST]) as get_all:
+			close_open._active_requests("PMO-1")
+		self.assertIn("reason", get_all.call_args.kwargs["fields"])
+
+	def _apply(self, state, reason):
+		doc = _FakePMO(state=state, docstatus=1)
+		with (
+			patch("frappe.get_doc", return_value=doc),
+			patch(f"{CO}.get_transitions", return_value=[{"action": "Close"}]),
+			patch(
+				f"{CO}._active_requests", return_value={"Request Close": self.REQUEST}
+			),
+			patch(f"{CO}.action_reasons", return_value=["Customer cancelled"]),
+			patch(f"{CO}._refuse_while_job_runs"),
+			patch(f"{CO}.apply_workflow") as apply,
+		):
+			close_open.apply_action("PMO-1", "Close", reason)
+		return doc, apply
+
+	def test_close_of_a_close_requested_pmo_records_the_request_reason(self):
+		for sent in (None, "", "Something else"):
+			with self.subTest(sent=sent):
+				doc, apply = self._apply("Close Requested", sent)
+				apply.assert_called_once_with(doc, "Close")
+				self.assertEqual(doc.flags[close_open.REASON_FLAG], "close 1")
+
+	def test_close_of_a_submitted_pmo_still_needs_a_listed_reason(self):
+		doc, apply = self._apply("Submitted", "Customer cancelled")
+		self.assertEqual(doc.flags[close_open.REASON_FLAG], "Customer cancelled")
+		with self.assertRaisesRegex(
+			frappe.ValidationError, "Choose one of the reasons"
+		):
+			self._apply("Submitted", "Something else")
+
+	def test_check_close_returns_the_request_reason_without_configured_reasons(self):
+		doc = _FakePMO(state="Close Requested")
+		with (
+			patch("frappe.get_doc", return_value=doc),
+			patch(f"{CO}.get_transitions", return_value=[{"action": "Close"}]),
+			patch(f"{CO}._close_request_reason", return_value="close 1"),
+			patch(f"{CO}.action_reasons", return_value=[]) as listed,
+			patch(f"{CO}._refuse_while_job_runs"),
+			patch(f"{CO}._pmo_documents", return_value=_docs()),
+			patch(f"{CO}._refuse_unless_ready"),
+			patch(
+				f"{CO}._close_stock_plan",
+				return_value=frappe._dict(entries=[], stopped=[]),
+			),
+		):
+			plan = close_open.check_action("PMO-1", "Close")
+		listed.assert_not_called()
+		self.assertEqual(plan["request_reason"], "close 1")
+		self.assertEqual(plan["reasons"], [])
+
+	def test_the_queued_close_keeps_the_request_reason(self):
+		doc = _FakePMO(state="Close Requested")
+		with (
+			patch("frappe.get_doc", return_value=doc),
+			patch(f"{CO}._close_request_reason", return_value="close 1"),
+			patch(f"{CO}._require_action"),
+			patch(f"{CO}._refuse_while_job_runs"),
+			patch(f"{CO}._pmo_documents", return_value=_docs()),
+			patch(f"{CO}._refuse_unless_ready"),
+			patch(
+				f"{CO}._close_stock_plan",
+				return_value=frappe._dict(entries=["SE-1"], stopped=[]),
+			),
+			patch(f"{CO}._check_close_rights"),
+			patch(f"{CO}._hold_for_close"),
+			patch("frappe.enqueue"),
+			patch("frappe.msgprint"),
+		):
+			close_open.enqueue_close("PMO-1", None)
+		self.assertEqual(_stored_snapshot(doc)["close"]["reason"], "close 1")
+
+	def test_the_form_may_leave_the_reason_out(self):
+		"""The Close dialog of a Close Requested PMO sends {pmo, action} only: frappe.xcall
+		drops the undefined reason, so the endpoints must not require it."""
+		doc = _FakePMO(state="Close Requested", docstatus=1)
+		with (
+			patch("frappe.get_doc", return_value=doc),
+			patch(f"{CO}.get_transitions", return_value=[{"action": "Close"}]),
+			patch(
+				f"{CO}._active_requests", return_value={"Request Close": self.REQUEST}
+			),
+			patch(f"{CO}.action_reasons", return_value=["Customer cancelled"]),
+			patch(f"{CO}._refuse_while_job_runs"),
+			patch(f"{CO}.apply_workflow") as apply,
+		):
+			close_open.apply_action("PMO-1", "Close")
+		apply.assert_called_once_with(doc, "Close")
+		self.assertEqual(doc.flags[close_open.REASON_FLAG], "close 1")
+
+		queued = _FakePMO(state="Close Requested")
+		with (
+			patch("frappe.get_doc", return_value=queued),
+			patch(f"{CO}._close_request_reason", return_value="close 1"),
+			patch(f"{CO}._require_action"),
+			patch(f"{CO}._refuse_while_job_runs"),
+			patch(f"{CO}._pmo_documents", return_value=_docs()),
+			patch(f"{CO}._refuse_unless_ready"),
+			patch(
+				f"{CO}._close_stock_plan",
+				return_value=frappe._dict(entries=["SE-1"], stopped=[]),
+			),
+			patch(f"{CO}._check_close_rights"),
+			patch(f"{CO}._hold_for_close"),
+			patch("frappe.enqueue"),
+			patch("frappe.msgprint"),
+		):
+			close_open.enqueue_close("PMO-1")
+		self.assertEqual(_stored_snapshot(queued)["close"]["reason"], "close 1")
+
+		with (
+			patch("frappe.get_doc", return_value=_FakePMO(state="Submitted")),
+			patch(f"{CO}.get_transitions", return_value=[{"action": "Hold"}]),
+			patch(f"{CO}.action_reasons", return_value=["Customer on hold"]),
+		):
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "Choose one of the reasons"
+			):
+				close_open.apply_action("PMO-1", "Hold")
