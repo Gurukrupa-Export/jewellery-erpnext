@@ -59,23 +59,27 @@ def add_item_attributes(self):
 
 		if item_attributes:
 			self.attributes = []
+			metadata_by_attribute = {}
 			for row in item_attributes:
+				if row.item_attribute not in metadata_by_attribute:
+					metadata_by_attribute[row.item_attribute] = (
+						frappe.db.get_value(
+							"Item Attribute",
+							row.item_attribute,
+							["numeric_values", "from_range", "to_range", "increment"],
+							as_dict=True,
+						)
+						or {}
+					)
+				metadata = metadata_by_attribute[row.item_attribute]
 				self.append(
 					"attributes",
 					{
 						"attribute": row.item_attribute,
-						"numeric_values": frappe.db.get_value(
-							"Item Attribute", row.item_attribute, "numeric_values"
-						),
-						"from_range": frappe.db.get_value(
-							"Item Attribute", row.item_attribute, "from_range"
-						),
-						"to_range": frappe.db.get_value(
-							"Item Attribute", row.item_attribute, "to_range"
-						),
-						"increment": frappe.db.get_value(
-							"Item Attribute", row.item_attribute, "increment"
-						),
+						"numeric_values": metadata.get("numeric_values"),
+						"from_range": metadata.get("from_range"),
+						"to_range": metadata.get("to_range"),
+						"increment": metadata.get("increment"),
 					},
 				)
 
@@ -325,7 +329,13 @@ def set_attribute_and_value_in_description(self):
 def calculate_item_wt_details(doc, bom=None, item=None):
 	if isinstance(doc, str):
 		doc = json.loads(doc)
+	if "cad_weight" not in doc:
+		frappe.throw(_("CAD Weight is required to calculate estimated weights."))
 	settings = frappe.get_doc("Jewellery Settings")
+	if not flt(settings.cad_to_rpt):
+		frappe.throw(_("Cad to RPT Ratio must be non-zero in Jewellery Settings."))
+	if not flt(settings.rpt_to_wax):
+		frappe.throw(_("RPT to Wax Ratio must be non-zero in Jewellery Settings."))
 	doc["cad_to_rpt_ratio"] = settings.cad_to_rpt
 	doc["estimated_rpt_wt"] = flt(doc["cad_weight"]) / flt(settings.cad_to_rpt)
 	doc["rpt_to_wax_ratio"] = settings.rpt_to_wax
