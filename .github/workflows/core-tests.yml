@@ -88,6 +88,11 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item_save_corrections
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item_metadata_integration
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_item_rebuild
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_item_rebuild_db
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_item_lifecycle
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_not_allowed_attribute_values
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_data_export
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_foreign_attachments
