@@ -2334,6 +2334,37 @@ class TestRequestNotifications(_Base):
 			with self.subTest(label):
 				self.assertEqual(self._replay(*rows), {})
 
+	def test_a_migrated_hold_request_is_ended_by_the_upgrade_row(self):
+		"""Review GK-JPR1600-LEGACY-HISTORY-002: the patch ends a legacy pending Hold request
+		with its own Withdraw Request row, so the Close request under it is the one a later
+		Open drops, and a Hold-only request leaves nothing pending."""
+		from jewellery_erpnext.patches.create_pmo_close_open_workflow import (
+			LEGACY_HOLD_ENDED,
+		)
+
+		close_then_hold = (
+			("Request Close", "a@example.com", "10:00"),
+			("Request Hold", "b@example.com", "10:05"),
+			("Withdraw Request", "Administrator", LEGACY_HOLD_ENDED),
+		)
+		self.assertEqual(
+			self._replay(*close_then_hold),
+			{"Request Close": ("a@example.com", "10:00")},
+		)
+		self.assertEqual(
+			self._replay(
+				*close_then_hold, ("Withdraw Request", "c@example.com", "12:00")
+			),
+			{},
+		)
+		self.assertEqual(
+			self._replay(
+				("Request Hold", "b@example.com", "10:05"),
+				("Withdraw Request", "Administrator", LEGACY_HOLD_ENDED),
+			),
+			{},
+		)
+
 	def test_a_newer_close_request_replaces_an_older_one(self):
 		self.assertEqual(
 			self._replay(
@@ -2600,6 +2631,41 @@ class TestMakeCloseRequest(_Base):
 		)
 		apply.assert_not_called()
 
+	def test_a_hold_or_close_committed_meanwhile_refuses_the_stale_request(self):
+		"""Review GK-JPR1600-REQUEST-STATE-001: the request is checked again on the PMO row
+		re-read with a lock, so a newer Hold / Closed is not overwritten."""
+		for newer in ("Hold", "Closed"):
+			with self.subTest(newer=newer):
+				seen = _FakePMO(state="Submitted", docstatus=1)
+				locked = _FakePMO(state=newer, docstatus=1)
+				reads = []
+
+				def _get_doc(doctype, name, for_update=False):
+					reads.append(for_update)
+					return locked if for_update else seen
+
+				with (
+					patch("frappe.get_doc", side_effect=_get_doc),
+					patch(
+						f"{CO}.get_transitions",
+						side_effect=lambda d: [{"action": "Close"}],
+					),
+					patch(f"{CO}.action_reasons", return_value=["Customer cancelled"]),
+					patch(f"{CO}._refuse_while_job_runs"),
+					patch(f"{CO}._request") as request,
+					patch(f"{CO}._record_reason") as record,
+				):
+					with self.assertRaises(frappe.PermissionError):
+						close_open.apply_action(
+							"PMO-1", "Request Close", "Customer cancelled"
+						)
+				self.assertEqual(reads, [False, True])
+				request.assert_not_called()
+				record.assert_not_called()
+				seen.db_set.assert_not_called()
+				locked.db_set.assert_not_called()
+				locked.add_comment.assert_not_called()
+
 	def test_refused_unless_the_user_may_close_a_submitted_pmo_and_save_it(self):
 		cases = {
 			"no Close transition": dict(actions=("Hold",)),
@@ -2610,3 +2676,50 @@ class TestMakeCloseRequest(_Base):
 			with self.subTest(label):
 				with self.assertRaises(frappe.PermissionError):
 					self._apply(**case)
+
+
+class TestLegacyHoldRequestMigration(_Base):
+	"""The workflow patch ends each legacy pending Hold request with one system row."""
+
+	def test_each_hold_requested_pmo_gets_one_withdraw_row(self):
+		from jewellery_erpnext.patches import create_pmo_close_open_workflow as wf
+
+		inserted = []
+
+		def _get_doc(values):
+			row = MagicMock()
+			row.db_insert.side_effect = lambda: inserted.append(values)
+			return row
+
+		with (
+			patch("frappe.get_all", return_value=["PMO-1", "PMO-2"]) as get_all,
+			patch("frappe.db.sql", return_value=[("PMO-1", 3)]),
+			patch("frappe.get_doc", side_effect=_get_doc),
+			patch.object(wf, "now_datetime", return_value="2026-11-02 10:00:00"),
+		):
+			wf._end_legacy_hold_requests()
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"],
+			{"docstatus": 1, "workflow_state": "Hold Requested"},
+		)
+		self.assertEqual(
+			[(r["parent"], r["idx"]) for r in inserted], [("PMO-1", 4), ("PMO-2", 1)]
+		)
+		for row in inserted:
+			self.assertEqual(row["status"], "Withdraw Request")
+			self.assertEqual(row["reason"], wf.LEGACY_HOLD_ENDED)
+			self.assertEqual(row["action_by"], "Administrator")
+			self.assertEqual(row["docstatus"], 1)
+			self.assertEqual(row["parentfield"], "status_reasons")
+
+	def test_nothing_in_hold_requested_writes_nothing(self):
+		from jewellery_erpnext.patches import create_pmo_close_open_workflow as wf
+
+		with (
+			patch("frappe.get_all", return_value=[]),
+			patch("frappe.db.sql") as sql,
+			patch("frappe.get_doc") as get_doc,
+		):
+			wf._end_legacy_hold_requests()
+		sql.assert_not_called()
+		get_doc.assert_not_called()

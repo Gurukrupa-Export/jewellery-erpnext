@@ -1147,8 +1147,17 @@ def apply_action(pmo, action, reason):
 def _make_close_request(doc, reason):
 	"""Submitted -> Close Requested, without a workflow button: the user clicked Close and the
 	work orders are not back yet. Written directly, like _hold_for_close, by a user who may
-	Close the PMO (checked by _require_action) and save it."""
+	Close the PMO and save it.
+
+	The state is written with db_set, which -- unlike a workflow save -- does not compare the
+	row with the one the checks saw. So the PMO is re-read with its row locked (the parent
+	first, as a workflow save takes it; nothing is locked before it here) and every check is
+	made again on that: a Hold or Close another user committed meanwhile refuses the request
+	before any comment, reason row, alert or state write."""
+	doc = frappe.get_doc(PMO, doc.name, for_update=True)
+	_require_action(doc, REQUEST_CLOSE)
 	doc.check_permission("write")
+	_refuse_while_job_runs(doc.name)
 	_request(doc, REQUEST_CLOSE, reason)
 	doc.db_set("workflow_state", CLOSE_REQUESTED)
 	_record_reason(doc, REQUEST_CLOSE, reason)

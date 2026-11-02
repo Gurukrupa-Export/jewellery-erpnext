@@ -52,6 +52,7 @@ transition open to several roles has one row per role.
 """
 
 import frappe
+from frappe.utils import now_datetime
 
 WORKFLOW = "Parent Manufacturing Order"
 DOCTYPE = "Parent Manufacturing Order"
@@ -71,8 +72,12 @@ STATES = (
 	("Closed", "1", SM, "Danger"),
 	("Close Requested", "1", "All", "Info"),
 )
-# A state of the earlier request workflow, moved off by execute().
+# A state of the earlier request workflow, moved off by execute(). Its pending Hold request is
+# ended with an explicit row, so close_open._active_requests replays the history right.
 HOLD_REQUESTED = "Hold Requested"
+STATUS_REASON = "PMO Status Reason"
+WITHDRAW_REQUEST = "Withdraw Request"
+LEGACY_HOLD_ENDED = "Hold request ended: the Hold Requested state was removed"
 
 # close_open.RESUME_CLOSE_KEY: hold_snapshot carries it while a Close request is pending.
 RESUME_KEY = "resume_close_request"
@@ -164,7 +169,8 @@ def execute():
 	if not frappe.db.has_column(DOCTYPE, "workflow_state"):
 		return
 	# Hold Requested is gone: back to the Close request pending under it, else Submitted, and
-	# the pending-Close mark it carried is dropped with it.
+	# the pending-Close mark it carried is dropped with it. Its Hold request ends first.
+	_end_legacy_hold_requests()
 	frappe.db.sql(
 		"""UPDATE `tabParent Manufacturing Order`
 		SET workflow_state = IF(
@@ -192,3 +198,46 @@ def execute():
 		)""",
 		{"draft": valid[0], "submitted": valid[1], "cancelled": valid[2]},
 	)
+
+
+def _end_legacy_hold_requests():
+	"""Add a Withdraw Request row (Administrator, now) to each PMO still in Hold Requested.
+
+	Its history ends with a pending Request Hold; the PMO now leaves that state for Close
+	Requested or Submitted. Without an ending row, a later Open of the Close request would be
+	replayed as withdrawing the Hold request instead, and a Hold-only request would stay
+	pending for good -- its requester alerted on every later action. The original rows are
+	kept as they are. Only PMOs still in Hold Requested get a row, and the UPDATE that follows
+	moves them out, so a re-run adds nothing."""
+	pmos = frappe.get_all(
+		DOCTYPE,
+		filters={"docstatus": 1, "workflow_state": HOLD_REQUESTED},
+		pluck="name",
+	)
+	if not pmos:
+		return
+	last_idx = dict(
+		frappe.db.sql(
+			"""SELECT parent, MAX(idx) FROM `tabPMO Status Reason`
+			WHERE parenttype = %(doctype)s AND parentfield = 'status_reasons'
+				AND parent IN %(pmos)s
+			GROUP BY parent""",
+			{"doctype": DOCTYPE, "pmos": tuple(pmos)},
+		)
+	)
+	now = now_datetime()
+	for name in pmos:
+		frappe.get_doc(
+			{
+				"doctype": STATUS_REASON,
+				"parent": name,
+				"parenttype": DOCTYPE,
+				"parentfield": "status_reasons",
+				"idx": (last_idx.get(name) or 0) + 1,
+				"docstatus": 1,
+				"status": WITHDRAW_REQUEST,
+				"reason": LEGACY_HOLD_ENDED,
+				"action_by": "Administrator",
+				"action_on": now,
+			}
+		).db_insert()
