@@ -2098,7 +2098,17 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 					for r in doc.get("diamond_detail", [])
 				)
 				continue
-		if (
+		if self.sales_type == "Outwork" and d.is_customer_item:
+			# Outwork, customer-supplied stone: the stone itself is not charged, so
+			# Rate shows 0. Only the handling charge of the customer's Diamond Price
+			# List is billed, i.e. Amount = handling rate x weight in cts.
+			d.total_diamond_rate = 0
+			d.handling_rate = flt((latest or {}).get("outwork_handling_charges_rate"))
+			d.quantity_3 = round(d.quantity, 2)
+			d.diamond_rate_for_specified_quantity = round(
+				d.quantity * d.handling_rate, 2
+			)
+		elif (
 			self.company == "KG GK Jewellers Private Limited"
 			and ctx.customer_group == "Internal"
 		):
