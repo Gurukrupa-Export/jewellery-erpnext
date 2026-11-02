@@ -680,30 +680,31 @@ def set_specifications_for_modified_bom(self, fields_list):
 # 	)
 # 	return result
 
+
 @frappe.whitelist()
 def check_diamond_sieve_size_tolerance_value_exist(filters):
-    if isinstance(filters, str):
-        filters = frappe.parse_json(filters)
+	if isinstance(filters, str):
+		filters = frappe.parse_json(filters)
 
-    result = frappe.get_all(
-        "Attribute Value Diamond Sieve Size",
-        filters=filters,
-        fields=[
-            "name",
-            "parent",
-            "diamond_shape",
-            "diamond_quality",
-            "from_weight",
-            "to_weight",
-            "for_universal_value",
-        ],
-    )
+	result = frappe.get_all(
+		"Attribute Value Diamond Sieve Size",
+		filters=filters,
+		fields=[
+			"name",
+			"parent",
+			"diamond_shape",
+			"diamond_quality",
+			"from_weight",
+			"to_weight",
+			"for_universal_value",
+		],
+	)
 
-    return {
-        "site": frappe.local.site,
-        "filters_received": filters,
-        "result": result,
-    }
+	return {
+		"site": frappe.local.site,
+		"filters_received": filters,
+		"result": result,
+	}
 
 
 @frappe.whitelist()
@@ -832,6 +833,10 @@ def update_totals(parent_doctype, parent_doctype_name):
 	diamond_bom_amount = 0
 	for row in self.diamond_detail:
 		diamond_rate_for_specified_quantity = row.total_diamond_rate * row.quantity
+		if row.is_customer_item and not row.total_diamond_rate:
+			# Customer-supplied stone with a zero Rate (Outwork): only the handling
+			# charge is billed, so Amount = handling rate x weight in cts.
+			diamond_rate_for_specified_quantity = flt(row.handling_rate) * row.quantity
 		row.db_set(
 			"diamond_rate_for_specified_quantity", diamond_rate_for_specified_quantity
 		)
