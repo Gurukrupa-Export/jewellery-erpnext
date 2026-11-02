@@ -380,10 +380,10 @@ class TestParentManufacturingOrder(IntegrationTestCase):
 			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.get_item_type"
 		) as mock_get_item_type:
 
-			def side_effect(item_code):
+			def side_effect(item_code, *args):
 				if item_code == "G-TEST-GEM":
 					return "gemstone_item"
-				return real_get_item_type(item_code)
+				return real_get_item_type(item_code, *args)
 
 			mock_get_item_type.side_effect = side_effect
 
@@ -466,10 +466,10 @@ class TestParentManufacturingOrder(IntegrationTestCase):
 			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.get_item_type"
 		) as mock_get_item_type:
 
-			def side_effect(item_code):
+			def side_effect(item_code, *args):
 				if item_code == "G-TEST-GEM":
 					return "gemstone_item"
-				return real_get_item_type(item_code)
+				return real_get_item_type(item_code, *args)
 
 			mock_get_item_type.side_effect = side_effect
 

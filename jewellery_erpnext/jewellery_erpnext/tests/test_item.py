@@ -147,7 +147,7 @@ def _db_mock(
 	mock_db = MagicMock()
 	weights = weights or {}
 
-	def get_value(doctype, name, fieldname):
+	def get_value(doctype, name, fieldname, **kwargs):
 		if doctype == "Attribute Value":
 			if fieldname == "custom_batch_abbreviation":
 				return None if abbr is None else abbr.get(name)
@@ -244,14 +244,16 @@ class TestAddItemAttributes(IntegrationTestCase):
 		self._get_all = patcher.start()
 		self.addCleanup(patcher.stop)
 
-		def item_attr_value(doctype, name, fieldname):
+		def item_attr_value(doctype, name, fieldname, as_dict=False):
 			values = {
 				"numeric_values": 1,
 				"from_range": 1.0,
 				"to_range": 10.0,
 				"increment": 0.5,
 			}
-			return values.get(fieldname) if doctype == "Item Attribute" else None
+			if doctype != "Item Attribute":
+				return None
+			return frappe._dict({f: values.get(f) for f in fieldname})
 
 		db = patch.object(
 			item_events.frappe.db, "get_value", side_effect=item_attr_value
@@ -314,14 +316,12 @@ class TestAddItemAttributes(IntegrationTestCase):
 		item_events.add_item_attributes(doc)
 		self.assertEqual(doc.attributes, [])
 
-	def test_fetches_each_attribute_metric_in_a_separate_query(self):
-		# Pinned as-is (suspected flaw #13, performance): one get_value call per
-		# metric per attribute -- 4 calls each (numeric_values, from_range,
-		# to_range, increment) -- instead of a single multi-field fetch. The
-		# setUp's get_all yields 2 template attributes, so 8 calls total.
+	def test_fetches_each_attribute_in_a_single_query(self):
+		# One multi-field get_value per attribute (was 4 -- suspected flaw #13). The
+		# setUp's get_all yields 2 template attributes, so 2 calls total.
 		calls = []
 
-		def counting(doctype, name, fieldname):
+		def counting(doctype, name, fieldname, **kwargs):
 			calls.append(fieldname)
 			return None
 
@@ -330,7 +330,7 @@ class TestAddItemAttributes(IntegrationTestCase):
 				_item(has_variants=1, subcategory="Necklace", attributes=[])
 			)
 		self.assertEqual(
-			calls, ["numeric_values", "from_range", "to_range", "increment"] * 2
+			calls, [["numeric_values", "from_range", "to_range", "increment"]] * 2
 		)
 
 
@@ -480,7 +480,7 @@ class TestUomConversion(IntegrationTestCase):
 			_item(attributes=self._diamond_attrs(), uoms=[_uom("Gram")]), exists=False
 		)
 		self.assertEqual(_uom_pairs(doc.uoms), [("Gram", 1)])
-		db.exists.assert_called()
+		db.get_value.assert_called()
 
 	def test_no_attributes_is_a_no_op(self):
 		doc, db = self._run(_item(attributes=[]))
@@ -511,13 +511,11 @@ class TestAttributeWeightHelpers(IntegrationTestCase):
 	def test_diamond_weight_filters_use_normalised_attribute_keys(self):
 		captured = {}
 
-		def exists(doctype, filters):
+		def get_value(doctype, filters, fieldname, **kwargs):
 			captured["filters"] = filters
-			return True
+			return 0.05
 
-		with patch.object(
-			item_events.frappe.db, "exists", side_effect=exists
-		), patch.object(item_events.frappe.db, "get_value", return_value=0.05):
+		with patch.object(item_events.frappe.db, "get_value", side_effect=get_value):
 			doc = _item(
 				attributes=[
 					_attr("Diamond Type", "D-NAT"),
@@ -539,7 +537,7 @@ class TestAttributeWeightHelpers(IntegrationTestCase):
 		self.assertEqual(weight, 0.05)
 
 	def test_incomplete_diamond_set_returns_zero_without_a_lookup(self):
-		with patch.object(item_events.frappe.db, "exists") as exists:
+		with patch.object(item_events.frappe.db, "get_value") as get_value:
 			doc = _item(
 				attributes=[
 					_attr("Diamond Type", "D-NAT"),
@@ -552,18 +550,16 @@ class TestAttributeWeightHelpers(IntegrationTestCase):
 				),
 				0,
 			)
-		exists.assert_not_called()
+		get_value.assert_not_called()
 
 	def test_gemstone_weight_filters_use_normalised_attribute_keys(self):
 		captured = {}
 
-		def exists(doctype, filters):
+		def get_value(doctype, filters, fieldname, **kwargs):
 			captured["filters"] = filters
-			return True
+			return 0.02
 
-		with patch.object(
-			item_events.frappe.db, "exists", side_effect=exists
-		), patch.object(item_events.frappe.db, "get_value", return_value=0.02):
+		with patch.object(item_events.frappe.db, "get_value", side_effect=get_value):
 			doc = _item(
 				attributes=[
 					_attr("Gemstone Type", "Ruby"),
@@ -867,19 +863,18 @@ class TestBeforeInsert(IntegrationTestCase):
 		self.assertEqual(doc.has_batch_no, 1)
 		self.assertEqual(doc.has_serial_no, 1)
 
-	def test_consumables_repeats_queries_per_attribute(self):
-		# Pinned as-is (suspected flaw #13, performance): custom_batch_or_serial_no
-		# is fetched twice per attribute (and three times for a "Serial No"
-		# attribute -- check + if + elif), and the group_abbr query (whose input,
-		# item_group, is constant) runs once per attribute instead of once per doc.
+	def test_consumables_reads_each_lookup_once(self):
+		# custom_batch_or_serial_no is fetched once per attribute (was 2-3 -- check +
+		# if + elif), and the group_abbr query, whose input (item_group) is constant,
+		# once per doc rather than once per attribute (suspected flaw #13).
 		db = _db_mock(batch_or_serial={"Round": "Batch", "S": "Serial No"}, items=0)
 		qb = _CountingQB({"attribute_value": [(CONSUMABLES_GROUP,)], "abbr": [("CM",)]})
 		with patch.object(item_events.frappe, "qb", qb), patch.object(
 			item_events.frappe, "db", db
 		), patch.object(item_events, "datetime", _fixed_clock()):
 			item_events.before_insert(_consumable(_attr("Size", "S")), None)
-		self.assertEqual(db.get_value.call_count, 5)  # 2 for Batch + 3 for Serial No
-		self.assertEqual(qb.abbr_runs, 2)  # once per attribute
+		self.assertEqual(db.get_value.call_count, 2)  # once per attribute
+		self.assertEqual(qb.abbr_runs, 1)  # once per doc
 
 	def test_consumables_null_abbr_crashes_with_type_error(self):
 		# Pinned as-is (suspected flaw #15): the guard only checks for an empty

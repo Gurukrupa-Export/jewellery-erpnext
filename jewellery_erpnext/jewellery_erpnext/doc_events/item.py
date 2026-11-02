@@ -60,22 +60,23 @@ def add_item_attributes(self):
 		if item_attributes:
 			self.attributes = []
 			for row in item_attributes:
+				item_attribute = (
+					frappe.db.get_value(
+						"Item Attribute",
+						row.item_attribute,
+						["numeric_values", "from_range", "to_range", "increment"],
+						as_dict=1,
+					)
+					or {}
+				)
 				self.append(
 					"attributes",
 					{
 						"attribute": row.item_attribute,
-						"numeric_values": frappe.db.get_value(
-							"Item Attribute", row.item_attribute, "numeric_values"
-						),
-						"from_range": frappe.db.get_value(
-							"Item Attribute", row.item_attribute, "from_range"
-						),
-						"to_range": frappe.db.get_value(
-							"Item Attribute", row.item_attribute, "to_range"
-						),
-						"increment": frappe.db.get_value(
-							"Item Attribute", row.item_attribute, "increment"
-						),
+						"numeric_values": item_attribute.get("numeric_values"),
+						"from_range": item_attribute.get("from_range"),
+						"to_range": item_attribute.get("to_range"),
+						"increment": item_attribute.get("increment"),
 					},
 				)
 
@@ -111,8 +112,11 @@ def set_diamond_attribute_weight(self, attribute_list):
 				attribute_filters.update(
 					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
 				)
-		if frappe.db.exists("Diamond Weight", attribute_filters):
-			weight = frappe.db.get_value("Diamond Weight", attribute_filters, "weight")
+		# ignore=True as the frappe.db.exists this replaced: Diamond Weight is a custom
+		# DocType that a site may not have.
+		weight = frappe.db.get_value(
+			"Diamond Weight", attribute_filters, "weight", ignore=True
+		)
 	return weight or 0
 
 
@@ -143,8 +147,13 @@ def set_gemstone_attribute_weight(self, attribute_list):
 				attribute_filters.update(
 					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
 				)
-		if frappe.db.exists("Gemstone Weight", attribute_filters):
-			weight = frappe.db.get_value("Gemstone Weight", attribute_filters, "weight")
+		# No matching row keeps the 0 default; ignore=True as in set_diamond_attribute_weight.
+		weight = (
+			frappe.db.get_value(
+				"Gemstone Weight", attribute_filters, "weight", ignore=True
+			)
+			or weight
+		)
 	return weight
 
 
@@ -430,31 +439,30 @@ def before_insert(self, method):
 	elif " - V" in self.item_group and self.variant_of:
 		validate_attribute_value(self)
 	elif self.item_group in consumables_list and self.variant_of:
+		# Depends on item_group only: read on first use, then reused for every attribute.
+		group_abbr = None
 		for i in self.attributes:
-			if not frappe.db.get_value(
+			batch_or_serial_no = frappe.db.get_value(
 				"Attribute Value", i.attribute_value, "custom_batch_or_serial_no"
-			):
+			)
+			if not batch_or_serial_no:
 				frappe.throw(
 					_(
 						"Select one options for <b>{attribute_value}</b> in Attribute Value"
 					).format(attribute_value=i.attribute_value)
 				)
-			if (
-				frappe.db.get_value(
-					"Attribute Value", i.attribute_value, "custom_batch_or_serial_no"
-				)
-				== "Batch"
-			):
+			if batch_or_serial_no == "Batch":
 				batch_number = "GE{year_code}{month_code}{week_code}-CO".format(
 					year_code=year_code, month_code=month_code, week_code=week_code
 				)
 				# group_abbr = frappe.db.sql("""select abbr  from `tabItem Attribute Value` where attribute_value = {item_group}""".format(item_group=self.item_group),as_dict=1)
-				group_abbr = (
-					frappe.qb.from_(iav)
-					.select(iav.abbr)
-					.where(iav.attribute_value == self.item_group)
-					.run()
-				)
+				if group_abbr is None:
+					group_abbr = (
+						frappe.qb.from_(iav)
+						.select(iav.abbr)
+						.where(iav.attribute_value == self.item_group)
+						.run()
+					)
 				if not group_abbr:
 					frappe.throw(
 						_(
@@ -488,21 +496,17 @@ def before_insert(self, method):
 				self.create_new_batch = 1
 				self.is_stock_item = 1
 				self.include_item_in_manufacturing = 1
-			elif (
-				frappe.db.get_value(
-					"Attribute Value", i.attribute_value, "custom_batch_or_serial_no"
-				)
-				== "Serial No"
-			):
+			elif batch_or_serial_no == "Serial No":
 				self.has_serial_no = 1
 				self.is_stock_item = 1
 				self.include_item_in_manufacturing = 1
-				group_abbr = (
-					frappe.qb.from_(iav)
-					.select(iav.abbr)
-					.where(iav.attribute_value == self.item_group)
-					.run()
-				)
+				if group_abbr is None:
+					group_abbr = (
+						frappe.qb.from_(iav)
+						.select(iav.abbr)
+						.where(iav.attribute_value == self.item_group)
+						.run()
+					)
 				if not group_abbr:
 					frappe.throw(
 						_(

@@ -17,14 +17,31 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 
 class TrackingBom(Document):
 	def before_validate(self):
-		self._set_precision()
-		self._set_gemstone_price_list_type()
+		customer = self._get_customer_settings()
+		self._set_precision(customer)
+		self._set_gemstone_price_list_type(customer)
 
 	def validate(self):
 		self.calculate_weights()
 		self.calculate_rates()
 
-	def _set_precision(self):
+	def _get_customer_settings(self):
+		"""The customer's precision and gemstone price-list settings, read in one query."""
+		if not self.customer:
+			return None
+		return frappe.db.get_value(
+			"Customer",
+			self.customer,
+			[
+				"custom_consider_2_digit_for_bom",
+				"custom_consider_2_digit_for_diamond",
+				"custom_consider_2_digit_for_gemstone",
+				"custom_gemstone_price_list_type",
+			],
+			as_dict=1,
+		)
+
+	def _set_precision(self, precision_data):
 		"""Set precision values based on customer settings."""
 		if not self.customer:
 			self.doc_pricision = 3
@@ -32,16 +49,6 @@ class TrackingBom(Document):
 			self.gemstone_pricision = 3
 			return
 
-		precision_data = frappe.db.get_value(
-			"Customer",
-			self.customer,
-			[
-				"custom_consider_2_digit_for_bom",
-				"custom_consider_2_digit_for_diamond",
-				"custom_consider_2_digit_for_gemstone",
-			],
-			as_dict=1,
-		)
 		if precision_data:
 			self.doc_pricision = (
 				2 if precision_data.get("custom_consider_2_digit_for_bom") else 3
@@ -57,13 +64,13 @@ class TrackingBom(Document):
 			self.diamond_pricision = 3
 			self.gemstone_pricision = 3
 
-	def _set_gemstone_price_list_type(self):
+	def _set_gemstone_price_list_type(self, customer):
 		"""Set gemstone price list type from customer on all gemstone detail rows."""
 		if not self.customer:
 			return
 
-		gemstone_price_list_type = frappe.db.get_value(
-			"Customer", self.customer, "custom_gemstone_price_list_type"
+		gemstone_price_list_type = (customer or {}).get(
+			"custom_gemstone_price_list_type"
 		)
 
 		if gemstone_price_list_type:
