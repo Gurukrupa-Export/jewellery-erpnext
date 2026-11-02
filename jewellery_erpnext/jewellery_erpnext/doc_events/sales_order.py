@@ -3891,6 +3891,49 @@ def customer_approval_filter(doctype, txt, searchfield, start, page_len, filters
 
 OTHER_WEIGHT_INVOICE_ITEM = "Other Weight"
 
+# Outwork: these invoice item rows all show the same amount -- the sum of the Edit BOM
+# making (metal + finding), diamond and gemstone amounts over the order's items.
+# Compared case-insensitively: the item codes exist as e.g. "Subcontracting income".
+OUTWORK_CHARGE_INVOICE_ITEMS = (
+	"hallmarking charges",
+	"subcontracting income",
+	"diamond certification charges",
+)
+
+
+def _set_outwork_charge_rows_amount(self, precision):
+	rows = [
+		r
+		for r in self.get("custom_invoice_item") or []
+		if (r.item_code or "").strip().lower() in OUTWORK_CHARGE_INVOICE_ITEMS
+	]
+	if not rows:
+		return
+
+	total = 0
+	for item in self.items:
+		if not item.bom:
+			continue
+		bom = frappe.get_doc("BOM", item.bom)
+		bom_amount = (
+			sum(flt(r.making_amount) for r in bom.metal_detail)
+			+ sum(flt(r.making_amount) for r in bom.finding_detail)
+			+ sum(
+				flt(r.diamond_rate_for_specified_quantity) for r in bom.diamond_detail
+			)
+			+ sum(
+				flt(r.gemstone_rate_for_specified_quantity) for r in bom.gemstone_detail
+			)
+		)
+		total += bom_amount * flt(item.qty)
+
+	total = flt(total, precision or 2)
+	for r in rows:
+		r.amount = total
+		r.rate = flt(total / r.qty, precision or 2) if flt(r.qty) else 0
+		r.tax_amount = flt(total * flt(r.tax_rate) / 100, precision or 2)
+		r.amount_with_tax = total + r.tax_amount
+
 
 def validate_item_dharm(self):
 	precision = frappe.db.get_value(
@@ -5055,6 +5098,9 @@ def validate_item_dharm(self):
 		for key, val in aggregated_certification_items.items():
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			self.append("custom_invoice_item", val)
+
+		if self.sales_type == "Outwork":
+			_set_outwork_charge_rows_amount(self, precision)
 
 		# Other weight is shown for reference only: quantity, no rate or tax.
 		if flt(self.custom_other_weight):
