@@ -100,24 +100,25 @@ def on_update(self, method):
 
 
 def on_update_after_submit(self, method):
-	pricision = 3
-	if frappe.db.get_value(
-		"Customer", self.customer, "custom_consider_2_digit_for_bom"
-	):
-		pricision = 2
-		self.db_set("doc_pricision", pricision)
-
-	if frappe.db.get_value(
-		"Customer", self.customer, "custom_consider_2_digit_for_diamond"
-	):
-		pricision = 2
-		self.db_set("diamond_pricision", pricision)
-
-	if frappe.db.get_value(
-		"Customer", self.customer, "custom_consider_2_digit_for_gemstone"
-	):
-		pricision = 2
-		self.db_set("gemstone_pricision", pricision)
+	precision_fields = {
+		"doc_pricision": "custom_consider_2_digit_for_bom",
+		"diamond_pricision": "custom_consider_2_digit_for_diamond",
+		"gemstone_pricision": "custom_consider_2_digit_for_gemstone",
+	}
+	precision_data = (
+		frappe.db.get_value(
+			"Customer", self.customer, list(precision_fields.values()), as_dict=True
+		)
+		if self.customer
+		else None
+	) or {}
+	# Match before_validate: each disabled flag (or no customer) restores 3 digits.
+	self.db_set(
+		{
+			field: 2 if precision_data.get(customer_field) else 3
+			for field, customer_field in precision_fields.items()
+		}
+	)
 
 	set_bom_rate(self)
 	calculate_total(self)
@@ -237,8 +238,16 @@ def set_bom_items(self):
 	"""
 	# Place a dummy Item if Bom type is Template or Quotation
 	default_item = frappe.db.get_single_value("Jewellery Settings", "defualt_item")
-	uom = frappe.db.get_value("Item", default_item, "stock_uom")
 	if self.bom_type in ["Template", "Quotation"]:
+		if not default_item:
+			frappe.throw(_("Please set the Default Item in Jewellery Settings."))
+		uom = frappe.db.get_value("Item", default_item, "stock_uom")
+		if not uom:
+			frappe.throw(
+				_(
+					"Default Item {0} in Jewellery Settings must exist and have a Stock UOM."
+				).format(default_item)
+			)
 		self.items = []
 		self.append(
 			"items",
@@ -255,19 +264,24 @@ def set_bom_items(self):
 
 
 def _set_bom_items_by_child_tables(self, default_item):
+	# A variant can repeat within and across the detail tables; its BOM Item
+	# carries the total quantity, in the Item's stock UOM.
 	bom_items = {}
-	bom_items.update(
-		{row.item_variant: row.quantity for row in self.metal_detail if row.quantity}
-	)
-	bom_items.update(
-		{row.item_variant: row.quantity for row in self.diamond_detail if row.quantity}
-	)
-	bom_items.update(
-		{row.item_variant: row.quantity for row in self.gemstone_detail if row.quantity}
-	)
-	bom_items.update(
-		{row.item_variant: row.quantity for row in self.finding_detail if row.quantity}
-	)
+	for table in (
+		"metal_detail",
+		"diamond_detail",
+		"gemstone_detail",
+		"finding_detail",
+	):
+		for row in self.get(table):
+			if row.quantity:
+				bom_items[row.item_variant] = flt(
+					bom_items.get(row.item_variant)
+				) + flt(row.quantity)
+	item_codes = list(bom_items) + [row.item_code for row in self.other_detail]
+	if bom_items:
+		item_codes.extend(row.item_code for row in self.items)
+	item_metadata = _get_bom_item_metadata(item_codes)
 	if bom_items:
 		# defualt_item = frappe.db.get_single_value("Jewellery Settings", "defualt_item")
 		items = frappe.get_all(
@@ -281,38 +295,62 @@ def _set_bom_items_by_child_tables(self, default_item):
 				self.bom_type not in ["Template", "Quotation"]
 				and d.item_code == default_item
 			)
-			or frappe.db.get_value("Item", d.item_code, "variant_of") in item_list
+			or (item_metadata.get(d.item_code) or {}).get("variant_of") in item_list
 		]
 		for d in to_remove:
 			self.remove(d)
 
-		uom_dict = frappe._dict()
 		for item_code, qty in bom_items.items():
-			if not uom_dict.get(item_code):
-				uom_dict[item_code] = frappe.db.get_value(
-					"Item", item_code, "stock_uom"
-				)
 			self.append(
 				"items",
 				{
 					"item_code": item_code,
 					"qty": qty,
-					"uom": uom_dict.get(item_code),
+					"uom": (item_metadata.get(item_code) or {}).get("stock_uom"),
 					"rate": 0,
 				},
 			)
 
 	if len(self.other_detail) > 0:
+		# Other Detail is the source for these Items, so replace their rows
+		# rather than appending another copy on every rebuild.
+		other_item_codes = {row.item_code for row in self.other_detail}
+		for d in [d for d in self.items if d.item_code in other_item_codes]:
+			self.remove(d)
 		for row in self.other_detail:
 			self.append(
 				"items",
 				{
 					"item_code": row.item_code,
 					"qty": row.quantity,
-					"uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+					"uom": (item_metadata.get(row.item_code) or {}).get("stock_uom"),
 					"rate": 0,
 				},
 			)
+
+
+def _get_bom_item_metadata(item_codes):
+	"""Batch Item metadata for this rebuild, keeping individual IN queries bounded."""
+	item_codes = list(dict.fromkeys(code for code in item_codes if code))
+	metadata = {}
+	for start in range(0, len(item_codes), 200):
+		for item in frappe.get_all(
+			"Item",
+			filters={"name": ["in", item_codes[start : start + 200]]},
+			fields=["name", "stock_uom", "variant_of"],
+			order_by=None,
+		):
+			metadata[item.name] = item
+	# SQL name comparisons can be case/accent insensitive. A batch returns the
+	# stored name, whereas callers may carry another spelling of that same link.
+	# Resolve unmatched inputs with the original lookup semantics (also preserving
+	# None for an actually missing Item), once per distinct input spelling.
+	for item_code in item_codes:
+		if item_code not in metadata:
+			metadata[item_code] = frappe.db.get_value(
+				"Item", item_code, ["stock_uom", "variant_of"], as_dict=True
+			)
+	return metadata
 
 
 def update_item_price(self):
