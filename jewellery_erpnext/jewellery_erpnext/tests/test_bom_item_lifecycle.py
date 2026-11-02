@@ -1,9 +1,11 @@
 """Real insert/save/open/submit checks for BOM and Item.
 
 These exercise the controllers and installed app hooks without mocking them; every
-test rolls back. They are not browser, concurrency or remote-sync tests.
+test rolls back. DB-stored Server Scripts are switched off (see setUp). They are not
+browser, concurrency or remote-sync tests.
 """
 
+from unittest.mock import patch
 from uuid import uuid4
 
 import frappe
@@ -16,6 +18,12 @@ from erpnext.controllers.item_variant import create_variant
 class TestBOMItemLifecycle(IntegrationTestCase):
 	def setUp(self):
 		super().setUp()
+		# A GK site carries DB-stored DocType-Event Server Scripts (e.g. "GK Item Naming" on Item
+		# before_insert, which needs an item category with an abbreviation). They are not part of
+		# the code under test, so these documents are saved without them, as on a bare site.
+		patcher = patch("frappe.model.document.run_server_script_for_doc_event")
+		patcher.start()
+		self.addCleanup(patcher.stop)
 		self.addCleanup(frappe.db.rollback)
 		self.addCleanup(frappe.set_user, frappe.session.user)
 		frappe.set_user("Administrator")
