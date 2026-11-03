@@ -24,6 +24,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
 	blocking_message,
 	pmo_blocking_state,
+	pmo_request_state,
+	request_message,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
@@ -76,6 +78,17 @@ class ManufacturingWorkOrder(Document):
 				+ " "
 				+ _("Its work orders cannot be submitted."),
 				title=_("Work Order {0}").format(state),
+			)
+		# A Close / Hold request waits for the work to come back; a newly submitted work order
+		# would start new work under it.
+		if state := pmo_request_state(self.manufacturing_order):
+			frappe.throw(
+				request_message(self.manufacturing_order, state)
+				+ " "
+				+ _(
+					"Its work orders cannot be submitted until the request is done or withdrawn."
+				),
+				title=_("Parent Manufacturing Order Restricted"),
 			)
 		self.validate_photoshop_images()
 
@@ -1251,6 +1264,7 @@ def _validate_split_basics(docname):
 			"department",
 			"gross_wt",
 			"manufacturing_operation",
+			"manufacturing_order",
 		],
 		as_dict=True,
 	)
@@ -1259,6 +1273,16 @@ def _validate_split_basics(docname):
 			_("Work Order {0} must be submitted before it can be split.").format(
 				docname
 			)
+		)
+
+	# A Close / Hold request waits for the work orders to come back, not for new ones.
+	if state := pmo_request_state(mwo.get("manufacturing_order")):
+		frappe.throw(
+			request_message(mwo.manufacturing_order, state)
+			+ " "
+			+ _(
+				"Work Order {0} cannot be split until the request is done or withdrawn."
+			).format(docname)
 		)
 
 	# Held or closed with its PMO: the split would close it and start new work orders under
