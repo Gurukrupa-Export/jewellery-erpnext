@@ -115,11 +115,8 @@ def set_diamond_attribute_weight(self, attribute_list):
 				attribute_filters.update(
 					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
 				)
-		# ignore=True as the frappe.db.exists this replaced: Diamond Weight is a custom
-		# DocType that a site may not have.
-		weight = frappe.db.get_value(
-			"Diamond Weight", attribute_filters, "weight", ignore=True
-		)
+		if frappe.db.exists("Diamond Weight", attribute_filters):
+			weight = frappe.db.get_value("Diamond Weight", attribute_filters, "weight")
 	return weight or 0
 
 
@@ -150,13 +147,8 @@ def set_gemstone_attribute_weight(self, attribute_list):
 				attribute_filters.update(
 					{row.attribute.replace(" ", "_").lower(): row.attribute_value}
 				)
-		# No matching row keeps the 0 default; ignore=True as in set_diamond_attribute_weight.
-		weight = (
-			frappe.db.get_value(
-				"Gemstone Weight", attribute_filters, "weight", ignore=True
-			)
-			or weight
-		)
+		if frappe.db.exists("Gemstone Weight", attribute_filters):
+			weight = frappe.db.get_value("Gemstone Weight", attribute_filters, "weight")
 	return weight
 
 

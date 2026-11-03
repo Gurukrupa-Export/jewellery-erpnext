@@ -474,7 +474,7 @@ class TestUomConversion(IntegrationTestCase):
 			_item(attributes=self._diamond_attrs(), uoms=[_uom("Gram")]), exists=False
 		)
 		self.assertEqual(_uom_pairs(doc.uoms), [("Gram", 1)])
-		db.get_value.assert_called()
+		db.exists.assert_called()
 
 	def test_no_attributes_is_a_no_op(self):
 		doc, db = self._run(_item(attributes=[]))
@@ -505,11 +505,13 @@ class TestAttributeWeightHelpers(IntegrationTestCase):
 	def test_diamond_weight_filters_use_normalised_attribute_keys(self):
 		captured = {}
 
-		def get_value(doctype, filters, fieldname, **kwargs):
+		def exists(doctype, filters):
 			captured["filters"] = filters
-			return 0.05
+			return True
 
-		with patch.object(item_events.frappe.db, "get_value", side_effect=get_value):
+		with patch.object(
+			item_events.frappe.db, "exists", side_effect=exists
+		), patch.object(item_events.frappe.db, "get_value", return_value=0.05):
 			doc = _item(
 				attributes=[
 					_attr("Diamond Type", "D-NAT"),
@@ -531,7 +533,7 @@ class TestAttributeWeightHelpers(IntegrationTestCase):
 		self.assertEqual(weight, 0.05)
 
 	def test_incomplete_diamond_set_returns_zero_without_a_lookup(self):
-		with patch.object(item_events.frappe.db, "get_value") as get_value:
+		with patch.object(item_events.frappe.db, "exists") as exists:
 			doc = _item(
 				attributes=[
 					_attr("Diamond Type", "D-NAT"),
@@ -544,16 +546,18 @@ class TestAttributeWeightHelpers(IntegrationTestCase):
 				),
 				0,
 			)
-		get_value.assert_not_called()
+		exists.assert_not_called()
 
 	def test_gemstone_weight_filters_use_normalised_attribute_keys(self):
 		captured = {}
 
-		def get_value(doctype, filters, fieldname, **kwargs):
+		def exists(doctype, filters):
 			captured["filters"] = filters
-			return 0.02
+			return True
 
-		with patch.object(item_events.frappe.db, "get_value", side_effect=get_value):
+		with patch.object(
+			item_events.frappe.db, "exists", side_effect=exists
+		), patch.object(item_events.frappe.db, "get_value", return_value=0.02):
 			doc = _item(
 				attributes=[
 					_attr("Gemstone Type", "Ruby"),
