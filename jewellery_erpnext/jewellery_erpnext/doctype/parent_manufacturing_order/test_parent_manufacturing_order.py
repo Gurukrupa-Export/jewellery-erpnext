@@ -1953,3 +1953,42 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 		doc.get_doc_before_save = lambda: None
 
 		doc._validate_diamond_grade_policy()
+
+
+class TestResolvedVariantMemo(UnitTestCase):
+	"""One PMO submit resolves each (template, attribute values) variant once: the work-order
+	pass reuses what the Material Request pass found."""
+
+	MOD = "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order"
+
+	def resolve(self, resolved_variants):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order import (
+			parent_manufacturing_order as pmo,
+		)
+
+		row = frappe._dict(item_code="TPL-MEMO", item="TPL-MEMO", metal_type="Gold")
+		item_info = {"TPL-MEMO": frappe._dict(variant_of=None, has_variants=1)}
+		with patch.dict(pmo._ATTRIBUTES_CACHE, {"TPL-MEMO": ["Metal Type"]}):
+			return pmo._resolve_existing_variant_item_code(
+				row, "BOM Metal Detail", None, item_info, resolved_variants
+			)
+
+	def test_second_pass_reuses_the_found_variant(self):
+		memo = {}
+		with patch(f"{self.MOD}.get_variant", return_value="TPL-MEMO-G") as get_variant:
+			self.assertEqual(self.resolve(memo), "TPL-MEMO-G")
+			self.assertEqual(self.resolve(memo), "TPL-MEMO-G")
+		get_variant.assert_called_once_with("TPL-MEMO", {"Metal Type": "Gold"})
+
+	def test_without_a_memo_every_call_looks_up(self):
+		with patch(f"{self.MOD}.get_variant", return_value="TPL-MEMO-G") as get_variant:
+			self.resolve(None)
+			self.resolve(None)
+		self.assertEqual(get_variant.call_count, 2)
+
+	def test_a_missing_variant_is_not_remembered(self):
+		memo = {}
+		with patch(f"{self.MOD}.get_variant", return_value=None):
+			with self.assertRaises(frappe.ValidationError):
+				self.resolve(memo)
+		self.assertEqual(memo, {})

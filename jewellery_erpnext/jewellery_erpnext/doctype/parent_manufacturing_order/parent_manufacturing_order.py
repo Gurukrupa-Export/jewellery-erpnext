@@ -152,8 +152,11 @@ def _get_item_variant_info(item_code, item_info=None):
 
 
 def _resolve_existing_variant_item_code(
-	row, bom_table, pmo_diamond_grade=None, item_info=None
+	row, bom_table, pmo_diamond_grade=None, item_info=None, resolved_variants=None
 ):
+	"""``resolved_variants`` is the caller's memo of found variants per (template, attribute
+	values), scoped to one PMO submit, so the work-order pass reuses what the Material
+	Request pass looked up."""
 	item_code = row.get("item_variant") or row.get("item_code")
 	item = _get_item_variant_info(item_code, item_info)
 	item_template = row.get("item") or (item.variant_of if item else None)
@@ -198,7 +201,12 @@ def _resolve_existing_variant_item_code(
 			).format(bom_table, row.get("idx") or row.get("name") or "?", item_template)
 		)
 
+	variant_key = (item_template, frozenset(args.items()))
+	if resolved_variants is not None and variant_key in resolved_variants:
+		return resolved_variants[variant_key]
 	if variant := get_variant(item_template, args):
+		if resolved_variants is not None:
+			resolved_variants[variant_key] = variant
 		return variant
 
 	used_attributes = ", ".join([f"{k}: {v}" for k, v in sorted(args.items())]) or _(
@@ -606,9 +614,11 @@ class ParentManufacturingOrder(Document):
 			frappe.throw(_("{0} is Closed and cannot be cancelled.").format(self.name))
 
 	def on_submit(self):
-		# Item variant_of / has_variants memo shared by create_material_requests and
-		# create_manufacturing_work_order, which resolve the same BOM rows. This submit only.
+		# Item variant_of / has_variants and resolved-variant memos shared by
+		# create_material_requests and create_manufacturing_work_order, which resolve the
+		# same BOM rows. This submit only.
 		self.flags.item_variant_info = {}
+		self.flags.resolved_variants = {}
 		if not self.order_form_type or self.order_form_type == "Order":
 			# One update_after_submit cycle for all three tolerance tables instead of one
 			# per populator, and none at all for a customer with no tolerance master --
@@ -628,6 +638,7 @@ class ParentManufacturingOrder(Document):
 		create_manufacturing_work_order(self)
 		# gemstone_details_set_mandatory_field(self)
 		self.flags.pop("item_variant_info", None)
+		self.flags.pop("resolved_variants", None)
 
 	def on_cancel(self):
 		update_existing(
@@ -687,6 +698,7 @@ class ParentManufacturingOrder(Document):
 			"Manufacturer", self.manufacturer, "custom_abbreviation"
 		)
 		item_info = self.flags.get("item_variant_info", {})
+		resolved_variants = self.flags.get("resolved_variants", {})
 
 		warehouse_dict = {
 			row.variant: row
@@ -724,7 +736,7 @@ class ParentManufacturingOrder(Document):
 					)
 				else:
 					item_code = _resolve_existing_variant_item_code(
-						row, bom_table, self.diamond_grade, item_info
+						row, bom_table, self.diamond_grade, item_info, resolved_variants
 					)
 				if not item_code:
 					field_name = (
@@ -1094,10 +1106,15 @@ def create_manufacturing_work_order(self):
 	).run(as_dict=True)
 
 	item_info = self.flags.get("item_variant_info", {})
+	resolved_variants = self.flags.get("resolved_variants", {})
 	finding_data = []
 	for row in finding_details:
 		item_code = row.get("item_variant") or _resolve_existing_variant_item_code(
-			row, "BOM Finding Detail", self.diamond_grade, item_info
+			row,
+			"BOM Finding Detail",
+			self.diamond_grade,
+			item_info,
+			resolved_variants,
 		)
 
 		template_item = row.get("item") or row.get("item_code")
