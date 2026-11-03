@@ -30,6 +30,12 @@ customer's. ``_allocate_tree_legs`` (the allocator behind the Tree Number "Recei
 button) is reused verbatim: this tree's own issued batches first, then, only if those fall short,
 same-``(inventory_type, customer)``-tier substitutes, and a hard throw when neither can cover it.
 
+**Findings are poured from Regular Stock only.** A tree holding customer metal (Customer Goods or
+Customer Stock) cannot pour findings -- the same rule Metal Conversion enforces in
+``validate_customer_metal_target``. ``_reject_customer_metal_trees`` refuses it at save from the
+tree's issued batches; ``_append_finding_rows`` refuses any customer slice the allocator returns
+at submit.
+
 **The Repack is deliberately ledger-invisible.** It carries no ``manufacturing_order`` /
 ``manufacturing_work_order`` on the header and no ``manufacturing_operation`` on any row. Those
 two omissions are load-bearing, not oversights:
@@ -55,6 +61,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils im
 	carry_rates_from_source_batches,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
 	normalize_ownership,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
@@ -72,6 +79,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_sto
 	_new_transfer_se,
 	_resolve_msl_warehouse,
 	_stamp_batch,
+	_tree_issued_batches,
+	_tree_issued_tiers,
 )
 
 REPACK_STOCK_ENTRY_TYPE = "Repack"
@@ -201,6 +210,7 @@ def validate_finding_repack(eir):
 		bucket = draws.setdefault(tree_name, {})
 		bucket[metal_item] = flt(bucket.get(metal_item, 0.0)) + _row_finding_total(row)
 
+	_reject_customer_metal_trees(draws)
 	_validate_draws_against_trees(draws)
 
 
@@ -256,6 +266,41 @@ def _validate_finding_item(row, item_code):
 			).format(row.idx, item_code, variant_of or _("not set"), FINDING_PREFIX),
 			title=_("Not a Finding Item"),
 		)
+
+
+def _reject_customer_metal_trees(draws):
+	"""A tree holding customer metal cannot pour findings -- only Regular Stock can.
+
+	Mirrors Metal Conversion's ``validate_customer_metal_target``. Ownership is read from every
+	batch the tree ever issued into MSL (``_tree_issued_batches``), not from what is still owed:
+	those batches are routinely drained by other trees' draws, and the tree's ownership must
+	still be known after that. A mixed tree is refused too -- the allocator hands back the
+	customer's metal first, so the finding would be poured from it.
+	"""
+	for tree_name in sorted(draws):
+		tree = frappe.get_doc("Tree Number", tree_name)
+		msl_wh = tree.get("msl_warehouse") or _resolve_msl_warehouse(tree)
+		for item_code in draws[tree_name]:
+			tiers = _tree_issued_tiers(_tree_issued_batches(tree, item_code, msl_wh))
+			customer_tiers = sorted(
+				(inv, cust or "-")
+				for inv, cust in tiers
+				if inv in CUSTOMER_INVENTORY_TYPES
+			)
+			if not customer_tiers:
+				continue
+			frappe.throw(
+				_(
+					"Tree <b>{0}</b> (item <b>{1}</b>) holds customer metal ({2}). Finding items "
+					"can only be made from Regular Stock metal. Clear the finding item / weight "
+					"fields."
+				).format(
+					tree_name,
+					item_code,
+					", ".join(f"{inv} - {cust}" for inv, cust in customer_tiers),
+				),
+				title=_("Finding Repack Not Allowed"),
+			)
 
 
 def _validate_draws_against_trees(draws):
@@ -407,10 +452,13 @@ def _append_finding_rows(se, pairs, metal_item, msl_wh, consume_alloc, ranks, pr
 	so the batches a finding is poured from are the batches the tree actually owes, in the order
 	the allocator ranked them.
 
-	A finding whose slice spans two ownership tiers produces one row per tier, each with its own
-	batch. That split is not an edge case to paper over: the minted batch reads ``inventory_type``
-	/ ``customer`` straight off its produce row, so folding a customer's metal and the company's
-	into one batch would silently change who owns it.
+	A customer slice (Customer Goods or Customer Stock) is refused: findings are made from Regular
+	Stock only. ``_reject_customer_metal_trees`` already refused such a tree at save; this is the
+	guard that holds whatever the allocator returned, same-tier fallback substitutes included.
+
+	A finding whose slice spans two ownership tiers still produces one row per tier, each with its
+	own batch: the minted batch reads ``inventory_type`` / ``customer`` straight off its produce
+	row, so folding two owners into one batch would silently change who owns it.
 	"""
 	stream = [[batch_no, flt(qty, prec)] for batch_no, qty in consume_alloc]
 	produced = []
@@ -443,6 +491,19 @@ def _append_finding_rows(se, pairs, metal_item, msl_wh, consume_alloc, ranks, pr
 
 		for owner, slices in by_owner.items():
 			inventory_type, customer = owner
+			if inventory_type in CUSTOMER_INVENTORY_TYPES:
+				frappe.throw(
+					_(
+						"Finding <b>{0}</b> would be poured from customer metal ({1} - {2}; batch "
+						"{3}). Finding items can only be made from Regular Stock metal."
+					).format(
+						item_code,
+						inventory_type,
+						customer or "-",
+						", ".join(b for b, _q in slices),
+					),
+					title=_("Finding Repack Not Allowed"),
+				)
 			produce_qty = flt(sum(qty for _b, qty in slices), prec)
 			for batch_no, qty in slices:
 				_append_consume_row(
