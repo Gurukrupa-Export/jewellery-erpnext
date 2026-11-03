@@ -3,6 +3,7 @@ import json
 
 import frappe
 from frappe import _
+from frappe.model import table_fields
 from frappe.utils import flt
 
 
@@ -18,8 +19,43 @@ def validate(self, method):
 
 
 def before_save(self, method):
-	pass
+	skip_variant_update_when_nothing_copied_changed(self)
 	# update_item_uom_conversion(self)
+
+
+def skip_variant_update_when_nothing_copied_changed(self):
+	"""ERPNext's Item.on_update re-saves every variant of a template (inline up to 30)
+	on each template save. Skip that when none of the fields it copies changed."""
+	# Flags live on the object: undo our own skip from an earlier save of the same doc.
+	if self.flags.pop("variant_update_skipped_unchanged", None):
+		self.flags.dont_update_variants = False
+	if not self.has_variants or self.is_new() or self.flags.dont_update_variants:
+		return
+	previous = self.get_doc_before_save()
+	if not previous:
+		return
+	# The fields erpnext.controllers.item_variant.copy_attributes_to_variant copies.
+	copied = set(frappe.get_all("Variant Field", pluck="field_name"))
+	copied.add("variant_based_on")
+	for df in self.meta.fields:
+		if not (df.reqd or df.fieldname in copied):
+			continue
+		if df.fieldtype in table_fields:
+			if _child_rows(previous.get(df.fieldname)) != _child_rows(
+				self.get(df.fieldname)
+			):
+				return
+		elif previous.get(df.fieldname) != self.get(df.fieldname):
+			return
+	self.flags.dont_update_variants = True
+	self.flags.variant_update_skipped_unchanged = True
+
+
+def _child_rows(rows):
+	return [
+		row.as_dict(no_default_fields=True, no_child_table_fields=True)
+		for row in rows or []
+	]
 
 
 def on_trash(self, method):
