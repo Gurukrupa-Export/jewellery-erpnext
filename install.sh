@@ -53,11 +53,15 @@ echo "::endgroup::"
 
 echo "::group::Create Site"
 
+# mariadb-client 11.x (Ubuntu 26.04) requires verified TLS by default; the CI
+# mariadb:10.6 service uses a self-signed cert, so the restore step fails.
+printf '[client]\nskip-ssl\n' > ~/.my.cnf
+
 bench new-site test_site \
     --admin-password admin \
     --db-root-password travis \
     --mariadb-root-username root \
-    --no-mariadb-socket
+    --mariadb-user-host-login-scope='%'
 
 echo "::endgroup::"
 
