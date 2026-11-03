@@ -260,6 +260,9 @@ doc_events = {
 			"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.create_subcontracting_log",
 			# "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_gold_repack",
 			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.stamp_snc_requirement",
+			# A metal return or adjustment for a PMO with a Close / Hold request: its requester
+			# is told once the last of the work is back (queued after commit; no-op otherwise).
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.queue_ready_check_after_stock_entry",
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,

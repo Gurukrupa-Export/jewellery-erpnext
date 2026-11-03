@@ -8,6 +8,9 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		// MOP Settings lists for the action. The action runs through apply_action, which records
 		// the reason with it, so Frappe's own workflow call is always cancelled (rejected). A
 		// Close whose Material Requests moved stock is queued instead (enqueue_close).
+		// A Close refused only because the work orders are not back yet comes back with a Close
+		// request to make instead: the same dialog sends the PMO to Close Requested. Open of a
+		// Close Requested PMO drops its Close request.
 		const action = frm.selected_workflow_action;
 		if (!["Hold", "Open", "Close"].includes(action)) return;
 		// handle_workflow_action freezes the screen before calling this and only unfreezes
@@ -24,10 +27,19 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 				callback: (r) => {
 					if (r.exc) return reject();
 					const plan = r.message || {};
+					if (plan.request) {
+						return ask_reason(
+							frm,
+							plan.request.action,
+							plan.request.reasons || [],
+							reject,
+							plan.request
+						);
+					}
 					if (action === "Close" && (plan.entries || []).length) {
 						return ask_close_with_stock(frm, plan, reject);
 					}
-					ask_reason(frm, action, plan.reasons || [], reject);
+					ask_reason(frm, action, plan.reasons || [], reject, plan);
 				},
 			});
 		});
@@ -355,8 +367,17 @@ function set_html(frm) {
 	});
 }
 
-function reason_field(reasons) {
-	// The reasons MOP Settings lists for the action; one has to be chosen.
+function reason_field(reasons, request_reason) {
+	// The reasons MOP Settings lists for the action; one has to be chosen. A Close of a Close
+	// Requested PMO takes its Close request's reason instead: shown, nothing to choose.
+	if (request_reason) {
+		return {
+			fieldtype: "HTML",
+			options: `<p><b>${__("Reason")}:</b> ${frappe.utils.escape_html(
+				request_reason
+			)} <span class="text-muted">(${__("from the Close request")})</span></p>`,
+		};
+	}
 	return {
 		fieldname: "reason",
 		fieldtype: "Select",
@@ -367,20 +388,74 @@ function reason_field(reasons) {
 	};
 }
 
-function action_message(frm, action) {
+function action_message(frm, action, detail) {
 	if (action === "Hold") return hold_message(frm);
-	if (action === "Open") return open_message();
+	if (action === "Open") return open_message(detail);
+	if (action === "Request Close") return request_message(detail);
 	return close_message(frm);
 }
 
-function ask_reason(frm, action, reasons, reject) {
+function request_message(detail) {
+	const departments = ((detail && detail.departments) || []).map(
+		(d) => `<b>${frappe.utils.escape_html(d)}</b>`
+	);
+	const destination = departments.length
+		? frappe.utils.comma_or(departments)
+		: `<b>${__("a Close / Hold Request Department")}</b>`;
+	return __(
+		"This Parent Manufacturing Order cannot be closed yet. Send it for a Close request? It stays open: the departments holding its work orders are alerted, its work orders can then be transferred only to {0} or Manufacturing Plan & Management (never to an employee), and no raw material can be transferred to them. Click Close again once they are back in Manufacturing Plan & Management with no metal.",
+		[destination]
+	);
+}
+
+function request_detail_html(detail) {
+	// Why the Close / Hold has to wait (server messages) and the work orders it waits for.
+	if (!detail) return "";
+	let html = "";
+	if ((detail.problems || []).length) {
+		html += `<div class="alert alert-warning small">${detail.problems.join("<br><br>")}</div>`;
+	}
+	const pending = detail.pending || [];
+	if (pending.length) {
+		const rows = pending
+			.map((w) => {
+				const where = w.in_transit
+					? __("In Transit")
+					: w.employee
+					? __("With {0}", [frappe.utils.escape_html(w.employee)])
+					: "";
+				return (
+					`<tr><td>${frappe.utils.get_form_link(
+						"Manufacturing Work Order",
+						w.work_order,
+						true
+					)}</td>` +
+					`<td>${frappe.utils.escape_html(w.department || "")}</td>` +
+					`<td>${frappe.utils.escape_html(w.status || "")} ${where}</td>` +
+					`<td class="text-right">${w.weight || 0}</td></tr>`
+				);
+			})
+			.join("");
+		html +=
+			`<p>${__("Work orders to come back:")}</p>` +
+			`<table class="table table-bordered table-condensed"><thead><tr>` +
+			`<th>${__("Work Order")}</th><th>${__("Department")}</th><th>${__("Status")}</th>` +
+			`<th class="text-right">${__("Gross Wt (g)")}</th></tr></thead><tbody>${rows}</tbody></table>`;
+	}
+	return html;
+}
+
+function ask_reason(frm, action, reasons, reject, detail) {
 	// The workflow action itself never runs from here (the promise is always rejected):
 	// apply_action does it, so the reason row is written with it or not at all.
 	const dialog = new frappe.ui.Dialog({
 		title: __(action),
 		fields: [
-			{ fieldtype: "HTML", options: `<p>${action_message(frm, action)}</p>` },
-			reason_field(reasons),
+			{
+				fieldtype: "HTML",
+				options: `<p>${action_message(frm, action, detail)}</p>${request_detail_html(detail)}`,
+			},
+			reason_field(reasons, detail && detail.request_reason),
 		],
 		primary_action_label: __("Yes"),
 		primary_action(values) {
@@ -413,7 +488,12 @@ function hold_message(frm) {
 	);
 }
 
-function open_message() {
+function open_message(detail) {
+	if (detail && detail.withdraws_close) {
+		return __(
+			"Drop the Close request of this Parent Manufacturing Order? Its work orders can move to any department or employee again."
+		);
+	}
 	return __(
 		"Open this Parent Manufacturing Order? Its Manufacturing Work Orders, their operations and its Material Requests go back to where they were before the Hold."
 	);
@@ -460,7 +540,7 @@ function ask_close_with_stock(frm, plan, reject) {
 						"It is on Hold until then. If a cancel fails it stays on Hold with what was done, and Close carries on from there."
 					)}</p>`,
 			},
-			reason_field(plan.reasons || []),
+			reason_field(plan.reasons || [], plan.request_reason),
 		],
 		primary_action_label: __("Cancel Entries and Close"),
 		primary_action(values) {
