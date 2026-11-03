@@ -71,14 +71,12 @@ class TestExecute(TestCase):
 			for name, text in scripts.items()
 		}
 		db = SimpleNamespace(exists=lambda doctype, name: name in docs)
-		with (
-			patch.object(fix.frappe, "db", db),
-			patch.object(
+		with patch.object(fix.frappe, "db", db):
+			with patch.object(
 				fix.frappe, "get_doc", side_effect=lambda doctype, name: docs[name]
-			),
-			patch("builtins.print"),
-		):
-			fix.execute()
+			):
+				with patch("builtins.print"):
+					fix.execute()
 		return docs
 
 	def test_updates_matching_scripts_and_skips_missing_ones(self):
