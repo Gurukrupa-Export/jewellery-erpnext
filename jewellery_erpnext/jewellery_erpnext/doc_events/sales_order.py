@@ -1117,6 +1117,29 @@ def get_stock_entry_additional_cost(self, doc):
 	return stock_entry.total_additional_costs if stock_entry else 0
 
 
+def _outwork_metal_wastage_rate(doc, mc_name, sub_info):
+	"""Outwork customer-item metal wastage rate (fraction) from Making Charge Price.
+
+	BOM with a Chains finding: Finding Subcategory row for that finding type.
+	Otherwise: the BOM item-subcategory row (sub_info). Uses `wastage` (percent).
+	"""
+	chain = next(
+		(f for f in doc.get("finding_detail", []) if f.finding_category == "Chains"),
+		None,
+	)
+	if chain:
+		row = next(
+			(
+				r
+				for r in _get_all_finding_sub_rows(mc_name)
+				if r.subcategory == chain.finding_type
+			),
+			None,
+		)
+		return flt(row.get("wastage")) / 100.0 if row else 0
+	return flt((sub_info or {}).get("wastage")) / 100.0
+
+
 def _process_metal_detail1(self, doc, ctx, cctx):
 	if not hasattr(doc, "metal_detail"):
 		return
@@ -1133,7 +1156,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			self.company == "Gurukrupa Export Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			_, sub_info, threshold = _get_making_charge(
+			mc_name, sub_info, threshold = _get_making_charge(
 				self, doc, s.metal_touch, ctx, cctx
 			)
 			# frappe.throw(str(sub_info))
@@ -1144,6 +1167,8 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				s.making_rate = sub_info.get("rate_per_gm", 0)
 				s.wastage_rate = 0
 				s.wastage_amount = 0
+				if self.sales_type == "Outwork":
+					s.wastage_rate = _outwork_metal_wastage_rate(doc, mc_name, sub_info)
 			else:
 				s.rate = round(s.se_rate, 2)
 				s.wastage_rate = 0
@@ -1159,7 +1184,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			self.company == "KG GK Jewellers Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			_, sub_info, threshold = _get_making_charge(
+			mc_name, sub_info, threshold = _get_making_charge(
 				self, doc, s.metal_touch, ctx, cctx
 			)
 			# frappe.throw(str(sub_info))
@@ -1178,6 +1203,8 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				s.making_amount = round(s.making_rate * s.quantity, 2)
 				s.wastage_rate = 0
 				s.wastage_amount = 0
+				if self.sales_type == "Outwork":
+					s.wastage_rate = _outwork_metal_wastage_rate(doc, mc_name, sub_info)
 				s.fg_purchase_rate = 0
 				s.fg_purchase_amount = 0
 			else:
@@ -1197,7 +1224,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			s.amount = round(s.rate * s.quantity, 2)
 
 		else:
-			_, sub_info, threshold = _get_making_charge(
+			mc_name, sub_info, threshold = _get_making_charge(
 				self, doc, s.metal_touch, ctx, cctx
 			)
 			# frappe.throw(str(sub_info))
@@ -1221,6 +1248,9 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				s.amount = 0
 				s.making_rate = sub_info.get("subcontracting_rate", 0)
 				s.making_amount = s.making_rate * s.quantity
+				if self.sales_type == "Outwork":
+					s.wastage_rate = _outwork_metal_wastage_rate(doc, mc_name, sub_info)
+					s.wastage_amount = s.wastage_rate * s.amount
 			else:
 				wastage = (
 					sub_info.get("subcontracting_wastage", 0) / 100.0
