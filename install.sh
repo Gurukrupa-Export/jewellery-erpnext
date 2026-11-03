@@ -24,11 +24,11 @@ bench get-app hrms --branch version-16
 bench get-app payments --branch develop
 bench get-app lending --branch version-16-beta
 bench get-app wiki --branch version-3
-bench get-app helpdesk --branch main --skip-assets
+bench get-app helpdesk --branch main
 bench get-app telephony --branch develop
 
 bench get-app https://github.com/resilient-tech/india-compliance.git --branch version-16
-bench get-app https://github.com/Gurukrupa-Export/gke_customization.git --branch gurukrupa-prod
+bench get-app https://github.com/Gurukrupa-Export/gke_customization.git --branch gurukrupa-uat
 bench get-app https://github.com/Gurukrupa-Export/gurukrupa_biometric.git --branch master
 bench get-app https://github.com/Gurukrupa-Export/gurukrupa_customizations.git --branch main
 
@@ -53,11 +53,15 @@ echo "::endgroup::"
 
 echo "::group::Create Site"
 
+# mariadb-client 11.x (Ubuntu 26.04) requires verified TLS by default; the CI
+# mariadb:10.6 service uses a self-signed cert, so the restore step fails.
+printf '[client]\nskip-ssl\n' > ~/.my.cnf
+
 bench new-site test_site \
     --admin-password admin \
     --db-root-password travis \
     --mariadb-root-username root \
-    --no-mariadb-socket
+    --mariadb-user-host-login-scope='%'
 
 echo "::endgroup::"
 
