@@ -105,6 +105,19 @@ class TestVariantGroupRepair(IntegrationTestCase):
 			frappe.db.get_value("Item", self.template.name, "item_group"), self.t_group
 		)
 
+	def test_moved_variant_stays_moved_when_its_template_is_saved(self):
+		good = self.variant("Good", [("Size", "5")])
+		with patch("builtins.print"):
+			variant_group_repair.repair(dry_run=0)
+		# A template save makes ERPNext copy its "- T" group onto the variant and save it.
+		# The variant's save hook puts "- V" back (end-to-end template save covered in
+		# test_variant_item_group); these legacy fixtures are too bare for a full save.
+		variant = frappe.get_doc("Item", good.name)
+		variant.item_group = self.t_group
+		with patch("frappe.model.document.run_server_script_for_doc_event"):
+			variant.run_method("before_validate")
+		self.assertEqual(variant.item_group, self.v_group)
+
 	def test_variant_with_an_empty_attribute_is_listed_not_moved(self):
 		empty = self.variant("Empty", [("Size", "5"), ("Colour", "")])
 		with patch("builtins.print"):

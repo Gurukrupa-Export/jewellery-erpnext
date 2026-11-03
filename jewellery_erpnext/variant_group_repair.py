@@ -1,8 +1,10 @@
 """Move variants left in their template's "- T" item group to their "- V" group.
 
-Until variant_item_group ran on insert, a variant created in code kept the template's
-"- T" group unless someone opened and saved it in the form (Item-Form-118). This moves
-the design variants only, with the same rule:
+Variants landed in "- T" mostly because ERPNext copies the template's item_group onto
+every variant on each template save (757 of the 879 on the prod copy were "- V" first),
+and some because they were created from the template in code. Item-Form-118 corrected
+them only when someone opened them; variant_item_group now does it on every variant save,
+so a moved variant stays moved. This moves the design variants only, with the same rule:
 
 * material variants whose "- V" group is a batch group (Metal/Diamond/Gemstone/Finding/
   Other - V) are listed, not moved: those groups get a batch series and stock flags at
