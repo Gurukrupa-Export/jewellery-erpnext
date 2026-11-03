@@ -161,3 +161,27 @@ class TestVariantItemGroupOnInsert(IntegrationTestCase):
 		variant.is_sales_item = 0
 		variant.insert()
 		self.assertEqual(variant.item_group, template.item_group)
+
+	def test_template_save_does_not_push_its_t_group_onto_variants(self):
+		subcategory = self.prefix + " Ring"
+		v_group = self.group(subcategory + " - V")
+		template, attribute = self.template(subcategory)
+		variant = create_variant(template.name, {attribute.name: 5})
+		variant.item_subcategory = subcategory
+		variant.is_sales_item = 0
+		variant.insert()
+		settings = frappe.get_single("Item Variant Settings")
+		settings.do_not_update_variants = 0
+		if "min_order_qty" not in {row.field_name for row in settings.fields}:
+			settings.append("fields", {"field_name": "min_order_qty"})
+		settings.save()
+
+		template.reload()
+		template.min_order_qty = 7  # copied to variants: ERPNext re-saves them
+		template.save()
+
+		pushed = frappe.db.get_value(
+			"Item", variant.name, ["min_order_qty", "item_group"], as_dict=True
+		)
+		self.assertEqual(pushed.min_order_qty, 7)  # the push happened
+		self.assertEqual(pushed.item_group, v_group)  # but the group stayed "- V"

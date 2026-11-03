@@ -8,6 +8,10 @@ from frappe.utils import flt
 
 def before_validate(self, method):
 	add_item_attributes(self)
+	# Every save: ERPNext's update_variants copies the template's "- T" group (item_group is
+	# mandatory, so always copied) onto each variant whenever the template is saved.
+	if group := variant_item_group(self):
+		self.item_group = group
 
 
 def validate(self, method):
@@ -449,10 +453,11 @@ GROUPS_KEPT_FOR_VARIANTS = (
 
 
 def variant_item_group(item):
-	"""The "- V" group a new variant belongs in, or None to keep its group.
+	"""The "- V" group a variant belongs in, or None to keep its group.
 
-	A variant created in code inherits the template's "- T" group; the form used to fix
-	that only when someone opened the variant (Item-Form-118 onload)."""
+	A variant gets its template's "- T" group when it is created from the template and
+	again each time ERPNext pushes template fields to it on a template save. The form
+	used to correct that only when someone opened the variant (Item-Form-118 onload)."""
 	if not item.variant_of or not item.item_group:
 		return None
 	if item.variant_of in MATERIAL_TEMPLATES:
