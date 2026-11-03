@@ -60,23 +60,22 @@ def add_item_attributes(self):
 		if item_attributes:
 			self.attributes = []
 			for row in item_attributes:
-				item_attribute = (
-					frappe.db.get_value(
-						"Item Attribute",
-						row.item_attribute,
-						["numeric_values", "from_range", "to_range", "increment"],
-						as_dict=1,
-					)
-					or {}
-				)
 				self.append(
 					"attributes",
 					{
 						"attribute": row.item_attribute,
-						"numeric_values": item_attribute.get("numeric_values"),
-						"from_range": item_attribute.get("from_range"),
-						"to_range": item_attribute.get("to_range"),
-						"increment": item_attribute.get("increment"),
+						"numeric_values": frappe.db.get_value(
+							"Item Attribute", row.item_attribute, "numeric_values"
+						),
+						"from_range": frappe.db.get_value(
+							"Item Attribute", row.item_attribute, "from_range"
+						),
+						"to_range": frappe.db.get_value(
+							"Item Attribute", row.item_attribute, "to_range"
+						),
+						"increment": frappe.db.get_value(
+							"Item Attribute", row.item_attribute, "increment"
+						),
 					},
 				)
 

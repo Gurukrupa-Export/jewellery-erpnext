@@ -302,33 +302,12 @@ def _set_bom_items_by_child_tables(self, default_item):
 	bom_items.update(
 		{row.item_variant: row.quantity for row in self.finding_detail if row.quantity}
 	)
-	uom_dict = frappe._dict()
 	if bom_items:
 		# defualt_item = frappe.db.get_single_value("Jewellery Settings", "defualt_item")
 		items = frappe.get_all(
 			"Jewellery System Item", {"parent": "Jewellery Settings"}, "item_code"
 		)
 		item_list = [row.get("item_code") for row in items]
-		item_codes = list({d.item_code for d in self.items if d.item_code})
-		variant_of_map = (
-			{
-				row.name: row.variant_of
-				for row in frappe.get_all(
-					"Item",
-					filters={"name": ["in", item_codes]},
-					fields=["name", "variant_of"],
-				)
-			}
-			if item_codes
-			else {}
-		)
-
-		def _variant_of(item_code):
-			if item_code in variant_of_map:
-				return variant_of_map[item_code]
-			# Unknown Item, or its name in another case: the per-row lookup as before.
-			return frappe.db.get_value("Item", item_code, "variant_of")
-
 		to_remove = [
 			d
 			for d in self.items
@@ -336,11 +315,12 @@ def _set_bom_items_by_child_tables(self, default_item):
 				self.bom_type not in ["Template", "Quotation"]
 				and d.item_code == default_item
 			)
-			or _variant_of(d.item_code) in item_list
+			or frappe.db.get_value("Item", d.item_code, "variant_of") in item_list
 		]
 		for d in to_remove:
 			self.remove(d)
 
+		uom_dict = frappe._dict()
 		for item_code, qty in bom_items.items():
 			if not uom_dict.get(item_code):
 				uom_dict[item_code] = frappe.db.get_value(
@@ -358,17 +338,12 @@ def _set_bom_items_by_child_tables(self, default_item):
 
 	if len(self.other_detail) > 0:
 		for row in self.other_detail:
-			# The row's own UOM -- this used to read ``item_code`` left over from the loop above.
-			if not uom_dict.get(row.item_code):
-				uom_dict[row.item_code] = frappe.db.get_value(
-					"Item", row.item_code, "stock_uom"
-				)
 			self.append(
 				"items",
 				{
 					"item_code": row.item_code,
 					"qty": row.quantity,
-					"uom": uom_dict.get(row.item_code),
+					"uom": frappe.db.get_value("Item", item_code, "stock_uom"),
 					"rate": 0,
 				},
 			)

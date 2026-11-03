@@ -244,16 +244,14 @@ class TestAddItemAttributes(IntegrationTestCase):
 		self._get_all = patcher.start()
 		self.addCleanup(patcher.stop)
 
-		def item_attr_value(doctype, name, fieldname, as_dict=False):
+		def item_attr_value(doctype, name, fieldname):
 			values = {
 				"numeric_values": 1,
 				"from_range": 1.0,
 				"to_range": 10.0,
 				"increment": 0.5,
 			}
-			if doctype != "Item Attribute":
-				return None
-			return frappe._dict({f: values.get(f) for f in fieldname})
+			return values.get(fieldname) if doctype == "Item Attribute" else None
 
 		db = patch.object(
 			item_events.frappe.db, "get_value", side_effect=item_attr_value
@@ -316,12 +314,14 @@ class TestAddItemAttributes(IntegrationTestCase):
 		item_events.add_item_attributes(doc)
 		self.assertEqual(doc.attributes, [])
 
-	def test_fetches_each_attribute_in_a_single_query(self):
-		# One multi-field get_value per attribute (was 4 -- suspected flaw #13). The
-		# setUp's get_all yields 2 template attributes, so 2 calls total.
+	def test_fetches_each_attribute_metric_in_a_separate_query(self):
+		# Pinned as-is (suspected flaw #13, performance): one get_value call per
+		# metric per attribute -- 4 calls each (numeric_values, from_range,
+		# to_range, increment) -- instead of a single multi-field fetch. The
+		# setUp's get_all yields 2 template attributes, so 8 calls total.
 		calls = []
 
-		def counting(doctype, name, fieldname, **kwargs):
+		def counting(doctype, name, fieldname):
 			calls.append(fieldname)
 			return None
 
@@ -330,7 +330,7 @@ class TestAddItemAttributes(IntegrationTestCase):
 				_item(has_variants=1, subcategory="Necklace", attributes=[])
 			)
 		self.assertEqual(
-			calls, [["numeric_values", "from_range", "to_range", "increment"]] * 2
+			calls, ["numeric_values", "from_range", "to_range", "increment"] * 2
 		)
 
 
