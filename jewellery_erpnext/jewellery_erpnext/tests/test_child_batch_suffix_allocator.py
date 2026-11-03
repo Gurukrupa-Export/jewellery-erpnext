@@ -136,7 +136,7 @@ class TestCreateChildBatchesSuffix(UnitTestCase):
 	"""``create_child_batches`` on the Create SNC conversion shape: one 24KT source row
 	from the customer's receipt batch, one batch-less 18KT produce row."""
 
-	def _run(self, existing, taken=()):
+	def _run(self, existing, taken=(), child_item=ITEM_18KT):
 		doc = SimpleNamespace(
 			doctype="Stock Entry",
 			name="MAT-STE-TEST",
@@ -148,7 +148,7 @@ class TestCreateChildBatchesSuffix(UnitTestCase):
 					s_warehouse="RM - GEPL",
 					batch_no=PARENT_24KT,
 				),
-				_row(name="tgt", t_warehouse="RM - GEPL"),
+				_row(name="tgt", t_warehouse="RM - GEPL", item_code=child_item),
 			],
 		)
 		inserted = []
@@ -189,6 +189,10 @@ class TestCreateChildBatchesSuffix(UnitTestCase):
 		self.assertEqual(doc.items[1].batch_no, f"{BASE_18KT}-AB")
 
 	def test_like_pattern_escapes_wildcards(self):
-		_doc, _inserted, sql = self._run([])
-		self.assertEqual(sql.call_args.args[1], (f"{BASE_18KT}-%",))
+		# '_' in the child item code must reach LIKE as a literal, not a wildcard.
+		_doc, _inserted, sql = self._run([], child_item="M_G-18KT%75.4-Y")
+		self.assertEqual(
+			sql.call_args.args[1],
+			("TNCU0085-2F11-M\\_G-18KT\\%75.4-Y-01-%",),
+		)
 		self.assertEqual(batch_rename._escape_like("A_B%C"), "A\\_B\\%C")
