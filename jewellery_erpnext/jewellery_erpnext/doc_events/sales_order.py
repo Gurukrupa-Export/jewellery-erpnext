@@ -1358,6 +1358,25 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 		return find_data
 
 
+def _outwork_finding_making_rate(f, mc_name, sub_info):
+	"""Outwork customer-item finding making rate from Making Charge Price.
+
+	Chains: Finding Subcategory row matching the finding type -> subcontracting_rate
+	(0 if no row). Others: the BOM item-subcategory row -> rate_per_gm.
+	"""
+	if f.finding_category == "Chains":
+		row = next(
+			(
+				r
+				for r in _get_all_finding_sub_rows(mc_name)
+				if r.subcategory == f.finding_type
+			),
+			None,
+		)
+		return flt(row.get("subcontracting_rate")) if row else 0
+	return flt((sub_info or {}).get("rate_per_gm"))
+
+
 def _process_finding_detail1(self, doc, ctx, cctx):
 	if not hasattr(doc, "finding_detail") or not doc.finding_detail:
 		doc.total_finding_amount = 0
@@ -1404,6 +1423,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate = 0
 				f.amount = 0
 				f.making_rate = find_data.get("rate_per_gm")
+				if self.sales_type == "Outwork":
+					f.making_rate = _outwork_finding_making_rate(f, mc_name, sub_info)
 				if self.sales_type == "Hybrid" and f.finding_category == "Chains":
 					f.making_rate = 0
 				f.wastage_rate = 0
@@ -1440,6 +1461,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.amount = 0
 				# f.making_rate=operational_cost/total_weight
 				f.making_rate = find_data.get("rate_per_gm")
+				if self.sales_type == "Outwork":
+					f.making_rate = _outwork_finding_making_rate(f, mc_name, sub_info)
 				if self.sales_type == "Hybrid" and f.finding_category == "Chains":
 					f.making_rate = 0
 				f.making_amount = round(f.making_rate * f.quantity, 2)
@@ -1494,6 +1517,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate = 0
 				f.amount = 0
 				f.making_rate = find_data.get("rate_per_gm")
+				if self.sales_type == "Outwork":
+					f.making_rate = _outwork_finding_making_rate(f, mc_name, sub_info)
 				if self.sales_type == "Hybrid" and f.finding_category == "Chains":
 					f.making_rate = 0
 				f.wastage_rate = 0
