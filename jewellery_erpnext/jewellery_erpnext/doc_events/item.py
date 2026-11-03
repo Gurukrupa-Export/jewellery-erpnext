@@ -8,6 +8,10 @@ from frappe.utils import flt
 
 def before_validate(self, method):
 	add_item_attributes(self)
+	# Every save: ERPNext's update_variants copies the template's "- T" group (item_group is
+	# mandatory, so always copied) onto each variant whenever the template is saved.
+	if group := variant_item_group(self):
+		self.item_group = group
 
 
 def validate(self, method):
@@ -363,7 +367,94 @@ def calculate_item_wt_details(doc, bom=None, item=None):
 	return doc
 
 
+# Variant item groups, as Item-Form-118 derives them in the form for a new variant.
+MATERIAL_TEMPLATES = (
+	"M",
+	"ML",
+	"D",
+	"DL",
+	"DBK",
+	"G",
+	"GL",
+	"F",
+	"FL",
+	"O",
+	"OL",
+	"Metal Unused/Loose Material",
+)
+GROUPS_KEPT_FOR_VARIANTS = (
+	# consumables
+	"Design DNU",
+	"Chemicals",
+	"Machinery",
+	"Office Supplies",
+	"Electric Accessories",
+	"Wax",
+	"Spare Accessories",
+	"Stationery",
+	"Medical Supplies",
+	"Tools & Accessories",
+	# assets
+	"Automated Screening Machine",
+	"Communication Devices",
+	"Landline Phones",
+	"Mobile",
+	"Computing Devices",
+	"Access Control",
+	"Ajax",
+	"Board",
+	"Computers",
+	"CPU",
+	"Keyboards",
+	"Laptop",
+	"Mice",
+	"Monitors",
+	"Printers",
+	"TV",
+	"Furniture",
+	"Lighting",
+	"Lamps",
+	"Networking Devices",
+	"Fire Safety",
+	"Network Equipment",
+	"Server",
+	"WiFi Routers",
+	"Surveillance",
+	"CCTV Cameras",
+	"CCTV Recorder",
+	"Vehicle",
+	"Four-Wheeler",
+	"Weighing Scale",
+	"Machineries",
+	"Electronics",
+	"Peripherals",
+	"Furnitures",
+)
+
+
+def variant_item_group(item):
+	"""The "- V" group a variant belongs in, or None to keep its group.
+
+	A variant gets its template's "- T" group when it is created from the template and
+	again each time ERPNext pushes template fields to it on a template save. The form
+	used to correct that only when someone opened the variant (Item-Form-118 onload)."""
+	if not item.variant_of or not item.item_group:
+		return None
+	if item.variant_of in MATERIAL_TEMPLATES:
+		group = item.item_group.replace(" - T", " - V")
+	elif item.item_group in GROUPS_KEPT_FOR_VARIANTS or not item.item_subcategory:
+		return None
+	else:
+		group = item.item_subcategory + " - V"
+	if group == item.item_group or not frappe.db.exists("Item Group", group):
+		return None
+	return group
+
+
 def before_insert(self, method):
+	# First: the batch, stock and attribute rules below key on the "- V" groups.
+	if group := variant_item_group(self):
+		self.item_group = group
 	consumables_list = []
 	iav = frappe.qb.DocType("Item Attribute Value")
 
