@@ -893,10 +893,20 @@ def audit_negative_batch_balances(
 		if (r["item_code"], r["batch_no"]) in neg_keys
 	}
 
-	meta: dict = {}
+	# The origin walk only steps onto operations that are themselves negative, so every
+	# header _meta needs is one of these; one query instead of one per operation.
+	meta: dict = {
+		m.name: m
+		for m in frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", list({r["mop"] for r in negatives})]},
+			fields=["name", "previous_mop", "status", "department"],
+			limit_page_length=0,
+		)
+	}
 
 	def _meta(mop):
-		"""Operation header, fetched once per operation actually walked."""
+		"""Operation header, prefetched above; anything missed is fetched once here."""
 		if mop not in meta:
 			meta[mop] = (
 				frappe.db.get_value(

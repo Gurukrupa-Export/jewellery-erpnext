@@ -93,15 +93,19 @@ class ManufacturingWorkOrder(Document):
 		self.validate_photoshop_images()
 
 	def on_submit(self):
+		last_operation = None
 		if self.for_fg:
-			self.validate_other_work_orders()
-
-			# new Code
-			last_department = frappe.db.get_value(
+			# (department, name) of the last Department Operation, read once for the
+			# validation below and create_manufacturing_operation.
+			last_operation = frappe.db.get_value(
 				"Department Operation",
 				{"is_last_operation": 1, "manufacturer": self.manufacturer},
-				"department",
+				["department", "name"],
 			)
+			last_department = last_operation[0] if last_operation else None
+			self.validate_other_work_orders(last_department)
+
+			# new Code
 			mop_list = frappe.db.get_list(
 				"Manufacturing Operation",
 				filters={
@@ -116,12 +120,11 @@ class ManufacturingWorkOrder(Document):
 						"Manufacturing Operation", mop, "status", "Finished"
 					)
 
-		create_manufacturing_operation(self)
+		create_manufacturing_operation(self, last_operation)
 		if self.split_from:
 			create_mr_for_split_work_order(self.name, self.company, self.manufacturer)
 		# self.start_datetime = now()
-		self.db_set("start_datetime", now())
-		self.db_set("status", "Not Started")
+		self.db_set({"start_datetime": now(), "status": "Not Started"})
 
 	def sync_mwo_weights(self):
 		sibling_mwos = frappe.db.get_all(
@@ -270,15 +273,16 @@ class ManufacturingWorkOrder(Document):
 				update_modified=False,
 			)
 
-	def validate_other_work_orders(self):
+	def validate_other_work_orders(self, last_department=None):
 		# last_department = frappe.db.get_value(
 		# 	"Department Operation", {"is_last_operation": 1, "company": self.company}, "department"
 		# )
-		last_department = frappe.db.get_value(
-			"Department Operation",
-			{"is_last_operation": 1, "manufacturer": self.manufacturer},
-			"department",
-		)
+		if last_department is None:
+			last_department = frappe.db.get_value(
+				"Department Operation",
+				{"is_last_operation": 1, "manufacturer": self.manufacturer},
+				"department",
+			)
 		if not last_department:
 			frappe.throw(_("Please set last operation first in Department Operation"))
 		pending_wo = frappe.get_all(
@@ -1035,7 +1039,7 @@ def _resolve_unpack_inventory(serial_no):
 	return source_inventory_type, source_customer
 
 
-def create_manufacturing_operation(doc):
+def create_manufacturing_operation(doc, last_operation=None):
 	# timer code
 	dt_string = get_datetime()
 
@@ -1070,11 +1074,13 @@ def create_manufacturing_operation(doc):
 		# department, operation = frappe.db.get_value(
 		# 	"Department Operation", {"is_last_operation": 1, "company": doc.company}, ["department", "name"]
 		# ) or ["", ""]
-		department, operation = frappe.db.get_value(
-			"Department Operation",
-			{"is_last_operation": 1, "manufacturer": doc.manufacturer},
-			["department", "name"],
-		) or ["", ""]
+		if last_operation is None:
+			last_operation = frappe.db.get_value(
+				"Department Operation",
+				{"is_last_operation": 1, "manufacturer": doc.manufacturer},
+				["department", "name"],
+			)
+		department, operation = last_operation or ["", ""]
 		# New Status
 		status = "Finished"
 

@@ -14,7 +14,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	CUSTOMER_GOODS_INVENTORY_TYPE,
 	pmo_expects_customer_goods,
 )
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
 from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
 	diamond_group_key,
 	gemstone_group_key,
@@ -137,21 +136,42 @@ def _get_variant_attribute_value(row, attribute):
 	return row.get(normalized_attr)
 
 
-def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
+def _get_item_variant_info(item_code, item_info=None):
+	"""Item ``variant_of`` / ``has_variants`` (None when the Item does not exist).
+
+	``item_info`` is the caller's memo, scoped to one PMO submit; each code is read once.
+	"""
+	if not item_code:
+		return None
+	if item_info is None:
+		item_info = {}
+	if item_code not in item_info:
+		item_info[item_code] = frappe.db.get_value(
+			"Item", item_code, ["variant_of", "has_variants"], as_dict=1
+		)
+	return item_info[item_code]
+
+
+def _resolve_existing_variant_item_code(
+	row, bom_table, pmo_diamond_grade=None, item_info=None, resolved_variants=None
+):
+	"""``resolved_variants`` is the caller's memo of found variants per (template, attribute
+	values), scoped to one PMO submit, so the work-order pass reuses what the Material
+	Request pass looked up."""
 	item_code = row.get("item_variant") or row.get("item_code")
-	item_template = row.get("item") or (
-		frappe.db.get_value("Item", item_code, "variant_of") if item_code else None
-	)
+	item = _get_item_variant_info(item_code, item_info)
+	item_template = row.get("item") or (item.variant_of if item else None)
 
 	if item_code:
-		item_has_variants = frappe.db.get_value("Item", item_code, "has_variants")
+		item_has_variants = item.has_variants if item else None
 		if not item_has_variants and not item_template:
 			return item_code
 
 	if not item_template:
 		return item_code
 
-	template_has_variants = frappe.db.get_value("Item", item_template, "has_variants")
+	template = _get_item_variant_info(item_template, item_info)
+	template_has_variants = template.has_variants if template else None
 	if not template_has_variants:
 		return item_template
 
@@ -182,7 +202,12 @@ def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
 			).format(bom_table, row.get("idx") or row.get("name") or "?", item_template)
 		)
 
+	variant_key = (item_template, frozenset(args.items()))
+	if resolved_variants is not None and variant_key in resolved_variants:
+		return resolved_variants[variant_key]
 	if variant := get_variant(item_template, args):
+		if resolved_variants is not None:
+			resolved_variants[variant_key] = variant
 		return variant
 
 	used_attributes = ", ".join([f"{k}: {v}" for k, v in sorted(args.items())]) or _(
@@ -202,8 +227,9 @@ def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
 	)
 
 
-def _validate_non_template_item(item_code, bom_table):
-	has_variants = frappe.db.get_value("Item", item_code, "has_variants")
+def _validate_non_template_item(item_code, bom_table, item_info=None):
+	item = _get_item_variant_info(item_code, item_info)
+	has_variants = item.has_variants if item else None
 	if has_variants:
 		frappe.throw(
 			_(
@@ -213,9 +239,9 @@ def _validate_non_template_item(item_code, bom_table):
 		)
 
 
-def _validate_item_exists(item_code, bom_table, row):
+def _validate_item_exists(item_code, bom_table, row, item_info=None):
 	"""Raise a clear error when a resolved item code does not exist in Item master."""
-	if not frappe.db.exists("Item", item_code):
+	if not _get_item_variant_info(item_code, item_info):
 		frappe.throw(
 			_(
 				"Item {0} does not exist in the system. Found in {1} (Row {2}). "
@@ -504,7 +530,8 @@ class ParentManufacturingOrder(Document):
 			],
 			as_dict=1,
 		)
-		self.db_set(
+		# Persisted by this save's own UPDATE: validate only runs on save and submit.
+		self.update(
 			{
 				"metal_department": warehouse_details.get("default_department"),
 				"diamond_department": warehouse_details.get(
@@ -595,6 +622,11 @@ class ParentManufacturingOrder(Document):
 			)
 
 	def on_submit(self):
+		# Item variant_of / has_variants and resolved-variant memos shared by
+		# create_material_requests and create_manufacturing_work_order, which resolve the
+		# same BOM rows. This submit only.
+		self.flags.item_variant_info = {}
+		self.flags.resolved_variants = {}
 		if not self.order_form_type or self.order_form_type == "Order":
 			# One update_after_submit cycle for all three tolerance tables instead of one
 			# per populator, and none at all for a customer with no tolerance master --
@@ -613,6 +645,8 @@ class ParentManufacturingOrder(Document):
 				self.create_material_requests()
 		create_manufacturing_work_order(self)
 		# gemstone_details_set_mandatory_field(self)
+		self.flags.pop("item_variant_info", None)
+		self.flags.pop("resolved_variants", None)
 
 	def on_cancel(self):
 		update_existing(
@@ -671,10 +705,8 @@ class ParentManufacturingOrder(Document):
 		mnf_abb = frappe.get_value(
 			"Manufacturer", self.manufacturer, "custom_abbreviation"
 		)
-		bom_doc = frappe.get_doc("Tracking Bom", bom)
-		if bom_doc.get("bom_type") == "Template":
-			set_item_variant(bom_doc)
-			bom_doc.save(ignore_permissions=True)
+		item_info = self.flags.get("item_variant_info", {})
+		resolved_variants = self.flags.get("resolved_variants", {})
 
 		warehouse_dict = {
 			row.variant: row
@@ -712,7 +744,7 @@ class ParentManufacturingOrder(Document):
 					)
 				else:
 					item_code = _resolve_existing_variant_item_code(
-						row, bom_table, self.diamond_grade
+						row, bom_table, self.diamond_grade, item_info, resolved_variants
 					)
 				if not item_code:
 					field_name = (
@@ -724,14 +756,14 @@ class ParentManufacturingOrder(Document):
 						_("{0} is missing in {1}").format(field_name, bom_table)
 					)
 				if bom_table != "BOM Gemstone Detail":
-					_validate_non_template_item(item_code, bom_table)
-				_validate_item_exists(item_code, bom_table, row)
+					_validate_non_template_item(item_code, bom_table, item_info)
+				_validate_item_exists(item_code, bom_table, row, item_info)
 				if bom_table in (
 					"BOM Metal Detail",
 					"BOM Finding Detail",
 				) and not row.get("item"):
 					_validate_metal_item_attributes(item_code, row, bom_table)
-				item_type = get_item_type(item_code)
+				item_type = get_item_type(item_code, item_info)
 				variant_key = _ITEM_TYPE_PREFIX[item_type]
 				if variant_key not in warehouse_dict:
 					frappe.throw(_("Please mention warehouse details in Manufacturer"))
@@ -965,10 +997,11 @@ class ParentManufacturingOrder(Document):
 		create_stock_entry(self, department_data)
 
 
-def get_item_type(item_code):
+def get_item_type(item_code, item_info=None):
 	if item_code in _VARIANT_TO_ITEM_TYPE:
 		return _VARIANT_TO_ITEM_TYPE[item_code]
-	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+	item = _get_item_variant_info(item_code, item_info)
+	variant_of = item.variant_of if item else None
 	return _VARIANT_TO_ITEM_TYPE.get(variant_of, "other_item")
 
 
@@ -1080,17 +1113,22 @@ def create_manufacturing_work_order(self):
 		.where(BOMFindingDetail.parent == self.custom_tracking_bom)
 	).run(as_dict=True)
 
+	item_info = self.flags.get("item_variant_info", {})
+	resolved_variants = self.flags.get("resolved_variants", {})
 	finding_data = []
 	for row in finding_details:
 		item_code = row.get("item_variant") or _resolve_existing_variant_item_code(
-			row, "BOM Finding Detail", self.diamond_grade
+			row,
+			"BOM Finding Detail",
+			self.diamond_grade,
+			item_info,
+			resolved_variants,
 		)
 
 		template_item = row.get("item") or row.get("item_code")
 		if not template_item:
-			template_item = (
-				frappe.db.get_value("Item", item_code, "variant_of") or item_code
-			)
+			item = _get_item_variant_info(item_code, item_info)
+			template_item = (item.variant_of if item else None) or item_code
 
 		ignore_wo = frappe.db.get_value(
 			"Item", template_item, "custom_ignore_work_order"

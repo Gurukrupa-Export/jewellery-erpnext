@@ -224,10 +224,8 @@ def on_cancel(self, method):
 			tb = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
 			if tb.docstatus == 1:
 				tb.cancel()
-		# Also handle legacy BOM references
+		# Also handle legacy BOM references; the BOM itself is untouched (never was saved)
 		if row.bom:
-			bom = frappe.get_doc("BOM", row.bom)
-			bom.is_active = 0
 			row.bom = ""
 	# cancel_bom(self)
 	validate_snc(self)

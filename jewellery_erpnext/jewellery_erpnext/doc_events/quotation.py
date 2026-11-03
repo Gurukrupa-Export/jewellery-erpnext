@@ -8,9 +8,6 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
-from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.utils import (
-	update_si,
-)
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom import update_totals
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	calculate_gst_rate,
@@ -182,7 +179,8 @@ def validate(self, method):
 		calculate_gst_rate(self)
 		if not self.get("__islocal"):
 			set_bom_item_details(self)
-			update_si(self)
+			# update_si is not called: it reloaded every row's BOM to build e-invoice rows that
+			# nothing uses while update_einvoice_items stays disabled (as in customization/quotation).
 			validate_invoice_item(self)
 		set_tracking_bom_rate_in_quotation(self)
 
@@ -910,8 +908,11 @@ def create_tracking_bom_directly(self):
 			for row in self.items:
 				row.db_update()
 			self.db_update()
-		frappe.db.set_value(self.doctype, self.name, "workflow_state", "BOM Created")
-		frappe.db.set_value(self.doctype, self.name, "custom_bom_creation_logs", None)
+		frappe.db.set_value(
+			self.doctype,
+			self.name,
+			{"workflow_state": "BOM Created", "custom_bom_creation_logs": None},
+		)
 
 	if item_codes:
 		frappe.db.sql(
@@ -1015,10 +1016,13 @@ def _create_single_tracking_bom(
 			},
 		)
 
-	# Validate calculates all rates and wait for bulk insert
+	# Validate calculates all rates (read into the quotation row below) and waits for the bulk
+	# insert. run_method runs the validate hooks here, once, so the insert can skip validate
+	# instead of calculating every rate a second time.
 	tracking_bom.set_new_name()
-	tracking_bom.before_validate()
-	tracking_bom.validate()
+	tracking_bom.run_method("before_validate")
+	tracking_bom.run_method("validate")
+	tracking_bom.flags.ignore_validate = True
 
 	# Update quotation item maps
 	item_tracking_data[row.item_code] = tracking_bom.name

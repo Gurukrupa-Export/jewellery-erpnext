@@ -150,11 +150,9 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 		mr_mod._create_transfer_se("MR-001")
 
 		# Linked + marked Done, without copying/creating a new SE.
-		mr.db_set.assert_any_call(
-			"custom_transfer_se", "SE-TRANSFER-9", update_modified=False
-		)
-		mr.db_set.assert_any_call(
-			"custom_transfer_se_state", "Done", update_modified=False
+		mr.db_set.assert_called_once_with(
+			{"custom_transfer_se": "SE-TRANSFER-9", "custom_transfer_se_state": "Done"},
+			update_modified=False,
 		)
 		mock_copy.assert_not_called()
 

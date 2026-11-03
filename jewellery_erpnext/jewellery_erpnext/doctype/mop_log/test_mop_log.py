@@ -1488,8 +1488,13 @@ class TestNegativeBatchBalanceAudit(IntegrationTestCase):
 			},
 		}
 
+		def get_all(_dt, filters=None, **kw):
+			# The one prefetch of every negative operation's header.
+			return [FrappeDict(headers[n]) for n in filters["name"][1] if n in headers]
+
 		with (
 			patch(f"{AUDIT}._latest_mop_log_balance_rows", return_value=rows),
+			patch(f"{AUDIT}.frappe.get_all", side_effect=get_all),
 			patch(
 				f"{AUDIT}.frappe.db.get_value",
 				side_effect=lambda _dt, name, _f, **kw: headers.get(name),
