@@ -27,6 +27,8 @@ from frappe.tests import IntegrationTestCase
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	_build_replacement_sre,
 	_existing_receive_se,
+	_float_tolerance,
+	_receive_tolerance,
 	create_mr_wo_stock_entry,
 	get_make_receive_entry_rows,
 )
@@ -3442,3 +3444,275 @@ class TestDialogValidatorAgreement(IntegrationTestCase):
 			stock_entry.append.call_args_list[0][0][1]["s_warehouse"],
 			rows[0]["s_warehouse"],
 		)
+
+
+class TestReceiveOneUnitQty(IntegrationTestCase):
+	"""A real 0.001 g quantity must survive Make Receive Entry.
+
+	Regression: ``_float_tolerance`` is a FULL unit (0.001 at float precision 3),
+	so ``remaining <= tolerance`` treated a genuine 0.001 reservation as zero.
+	The popup dropped the line without even listing it under ``skipped`` ("Stock
+	Reservation Entries exist, but no receivable MOP balance was found"), the
+	validator accepted a 0.001 over-receive, and a 0.001 leftover got no
+	replacement SRE. The Make Receive path now uses ``_receive_tolerance`` (half
+	a unit); Employee IR loss handling keeps ``_float_tolerance``.
+	"""
+
+	ITEM_F = "F-G-22KT-91.75-Y-KS-RKS"
+	ITEM_D = "D-NT-RO-6B-+9.5-10"
+	BATCH = "KG2F082-01"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	# Reuse the existing harnesses rather than copying them.
+	_patch_popup = TestPopupReservedVsMopFields._patch_popup
+	_patch_batch_popup = TestMakeReceiveEntryPerRowPcs._patch_popup
+	_patch_validator = TestServerQtyValidation._patch_validator
+	_run_partial_receive = TestReplacementSafeRule._run_partial_receive
+
+	def _qty_sre(self, name, item_code, qty, delivered=0.0):
+		sre = _qty_sre(name=name, reserved_qty=qty, delivered_qty=delivered)
+		sre["item_code"] = item_code
+		return sre
+
+	# --- tolerance helpers ---------------------------------------------------
+
+	def test_receive_tolerance_is_half_a_unit(self):
+		self.assertAlmostEqual(_receive_tolerance(3), 0.0005)
+		self.assertAlmostEqual(_receive_tolerance(2), 0.005)
+		self.assertAlmostEqual(_receive_tolerance(0), 0.0001)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_receive_tolerance_reads_system_precision(self, _mock_single):
+		self.assertAlmostEqual(_receive_tolerance(), 0.0005)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_float_tolerance_is_unchanged_for_employee_ir(self, _mock_single):
+		"""Employee IR loss guards rely on the one-unit slack; do not change it."""
+		self.assertAlmostEqual(_float_tolerance(3), 0.001)
+		self.assertAlmostEqual(_float_tolerance(), 0.001)
+
+	# --- popup: get_make_receive_entry_rows ---------------------------------
+
+	def test_popup_lists_qty_based_sre_with_0_001_remaining(self):
+		"""The reported case: active SRE, MOP Log balance present, 0.001 left."""
+		self._patch_popup(
+			sre_rows=[_sre_dict(reserved_qty=0.001)],
+			mop_rows=[_mop_log_row(qty=0.001)],
+		)
+		result = get_make_receive_entry_rows("MOP-1")
+		self.assertEqual(result["active_sre_count"], 1)
+		self.assertEqual(len(result["rows"]), 1)
+		self.assertAlmostEqual(result["rows"][0]["available_to_receive_qty"], 0.001)
+		self.assertAlmostEqual(result["rows"][0]["reserved_qty"], 0.001)
+		self.assertEqual(result["skipped"], [])
+
+	def test_popup_lists_batch_based_f_item_with_0_001_remaining(self):
+		self._patch_batch_popup(
+			sre_rows=[_batch_sre("SRE-F", self.ITEM_F)],
+			mop_rows=[_balance_row(self.ITEM_F, self.BATCH, qty_batch=0.001, pcs_batch=0)],
+			sb_rows=[_sb_entry("SB1", "SRE-F", self.BATCH, 0.001)],
+		)
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
+		self.assertEqual(len(rows), 1)
+		self.assertAlmostEqual(rows[0]["available_to_receive_qty"], 0.001)
+		self.assertEqual(rows[0]["batch_no"], self.BATCH)
+
+	def test_popup_keeps_0_001_line_beside_larger_lines_of_the_same_item(self):
+		"""UAT MOP-2610-19GB6T shape: 0.493 + 0.001 of one D item, plus an M item.
+		The 0.001 line used to vanish, leaving 2 rows instead of 3."""
+		self._patch_batch_popup(
+			sre_rows=[
+				_batch_sre("SRE-D1", self.ITEM_D),
+				_batch_sre("SRE-D2", self.ITEM_D),
+			],
+			mop_rows=[
+				_balance_row(self.ITEM_D, self.BATCH, qty_batch=0.494, pcs_batch=6),
+				_transfer_row("T1", self.ITEM_D, self.BATCH, 0.493, 5),
+				_transfer_row("T2", self.ITEM_D, self.BATCH, 0.001, 1),
+			],
+			sb_rows=[
+				_sb_entry("SB1", "SRE-D1", self.BATCH, 0.493),
+				_sb_entry("SB2", "SRE-D2", self.BATCH, 0.001),
+			],
+		)
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
+		self.assertEqual(len(rows), 2)
+		by_qty = {round(r["available_to_receive_qty"], 3): r for r in rows}
+		self.assertEqual(set(by_qty), {0.493, 0.001})
+		self.assertEqual(by_qty[0.001]["available_to_receive_pcs"], 1)
+
+	def test_popup_0_001_sre_with_zero_mop_balance_is_reported_as_skipped(self):
+		"""It now reaches the MOP-balance check, so the dialog can say why."""
+		self._patch_popup(
+			sre_rows=[_sre_dict(reserved_qty=0.001)],
+			mop_rows=[_mop_log_row(qty=0.0)],
+		)
+		result = get_make_receive_entry_rows("MOP-1")
+		self.assertEqual(result["rows"], [])
+		self.assertEqual(len(result["skipped"]), 1)
+		self.assertEqual(result["skipped"][0]["reason"], "mop_zero_balance")
+		self.assertAlmostEqual(result["skipped"][0]["sre_remaining"], 0.001)
+
+	def test_popup_0_001_sre_without_mop_row_falls_back_to_sre_with_warning(self):
+		self._patch_popup(sre_rows=[_sre_dict(reserved_qty=0.001)], mop_rows=[])
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
+		self.assertEqual(len(rows), 1)
+		self.assertAlmostEqual(rows[0]["available_to_receive_qty"], 0.001)
+		self.assertTrue(rows[0]["warning"])
+
+	def test_popup_still_treats_float_noise_as_zero(self):
+		"""Residue far below half a unit must not surface as a receivable row."""
+		sre = _sre_dict(reserved_qty=5.0)
+		sre["delivered_qty"] = 4.9999999
+		self._patch_popup(sre_rows=[sre], mop_rows=[_mop_log_row(qty=5.0)])
+		self.assertEqual(get_make_receive_entry_rows("MOP-1")["rows"], [])
+
+	def test_popup_sub_half_unit_remaining_is_zero(self):
+		self._patch_popup(
+			sre_rows=[_sre_dict(reserved_qty=0.0004)],
+			mop_rows=[_mop_log_row(qty=0.0004)],
+		)
+		self.assertEqual(get_make_receive_entry_rows("MOP-1")["rows"], [])
+
+	# --- validator: create_mr_wo_stock_entry --------------------------------
+
+	def _receive(self, qty, request_id):
+		return create_mr_wo_stock_entry(
+			{
+				"manufacturing_operation": "MOP-1",
+				"receive_items": [
+					{"stock_reservation_entry": "SRE-1", "qty": qty, "idx": 1}
+				],
+			},
+			request_id=request_id,
+		)
+
+	def test_receive_over_reserved_by_one_unit_is_rejected(self):
+		"""0.494 against 0.493 remaining: a 0.001 over-receive used to slip
+		through because ``req > remaining + 0.001`` is false."""
+		mock_new_doc = self._patch_validator(sre_qty=0.493, mop_qty=0.493)
+		with self.assertRaisesRegex(
+			frappe.exceptions.ValidationError, "exceeds reserved qty"
+		):
+			self._receive(0.494, "ou-1")
+		mock_new_doc.assert_not_called()
+
+	def test_receive_over_mop_balance_by_one_unit_is_rejected(self):
+		mock_new_doc = self._patch_validator(sre_qty=0.005, mop_qty=0.001)
+		with self.assertRaisesRegex(
+			frappe.exceptions.ValidationError, "exceeds available qty"
+		):
+			self._receive(0.002, "ou-2")
+		mock_new_doc.assert_not_called()
+
+	def test_receive_exact_0_001_passes_validation(self):
+		"""Not rejected by either cap (new_doc stays unmocked-return; we only
+		need to get past the checks, so stop at Stock Entry creation)."""
+		mock_new_doc = self._patch_validator(sre_qty=0.001, mop_qty=0.001)
+		mock_new_doc.side_effect = RuntimeError("reached Stock Entry creation")
+		with self.assertRaisesRegex(RuntimeError, "reached Stock Entry creation"):
+			self._receive(0.001, "ok-1")
+
+	def test_full_receive_of_0_001_creates_no_replacement_sre(self):
+		replacement, original = self._run_partial_receive(
+			mop_qty=0.001, req_qty=0.001, sre_qty=0.001
+		)
+		original.cancel.assert_called_once()
+		replacement.insert.assert_not_called()
+		replacement.submit.assert_not_called()
+
+	def test_partial_receive_leaving_0_001_recreates_the_sre(self):
+		"""Receive 0.492 of 0.493: the 0.001 left over must keep its
+		reservation. It used to count as a full receive and be dropped."""
+		replacement, original = self._run_partial_receive(
+			mop_qty=0.493, req_qty=0.492, sre_qty=0.493
+		)
+		original.cancel.assert_called_once()
+		self.assertAlmostEqual(replacement.reserved_qty, 0.001)
+		replacement.submit.assert_called_once()
+
+	def test_partial_receive_replacement_capped_by_mop_at_0_001(self):
+		"""SRE 0.010, MOP 0.004, receive 0.003 -> min(0.007, 0.001) = 0.001."""
+		replacement, _ = self._run_partial_receive(
+			mop_qty=0.004, req_qty=0.003, sre_qty=0.010
+		)
+		self.assertAlmostEqual(replacement.reserved_qty, 0.001)
+		replacement.submit.assert_called_once()
+
+	# --- _build_replacement_sre ---------------------------------------------
+
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.get_available_qty_to_reserve",
+		return_value=1.0,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_cached_value",
+		return_value=(0, 0),
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_build_replacement_sre_keeps_0_001(
+		self, _mock_single, mock_new_doc, _mock_cached, _mock_available
+	):
+		original = TestBuildReplacementSreZeroQty._original_sre(None)
+		out = _build_replacement_sre(original, remaining_qty=0.001)
+		self.assertIsNotNone(out)
+		mock_new_doc.assert_called_once()
+		self.assertAlmostEqual(mock_new_doc.return_value.reserved_qty, 0.001)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_build_replacement_sre_still_ignores_sub_half_unit(
+		self, _mock_single, mock_new_doc
+	):
+		original = TestBuildReplacementSreZeroQty._original_sre(None)
+		self.assertIsNone(_build_replacement_sre(original, remaining_qty=0.0004))
+		mock_new_doc.assert_not_called()
+
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.get_available_qty_to_reserve",
+		return_value=1.0,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_cached_value",
+		return_value=(0, 0),
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_build_replacement_sre_keeps_0_001_batch_row(
+		self, _mock_single, mock_new_doc, _mock_cached, _mock_available
+	):
+		original = TestBuildReplacementSreZeroQty._original_sre(
+			None, reservation_based_on="Serial and Batch"
+		)
+		out = _build_replacement_sre(
+			original,
+			remaining_qty=0.001,
+			sb_remaining=[{"batch_no": self.BATCH, "qty": 0.001}],
+		)
+		self.assertIsNotNone(out)
+		mock_new_doc.assert_called_once()
