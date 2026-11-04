@@ -131,7 +131,8 @@
    "fieldtype": "Link",
    "label": "MSL Warehouse",
    "options": "Warehouse",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "metal_details_section",
@@ -250,7 +251,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-06-23 17:28:21.338051",
+ "modified": "2026-11-02 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Tree Number",
