@@ -132,7 +132,4 @@ jewellery_erpnext.patches.add_mr_hold_closed_workflow_states
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only
 jewellery_erpnext.patches.move_manufacturing_plan_layout_to_core
 jewellery_erpnext.patches.clear_kggk_source_on_non_template_bom #2026-10-28 clear inherited KGGK source fields on non-Template BOMs
-jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Close / Hold requests, Order Department and Hold Team
-jewellery_erpnext.patches.seed_pmo_request_blocked_stock_entry_types
-jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Hold during a Close request keeps it (conditional Open / Withdraw)
-jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-30 Only Hold, Open and Close buttons; Close makes the Close request
+jewellery_erpnext.patches.move_sales_invoice_invoice_item_to_e_invoice_child #2026-11-04 invoice_item rows -> Sales Invoice E Invoice Item
