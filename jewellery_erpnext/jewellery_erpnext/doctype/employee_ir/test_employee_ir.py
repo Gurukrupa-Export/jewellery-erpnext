@@ -298,6 +298,105 @@ class TestEmployeeIRReceiveDelayGuard(IntegrationTestCase):
 			validate_employee_ir_receive_delay(doc)
 
 
+class TestIssueRptWtIssuePerRow(IntegrationTestCase):
+	"""``on_submit_issue_new`` must give every operation its OWN row's ``rpt_wt_issue``.
+
+	It used to mutate one shared ``values`` dict inside the row loop and store that same object
+	for every Manufacturing Operation, so a multi-row Issue left every operation holding the LAST
+	row's ``rpt_wt_issue`` (and the time-log args aliased it too).
+	"""
+
+	MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir"
+
+	@classmethod
+	def setUpClass(cls):
+		# Pure-logic suite: skip the ERPNext master bootstrap (fails on this bench).
+		pass
+
+	def _doc(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
+			EmployeeIR,
+		)
+
+		doc = frappe.new_doc("Employee IR")
+		self.assertIsInstance(doc, EmployeeIR)
+		doc.update(
+			{
+				"name": "EIR-RPT-TEST",
+				"type": "Issue",
+				"department": "Dept - T",
+				"operation": "Op - T",
+				"employee": "EMP-T",
+				"subcontracting": "No",
+				"company": "Co - T",
+			}
+		)
+		for mop, mwo, rpt in (
+			("MOP-A", "MWO-A", 1.25),
+			("MOP-B", "MWO-B", 2.5),
+			("MOP-C", "MWO-C", 0),
+		):
+			doc.append(
+				"employee_ir_operations",
+				{
+					"manufacturing_operation": mop,
+					"manufacturing_work_order": mwo,
+					"rpt_wt_issue": rpt,
+				},
+			)
+		return doc
+
+	def _run(self, cancel=False):
+		doc = self._doc()
+		captured = {}
+
+		def _bulk_update(doctype, mops_to_update, **kwargs):
+			captured["doctype"] = doctype
+			captured["payload"] = mops_to_update
+
+		with (
+			patch(f"{self.MODULE}.frappe.db.get_value", return_value="WH - T"),
+			patch(f"{self.MODULE}.frappe.db.bulk_update", side_effect=_bulk_update),
+			patch(f"{self.MODULE}.frappe.db.sql", return_value=[]),
+			patch(f"{self.MODULE}.frappe.db.set_value"),
+			patch(f"{self.MODULE}.creste_mop_log_for_employee_ir"),
+			patch(f"{self.MODULE}.batch_add_time_logs") as time_logs,
+			patch(f"{self.MODULE}.create_tree_on_issue"),
+			patch(f"{self.MODULE}.unlink_tree_on_issue_cancel"),
+			patch.object(type(doc), "_refresh_msl_tracking"),
+		):
+			doc.on_submit_issue_new(cancel=cancel)
+		return captured, time_logs
+
+	def test_each_operation_gets_its_own_rpt_wt_issue(self):
+		captured, time_logs = self._run()
+		payload = captured["payload"]
+		self.assertEqual(captured["doctype"], "Manufacturing Operation")
+		self.assertEqual(payload["MOP-A"]["rpt_wt_issue"], 1.25)
+		self.assertEqual(payload["MOP-B"]["rpt_wt_issue"], 2.5)
+		self.assertEqual(payload["MOP-C"]["rpt_wt_issue"], 0)
+		# Distinct objects, so a later mutation cannot leak across operations.
+		self.assertIsNot(payload["MOP-A"], payload["MOP-B"])
+		for values in payload.values():
+			self.assertEqual(values["status"], "WIP")
+			self.assertEqual(values["employee"], "EMP-T")
+			self.assertEqual(values["operation"], "Op - T")
+		# The time-log args carry the same per-row values.
+		args = dict(time_logs.call_args.args[1])
+		self.assertEqual(args["MOP-A"]["rpt_wt_issue"], 1.25)
+		self.assertEqual(args["MOP-B"]["rpt_wt_issue"], 2.5)
+
+	def test_cancel_still_resets_each_operation(self):
+		captured, time_logs = self._run(cancel=True)
+		payload = captured["payload"]
+		for mop in ("MOP-A", "MOP-B", "MOP-C"):
+			self.assertEqual(payload[mop]["status"], "Not Started")
+			self.assertIsNone(payload[mop]["operation"])
+			self.assertIsNone(payload[mop]["employee"])
+		self.assertEqual(payload["MOP-B"]["rpt_wt_issue"], 2.5)
+		time_logs.assert_not_called()
+
+
 class TestManufacturingOperationBalance(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
