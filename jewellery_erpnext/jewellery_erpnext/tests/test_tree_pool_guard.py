@@ -6,9 +6,12 @@
 Shaped on "Casting KGJPL - 00294 WH - KGJPL": MAT-STE-66673 moved 20.86 g out by hand and
 MAT-STE-75009 put 40.074 g back, leaving the warehouse 7.0 g short of its open trees until
 KGJPL-TR-26-00361 could not Receive. The guard refuses the move out (and the cancel of a move
-in) at the point it happens; inflows and every system flow pass untouched. Pure; for CI.
+in) at the point it happens; inflows and every system flow pass untouched. The mocked classes are
+pure; ``TestFreshClaimsAcrossTransactions`` uses a second real connection and commits its own
+throwaway rows (removed in tearDown).
 """
 
+import time
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -26,6 +29,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events import (
 MSL = "Casting KGJPL - 00294 WH - KGJPL"
 RM = "Waxing RM - KGJPL"
 METAL = "M-G-22KT-91.75-Y"
+INDEX = "msl_warehouse_index"
 
 
 def _row(item_code=METAL, qty=0.0, s=None, t=None, **extra):
@@ -54,11 +58,12 @@ def _tree(name, pending, status="Partially Received", warehouse=MSL, item_code=M
 
 
 @contextmanager
-def _ledger(trees=(), bins=None):
+def _ledger(trees=(), bins=None, index=INDEX, sql_error=None):
 	"""Stand in for the two reads: the open-tree SQL (filtered the way the WHERE clause does)
-	and the locking Bin read. Yields the call log so a test can assert what was read."""
+	and the locking Bin read. Every warehouse named "Casting ..." is an MSL. Yields the call log
+	so a test can assert what was read."""
 	bins = bins or {}
-	calls = {"sql": 0, "bin": []}
+	calls = {"sql": 0, "bin": [], "queries": []}
 	# flt(x, precision) reads System Settings' rounding method through the db and swallows any
 	# error into 0 -- so every read other than these two must still reach the real one.
 	real_sql, real_get_value = frappe.db.sql, frappe.db.get_value
@@ -67,6 +72,9 @@ def _ledger(trees=(), bins=None):
 		if "`tabTree Material Detail`" not in query:
 			return real_sql(query, values, *args, **kwargs)
 		calls["sql"] += 1
+		calls["queries"].append(query)
+		if sql_error:
+			raise sql_error
 		return [
 			t
 			for t in trees
@@ -84,7 +92,9 @@ def _ledger(trees=(), bins=None):
 
 	with patch.object(tree_balance, "qty_precision", return_value=3), patch.object(
 		frappe.db, "sql", side_effect=fake_sql
-	), patch.object(frappe.db, "get_value", side_effect=fake_get_value):
+	), patch.object(frappe.db, "get_value", side_effect=fake_get_value), patch.object(
+		guard, "is_msl_warehouse", side_effect=lambda wh: wh.startswith("Casting ")
+	), patch.object(guard, "_msl_index_name", return_value=index):
 		yield calls
 
 
@@ -171,6 +181,44 @@ class TestWhatPassesUntouched(unittest.TestCase):
 		self.assertEqual(calls["sql"], 0)
 
 
+class TestClaimsReadPastTheSnapshot(unittest.TestCase):
+	"""The claims must be as current as the locked Bin, without ever waiting after it."""
+
+	def test_claims_are_a_nowait_locking_read_on_the_msl_index(self):
+		with _ledger([_tree("TR-1", 90.0)], {(METAL, MSL): 100.0}) as calls:
+			guard.guard_tree_pool(_entry(_row(qty=10.0, s=MSL, t=RM)))
+		(query,) = calls["queries"]
+		self.assertIn(f"FORCE INDEX (`{INDEX}`)", query)
+		self.assertIn("STRAIGHT_JOIN `tabTree Material Detail`", query)
+		self.assertTrue(query.strip().endswith("LOCK IN SHARE MODE NOWAIT"), query)
+
+	def test_without_the_index_it_falls_back_to_the_plain_read(self):
+		# Before migrate: a locking read with no index would hold every tree on the site.
+		with _ledger([_tree("TR-1", 90.0)], {(METAL, MSL): 100.0}, index=None) as calls:
+			guard.guard_tree_pool(_entry(_row(qty=10.0, s=MSL, t=RM)))
+		(query,) = calls["queries"]
+		self.assertNotIn("FORCE INDEX", query)
+		self.assertNotIn("LOCK IN", query)
+
+	def test_a_tree_row_being_written_refuses_as_busy(self):
+		for error in (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
+			with self.subTest(error=error.__name__):
+				with _ledger(sql_error=error("busy")) as calls:
+					with self.assertRaises(frappe.ValidationError) as ctx:
+						guard.guard_tree_pool(_entry(_row(qty=10.0, s=MSL, t=RM)))
+				self.assertIn("being updated by another user", str(ctx.exception))
+				self.assertIn(MSL, str(ctx.exception))
+				self.assertEqual(calls["bin"], [])
+
+	def test_a_warehouse_that_is_not_an_msl_is_never_read(self):
+		# MSL-ness comes from the Warehouse, not from a tree read that might be stale.
+		with _ledger(
+			[_tree("TR-1", 90.0, warehouse=RM)], {(METAL, RM): 100.0}
+		) as calls:
+			guard.guard_tree_pool(_entry(_row(qty=100.0, s=RM, t=MSL)))
+		self.assertEqual(calls["sql"], 0)
+
+
 class TestCancel(unittest.TestCase):
 	def test_cancelling_a_manual_inflow_below_the_claim_is_refused(self):
 		# Cancelling MAT-STE-75009 would take its 40.074 back out of a warehouse already short.
@@ -207,3 +255,144 @@ class TestHookOrder(unittest.TestCase):
 		self._assert_after(
 			"before_cancel", "prelock_bins_on_cancel", "guard_tree_pool_on_cancel"
 		)
+
+
+class TestFreshClaimsAcrossTransactions(unittest.TestCase):
+	"""Two real connections. A (``frappe.db``) is the manual entry: its REPEATABLE READ snapshot
+	is taken first. B is another user's tree Issue, committed after that snapshot. The guard must
+	still count B's claim, and must refuse -- not wait -- while B is writing a tree row.
+
+	B commits throwaway Tree Number rows at a made-up warehouse and tearDown deletes them. Only the
+	Bin read is stubbed; the claims query runs for real.
+	"""
+
+	WH = "TPG Race MSL WH"
+
+	def setUp(self):
+		if frappe.db.db_type != "mariadb":
+			self.skipTest("MariaDB locking reads")
+		if not guard._msl_index_name():
+			self.skipTest("Tree Number.msl_warehouse has no index yet (run migrate)")
+		self.prefix = f"TPG-RACE-{frappe.generate_hash(length=8)}"
+		self.other = frappe.database.get_db(
+			socket=frappe.db.socket,
+			host=frappe.db.host,
+			user=frappe.db.user,
+			password=frappe.db.password,
+			port=frappe.db.port,
+			cur_db_name=frappe.db.cur_db_name,
+		)
+		self.other.connect()
+		self.other.sql("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+		frappe.db.rollback()
+		# Applies to A's next transaction, which the rollback above has not started yet.
+		frappe.db.sql("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+		frappe.db.rollback()
+
+	def tearDown(self):
+		frappe.db.rollback()
+		self.other.rollback()
+		self.other.sql(
+			"DELETE FROM `tabTree Material Detail` WHERE parent LIKE %s",
+			(f"{self.prefix}%",),
+		)
+		self.other.sql(
+			"DELETE FROM `tabTree Number` WHERE name LIKE %s", (f"{self.prefix}%",)
+		)
+		self.other.commit()
+		self.other.close()
+
+	def _commit_tree(self, suffix, pending, status="Issued"):
+		"""B: one open tree owing ``pending`` of METAL at WH, committed."""
+		name = f"{self.prefix}-{suffix}"
+		self.other.sql(
+			"""INSERT INTO `tabTree Number` (name, creation, modified, status, msl_warehouse)
+			VALUES (%s, NOW(6), NOW(6), %s, %s)""",
+			(name, status, self.WH),
+		)
+		self.other.sql(
+			"""INSERT INTO `tabTree Material Detail`
+				(name, creation, modified, parent, parenttype, parentfield, idx, item_code, pending_qty)
+			VALUES (%s, NOW(6), NOW(6), %s, 'Tree Number', 'material_details', 1, %s, %s)""",
+			(f"{name}-M", name, METAL, pending),
+		)
+		self.other.commit()
+		return name
+
+	def _snapshot_claims(self):
+		"""A's plain read -- also what pins A's snapshot if nothing has yet."""
+		return flt_sum(
+			frappe.db.sql(
+				"""SELECT tmd.pending_qty FROM `tabTree Material Detail` tmd
+				JOIN `tabTree Number` tn ON tn.name = tmd.parent
+				WHERE tn.msl_warehouse = %s""",
+				self.WH,
+			)
+		)
+
+	@contextmanager
+	def _bin(self, actual):
+		real_get_value = frappe.db.get_value
+
+		def fake_get_value(doctype, *args, **kwargs):
+			return (
+				actual if doctype == "Bin" else real_get_value(doctype, *args, **kwargs)
+			)
+
+		with patch.object(
+			frappe.db, "get_value", side_effect=fake_get_value
+		), patch.object(
+			guard, "is_msl_warehouse", side_effect=lambda wh: wh == self.WH
+		):
+			yield
+
+	def _draw(self, qty):
+		guard.guard_tree_pool(
+			_entry(_row(qty=qty, s=self.WH, t=RM), name="MAT-STE-RACE")
+		)
+
+	def test_an_issue_committed_after_the_snapshot_still_counts(self):
+		# Stock 100 owed 90; B issues 10 more (stock 110, owed 100); A then draws 20.
+		self._commit_tree("T1", 90.0)
+		self.assertEqual(self._snapshot_claims(), 90.0)  # A's snapshot now exists
+		t2 = self._commit_tree("T2", 10.0)
+		self.assertEqual(
+			self._snapshot_claims(), 90.0, "A must still be on its old snapshot"
+		)
+		with self._bin(110.0):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				self._draw(20.0)
+		self.assertIn(t2, str(ctx.exception))
+		self.assertIn("<strong>100.0</strong>", str(ctx.exception))
+
+	def test_no_claims_in_the_snapshot_does_not_skip_the_warehouse(self):
+		self.assertEqual(self._snapshot_claims(), 0.0)
+		self._commit_tree("T1", 100.0)
+		with self._bin(110.0):
+			with self.assertRaises(frappe.ValidationError):
+				self._draw(20.0)
+
+	def test_the_surplus_still_moves(self):
+		self._commit_tree("T1", 90.0)
+		self._snapshot_claims()
+		self._commit_tree("T2", 10.0)
+		with self._bin(110.0):
+			self._draw(10.0)
+
+	def test_a_tree_being_written_refuses_at_once_instead_of_waiting(self):
+		t1 = self._commit_tree("T1", 90.0)
+		self._snapshot_claims()
+		self.other.sql(
+			"UPDATE `tabTree Material Detail` SET pending_qty = 95 WHERE parent = %s",
+			t1,
+		)  # B holds the row, uncommitted
+		started = time.monotonic()
+		with self._bin(110.0):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				self._draw(5.0)
+		self.assertLess(time.monotonic() - started, 5)
+		self.assertIn("being updated by another user", str(ctx.exception))
+
+
+def flt_sum(rows):
+	return sum(float(r[0] or 0) for r in rows or ())
