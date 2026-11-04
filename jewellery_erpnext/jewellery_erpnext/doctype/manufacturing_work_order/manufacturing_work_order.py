@@ -21,6 +21,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_ev
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 	validate_not_eod_sync_locked,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+	blocking_message,
+	pmo_blocking_state,
+	pmo_request_state,
+	request_message,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
 )
@@ -64,18 +70,42 @@ class ManufacturingWorkOrder(Document):
 			)
 
 	def before_submit(self):
+		# Holding or closing a PMO holds / closes its draft work orders too; on_submit would set
+		# one back to Not Started under the still held or closed PMO.
+		if state := pmo_blocking_state(self.manufacturing_order):
+			frappe.throw(
+				blocking_message(self.manufacturing_order, state)
+				+ " "
+				+ _("Its work orders cannot be submitted."),
+				title=_("Work Order {0}").format(state),
+			)
+		# A Close / Hold request waits for the work to come back; a newly submitted work order
+		# would start new work under it.
+		if state := pmo_request_state(self.manufacturing_order):
+			frappe.throw(
+				request_message(self.manufacturing_order, state)
+				+ " "
+				+ _(
+					"Its work orders cannot be submitted until the request is done or withdrawn."
+				),
+				title=_("Parent Manufacturing Order Restricted"),
+			)
 		self.validate_photoshop_images()
 
 	def on_submit(self):
+		last_operation = None
 		if self.for_fg:
-			self.validate_other_work_orders()
-
-			# new Code
-			last_department = frappe.db.get_value(
+			# (department, name) of the last Department Operation, read once for the
+			# validation below and create_manufacturing_operation.
+			last_operation = frappe.db.get_value(
 				"Department Operation",
 				{"is_last_operation": 1, "manufacturer": self.manufacturer},
-				"department",
+				["department", "name"],
 			)
+			last_department = last_operation[0] if last_operation else None
+			self.validate_other_work_orders(last_department)
+
+			# new Code
 			mop_list = frappe.db.get_list(
 				"Manufacturing Operation",
 				filters={
@@ -90,12 +120,11 @@ class ManufacturingWorkOrder(Document):
 						"Manufacturing Operation", mop, "status", "Finished"
 					)
 
-		create_manufacturing_operation(self)
+		create_manufacturing_operation(self, last_operation)
 		if self.split_from:
 			create_mr_for_split_work_order(self.name, self.company, self.manufacturer)
 		# self.start_datetime = now()
-		self.db_set("start_datetime", now())
-		self.db_set("status", "Not Started")
+		self.db_set({"start_datetime": now(), "status": "Not Started"})
 
 	def sync_mwo_weights(self):
 		sibling_mwos = frappe.db.get_all(
@@ -244,15 +273,16 @@ class ManufacturingWorkOrder(Document):
 				update_modified=False,
 			)
 
-	def validate_other_work_orders(self):
+	def validate_other_work_orders(self, last_department=None):
 		# last_department = frappe.db.get_value(
 		# 	"Department Operation", {"is_last_operation": 1, "company": self.company}, "department"
 		# )
-		last_department = frappe.db.get_value(
-			"Department Operation",
-			{"is_last_operation": 1, "manufacturer": self.manufacturer},
-			"department",
-		)
+		if last_department is None:
+			last_department = frappe.db.get_value(
+				"Department Operation",
+				{"is_last_operation": 1, "manufacturer": self.manufacturer},
+				"department",
+			)
 		if not last_department:
 			frappe.throw(_("Please set last operation first in Department Operation"))
 		pending_wo = frappe.get_all(
@@ -1009,7 +1039,7 @@ def _resolve_unpack_inventory(serial_no):
 	return source_inventory_type, source_customer
 
 
-def create_manufacturing_operation(doc):
+def create_manufacturing_operation(doc, last_operation=None):
 	# timer code
 	dt_string = get_datetime()
 
@@ -1044,11 +1074,13 @@ def create_manufacturing_operation(doc):
 		# department, operation = frappe.db.get_value(
 		# 	"Department Operation", {"is_last_operation": 1, "company": doc.company}, ["department", "name"]
 		# ) or ["", ""]
-		department, operation = frappe.db.get_value(
-			"Department Operation",
-			{"is_last_operation": 1, "manufacturer": doc.manufacturer},
-			["department", "name"],
-		) or ["", ""]
+		if last_operation is None:
+			last_operation = frappe.db.get_value(
+				"Department Operation",
+				{"is_last_operation": 1, "manufacturer": doc.manufacturer},
+				["department", "name"],
+			)
+		department, operation = last_operation or ["", ""]
 		# New Status
 		status = "Finished"
 
@@ -1233,10 +1265,12 @@ def _validate_split_basics(docname):
 		docname,
 		[
 			"docstatus",
+			"status",
 			"has_split_mwo",
 			"department",
 			"gross_wt",
 			"manufacturing_operation",
+			"manufacturing_order",
 		],
 		as_dict=True,
 	)
@@ -1245,6 +1279,23 @@ def _validate_split_basics(docname):
 			_("Work Order {0} must be submitted before it can be split.").format(
 				docname
 			)
+		)
+
+	# A Close / Hold request waits for the work orders to come back, not for new ones.
+	if state := pmo_request_state(mwo.get("manufacturing_order")):
+		frappe.throw(
+			request_message(mwo.manufacturing_order, state)
+			+ " "
+			+ _(
+				"Work Order {0} cannot be split until the request is done or withdrawn."
+			).format(docname)
+		)
+
+	# Held or closed with its PMO: the split would close it and start new work orders under
+	# a PMO that takes none. (A split parent is Closed too, but has_split_mwo says so below.)
+	if mwo.status == "Hold" or (mwo.status == "Closed" and not cint(mwo.has_split_mwo)):
+		frappe.throw(
+			_("Work Order {0} is {1} and cannot be split.").format(docname, mwo.status)
 		)
 
 	# A split parent keeps its department and zero weight, and its pending operations are

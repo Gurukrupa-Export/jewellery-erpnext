@@ -11,6 +11,10 @@ from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
 	WEIGHT_FIELDS,
 	get_summary_data,
@@ -90,12 +94,22 @@ class DepartmentIR(Document):
 			["name", "gross_wt"],
 			order_by="creation asc",
 		)
+		records = without_closed_mwo_operations(records)
 		self.department_ir_operation = []
 		if records:
 			for row in records:
 				self.append(
 					"department_ir_operation", {"manufacturing_operation": row.name}
 				)
+
+	def validate(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			refuse_department_ir_while_requested,
+		)
+
+		block_closed_mwo_operations(self, "department_ir_operation")
+		# A PMO with a Close / Hold request: its work orders go only to the request department.
+		refuse_department_ir_while_requested(self, "department_ir_operation")
 
 	def before_save(self):
 		self.set_parent_manufacturing_order_count()
@@ -168,10 +182,17 @@ class DepartmentIR(Document):
 				)
 
 	def on_submit(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			queue_ready_check_after_transfer,
+		)
+
 		if self.type == "Issue":
 			self.on_submit_issue_new()
 		else:
 			self.on_submit_receive()
+			# A Receive may bring back the last work order of a PMO with a Close / Hold
+			# request: its requester is told once the submit commits.
+			queue_ready_check_after_transfer(self, "department_ir_operation")
 
 	def on_cancel(self):
 		if self.type == "Issue":

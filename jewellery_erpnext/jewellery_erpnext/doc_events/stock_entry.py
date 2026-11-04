@@ -1093,6 +1093,12 @@ def onsubmit(self, method):
 		):
 			return
 
+	# A producer that writes its own reservation and MOP Log rows (Settle's work-order legs)
+	# opts out here: the generic bridge would reserve and log its rows a second time.
+	flags = getattr(self, "flags", None)
+	if isinstance(flags, dict) and flags.get("skip_mwo_reservation"):
+		return
+
 	types_for_reservation = frappe.db.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},

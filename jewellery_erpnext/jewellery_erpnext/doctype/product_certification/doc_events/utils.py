@@ -504,13 +504,19 @@ def _receipt_precision():
 
 
 def _issued_batch_pool(issue_item_defaults, item_code):
-	"""What the Issue drew for ``item_code``, batch by batch, in the order it drew it."""
+	"""What the Issue drew for ``item_code``, batch by batch, in the order it drew it.
+
+	One entry per batch. An Issue that sends one batch on several rows -- one row per tree --
+	lists that batch once per row, and ``allocate_in_order`` caps each entry at its own qty
+	while counting ``taken`` per batch, so the batch held only its largest row. CRT-2026-00126:
+	ten trees of 5.75 off one batch, and the second Touch row was "short by 0.23" after 0.60.
+	"""
 	entry = issue_item_defaults.get(item_code) or {}
-	return [
-		(batch_no, flt(qty))
-		for batch_no, qty in (entry.get("batches") or [])
-		if batch_no and flt(qty) > 0
-	]
+	pool = {}
+	for batch_no, qty in entry.get("batches") or []:
+		if batch_no and flt(qty) > 0:
+			pool[batch_no] = flt(pool.get(batch_no)) + flt(qty)
+	return list(pool.items())
 
 
 def _split_row_by_issued_batches(row, issue_item_defaults, taken, precision):
@@ -549,7 +555,9 @@ def _split_row_by_issued_batches(row, issue_item_defaults, taken, precision):
 			).format(
 				frappe.bold(row.get("item_code")),
 				need,
-				frappe.bold(row.get("s_warehouse") or frappe._("the supplier warehouse")),
+				frappe.bold(
+					row.get("s_warehouse") or frappe._("the supplier warehouse")
+				),
 				available,
 				flt(shortfall, precision),
 			),

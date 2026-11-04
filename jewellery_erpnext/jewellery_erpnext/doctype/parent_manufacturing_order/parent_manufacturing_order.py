@@ -4,6 +4,7 @@
 import frappe
 from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe import _
+from frappe.model import no_value_fields, table_fields
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
@@ -13,7 +14,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 	CUSTOMER_GOODS_INVENTORY_TYPE,
 	pmo_expects_customer_goods,
 )
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
 from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
 	diamond_group_key,
 	gemstone_group_key,
@@ -23,6 +23,15 @@ from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_mast
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+	CLOSED_DRAFT_STATE,
+	CLOSED_STATE,
+	HOLD_DRAFT_STATE,
+	HOLD_STATE,
+	REQUESTED_STATES,
+	on_workflow_state_change,
+	refuse_while_blocked,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
 	custom_override_grades,
@@ -127,21 +136,42 @@ def _get_variant_attribute_value(row, attribute):
 	return row.get(normalized_attr)
 
 
-def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
+def _get_item_variant_info(item_code, item_info=None):
+	"""Item ``variant_of`` / ``has_variants`` (None when the Item does not exist).
+
+	``item_info`` is the caller's memo, scoped to one PMO submit; each code is read once.
+	"""
+	if not item_code:
+		return None
+	if item_info is None:
+		item_info = {}
+	if item_code not in item_info:
+		item_info[item_code] = frappe.db.get_value(
+			"Item", item_code, ["variant_of", "has_variants"], as_dict=1
+		)
+	return item_info[item_code]
+
+
+def _resolve_existing_variant_item_code(
+	row, bom_table, pmo_diamond_grade=None, item_info=None, resolved_variants=None
+):
+	"""``resolved_variants`` is the caller's memo of found variants per (template, attribute
+	values), scoped to one PMO submit, so the work-order pass reuses what the Material
+	Request pass looked up."""
 	item_code = row.get("item_variant") or row.get("item_code")
-	item_template = row.get("item") or (
-		frappe.db.get_value("Item", item_code, "variant_of") if item_code else None
-	)
+	item = _get_item_variant_info(item_code, item_info)
+	item_template = row.get("item") or (item.variant_of if item else None)
 
 	if item_code:
-		item_has_variants = frappe.db.get_value("Item", item_code, "has_variants")
+		item_has_variants = item.has_variants if item else None
 		if not item_has_variants and not item_template:
 			return item_code
 
 	if not item_template:
 		return item_code
 
-	template_has_variants = frappe.db.get_value("Item", item_template, "has_variants")
+	template = _get_item_variant_info(item_template, item_info)
+	template_has_variants = template.has_variants if template else None
 	if not template_has_variants:
 		return item_template
 
@@ -172,7 +202,12 @@ def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
 			).format(bom_table, row.get("idx") or row.get("name") or "?", item_template)
 		)
 
+	variant_key = (item_template, frozenset(args.items()))
+	if resolved_variants is not None and variant_key in resolved_variants:
+		return resolved_variants[variant_key]
 	if variant := get_variant(item_template, args):
+		if resolved_variants is not None:
+			resolved_variants[variant_key] = variant
 		return variant
 
 	used_attributes = ", ".join([f"{k}: {v}" for k, v in sorted(args.items())]) or _(
@@ -192,8 +227,9 @@ def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
 	)
 
 
-def _validate_non_template_item(item_code, bom_table):
-	has_variants = frappe.db.get_value("Item", item_code, "has_variants")
+def _validate_non_template_item(item_code, bom_table, item_info=None):
+	item = _get_item_variant_info(item_code, item_info)
+	has_variants = item.has_variants if item else None
 	if has_variants:
 		frappe.throw(
 			_(
@@ -203,9 +239,9 @@ def _validate_non_template_item(item_code, bom_table):
 		)
 
 
-def _validate_item_exists(item_code, bom_table, row):
+def _validate_item_exists(item_code, bom_table, row, item_info=None):
 	"""Raise a clear error when a resolved item code does not exist in Item master."""
-	if not frappe.db.exists("Item", item_code):
+	if not _get_item_variant_info(item_code, item_info):
 		frappe.throw(
 			_(
 				"Item {0} does not exist in the system. Found in {1} (Row {2}). "
@@ -268,6 +304,11 @@ def _validate_metal_item_attributes(item_code, row, bom_table):
 		)
 
 
+# What a Hold / Open / Close of the PMO writes besides its state: the reason row and the
+# snapshot, both by the action itself (doc_events/close_open.py).
+STATE_CHANGE_FIELDS = {"workflow_state", "status_reasons", "hold_snapshot"}
+
+
 class ParentManufacturingOrder(Document):
 	def before_save(self):
 		is_new = self.is_new()
@@ -299,9 +340,16 @@ class ParentManufacturingOrder(Document):
 			"Item", self.item_code, "has_batch_no"
 		):
 			frappe.throw(_("Diamond Grade is not mentioned in customer"))
-		self.metal_details()
 
 	def before_submit(self):
+		# A held or closed draft is submitted only through its workflow action, which has
+		# already moved the state to Submitted by now; a direct submit still carries the old one.
+		if self.get("workflow_state") == HOLD_DRAFT_STATE:
+			frappe.throw(
+				_("{0} is on Hold: submit it with the Submit action.").format(self.name)
+			)
+		if self.get("workflow_state") == CLOSED_DRAFT_STATE:
+			frappe.throw(_("{0} is Closed and cannot be submitted.").format(self.name))
 		# frappe runs validate + before_submit on submit and skips before_save, so the grade has
 		# to be resolved here too: without it a PMO that reached submit without a stored grade
 		# silently skips the tracking BOM update below.
@@ -419,14 +467,22 @@ class ParentManufacturingOrder(Document):
 			self.diamond_grade = grade
 
 	def metal_details(self):
-		if self.custom_tracking_bom:
-			metal_purity = frappe.db.get_value(
-				"Metal Criteria",
-				{"parent": self.manufacturer, "metal_touch": self.metal_touch},
-				["metal_purity"],
-			)
-			if metal_purity:
-				self.metal_purity = metal_purity
+		if not (self.manufacturer and self.metal_type and self.metal_touch):
+			return
+
+		metal_purity = frappe.db.get_value(
+			"Metal Criteria",
+			{
+				"parent": self.manufacturer,
+				"parenttype": "Manufacturer",
+				"parentfield": "metal_criteria",
+				"metal_type": self.metal_type,
+				"metal_touch": self.metal_touch,
+			},
+			"metal_purity",
+		)
+		if metal_purity:
+			self.metal_purity = metal_purity
 
 	def after_insert(self):
 		if self.custom_tracking_bom:
@@ -455,9 +511,10 @@ class ParentManufacturingOrder(Document):
 		# Also above it: the grade a PMO carries has to be legitimate from the moment it is
 		# created, and validate is the only hook frappe runs on both save and submit.
 		self._validate_diamond_grade_policy()
+		# Resolve derived purity on insert and automated saves as well as submission.
+		self.metal_details()
 		if self.is_new() or self.flags.ignore_validations:
 			return
-		self.metal_details()
 		validate_mfg_date(self)
 		if not self.manufacturer:
 			return
@@ -473,7 +530,8 @@ class ParentManufacturingOrder(Document):
 			],
 			as_dict=1,
 		)
-		self.db_set(
+		# Persisted by this save's own UPDATE: validate only runs on save and submit.
+		self.update(
 			{
 				"metal_department": warehouse_details.get("default_department"),
 				"diamond_department": warehouse_details.get(
@@ -495,11 +553,80 @@ class ParentManufacturingOrder(Document):
 			}
 		)
 
+	def _state_change_only(self):
+		"""True for a save that only moves the workflow state.
+
+		apply_workflow reloads the PMO and changes nothing but its state, so a Hold, Open or
+		Close carries no edit that the PMO's own validation has to see -- and must not be
+		refused by it: a draft whose Sales Order or Manufacturing Plan has been cancelled since
+		is exactly the one to close. Only saves and updates after submit qualify; a submit
+		always runs the full validation.
+		"""
+		if getattr(self, "_action", None) not in ("save", "update_after_submit"):
+			return False
+		before = self.get_doc_before_save()
+		if not before or before.get("workflow_state") == self.get("workflow_state"):
+			return False
+		for df in self.meta.fields:
+			if df.fieldname in STATE_CHANGE_FIELDS:
+				continue
+			if df.fieldtype in table_fields:
+				rows = [row.name for row in self.get(df.fieldname) or []]
+				if rows != [row.name for row in before.get(df.fieldname) or []]:
+					return False
+			elif df.fieldtype not in no_value_fields:
+				if self.get(df.fieldname) != before.get(df.fieldname):
+					return False
+		return True
+
+	def _validate_links(self):
+		if self._state_change_only():
+			return
+		return super()._validate_links()
+
+	def before_validate(self):
+		if self._state_change_only():
+			self.flags.ignore_validate = True
+			self.flags.ignore_mandatory = True
+
+	def before_update_after_submit(self):
+		if self._state_change_only():
+			self.flags.ignore_mandatory = True
+
+	def on_update(self):
+		on_workflow_state_change(self)
+
 	def on_update_after_submit(self):
+		if self._state_change_only():
+			on_workflow_state_change(self)
+			return
 		update_due_days(self)
 		validate_mfg_date(self)
+		on_workflow_state_change(self)
+
+	def before_cancel(self):
+		# Hold has to be undone (Open) before a cancel, and a Close is final. A cancel through
+		# the API (or Hybrid Cancel) skips the workflow, so it is refused here.
+		if self.get("workflow_state") == HOLD_STATE:
+			frappe.throw(
+				_("{0} is on Hold: Open it before cancelling.").format(self.name)
+			)
+		if self.get("workflow_state") == CLOSED_STATE:
+			frappe.throw(_("{0} is Closed and cannot be cancelled.").format(self.name))
+		# A Close request keeps the order and its trail until it is closed or dropped (Open).
+		if self.get("workflow_state") in REQUESTED_STATES:
+			frappe.throw(
+				_(
+					"{0} is {1}: Open it to drop the Close request before cancelling."
+				).format(self.name, _(self.get("workflow_state")))
+			)
 
 	def on_submit(self):
+		# Item variant_of / has_variants and resolved-variant memos shared by
+		# create_material_requests and create_manufacturing_work_order, which resolve the
+		# same BOM rows. This submit only.
+		self.flags.item_variant_info = {}
+		self.flags.resolved_variants = {}
 		if not self.order_form_type or self.order_form_type == "Order":
 			# One update_after_submit cycle for all three tolerance tables instead of one
 			# per populator, and none at all for a customer with no tolerance master --
@@ -518,6 +645,8 @@ class ParentManufacturingOrder(Document):
 				self.create_material_requests()
 		create_manufacturing_work_order(self)
 		# gemstone_details_set_mandatory_field(self)
+		self.flags.pop("item_variant_info", None)
+		self.flags.pop("resolved_variants", None)
 
 	def on_cancel(self):
 		update_existing(
@@ -576,10 +705,8 @@ class ParentManufacturingOrder(Document):
 		mnf_abb = frappe.get_value(
 			"Manufacturer", self.manufacturer, "custom_abbreviation"
 		)
-		bom_doc = frappe.get_doc("Tracking Bom", bom)
-		if bom_doc.get("bom_type") == "Template":
-			set_item_variant(bom_doc)
-			bom_doc.save(ignore_permissions=True)
+		item_info = self.flags.get("item_variant_info", {})
+		resolved_variants = self.flags.get("resolved_variants", {})
 
 		warehouse_dict = {
 			row.variant: row
@@ -617,7 +744,7 @@ class ParentManufacturingOrder(Document):
 					)
 				else:
 					item_code = _resolve_existing_variant_item_code(
-						row, bom_table, self.diamond_grade
+						row, bom_table, self.diamond_grade, item_info, resolved_variants
 					)
 				if not item_code:
 					field_name = (
@@ -629,14 +756,14 @@ class ParentManufacturingOrder(Document):
 						_("{0} is missing in {1}").format(field_name, bom_table)
 					)
 				if bom_table != "BOM Gemstone Detail":
-					_validate_non_template_item(item_code, bom_table)
-				_validate_item_exists(item_code, bom_table, row)
+					_validate_non_template_item(item_code, bom_table, item_info)
+				_validate_item_exists(item_code, bom_table, row, item_info)
 				if bom_table in (
 					"BOM Metal Detail",
 					"BOM Finding Detail",
 				) and not row.get("item"):
 					_validate_metal_item_attributes(item_code, row, bom_table)
-				item_type = get_item_type(item_code)
+				item_type = get_item_type(item_code, item_info)
 				variant_key = _ITEM_TYPE_PREFIX[item_type]
 				if variant_key not in warehouse_dict:
 					frappe.throw(_("Please mention warehouse details in Manufacturer"))
@@ -849,6 +976,7 @@ class ParentManufacturingOrder(Document):
 
 	@frappe.whitelist()
 	def send_to_customer_for_approval(self):
+		refuse_while_blocked(self.name, _("It cannot be sent for customer approval."))
 		mwo_list = frappe.db.get_all(
 			"Manufacturing Work Order",
 			{"manufacturing_order": self.name, "docstatus": 1},
@@ -869,10 +997,11 @@ class ParentManufacturingOrder(Document):
 		create_stock_entry(self, department_data)
 
 
-def get_item_type(item_code):
+def get_item_type(item_code, item_info=None):
 	if item_code in _VARIANT_TO_ITEM_TYPE:
 		return _VARIANT_TO_ITEM_TYPE[item_code]
-	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+	item = _get_item_variant_info(item_code, item_info)
+	variant_of = item.variant_of if item else None
 	return _VARIANT_TO_ITEM_TYPE.get(variant_of, "other_item")
 
 
@@ -984,17 +1113,22 @@ def create_manufacturing_work_order(self):
 		.where(BOMFindingDetail.parent == self.custom_tracking_bom)
 	).run(as_dict=True)
 
+	item_info = self.flags.get("item_variant_info", {})
+	resolved_variants = self.flags.get("resolved_variants", {})
 	finding_data = []
 	for row in finding_details:
 		item_code = row.get("item_variant") or _resolve_existing_variant_item_code(
-			row, "BOM Finding Detail", self.diamond_grade
+			row,
+			"BOM Finding Detail",
+			self.diamond_grade,
+			item_info,
+			resolved_variants,
 		)
 
 		template_item = row.get("item") or row.get("item_code")
 		if not template_item:
-			template_item = (
-				frappe.db.get_value("Item", item_code, "variant_of") or item_code
-			)
+			item = _get_item_variant_info(item_code, item_info)
+			template_item = (item.variant_of if item else None) or item_code
 
 		ignore_wo = frappe.db.get_value(
 			"Item", template_item, "custom_ignore_work_order"
@@ -1683,6 +1817,7 @@ def hold_mop(self):
 
 @frappe.whitelist()
 def create_mwo(pmo, doc, reason=None):
+	refuse_while_blocked(pmo, _("No new work order can be created for it."))
 	cad_mwo = frappe.db.get_value(
 		"Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}
 	)

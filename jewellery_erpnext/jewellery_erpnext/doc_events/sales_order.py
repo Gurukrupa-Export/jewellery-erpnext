@@ -15,7 +15,10 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 # Companies allowed to use Sales Type "Hybrid" (3% on company-owned material +
 # 5% on customer-supplied material within the same BOM). Extend this tuple to
 # roll Hybrid out to more companies later.
-HYBRID_ENABLED_COMPANIES = ("KG GK Jewellers Private Limited","Gurukrupa Export Private Limited")
+HYBRID_ENABLED_COMPANIES = (
+	"KG GK Jewellers Private Limited",
+	"Gurukrupa Export Private Limited",
+)
 
 # Placeholder item that carries the aggregated customer-supplied (5%) amount
 # for Hybrid Sales Orders — see add_hybrid_outwork_row().
@@ -221,10 +224,8 @@ def on_cancel(self, method):
 			tb = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
 			if tb.docstatus == 1:
 				tb.cancel()
-		# Also handle legacy BOM references
+		# Also handle legacy BOM references; the BOM itself is untouched (never was saved)
 		if row.bom:
-			bom = frappe.get_doc("BOM", row.bom)
-			bom.is_active = 0
 			row.bom = ""
 	# cancel_bom(self)
 	validate_snc(self)
@@ -849,16 +850,24 @@ def _get_bom_context(self):
 			"custom_precision_for_gross_weight",
 		],
 	)
+	# A ticked "(2 Digit)" box forces 2, matching the Customer's "Consider 2 Digit for ..."
+	# that the form copies into it.
 	if self.get("custom_precision"):
-		metal_precision = 3
+		metal_precision = 2
+	# Diamond covers diamonds and gemstones; Gemstone overrides gemstones alone.
+	gemstone_precision = stone_precision
 	if self.get("custom_precision_for_stone"):
-		stone_precision = 3
+		stone_precision = 2
+		gemstone_precision = 2
+	if self.get("custom_precision_for_gemstone"):
+		gemstone_precision = 2
 	return frappe._dict(
 		gold_gst_rate=gold_gst_rate,
 		customer_group=customer_group,
 		precision=precision,
 		metal_precision=metal_precision or 3,
 		stone_precision=stone_precision or 3,
+		gemstone_precision=gemstone_precision or 3,
 		precision_for_net_weight=precision_for_net_weight or 3,
 		precision_for_gross_weight=precision_for_gross_weight or 3,
 	)
@@ -1106,6 +1115,29 @@ def get_stock_entry_additional_cost(self, doc):
 	return stock_entry.total_additional_costs if stock_entry else 0
 
 
+def _outwork_metal_wastage_rate(doc, mc_name, sub_info):
+	"""Outwork customer-item metal wastage rate (fraction) from Making Charge Price.
+
+	BOM with a Chains finding: Finding Subcategory row for that finding type.
+	Otherwise: the BOM item-subcategory row (sub_info). Uses `wastage` (percent).
+	"""
+	chain = next(
+		(f for f in doc.get("finding_detail", []) if f.finding_category == "Chains"),
+		None,
+	)
+	if chain:
+		row = next(
+			(
+				r
+				for r in _get_all_finding_sub_rows(mc_name)
+				if r.subcategory == chain.finding_type
+			),
+			None,
+		)
+		return flt(row.get("wastage")) / 100.0 if row else 0
+	return flt((sub_info or {}).get("wastage")) / 100.0
+
+
 def _process_metal_detail1(self, doc, ctx, cctx):
 	if not hasattr(doc, "metal_detail"):
 		return
@@ -1122,7 +1154,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			self.company == "Gurukrupa Export Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			_, sub_info, threshold = _get_making_charge(
+			mc_name, sub_info, threshold = _get_making_charge(
 				self, doc, s.metal_touch, ctx, cctx
 			)
 			# frappe.throw(str(sub_info))
@@ -1133,6 +1165,8 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				s.making_rate = sub_info.get("rate_per_gm", 0)
 				s.wastage_rate = 0
 				s.wastage_amount = 0
+				if self.sales_type == "Outwork":
+					s.wastage_rate = _outwork_metal_wastage_rate(doc, mc_name, sub_info)
 			else:
 				s.rate = round(s.se_rate, 2)
 				s.wastage_rate = 0
@@ -1148,7 +1182,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			self.company == "KG GK Jewellers Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			_, sub_info, threshold = _get_making_charge(
+			mc_name, sub_info, threshold = _get_making_charge(
 				self, doc, s.metal_touch, ctx, cctx
 			)
 			# frappe.throw(str(sub_info))
@@ -1167,6 +1201,8 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				s.making_amount = round(s.making_rate * s.quantity, 2)
 				s.wastage_rate = 0
 				s.wastage_amount = 0
+				if self.sales_type == "Outwork":
+					s.wastage_rate = _outwork_metal_wastage_rate(doc, mc_name, sub_info)
 				s.fg_purchase_rate = 0
 				s.fg_purchase_amount = 0
 			else:
@@ -1186,7 +1222,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			s.amount = round(s.rate * s.quantity, 2)
 
 		else:
-			_, sub_info, threshold = _get_making_charge(
+			mc_name, sub_info, threshold = _get_making_charge(
 				self, doc, s.metal_touch, ctx, cctx
 			)
 			# frappe.throw(str(sub_info))
@@ -1210,6 +1246,9 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				s.amount = 0
 				s.making_rate = sub_info.get("subcontracting_rate", 0)
 				s.making_amount = s.making_rate * s.quantity
+				if self.sales_type == "Outwork":
+					s.wastage_rate = _outwork_metal_wastage_rate(doc, mc_name, sub_info)
+					s.wastage_amount = s.wastage_rate * s.amount
 			else:
 				wastage = (
 					sub_info.get("subcontracting_wastage", 0) / 100.0
@@ -1347,6 +1386,25 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 		return find_data
 
 
+def _outwork_finding_making_rate(f, mc_name, sub_info):
+	"""Outwork customer-item finding making rate from Making Charge Price.
+
+	Chains: Finding Subcategory row matching the finding type -> subcontracting_rate
+	(0 if no row). Others: the BOM item-subcategory row -> rate_per_gm.
+	"""
+	if f.finding_category == "Chains":
+		row = next(
+			(
+				r
+				for r in _get_all_finding_sub_rows(mc_name)
+				if r.subcategory == f.finding_type
+			),
+			None,
+		)
+		return flt(row.get("subcontracting_rate")) if row else 0
+	return flt((sub_info or {}).get("rate_per_gm"))
+
+
 def _process_finding_detail1(self, doc, ctx, cctx):
 	if not hasattr(doc, "finding_detail") or not doc.finding_detail:
 		doc.total_finding_amount = 0
@@ -1393,6 +1451,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate = 0
 				f.amount = 0
 				f.making_rate = find_data.get("rate_per_gm")
+				if self.sales_type == "Outwork":
+					f.making_rate = _outwork_finding_making_rate(f, mc_name, sub_info)
 				if self.sales_type == "Hybrid" and f.finding_category == "Chains":
 					f.making_rate = 0
 				f.wastage_rate = 0
@@ -1429,6 +1489,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.amount = 0
 				# f.making_rate=operational_cost/total_weight
 				f.making_rate = find_data.get("rate_per_gm")
+				if self.sales_type == "Outwork":
+					f.making_rate = _outwork_finding_making_rate(f, mc_name, sub_info)
 				if self.sales_type == "Hybrid" and f.finding_category == "Chains":
 					f.making_rate = 0
 				f.making_amount = round(f.making_rate * f.quantity, 2)
@@ -1483,6 +1545,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate = 0
 				f.amount = 0
 				f.making_rate = find_data.get("rate_per_gm")
+				if self.sales_type == "Outwork":
+					f.making_rate = _outwork_finding_making_rate(f, mc_name, sub_info)
 				if self.sales_type == "Hybrid" and f.finding_category == "Chains":
 					f.making_rate = 0
 				f.wastage_rate = 0
@@ -1538,9 +1602,9 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 
 	HEADERS = {"Authorization": f"token {api_key}:{api_secret}"}
 
-	stone_prec = int(ctx.stone_precision or 3)
+	gemstone_prec = int(ctx.gemstone_precision or 3)
 	for gem in doc.gemstone_detail:
-		gem.quantity = round(gem.quantity, stone_prec)
+		gem.quantity = round(gem.quantity, gemstone_prec)
 
 		if (
 			self.company == "Gurukrupa Export Private Limited"
@@ -2087,7 +2151,17 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 					for r in doc.get("diamond_detail", [])
 				)
 				continue
-		if (
+		if self.sales_type == "Outwork" and d.is_customer_item:
+			# Outwork, customer-supplied stone: the stone itself is not charged, so
+			# Rate shows 0. Only the handling charge of the customer's Diamond Price
+			# List is billed, i.e. Amount = handling rate x weight in cts.
+			d.total_diamond_rate = 0
+			d.handling_rate = flt((latest or {}).get("outwork_handling_charges_rate"))
+			d.quantity_3 = round(d.quantity, 2)
+			d.diamond_rate_for_specified_quantity = round(
+				d.quantity * d.handling_rate, 2
+			)
+		elif (
 			self.company == "KG GK Jewellers Private Limited"
 			and ctx.customer_group == "Internal"
 		):
@@ -2234,6 +2308,63 @@ def _reconcile_metal_weights(doc, ctx, target=None, so_self=None, cctx=None):
 	doc.total_wastage_amount = sum(flt(r.wastage_amount) for r in doc.metal_detail)
 	doc.total_making_amount = sum(flt(r.making_amount) for r in doc.metal_detail)
 	doc.total_metal_weight = sum(flt(r.quantity) for r in doc.metal_detail)
+
+
+CUSTOMER_MATERIAL_WEIGHT_FIELDS = (
+	"custom_customer_gold_weight",
+	"custom_customer_diamond_weight",
+	"custom_customer_stone_weight",
+)
+
+
+def customer_material_weights(bom):
+	"""Weights of the BOM rows ticked "Is Customer Item": metal in gms, diamond and
+	gemstone in cts."""
+
+	def ticked(table):
+		return sum(flt(r.quantity) for r in bom.get(table) or [] if r.is_customer_item)
+
+	return {
+		"custom_customer_gold_weight": ticked("metal_detail"),
+		"custom_customer_diamond_weight": ticked("diamond_detail"),
+		"custom_customer_stone_weight": ticked("gemstone_detail"),
+	}
+
+
+def sync_customer_material_weights(bom, method=None):
+	"""BOM on_change: refresh the customer weights of draft Outwork Sales Order rows
+	using this BOM.
+
+	The weights are otherwise only worked out on a Sales Order save, so a tick changed
+	on the BOM itself (BOM form, or the Edit BOM dialog without a save) would not show
+	on the order until it was saved again.
+
+	Skipped for the BOM saves a Sales Order save makes itself: that save has just set
+	the weights, and Sales Order Item.bom is not indexed.
+	"""
+	if bom.flags.skip_customer_weight_sync:
+		return
+
+	SalesOrder = frappe.qb.DocType("Sales Order")
+	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
+	rows = (
+		frappe.qb.from_(SalesOrderItem)
+		.join(SalesOrder)
+		.on(SalesOrder.name == SalesOrderItem.parent)
+		.select(SalesOrderItem.name)
+		.where(
+			(SalesOrderItem.bom == bom.name)
+			& (SalesOrder.docstatus == 0)
+			& (SalesOrder.sales_type == "Outwork")
+		)
+		.run(pluck=True)
+	)
+	if not rows:
+		return
+
+	weights = customer_material_weights(bom)
+	for name in rows:
+		frappe.db.set_value("Sales Order Item", name, weights, update_modified=False)
 
 
 def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
@@ -2454,6 +2585,8 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	row.custom_other_weight = doc.total_other_weight
 	row.custom_metal_weight = doc.total_metal_weight
 	row.custom_finding_weight = doc.finding_weight
+	row.custom_chain_finding_weight = chain_weight
+	row.custom_other_finding_weight = raw_finding_weight
 	row.custom_diamond_weight = doc.total_diamond_weight_in_gms
 	row.custom_gemstone_weight = doc.total_gemstone_weight_in_gms
 	row.custom_gross_weight = doc.gross_weight
@@ -2462,6 +2595,12 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
 	self.custom_metal_weight = sum(flt(r.custom_metal_weight) for r in self.items)
 	self.custom_finding_weight = sum(flt(r.custom_finding_weight) for r in self.items)
+	self.custom_chain_finding_weight = sum(
+		flt(r.custom_chain_finding_weight) for r in self.items
+	)
+	self.custom_other_finding_weight = sum(
+		flt(r.custom_other_finding_weight) for r in self.items
+	)
 	self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
 	self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
 	self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
@@ -2481,6 +2620,11 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	# row.custom_customer_weight = m_ci + f_ci + d_ci + g_ci
 	row.custom_company_rm_weight = m_co + f_co + d_co + g_co
 	row.custom_customer_weight = m_ci + f_ci + d_ci + g_ci
+
+	# Outwork: customer-supplied metal (gms), diamond (cts) and gemstone (cts), 0 otherwise.
+	weights = customer_material_weights(doc) if self.sales_type == "Outwork" else {}
+	for fieldname in CUSTOMER_MATERIAL_WEIGHT_FIELDS:
+		row.set(fieldname, weights.get(fieldname, 0))
 
 	# ── Hybrid: split this row's taxable amount into company-owned
 	# (is_customer_item = 0, taxed at the Outright rate) vs
@@ -2582,6 +2726,11 @@ def create_serial_no_bom(self, row, ctx=None):
 		doc.hallmarking_amount = 0
 		doc.certification_amount = 0
 	doc.gold_rate_with_gst = self.gold_rate_with_gst
+	# The order's Diamond Quality wins; without one, the row takes the BOM's.
+	if self.custom_diamond_quality:
+		row.diamond_quality = self.custom_diamond_quality
+	elif doc.get("diamond_quality"):
+		row.diamond_quality = doc.diamond_quality
 	if hasattr(doc, "diamond_detail"):
 		for diamond in doc.diamond_detail or []:
 			diamond.quality = row.diamond_quality
@@ -2592,6 +2741,7 @@ def create_serial_no_bom(self, row, ctx=None):
 	if ctx:
 		_m_prec = int(ctx.metal_precision or 3)
 		_s_prec = int(ctx.stone_precision or 3)
+		_g_prec = int(ctx.gemstone_precision or 3)
 		for m in doc.metal_detail:
 			m.quantity = round(flt(m.quantity), _m_prec)
 		for f in doc.finding_detail or []:
@@ -2599,7 +2749,7 @@ def create_serial_no_bom(self, row, ctx=None):
 		for d in doc.diamond_detail or []:
 			d.quantity = round(flt(d.quantity), _s_prec)
 		for g in doc.gemstone_detail or []:
-			g.quantity = round(flt(g.quantity), _s_prec)
+			g.quantity = round(flt(g.quantity), _g_prec)
 		for o in doc.other_detail or []:
 			o.quantity = round(flt(o.quantity), _m_prec)
 
@@ -2612,7 +2762,50 @@ def create_serial_no_bom(self, row, ctx=None):
 		doc.modified = existing.modified
 		doc.set("__islocal", 0)
 
+	# Whether the row's previous BOM is overwritten above or replaced by a new one (it
+	# is not reusable once submitted), the Outwork ticks on it must not be lost.
+	if (
+		self.sales_type == "Outwork"
+		and row.bom
+		and frappe.db.get_value("BOM", row.bom, "item") == doc.item
+	):
+		_keep_customer_item_flags(doc, row.bom)
+
 	return doc, bom_doc
+
+
+# Child tables whose "Is Customer Item" an Outwork user ticks in the Edit BOM dialog.
+CUSTOMER_ITEM_TABLES = (
+	("metal_detail", "BOM Metal Detail"),
+	("diamond_detail", "BOM Diamond Detail"),
+	("gemstone_detail", "BOM Gemstone Detail"),
+)
+
+
+def _keep_customer_item_flags(doc, existing_bom):
+	"""Carry "Is Customer Item" over from the row's previous BOM.
+
+	Every save rebuilds the row's BOM from the serial's source BOM, which would reset
+	the ticks made in the Edit BOM dialog. Rows are matched by position, as the
+	quantity reset in _process_single_row does; a table whose row count changed is
+	left as the source has it, since its positions no longer line up.
+	"""
+	for table_field, child_doctype in CUSTOMER_ITEM_TABLES:
+		flags = frappe.get_all(
+			child_doctype,
+			filters={
+				"parent": existing_bom,
+				"parenttype": "BOM",
+				"parentfield": table_field,
+			},
+			pluck="is_customer_item",
+			order_by="idx asc",
+		)
+		rows = doc.get(table_field) or []
+		if len(flags) != len(rows):
+			continue
+		for target, flag in zip(rows, flags):
+			target.is_customer_item = flag
 
 
 def _get_reusable_so_boms(self):
@@ -2683,6 +2876,7 @@ def _process_single_row(self, row, ctx):
 		if _snc:
 			_m_prec = int(ctx.metal_precision or 3)
 			_s_prec = int(ctx.stone_precision or 3)
+			_g_prec = int(ctx.gemstone_precision or 3)
 			for m_d, m_s in zip(doc.metal_detail, _snc.metal_detail):
 				m_d.quantity = round(flt(m_s.quantity), _m_prec)
 			for f_d, f_s in zip(doc.finding_detail, _snc.finding_detail):
@@ -2690,7 +2884,7 @@ def _process_single_row(self, row, ctx):
 			for d_d, d_s in zip(doc.diamond_detail, _snc.diamond_detail):
 				d_d.quantity = round(flt(d_s.quantity), _s_prec)
 			for g_d, g_s in zip(doc.gemstone_detail, _snc.gemstone_detail):
-				g_d.quantity = round(flt(g_s.quantity), _s_prec)
+				g_d.quantity = round(flt(g_s.quantity), _g_prec)
 			for o_d, o_s in zip(doc.other_detail or [], _snc.other_detail or []):
 				o_d.quantity = round(flt(o_s.quantity), _m_prec)
 
@@ -2732,23 +2926,21 @@ def _process_single_row(self, row, ctx):
 		_process_diamond_detail(self, doc, ctx, row, cctx)
 		_update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=cctx)
 
+		# _update_bom_totals already set this row's customer weights.
+		doc.flags.skip_customer_weight_sync = True
 		doc.save(ignore_permissions=True)
 		row.bom = doc.name
 		row.bom_no = doc.name
 
-	elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+	elif not row.bom and _tracking_bom_exists(row.custom_tracking_bom, ctx):
 		# row.bom = row.custom_tracking_bom
-		frappe.db.set_value(
-			"Tracking Bom",
-			row.custom_tracking_bom,
-			{
-				"bom_type": "Sales Order",
-				"reference_doctype": "Sales Order",
-				"reference_docname": self.name,
-				"gold_rate_with_gst": self.gold_rate_with_gst,
-			},
+		# Linked to this Sales Order in one bulk write by create_new_bom1 after the loop;
+		# nothing in the loop reads these fields back.
+		ctx.tracking_boms_to_link.append(row.custom_tracking_bom)
+		# Only the amounts are read below, and the link write above does not touch them.
+		doc = ctx.tracking_bom_data.get(row.custom_tracking_bom) or frappe.get_doc(
+			"Tracking Bom", row.custom_tracking_bom
 		)
-		doc = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
 		row.gold_bom_rate = doc.gold_bom_amount
 		row.diamond_bom_rate = doc.diamond_bom_amount
 		row.gemstone_bom_rate = doc.gemstone_bom_amount
@@ -2756,6 +2948,75 @@ def _process_single_row(self, row, ctx):
 		row.making_charge = doc.making_charge
 		row.bom_rate = doc.total_bom_amount
 		row.rate = doc.total_bom_amount
+
+
+_TRACKING_BOM_AMOUNT_FIELDS = (
+	"gold_bom_amount",
+	"diamond_bom_amount",
+	"gemstone_bom_amount",
+	"other_bom_amount",
+	"making_charge",
+	"total_bom_amount",
+)
+
+
+def _get_tracking_bom_amounts(self):
+	"""Amounts of every Tracking BOM linked on the items, keyed by name, in one query."""
+	names = list(
+		{
+			row.custom_tracking_bom
+			for row in self.items
+			if row.get("custom_tracking_bom")
+		}
+	)
+	if not names:
+		return {}
+	return {
+		d.name: d
+		for d in frappe.get_all(
+			"Tracking Bom",
+			filters={"name": ["in", names]},
+			fields=["name", *_TRACKING_BOM_AMOUNT_FIELDS],
+		)
+	}
+
+
+def _tracking_bom_exists(name, ctx):
+	"""``frappe.db.exists("Tracking Bom", name)`` answered from the prefetched map.
+
+	A name the bulk query did not return (missing, or matched only by the database's
+	case-insensitive collation) is checked exactly as before.
+	"""
+	if name and name in ctx.tracking_bom_data:
+		return True
+	return frappe.db.exists("Tracking Bom", name)
+
+
+def _link_tracking_boms_to_sales_order(self, tracking_bom_names):
+	"""Point the rows' Tracking BOMs at this Sales Order in one UPDATE.
+
+	Same values the per-row ``frappe.db.set_value`` wrote. A failure is logged like the per-row
+	failures in create_new_bom1 rather than stopping the save.
+	"""
+	names = list(dict.fromkeys(tracking_bom_names))
+	if not names:
+		return
+	try:
+		frappe.db.set_value(
+			"Tracking Bom",
+			{"name": ["in", names]},
+			{
+				"bom_type": "Sales Order",
+				"reference_doctype": "Sales Order",
+				"reference_docname": self.name,
+				"gold_rate_with_gst": self.gold_rate_with_gst,
+			},
+		)
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			f"BOM failed — {self.name} linking Tracking BOMs",
+		)
 
 
 def _bulk_update_child_rows(self):
@@ -2843,6 +3104,10 @@ def create_new_bom1(self):
 		["compute_making_charges_on", "custom_ignore_po_creation_for_certification"],
 	) or (None, None)
 	ctx.reusable_boms = _get_reusable_so_boms(self)
+	# Tracking BOM rows: amounts read in one query (was an exists + get_doc per row) and the
+	# Sales Order link written in one UPDATE (was a set_value per row).
+	ctx.tracking_bom_data = _get_tracking_bom_amounts(self)
+	ctx.tracking_boms_to_link = []
 	failures = []
 
 	for i, row in enumerate(self.items):
@@ -2880,6 +3145,7 @@ def create_new_bom1(self):
 			title=_("BOM not created for {0} rows").format(len(failures)),
 			indicator="orange",
 		)
+	_link_tracking_boms_to_sales_order(self, ctx.tracking_boms_to_link)
 	_bulk_update_child_rows(self)
 	if failures:
 		# Failed rows must be priced again at Submit, so this order must not
@@ -2957,6 +3223,7 @@ _BOM_PRICING_HEADER_FIELDS = (
 	"gold_rate_with_gst",
 	"custom_precision",
 	"custom_precision_for_stone",
+	"custom_precision_for_gemstone",
 	"custom_parent_sales_order",
 	"custom_diamond_quality",  # copied into every row's diamonds while pricing
 )
@@ -3673,6 +3940,52 @@ def customer_approval_filter(doctype, txt, searchfield, start, page_len, filters
 	dialoge_filter = query.run(as_dict=True)
 
 	return dialoge_filter
+
+
+OTHER_WEIGHT_INVOICE_ITEM = "Other Weight"
+
+# Outwork: these invoice item rows all show the same amount -- the sum of the Edit BOM
+# making (metal + finding), diamond and gemstone amounts over the order's items.
+# Compared case-insensitively: the item codes exist as e.g. "Subcontracting income".
+OUTWORK_CHARGE_INVOICE_ITEMS = (
+	"hallmarking charges",
+	"subcontracting income",
+	"diamond certification charges",
+)
+
+
+def _set_outwork_charge_rows_amount(self, precision):
+	rows = [
+		r
+		for r in self.get("custom_invoice_item") or []
+		if (r.item_code or "").strip().lower() in OUTWORK_CHARGE_INVOICE_ITEMS
+	]
+	if not rows:
+		return
+
+	total = 0
+	for item in self.items:
+		if not item.bom:
+			continue
+		bom = frappe.get_doc("BOM", item.bom)
+		bom_amount = (
+			sum(flt(r.making_amount) for r in bom.metal_detail)
+			+ sum(flt(r.making_amount) for r in bom.finding_detail)
+			+ sum(
+				flt(r.diamond_rate_for_specified_quantity) for r in bom.diamond_detail
+			)
+			+ sum(
+				flt(r.gemstone_rate_for_specified_quantity) for r in bom.gemstone_detail
+			)
+		)
+		total += bom_amount * flt(item.qty)
+
+	total = flt(total, precision or 2)
+	for r in rows:
+		r.amount = total
+		r.rate = flt(total / r.qty, precision or 2) if flt(r.qty) else 0
+		r.tax_amount = flt(total * flt(r.tax_rate) / 100, precision or 2)
+		r.amount_with_tax = total + r.tax_amount
 
 
 def validate_item_dharm(self):
@@ -4838,6 +5151,27 @@ def validate_item_dharm(self):
 		for key, val in aggregated_certification_items.items():
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			self.append("custom_invoice_item", val)
+
+		if self.sales_type == "Outwork":
+			_set_outwork_charge_rows_amount(self, precision)
+
+		# Other weight is shown for reference only: quantity, no rate or tax.
+		if flt(self.custom_other_weight):
+			self.append(
+				"custom_invoice_item",
+				{
+					"item_code": OTHER_WEIGHT_INVOICE_ITEM,
+					"item_name": OTHER_WEIGHT_INVOICE_ITEM,
+					"uom": "Gram",
+					"qty": flt(self.custom_other_weight, 3),
+					"rate": 0,
+					"amount": 0,
+					"tax_rate": 0,
+					"tax_amount": 0,
+					"amount_with_tax": 0,
+					"delivery_date": self.delivery_date,
+				},
+			)
 
 
 def validate_quotation_item(self):

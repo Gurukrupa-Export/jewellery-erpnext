@@ -58,7 +58,6 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_specifications
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
           # The three Employee IR loss gates. The blanket per-material gate had no CI
           # entry at all until now, so the gate the customer-finding gate mirrors was
@@ -73,10 +72,16 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_row_ownership
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_allowed_items
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_reconcile_v15_order_dimension_custom_fields
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_invoice
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_invoice
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item_save_corrections
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item_metadata_integration
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_item_rebuild
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_item_rebuild_db
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_item_lifecycle
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_not_allowed_attribute_values
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_data_export

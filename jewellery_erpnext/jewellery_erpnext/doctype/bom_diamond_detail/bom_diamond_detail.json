@@ -146,7 +146,7 @@
    "options": "Attribute Value"
   },
   {
-   "default": "cts",
+   "default": "Carat",
    "fieldname": "stock_uom",
    "fieldtype": "Link",
    "hidden": 1,
@@ -256,8 +256,8 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-04-03 12:04:33.347967",
- "modified_by": "shubham_k@gkexport.com",
+ "modified": "2026-10-30 11:26:03.733141",
+ "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "BOM Diamond Detail",
  "owner": "Administrator",

@@ -404,7 +404,8 @@
    "fieldtype": "Check",
    "insert_after": "precision",
    "is_system_generated": 1,
-   "label": "Precision For Metal(2 Digit)",
+   "label": "Precision For BOM(2 Digit)",
+   "read_only": 1,
    "module": "Jewellery Erpnext"
   },
   
@@ -414,7 +415,18 @@
    "fieldtype": "Check",
    "insert_after": "custom_precision",
    "is_system_generated": 1,
-   "label": "Precision For Stone(2 Digit)",
+   "label": "Precision For Diamond(2 Digit)",
+   "read_only": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_precision_for_gemstone",
+   "fieldtype": "Check",
+   "insert_after": "custom_precision_for_stone",
+   "is_system_generated": 1,
+   "label": "Precision For Gemstone(2 Digit)",
+   "read_only": 1,
    "module": "Jewellery Erpnext"
   },
    {
@@ -432,7 +444,26 @@
    "fieldtype": "Float",
    "is_system_generated": 1,
    "insert_after": "custom_metal_weight",
+   "hidden": 1,
    "label": "Finding Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_chain_finding_weight",
+   "fieldtype": "Float",
+   "is_system_generated": 1,
+   "insert_after": "custom_finding_weight",
+   "label": "Chain Finding",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_other_finding_weight",
+   "fieldtype": "Float",
+   "is_system_generated": 1,
+   "insert_after": "custom_chain_finding_weight",
+   "label": "Other Finding",
    "module": "Jewellery Erpnext"
   },
   {
@@ -440,8 +471,8 @@
    "fieldname": "custom_gemstone_weight",
    "fieldtype": "Float",
    "is_system_generated": 1,
-   "insert_after": "custom_finding_weight",
-   "label": "Gemstone Weight",
+   "insert_after": "custom_other_finding_weight",
+   "label": "Gemstone Weight (gms)",
    "module": "Jewellery Erpnext"
   },
   {
@@ -459,7 +490,7 @@
    "fieldtype": "Float",
    "is_system_generated": 1,
    "insert_after": "custom_diamond_weight",
-   "label": "Other Weight",
+   "label": "Other Weight (gms)",
    "module": "Jewellery Erpnext"
   },
   {

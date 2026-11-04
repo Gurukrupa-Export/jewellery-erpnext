@@ -21,6 +21,7 @@ frappe.ui.form.on("Sales Order", {
 		}
 	},
 	refresh: function (frm) {
+		toggle_outwork_customer_columns(frm);
 		patch_barcode_scanner_for_serial_no_rows(frm);
 		patch_items_grid_for_serial_upload(frm);
 		patch_serial_no_item_trigger(frm);
@@ -234,6 +235,9 @@ frappe.ui.form.on("Sales Order", {
 	onload_post_render(frm) {
 		filter_customer(frm);
 		set_company_address_from_branch(frm);
+		// An order mapped from a Quotation opens with the customer already set,
+		// so the customer trigger never fires for it.
+		if (frm.is_new()) set_precision_from_customer(frm);
 	},
 	sales_type(frm) {
 		filter_customer(frm);
@@ -242,6 +246,7 @@ frappe.ui.form.on("Sales Order", {
 	},
 	customer(frm) {
 		get_sales_type(frm);
+		set_precision_from_customer(frm);
 	},
 	branch(frm) {
 		set_company_address_from_branch(frm);
@@ -262,6 +267,26 @@ function set_company_address_from_branch(frm) {
 		if (branch_address && branch_address !== frm.doc.company_address) {
 			frm.set_value("company_address", branch_address);
 		}
+	});
+}
+
+// Customer "Consider 2 Digit for ..." checkbox -> Sales Order precision checkbox.
+// Only a default: the user can still change the Sales Order checkboxes afterwards.
+const CUSTOMER_PRECISION_FIELDS = {
+	custom_consider_2_digit_for_bom: "custom_precision",
+	custom_consider_2_digit_for_diamond: "custom_precision_for_stone",
+	custom_consider_2_digit_for_gemstone: "custom_precision_for_gemstone",
+};
+
+function set_precision_from_customer(frm) {
+	if (!frm.doc.customer || frm.doc.docstatus !== 0) return;
+	frappe.db.get_value("Customer", frm.doc.customer, Object.keys(CUSTOMER_PRECISION_FIELDS)).then((r) => {
+		const customer = r.message || {};
+		const values = {};
+		for (const [customer_field, so_field] of Object.entries(CUSTOMER_PRECISION_FIELDS)) {
+			values[so_field] = cint(customer[customer_field]);
+		}
+		frm.set_value(values);
 	});
 }
 
@@ -291,6 +316,9 @@ frappe.ui.form.on("Sales Order Item", {
 		if (frm.doc.__islocal) {
 			frappe.throw(__("Please save document to edit the BOM."));
 		}
+
+		// Outwork: the user marks which metal/diamond/gemstone rows the customer supplied.
+		const can_tick_customer_item = frm.doc.sales_type === "Outwork" && frm.doc.docstatus === 0;
 
 		// child table data variables
 		let metal_data = [];
@@ -476,7 +504,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "is_customer_item",
 				label: __("Is Customer Item"),
 				columns: 1,
-				read_only: 1,
+				read_only: can_tick_customer_item ? 0 : 1,
 				in_list_view: 1,
 			},
 		];
@@ -671,7 +699,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "is_customer_item",
 				label: __("Is Customer Item"),
 				columns: 1,
-				read_only: 1,
+				read_only: can_tick_customer_item ? 0 : 1,
 				in_list_view: 1,
 			},
 		];
@@ -830,7 +858,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "is_customer_item",
 				label: __("Is Customer Item"),
 				columns: 1,
-				read_only: 1,
+				read_only: can_tick_customer_item ? 0 : 1,
 				in_list_view: 1,
 			},
 		];
@@ -1510,6 +1538,8 @@ frappe.ui.form.on("Sales Order Item", {
 						finding_detail: finding_detail,
 					},
 					callback: function (r) {
+						// Outwork: save so the Customer Gold/Diamond/Stone weights are recalculated.
+						if (can_tick_customer_item) frm.dirty();
 						frm.is_dirty() ? frm.save() : frm.reload_doc();
 					},
 				});
@@ -2413,6 +2443,45 @@ let add_row = (serial_no, frm, row) => {
 		});
 	});
 };
+
+// Customer-supplied gold/diamond/stone weights only mean something on Outwork orders.
+const OUTWORK_CUSTOMER_FIELDS = [
+	"custom_customer_gold_weight",
+	"custom_customer_diamond_weight",
+	"custom_customer_stone_weight",
+];
+// The Yes/No ownership flags the weights stand in for on Outwork; still read by
+// Manufacturing Plan, so only their grid columns are hidden.
+const CUSTOMER_FLAG_FIELDS = ["custom_customer_gold", "custom_customer_diamond", "custom_customer_stone"];
+
+function toggle_outwork_customer_columns(frm) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) return;
+	include_outwork_columns_in_saved_layout(grid);
+	const is_outwork = frm.doc.sales_type === "Outwork";
+	grid.set_column_disp_in_list_view(OUTWORK_CUSTOMER_FIELDS, is_outwork);
+	grid.set_column_disp_in_list_view(CUSTOMER_FLAG_FIELDS, !is_outwork);
+}
+
+// A user's saved grid layout (⚙ settings) replaces in_list_view entirely, so the weight
+// columns would never appear for anyone who had saved one. On Outwork orders append them
+// to that layout for display only; the saved settings themselves are left untouched.
+function include_outwork_columns_in_saved_layout(grid) {
+	if (grid.__outwork_columns_patched) return;
+	grid.__outwork_columns_patched = true;
+
+	const setup_user_defined_columns = grid.setup_user_defined_columns;
+	grid.setup_user_defined_columns = function () {
+		setup_user_defined_columns.apply(this, arguments);
+		if (!this.user_defined_columns.length || this.frm.doc.sales_type !== "Outwork") return;
+
+		const shown = new Set(this.user_defined_columns.map((df) => df.fieldname));
+		for (const fieldname of OUTWORK_CUSTOMER_FIELDS) {
+			const df = !shown.has(fieldname) && this.docfields.find((d) => d.fieldname === fieldname);
+			if (df) this.user_defined_columns.push(df);
+		}
+	};
+}
 
 let get_sales_type = (frm) => {
 	// get purchase type using customer

@@ -133,7 +133,7 @@
    "label": "Making Amount"
   },
   {
-   "default": "gms",
+   "default": "Gram",
    "fieldname": "stock_uom",
    "fieldtype": "Link",
    "hidden": 1,
@@ -299,8 +299,8 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-04-24 11:33:12.334675",
- "modified_by": "shruti_b@gkexport.com",
+ "modified": "2026-10-30 11:25:34.074605",
+ "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "BOM Metal Detail",
  "owner": "Administrator",

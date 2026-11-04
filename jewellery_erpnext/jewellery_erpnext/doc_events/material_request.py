@@ -896,8 +896,10 @@ def _create_transfer_se(mr_name):
 	# Belt-and-suspenders idempotency: a submitted transfer SE already linked to this MR.
 	existing = get_submitted_from_reserve_se(mr_name)
 	if existing:
-		mr.db_set("custom_transfer_se", existing, update_modified=False)
-		mr.db_set("custom_transfer_se_state", "Done", update_modified=False)
+		mr.db_set(
+			{"custom_transfer_se": existing, "custom_transfer_se_state": "Done"},
+			update_modified=False,
+		)
 		return
 
 	# A copied request (split work order, desk Duplicate) can carry another request's reserve
@@ -945,8 +947,10 @@ def _create_transfer_se(mr_name):
 	new_se_doc.save()
 	new_se_doc.submit()
 
-	mr.db_set("custom_transfer_se", new_se_doc.name, update_modified=False)
-	mr.db_set("custom_transfer_se_state", "Done", update_modified=False)
+	mr.db_set(
+		{"custom_transfer_se": new_se_doc.name, "custom_transfer_se_state": "Done"},
+		update_modified=False,
+	)
 
 
 @frappe.whitelist()

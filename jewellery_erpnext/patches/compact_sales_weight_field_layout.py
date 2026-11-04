@@ -80,11 +80,8 @@ WEIGHT_FIELD_ORDER = (
 # Four columns of two fields: wide enough that no label wraps.
 COLUMN_COUNT = 4
 
-# Four columns need three separators.
-COLUMN_BREAKS = tuple(f"custom_weight_col_{i}" for i in range(1, COLUMN_COUNT))
 
-
-def _locate_block(doctype):
+def _locate_block(doctype, field_order=WEIGHT_FIELD_ORDER):
 	"""Return ``(section_fieldname, block_members)`` for the weight block.
 
 	``section_fieldname`` is the Section Break the block lives under — found by walking
@@ -96,7 +93,7 @@ def _locate_block(doctype):
 	"""
 	fields = frappe.get_meta(doctype).fields
 
-	positions = [i for i, df in enumerate(fields) if df.fieldname in WEIGHT_FIELD_ORDER]
+	positions = [i for i, df in enumerate(fields) if df.fieldname in field_order]
 	if not positions:
 		return None, []
 
@@ -126,34 +123,36 @@ def _existing_separators(doctype, members):
 	)
 
 
-def _build_columns(present):
+def _build_columns(present, column_count=COLUMN_COUNT):
 	"""Split ``present`` into COLUMN_COUNT columns, filled so the form READS row-major.
 
 	With eight fields and four columns, column *i* holds fields *i* and *i + 4*, which
 	renders as two rows in the declared order.
 	"""
-	return [list(present[i::COLUMN_COUNT]) for i in range(COLUMN_COUNT)]
+	return [list(present[i::column_count]) for i in range(column_count)]
 
 
-def _compact_one(doctype):
-	"""Rearrange one parent's weight block into the 4-column grid. True when applied."""
-	section_fieldname, members = _locate_block(doctype)
+def _compact_one(doctype, field_order=WEIGHT_FIELD_ORDER, column_count=COLUMN_COUNT):
+	"""Rearrange one parent's weight block into a ``column_count``-column grid, read
+	row-major in ``field_order``. True when applied."""
+	section_fieldname, members = _locate_block(doctype, field_order)
 	if not section_fieldname:
 		frappe.logger().info(
 			f"compact_sales_weight_field_layout: no weight block on {doctype}, skipped"
 		)
 		return False
 
-	present = [f for f in WEIGHT_FIELD_ORDER if custom_field_name(doctype, f)]
+	present = [f for f in field_order if custom_field_name(doctype, f)]
 	if not present:
 		return False
 
-	columns = [column for column in _build_columns(present) if column]
+	columns = [column for column in _build_columns(present, column_count) if column]
 	breaks_needed = len(columns) - 1
 
 	existing = _existing_separators(doctype, members)
 	separators = list(existing[:breaks_needed])
-	shortfall = [name for name in COLUMN_BREAKS if name not in separators][
+	column_breaks = [f"custom_weight_col_{i}" for i in range(1, column_count)]
+	shortfall = [name for name in column_breaks if name not in separators][
 		: breaks_needed - len(separators)
 	]
 

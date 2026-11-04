@@ -28,6 +28,7 @@ class SerialNumberCreator(Document):
 	def validate(self):
 		# Runs on draft save AND on submit (_submit -> save), so a document created
 		# before this existed repairs itself the next time it is saved or submitted.
+		self._render_pending_source_rows()
 		split_source_rows_by_reservation(self)
 
 	def before_insert(self):
@@ -51,6 +52,30 @@ class SerialNumberCreator(Document):
 		# retry kept in the codebase is bounded_retry on idempotent *background* jobs.
 		to_prepare_data_for_make_mnf_stock_entry(self)
 		update_new_serial_no(self)
+
+	def _render_pending_source_rows(self):
+		"""Fill a draft that was created before its Manufacturing Operation had a balance.
+
+		``_render_fg_details`` runs only in ``before_insert``, and
+		``create_snc_from_mwo_submit`` returns the existing document rather than rebuilding
+		it -- so a Serial Number Creator auto-created at Work Order submit BEFORE its operation
+		had any balance would keep both tables empty for good, and its submit died on
+		``get_doc("Serial No", None)``. There was no way back.
+
+		Only a draft with BOTH tables empty is touched: that shape is never something an
+		operator meant, because clearing one table leaves the other populated. A draft the
+		operator has actually edited is left alone.
+		"""
+		if self.docstatus != 0:
+			return
+		if self.fg_details or self.source_table:
+			return
+		if not self.manufacturing_operation:
+			return
+
+		self._render_fg_details()
+		if self.source_table:
+			self._compute_total_weight()
 
 	def _render_fg_details(self):
 		"""Build source_table (batch-wise) and fg_details (aggregated) from MOP Log."""
@@ -1300,6 +1325,18 @@ def validate_not_metal_only(doc):
 
 
 def validate_qty(self):
+	# With no source rows nothing is consumed and no finished-good serial is made, and the
+	# submit used to die later on get_doc("Serial No", None).
+	job = self.parent_manufacturing_order or self.manufacturing_work_order
+	if not self.source_table and job:
+		frappe.throw(
+			_(
+				"Source Table is empty. Manufacturing Operation {0} had no balance when this "
+				"document was created. Save it again to load the operation's materials, check "
+				"them, then submit."
+			).format(self.manufacturing_operation or "-")
+		)
+
 	for row in self.source_table:
 		if row.qty <= 0:
 			frappe.throw(_("Source Table Quantity Zero or Negative Not Allowed"))
@@ -1468,25 +1505,34 @@ def _save_refetches(doc, fieldname):
 	return bool(doc.get(df.fetch_from.split(".", 1)[0]))
 
 
+def _fetched_value(doc, fieldname):
+	"""The value doc.save() fetches into `fieldname` through its fetch_from link."""
+	link_fieldname, source_fieldname = doc.meta.get_field(fieldname).fetch_from.split(
+		".", 1
+	)
+	link_doctype = doc.meta.get_field(link_fieldname).options
+	return frappe.db.get_value(link_doctype, doc.get(link_fieldname), source_fieldname)
+
+
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
 	customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
 	)
-	if (
-		customer
-		and new_sn_doc.customer != customer
-		and not _save_refetches(new_sn_doc, "customer")
-	):
-		# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
-		# customer; only the stock ledger may, and it writes the column directly. The order's
-		# customer is written the same way, so the save below sees it unchanged.
-		#
-		# A site that fetches the customer from the serial's linked BOM (a Property Setter with
-		# fetch_from custom_bom_no.customer, as the CI fixtures have) gets it from there on the
-		# save below, as it always did; stamping the order's customer first would make that
-		# fetch look like a change. A serial with no BOM linked is not re-fetched, so it is
-		# stamped.
+	# ERPNext 16.52 (frappe/erpnext#60162) refuses a save() that changes a Serial No's
+	# customer; only the stock ledger may, and it writes the column directly. The customer is
+	# written the same way, so the save below sees it unchanged.
+	if _save_refetches(new_sn_doc, "customer"):
+		# A site that fetches the customer from the serial's linked BOM (GEPL: a Property Setter
+		# with fetch_from custom_bom_no.customer) has the save put the BOM's customer back over
+		# whatever is set, so the BOM's customer is what the serial ends up with, as it always
+		# did. Write that value, empty or not: the FG BOM carries the order's customer on GEPL,
+		# and leaving the column empty made the fetch itself the refused change.
+		bom_customer = _fetched_value(new_sn_doc, "customer")
+		if new_sn_doc.customer != bom_customer:
+			new_sn_doc.db_set("customer", bom_customer, update_modified=False)
+	elif customer and new_sn_doc.customer != customer:
+		# No fetch (or no BOM linked yet, so nothing to fetch from): stamp the order's customer.
 		new_sn_doc.db_set("customer", customer, update_modified=False)
 	existing_huid = []
 	existing_certification = []
