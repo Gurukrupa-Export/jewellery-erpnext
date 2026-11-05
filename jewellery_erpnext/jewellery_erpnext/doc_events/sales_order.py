@@ -975,7 +975,8 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
 	_dmk = _get_data_migration_settings()
 	from_site = _dmk.from_site_1
 	api_key = _dmk.api_key
-	api_secret = _dmk.api_secret
+	# raise_exception=False: no secret stored must read as empty, as before, not abort the save.
+	api_secret = _dmk.get_password("api_secret", raise_exception=False)
 
 	use_api = bool(from_site)
 
@@ -1313,7 +1314,8 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 	_dmk = _get_data_migration_settings()
 	from_site = _dmk.from_site_1
 	api_key = _dmk.api_key
-	api_secret = _dmk.api_secret
+	# raise_exception=False: no secret stored must read as empty, as before, not abort the save.
+	api_secret = _dmk.get_password("api_secret", raise_exception=False)
 	use_api = bool(from_site)
 	if use_api:
 		url = f"{from_site}/api/method/gke_customization.gke_order_forms.doc_events.item.get_finding_charge"
@@ -1597,7 +1599,8 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 	_dmk = _get_data_migration_settings()
 	from_site = _dmk.from_site_1
 	api_key = _dmk.api_key
-	api_secret = _dmk.api_secret
+	# raise_exception=False: no secret stored must read as empty, as before, not abort the save.
+	api_secret = _dmk.get_password("api_secret", raise_exception=False)
 	use_api = bool(from_site)
 
 	HEADERS = {"Authorization": f"token {api_key}:{api_secret}"}
@@ -2024,7 +2027,8 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 	_dmk = _get_data_migration_settings()
 	from_site = _dmk.from_site_1
 	api_key = _dmk.api_key
-	api_secret = _dmk.api_secret
+	# raise_exception=False: no secret stored must read as empty, as before, not abort the save.
+	api_secret = _dmk.get_password("api_secret", raise_exception=False)
 	use_api = bool(from_site)
 
 	# customer_key = (
