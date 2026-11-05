@@ -25,6 +25,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	pick_diamond_grade,
 	resolve_diamond_grade,
 	sales_type_expects,
+	validate_outright_grade,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	resolve_parent_chains,
@@ -1953,6 +1954,114 @@ class TestDiamondGradePolicyValidation(UnitTestCase):
 		doc.get_doc_before_save = lambda: None
 
 		doc._validate_diamond_grade_policy()
+
+
+class TestValidateOutrightGrade(UnitTestCase):
+	"""An Outright order may not fall back to a customer-diamond-quality grade.
+
+	PMO-KGJPL-RI00326-020-0001: Outright, Ref Customer MHCU0024, quality GH-VVS/VS, whose only
+	configured grade was the flagged MH24K. The picker's fallback stored it without a word.
+	"""
+
+	def _validate(self, sales_type, grade, flags):
+		with patch(f"{FILTERS_QUERY}._grade_flags", return_value=flags) as grade_flags:
+			validate_outright_grade(sales_type, grade, "MHCU0024", "GH-VVS/VS")
+		return grade_flags
+
+	def test_outright_with_a_flagged_grade_is_rejected(self):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._validate("Outright", "MH24K", {"MH24K": 1})
+
+		# the message has to send the user to the master that needs the fix
+		self.assertIn("MHCU0024", str(ctx.exception))
+		self.assertIn("GH-VVS/VS", str(ctx.exception))
+
+	def test_outright_with_a_plain_grade_passes(self):
+		self._validate("Outright", "20K", {"20K": 0})
+
+	def test_neutral_sales_types_keep_the_fallback(self):
+		for sales_type in (
+			"Hybrid",
+			"Branch Sales",
+			"Certification",
+			"Repairing",
+			None,
+			"",
+		):
+			with self.subTest(sales_type=sales_type):
+				grade_flags = self._validate(sales_type, "MH24K", {"MH24K": 1})
+				grade_flags.assert_not_called()
+
+	def test_outwork_is_left_to_the_picker(self):
+		"""Outwork takes only flagged grades; the picker already refuses the plain ones."""
+		grade_flags = self._validate("Outwork", "MH24K", {"MH24K": 1})
+		grade_flags.assert_not_called()
+
+	def test_no_resolved_grade_is_left_to_the_existing_check(self):
+		# before_save throws "Diamond Grade is not mentioned in customer" for that case
+		grade_flags = self._validate("Outright", None, {})
+		grade_flags.assert_not_called()
+
+
+class FakePMOGrade(FakePMO):
+	"""FakePMO carrying the shipped _set_diamond_grade (see FakePMOPolicy for why it is bound)."""
+
+	_set_diamond_grade = ParentManufacturingOrder._set_diamond_grade
+
+
+class TestSetDiamondGradeOutright(UnitTestCase):
+	"""_set_diamond_grade runs on insert, draft save and submit, so the rule is applied there."""
+
+	def _set(self, resolved, grade_flags, **fields):
+		doc = FakePMOGrade(
+			customer="GJCU0009",
+			ref_customer="MHCU0024",
+			diamond_quality="GH-VVS/VS",
+			sales_type="Outright",
+			is_customer_diamond=0,
+			use_custom_diamond_grade=0,
+			diamond_grade=None,
+			flags=frappe._dict(ignore_validations=False),
+		)
+		doc.update(fields)
+		with (
+			patch(
+				f"{PMO_MODULE}.resolve_diamond_grade", return_value=resolved
+			) as resolve,
+			patch(f"{FILTERS_QUERY}._grade_flags", return_value=grade_flags),
+		):
+			doc._set_diamond_grade()
+		return doc, resolve
+
+	def test_outright_resolving_to_a_flagged_grade_throws(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._set("MH24K", {"MH24K": 1})
+
+	def test_outright_resolving_to_a_plain_grade_stores_it(self):
+		doc, resolve = self._set("20K", {"20K": 0})
+
+		self.assertEqual(doc.diamond_grade, "20K")
+		resolve.assert_called_once_with("MHCU0024", "GH-VVS/VS", 0)
+
+	def test_hybrid_still_stores_the_flagged_fallback(self):
+		doc, _ = self._set("MH24K", {"MH24K": 1}, sales_type="Hybrid")
+
+		self.assertEqual(doc.diamond_grade, "MH24K")
+
+	def test_custom_grade_mode_is_not_resolved_here(self):
+		doc, resolve = self._set(
+			"MH24K", {"MH24K": 1}, use_custom_diamond_grade=1, diamond_grade="20K"
+		)
+
+		self.assertEqual(doc.diamond_grade, "20K")
+		resolve.assert_not_called()
+
+	def test_ignore_validations_is_still_an_escape_hatch(self):
+		doc, _ = self._set(
+			"MH24K", {"MH24K": 1}, flags=frappe._dict(ignore_validations=True)
+		)
+
+		self.assertEqual(doc.diamond_grade, "MH24K")
 
 
 class TestResolvedVariantMemo(UnitTestCase):
