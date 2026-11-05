@@ -248,7 +248,8 @@
    "fieldname": "manufacturer",
    "fieldtype": "Link",
    "label": "Manufacturer",
-   "options": "Manufacturer"
+   "options": "Manufacturer",
+   "reqd": 1
   },
   {
    "default": "0",
@@ -453,7 +454,7 @@
    "link_fieldname": "employee_ir"
   }
  ],
- "modified": "2026-10-21 12:00:00.000000",
+ "modified": "2026-11-05 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR",
