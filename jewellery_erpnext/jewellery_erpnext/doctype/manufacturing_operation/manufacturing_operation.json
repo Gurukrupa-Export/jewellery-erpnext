@@ -153,7 +153,7 @@
    "in_standard_filter": 1,
    "label": "Status",
    "no_copy": 1,
-   "options": "Not Started\nOn Hold\nWIP\nQC Pending\nQC Completed\nFinished\nRevert"
+   "options": "Not Started\nOn Hold\nWIP\nQC Pending\nQC Completed\nFinished\nRevert\nHold"
   },
   {
    "depends_on": "eval:!doc.for_subcontracting",
@@ -801,7 +801,7 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-10-14 10:00:00.000000",
+ "modified": "2026-10-29 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",

@@ -11,6 +11,10 @@ from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
 	WEIGHT_FIELDS,
 	get_summary_data,
@@ -90,6 +94,7 @@ class DepartmentIR(Document):
 			["name", "gross_wt"],
 			order_by="creation asc",
 		)
+		records = without_closed_mwo_operations(records)
 		self.department_ir_operation = []
 		if records:
 			for row in records:
@@ -97,7 +102,25 @@ class DepartmentIR(Document):
 					"department_ir_operation", {"manufacturing_operation": row.name}
 				)
 
+	def validate(self):
+		block_closed_mwo_operations(self, "department_ir_operation")
+
+	def before_save(self):
+		self.set_parent_manufacturing_order_count()
+
+	def set_parent_manufacturing_order_count(self):
+		# Rebuilt from the whole table each time, so added, edited and deleted rows all count.
+		self.parent_manufacturing_order_count = len(
+			{
+				row.parent_manufacturing_order
+				for row in self.department_ir_operation
+				if row.parent_manufacturing_order
+			}
+		)
+
 	def before_submit(self):
+		# An insert-and-submit (REST, docstatus=1) runs before_submit instead of before_save.
+		self.set_parent_manufacturing_order_count()
 		if not self.department_ir_operation:
 			frappe.throw("Add row in <b>Department IR Operations Table</b>")
 

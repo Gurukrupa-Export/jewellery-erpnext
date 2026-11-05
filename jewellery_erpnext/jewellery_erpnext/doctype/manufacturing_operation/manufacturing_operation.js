@@ -66,7 +66,18 @@ frappe.ui.form.on("Manufacturing Operation", {
 				frappe.set_route("Form", "Swap Metal", "new-swap-metal");
 			}).addClass("btn-primary");
 		}
-		if (!frm.doc.__islocal) {
+		// "Hold" is its Parent Manufacturing Order's Hold, not the timer's "On Hold": only the
+		// order's Open or Close takes it off, so none of the status or timer buttons apply.
+		const held_with_order = frm.doc.status === "Hold";
+		if (held_with_order) {
+			frm.set_intro(
+				__(
+					"On Hold with its Parent Manufacturing Order. It comes back as it was when the order is opened."
+				),
+				"orange"
+			);
+		}
+		if (!frm.doc.__islocal && !held_with_order) {
 			// if (!in_list(["Finished", "On Hold"], frm.doc.status)) {
 			if (!["Finished", "On Hold"].includes(frm.doc.status)) {
 				frm.add_custom_button(__("On Hold"), () => {
@@ -92,7 +103,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 		frappe.flags.pause_job = 0;
 		frappe.flags.resume_job = 0;
 
-		if (frm.doc.docstatus == 0 && !frm.is_new()) {
+		if (frm.doc.docstatus == 0 && !frm.is_new() && !held_with_order) {
 			// ****timer custome buttton trigger***
 			frm.trigger("prepare_timer_buttons");
 

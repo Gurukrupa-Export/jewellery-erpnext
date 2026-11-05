@@ -2846,7 +2846,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 				)
 			],
 			exploded_product_details=[
-				frappe._dict(idx=1, item_code="M22", tree_no="TREE-A", gross_weight=0.460),
+				frappe._dict(
+					idx=1, item_code="M22", tree_no="TREE-A", gross_weight=0.460
+				),
 				frappe._dict(
 					idx=2,
 					item_code="M24",
@@ -2854,7 +2856,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 					gross_weight=0.120,
 					conversion_quantity=0.131,
 				),
-				frappe._dict(idx=3, item_code="ML22", tree_no="TREE-A", gross_weight=0.009),
+				frappe._dict(
+					idx=3, item_code="ML22", tree_no="TREE-A", gross_weight=0.009
+				),
 			],
 		)
 
@@ -2865,7 +2869,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 			utils as pc_utils,
 		)
 
-		defaults = {"M22": {"s_warehouse": "SUP-WH", "batch_no": None, "serial_no": None}}
+		defaults = {
+			"M22": {"s_warehouse": "SUP-WH", "batch_no": None, "serial_no": None}
+		}
 		if batches is not None:
 			defaults["M22"]["batches"] = list(batches)
 			defaults["M22"]["batch_no"] = batches[0][0] if batches else None
@@ -2884,7 +2890,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 		frappe.get_precision("Stock Entry Detail", "transfer_qty")
 
 		with (
-			patch.object(pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"),
+			patch.object(
+				pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"
+			),
 			patch.object(
 				pc_utils, "_get_department_scrap_warehouse", return_value="SCRAP-WH"
 			),
@@ -2907,11 +2915,15 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 
 	@staticmethod
 	def _consumes(se):
-		return [r for r in se.items if r.get("s_warehouse") and not r.get("t_warehouse")]
+		return [
+			r for r in se.items if r.get("s_warehouse") and not r.get("t_warehouse")
+		]
 
 	@staticmethod
 	def _produces(se):
-		return [r for r in se.items if r.get("t_warehouse") and not r.get("s_warehouse")]
+		return [
+			r for r in se.items if r.get("t_warehouse") and not r.get("s_warehouse")
+		]
 
 	def test_receipt_draws_each_issued_batch_in_order(self):
 		entries = self._run(self._doc(), batches=self.ISSUED)
@@ -2992,7 +3004,10 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 			[("M22", self.B1, 0.460)],
 		)
 		self.assertEqual(
-			[(r.item_code, r.batch_no, r.qty) for r in self._consumes(entries["Repack"])],
+			[
+				(r.item_code, r.batch_no, r.qty)
+				for r in self._consumes(entries["Repack"])
+			],
 			[("M22", self.B1, 0.131), ("M22", self.B1, 0.009)],
 		)
 
@@ -3002,7 +3017,9 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 		entries = self._run(self._doc(), batches=None)
 
 		receipt = entries["Material Receipt for Certification"]
-		self.assertEqual([(r.item_code, r.qty) for r in receipt.items], [("M22", 0.460)])
+		self.assertEqual(
+			[(r.item_code, r.qty) for r in receipt.items], [("M22", 0.460)]
+		)
 		self.assertEqual(
 			[(r.item_code, r.qty) for r in self._consumes(entries["Repack"])],
 			[("M22", 0.131), ("M22", 0.009)],
@@ -3011,7 +3028,10 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 	def test_an_empty_allocation_falls_back_too(self):
 		entries = self._run(self._doc(), batches=[])
 		self.assertEqual(
-			[(r.item_code, r.qty) for r in entries["Material Receipt for Certification"].items],
+			[
+				(r.item_code, r.qty)
+				for r in entries["Material Receipt for Certification"].items
+			],
 			[("M22", 0.460)],
 		)
 
@@ -3024,6 +3044,75 @@ class TestFireAssyBatchSplit(IntegrationTestCase):
 		msg = frappe.utils.strip_html(str(cm.exception))
 		self.assertIn("M22", msg)
 		self.assertIn("0.181", msg)
+
+	def _two_tree_doc(self):
+		"""CRT-2026-00126's first two trees: each sent on its own Issue row, both off one batch."""
+
+		def tree(tree_no, total, touch, start):
+			return (
+				frappe._dict(
+					idx=start // 3 + 1,
+					item_code="M22",
+					tree_no=tree_no,
+					total_weight=total,
+					pure_item="M24",
+					loss_item="ML22",
+				),
+				[
+					frappe._dict(
+						idx=start + 1,
+						item_code="M22",
+						tree_no=tree_no,
+						gross_weight=touch,
+					),
+					frappe._dict(
+						idx=start + 2,
+						item_code="M24",
+						tree_no=tree_no,
+						gross_weight=0.130,
+						conversion_quantity=0.142,
+					),
+					frappe._dict(
+						idx=start + 3,
+						item_code="ML22",
+						tree_no=tree_no,
+						gross_weight=0.008,
+					),
+				],
+			)
+
+		pd_a, ex_a = tree("TREE-A", 0.570, 0.420, 0)
+		pd_b, ex_b = tree("TREE-B", 0.560, 0.410, 3)
+		doc = self._doc()
+		doc.product_details = [pd_a, pd_b]
+		doc.exploded_product_details = ex_a + ex_b
+		return doc
+
+	def test_one_batch_issued_on_several_rows_pools_into_one(self):
+		"""CRT-2026-00126: MAT-STE-71322 issued KG2F103-MGL229175Y0-2U74X on ten rows, one per
+		tree. Each row's qty was its own pool entry while ``taken`` counted the batch as a whole,
+		so the batch held only its largest row and the second Touch row threw "short by 0.23"."""
+		entries = self._run(
+			self._two_tree_doc(), batches=[(self.B1, 0.570), (self.B1, 0.560)]
+		)
+
+		receipt = entries["Material Receipt for Certification"]
+		self.assertEqual(
+			[(r.item_code, r.batch_no, r.qty) for r in receipt.items],
+			[("M22", self.B1, 0.420), ("M22", self.B1, 0.410)],
+		)
+		self.assertEqual(
+			[(r.batch_no, r.qty) for r in self._consumes(entries["Repack"])],
+			[(self.B1, 0.142), (self.B1, 0.008), (self.B1, 0.142), (self.B1, 0.008)],
+		)
+
+		drawn = sum(
+			row.qty
+			for se in entries.values()
+			for row in se.items
+			if row.get("s_warehouse") and row.item_code == "M22"
+		)
+		self.assertAlmostEqual(drawn, 1.130, places=3)
 
 
 class TestIssueBatchAllocationRead(IntegrationTestCase):
@@ -3068,8 +3157,18 @@ class TestIssueBatchAllocationRead(IntegrationTestCase):
 				}
 			],
 			bundle_entries=[
-				{"parent": "BUNDLE-1", "batch_no": "B1", "serial_no": None, "qty": -0.081},
-				{"parent": "BUNDLE-1", "batch_no": "B2", "serial_no": None, "qty": -0.519},
+				{
+					"parent": "BUNDLE-1",
+					"batch_no": "B1",
+					"serial_no": None,
+					"qty": -0.081,
+				},
+				{
+					"parent": "BUNDLE-1",
+					"batch_no": "B2",
+					"serial_no": None,
+					"qty": -0.519,
+				},
 			],
 		)
 
@@ -3688,9 +3787,15 @@ class TestCertificationPoQty(IntegrationTestCase):
 
 _CUSTOMER = "GJCU0009"
 _BATCH_OWNERS = {
-	"B-CUST": frappe._dict(name="B-CUST", custom_inventory_type="Customer Goods", custom_customer=_CUSTOMER),
-	"B-CO": frappe._dict(name="B-CO", custom_inventory_type="Regular Stock", custom_customer=None),
-	"B-HALF": frappe._dict(name="B-HALF", custom_inventory_type="Customer Goods", custom_customer=None),
+	"B-CUST": frappe._dict(
+		name="B-CUST", custom_inventory_type="Customer Goods", custom_customer=_CUSTOMER
+	),
+	"B-CO": frappe._dict(
+		name="B-CO", custom_inventory_type="Regular Stock", custom_customer=None
+	),
+	"B-HALF": frappe._dict(
+		name="B-HALF", custom_inventory_type="Customer Goods", custom_customer=None
+	),
 }
 
 
@@ -3723,26 +3828,43 @@ class TestStampRowsFromBatches(IntegrationTestCase):
 
 	def test_a_customer_batch_is_issued_as_the_customers(self):
 		self.assertEqual(
-			self._stamp([frappe._dict(s_warehouse="WH", batch_no="B-CUST", inventory_type="Regular Stock")]),
+			self._stamp(
+				[
+					frappe._dict(
+						s_warehouse="WH",
+						batch_no="B-CUST",
+						inventory_type="Regular Stock",
+					)
+				]
+			),
 			[("Customer Goods", _CUSTOMER)],
 		)
 
 	def test_a_company_batch_stays_regular_stock(self):
 		self.assertEqual(
-			self._stamp([{"s_warehouse": "WH", "batch_no": "B-CO"}]), [("Regular Stock", None)]
+			self._stamp([{"s_warehouse": "WH", "batch_no": "B-CO"}]),
+			[("Regular Stock", None)],
 		)
 
 	def test_an_owner_the_row_already_names_is_kept(self):
 		self.assertEqual(
 			self._stamp(
-				[frappe._dict(s_warehouse="WH", batch_no="B-CUST", inventory_type="Customer Goods", customer="GJCU0010")]
+				[
+					frappe._dict(
+						s_warehouse="WH",
+						batch_no="B-CUST",
+						inventory_type="Customer Goods",
+						customer="GJCU0010",
+					)
+				]
 			),
 			[("Customer Goods", "GJCU0010")],
 		)
 
 	def test_customer_goods_without_a_customer_is_booked_regular(self):
 		self.assertEqual(
-			self._stamp([frappe._dict(s_warehouse="WH", batch_no="B-HALF")]), [("Regular Stock", None)]
+			self._stamp([frappe._dict(s_warehouse="WH", batch_no="B-HALF")]),
+			[("Regular Stock", None)],
 		)
 
 	def test_the_owner_lookup_runs_against_the_real_batch_table(self):
@@ -3755,7 +3877,10 @@ class TestStampRowsFromBatches(IntegrationTestCase):
 	def test_inward_and_batchless_rows_are_left_alone(self):
 		self.assertEqual(
 			self._stamp(
-				[frappe._dict(t_warehouse="WH", batch_no="B-CUST"), frappe._dict(s_warehouse="WH")]
+				[
+					frappe._dict(t_warehouse="WH", batch_no="B-CUST"),
+					frappe._dict(s_warehouse="WH"),
+				]
 			),
 			[(None, None), (None, None)],
 		)
@@ -3793,12 +3918,21 @@ class TestReceivedBatchesCarryOwnerAndRate(IntegrationTestCase):
 			self,
 			[
 				{"item_code": "M22", "tree_no": "TREE-A", "gross_weight": 60.0},
-				{"item_code": "M24", "tree_no": "TREE-A", "gross_weight": 30.0, "conversion_quantity": 32.612},
+				{
+					"item_code": "M24",
+					"tree_no": "TREE-A",
+					"gross_weight": 30.0,
+					"conversion_quantity": 32.612,
+				},
 				{"item_code": "ML22", "tree_no": "TREE-A", "gross_weight": 7.388},
 			],
 		)
 		issued = {
-			"M22": {"batch_no": issued_batch, "s_warehouse": "SUP-WH", "batches": [(issued_batch, 100.0)]}
+			"M22": {
+				"batch_no": issued_batch,
+				"s_warehouse": "SUP-WH",
+				"batches": [(issued_batch, 100.0)],
+			}
 		}
 		created = []
 
@@ -3809,13 +3943,29 @@ class TestReceivedBatchesCarryOwnerAndRate(IntegrationTestCase):
 
 		self.make_batch = MagicMock(return_value="B-PREMADE")
 		with (
-			patch.object(pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"),
-			patch.object(pc_utils, "_get_department_scrap_warehouse", return_value="SCRAP-WH"),
-			patch.object(pc_utils, "_get_supplier_certification_warehouse", return_value="SUP-WH"),
-			patch.object(pc_utils, "_get_issue_stock_entry_details", return_value=({"M22": "SUP-WH"}, issued)),
+			patch.object(
+				pc_utils, "_get_department_rm_warehouse", return_value="RM-WH"
+			),
+			patch.object(
+				pc_utils, "_get_department_scrap_warehouse", return_value="SCRAP-WH"
+			),
+			patch.object(
+				pc_utils, "_get_supplier_certification_warehouse", return_value="SUP-WH"
+			),
+			patch.object(
+				pc_utils,
+				"_get_issue_stock_entry_details",
+				return_value=({"M22": "SUP-WH"}, issued),
+			),
 			# Also the "latest batch of this item in the supplier warehouse" fallback's answer.
-			patch.object(frappe.db, "get_value", return_value="B-LATEST-IN-SUPPLIER-WH"),
-			patch.object(frappe, "get_cached_value", side_effect=lambda dt, name, *a, **k: flags.get(name, (0, 0, 0))),
+			patch.object(
+				frappe.db, "get_value", return_value="B-LATEST-IN-SUPPLIER-WH"
+			),
+			patch.object(
+				frappe,
+				"get_cached_value",
+				side_effect=lambda dt, name, *a, **k: flags.get(name, (0, 0, 0)),
+			),
 			patch.object(pc_utils, "_batch_owners", side_effect=_batch_owners),
 			patch.object(frappe, "new_doc", side_effect=_new_doc),
 			patch.object(batch_module, "make_batch", self.make_batch),
@@ -3845,7 +3995,8 @@ class TestReceivedBatchesCarryOwnerAndRate(IntegrationTestCase):
 		entries = self._run("B-CUST")
 		receipt = entries["Material Receipt for Certification"]
 		self.assertEqual(
-			{(r.inventory_type, r.customer) for r in receipt.items}, {("Customer Goods", _CUSTOMER)}
+			{(r.inventory_type, r.customer) for r in receipt.items},
+			{("Customer Goods", _CUSTOMER)},
 		)
 		self.assertEqual(
 			{(r.inventory_type, r.customer) for r in entries["Repack"].items},
@@ -3860,7 +4011,9 @@ class TestReceivedBatchesCarryOwnerAndRate(IntegrationTestCase):
 		)
 
 	def test_an_item_that_does_not_mint_its_own_batches_keeps_the_old_fallback(self):
-		entries = self._run("B-CO", {"M22": (1, 0, 1), "M24": (1, 0, 0), "ML22": (1, 0, 0)})
+		entries = self._run(
+			"B-CO", {"M22": (1, 0, 1), "M24": (1, 0, 0), "ML22": (1, 0, 0)}
+		)
 		self.assertEqual(
 			[r.batch_no for r in self._produced(entries)],
 			["B-LATEST-IN-SUPPLIER-WH", "B-LATEST-IN-SUPPLIER-WH"],

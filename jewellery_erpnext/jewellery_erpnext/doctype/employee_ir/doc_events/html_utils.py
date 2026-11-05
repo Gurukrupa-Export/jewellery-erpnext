@@ -20,6 +20,9 @@ def get_summary_data(doc):
 			"gemstone_pcs": 0,
 		}
 	]
+	# Received Gross Wt is shown as received_gross_wt + finding_wt1 + finding_wt2,
+	# so it is summed separately from the plain per-field totals above.
+	received_gross_wt = 0
 	for row in doc.get("employee_ir_operations"):
 		for i in data[0]:
 			if row.get(i):
@@ -28,5 +31,12 @@ def get_summary_data(doc):
 					value = int(row.get(i))
 				data[0][i] += flt(value, 3)
 			data[0][i] = flt(data[0][i], 3)
+		received_gross_wt += (
+			flt(row.get("received_gross_wt"), 3)
+			+ flt(row.get("finding_wt1"), 3)
+			+ flt(row.get("finding_wt2"), 3)
+		)
+
+	data[0]["received_gross_wt"] = flt(received_gross_wt, 3)
 
 	return data

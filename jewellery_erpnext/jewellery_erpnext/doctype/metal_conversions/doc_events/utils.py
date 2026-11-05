@@ -16,6 +16,20 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import
 )
 
 
+QTY_PRECISION = 3
+
+
+def covers_required_qty(total_qty, required_qty):
+	"""True when the allocated batch quantities add up to the required quantity.
+
+	Batch pieces are summed as floats, so two or more of them can land a hair off the
+	required figure (67.279 + 22.639 is 89.91799999999999, not 89.918). Comparing with
+	``!=`` then reported a shortfall on stock that was there, and only once a quantity
+	ran into a second batch. Both sides are rounded to the quantity precision first.
+	"""
+	return flt(total_qty, QTY_PRECISION) == flt(required_qty, QTY_PRECISION)
+
+
 def update_batch_details(self):
 	rows_to_append = []
 	self.flags.only_regular_stock_allowed = True
@@ -94,19 +108,19 @@ def update_alloy_betch(self):
 		self.alloy_batch_details = []
 		# batch_data = batch_data[0]
 		if batch_data:
-			remaining_qty = 0
+			required_qty = flt(self.source_alloy_qty, QTY_PRECISION)
 			total_qty = 0
 			for i in batch_data:
-				qty = 0
-				if flt(self.source_alloy_qty) > i.qty:
-					qty = i.qty
-					remaining_qty += i.qty
-					total_qty += qty
-				else:
-					qty = flt(self.source_alloy_qty) - remaining_qty
-					total_qty += qty
+				still_needed = flt(required_qty - total_qty, QTY_PRECISION)
+				if still_needed <= 0:
+					break
+				# Each batch gives what is still needed, at most what it holds.
+				qty = min(flt(i.qty, QTY_PRECISION), still_needed)
+				if qty <= 0:
+					continue
+				total_qty = flt(total_qty + qty, QTY_PRECISION)
 				self.append("alloy_batch_details", {"qty": qty, "batch": i.batch_no})
-			if total_qty != flt(self.source_alloy_qty):
+			if not covers_required_qty(total_qty, required_qty):
 				frappe.throw(
 					_(
 						"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
@@ -221,7 +235,7 @@ def update_source_betch(self):
 		if remaining_qty >= required_qty:
 			break  # Stop if we have filled the required quantity
 
-	if total_qty != required_qty:
+	if not covers_required_qty(total_qty, required_qty):
 		frappe.throw(
 			_(
 				"The source quantity is not available for the given warehouse. The available quantity is {}.".format(

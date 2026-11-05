@@ -537,6 +537,7 @@ function set_html(frm) {
 			<thead>
 				<tr style = "text-align:center">
 					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Gross WT</th>
+					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Received Gross WT</th>
 					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Net WT</th>
 					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Finding WT</th>
 					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Diamond WT</th>
@@ -549,6 +550,7 @@ function set_html(frm) {
 			{% for item in data %}
 				<tr style = "text-align:center">
 					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.gross_wt }}</td>
+					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.received_gross_wt }}</td>
 					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.net_wt }}</td>
 					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.finding_wt }}</td>
 					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.diamond_wt }}</td>

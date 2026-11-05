@@ -29,6 +29,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority 
 	loss_rank,
 	tiered_allocate,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
 )
@@ -121,6 +125,7 @@ class EmployeeIR(Document):
 			},
 			["name", "gross_wt"],
 		)
+		records = without_closed_mwo_operations(records)
 		self.employee_ir_operations = []
 		if records:
 			for row in records:
@@ -128,7 +133,32 @@ class EmployeeIR(Document):
 					"employee_ir_operations", {"manufacturing_operation": row.name}
 				)
 
+	def before_save(self):
+		self.set_parent_manufacturing_order_count()
+
+	def set_parent_manufacturing_order_count(self):
+		# The rows carry no PMO of their own: read it off each row's work order (fetched
+		# from its operation during validate). Rebuilt from the whole table each time, so
+		# added, edited and deleted rows all count.
+		work_orders = {
+			row.manufacturing_work_order
+			for row in self.employee_ir_operations
+			if row.manufacturing_work_order
+		}
+		pmos = (
+			frappe.get_all(
+				"Manufacturing Work Order",
+				filters={"name": ["in", list(work_orders)]},
+				pluck="manufacturing_order",
+			)
+			if work_orders
+			else []
+		)
+		self.parent_manufacturing_order_count = len({pmo for pmo in pmos if pmo})
+
 	def before_submit(self):
+		# An insert-and-submit (REST, docstatus=1) runs before_submit instead of before_save.
+		self.set_parent_manufacturing_order_count()
 		if self.type == "Issue":
 			self.issue_submitted_on = now_datetime()
 			validate_casting_group_complete(self)
@@ -184,6 +214,7 @@ class EmployeeIR(Document):
 		validate_duplication_and_gr_wt(self)
 
 	def validate(self):
+		block_closed_mwo_operations(self, "employee_ir_operations")
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()
