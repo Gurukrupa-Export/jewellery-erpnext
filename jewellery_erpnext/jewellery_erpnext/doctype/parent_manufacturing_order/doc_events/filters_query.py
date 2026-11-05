@@ -1,6 +1,7 @@
 import json
 
 import frappe
+from frappe import _
 from frappe.utils import cint, cstr
 
 # from frappe.query_builder import Case
@@ -122,6 +123,33 @@ def custom_override_grades(all_grades, sales_type, is_customer_diamond, flags=No
 def sales_type_expects(sales_type):
 	"""The is_customer_diamond this Sales Type requires, or None when it dictates nothing."""
 	return SALES_TYPE_CUSTOMER_DIAMOND.get(sales_type)
+
+
+def validate_outright_grade(sales_type, grade, customer, diamond_quality):
+	"""Refuse a customer-diamond-quality grade on an Outright order.
+
+	pick_diamond_grade lets a non-customer-diamond order fall back to a flagged grade when the
+	customer has no plain one for the quality, which Hybrid and the other neutral Sales Types
+	still rely on. An Outright order is company-owned stock, so that fallback only hides a
+	missing plain grade in the customer master while the flagged grade goes onto the tracking
+	BOM and selects the diamond variants.
+	"""
+	if not grade or sales_type_expects(sales_type) != 0:
+		return
+
+	if not _grade_flags([grade]).get(grade):
+		return
+
+	frappe.throw(
+		_(
+			"Customer {0} has no normal Diamond Grade for quality {1}, only the Customer "
+			"Diamond Quality grade {2}, which an Outright order cannot use. Add a normal grade "
+			"to the customer's Diamond Grades table."
+		).format(
+			frappe.bold(customer), frappe.bold(diamond_quality), frappe.bold(grade)
+		),
+		title=_("Diamond Grade Missing"),
+	)
 
 
 def customer_grades(customer, diamond_quality):
