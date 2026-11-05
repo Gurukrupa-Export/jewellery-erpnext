@@ -54,6 +54,12 @@ def execute():
 		f"SELECT {cols} FROM `tab{OLD_CHILD}` WHERE {where}",
 		(FIELD, PARENT),
 	)
+	# Only rows that now exist in the new table (same name) are removed from the old one.
+	frappe.db.sql(
+		f"DELETE o FROM `tab{OLD_CHILD}` o JOIN `tab{NEW_CHILD}` n ON n.name = o.name "
+		"WHERE o.`parentfield` = %s AND o.`parenttype` = %s",
+		(FIELD, PARENT),
+	)
 
 	frappe.clear_cache(doctype=PARENT)
 	frappe.db.commit()
