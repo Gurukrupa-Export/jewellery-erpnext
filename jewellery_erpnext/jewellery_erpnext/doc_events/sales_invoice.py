@@ -6,9 +6,6 @@ from frappe import _
 from frappe.query_builder.custom import ConstantColumn
 from frappe.utils import flt, get_last_day, getdate
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
-	_calculate_diamond_amount,
-)
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
 
 
@@ -1613,7 +1610,6 @@ def update_bom_details(
 			rate = so_item.rate
 
 		else:
-			amount = _calculate_diamond_amount(bom_doc, i, {}, {})
 			if is_branch_customer:
 				amount = i.se_rate * i.quantity
 			amount = i.diamond_rate_for_specified_quantity
