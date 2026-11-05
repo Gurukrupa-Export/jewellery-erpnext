@@ -499,6 +499,114 @@ class TestSalesInvoiceBeforeValidate(_SIBase):
 		mocks.update_income_account.assert_called_once_with(si)
 
 
+def _purity_row(metal_type="Gold", metal_touch="22KT", quantity=2, **overrides):
+	fields = dict(
+		metal_type=metal_type,
+		metal_touch=metal_touch,
+		quantity=quantity,
+		wastage_rate=0,
+		is_customer_item=0,
+	)
+	fields.update(overrides)
+	return SimpleNamespace(**fields)
+
+
+class TestCustomerMetalPurity(_SIBase):
+	"""Metal Criteria lookup that replaced the f-string SQL in before_validate."""
+
+	def _run(self, si, bom, criteria):
+		return _run_with_patches(
+			si,
+			si_events.before_validate,
+			*_std_before_validate_patches(get_value={"return_value": None}),
+			patch(f"{SI}.frappe.get_doc", return_value=bom),
+			patch(f"{SI}.frappe.get_all", return_value=criteria),
+			patch(f"{SI}.frappe.db.get_single_value", return_value=3),
+			patch(f"{SI}.update_making_charges"),
+		)
+
+	def test_map_reads_only_customer_rows(self):
+		with patch(f"{SI}.frappe.get_all", return_value=[]) as mock_get_all:
+			si_events._get_customer_metal_purity_map("CUST-1")
+		mock_get_all.assert_called_once_with(
+			"Metal Criteria",
+			filters={"parent": "CUST-1", "parenttype": "Customer"},
+			fields=["metal_type", "metal_touch", "metal_purity"],
+		)
+
+	def test_map_quoted_customer_name_does_not_break_query(self):
+		# Unpatched: the name reaches the DB as a bound parameter, so a quote is
+		# just data. The old f-string query failed on it with a SQL syntax error.
+		self.assertEqual(
+			si_events._get_customer_metal_purity_map("D'Souza' OR '1'='1"), {}
+		)
+
+	def test_lookup_returns_purity_for_type_and_touch(self):
+		purity_map = {("Gold", "22KT"): "91.6", ("Gold", "18KT"): "75"}
+		self.assertEqual(
+			si_events._customer_metal_purity(purity_map, "CUST-1", _purity_row()),
+			"91.6",
+		)
+
+	def test_lookup_missing_criteria_throws(self):
+		with self.assertRaises(frappe.ValidationError):
+			si_events._customer_metal_purity({}, "CUST-1", _purity_row())
+
+	def test_before_validate_prices_metal_and_finding_rows(self):
+		metal = _purity_row(metal_touch="22KT", quantity=2)
+		finding = _purity_row(metal_touch="18KT", quantity=1)
+		bom = _bom(
+			metal_detail=[metal],
+			finding_detail=[finding],
+			total_wastage_amount=0,
+			save=MagicMock(),
+		)
+		si = DummySalesInvoice(
+			gold_rate=1000.0,
+			items=[
+				StubItemRow(item_code="RING-1", bom="BOM-1"),
+				StubItemRow(item_code="RING-2", bom="BOM-2"),
+			],
+		)
+		criteria = [
+			frappe._dict(metal_type="Gold", metal_touch="22KT", metal_purity="91.6"),
+			frappe._dict(metal_type="Gold", metal_touch="18KT", metal_purity="75"),
+		]
+		mocks = self._run(si, bom, criteria)
+		# rate = purity * gold_rate_with_gst / (100 + gold_gst_rate)
+		gold_rate_with_gst = round(1000.0 * 1.03, 3)
+		self.assertEqual(metal.customer_metal_purity, "91.6")
+		self.assertEqual(metal.rate, round(91.6 * gold_rate_with_gst / 103, 2))
+		self.assertEqual(finding.customer_metal_purity, "75")
+		self.assertEqual(finding.rate, round(75 * gold_rate_with_gst / 103, 2))
+		# One criteria read per invoice, however many items and BOM rows.
+		mocks.get_all.assert_called_once()
+
+	def test_before_validate_missing_criteria_blocks_save(self):
+		bom = _bom(metal_detail=[_purity_row()], save=MagicMock())
+		si = DummySalesInvoice(
+			gold_rate=1000.0, items=[StubItemRow(item_code="RING-1", bom="BOM-1")]
+		)
+		with self.assertRaises(frappe.ValidationError):
+			self._run(si, bom, [])
+		bom.save.assert_not_called()
+
+	def test_customer_item_row_needs_no_criteria(self):
+		# Customer gold is skipped before the purity lookup, so a customer with no
+		# Metal Criteria for it can still save.
+		customer_row = _purity_row(is_customer_item=1, amount=500)
+		bom = _bom(
+			metal_detail=[customer_row], total_wastage_amount=0, save=MagicMock()
+		)
+		si = DummySalesInvoice(
+			gold_rate=1000.0, items=[StubItemRow(item_code="RING-1", bom="BOM-1")]
+		)
+		self._run(si, bom, [])
+		self.assertEqual(customer_row.amount, 0)
+		self.assertFalse(hasattr(customer_row, "customer_metal_purity"))
+		bom.save.assert_called_once()
+
+
 class TestSalesInvoiceValidate(_SIBase):
 	def _assert_bom_header_sums(self, si):
 		self.assertEqual(si.custom_diamond_pcs, 2)
@@ -1272,10 +1380,17 @@ class TestCustomerMetalIsNotRepricedByTheInvoice(_SIBase):
 		with (
 			patch(f"{SI}.frappe.db.get_value", side_effect=_get_value),
 			patch(f"{SI}.frappe.get_doc", return_value=bom_doc),
+			patch(f"{SI}.frappe.db.get_single_value", return_value=self.GST),
 			patch(
-				f"{SI}.frappe.db.get_single_value", return_value=self.GST
+				f"{SI}.frappe.get_all",
+				return_value=[
+					frappe._dict(
+						metal_type="Gold",
+						metal_touch="18K",
+						metal_purity=self.CUSTOMER_PURITY,
+					)
+				],
 			),
-			patch(f"{SI}.frappe.db.sql", return_value=[{"metal_purity": self.CUSTOMER_PURITY}]),
 			patch(f"{SI}.update_making_charges", side_effect=_fake_making_charges),
 			patch(f"{SI}.update_income_account"),
 			patch(f"{SI}.update_si_data"),
@@ -1315,9 +1430,7 @@ class TestCustomerMetalIsNotRepricedByTheInvoice(_SIBase):
 		self._run([company_row])
 
 		self.assertEqual(company_row.rate, self._full_rate())
-		self.assertEqual(
-			company_row.amount, round(self._full_rate() * 10.0, 2)
-		)
+		self.assertEqual(company_row.amount, round(self._full_rate() * 10.0, 2))
 
 	def test_total_metal_amount_excludes_the_customers_metal(self):
 		"""The figure that gets persisted, and the one a later recompute would read."""
