@@ -41,6 +41,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	is_customer_diamond_flag,
 	resolve_diamond_grade,
 	sales_type_expects,
+	validate_outright_grade,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
@@ -413,11 +414,16 @@ class ParentManufacturingOrder(Document):
 		if self.use_custom_diamond_grade:
 			return
 
+		customer = self.ref_customer or self.customer
 		grade = resolve_diamond_grade(
-			self.ref_customer or self.customer,
+			customer,
 			self.diamond_quality,
 			self.is_customer_diamond,
 		)
+		if not self.flags.ignore_validations:
+			validate_outright_grade(
+				self.sales_type, grade, customer, self.diamond_quality
+			)
 		if grade:
 			self.diamond_grade = grade
 
