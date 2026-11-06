@@ -165,6 +165,7 @@ def _db_mock(
 
 	mock_db.get_value.side_effect = get_value
 	mock_db.get_list.return_value = [{"name": f"ITM-{i}"} for i in range(1, items + 1)]
+	mock_db.count.return_value = items
 	if callable(exists):
 		mock_db.exists.side_effect = exists
 	else:
@@ -839,12 +840,9 @@ class TestBeforeInsert(IntegrationTestCase):
 		self.assertEqual(doc.batch_number_series, f"{DATE_CODE}-COCMCM05{BATCH_SUFFIX}")
 
 	def test_consumables_sequence_tracks_the_true_count_past_20(self):
-		# Guard pinned for suspected flaw #8 (verified benign): the count comes
-		# from frappe.db.get_list, which in this Frappe v16 applies NO 20-row cap
-		# -- the limit_page_length=20 default lives in frappe.client.get_list (the
-		# API/listview controller), not the DB method used here. So 25 variants
-		# yield sequence 26, not a stuck 21. If a framework change ever caps
-		# get_list, this test fails.
+		# Guard pinned for suspected flaw #8: the count comes from frappe.db.count
+		# (a COUNT query, no row cap; it was len(frappe.db.get_list(...)) before), so
+		# 25 variants yield sequence 26, not a stuck 21.
 		doc = self._insert(
 			_consumable(),
 			db=_db_mock(batch_or_serial={"Round": "Batch"}, items=25),
