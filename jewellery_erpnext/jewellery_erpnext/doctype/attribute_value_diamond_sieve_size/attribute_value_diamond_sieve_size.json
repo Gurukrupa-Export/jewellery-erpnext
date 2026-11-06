@@ -59,8 +59,9 @@
   },
   {
    "fieldname": "size_in_mm",
-   "fieldtype": "Float",
-   "label": "Size in MM"
+   "fieldtype": "Link",
+   "label": "Size in MM",
+   "options": "Attribute Value"
   },
   {
    "fieldname": "pcs",
