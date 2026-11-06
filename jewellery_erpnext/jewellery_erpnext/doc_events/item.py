@@ -477,10 +477,8 @@ def before_insert(self, method):
 				# 	frappe.throw(("Abbrivation is missing for {0}".format(i.attribute_value)))
 				# batch_code = batch_number + group_abbr[0][0] + batch_abbr_code + "-.##."
 
-				total_variant = len(
-					frappe.db.get_list(
-						"Item", {"item_group": self.item_group, "has_batch_no": 1}
-					)
+				total_variant = frappe.db.count(
+					"Item", {"item_group": self.item_group, "has_batch_no": 1}
 				)
 
 				if total_variant == 0:
@@ -514,10 +512,8 @@ def before_insert(self, method):
 							"Abbr is not available for <b>{item_group}</b> in Item Attribute Consumnables"
 						).format(item_group=self.item_group)
 					)
-				total_variant = len(
-					frappe.db.get_list(
-						"Item", {"item_group": self.item_group, "has_serial_no": 1}
-					)
+				total_variant = frappe.db.count(
+					"Item", {"item_group": self.item_group, "has_serial_no": 1}
 				)
 				if total_variant == 0:
 					sequence = 1
