@@ -20,6 +20,7 @@ frappe.ui.form.on("Metal Conversions", {
 		// render its stored value against until this runs.
 		set_remark_options(frm);
 		toggle_chain_fields(frm);
+		correct_chain_target_qty(frm);
 	},
 	setup(frm) {
 		// Set Metal Tab Filter
@@ -117,7 +118,7 @@ frappe.ui.form.on("Metal Conversions", {
 		// typed in at Receive -- not a purity calculation. Its batches were drawn on the
 		// server and moved by Issue, so they are never cleared here.
 		if (is_chain(frm)) {
-			set_chain_loss(frm);
+			fill_chain_target_qty(frm);
 			return;
 		}
 		clear_source_batches(frm);
@@ -170,16 +171,13 @@ frappe.ui.form.on("Metal Conversions", {
 		const missing = [];
 		if (!frm.doc.target_item) missing.push(__("Target Item"));
 		if (!flt(frm.doc.target_qty)) missing.push(__("Target Qty"));
-		let message = null;
+		// How much may come back is the server's call (validate_receive): the weight issued
+		// for an employee, the purity conversion for a supplier -- who adds alloy, so the
+		// target may outweigh the source.
 		if (missing.length) {
-			message = __("Enter {0} before Receive.", [missing.join(", ")]);
-		} else if (flt(frm.doc.target_qty) > flt(frm.doc.source_qty)) {
-			message = __("Target Qty cannot be greater than Source Qty.");
-		}
-		if (message) {
 			// workflow.js froze the page and only unfreezes after the action runs.
 			frappe.dom.unfreeze();
-			frappe.throw(message);
+			frappe.throw(__("Enter {0} before Receive.", [missing.join(", ")]));
 		}
 	},
 });
@@ -373,8 +371,70 @@ function refresh_chain_details(frm) {
 
 function set_chain_loss(frm) {
 	if (!is_chain(frm)) return;
+	if (frm.doc.is_chain_subcontracting) {
+		// The loss is the fine shortfall when the supplier added alloy, so the server works it
+		// out from the purities (chain_subcontracting.receive_split).
+		frm.call("get_chain_receive_qtys").then((r) => {
+			if (r.message) frm.set_value("chain_process_loss_qty", r.message.loss_qty);
+		});
+		return;
+	}
 	const loss = frm.doc.target_qty ? flt(frm.doc.source_qty) - flt(frm.doc.target_qty) : 0;
 	frm.set_value("chain_process_loss_qty", loss);
+}
+
+// On open, an issued subcontracted conversion whose Target Qty is blank or above what the
+// Source Qty converts to (e.g. typed before the purity cap existed) is set to that figure. A
+// lower value -- what actually came back -- is kept.
+function correct_chain_target_qty(frm) {
+	if (
+		!is_chain(frm) ||
+		!frm.doc.is_chain_subcontracting ||
+		!frm.doc.chain_issue_stock_entry ||
+		frm.doc.docstatus !== 0 ||
+		!frm.doc.target_item
+	) {
+		return;
+	}
+	frm.call("get_chain_receive_qtys").then((r) => {
+		const fill = r.message && r.message.max_target_qty;
+		// The server's tolerance: one unit at posting precision (validate_receive).
+		if (!fill || (flt(frm.doc.target_qty) && flt(frm.doc.target_qty) - fill <= 0.001)) {
+			return;
+		}
+		frm.set_value("target_qty", fill).then(() => {
+			frappe.show_alert(
+				{
+					message: __("Target Qty set to {0}: what {1} of {2} converts to. Save, then Receive.", [
+						format_number(fill, null, 3),
+						frm.doc.source_qty,
+						frm.doc.source_item,
+					]),
+					indicator: "orange",
+				},
+				8
+			);
+		});
+	});
+}
+
+// A subcontracted chain conversion's Target Qty is filled with what the Source Qty converts
+// to at the purities, as the regular conversion fills it -- but with no alloy fields: the
+// supplier adds the alloy. It can be lowered to what actually came back, never raised.
+function fill_chain_target_qty(frm) {
+	if (!frm.doc.is_chain_subcontracting || !frm.doc.target_item) {
+		set_chain_loss(frm);
+		return;
+	}
+	frm.call("get_chain_receive_qtys").then((r) => {
+		const fill = r.message && r.message.max_target_qty;
+		if (fill) {
+			// target_qty's own handler then refreshes the loss.
+			frm.set_value("target_qty", fill);
+		} else {
+			set_chain_loss(frm);
+		}
+	});
 }
 
 function toggle_chain_fields(frm) {
