@@ -3,6 +3,10 @@
 
 frappe.ui.form.on("Department Operation", {
 	setup: function (frm) {
+		frm.set_query("department_process", function () {
+			return { filters: { department: frm.doc.department, disabled: 0 } };
+		});
+
 		frm.set_query("service_item", function () {
 			return {
 				filters: {

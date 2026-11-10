@@ -70,6 +70,7 @@
   "manufacturing_plan",
   "department",
   "manufacturing_operation",
+  "current_process",
   "tree_number",
   "casting_group",
   "project",
@@ -582,6 +583,16 @@
    "read_only": 1
   },
   {
+   "description": "Mirror of the current Manufacturing Operation's process.",
+   "fieldname": "current_process",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Current Process",
+   "no_copy": 1,
+   "options": "Department Process",
+   "read_only": 1
+  },
+  {
    "allow_on_submit": 1,
    "description": "Casting tree this work order is attached to. Set when a Casting (tree) Employee IR is issued.",
    "fieldname": "tree_number",
@@ -772,7 +783,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-10-21 12:00:00.000000",
+ "modified": "2026-11-10 12:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

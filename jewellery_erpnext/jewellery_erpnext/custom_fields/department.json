@@ -178,6 +178,23 @@
    "insert_after": "custom_is_chain_manufacturing",
    "label": "Is Chain Subcontracting",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_process_control_section",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_is_chain_subcontracting",
+   "label": "Process Control",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Track which Department Process each work order is in and move work orders between processes with Process Transfer. Needs at least one enabled Department Process and a Process on every Department Operation of this department.",
+   "dt": "Department",
+   "fieldname": "custom_enable_process_control",
+   "fieldtype": "Check",
+   "insert_after": "custom_process_control_section",
+   "label": "Enable Process Control",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
