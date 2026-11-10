@@ -30,16 +30,14 @@ frappe.ui.form.on("Process Transfer", {
 		if (!mwo) return;
 		const exists = (frm.doc.operations || []).some((r) => r.manufacturing_work_order === mwo);
 		if (exists) {
-			frappe.show_alert({ message: __("{0} is already listed.", [mwo]), indicator: "orange" });
+			frappe.show_alert({
+				message: __("{0} is already listed.", [frappe.utils.escape_html(mwo)]),
+				indicator: "orange",
+			});
 		} else {
 			frm.add_child("operations", { manufacturing_work_order: mwo });
 			frm.refresh_field("operations");
 		}
 		frm.set_value("scan_mwo", "");
-	},
-	get_operations(frm) {
-		frappe.msgprint(
-			__("Save the draft: the current operation and process of each work order are read on save.")
-		);
 	},
 });

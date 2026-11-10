@@ -12,8 +12,8 @@ What is under test (``doc_events/process_control.py`` and the four new DocTypes)
 * The Department switch is refused until the cell is fully configured.
 * Job state: ``Manufacturing Operation.department_process`` and ``Manufacturing Work Order.current_process``
   change only inside ``process_transition``. A successor operation inherits the process.
-* Process Transfer drafts read each row's active operation and process from the database, refuse
-  mixed or duplicate rows, and cannot be submitted yet.
+* Process Transfer drafts read each row's active operation and process from the database (one
+  batched read), refuse mixed or duplicate rows, and cannot be submitted yet.
 * User Process Access: one or several processes, data-entry users without an Employee, defaults
   that never grant, no self-grant, and System Manager alone cannot write.
 
@@ -22,6 +22,7 @@ whole transaction back in ``tearDown``. ``frappe.db.commit`` and RQ are recorded
 unused. Everything carries the ``TPCF-`` prefix.
 """
 
+import zlib
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -61,15 +62,13 @@ class _ProcessHarness(IntegrationTestCase):
 			from jewellery_erpnext.patches.add_process_control_fields import execute
 
 			execute()
-		cls.run_prefix = fx.new_prefix(PREFIX_BASE)
-		cls.world_count = 0
 
 	@classmethod
 	def tearDownClass(cls):
 		frappe.db.rollback()
 		leaked = frappe.get_all(
 			"Department Process",
-			filters={"name": ["like", f"{cls.run_prefix}%"]},
+			filters={"name": ["like", f"{PREFIX_BASE}-%"]},
 			pluck="name",
 		)
 		super().tearDownClass()
@@ -78,7 +77,6 @@ class _ProcessHarness(IntegrationTestCase):
 
 	def setUp(self):
 		super().setUp()
-		type(self).world_count += 1
 		self.commits = []
 		self.enqueued = []
 		for patcher in (
@@ -92,8 +90,9 @@ class _ProcessHarness(IntegrationTestCase):
 		):
 			patcher.start()
 			self.addCleanup(patcher.stop)
+		# Deterministic per test (no random names): every test rolls back, so the test id is enough.
 		self.w = fx.make_world(
-			f"{self.run_prefix}-{self.world_count:02d}",
+			f"{PREFIX_BASE}-{zlib.crc32(self.id().encode()):08x}",
 			departments=("MM", "DS"),
 			employees={"MM1": "MM"},
 			subcontractors=(),
@@ -402,6 +401,9 @@ class TestDepartmentSwitch(_ProcessHarness):
 		guard = "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.guard_process_field"
 		self.assertIn(guard, events["Manufacturing Operation"]["validate"])
 		self.assertIn(guard, events["Manufacturing Work Order"]["validate"])
+		self.assertIn(
+			guard, events["Manufacturing Work Order"]["before_update_after_submit"]
+		)
 		self.assertIn(
 			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.validate_department",
 			events["Department"]["validate"],
@@ -846,3 +848,104 @@ class TestFormsLoad(_ProcessHarness):
 			self.assertIn(snippet, bundle[0].get("__js") or "", doctype)
 		child = [d["name"] for d in get_meta_bundle("Process Transfer")]
 		self.assertIn("Process Transfer Operation", child)
+
+
+# ------------------------------------------------------------------------------------------------
+# Review fixes: database uniqueness, batched reads, bounded scans, escaping, update after submit
+# ------------------------------------------------------------------------------------------------
+
+
+class TestReviewFixes(_ProcessHarness):
+	def test_trailing_space_cannot_make_a_second_process(self):
+		self.process("Setting")
+		with self.assertRaises(frappe.DuplicateEntryError):
+			self.process("Setting ")
+
+	def test_database_refuses_a_second_process_of_the_same_name(self):
+		a = self.process("Setting")
+		row = frappe.get_doc("Department Process", a).as_dict()
+		row.update(name=f"{a} copy")
+		with self.assertRaises(
+			(frappe.UniqueValidationError, frappe.DuplicateEntryError)
+		):
+			frappe.get_doc(row).db_insert()
+
+	def test_database_refuses_a_duplicate_grant(self):
+		a, _b, _ = self.cell()
+		u = self.user("dupdb")
+		row = self.grant(u, a).as_dict()
+		row.update(name=f"{row.name}-copy")
+		with self.assertRaises(
+			(frappe.UniqueValidationError, frappe.DuplicateEntryError)
+		):
+			frappe.get_doc(row).db_insert()
+
+	def test_row_reads_do_not_grow_with_the_number_of_rows(self):
+		a, _b, _ = self.cell()
+		one = [self.job(process=a)[0]]
+		four = [self.job(process=a)[0] for _ in range(4)]
+
+		def queries(work_orders):
+			with patch.object(frappe.db, "sql", wraps=frappe.db.sql) as spy:
+				found = pc.get_active_operations(work_orders)
+			self.assertTrue(all(isinstance(v, dict) for v in found.values()), found)
+			return spy.call_count
+
+		self.assertEqual(queries(one), queries(four))
+
+	def test_row_errors_name_the_row(self):
+		a, b, _ = self.cell()
+		good, _ = self.job(process=a)
+		stale, mop = self.job(process=a)
+		fx.make_operation(self.w, stale, "MM", previous_mop=mop)
+		with self.assertRaisesRegex(ActiveOperationError, "Row #2.*successor"):
+			self.transfer(a, b, [good, stale]).insert()
+
+	def test_empty_row_is_named(self):
+		a, b, _ = self.cell()
+		doc = self.transfer(a, b, [""])
+		with self.assertRaisesRegex(
+			ProcessControlError, "Row #1: select a Manufacturing Work Order"
+		):
+			doc.insert()
+
+	def test_open_operations_is_bounded_and_skips_reverted(self):
+		a, _b, _ = self.cell()
+		reverted = None
+		for i in range(7):
+			_mwo, mop = self.job(process=a)
+			if i == 0:
+				frappe.db.set_value(
+					"Manufacturing Operation", mop, "department_ir_status", "Revert"
+				)
+				reverted = mop
+		found = pc.open_operations(department_process=a)
+		self.assertEqual(len(found), pc.MESSAGE_LIST_LIMIT)
+		self.assertNotIn(reverted, found)
+
+	def test_mapping_message_names_old_and_new_process(self):
+		a, b, _op_b = self.cell()
+		_mwo, mop = self.job(process=a)
+		frappe.db.set_value(
+			"Manufacturing Operation", mop, "operation", self.w.operations["MM"]
+		)
+		with self.assertRaises(ProcessControlError) as ctx:
+			self.map_operation(self.w.operations["MM"], b)
+		self.assertIn(a, str(ctx.exception))
+		self.assertIn(b, str(ctx.exception))
+
+	def test_submitted_work_order_process_cannot_be_saved_outside_the_transition(self):
+		a, _b, _ = self.cell()
+		mwo, _ = self.job()
+		doc = frappe.get_doc("Manufacturing Work Order", mwo)
+		self.assertEqual(doc.docstatus, 1)
+		doc.current_process = a
+		with self.assertRaises(ProcessStateError):
+			doc.save()
+		self.assertFalse(
+			frappe.db.get_value("Manufacturing Work Order", mwo, "current_process")
+		)
+
+	def test_messages_escape_values(self):
+		self.assertNotIn("<img", pc.bold('<img src=x onerror="alert(1)">'))
+		self.assertIn("&lt;img", pc.bold("<img>"))

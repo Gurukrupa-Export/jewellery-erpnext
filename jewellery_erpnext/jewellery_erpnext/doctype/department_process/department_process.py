@@ -12,16 +12,19 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
-	OPEN_STATUSES,
-	is_reverted,
-)
 from jewellery_erpnext.jewellery_erpnext.doc_events.process_control import (
 	ProcessControlError,
+	bold,
+	open_operations,
 )
 
 
 class DepartmentProcess(Document):
+	def before_naming(self):
+		# The name is built from process_name before validate runs: strip here, so "Setting " and
+		# "Setting" cannot become two processes of one department.
+		self.process_name = (self.process_name or "").strip()
+
 	def validate(self):
 		self.process_name = (self.process_name or "").strip()
 		self.validate_scope()
@@ -36,13 +39,13 @@ class DepartmentProcess(Document):
 		)
 		if not department:
 			frappe.throw(
-				_("Department {0} does not exist.").format(frappe.bold(self.department))
+				_("Department {0} does not exist.").format(bold(self.department))
 			)
 		if department.is_group:
 			frappe.throw(
 				_(
 					"Department {0} is a group. A process belongs to a working (non-group) department."
-				).format(frappe.bold(self.department)),
+				).format(bold(self.department)),
 				ProcessControlError,
 			)
 		self.company = department.company
@@ -51,9 +54,9 @@ class DepartmentProcess(Document):
 				_(
 					"Manufacturer {0} does not match Department {1}, whose manufacturer is {2}."
 				).format(
-					frappe.bold(self.manufacturer),
-					frappe.bold(self.department),
-					frappe.bold(department.manufacturer),
+					bold(self.manufacturer),
+					bold(self.department),
+					bold(department.manufacturer),
 				),
 				ProcessControlError,
 			)
@@ -68,36 +71,27 @@ class DepartmentProcess(Document):
 			):
 				frappe.throw(
 					_("Manufacturer {0} belongs to Company {1}, not {2}.").format(
-						frappe.bold(self.manufacturer),
-						frappe.bold(manufacturer_company),
-						frappe.bold(self.company),
+						bold(self.manufacturer),
+						bold(manufacturer_company),
+						bold(self.company),
 					),
 					ProcessControlError,
 				)
 
 	def validate_disable(self):
-		if not self.disabled or self.is_new():
+		if not self.disabled or self.is_new() or not self.has_value_changed("disabled"):
 			return
-		if not self.has_value_changed("disabled"):
-			return
-		active = [
-			r.name
-			for r in frappe.get_all(
-				"Manufacturing Operation",
-				filters={
-					"department_process": self.name,
-					"status": ["in", OPEN_STATUSES],
-				},
-				fields=["name", "status", "department_ir_status"],
-				order_by="name asc",
-			)
-			if not is_reverted(r.status, r.department_ir_status)
-		][:5]
+		active = open_operations(department_process=self.name)
 		if active:
 			frappe.throw(
 				_(
 					"Process {0} cannot be disabled while work is in it. Open operations include: {1}. "
 					"Move those work orders to another process first."
-				).format(frappe.bold(self.name), ", ".join(active)),
+				).format(bold(self.name), ", ".join(bold(m) for m in active)),
 				ProcessControlError,
 			)
+
+
+def on_doctype_update():
+	# One process name per department, enforced by the database (the name alone can be renamed).
+	frappe.db.add_unique("Department Process", ["department", "process_name"])
