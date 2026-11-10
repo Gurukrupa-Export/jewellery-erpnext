@@ -257,6 +257,8 @@ class TestProcessConfiguration(_ProcessHarness):
 			self.process("Setting", manufacturer=other)
 
 	def test_manufacturer_of_another_company_is_refused(self):
+		if not frappe.get_meta("Manufacturer").has_field("company"):
+			self.skipTest("Manufacturer.company is not installed on this site")
 		frappe.db.set_value("Department", self.dept(), "manufacturer", None)
 		other = fx._insert(
 			self.w,
