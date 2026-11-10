@@ -302,6 +302,8 @@ doc_events = {
 		"on_submit": [
 			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.validate_and_repack_on_mwo_submit"
 		],
+		# current_process is allow_on_submit so the transition service can save it; nothing else may.
+		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.guard_process_field",
 	},
 	"Mould": {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils.clear_item_mould_cache",

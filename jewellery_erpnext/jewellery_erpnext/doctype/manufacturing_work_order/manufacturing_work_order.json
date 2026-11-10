@@ -582,6 +582,7 @@
    "read_only": 1
   },
   {
+   "allow_on_submit": 1,
    "description": "Mirror of the current Manufacturing Operation's process.",
    "fieldname": "current_process",
    "fieldtype": "Link",
@@ -773,7 +774,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-11-10 12:00:00.000000",
+ "modified": "2026-11-10 19:00:01.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

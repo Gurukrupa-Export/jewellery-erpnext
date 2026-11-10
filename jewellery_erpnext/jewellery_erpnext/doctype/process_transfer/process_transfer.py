@@ -13,10 +13,11 @@ has no Current Process, and every row must be such a work order. Nothing is ever
 or guessed.
 
 DAY 1: the draft is complete. Each row's active operation and current process are re-read from
-the database on every save, and the department, processes, scope and duplicates are validated.
-SUBMISSION IS REFUSED: the atomic, locked update of Manufacturing Operation and Manufacturing
-Work Order, its history and its cancellation come with the Day 2 transition service. A Process
-Transfer can therefore never appear to have moved a job that did not move.
+the database on every save (one batched read for all rows), and the department, processes,
+scope and duplicates are validated. SUBMISSION IS REFUSED: the locked update of Manufacturing
+Operation and Manufacturing Work Order, its history and its cancellation come with the Day 2
+transition service. A Process Transfer can therefore never appear to have moved a job that did
+not move.
 """
 
 import frappe
@@ -25,8 +26,10 @@ from frappe.model.document import Document
 from frappe.utils import cstr
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.process_control import (
+	ActiveOperationError,
 	ProcessControlError,
-	get_active_operation,
+	bold,
+	get_active_operations,
 	get_process,
 	is_process_control_enabled,
 )
@@ -52,35 +55,35 @@ class ProcessTransfer(Document):
 		)
 
 	def validate_department(self):
+		if not self.department:
+			frappe.throw(_("Select the Department."), ProcessControlError)
 		department = frappe.db.get_value(
 			"Department", self.department, ["company", "manufacturer"], as_dict=True
 		)
 		if not department:
 			frappe.throw(
-				_("Department {0} does not exist.").format(frappe.bold(self.department))
+				_("Department {0} does not exist.").format(bold(self.department))
 			)
 		if not is_process_control_enabled(self.department):
 			frappe.throw(
 				_("Department {0} does not use process control.").format(
-					frappe.bold(self.department)
+					bold(self.department)
 				),
 				ProcessControlError,
 			)
 		if department.company != self.company:
 			frappe.throw(
 				_("Department {0} belongs to Company {1}, not {2}.").format(
-					frappe.bold(self.department),
-					frappe.bold(department.company),
-					frappe.bold(self.company),
+					bold(self.department), bold(department.company), bold(self.company)
 				),
 				ProcessControlError,
 			)
 		if department.manufacturer and department.manufacturer != self.manufacturer:
 			frappe.throw(
 				_("Department {0} belongs to Manufacturer {1}, not {2}.").format(
-					frappe.bold(self.department),
-					frappe.bold(department.manufacturer),
-					frappe.bold(self.manufacturer),
+					bold(self.department),
+					bold(department.manufacturer),
+					bold(self.manufacturer),
 				),
 				ProcessControlError,
 			)
@@ -107,34 +110,37 @@ class ProcessTransfer(Document):
 				)
 			fieldnames = ("current_process", "next_process")
 		for fieldname in fieldnames:
-			process = get_process(self.get(fieldname))
 			label = _(self.meta.get_label(fieldname))
+			process = get_process(self.get(fieldname))
 			if not process:
 				frappe.throw(
-					_("{0} {1} does not exist.").format(
-						label, frappe.bold(self.get(fieldname))
-					)
+					_("Select the {0}.").format(label)
+					if not self.get(fieldname)
+					else _("{0} {1} does not exist.").format(
+						label, bold(self.get(fieldname))
+					),
+					ProcessControlError,
 				)
 			if process.department != self.department:
 				frappe.throw(
 					_("{0} {1} belongs to Department {2}, not {3}.").format(
 						label,
-						frappe.bold(process.name),
-						frappe.bold(process.department),
-						frappe.bold(self.department),
+						bold(process.name),
+						bold(process.department),
+						bold(self.department),
 					),
 					ProcessControlError,
 				)
 			if process.disabled:
 				frappe.throw(
-					_("{0} {1} is disabled.").format(label, frappe.bold(process.name)),
+					_("{0} {1} is disabled.").format(label, bold(process.name)),
 					ProcessControlError,
 				)
 		if self.current_process == self.next_process:
 			frappe.throw(
 				_(
 					"Current Process and Next Process are both {0}. Choose a different Next Process."
-				).format(frappe.bold(self.current_process)),
+				).format(bold(self.current_process)),
 				ProcessControlError,
 			)
 
@@ -146,39 +152,52 @@ class ProcessTransfer(Document):
 		seen = {}
 		for row in self.operations:
 			mwo = cstr(row.manufacturing_work_order).strip()
+			if not mwo:
+				frappe.throw(
+					_("Row #{0}: select a Manufacturing Work Order.").format(row.idx),
+					ProcessControlError,
+				)
 			if mwo in seen:
 				frappe.throw(
 					_(
 						"Row #{0}: Manufacturing Work Order {1} is already in row #{2}."
-					).format(row.idx, frappe.bold(mwo), seen[mwo]),
+					).format(row.idx, bold(mwo), seen[mwo]),
 					ProcessControlError,
 				)
 			seen[mwo] = row.idx
-			self.set_row_from_active_operation(row)
+		active = get_active_operations(seen)
+		for row in self.operations:
+			self.set_row_from_active_operation(
+				row, active[cstr(row.manufacturing_work_order).strip()]
+			)
 
-	def set_row_from_active_operation(self, row):
-		mop = get_active_operation(row.manufacturing_work_order)
+	def set_row_from_active_operation(self, row, mop):
+		if not isinstance(mop, dict):
+			frappe.throw(_("Row #{0}: {1}").format(row.idx, mop), ActiveOperationError)
 		mwo = mop.work_order
 		prefix = _("Row #{0}: Manufacturing Work Order {1}").format(
-			row.idx, frappe.bold(mwo.name)
+			row.idx, bold(mwo.name)
 		)
 		if mwo.docstatus != 1:
 			frappe.throw(_("{0} is not submitted.").format(prefix), ProcessControlError)
-		if mwo.company != self.company or mwo.manufacturer != self.manufacturer:
-			frappe.throw(
-				_("{0} belongs to {1} / {2}, not {3} / {4}.").format(
-					prefix,
-					mwo.company,
-					mwo.manufacturer,
-					self.company,
-					self.manufacturer,
-				),
-				ProcessControlError,
-			)
+		for fieldname, label in (
+			("company", _("Company")),
+			("manufacturer", _("Manufacturer")),
+		):
+			if mwo.get(fieldname) != self.get(fieldname):
+				frappe.throw(
+					_("{0} has {1} {2}, but this Process Transfer is for {3}.").format(
+						prefix,
+						label,
+						bold(mwo.get(fieldname)),
+						bold(self.get(fieldname)),
+					),
+					ProcessControlError,
+				)
 		if mop.department != self.department:
 			frappe.throw(
 				_("{0} is in Department {1}, not {2}.").format(
-					prefix, frappe.bold(mop.department), frappe.bold(self.department)
+					prefix, bold(mop.department), bold(self.department)
 				),
 				ProcessControlError,
 			)
@@ -192,7 +211,7 @@ class ProcessTransfer(Document):
 					_(
 						"{0} is already in process {1}. Use a Process Transfer without Initial Process "
 						"Assignment."
-					).format(prefix, frappe.bold(mop.department_process)),
+					).format(prefix, bold(mop.department_process)),
 					ProcessControlError,
 				)
 			return
@@ -207,9 +226,7 @@ class ProcessTransfer(Document):
 		if mop.department_process != self.current_process:
 			frappe.throw(
 				_("{0} is in process {1}, not the Current Process {2}.").format(
-					prefix,
-					frappe.bold(mop.department_process),
-					frappe.bold(self.current_process),
+					prefix, bold(mop.department_process), bold(self.current_process)
 				),
 				ProcessControlError,
 			)

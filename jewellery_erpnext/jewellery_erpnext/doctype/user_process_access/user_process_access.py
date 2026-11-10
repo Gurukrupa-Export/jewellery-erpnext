@@ -23,6 +23,7 @@ from frappe.model.document import Document
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.process_control import (
 	ProcessControlError,
+	bold,
 	get_process,
 )
 
@@ -52,18 +53,18 @@ class UserProcessAccess(Document):
 			"User", self.user, ["enabled", "user_type"], as_dict=True
 		)
 		if not user:
-			frappe.throw(_("User {0} does not exist.").format(frappe.bold(self.user)))
+			frappe.throw(_("User {0} does not exist.").format(bold(self.user)))
 		if user.user_type != "System User":
 			frappe.throw(
 				_(
 					"User {0} is not a System User and cannot make manufacturing transactions."
-				).format(frappe.bold(self.user)),
+				).format(bold(self.user)),
 				ProcessControlError,
 			)
 		if self.enabled and not user.enabled:
 			frappe.throw(
 				_("User {0} is disabled; the access row must be disabled too.").format(
-					frappe.bold(self.user)
+					bold(self.user)
 				),
 				ProcessControlError,
 			)
@@ -73,13 +74,13 @@ class UserProcessAccess(Document):
 		if not process:
 			frappe.throw(
 				_("Department Process {0} does not exist.").format(
-					frappe.bold(self.department_process)
+					bold(self.department_process)
 				)
 			)
 		if self.enabled and process.disabled:
 			frappe.throw(
 				_("Department Process {0} is disabled and cannot be granted.").format(
-					frappe.bold(self.department_process)
+					bold(self.department_process)
 				),
 				ProcessControlError,
 			)
@@ -101,7 +102,7 @@ class UserProcessAccess(Document):
 				_(
 					"User {0} is linked to more than one active Employee. Fix the Employee master before "
 					"granting process access."
-				).format(frappe.bold(self.user)),
+				).format(bold(self.user)),
 				ProcessControlError,
 			)
 		self.employee = employees[0] if employees else None
@@ -119,9 +120,9 @@ class UserProcessAccess(Document):
 		if duplicate:
 			frappe.throw(
 				_("User {0} already has access to {1} in {2}.").format(
-					frappe.bold(self.user),
-					frappe.bold(self.department_process),
-					duplicate,
+					bold(self.user),
+					bold(self.department_process),
+					bold(duplicate),
 				),
 				ProcessControlError,
 			)
@@ -144,13 +145,22 @@ class UserProcessAccess(Document):
 				"name": ["!=", self.name or ""],
 			},
 			"department_process",
+			# Two managers saving defaults for the same user at once: the row lock (through the
+			# user/process unique index) makes the second save wait and then see the first.
+			for_update=True,
 		)
 		if other:
 			frappe.throw(
 				_("User {0} already has {1} as the default process for {2}.").format(
-					frappe.bold(self.user),
-					frappe.bold(other),
-					frappe.bold(self.department),
+					bold(self.user),
+					bold(other),
+					bold(self.department),
 				),
 				ProcessControlError,
 			)
+
+
+def on_doctype_update():
+	# One row per user and process, enforced by the database: the validate check above only gives
+	# the friendly message, and two simultaneous saves would both pass it.
+	frappe.db.add_unique("User Process Access", ["user", "department_process"])
