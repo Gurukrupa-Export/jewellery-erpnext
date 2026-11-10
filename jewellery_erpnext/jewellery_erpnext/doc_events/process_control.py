@@ -154,6 +154,26 @@ def validate_department(doc, method=None):
 			ProcessControlError,
 		)
 
+	# Work already in the department has no process. It is shown, not guessed (GK-DEC-0004):
+	# those work orders get their first process through an Initial Process Assignment.
+	unassigned = [
+		r.manufacturing_work_order for r in report_active_jobs_without_process(doc.name)
+	]
+	if unassigned:
+		shown = ", ".join(unassigned[:10]) + (
+			_(" and {0} more").format(len(unassigned) - 10)
+			if len(unassigned) > 10
+			else ""
+		)
+		frappe.msgprint(
+			_(
+				"{0} active work orders in Department {1} have no process yet: {2}. Give them their "
+				"first process with a Process Transfer marked Initial Process Assignment."
+			).format(len(unassigned), frappe.bold(doc.name), shown),
+			title=_("Work Orders Without a Process"),
+			indicator="orange",
+		)
+
 
 # --------------------------------------------------------------------------------------------
 # user access (operator authority; separate from worker eligibility and job state)

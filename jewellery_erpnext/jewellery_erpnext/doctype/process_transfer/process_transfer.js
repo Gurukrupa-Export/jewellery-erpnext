@@ -22,6 +22,9 @@ frappe.ui.form.on("Process Transfer", {
 		frm.set_value("current_process", null);
 		frm.set_value("next_process", null);
 	},
+	initial_assignment(frm) {
+		if (frm.doc.initial_assignment) frm.set_value("current_process", null);
+	},
 	scan_mwo(frm) {
 		const mwo = (frm.doc.scan_mwo || "").trim();
 		if (!mwo) return;
