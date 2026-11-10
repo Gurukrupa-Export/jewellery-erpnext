@@ -1,0 +1,160 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "PT-.manufacturer.-.YYYY.-.#####",
+ "creation": "2026-11-10 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "manufacturer",
+  "department",
+  "posting_date",
+  "column_break_process",
+  "current_process",
+  "next_process",
+  "reason",
+  "section_break_work_orders",
+  "scan_mwo",
+  "get_operations",
+  "operations",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Manufacturer",
+   "options": "Manufacturer",
+   "reqd": 1
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Department",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_process",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "current_process",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Current Process",
+   "options": "Department Process",
+   "reqd": 1
+  },
+  {
+   "fieldname": "next_process",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Next Process",
+   "options": "Department Process",
+   "reqd": 1
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason"
+  },
+  {
+   "fieldname": "section_break_work_orders",
+   "fieldtype": "Section Break",
+   "label": "Work Orders"
+  },
+  {
+   "depends_on": "eval: doc.docstatus == 0",
+   "fieldname": "scan_mwo",
+   "fieldtype": "Data",
+   "label": "Scan Manufacturing Work Order",
+   "options": "Barcode"
+  },
+  {
+   "depends_on": "eval: doc.docstatus == 0",
+   "fieldname": "get_operations",
+   "fieldtype": "Button",
+   "label": "Get Manufacturing Operations"
+  },
+  {
+   "fieldname": "operations",
+   "fieldtype": "Table",
+   "label": "Process Transfer Operations",
+   "options": "Process Transfer Operation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Process Transfer",
+   "print_hide": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-11-10 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Process Transfer",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Process Transfer User",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

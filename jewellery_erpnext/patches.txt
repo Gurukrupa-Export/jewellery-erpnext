@@ -134,3 +134,4 @@ jewellery_erpnext.patches.move_manufacturing_plan_layout_to_core
 jewellery_erpnext.patches.clear_kggk_source_on_non_template_bom #2026-10-28 clear inherited KGGK source fields on non-Template BOMs
 jewellery_erpnext.patches.move_sales_invoice_invoice_item_to_e_invoice_child #2026-11-04 invoice_item rows -> Sales Invoice E Invoice Item
 jewellery_erpnext.patches.remove_stale_sales_invoice_invoice_item_rows #2026-11-05 re-move invoice_item rows written after fixture reverted the field
+jewellery_erpnext.patches.add_process_control_fields

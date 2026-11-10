@@ -282,8 +282,20 @@ doc_events = {
 		# No-op on a site that has not been sharded. See the patch module docstring.
 		"after_insert": "jewellery_erpnext.patches.shard_stock_entry_naming_by_type.on_stock_entry_type_insert",
 	},
+	"Manufacturing Operation": {
+		# The operation's process is the job's authoritative process state (Process Transfer).
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.guard_process_field",
+	},
+	"Department": {
+		# Process control may be switched on only for a fully configured cell.
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.validate_department",
+	},
 	"Manufacturing Work Order": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_id",
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_id",
+			# The job's current process changes only through the process transition service.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.guard_process_field",
+		],
 		"before_submit": [
 			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.validate_snc_before_submit"
 		],
@@ -538,6 +550,8 @@ fixtures = [
 					"All",
 					"Refining User",
 					"Refining Manager",
+					"Process Transfer User",
+					"Process Access Manager",
 				],
 			]
 		],
