@@ -748,3 +748,99 @@ class TestUserProcessAccess(_ProcessHarness):
 		self.assertFalse(frappe.has_permission("Department Process", "write", user=op))
 		self.assertTrue(frappe.has_permission("Department Process", "read", user=op))
 		self.assertTrue(frappe.has_permission("Process Transfer", "create", user=op))
+
+
+# ------------------------------------------------------------------------------------------------
+# Day 1 decisions: first process for existing work, department switch through a real save, forms
+# ------------------------------------------------------------------------------------------------
+
+
+class TestInitialAssignment(_ProcessHarness):
+	def initial(self, nxt, work_orders, current=None):
+		doc = self.transfer(current, nxt, work_orders)
+		doc.initial_assignment = 1
+		return doc
+
+	def test_initial_assignment_takes_jobs_without_a_process(self):
+		a, _b, _ = self.cell()
+		mwo, mop = self.job()
+		doc = self.initial(a, [mwo]).insert()
+		row = doc.operations[0]
+		self.assertEqual(row.manufacturing_operation, mop)
+		self.assertFalse(row.current_process)
+		self.assertEqual(row.next_process, a)
+
+	def test_initial_assignment_refuses_a_job_that_has_a_process(self):
+		a, b, _ = self.cell()
+		mwo, _ = self.job(process=a)
+		with self.assertRaisesRegex(ProcessControlError, "is already in process"):
+			self.initial(b, [mwo]).insert()
+
+	def test_initial_assignment_has_no_current_process(self):
+		a, b, _ = self.cell()
+		mwo, _ = self.job()
+		with self.assertRaisesRegex(
+			ProcessControlError, "Current Process must be empty"
+		):
+			self.initial(b, [mwo], current=a).insert()
+
+	def test_normal_transfer_needs_a_current_process(self):
+		_a, b, _ = self.cell()
+		mwo, _ = self.job()
+		with self.assertRaisesRegex(ProcessControlError, "Select the Current Process"):
+			self.transfer(None, b, [mwo]).insert()
+
+	def test_initial_assignment_cannot_be_submitted_yet(self):
+		a, _b, _ = self.cell()
+		mwo, mop = self.job()
+		doc = self.initial(a, [mwo]).insert()
+		with self.assertRaises(ProcessTransferNotAvailableError):
+			doc.submit()
+		self.assertFalse(
+			frappe.db.get_value("Manufacturing Operation", mop, "department_process")
+		)
+
+
+class TestDepartmentSwitchSave(_ProcessHarness):
+	def test_switch_on_lists_work_without_a_process(self):
+		a = self.process("Process A")
+		self.map_operation(self.w.operations["MM"], a)
+		mwo, _ = self.job()
+		doc = frappe.get_doc("Department", self.dept())
+		doc.set(pc.DEPARTMENT_FLAG, 1)
+		frappe.local.message_log = []
+		pc.validate_department(doc)
+		messages = " ".join(str(m) for m in frappe.local.message_log)
+		self.assertIn(mwo, messages)
+		self.assertIn("Initial Process Assignment", messages)
+
+	def test_switch_through_a_real_department_save(self):
+		doc = frappe.get_doc("Department", self.dept())
+		doc.set(pc.DEPARTMENT_FLAG, 1)
+		with self.assertRaisesRegex(
+			ProcessControlError, "no enabled Department Process"
+		):
+			doc.save()
+		a = self.process("Process A")
+		self.map_operation(self.w.operations["MM"], a)
+		doc = frappe.get_doc("Department", self.dept())
+		doc.set(pc.DEPARTMENT_FLAG, 1)
+		doc.save()
+		self.assertTrue(pc.is_process_control_enabled(self.dept()))
+
+
+class TestFormsLoad(_ProcessHarness):
+	def test_forms_load_with_their_scripts(self):
+		from frappe.desk.form.load import get_meta_bundle
+
+		expected = {
+			"Process Transfer": "scan_mwo(frm)",
+			"Department Process": 'frappe.ui.form.on("Department Process"',
+			"User Process Access": 'frm.set_query("department_process"',
+			"Department Operation": 'frm.set_query("department_process"',
+		}
+		for doctype, snippet in expected.items():
+			bundle = get_meta_bundle(doctype)
+			self.assertIn(snippet, bundle[0].get("__js") or "", doctype)
+		child = [d["name"] for d in get_meta_bundle("Process Transfer")]
+		self.assertIn("Process Transfer Operation", child)

@@ -14,6 +14,7 @@ work order's current process). One row grants one process, so:
 ``is_default`` only pre-selects a process. Default and grant are the same row, and a default on
 a disabled row is refused, so a default never widens access. Rows are written by the Process
 Access Manager role only (System Manager can read them), and nobody may grant themselves access.
+Relief access has no expiry date: the manager disables the row when the relief ends (GK-DEC-0001).
 """
 
 import frappe
@@ -36,8 +37,8 @@ class UserProcessAccess(Document):
 		self.validate_default()
 
 	def validate_not_self_grant(self):
-		# PROVISIONAL rule (Day 1): who may grant access is an open business decision. Until it is
-		# settled, nobody, the Process Access Manager included, may grant or edit their own access.
+		# GK-DEC-0001 (delegated decision, awaiting GK ratification): only a Process Access Manager
+		# writes access, and nobody, a Process Access Manager included, grants or edits their own.
 		if self.user == frappe.session.user and frappe.session.user != "Administrator":
 			frappe.throw(
 				_(

@@ -11,6 +11,7 @@
   "department",
   "posting_date",
   "column_break_process",
+  "initial_assignment",
   "current_process",
   "next_process",
   "reason",
@@ -57,12 +58,20 @@
    "fieldtype": "Column Break"
   },
   {
+   "default": "0",
+   "description": "For work orders that have no process yet (they were in the department before process control was switched on). Leave Current Process empty; every work order receives the Next Process.",
+   "fieldname": "initial_assignment",
+   "fieldtype": "Check",
+   "label": "Initial Process Assignment"
+  },
+  {
    "fieldname": "current_process",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Current Process",
+   "mandatory_depends_on": "eval: !doc.initial_assignment",
    "options": "Department Process",
-   "reqd": 1
+   "read_only_depends_on": "eval: doc.initial_assignment"
   },
   {
    "fieldname": "next_process",

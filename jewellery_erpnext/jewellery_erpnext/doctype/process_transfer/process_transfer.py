@@ -7,6 +7,11 @@ Model: the header carries the transition (Current Process to Next Process). Ever
 a work order whose active operation is currently in the header's Current Process. A row in
 another process is refused, never rewritten.
 
+Initial Process Assignment (``initial_assignment``, GK-DEC-0004): a work order that was already in
+the department when process control was switched on has no process. An initial assignment
+has no Current Process, and every row must be such a work order. Nothing is ever back-filled
+or guessed.
+
 DAY 1: the draft is complete. Each row's active operation and current process are re-read from
 the database on every save, and the department, processes, scope and duplicates are validated.
 SUBMISSION IS REFUSED: the atomic, locked update of Manufacturing Operation and Manufacturing
@@ -81,7 +86,27 @@ class ProcessTransfer(Document):
 			)
 
 	def validate_processes(self):
-		for fieldname in ("current_process", "next_process"):
+		if self.initial_assignment:
+			if self.current_process:
+				frappe.throw(
+					_(
+						"An Initial Process Assignment is for work orders that have no process yet, so "
+						"Current Process must be empty."
+					),
+					ProcessControlError,
+				)
+			fieldnames = ("next_process",)
+		else:
+			if not self.current_process:
+				frappe.throw(
+					_(
+						"Select the Current Process. For work orders that have no process yet, tick "
+						"Initial Process Assignment."
+					),
+					ProcessControlError,
+				)
+			fieldnames = ("current_process", "next_process")
+		for fieldname in fieldnames:
 			process = get_process(self.get(fieldname))
 			label = _(self.meta.get_label(fieldname))
 			if not process:
@@ -161,10 +186,21 @@ class ProcessTransfer(Document):
 		row.manufacturing_operation = mop.name
 		row.current_process = mop.department_process
 		row.next_process = self.next_process
+		if self.initial_assignment:
+			if mop.department_process:
+				frappe.throw(
+					_(
+						"{0} is already in process {1}. Use a Process Transfer without Initial Process "
+						"Assignment."
+					).format(prefix, frappe.bold(mop.department_process)),
+					ProcessControlError,
+				)
+			return
 		if not mop.department_process:
 			frappe.throw(
 				_(
-					"{0} has no current process yet, so it cannot be transferred between processes."
+					"{0} has no current process yet. Give it its first process with an Initial "
+					"Process Assignment."
 				).format(prefix),
 				ProcessControlError,
 			)
