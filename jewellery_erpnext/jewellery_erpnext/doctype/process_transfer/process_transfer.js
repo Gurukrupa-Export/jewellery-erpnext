@@ -1,8 +1,8 @@
 // Copyright (c) 2026, Nirali and contributors
 // For license information, please see license.txt
 
-// Day 1: process pickers and a scan box that adds a row. The server reads each row's active
-// Manufacturing Operation and current process on save; the client never decides them.
+// The server reads each work order's active operation and current process and enforces every
+// rule on save, submit and cancel; this script only offers filters and the scan/fetch entry.
 
 frappe.ui.form.on("Process Transfer", {
 	setup(frm) {
@@ -28,16 +28,31 @@ frappe.ui.form.on("Process Transfer", {
 	scan_mwo(frm) {
 		const mwo = (frm.doc.scan_mwo || "").trim();
 		if (!mwo) return;
-		const exists = (frm.doc.operations || []).some((r) => r.manufacturing_work_order === mwo);
-		if (exists) {
-			frappe.show_alert({
-				message: __("{0} is already listed.", [frappe.utils.escape_html(mwo)]),
-				indicator: "orange",
-			});
-		} else {
-			frm.add_child("operations", { manufacturing_work_order: mwo });
-			frm.refresh_field("operations");
-		}
 		frm.set_value("scan_mwo", "");
+		add_work_orders(frm, [mwo]);
+	},
+	get_operations(frm) {
+		frappe.prompt(
+			{
+				fieldname: "work_orders",
+				fieldtype: "Small Text",
+				label: __("Manufacturing Work Orders"),
+				description: __("One per line."),
+				reqd: 1,
+			},
+			(values) => add_work_orders(frm, values.work_orders.split(/[\n,]+/)),
+			__("Get Manufacturing Operations"),
+			__("Add")
+		);
 	},
 });
+
+// Work orders the server cannot add are listed in a message; the form stays usable.
+function add_work_orders(frm, work_orders) {
+	const names = work_orders.map((w) => (w || "").trim()).filter(Boolean);
+	if (!names.length) return;
+	return frm.call("add_work_orders", { work_orders: names }).then(() => {
+		frm.refresh_field("operations");
+		frm.dirty();
+	});
+}
