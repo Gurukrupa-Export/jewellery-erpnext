@@ -17,6 +17,7 @@
   "reason",
   "section_break_work_orders",
   "scan_mwo",
+  "get_operations",
   "operations",
   "amended_from"
  ],
@@ -98,6 +99,12 @@
    "options": "Barcode"
   },
   {
+   "depends_on": "eval: doc.docstatus == 0",
+   "fieldname": "get_operations",
+   "fieldtype": "Button",
+   "label": "Get Manufacturing Operations"
+  },
+  {
    "fieldname": "operations",
    "fieldtype": "Table",
    "label": "Process Transfer Operations",
@@ -117,7 +124,7 @@
  "index_web_pages_for_search": 0,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-11-10 19:00:03.000000",
+ "modified": "2026-11-11 12:00:06.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Process Transfer",
