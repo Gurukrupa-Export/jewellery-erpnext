@@ -238,6 +238,7 @@ frappe.ui.form.on("Employee IR", {
 									tree_number: tree_number,
 								});
 								frm.refresh_field("employee_ir_operations");
+								fill_estimated_rpt_wt(frm, row);
 								apply_tree_header(frm);
 								load_repeat_flag(frm);
 							}
@@ -902,4 +903,19 @@ async function validate_employee_ir_wo_limit(frm) {
 			])
 		);
 	}
+}
+
+// CAD receive: pre-fill Estimated RPT WT from the Item. The user can still change it.
+// Off a CAD Receive the column is hidden, so there is nothing to fill.
+function fill_estimated_rpt_wt(frm, row) {
+	if (frm.doc.type != "Receive" || frm.doc.receive_details_type != "CAD") return;
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_receive.get_estimated_rpt_wt",
+		args: { manufacturing_operation: row.manufacturing_operation },
+		callback(r) {
+			if (r.message) {
+				frappe.model.set_value(row.doctype, row.name, "estimated_rpt_wt", r.message);
+			}
+		},
+	});
 }

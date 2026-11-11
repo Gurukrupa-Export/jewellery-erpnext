@@ -35,6 +35,8 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_receive import (
 	cad_cam_values_for_operation,
+	get_receive_details_type,
+	sync_item_master_for_receive,
 	validate_cad_cam_receive_details,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
@@ -424,10 +426,16 @@ class EmployeeIR(Document):
 			)
 		if not (to_warehouse and from_warehouse):
 			frappe.throw(_("To Warehouse or From Warehouse not available"))
+		# Stamped with the operation: frappe.db.set_value skips the fetch_from, and the
+		# operation's CAD / CAM fields show off this flag while the work is in progress.
+		receive_details_type = (
+			None if cancel else get_receive_details_type(self.operation)
+		)
 		for row in self.employee_ir_operations:
 			values.update(
 				{
 					"operation": operation,
+					"receive_details_type": receive_details_type,
 					"rpt_wt_issue": row.rpt_wt_issue,
 					"start_time": start_time,
 				}
@@ -791,6 +799,8 @@ class EmployeeIR(Document):
 			frappe.db.set_value(
 				"Manufacturing Operation", row.manufacturing_operation, res
 			)
+			if res.get("receive_details_type") and not cancel:
+				sync_item_master_for_receive(row.manufacturing_operation)
 
 			if time_log_args and not cancel:
 				batch_add_time_logs(self, time_log_args)

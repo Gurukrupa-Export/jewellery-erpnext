@@ -6,8 +6,9 @@ details before the flag existed, then copies the flag onto the Manufacturing Ope
 already exist: ``fetch_from`` only fills on save, and their CAD / CAM fields now show off the
 flag. One UPDATE ... JOIN, not a save per record, because Manufacturing Operation is large.
 
-Operations are matched by name. A company that names them differently has to flag its own
-Department Operations by hand; the unmatched names are printed so that is not silent.
+Operations are matched by name: the base name and the per-company copies ("<base> - <ABBR>").
+A company that names them differently has to flag its own Department Operations by hand; a
+base name with no match is printed so that is not silent.
 """
 
 import frappe
@@ -22,23 +23,30 @@ def execute():
 	if not frappe.db.has_column("Department Operation", "receive_details_type"):
 		return
 
-	for operation, details_type in OPERATION_TYPES.items():
-		if frappe.db.exists("Department Operation", operation):
+	for base, details_type in OPERATION_TYPES.items():
+		# "RPT Digital File Generation" and the per-company copies named "<base> - <ABBR>".
+		names = frappe.get_all(
+			"Department Operation",
+			or_filters=[["name", "=", base], ["name", "like", f"{base} - %"]],
+			pluck="name",
+		)
+		if not names:
+			print(
+				f"set_cad_cam_receive_details_type: no Department Operation '{base}' - flag it by hand"
+			)
+		for name in names:
 			# Only fill a blank: never overwrite a choice someone already made.
 			if not frappe.db.get_value(
-				"Department Operation", operation, "receive_details_type"
+				"Department Operation", name, "receive_details_type"
 			):
 				frappe.db.set_value(
 					"Department Operation",
-					operation,
+					name,
 					"receive_details_type",
 					details_type,
 					update_modified=False,
 				)
-		else:
-			print(
-				f"set_cad_cam_receive_details_type: Department Operation '{operation}' not found - flag it by hand"
-			)
+				print(f"set_cad_cam_receive_details_type: {name} = {details_type}")
 
 	frappe.db.sql(
 		"""

@@ -325,6 +325,7 @@
    "precision": "3"
   },
   {
+   "depends_on": "eval: doc.receive_details_type == \"CAD\"",
    "fieldname": "estimated_rpt_wt",
    "fieldtype": "Float",
    "label": "Estimated RPT WT",
@@ -646,6 +647,7 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval: doc.receive_details_type == \"CAD\"",
    "fieldname": "ref_name",
    "fieldtype": "Data",
    "label": "Ref Name",
@@ -829,7 +831,7 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-11-10 10:00:00.000000",
+ "modified": "2026-11-11 14:30:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
