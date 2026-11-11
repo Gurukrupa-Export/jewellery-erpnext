@@ -696,7 +696,11 @@ class TestCancel(_WorkflowHarness):
 		mwo, _ = self.job_in(a)
 		doc = self.submitted(a, b, [mwo])
 		draft = fx.issue(self.w, mwo, submit=False)
-		with self.assertRaisesRegex(ProcessTransitionConflictError, draft.name):
+		# The cancel's own check refuses (its wording); the terminal re-check is a second layer.
+		with self.assertRaisesRegex(
+			ProcessTransitionConflictError,
+			f"{draft.name}.*This Process Transfer cannot be cancelled",
+		):
 			frappe.get_doc(PT, doc.name).cancel()
 
 	def test_an_undone_department_issue_does_not_block_the_earlier_transfer(self):
