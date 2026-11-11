@@ -784,6 +784,53 @@ class TestCancel(_WorkflowHarness):
 		with self.assertRaisesRegex(ProcessTransitionConflictError, doc.name):
 			fx.reload(receive.name, "Department IR").cancel()
 
+	def test_a_cancelled_transfer_does_not_block_undoing_the_issue(self):
+		# This branch deletes the operation a Department IR Issue minted when the Issue is
+		# cancelled; the cancelled transfer that moved that operation must not stop it.
+		a, b, _c = self.cell3()
+		mwo, _ = self.job_in(None, key="DS")
+		issue = fx.submit_ir(
+			fx.insert_ir(
+				fx.department_ir(
+					self.w, "Issue", [mwo], current="DS", to="MM", destination_process=a
+				)
+			)
+		)
+		minted = frappe.db.get_value(
+			"Manufacturing Operation", {"department_issue_id": issue.name}
+		)
+		receive = fx.submit_ir(
+			fx.insert_ir(
+				fx.department_ir(
+					self.w,
+					"Receive",
+					[mwo],
+					current="MM",
+					previous="DS",
+					receive_against=issue.name,
+				)
+			)
+		)
+		doc = self.submitted(a, b, [mwo])
+		frappe.get_doc(PT, doc.name).cancel()
+		fx.reload(receive.name, "Department IR").cancel()
+		fx.reload(issue.name, "Department IR").cancel()
+		self.assertFalse(frappe.db.exists("Manufacturing Operation", minted))
+		self.assertEqual(
+			frappe.db.get_value(
+				"Process Transfer Operation",
+				{"parent": doc.name},
+				"manufacturing_work_order",
+			),
+			mwo,
+		)
+		self.assertTrue(
+			frappe.db.exists(
+				"Process Transition Log",
+				{"voucher_no": doc.name, "manufacturing_work_order": mwo},
+			)
+		)
+
 
 # ------------------------------------------------------------------------------------------------
 # E. genuine two-connection race (committed world, purged afterwards)

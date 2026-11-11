@@ -117,6 +117,8 @@ doc_events = {
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			# A Receive whose successor operation has since changed process stays put.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.block_receive_cancel_after_transfer",
+			# This branch deletes the operation the cancel undoes; cancelled transfers must not block it.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.release_cancelled_transfer_rows",
 		],
 	},
 	"Department IR": {
@@ -139,6 +141,8 @@ doc_events = {
 			_EOD_LOCK_VALIDATOR,
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.block_receive_cancel_after_transfer",
+			# This branch deletes the operation the cancel undoes; cancelled transfers must not block it.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.release_cancelled_transfer_rows",
 		],
 		# After the controller minted / reverted the next department's operations.
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.assign_destination_process",

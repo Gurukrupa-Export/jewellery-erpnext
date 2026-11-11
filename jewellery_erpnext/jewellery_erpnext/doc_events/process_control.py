@@ -830,6 +830,46 @@ def block_receive_cancel_after_transfer(
 	_refuse_if_transferred(doc, operations)
 
 
+def release_cancelled_transfer_rows(doc: Document, method: str | None = None) -> None:
+	"""``before_cancel`` on Employee IR and Department IR, after the Receive-cancel block.
+
+	On this branch an Employee IR Receive cancel deletes the successor operation it minted, and a
+	Department IR Issue cancel deletes the operation it minted in the next department. Frappe
+	refuses to delete a record that any row links, cancelled or not, so a cancelled Process
+	Transfer that once moved that operation would make the Receive / Issue impossible to cancel.
+	Clear the operation on cancelled transfer rows only, as the controllers already do for
+	cancelled Department IR rows and Stock Entry Detail. A submitted transfer keeps its link and
+	still blocks the delete; the Process Transition Log keeps the history (it is in
+	``ignore_links_on_delete``)."""
+	if doc.doctype == "Employee IR":
+		if doc.get("type") != "Receive":
+			return
+		row_mops = [
+			r.manufacturing_operation
+			for r in doc.get("employee_ir_operations") or ()
+			if r.manufacturing_operation
+		]
+		if not row_mops:
+			return
+		filters = {"employee_ir": doc.name, "previous_mop": ["in", row_mops]}
+	else:
+		if doc.get("type") != "Issue":
+			return
+		filters = {"department_issue_id": doc.name}
+	operations = frappe.get_all(
+		"Manufacturing Operation", filters=filters, pluck="name"
+	)
+	if not operations:
+		return
+	row = frappe.qb.DocType("Process Transfer Operation")
+	(
+		frappe.qb.update(row)
+		.set(row.manufacturing_operation, None)
+		.where(row.docstatus == 2)
+		.where(row.manufacturing_operation.isin(operations))
+	).run()
+
+
 def validate_department_ir_destination(
 	doc: Document, method: str | None = None
 ) -> None:
