@@ -33,6 +33,10 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
 	block_closed_mwo_operations,
 	without_closed_mwo_operations,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_receive import (
+	cad_cam_values_for_operation,
+	validate_cad_cam_receive_details,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
 	get_blocked_finding_batches,
 	is_customer_goods_finding_blocked,
@@ -267,6 +271,7 @@ class EmployeeIR(Document):
 		validate_casting_tree(self)
 		validate_casting_receive(self)
 		validate_finding_repack(self)
+		validate_cad_cam_receive_details(self)
 		self.validate_fg_bom_fields()
 		self.set_repeat_receive_flag()
 
@@ -779,6 +784,9 @@ class EmployeeIR(Document):
 				)
 				res["rpt_wt_receive"] = row.rpt_wt_receive
 				res["rpt_wt_loss"] = flt(row.rpt_wt_receive - issue_wt, 3)
+
+			# CAD / CAM details entered on the row (cleared again on cancel).
+			res.update(cad_cam_values_for_operation(self, row, cancel=cancel))
 
 			frappe.db.set_value(
 				"Manufacturing Operation", row.manufacturing_operation, res
