@@ -9,7 +9,8 @@
   "manufacturing_work_order",
   "manufacturing_operation",
   "current_process",
-  "next_process"
+  "next_process",
+  "process_transition_snapshot"
  ],
  "fields": [
   {
@@ -44,12 +45,22 @@
    "label": "Next Process",
    "options": "Department Process",
    "read_only": 1
+  },
+  {
+   "description": "The work order's latest process change when this draft was saved; submit refuses if it has changed since.",
+   "fieldname": "process_transition_snapshot",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Process Transition Snapshot",
+   "no_copy": 1,
+   "options": "Process Transition Log",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-11-10 19:00:04.000000",
+ "modified": "2026-11-11 12:00:05.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Process Transfer Operation",

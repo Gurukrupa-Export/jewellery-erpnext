@@ -566,6 +566,9 @@ class TestProcessTransferDraft(_ProcessHarness):
 
 	def test_submission_is_refused_and_nothing_moves(self):
 		a, b, _ = self.cell()
+		frappe.db.set_single_value(
+			"MOP Settings", "enable_process_control", 0
+		)  # pilot off
 		mwo, mop = self.job(process=a)
 		doc = self.transfer(a, b, [mwo]).insert()
 		with self.assertRaises(ProcessTransferNotAvailableError):
@@ -796,6 +799,9 @@ class TestInitialAssignment(_ProcessHarness):
 
 	def test_initial_assignment_cannot_be_submitted_yet(self):
 		a, _b, _ = self.cell()
+		frappe.db.set_single_value(
+			"MOP Settings", "enable_process_control", 0
+		)  # pilot off
 		mwo, mop = self.job()
 		doc = self.initial(a, [mwo]).insert()
 		with self.assertRaises(ProcessTransferNotAvailableError):

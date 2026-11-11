@@ -74,7 +74,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-10 19:00:05.000000",
+ "modified": "2026-11-11 15:00:02.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department Process",
@@ -108,6 +108,11 @@
    "read": 1,
    "report": 1,
    "role": "Process Access Manager"
+  },
+  {
+   "read": 1,
+   "role": "All",
+   "select": 1
   }
  ],
  "search_fields": "process_name,department",
