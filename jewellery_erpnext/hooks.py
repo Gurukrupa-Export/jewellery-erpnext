@@ -108,7 +108,12 @@ doc_events = {
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.validate_no_sample_issue",
 		],
-		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
+		"before_cancel": [
+			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_MOVEMENT_VALIDATOR,
+			# A Receive whose successor operation has since changed process stays put.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.block_receive_cancel_after_transfer",
+		],
 	},
 	"Department IR": {
 		# On validate, not before_submit: the operator is told the weight is out of
@@ -116,7 +121,9 @@ doc_events = {
 		# too, so this one entry covers both. See the module docstring for which weights
 		# it sees on each path -- before_validate refreshes them on save but not submit.
 		"validate": [
-			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance.validate_product_tolerance"
+			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance.validate_product_tolerance",
+			# An Issue into a process-controlled department names its destination process.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.validate_department_ir_destination",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_submit": [
@@ -124,7 +131,14 @@ doc_events = {
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils.validate_no_sample_issue",
 		],
-		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
+		"before_cancel": [
+			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_MOVEMENT_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.block_receive_cancel_after_transfer",
+		],
+		# After the controller minted / reverted the next department's operations.
+		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.assign_destination_process",
+		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.restore_after_department_ir_cancel",
 	},
 	"MOP Log": {
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
