@@ -30,7 +30,7 @@ Lifecycle:
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.query_builder.functions import Min
+from frappe.query_builder.functions import Max
 from frappe.utils import cint, cstr
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.process_control import (
@@ -40,12 +40,14 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.process_control import (
 	ProcessTransitionConflictError,
 	apply_transition,
 	bold,
+	effective_transitions,
 	get_active_operations,
 	get_process,
 	is_pilot_enabled,
 	is_process_control_enabled,
 	lock_jobs,
 	open_issue_drafts,
+	outstanding_issue_drafts,
 	read_locked_state,
 	readiness_problem,
 	require_process_access,
@@ -78,18 +80,20 @@ class ProcessTransfer(Document):
 			cstr(r.manufacturing_work_order).strip()
 			for r in self.get("operations") or ()
 		]
-		mops = [
-			r.manufacturing_operation
-			for r in self.get("operations") or ()
-			if r.manufacturing_operation
-		]
-		if len(mops) < len([m for m in mwos if m]):
-			# Rows not read yet (a document inserted already submitted): lock the operations they
-			# point at now; the locked re-read in validate confirms them.
-			mops += [
+		if self.is_new():
+			# Inserted already submitted (API, import): the rows were never read, so lock the
+			# operations the work orders point at now, not whatever the client sent; the locked
+			# re-read in validate confirms them. Operations first, then work orders (RULE E).
+			mops = [
 				m.name
 				for m in get_active_operations(mwos).values()
 				if isinstance(m, dict)
+			]
+		else:
+			mops = [
+				r.manufacturing_operation
+				for r in self.get("operations") or ()
+				if r.manufacturing_operation
 			]
 		lock_jobs(self, mops, mwos)
 
@@ -363,10 +367,33 @@ class ProcessTransfer(Document):
 			voucher_type=self.doctype,
 			voucher_no=self.name,
 		)
+		self._refuse_open_issue_drafts_now()
+
+	def _refuse_open_issue_drafts_now(self):
+		"""Terminal re-check, as Employee IR / Department IR end their submits: an Employee IR Issue
+		draft saved on one of these work orders while this transaction waited for its locks is
+		invisible to the earlier (snapshot) read. Locking reads that never wait see it; a hit
+		rolls the whole document back."""
+		drafts = outstanding_issue_drafts(
+			[r.manufacturing_work_order for r in self.operations],
+			exclude=None,
+			locking=True,
+		)
+		if drafts:
+			hit = drafts[0]
+			frappe.throw(
+				_(
+					"Manufacturing Work Order {0} is on draft Employee IR Issue {1}. Submit or delete it first."
+				).format(bold(hit["mwo"]), bold(hit["draft"])),
+				ProcessTransitionConflictError,
+			)
 
 	# -- cancel (GK-DEC-0007) ------------------------------------------------------------------------
 
 	def before_cancel(self):
+		# Cancelling moves the jobs out of the Next Process again: it needs the same authority as
+		# handing them over from it (GK-DEC-0002 / GK-DEC-0007).
+		require_process_access(self.next_process)
 		logs = {
 			log.manufacturing_work_order: log
 			for log in frappe.get_all(
@@ -389,14 +416,15 @@ class ProcessTransfer(Document):
 		state = read_locked_state(
 			{mwo: log.manufacturing_operation for mwo, log in logs.items()}
 		)
-		later = self._later_transition_vouchers(
-			[
-				s.work_order.process_transition
-				for s in state.values()
-				if isinstance(s, dict)
-			]
-		)
+		latest = [
+			s.work_order.process_transition
+			for s in state.values()
+			if isinstance(s, dict)
+		]
+		effective = effective_transitions(latest)
+		later = self._later_transition_vouchers(latest)
 		moved_material = self._stock_entries_since(logs)
+		drafts = open_issue_drafts(list(logs), locked=True)
 		entries = []
 		for row in self.operations:
 			log = logs.get(row.manufacturing_work_order)
@@ -408,7 +436,9 @@ class ProcessTransfer(Document):
 			)
 			if not isinstance(current, dict):
 				reason = current
-			elif cstr(current.work_order.process_transition) != cstr(log.name):
+			elif effective.get(cstr(current.work_order.process_transition)) != cstr(
+				log.name
+			):
 				reason = _(
 					"has a later process change ({0}); only the latest change can be cancelled."
 				).format(
@@ -421,6 +451,10 @@ class ProcessTransfer(Document):
 				reason = _("{0} since this transfer.").format(
 					readiness_problem(current, current.work_order)
 				)
+			elif row.manufacturing_work_order in drafts:
+				reason = _(
+					"is on draft Employee IR Issue {0}; submit or delete it first."
+				).format(bold(drafts[row.manufacturing_work_order]))
 			elif log.manufacturing_operation in moved_material:
 				reason = _(
 					"had material moved for it by Stock Entry {0} after this transfer."
@@ -445,7 +479,7 @@ class ProcessTransfer(Document):
 					department=self.department,
 					from_process=log.to_process,
 					to_process=log.from_process,
-					previous_transition=log.name,
+					previous_transition=current.work_order.process_transition,
 					reverses=log.name,
 				)
 			)
@@ -458,6 +492,7 @@ class ProcessTransfer(Document):
 			voucher_type=self.doctype,
 			voucher_no=self.name,
 		)
+		self._refuse_open_issue_drafts_now()
 
 	@staticmethod
 	def _later_transition_vouchers(log_names):
@@ -476,8 +511,10 @@ class ProcessTransfer(Document):
 	@staticmethod
 	def _stock_entries_since(logs) -> dict[str, str]:
 		"""``{operation: Stock Entry}`` for submitted Stock Entries that moved material for a
-		transferred operation after its transfer (header or row reference). Conservative: a
-		delayed posting of older material also blocks, which errs towards refusing."""
+		transferred operation after its transfer (header or row reference). "After" is judged by
+		when the entry was submitted (``modified``), not drafted (``creation``): a draft from before
+		the transfer submitted after it still blocks. Conservative: any later change to a submitted
+		entry, or a delayed posting of older material, also blocks."""
 		if not logs:
 			return {}
 		since = {
@@ -490,13 +527,13 @@ class ProcessTransfer(Document):
 			frappe.qb.from_(SE)
 			.select(
 				SE.manufacturing_operation.as_("mop"),
-				Min(SE.name).as_("entry"),
-				Min(SE.creation).as_("at"),
+				Max(SE.name).as_("entry"),
+				Max(SE.modified).as_("at"),
 			)
 			.where(
 				(SE.docstatus == 1)
 				& SE.manufacturing_operation.isin(list(since))
-				& (SE.creation > earliest)
+				& (SE.modified > earliest)
 			)
 			.groupby(SE.manufacturing_operation)
 		).run(as_dict=True) + (
@@ -505,13 +542,13 @@ class ProcessTransfer(Document):
 			.on(SE.name == SED.parent)
 			.select(
 				SED.manufacturing_operation.as_("mop"),
-				Min(SE.name).as_("entry"),
-				Min(SE.creation).as_("at"),
+				Max(SE.name).as_("entry"),
+				Max(SE.modified).as_("at"),
 			)
 			.where(
 				(SE.docstatus == 1)
 				& SED.manufacturing_operation.isin(list(since))
-				& (SE.creation > earliest)
+				& (SE.modified > earliest)
 			)
 			.groupby(SED.manufacturing_operation)
 		).run(as_dict=True)

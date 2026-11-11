@@ -15,12 +15,18 @@ process (``Department Operation.department_process``). Three ideas stay separate
   it never grants.
 * **Job state**: which process a work order is in. ``Manufacturing Operation.department_process``
   on the work order's active operation is the authoritative value.
-  ``Manufacturing Work Order.current_process`` mirrors it. Both change only through a document
-  save inside :func:`process_transition`, never through ``db_set`` / ``set_value``.
+  ``Manufacturing Work Order.current_process`` mirrors it, and ``process_transition`` points at
+  the job's latest change (a Process Transition Log row). All three change only in
+  :func:`apply_transition`, under the same MOP-then-MWO row locks Employee IR and Department IR
+  take. It writes with ``frappe.db.set_value`` on purpose (a full operation save rewrites Parent
+  Manufacturing Order totals); a document save or REST update of these fields is refused by
+  :func:`guard_process_field`.
 
-DAY 1 SCOPE: configuration checks, read helpers for the Day 2/3 checks, and the guard on the two
-job-state fields. Nothing here blocks Employee IR, Department IR, Stock Entry or Material Request
-yet, so departments without process control behave exactly as before.
+Day 1 added configuration, read helpers and the field guard. Day 2 adds the transition service
+(Process Transfer submit / cancel), the Department IR destination process and the Receive-cancel
+block. The pilot switch (MOP Settings › Enable Process Control) keeps Process Transfer and the
+Department IR assignment off until the Day 3 checks on Employee IR, Department IR, Stock Entry
+and Material Request exist. Departments without process control behave exactly as before.
 """
 
 from collections.abc import Iterable, Iterator
@@ -37,6 +43,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard impo
 	OPEN_STATUSES,
 	_confirm_drafts,
 	_lock_block,
+	_refuse_if_snapshot_older,
 	is_open_operation,
 	is_reverted,
 	outstanding_issue_drafts,
@@ -367,9 +374,10 @@ def get_active_operation(work_order: str) -> frappe._dict:
 
 @contextmanager
 def process_transition() -> Iterator[None]:
-	"""The only context in which the job-state fields may change. The Day 2 transition service
-	opens it after its own authority, scope and lock checks, then saves the documents (so their
-	validations and hooks run). It is a server flag, not a client one."""
+	"""The context in which the job-state fields may change. :func:`apply_transition` opens it
+	around its writes; ``frappe.db.set_value`` itself bypasses validation, so the flag matters for
+	any document save that happens inside it (the guard lets that save through) and documents
+	that every job-state write belongs to a transition. It is a server flag, not a client one."""
 	previous = frappe.flags.get(TRANSITION_FLAG)
 	frappe.flags[TRANSITION_FLAG] = True
 	try:
@@ -545,9 +553,65 @@ def lock_jobs(
 ) -> None:
 	"""Take the same MOP-then-MWO row locks Employee IR and Department IR take
 	(``current_operation_guard._lock_block``, ``lock_order`` RULE D/E), with a fresh wait budget
-	for this attempt. A busy row raises ``WorkOrderBusyError``."""
+	for this attempt. A busy row raises ``WorkOrderBusyError``.
+
+	Then refuse as busy when an operation changed while this transaction waited for it
+	(``_refuse_if_snapshot_older``): the transaction's REPEATABLE READ snapshot predates the wait,
+	so its plain reads (open Employee IR drafts, Stock Entries) would miss what the other
+	transaction committed. The retry reads it afresh."""
 	doc.flags.pop(LOCK_DEADLINE_FLAG, None)
-	_lock_block([m for m in operations if m], [w for w in work_orders if w], doc)
+	operations = [m for m in operations if m]
+	mop_rows, _mwo_rows = _lock_block(operations, [w for w in work_orders if w], doc)
+	_refuse_if_snapshot_older(mop_rows, operations)
+
+
+def effective_transitions(log_names: Iterable[str]) -> dict[str, str | None]:
+	"""``{log: the change it leaves in force}``: a Cancellation is replaced by the transition
+	before the change it reversed, repeatedly, so undone pairs (a Department IR Issue that was
+	cancelled, say) do not count as a later change. Other logs map to themselves. Batched, one
+	query per level of nesting."""
+	result = {cstr(n): cstr(n) for n in log_names if n}
+	pending = dict(result)
+	for _level in range(50):
+		if not pending:
+			break
+		rows = {
+			cstr(r.name): r
+			for r in frappe.get_all(
+				"Process Transition Log",
+				filters={"name": ["in", list(set(pending.values()))]},
+				fields=["name", "event", "reverses"],
+			)
+		}
+		reversed_names = [
+			cstr(r.reverses)
+			for r in rows.values()
+			if r.event == "Cancellation" and r.reverses
+		]
+		previous = (
+			{
+				cstr(r.name): cstr(r.previous_transition)
+				if r.previous_transition
+				else None
+				for r in frappe.get_all(
+					"Process Transition Log",
+					filters={"name": ["in", reversed_names]},
+					fields=["name", "previous_transition"],
+				)
+			}
+			if reversed_names
+			else {}
+		)
+		next_pending = {}
+		for start, current in pending.items():
+			row = rows.get(current)
+			if row and row.event == "Cancellation" and row.reverses:
+				before = previous.get(cstr(row.reverses))
+				result[start] = before
+				if before:
+					next_pending[start] = before
+		pending = next_pending
+	return result
 
 
 def read_locked_state(expected: dict[str, str]) -> dict[str, frappe._dict | str]:
@@ -701,6 +765,26 @@ def block_receive_cancel_after_transfer(
 	transfer to cancel first."""
 	if doc.get("type") != "Receive":
 		return
+	rows = (
+		doc.get(
+			"employee_ir_operations"
+			if doc.doctype == "Employee IR"
+			else "department_ir_operation"
+		)
+		or ()
+	)
+	work_orders = sorted(
+		{r.manufacturing_work_order for r in rows if r.manufacturing_work_order}
+	)
+	# Cheap exit first (indexed): no transfer was ever made on these work orders.
+	if not work_orders or not frappe.db.exists(
+		"Process Transition Log",
+		{
+			"manufacturing_work_order": ["in", work_orders],
+			"event": ["in", TRANSFER_EVENTS],
+		},
+	):
+		return
 	if doc.doctype == "Employee IR":
 		row_mops = [
 			r.manufacturing_operation
@@ -711,7 +795,11 @@ def block_receive_cancel_after_transfer(
 			return
 		operations = frappe.get_all(
 			"Manufacturing Operation",
-			filters={"employee_ir": doc.name, "previous_mop": ["in", row_mops]},
+			filters={
+				"manufacturing_work_order": ["in", work_orders],
+				"employee_ir": doc.name,
+				"previous_mop": ["in", row_mops],
+			},
 			pluck="name",
 		)
 	else:
@@ -779,12 +867,32 @@ def assign_destination_process(doc: Document, method: str | None = None) -> None
 	department: clear a process the copy carried over from the cell it left (GK-GAP-0925)."""
 	if doc.get("type") != "Issue":
 		return
+	rows = doc.get("department_ir_operation") or ()
+	work_orders = sorted(
+		{r.manufacturing_work_order for r in rows if r.manufacturing_work_order}
+	)
+	if not work_orders:
+		return
+	controlled = is_pilot_enabled() and is_process_control_enabled(doc.next_department)
+	if not controlled and not frappe.db.exists(
+		"Manufacturing Operation",
+		{
+			"name": [
+				"in",
+				[r.manufacturing_operation for r in rows if r.manufacturing_operation],
+			],
+			"department_process": ["is", "set"],
+		},
+	):
+		return  # nothing to assign and nothing carried over: today's Department IR, untouched
 	minted = frappe.get_all(
 		"Manufacturing Operation",
-		filters={"department_issue_id": doc.name},
+		filters={
+			"manufacturing_work_order": ["in", work_orders],
+			"department_issue_id": doc.name,
+		},
 		fields=["name", "manufacturing_work_order", "department", "department_process"],
 	)
-	controlled = is_pilot_enabled() and is_process_control_enabled(doc.next_department)
 	target = doc.destination_process if controlled else None
 	minted = [
 		m

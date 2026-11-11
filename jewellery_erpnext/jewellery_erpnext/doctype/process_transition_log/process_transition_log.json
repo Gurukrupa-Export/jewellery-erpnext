@@ -40,7 +40,8 @@
    "in_standard_filter": 1,
    "label": "Manufacturing Operation",
    "options": "Manufacturing Operation",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "department",
@@ -114,7 +115,8 @@
    "fieldtype": "Link",
    "label": "Reverses",
    "options": "Process Transition Log",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "column_break_actor",
@@ -137,7 +139,7 @@
  "in_create": 1,
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-11 12:00:02.000000",
+ "modified": "2026-11-11 15:00:01.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Process Transition Log",

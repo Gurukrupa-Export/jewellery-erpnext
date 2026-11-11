@@ -232,24 +232,36 @@ class TestSubmit(_WorkflowHarness):
 		self.assertFalse(self.logs(voucher_no=doc.name))
 
 	def test_a_failure_while_writing_leaves_no_partial_transfer(self):
-		from frappe.database import savepoint
-
 		a, b, _c = self.cell3()
 		first, first_mop = self.job_in(a)
 		second, _ = self.job_in(a)
 		doc = self.transfer(a, b, [first, second]).insert()
+		failing_mwo = max(
+			first, second
+		)  # rows are written in work-order order: this one last
 		real = frappe.db.set_value
+		calls = []
 
 		def failing(doctype, name, *args, **kwargs):
-			if doctype == "Manufacturing Work Order" and name == max(first, second):
+			calls.append((doctype, name))
+			if doctype == "Manufacturing Work Order" and name == failing_mwo:
 				raise frappe.ValidationError("simulated failure on the second row")
 			return real(doctype, name, *args, **kwargs)
 
-		with savepoint(catch=frappe.ValidationError):
-			with patch.object(frappe.db, "set_value", failing):
+		frappe.db.savepoint("pt_atomic")
+		with patch.object(frappe.db, "set_value", failing):
+			with self.assertRaisesRegex(
+				frappe.ValidationError, "simulated failure on the second row"
+			):
 				frappe.get_doc(PT, doc.name).submit()
-		# The request's rollback (here the savepoint) takes the first row's writes with it:
-		# nothing committed in between (the harness fails the test on any commit).
+		# The first row really was written before the failure ...
+		self.assertLess(first, failing_mwo)
+		self.assertIn(("Manufacturing Operation", first_mop), calls)
+		self.assertIn(("Manufacturing Work Order", first), calls)
+		self.assertEqual(len(self.logs(voucher_no=doc.name)), 2)
+		# ... and the request's rollback (here: to the savepoint) takes it with the rest. Nothing
+		# was committed in between (the harness fails the test on any commit).
+		frappe.db.rollback(save_point="pt_atomic")
 		self.assertEqual(self.mop_process(first_mop), a)
 		self.assertFalse(self.logs(voucher_no=doc.name))
 		self.assertEqual(frappe.db.get_value(PT, doc.name, "docstatus"), 0)
@@ -350,6 +362,69 @@ class TestSubmit(_WorkflowHarness):
 		frappe.get_doc(PT, doc.name).submit()
 		frappe.set_user("Administrator")
 		self.assertEqual(self.state(mwo).current_process, b)
+
+	def test_no_role_bypasses_process_access(self):
+		a, b, _c = self.cell3()
+		mwo, _ = self.job_in(a)
+		doc = self.transfer(a, b, [mwo]).insert()
+		manager = self.user("sysmgr", roles=("System Manager", "Process Transfer User"))
+		frappe.set_user(manager)
+		with self.assertRaises(frappe.PermissionError):
+			frappe.get_doc(PT, doc.name).submit()
+		frappe.set_user("Administrator")
+		frappe.db.set_value(
+			"User Process Access",
+			{"user": "Administrator", "department_process": a},
+			"enabled",
+			0,
+		)
+		with self.assertRaises(frappe.PermissionError):  # Administrator too
+			frappe.get_doc(PT, doc.name).submit()
+		self.assertEqual(self.state(mwo).current_process, a)
+
+	def test_initial_assignment_needs_access_to_the_next_process(self):
+		a, b, _c = self.cell3()
+		mwo, _ = self.job_in(None)
+		doc = self.transfer(None, a, [mwo])
+		doc.initial_assignment = 1
+		doc.insert()
+		wrong = self.user("initwrong", roles=("Process Transfer User",))
+		self.grant(wrong, b)
+		frappe.set_user(wrong)
+		with self.assertRaises(frappe.PermissionError):
+			frappe.get_doc(PT, doc.name).submit()
+		frappe.set_user("Administrator")
+		right = self.user("initright", roles=("Process Transfer User",))
+		self.grant(right, a)
+		frappe.set_user(right)
+		frappe.get_doc(PT, doc.name).submit()
+		frappe.set_user("Administrator")
+		self.assertEqual(self.state(mwo).current_process, a)
+
+	def test_a_disabled_grant_does_not_authorise(self):
+		a, b, _c = self.cell3()
+		mwo, _ = self.job_in(a)
+		doc = self.transfer(a, b, [mwo]).insert()
+		user = self.user("disabledgrant", roles=("Process Transfer User",))
+		self.grant(user, a, enabled=0)
+		frappe.set_user(user)
+		with self.assertRaises(frappe.PermissionError):
+			frappe.get_doc(PT, doc.name).submit()
+		frappe.set_user("Administrator")
+
+	def test_a_draft_saved_while_submit_waited_is_caught_at_the_end(self):
+		"""The terminal re-check: the validation read is a snapshot that can miss a draft saved
+		while the submit waited for its locks (emulated by hiding it from that read)."""
+		a, b, _c = self.cell3()
+		mwo, mop = self.job_in(a)
+		doc = self.transfer(a, b, [mwo]).insert()
+		draft = fx.issue(self.w, mwo, submit=False)
+		frappe.db.savepoint("pt_terminal")
+		with patch(f"{PT_MODULE}.open_issue_drafts", return_value={}):
+			with self.assertRaisesRegex(ProcessTransitionConflictError, draft.name):
+				frappe.get_doc(PT, doc.name).submit()
+		frappe.db.rollback(save_point="pt_terminal")
+		self.assertEqual(self.mop_process(mop), a)
 
 	def test_api_submit_is_checked_the_same_way(self):
 		a, b, _c = self.cell3()
@@ -455,6 +530,23 @@ class TestManufacturingIntegration(_WorkflowHarness):
 			frappe.get_doc(LOG, st.process_transition).event, "Cancellation"
 		)
 
+	def test_issue_out_of_a_cell_and_its_cancel_restore_the_process(self):
+		a, _b, _c = self.cell3()
+		mwo, mop = self.job_in(a)
+		issue = self.dir_issue(mwo, "MM", "DS")
+		issue_log = frappe.get_doc(LOG, self.state(mwo).process_transition)
+		self.assertEqual((issue_log.from_process, issue_log.to_process), (a, None))
+		fx.reload(issue.name, "Department IR").cancel()
+		st = self.state(mwo)
+		self.assertEqual(
+			(st.manufacturing_operation, st.current_process, self.mop_process(mop)),
+			(mop, a, a),
+		)
+		last = frappe.get_doc(LOG, st.process_transition)
+		self.assertEqual(
+			(last.event, cstr(last.reverses)), ("Cancellation", cstr(issue_log.name))
+		)
+
 	def test_leaving_a_cell_clears_the_process(self):
 		a, _b, _c = self.cell3()
 		mwo, _ = self.job_in(a)
@@ -521,25 +613,111 @@ class TestCancel(_WorkflowHarness):
 			frappe.get_doc(PT, first.name).cancel()
 		self.assertEqual(self.state(mwo).current_process, b)
 
-	def test_cancel_after_material_moved_is_refused(self):
-		a, b, _c = self.cell3()
-		mwo, mop = self.job_in(a)
-		doc = self.submitted(a, b, [mwo])
-		entry = fx._insert(
+	def stock_entry(self, mop, *, seconds, on_row=False):
+		"""A submitted Stock Entry naming ``mop`` (header, or only a Stock Entry Detail row),
+		submitted ``seconds`` from now."""
+		when = add_to_date(now_datetime(), seconds=seconds)
+		name = fx.next_name(self.w, "SE")
+		fx._insert(
 			self.w,
 			"Stock Entry",
 			{
-				"name": f"{self.w.prefix}-SE-001",
+				"name": name,
 				"docstatus": 1,
 				"company": self.w.company,
 				"purpose": "Material Transfer",
 				"stock_entry_type": "Material Transfer",
-				"manufacturing_operation": mop,
-				"creation": add_to_date(now_datetime(), seconds=2),
+				"manufacturing_operation": None if on_row else mop,
+				"creation": add_to_date(when, seconds=-600),  # drafted long before
+				"modified": when,
 			},
 		)
+		if on_row:
+			frappe.get_doc(
+				{
+					"doctype": "Stock Entry Detail",
+					"name": fx.next_name(self.w, "SED"),
+					"parent": name,
+					"parenttype": "Stock Entry",
+					"parentfield": "items",
+					"idx": 1,
+					"docstatus": 1,
+					"manufacturing_operation": mop,
+				}
+			).db_insert()
+		return name
+
+	def test_cancel_after_material_moved_is_refused(self):
+		a, b, _c = self.cell3()
+		mwo, mop = self.job_in(a)
+		doc = self.submitted(a, b, [mwo])
+		entry = self.stock_entry(
+			mop, seconds=2
+		)  # drafted before the transfer, submitted after
 		with self.assertRaisesRegex(ProcessTransitionConflictError, entry):
 			frappe.get_doc(PT, doc.name).cancel()
+
+	def test_material_named_only_on_a_row_also_refuses(self):
+		a, b, _c = self.cell3()
+		mwo, mop = self.job_in(a)
+		doc = self.submitted(a, b, [mwo])
+		entry = self.stock_entry(mop, seconds=2, on_row=True)
+		with self.assertRaisesRegex(ProcessTransitionConflictError, entry):
+			frappe.get_doc(PT, doc.name).cancel()
+
+	def test_material_moved_before_the_transfer_does_not_refuse(self):
+		a, b, _c = self.cell3()
+		mwo, mop = self.job_in(a)
+		self.stock_entry(mop, seconds=-60)
+		doc = self.submitted(a, b, [mwo])
+		self.stock_entry(mop, seconds=-30)  # an older entry next to it changes nothing
+		frappe.get_doc(PT, doc.name).cancel()
+		self.assertEqual(self.state(mwo).current_process, a)
+
+	def test_cancel_needs_access_to_the_process_it_leaves(self):
+		a, b, _c = self.cell3()
+		mwo, _ = self.job_in(a)
+		doc = self.submitted(a, b, [mwo])
+		only_a = self.user("onlya", roles=("Process Transfer User",))
+		self.grant(only_a, a)
+		frappe.set_user(only_a)
+		with self.assertRaises(frappe.PermissionError):
+			frappe.get_doc(PT, doc.name).cancel()
+		frappe.set_user("Administrator")
+		in_b = self.user("inb", roles=("Process Transfer User",))
+		self.grant(in_b, b)
+		frappe.set_user(in_b)
+		frappe.get_doc(PT, doc.name).cancel()
+		frappe.set_user("Administrator")
+		self.assertEqual(self.state(mwo).current_process, a)
+
+	def test_cancel_with_an_open_employee_issue_draft_is_refused(self):
+		a, b, _c = self.cell3()
+		mwo, _ = self.job_in(a)
+		doc = self.submitted(a, b, [mwo])
+		draft = fx.issue(self.w, mwo, submit=False)
+		with self.assertRaisesRegex(ProcessTransitionConflictError, draft.name):
+			frappe.get_doc(PT, doc.name).cancel()
+
+	def test_an_undone_department_issue_does_not_block_the_earlier_transfer(self):
+		a, b, _c = self.cell3()
+		mwo, mop = self.job_in(a)
+		doc = self.submitted(a, b, [mwo])
+		issue = fx.submit_ir(
+			fx.insert_ir(
+				fx.department_ir(self.w, "Issue", [mwo], current="MM", to="DS")
+			)
+		)
+		self.assertIsNone(self.state(mwo).current_process)  # left the cell
+		fx.reload(issue.name, "Department IR").cancel()
+		self.assertEqual(
+			(self.state(mwo).manufacturing_operation, self.state(mwo).current_process),
+			(mop, b),
+		)
+		frappe.get_doc(PT, doc.name).cancel()
+		self.assertEqual(
+			(self.mop_process(mop), self.state(mwo).current_process), (a, a)
+		)
 
 	def test_amend_reads_the_jobs_again(self):
 		a, b, _c = self.cell3()
