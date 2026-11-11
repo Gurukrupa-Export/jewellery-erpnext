@@ -25,7 +25,7 @@ from frappe.permissions import add_permission
 from frappe.utils import add_to_date, cstr, now_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import process_control as pc
-from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
+from jewellery_erpnext.jewellery_erpnext.doc_events.process_locks import (
 	WorkOrderBusyError,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.process_control import (
@@ -606,12 +606,12 @@ class TestCancel(_WorkflowHarness):
 		second = self.submitted(b, c, [mwo])
 		with self.assertRaisesRegex(ProcessTransitionConflictError, second.name):
 			frappe.get_doc(PT, first.name).cancel()
+		# Once the later change is undone, the earlier one is the change in force again
+		# (cancellations are skipped when deciding what is latest), so it can be cancelled.
 		frappe.get_doc(PT, second.name).cancel()
-		with self.assertRaisesRegex(
-			ProcessTransitionConflictError, "later process change"
-		):
-			frappe.get_doc(PT, first.name).cancel()
 		self.assertEqual(self.state(mwo).current_process, b)
+		frappe.get_doc(PT, first.name).cancel()
+		self.assertEqual(self.state(mwo).current_process, a)
 
 	def stock_entry(self, mop, *, seconds, on_row=False):
 		"""A submitted Stock Entry naming ``mop`` (header, or only a Stock Entry Detail row),
@@ -714,6 +714,12 @@ class TestCancel(_WorkflowHarness):
 			(self.state(mwo).manufacturing_operation, self.state(mwo).current_process),
 			(mop, b),
 		)
+		# This branch's Department IR Issue cancel leaves the source operation WIP (kggk_uat puts
+		# it back to Not Started), so the job is not at rest and the transfer cannot be cancelled.
+		with self.assertRaisesRegex(ProcessTransitionConflictError, "is WIP"):
+			frappe.get_doc(PT, doc.name).cancel()
+		# With the operation back at rest, the undone Issue does not count as a later change.
+		frappe.db.set_value("Manufacturing Operation", mop, "status", "Not Started")
 		frappe.get_doc(PT, doc.name).cancel()
 		self.assertEqual(
 			(self.mop_process(mop), self.state(mwo).current_process), (a, a)

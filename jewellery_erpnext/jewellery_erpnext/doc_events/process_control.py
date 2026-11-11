@@ -39,13 +39,18 @@ from frappe.query_builder.functions import Coalesce
 from frappe.utils import cint, cstr, escape_html, now_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
-	LOCK_DEADLINE_FLAG,
 	OPEN_STATUSES,
+	is_open_operation,
+	is_reverted,
+)
+
+# This branch's current-operation guard has only the status helpers; the lock block, snapshot
+# check and draft reads come from process_locks (same names and contracts as kggk_uat's guard).
+from jewellery_erpnext.jewellery_erpnext.doc_events.process_locks import (
+	LOCK_DEADLINE_FLAG,
 	_confirm_drafts,
 	_lock_block,
 	_refuse_if_snapshot_older,
-	is_open_operation,
-	is_reverted,
 	outstanding_issue_drafts,
 )
 from jewellery_erpnext.jewellery_erpnext.lock_order import _lock_rows_by_name

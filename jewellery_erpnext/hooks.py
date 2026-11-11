@@ -97,6 +97,10 @@ _SUPPLIER_ALLOWED_ITEM_VALIDATOR = (
 before_request = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 before_job = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 
+# A history row never blocks deleting the operation or document it describes (a branch whose
+# Department IR / Employee IR cancel deletes the operation it minted, for one).
+ignore_links_on_delete = ["Process Transition Log"]
+
 doc_events = {
 	# Block stock/manufacturing transactions while EOD sync is running.
 	# The validator bypasses itself when frappe.flags.in_eod_mop_sync is True
