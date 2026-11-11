@@ -753,6 +753,24 @@ def _refuse_if_transferred(doc: Document, operations: list[str]) -> None:
 # --------------------------------------------------------------------------------------------
 
 
+def _row_work_orders(rows) -> list[str]:
+	"""Work orders a document's rows touch: each row's own and the owner of its operation (one
+	primary-key read). They differ only for rows the guard's warn mode admitted with a mismatched
+	work order; the rest of the code acts on the owner, so these checks include it too."""
+	named = {r.manufacturing_work_order for r in rows if r.manufacturing_work_order}
+	operations = [r.manufacturing_operation for r in rows if r.manufacturing_operation]
+	owners = (
+		frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", operations]},
+			pluck="manufacturing_work_order",
+		)
+		if operations
+		else []
+	)
+	return sorted(named | {o for o in owners if o})
+
+
 def block_receive_cancel_after_transfer(
 	doc: Document, method: str | None = None
 ) -> None:
@@ -773,9 +791,7 @@ def block_receive_cancel_after_transfer(
 		)
 		or ()
 	)
-	work_orders = sorted(
-		{r.manufacturing_work_order for r in rows if r.manufacturing_work_order}
-	)
+	work_orders = _row_work_orders(rows)
 	# Cheap exit first (indexed): no transfer was ever made on these work orders.
 	if not work_orders or not frappe.db.exists(
 		"Process Transition Log",
@@ -868,9 +884,7 @@ def assign_destination_process(doc: Document, method: str | None = None) -> None
 	if doc.get("type") != "Issue":
 		return
 	rows = doc.get("department_ir_operation") or ()
-	work_orders = sorted(
-		{r.manufacturing_work_order for r in rows if r.manufacturing_work_order}
-	)
+	work_orders = _row_work_orders(rows)
 	if not work_orders:
 		return
 	controlled = is_pilot_enabled() and is_process_control_enabled(doc.next_department)
