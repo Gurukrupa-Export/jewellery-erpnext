@@ -106,6 +106,10 @@ _SUPPLIER_ALLOWED_ITEM_VALIDATOR = (
 before_request = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 before_job = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 
+# A history row never blocks deleting the operation or document it describes (a branch whose
+# Department IR / Employee IR cancel deletes the operation it minted, for one).
+ignore_links_on_delete = ["Process Transition Log"]
+
 doc_events = {
 	# While a PMO's Cancel All Linked Documents runs, refuse any submit that points at that PMO
 	# (directly or through its Work Orders / Operations). One Redis read per submit when idle.

@@ -606,12 +606,12 @@ class TestCancel(_WorkflowHarness):
 		second = self.submitted(b, c, [mwo])
 		with self.assertRaisesRegex(ProcessTransitionConflictError, second.name):
 			frappe.get_doc(PT, first.name).cancel()
+		# Once the later change is undone, the earlier one is the change in force again
+		# (cancellations are skipped when deciding what is latest), so it can be cancelled.
 		frappe.get_doc(PT, second.name).cancel()
-		with self.assertRaisesRegex(
-			ProcessTransitionConflictError, "later process change"
-		):
-			frappe.get_doc(PT, first.name).cancel()
 		self.assertEqual(self.state(mwo).current_process, b)
+		frappe.get_doc(PT, first.name).cancel()
+		self.assertEqual(self.state(mwo).current_process, a)
 
 	def stock_entry(self, mop, *, seconds, on_row=False):
 		"""A submitted Stock Entry naming ``mop`` (header, or only a Stock Entry Detail row),
