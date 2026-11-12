@@ -501,10 +501,16 @@ class ProcessTransitionConflictError(ProcessControlError):
 
 def is_pilot_enabled() -> bool:
 	"""MOP Settings › Enable Process Control. Off (the default, or a site that has not migrated
-	the field yet) means no process change is applied anywhere."""
-	if not frappe.get_meta(PILOT_DOCTYPE).has_field(PILOT_FIELD):
-		return False
-	return bool(cint(frappe.db.get_single_value(PILOT_DOCTYPE, PILOT_FIELD)))
+	the field yet) means no process change is applied anywhere.
+
+	Read straight from ``tabSingles``: it runs on every Employee IR, Department IR, Stock Entry and
+	Material Request transfer, so it loads no DocType meta and keeps no cache that could outlive a
+	rolled-back change. A site without the field has no row, which reads as off."""
+	rows = frappe.db.sql(
+		"SELECT `value` FROM `tabSingles` WHERE `doctype` = %s AND `field` = %s",
+		(PILOT_DOCTYPE, PILOT_FIELD),
+	)
+	return bool(rows and cint(rows[0][0]))
 
 
 def readiness_problem(mop: frappe._dict, mwo: frappe._dict) -> str | None:

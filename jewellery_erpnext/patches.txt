@@ -138,3 +138,4 @@ jewellery_erpnext.patches.remove_stale_sales_invoice_invoice_item_rows #2026-11-
 jewellery_erpnext.patches.add_item_save_indexes #2026-11-06 Item naming sequence and variant attribute lookups
 jewellery_erpnext.patches.add_process_control_fields
 jewellery_erpnext.patches.grant_process_transfer_user_work_order_read
+jewellery_erpnext.patches.add_process_control_stock_entry_field

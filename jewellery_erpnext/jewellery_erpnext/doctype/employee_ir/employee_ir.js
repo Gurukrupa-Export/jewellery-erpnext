@@ -27,6 +27,7 @@ frappe.ui.form.on("Employee IR", {
 		load_fg_bom_fields(frm, true);
 	},
 	onload(frm) {
+		load_process_control(frm);
 		frm.fields_dict["employee_ir_operations"].grid.add_new_row = false;
 		$(frm.fields_dict["employee_ir_operations"].grid.wrapper).find(".grid-add-row").hide();
 	},
@@ -36,12 +37,17 @@ frappe.ui.form.on("Employee IR", {
 	setup(frm) {
 		frm.ignore_doctypes_on_cancel_all = ["Stock Entry", "Serial and Batch Bundle"];
 		frm.set_query("operation", function () {
-			return {
-				filters: [
-					["Department Operation", "department", "=", frm.doc.department],
-					["Department Operation", "is_subcontracted", "=", frm.doc.subcontracting == "Yes"],
-				],
-			};
+			const filters = [
+				["Department Operation", "department", "=", frm.doc.department],
+				["Department Operation", "is_subcontracted", "=", frm.doc.subcontracting == "Yes"],
+			];
+			// Process control: offer only operations of processes this user may work in. The
+			// server checks it again (process_enforcement.check_employee_ir); this is a convenience.
+			const pc = frm.__process_control;
+			if (pc && pc.controlled) {
+				filters.push(["Department Operation", "department_process", "in", pc.allowed]);
+			}
+			return { filters: filters };
 		});
 		frm.set_query("department", function () {
 			return {
@@ -90,6 +96,7 @@ frappe.ui.form.on("Employee IR", {
 			} else {
 				filters["subcontractor"] = ["is", "not set"];
 			}
+			add_process_filter(frm, filters);
 
 			return {
 				filters: filters,
@@ -110,6 +117,7 @@ frappe.ui.form.on("Employee IR", {
 	},
 	department(frm) {
 		clear_operations_table(frm);
+		load_process_control(frm);
 	},
 	operation(frm) {
 		// Repeat-ness is per (work order, operation), so re-pointing the operation
@@ -192,6 +200,7 @@ frappe.ui.form.on("Employee IR", {
 				} else {
 					query_filters["subcontractor"] = ["is", "not set"];
 				}
+				add_process_filter(frm, query_filters);
 			} else {
 				query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
 				query_filters["operation"] = frm.doc.operation;
@@ -269,6 +278,7 @@ frappe.ui.form.on("Employee IR", {
 				} else {
 					query_filters["subcontractor"] = ["is", "not set"];
 				}
+				add_process_filter(frm, query_filters);
 			} else {
 				query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
 				query_filters["operation"] = frm.doc.operation;
@@ -308,6 +318,7 @@ frappe.ui.form.on("Employee IR", {
 						} else {
 							query_filters["subcontractor"] = ["is", "not set"];
 						}
+						add_process_filter(frm, query_filters);
 					} else {
 						query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
 						query_filters["operation"] = frm.doc.operation;
@@ -901,5 +912,27 @@ async function validate_employee_ir_wo_limit(frm) {
 				frm.doc.department,
 			])
 		);
+	}
+}
+
+// Process control (manufacturing cells): which processes this user may work in for the
+// document's department. Only narrows pickers; the server decides.
+function load_process_control(frm) {
+	frm.__process_control = null;
+	if (!frm.doc.department) return;
+	frappe
+		.xcall("jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.my_processes", {
+			department: frm.doc.department,
+		})
+		.then((r) => {
+			frm.__process_control = r;
+		});
+}
+
+function add_process_filter(frm, filters) {
+	// An Issue offers only jobs already in the selected operation's process.
+	const pc = frm.__process_control;
+	if (pc && pc.controlled && frm.doc.type == "Issue" && frm.doc.department_process) {
+		filters["department_process"] = frm.doc.department_process;
 	}
 }

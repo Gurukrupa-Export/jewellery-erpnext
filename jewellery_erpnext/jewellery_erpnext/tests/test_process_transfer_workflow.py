@@ -60,13 +60,37 @@ class _WorkflowHarness(_ProcessHarness):
 	# -- world ----------------------------------------------------------------------------------
 
 	def cell3(self):
-		"""MM as a cell with processes A, B, C; Administrator may act in all three."""
+		"""MM as a cell with processes A, B, C; Administrator may act in all three. The karigar
+		MM1 holds MM's operation (process A), as the Employee IR picker requires."""
 		a, b, op_b = self.cell()
 		c = self.process("Process C")
-		self.map_operation(self.operation("Op C"), c)
+		op_c = self.operation("Op C")
+		self.map_operation(op_c, c)
 		for p in (a, b, c):
 			self.grant("Administrator", p)
+		self.operation_of = {a: self.w.operations["MM"], b: op_b, c: op_c}
+		self.qualify("MM1", self.w.operations["MM"])
 		return a, b, c
+
+	def qualify(self, employee_key, operation):
+		"""Give the karigar ``operation`` (Employee.custom_operation, where the site has it)."""
+		if frappe.get_meta("Employee").has_field("custom_operation"):
+			frappe.db.set_value(
+				"Employee",
+				self.w.employees[employee_key],
+				"custom_operation",
+				operation,
+			)
+
+	def issue_in(self, process, mwo, *, submit=True, employee="MM1"):
+		"""An Employee IR Issue of ``mwo`` for the operation of ``process``, to a karigar who holds
+		that operation."""
+		operation = self.operation_of[process]
+		self.qualify(employee, operation)
+		doc = fx.employee_ir(self.w, "Issue", [mwo], employee=employee)
+		doc.operation = operation
+		doc = fx.insert_ir(doc)
+		return fx.submit_ir(doc) if submit else doc
 
 	def assign(self, mwo, mop, process):
 		frappe.db.set_value(
@@ -595,7 +619,7 @@ class TestCancel(_WorkflowHarness):
 		a, b, _c = self.cell3()
 		mwo, _ = self.job_in(a)
 		doc = self.submitted(a, b, [mwo])
-		fx.issue(self.w, mwo)
+		self.issue_in(b, mwo)  # the job now works in B
 		with self.assertRaisesRegex(ProcessTransitionConflictError, "is with employee"):
 			frappe.get_doc(PT, doc.name).cancel()
 
@@ -695,7 +719,7 @@ class TestCancel(_WorkflowHarness):
 		a, b, _c = self.cell3()
 		mwo, _ = self.job_in(a)
 		doc = self.submitted(a, b, [mwo])
-		draft = fx.issue(self.w, mwo, submit=False)
+		draft = self.issue_in(b, mwo, submit=False)
 		# The cancel's own check refuses (its wording); the terminal re-check is a second layer.
 		with self.assertRaisesRegex(
 			ProcessTransitionConflictError,
