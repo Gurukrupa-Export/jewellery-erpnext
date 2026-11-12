@@ -221,6 +221,13 @@ class EmployeeIR(Document):
 		if self.type == "Issue":
 			self.issue_submitted_on = now_datetime()
 			validate_casting_group_complete(self)
+			# A subcontracting Issue posts no Stock Entry (only unsynced MOP Logs the EOD sync
+			# moves later), so the Stock Entry guard would not see this metal leave for the supplier.
+			from jewellery_erpnext.jewellery_erpnext.doc_events.supplier_metal_limit import (
+				validate_employee_ir_supplier_limit,
+			)
+
+			validate_employee_ir_supplier_limit(self)
 		else:
 			validate_employee_ir_receive_delay(self)
 
