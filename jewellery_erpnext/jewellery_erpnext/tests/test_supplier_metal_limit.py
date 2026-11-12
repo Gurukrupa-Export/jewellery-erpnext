@@ -117,6 +117,11 @@ class _World(unittest.TestCase):
 		self.supplier_busy = False
 		# a Bin another transaction is writing right now (the NOWAIT share read fails)
 		self.bins_busy = False
+		self.busy_bins = set()  # Bin names whose primary-key share read fails right now
+		self.seq_created = []  # counter rows the guard INSERT IGNOREd
+		self.seq_insert_busy = (
+			False  # that insert meets a lock (zero lock wait -> timeout)
+		)
 		# issue counters (tabSeries key -> current): as this transaction's snapshot sees them, and
 		# as committed now (the locking read); None = same as the snapshot
 		self.seq_snapshot = {}
@@ -205,7 +210,13 @@ class _World(unittest.TestCase):
 			return [(s,) for s in values["suppliers"]]
 		if "FROM `tabSeries`" in q or "INTO `tabSeries`" in q:
 			key = values[0]
-			if q.startswith("INSERT"):
+			if "INSERT IGNORE" in q:
+				if self.seq_insert_busy:
+					self.assertIn("SET STATEMENT innodb_lock_wait_timeout=0 FOR", q)
+					raise frappe.QueryTimeoutError("Lock wait timeout exceeded")
+				self.seq_created.append(key)
+				return ()
+			if "INSERT INTO" in q:
 				self.assertIn("ON DUPLICATE KEY UPDATE", q)
 				self.seq_bumps.append(key)
 				return ()
@@ -216,6 +227,10 @@ class _World(unittest.TestCase):
 					if self.seq_latest is not None
 					else self.seq_snapshot
 				)
+				if key not in seen:
+					# never locked while missing: the INSERT IGNORE must have created it
+					self.assertIn(key, self.seq_created)
+					return ((0,),)
 			return ((seen[key],),) if key in seen else ()
 		if q.startswith("SELECT name FROM `tabBin` FORCE INDEX (`warehouse`)"):
 			self.assertIn("LOCK IN SHARE MODE NOWAIT", q)
@@ -226,7 +241,20 @@ class _World(unittest.TestCase):
 				for (item, wh) in sorted(self.bins)
 				if wh in values["warehouses"]
 			]
+		if q.startswith(
+			"SELECT b.name, i.variant_of FROM `tabBin` b LEFT JOIN `tabItem`"
+		):
+			self.assertNotIn("LOCK", q)
+			bins = self.stale_bins if self.stale_bins is not None else self.bins
+			return [
+				(_bin_name(item, wh), ITEMS[item][0])
+				for (item, wh) in sorted(bins)
+				if _bin_name(item, wh) in values["names"]
+			]
 		if "WHERE name IN %(names)s LOCK IN SHARE MODE NOWAIT" in q:
+			if self.busy_bins & set(values["names"]):
+				raise frappe.QueryTimeoutError("Lock wait timeout exceeded")
+			self.share_locked = sorted(values["names"])
 			return [
 				frappe._dict(item_code=item, warehouse=wh, actual_qty=qty)
 				for (item, wh), qty in sorted(self.bins.items())
@@ -459,6 +487,25 @@ class TestStockEntryGuard(_World):
 			self._submit(_se(_row("M-24KT", 0.1, "STORE", "C-WIP")))
 		self.assertIn("retry", str(raised.exception))
 
+	def test_counter_row_is_created_before_it_is_locked(self):
+		# PR #1655 re-review: FOR UPDATE on a missing key gap-locks tabSeries. Order per key:
+		# plain read -> INSERT IGNORE -> FOR UPDATE.
+		self._submit(_se(_row("M-24KT", 1, "STORE", "C-WIP")))
+		series = [q for q in self.sql_calls if "tabSeries" in q]
+		self.assertEqual(len(series), 3)
+		self.assertNotIn("FOR UPDATE", series[0])
+		self.assertIn("INSERT IGNORE", series[1])
+		self.assertNotIn(
+			"SET STATEMENT", series[1]
+		)  # Stock Entry path may wait, as on Supplier
+		self.assertIn("FOR UPDATE", series[2])
+		self.assertEqual(self.seq_created, [sml._issue_seq_key("SUP-C")])
+
+	def test_a_fresh_counter_row_is_not_a_moved_counter(self):
+		# No row in the snapshot, none committed since: the row this entry creates reads 0.
+		self._submit(_se(_row("M-24KT", 1, "STORE", "C-WIP")))
+		self.assertEqual(self.seq_bumps, [])
+
 	def test_a_stock_entry_never_bumps_the_issue_counter(self):
 		self.seq_snapshot = {sml._issue_seq_key("SUP-C"): 7}
 		self._submit(_se(_row("M-24KT", 1, "STORE", "C-WIP")))
@@ -619,6 +666,50 @@ class TestEmployeeIRIssue(_World):
 
 	def test_a_bin_being_written_asks_to_retry(self):
 		self.bins_busy = True
+		self._balance("MOP-1", "M-24KT", 1)
+		with self.assertRaises(frappe.ValidationError) as raised:
+			sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))
+		self.assertNotIsInstance(raised.exception, sml.SupplierMetalLimitError)
+		self.assertIn("retry", str(raised.exception))
+
+	def test_the_issue_creates_its_counter_row_without_waiting_before_locking_it(self):
+		self._balance("MOP-1", "M-24KT", 1)
+		sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))
+		series = [q for q in self.sql_calls if "tabSeries" in q]
+		self.assertNotIn("FOR UPDATE", series[0])
+		self.assertTrue(
+			series[1].startswith(
+				"SET STATEMENT innodb_lock_wait_timeout=0 FOR INSERT IGNORE"
+			)
+		)
+		self.assertIn("FOR UPDATE NOWAIT", series[2])
+		self.assertIn(
+			"ON DUPLICATE KEY UPDATE", series[3]
+		)  # the bump, row already held
+
+	def test_issue_counter_insert_never_waits(self):
+		self.seq_insert_busy = True
+		self._balance("MOP-1", "M-24KT", 1)
+		with self.assertRaises(frappe.ValidationError) as raised:
+			sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))
+		self.assertNotIsInstance(raised.exception, sml.SupplierMetalLimitError)
+		self.assertIn("retry", str(raised.exception))
+		self.assertEqual(self.seq_bumps, [])
+
+	def test_only_metal_bins_are_share_locked(self):
+		self.bins[("D-STONE", "C-WIP")] = 20
+		self._balance("MOP-1", "M-24KT", 1)
+		sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))
+		self.assertEqual(self.share_locked, [_bin_name("M-9175", "C-WIP")])
+
+	def test_a_non_metal_bin_being_written_does_not_make_the_issue_busy(self):
+		self.bins[("D-STONE", "C-WIP")] = 20
+		self.busy_bins = {_bin_name("D-STONE", "C-WIP")}
+		self._balance("MOP-1", "M-24KT", 1)
+		sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))
+
+	def test_a_metal_bin_being_written_asks_to_retry(self):
+		self.busy_bins = {_bin_name("M-9175", "C-WIP")}
 		self._balance("MOP-1", "M-24KT", 1)
 		with self.assertRaises(frappe.ValidationError) as raised:
 			sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))

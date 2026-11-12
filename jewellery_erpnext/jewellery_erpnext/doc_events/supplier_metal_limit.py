@@ -49,7 +49,12 @@ Locking (``lock_order``: parent control row -> Series -> Bin):
   only while holding the Supplier row), and both paths compare the snapshot's counter with the
   locked one right after taking the Supplier row: a difference is refused with "retry", whose
   fresh transaction sees that Issue. Stock Entries do not bump it, so a second Stock Entry still
-  waits for the first and is judged on its current Bins.
+  waits for the first and is judged on its current Bins. The counter row is created (at 0) before
+  it is first locked, never locked while missing -- see :func:`_issue_seq_moved`.
+* "Retry" is the only correct answer there: the Issue's metal is invisible to this transaction,
+  so deciding anyway would be deciding on stale data. A background Stock Entry (Submission Queue)
+  that meets it fails with that message and is simply resubmitted; the window is an Issue to the
+  same supplier committing during this entry's own submit.
 * Residual, safe side: the EOD sync committing between a Stock Entry's snapshot and its Bin locks
   shows the synced metal in both the Bins and the snapshot's pending logs -- a refusal a retry
   clears. (Employee IR submits are refused during the sync by ``current_operation_guard``.)
@@ -282,7 +287,10 @@ def _current_bin_holdings(warehouse_supplier):
 	1. ``SELECT name ... FORCE INDEX (warehouse) ... LOCK IN SHARE MODE NOWAIT``: covered by the
 	   index, so it locks index entries only, and it also finds a Bin created after this
 	   transaction's snapshot;
-	2. those rows by primary key, ``LOCK IN SHARE MODE NOWAIT``.
+	2. which of those names are metal / finding Bins, from a plain read (an unknown name counts);
+	3. only those rows by primary key, ``LOCK IN SHARE MODE NOWAIT`` -- a diamond Bin being
+	   written does not make the Issue busy, and a large supplier holds tens of locks, not
+	   thousands.
 
 	A Bin being written right now raises ``QueryTimeoutError`` / ``QueryDeadlockError`` -- the
 	caller says "retry". Without the index (never seen) it falls back to the plain read.
@@ -306,13 +314,32 @@ def _current_bin_holdings(warehouse_supplier):
 	]
 	if not names:
 		return {}
+	# Share-lock only the metal Bins: a Bin's item never changes, so the snapshot can tell which
+	# names are metal; a name it does not know (a Bin created after it) is locked regardless.
+	known = {
+		r[0]: r[1]
+		for r in frappe.db.sql(
+			"""
+			SELECT b.name, i.variant_of
+			FROM `tabBin` b
+			LEFT JOIN `tabItem` i ON i.name = b.item_code
+			WHERE b.name IN %(names)s
+			""",
+			{"names": tuple(sorted(names))},
+		)
+	}
+	candidates = sorted(
+		n for n in names if n not in known or known[n] in METAL_FAMILIES
+	)
+	if not candidates:
+		return {}
 	rows = frappe.db.sql(
 		"""
 		SELECT item_code, warehouse, actual_qty FROM `tabBin`
 		WHERE name IN %(names)s
 		LOCK IN SHARE MODE NOWAIT
 		""",
-		{"names": tuple(sorted(names))},
+		{"names": tuple(candidates)},
 		as_dict=True,
 	)
 	return _price_bins(rows, warehouse_supplier)
@@ -419,15 +446,32 @@ def _issue_seq_moved(suppliers, nowait=False):
 	"""The suppliers whose issue counter moved after this transaction's snapshot was taken, i.e.
 	an Employee IR Issue to them committed that the snapshot's MOP Logs do not show.
 
-	Call while holding the Supplier rows: only their holders touch the counter, so the locking
-	read never waits on anything (``nowait`` keeps RULE E explicit on the Employee IR path). The
-	plain read goes first -- it is the snapshot's value (or, in a transaction with no read yet,
-	starts the snapshot now and is then equal by construction)."""
+	Call while holding the Supplier rows: only their holders touch the counter, so nothing here
+	waits on another holder of it (``nowait`` keeps RULE E explicit on the Employee IR path).
+
+	1. Plain read first -- the snapshot's value (or, in a transaction with no read yet, it starts
+	   the snapshot now and is then equal by construction).
+	2. ``INSERT IGNORE`` the row at 0, so it EXISTS before it is locked. A ``FOR UPDATE`` on a
+	   missing primary key would lock the GAP around it until the transaction ends (REPEATABLE
+	   READ), blocking every other supplier's first counter row and any new naming-series row
+	   sorting beside it (``SINV-27...``, ``SM...``, ``ST...``), and two first Issues to two
+	   suppliers would deadlock on their bumps. An insert holds a record lock only, and a
+	   duplicate on the clustered key a record-only lock too. The row is created in the caller's
+	   own transaction, so a rollback takes it back. On the Employee IR path the insert runs with a
+	   zero lock wait, like the NOWAIT reads.
+	3. ``FOR UPDATE`` the now-existing row: a single-row lock, the latest committed value. A row
+	   step 2 just created reads 0 -- the same as "missing" in the snapshot, i.e. not moved.
+	"""
 	moved = []
 	for supplier in sorted({s for s in suppliers if s}):
 		key = _issue_seq_key(supplier)
 		snapshot = frappe.db.sql(
 			"SELECT `current` FROM `tabSeries` WHERE `name` = %s", (key,)
+		)
+		frappe.db.sql(
+			("SET STATEMENT innodb_lock_wait_timeout=0 FOR " if nowait else "")
+			+ "INSERT IGNORE INTO `tabSeries` (`name`, `current`) VALUES (%s, 0)",
+			(key,),
 		)
 		latest = frappe.db.sql(
 			f"SELECT `current` FROM `tabSeries` WHERE `name` = %s FOR UPDATE"
