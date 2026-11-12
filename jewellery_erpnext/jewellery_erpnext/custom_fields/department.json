@@ -178,6 +178,15 @@
    "insert_after": "custom_is_chain_manufacturing",
    "label": "Is Chain Subcontracting",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_is_cell_department",
+   "fieldtype": "Check",
+   "insert_after": "custom_is_chain_subcontracting",
+   "label": "Is Cell Department",
+   "description": "Stock Entry material transfers (Work Order) require the user's process to match the Manufacturing Operation's process.",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
