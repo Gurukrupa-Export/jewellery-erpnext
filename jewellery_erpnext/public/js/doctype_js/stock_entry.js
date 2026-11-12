@@ -2251,13 +2251,19 @@ function apply_wo_transfer_warehouses(frm, force) {
 		frm.doc.docstatus == 0 &&
 		!cint(frm.doc.auto_created);
 	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
-	["from_warehouse", "to_warehouse"].forEach((f) => frm.set_df_property(f, "read_only", locked ? 1 : 0));
-	if (grid) {
-		["s_warehouse", "t_warehouse"].forEach((f) =>
-			grid.update_docfield_property(f, "read_only", locked ? 1 : 0)
-		);
+	// Other entry types keep their own read-only handling; only this type is touched here.
+	const set_lock = (on) => {
+		["from_warehouse", "to_warehouse"].forEach((f) => frm.set_df_property(f, "read_only", on ? 1 : 0));
+		if (grid) {
+			["s_warehouse", "t_warehouse"].forEach((f) =>
+				grid.update_docfield_property(f, "read_only", on ? 1 : 0)
+			);
+		}
+	};
+	if (!locked) {
+		if (frm.doc.stock_entry_type == "Material Transfer (WORK ORDER)") set_lock(false);
+		return;
 	}
-	if (!locked) return;
 	// Only a new entry, a blank field, or an operation just chosen (force) is written. Opening an
 	// already-saved draft must not re-home it to the viewer's department.
 	const write = (cur) => force || !cur;
@@ -2266,6 +2272,8 @@ function apply_wo_transfer_warehouses(frm, force) {
 		args: { manufacturing_operation: frm.doc.manufacturing_operation || null },
 		callback(r) {
 			const w = r.message || {};
+			// Users with no Employee/department get no values; leave the fields editable for them.
+			set_lock(!!w.source);
 			if (w.source) {
 				if (write(frm.doc.from_warehouse) && frm.doc.from_warehouse != w.source)
 					frm.set_value("from_warehouse", w.source);

@@ -88,6 +88,12 @@ def _expected_target(mop, department):
 		return _department_warehouse(department, "Manufacturing", _("WO warehouse"))
 	if mop.status == "WIP":
 		if not mop.employee:
+			if mop.get("subcontractor"):
+				frappe.throw(
+					_(
+						"Manufacturing Operation {0} is with a subcontractor; use the subcontracting transfer."
+					).format(mop.name)
+				)
 			frappe.throw(
 				_("Manufacturing Operation {0} is WIP but has no employee.").format(
 					mop.name
