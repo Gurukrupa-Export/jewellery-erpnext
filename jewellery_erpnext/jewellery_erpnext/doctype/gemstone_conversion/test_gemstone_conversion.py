@@ -1,12 +1,15 @@
 # Copyright (c) 2024, Nirali and Contributors
 # See license.txt
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion import (
+	GemstoneConversion,
+	get_loss_item,
 	validate_gemstone_item,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
@@ -188,3 +191,44 @@ class TestGemstoneItemAttributeValidation(FrappeTestCase):
 		with self.assertRaises(frappe.ValidationError) as cm:
 			self._validate([(SOURCE_ITEM, dict(SOURCE_ATTRIBUTES))])
 		self.assertIn("Same Item", str(cm.exception))
+
+
+class TestGemstoneConversionEndpointPermission(FrappeTestCase):
+	"""Whitelisted endpoints require write access on Gemstone Conversion."""
+
+	def _as_guest(self, fn):
+		user = frappe.session.user
+		frappe.set_user("Guest")
+		try:
+			fn()
+		finally:
+			frappe.set_user(user)
+
+	def test_get_loss_item_denied_without_permission(self):
+		with patch(
+			f"{GEMSTONE_CONVERSION_MODULE}.get_item_loss_item"
+		) as mock_loss_item:
+			with self.assertRaises(frappe.PermissionError):
+				self._as_guest(lambda: get_loss_item("Test Company", SOURCE_ITEM))
+		mock_loss_item.assert_not_called()
+
+	def test_get_loss_item_allowed_with_permission(self):
+		with patch(
+			f"{GEMSTONE_CONVERSION_MODULE}.get_item_loss_item", return_value="G-LOSS"
+		) as mock_loss_item:
+			self.assertEqual(get_loss_item("Test Company", SOURCE_ITEM, "L"), "G-LOSS")
+		mock_loss_item.assert_called_once_with("Test Company", SOURCE_ITEM, "G", "L")
+
+	def test_doc_methods_denied_without_permission(self):
+		doc = SimpleNamespace(employee="EMP-1", batch="B-1", company="Test Company")
+		for method in (
+			GemstoneConversion.get_detail_tab_value,
+			GemstoneConversion.get_batch_detail,
+		):
+			with self.subTest(method=method.__name__):
+				with patch(
+					f"{GEMSTONE_CONVERSION_MODULE}.frappe.get_value"
+				) as mock_get_value:
+					with self.assertRaises(frappe.PermissionError):
+						self._as_guest(lambda: method(doc))
+				mock_get_value.assert_not_called()
