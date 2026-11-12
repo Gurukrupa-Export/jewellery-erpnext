@@ -293,7 +293,7 @@ class TestEmployeeIR(_EnforcementHarness):
 		with refused(self, frappe.PermissionError, f"no access to process {a}"):
 			fx.insert_ir(self.issue_doc(mwo))
 
-	def test_api_insert_with_a_tampered_pair_is_judged_by_the_operations_own_job(self):
+	def test_api_insert_with_a_tampered_pair_is_refused_and_changes_nothing(self):
 		a, b, _c = self.cell3()
 		mwo, _ = self.job_in(a)
 		other, other_mop = self.job_in(b)
@@ -303,9 +303,10 @@ class TestEmployeeIR(_EnforcementHarness):
 			other_mop  # tampered pair: B's operation, A's work order
 		)
 		row.manufacturing_work_order = mwo
-		# The row's work order is re-derived from the operation. That job is in B, so issuing A's
-		# operation to it is refused: the client's work order decides nothing.
-		with refused(self, ProcessEnforcementError, f"is in process {b}") as ctx:
+		# Either the row's work order is re-derived from the operation (kggk_uat: read-only fetch),
+		# whose job is in B, or the mismatched pair itself is refused (fetch_if_empty). Both name
+		# the operation's real job; the client's work order decides nothing.
+		with self.assertRaises(ProcessEnforcementError) as ctx:
 			frappe.client.insert(doc.as_dict())
 		self.assertIn(other, _text(ctx.exception))
 		self.assertEqual(self.mop_state(other_mop).status, "Not Started")
@@ -1249,7 +1250,29 @@ class TestStockEntryRace(_race._RaceCase if _race else object):  # type: ignore[
 
 		RESIDUE_TABLES = _Day2.RESIDUE_TABLES
 		_purge_and_verify = _Day2._purge_and_verify
-		tearDown = _Day2.tearDown
+
+	def tearDown(self):
+		# Day 2's tearDown body, with the base call made explicit: its zero-argument super() is
+		# bound to TestProcessTransferRace and refuses an instance of this class.
+		if self.race:
+			self.race.close()
+		frappe.db.rollback()
+		prefix = f"{self.world.prefix}%"
+		frappe.db.delete(
+			"Process Transition Log", {"manufacturing_work_order": ["like", prefix]}
+		)
+		frappe.db.delete(
+			"User Process Access", {"department_process": ["like", prefix]}
+		)
+		frappe.db.set_value(
+			"Department Operation",
+			{"name": ["like", prefix]},
+			"department_process",
+			None,
+		)
+		frappe.db.delete("Department Process", {"department": ["like", prefix]})
+		frappe.db.commit()
+		_race._RaceCase.tearDown(self)
 
 	def test_a_stock_entry_waits_for_and_refuses_a_held_work_order(self):
 		w = self.world
