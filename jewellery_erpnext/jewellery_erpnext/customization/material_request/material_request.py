@@ -13,7 +13,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.transit impor
 )
 
 
-@frappe.whitelist()
+# Not whitelisted (removed with process control, GK-PROC-0014): the only caller is the Transfer
+# to MOP step in doc_events/material_request.before_update_after_submit, which checks the job first.
+# As an endpoint it took the request as client JSON and minted a work-order Stock Entry with no
+# permission, workflow or process check.
 def make_mop_stock_entry(self, **kwargs):
 	try:
 		if isinstance(self, str):
@@ -351,7 +354,10 @@ def make_department_transfer_stock_entry(self):
 	return new_se_doc.name
 
 
-@frappe.whitelist()
+# Not whitelisted (removed with process control, GK-PROC-0014): the only caller is the Transfer
+# to MOP step in doc_events/material_request.before_update_after_submit, which checks the job first.
+# As an endpoint it took the request as client JSON and minted a work-order Stock Entry with no
+# permission, workflow or process check.
 def make_department_mop_stock_entry(self, **kwargs):
 	if isinstance(self, str):
 		self = json.loads(self)
