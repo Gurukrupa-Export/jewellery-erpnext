@@ -18,6 +18,7 @@
   "abbr",
   "column_break_wotev",
   "department",
+  "department_process",
   "section_break_8ac16",
   "manufacturing_work_order",
   "manufacturing_order",
@@ -129,6 +130,16 @@
    "in_list_view": 1,
    "label": "Department",
    "options": "Department"
+  },
+  {
+   "description": "The process this operation is in, for departments with process control. Changed only by Process Transfer and the manufacturing flow.",
+   "fieldname": "department_process",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Current Process",
+   "options": "Department Process",
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fetch_from": "previous_mop.operation",
@@ -831,7 +842,7 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-10-21 12:00:00.000000",
+ "modified": "2026-11-10 19:00:02.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
