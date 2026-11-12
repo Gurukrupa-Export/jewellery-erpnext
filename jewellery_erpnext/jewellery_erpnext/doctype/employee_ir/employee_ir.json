@@ -24,6 +24,7 @@
   "tree_number",
   "section_break_pk7m5",
   "operation",
+  "receive_details_type",
   "employee",
   "is_repeat_receive",
   "worker_performance",
@@ -160,6 +161,16 @@
    "label": "Operation",
    "options": "Department Operation",
    "reqd": 1
+  },
+  {
+   "fetch_from": "operation.receive_details_type",
+   "fieldname": "receive_details_type",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Receive Details Type",
+   "no_copy": 1,
+   "options": "\nCAD\nCAM",
+   "read_only": 1
   },
   {
    "fieldname": "subcontracting",
@@ -453,7 +464,7 @@
    "link_fieldname": "employee_ir"
   }
  ],
- "modified": "2026-10-29 12:00:00.000000",
+ "modified": "2026-11-10 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR",

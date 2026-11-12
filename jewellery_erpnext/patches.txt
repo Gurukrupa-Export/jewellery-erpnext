@@ -136,3 +136,4 @@ jewellery_erpnext.patches.clear_kggk_source_on_non_template_bom #2026-10-28 clea
 jewellery_erpnext.patches.move_sales_invoice_invoice_item_to_e_invoice_child #2026-11-04 invoice_item rows -> Sales Invoice E Invoice Item
 jewellery_erpnext.patches.remove_stale_sales_invoice_invoice_item_rows #2026-11-05 re-move invoice_item rows written after fixture reverted the field
 jewellery_erpnext.patches.add_item_save_indexes #2026-11-06 Item naming sequence and variant attribute lookups
+jewellery_erpnext.patches.set_cad_cam_receive_details_type #2026-11-10 flag RPT Digital File Generation (CAD) / RPT Support Generation (CAM) and backfill Manufacturing Operation
