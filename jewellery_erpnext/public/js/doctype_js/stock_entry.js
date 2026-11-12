@@ -2248,3 +2248,42 @@ function make_customer_gold_return_mr(frm, row, qty) {
 		frappe.set_route("Form", "Material Request", mr.name);
 	});
 }
+
+// Process control (manufacturing cells). For a job in a department that uses process control,
+// pre-fill Department Process with the user's default process there and offer only processes
+// the user may work in. Convenience only: the server checks the job's process and the user's
+// access again (process_enforcement.check_stock_entry), and stamps the process when left empty.
+frappe.ui.form.on("Stock Entry", {
+	setup(frm) {
+		frm.set_query("custom_department_process", function () {
+			const pc = frm.__process_control;
+			return {
+				filters: [["Department Process", "name", "in", (pc && pc.allowed) || []]],
+			};
+		});
+	},
+	manufacturing_operation(frm) {
+		load_stock_entry_process_control(frm);
+	},
+});
+
+function load_stock_entry_process_control(frm) {
+	frm.__process_control = null;
+	if (!frm.fields_dict.custom_department_process || !frm.doc.manufacturing_operation) return;
+	frappe.db
+		.get_value("Manufacturing Operation", frm.doc.manufacturing_operation, "department")
+		.then((r) => {
+			const department = r.message && r.message.department;
+			if (!department) return;
+			return frappe
+				.xcall("jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.my_processes", {
+					department: department,
+				})
+				.then((pc) => {
+					frm.__process_control = pc;
+					if (pc.controlled && !frm.doc.custom_department_process && pc.default) {
+						frm.set_value("custom_department_process", pc.default);
+					}
+				});
+		});
+}

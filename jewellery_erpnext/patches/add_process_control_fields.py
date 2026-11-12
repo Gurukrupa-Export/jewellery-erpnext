@@ -1,9 +1,10 @@
-"""Install the Department switch for process control (manufacturing cells).
+"""Install the process-control custom fields (manufacturing cells).
 
 ``Department.custom_enable_process_control`` turns process control on for one department. A
 department can only switch it on once its processes and operation mappings are complete
 (``doc_events.process_control.validate_department``). It is off for every existing department,
-so installing it changes nothing until someone enables it.
+so installing it changes nothing until someone enables it. ``Stock Entry.custom_department_process``
+(Day 3) records the process a work-order material movement was made in.
 
 ``custom_fields/department.json`` reaches only fresh installs: the after_migrate loader is off.
 This patch reaches existing sites, and ``create_test_data`` calls it for CI sites, because
@@ -37,7 +38,25 @@ PROCESS_CONTROL_FIELDS = {
 			"insert_after": "custom_process_control_section",
 			"module": "Jewellery Erpnext",
 		},
-	]
+	],
+	# Day 3 (GK-PROC-0013): the process a work-order material movement is made in. Pre-filled from
+	# the user's default process, changeable among their granted processes, checked against the
+	# job's process on the server, and stamped with it when left empty.
+	"Stock Entry": [
+		{
+			"fieldname": "custom_department_process",
+			"fieldtype": "Link",
+			"label": "Department Process",
+			"options": "Department Process",
+			"insert_after": "manufacturing_operation",
+			"description": (
+				"The process this material movement is made in. In departments that use process "
+				"control it must be the work order's current process, and you need access to it."
+			),
+			"no_copy": 1,
+			"module": "Jewellery Erpnext",
+		},
+	],
 }
 
 

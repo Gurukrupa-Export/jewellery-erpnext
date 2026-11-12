@@ -155,3 +155,4 @@ jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Hold during
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-30 Only Hold, Open and Close buttons; Close makes the Close request
 jewellery_erpnext.patches.add_process_control_fields
 jewellery_erpnext.patches.grant_process_transfer_user_work_order_read
+jewellery_erpnext.patches.add_process_control_stock_entry_field
