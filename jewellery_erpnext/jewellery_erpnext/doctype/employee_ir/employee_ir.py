@@ -33,6 +33,12 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
 	block_closed_mwo_operations,
 	without_closed_mwo_operations,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_receive import (
+	cad_cam_values_for_operation,
+	get_receive_details_type,
+	sync_item_master_for_receive,
+	validate_cad_cam_receive_details,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
 )
@@ -241,6 +247,7 @@ class EmployeeIR(Document):
 		validate_casting_tree(self)
 		validate_casting_receive(self)
 		validate_finding_repack(self)
+		validate_cad_cam_receive_details(self)
 		self.validate_fg_bom_fields()
 		self.set_repeat_receive_flag()
 
@@ -393,10 +400,16 @@ class EmployeeIR(Document):
 			)
 		if not (to_warehouse and from_warehouse):
 			frappe.throw(_("To Warehouse or From Warehouse not available"))
+		# Stamped with the operation: frappe.db.set_value skips the fetch_from, and the
+		# operation's CAD / CAM fields show off this flag while the work is in progress.
+		receive_details_type = (
+			None if cancel else get_receive_details_type(self.operation)
+		)
 		for row in self.employee_ir_operations:
 			values.update(
 				{
 					"operation": operation,
+					"receive_details_type": receive_details_type,
 					"rpt_wt_issue": row.rpt_wt_issue,
 					"start_time": start_time,
 				}
@@ -754,9 +767,14 @@ class EmployeeIR(Document):
 				res["rpt_wt_receive"] = row.rpt_wt_receive
 				res["rpt_wt_loss"] = flt(row.rpt_wt_receive - issue_wt, 3)
 
+			# CAD / CAM details entered on the row (cleared again on cancel).
+			res.update(cad_cam_values_for_operation(self, row, cancel=cancel))
+
 			frappe.db.set_value(
 				"Manufacturing Operation", row.manufacturing_operation, res
 			)
+			if res.get("receive_details_type") and not cancel:
+				sync_item_master_for_receive(row.manufacturing_operation)
 
 			if time_log_args and not cancel:
 				batch_add_time_logs(self, time_log_args)
