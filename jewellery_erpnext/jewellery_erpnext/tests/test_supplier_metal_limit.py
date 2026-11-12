@@ -115,6 +115,13 @@ class _World(unittest.TestCase):
 		self.sql_calls = []
 		self.supplier_locks = []
 		self.supplier_busy = False
+		# a Bin another transaction is writing right now (the NOWAIT share read fails)
+		self.bins_busy = False
+		# issue counters (tabSeries key -> current): as this transaction's snapshot sees them, and
+		# as committed now (the locking read); None = same as the snapshot
+		self.seq_snapshot = {}
+		self.seq_latest = None
+		self.seq_bumps = []
 		self.field_exists = True
 		self.stack = ExitStack()
 		self.addCleanup(self.stack.close)
@@ -145,6 +152,7 @@ class _World(unittest.TestCase):
 			patch.object(
 				sml, "_limit_field_exists", side_effect=lambda: self.field_exists
 			),
+			patch.object(sml, "_bin_warehouse_index", return_value="warehouse"),
 			patch("frappe.db.sql", side_effect=self._sql),
 			patch("frappe.db.get_value", side_effect=get_value),
 			patch.object(frappe, "get_all", side_effect=get_all),
@@ -195,6 +203,35 @@ class _World(unittest.TestCase):
 				raise frappe.QueryTimeoutError("Lock wait timeout exceeded")
 			self.supplier_locks.append((tuple(values["suppliers"]), "NOWAIT" in q))
 			return [(s,) for s in values["suppliers"]]
+		if "FROM `tabSeries`" in q or "INTO `tabSeries`" in q:
+			key = values[0]
+			if q.startswith("INSERT"):
+				self.assertIn("ON DUPLICATE KEY UPDATE", q)
+				self.seq_bumps.append(key)
+				return ()
+			seen = self.seq_snapshot
+			if "FOR UPDATE" in q:
+				seen = (
+					self.seq_latest
+					if self.seq_latest is not None
+					else self.seq_snapshot
+				)
+			return ((seen[key],),) if key in seen else ()
+		if q.startswith("SELECT name FROM `tabBin` FORCE INDEX (`warehouse`)"):
+			self.assertIn("LOCK IN SHARE MODE NOWAIT", q)
+			if self.bins_busy:
+				raise frappe.QueryTimeoutError("Lock wait timeout exceeded")
+			return [
+				(_bin_name(item, wh),)
+				for (item, wh) in sorted(self.bins)
+				if wh in values["warehouses"]
+			]
+		if "WHERE name IN %(names)s LOCK IN SHARE MODE NOWAIT" in q:
+			return [
+				frappe._dict(item_code=item, warehouse=wh, actual_qty=qty)
+				for (item, wh), qty in sorted(self.bins.items())
+				if _bin_name(item, wh) in values["names"]
+			]
 		if q.startswith("SELECT b.item_code, b.warehouse FROM `tabBin`"):
 			return [
 				(item, wh)
@@ -387,6 +424,46 @@ class TestStockEntryGuard(_World):
 			[("F-80", "A-WIP"), ("M-90", "A-MSL"), ("ML-70", "A-HM")],
 		)
 
+	def test_an_unsynced_employee_ir_issue_counts_against_a_stock_entry(self):
+		# PR #1655 review: an Issue sent 4 g pure to SUP-C today (MOP Logs, Bins unchanged). A Stock
+		# Entry that fits only if that is ignored (45.875 + 0.5 = 46.375) is refused at 50.375.
+		self._log("MWO-9", "MOP-9", "M-24KT", 4, "DEPT", "C-WIP", "2026-11-10 10:00")
+		message = self._refused(
+			self._submit, _se(_row("M-24KT", 0.5, "STORE", "C-WIP"))
+		)
+		self.assertIn("49.875", message)
+		self.assertIn("50.375", message)
+		self.logs = []
+		self._submit(_se(_row("M-24KT", 0.5, "STORE", "C-WIP")))
+
+	def test_an_unsynced_receive_back_frees_room_for_a_stock_entry(self):
+		# 45.875 + 5.125 = 51.0 is refused on the Bins alone; 10 g received back today -> 41.0.
+		self._log("MWO-8", "MOP-8", "M-24KT", 10, "C-WIP", "DEPT", "2026-11-10 09:00")
+		self._submit(_se(_row("M-24KT", 5.125, "STORE", "C-WIP")))
+
+	def test_an_issue_committed_after_the_snapshot_asks_the_stock_entry_to_retry(self):
+		key = sml._issue_seq_key("SUP-C")
+		self.seq_snapshot = {key: 3}
+		self.seq_latest = {key: 4}
+		doc = _se(_row("M-24KT", 0.1, "STORE", "C-WIP"))
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self._submit(doc)
+		self.assertNotIsInstance(raised.exception, sml.SupplierMetalLimitError)
+		self.assertIn("retry", str(raised.exception))
+		self.assertIsNone(doc.flags.get(sml.BIN_PAIRS_FLAG))
+
+	def test_a_first_issue_after_the_snapshot_is_seen_too(self):
+		# The counter row did not exist yet in the snapshot.
+		self.seq_latest = {sml._issue_seq_key("SUP-C"): 1}
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self._submit(_se(_row("M-24KT", 0.1, "STORE", "C-WIP")))
+		self.assertIn("retry", str(raised.exception))
+
+	def test_a_stock_entry_never_bumps_the_issue_counter(self):
+		self.seq_snapshot = {sml._issue_seq_key("SUP-C"): 7}
+		self._submit(_se(_row("M-24KT", 1, "STORE", "C-WIP")))
+		self.assertEqual(self.seq_bumps, [])
+
 
 class TestPrelockBinsIntegration(_World):
 	def test_supplier_bins_join_the_single_sorted_bin_batch(self):
@@ -511,6 +588,56 @@ class TestEmployeeIRIssue(_World):
 		self._balance("MOP-1", "M-9175", 5)
 		self._refused(sml.employee_ir_preflight, self._eir("MOP-1"))
 		self.assertEqual(self.supplier_locks, [])
+		self.assertFalse(any("tabSeries" in q for q in self.sql_calls))
+		self.assertFalse(any("LOCK IN SHARE MODE" in q for q in self.sql_calls))
+
+	def test_an_issue_committed_after_the_snapshot_asks_to_retry(self):
+		key = sml._issue_seq_key("SUP-C")
+		self.seq_snapshot = {key: 3}
+		self.seq_latest = {key: 4}
+		self._balance("MOP-1", "M-24KT", 0.1)
+		with self.assertRaises(frappe.ValidationError) as raised:
+			sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))
+		self.assertNotIsInstance(raised.exception, sml.SupplierMetalLimitError)
+		self.assertIn("retry", str(raised.exception))
+		self.assertEqual(self.seq_bumps, [])
+
+	def test_the_issue_reads_the_latest_bins_not_the_snapshot(self):
+		# The snapshot still shows SUP-C empty; the latest committed Bins hold 45.875.
+		self.stale_bins = {}
+		self._balance("MOP-1", "M-9175", 5)  # 45.875 + 4.5875 = 50.4625
+		message = self._refused(
+			sml.validate_employee_ir_supplier_limit, self._eir("MOP-1")
+		)
+		self.assertIn("45.875", message)
+		self.assertTrue(
+			any(
+				"WHERE name IN %(names)s LOCK IN SHARE MODE NOWAIT" in q
+				for q in self.sql_calls
+			)
+		)
+
+	def test_a_bin_being_written_asks_to_retry(self):
+		self.bins_busy = True
+		self._balance("MOP-1", "M-24KT", 1)
+		with self.assertRaises(frappe.ValidationError) as raised:
+			sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))
+		self.assertNotIsInstance(raised.exception, sml.SupplierMetalLimitError)
+		self.assertIn("retry", str(raised.exception))
+
+	def test_only_a_passing_issue_bumps_the_counter(self):
+		key = sml._issue_seq_key("SUP-C")
+		self._balance("MOP-1", "M-24KT", 4)  # 49.875: passes
+		sml.validate_employee_ir_supplier_limit(self._eir("MOP-1"))
+		self.assertEqual(self.seq_bumps, [key])
+		self._balance("MOP-2", "M-9175", 5)  # 50.4625: refused
+		self._refused(sml.validate_employee_ir_supplier_limit, self._eir("MOP-2"))
+		self.assertEqual(self.seq_bumps, [key])
+
+	def test_counter_keys_fit_the_series_name_column(self):
+		key = sml._issue_seq_key("A" * 140)
+		self.assertLessEqual(len(key), 100)
+		self.assertNotEqual(key, sml._issue_seq_key("A" * 139))
 
 	def test_non_subcontracting_issue_and_receive_are_not_checked(self):
 		self._balance("MOP-1", "M-9175", 500)

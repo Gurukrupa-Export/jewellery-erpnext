@@ -22,9 +22,13 @@ Two entry points, because one MWO path posts no Stock Entry when the metal leave
   and fail again every night.
 * **Employee IR Issue with subcontracting** -- it only writes unsynced MOP Logs; the EOD sync moves
   the stock later. :func:`validate_employee_ir_supplier_limit` prices the operations' current
-  balances (the very rows the Issue clones) and adds the supplier's pending, not-yet-synced MOP Log
-  movements to its Bin holding, so several issues on one day cannot each pass against the same
-  pre-sync Bins.
+  balances (the very rows the Issue clones).
+
+Both paths measure the supplier's holding the same way: its Bins PLUS the net pure grams its
+pending, not-yet-synced MOP Logs will still move in / out at the next EOD sync
+(:func:`pending_sync_pure`). So neither an Issue nor a Stock Entry can pass against pre-sync Bins
+that an earlier same-day Issue has already promised away, and an unsynced Receive back frees room.
+Stock Entries write their own MOP Logs ``is_synced=1``, so nothing in the Bins is counted twice.
 
 Locking (``lock_order``: parent control row -> Series -> Bin):
 
@@ -35,10 +39,27 @@ Locking (``lock_order``: parent control row -> Series -> Bin):
   read back from exactly those already-held rows, i.e. a current read, never this transaction's
   older snapshot.
 * Employee IR: the work-order block (RULE D) is already held there and RULE E forbids waiting, so
-  the Supplier row is taken ``NOWAIT`` and a busy supplier is refused with "retry".
+  the Supplier row is taken ``NOWAIT`` and a busy supplier is refused with "retry". Its Bins are
+  then read with non-waiting share locks (a covered index read of the supplier's warehouses, then
+  the rows by primary key), so they too are the latest committed values.
+* The pending MOP Logs cannot be read with locks (the unsynced range of ``mop_eod_sync_idx`` is
+  shared by every work order on the site), so they come from the transaction's snapshot. What could
+  make that snapshot too low is an Issue to the same supplier committed after it was taken. Every
+  Issue that passes therefore bumps the supplier's issue counter (one ``tabSeries`` row, touched
+  only while holding the Supplier row), and both paths compare the snapshot's counter with the
+  locked one right after taking the Supplier row: a difference is refused with "retry", whose
+  fresh transaction sees that Issue. Stock Entries do not bump it, so a second Stock Entry still
+  waits for the first and is judged on its current Bins.
+* Residual, safe side: the EOD sync committing between a Stock Entry's snapshot and its Bin locks
+  shows the synced metal in both the Bins and the snapshot's pending logs -- a refusal a retry
+  clears. (Employee IR submits are refused during the sync by ``current_operation_guard``.)
 
-Out of scope (v1): cancelling an entry that moved metal OUT of a supplier (it brings it back).
+Out of scope (v1): cancelling an entry that moved metal OUT of a supplier, or a subcontract
+Employee IR Receive (both bring the metal back to the supplier); a cancel restores a state that was
+already allowed, and refusing it would leave the document stuck as submitted.
 """
+
+import hashlib
 
 import frappe
 from frappe import _
@@ -235,7 +256,72 @@ def _bin_holdings(warehouse_supplier, locked_bins=None):
 			{"warehouses": warehouses, "families": METAL_FAMILIES},
 			as_dict=True,
 		)
-	purities = _metal_items(r.item_code for r in rows)
+	return _price_bins(rows, warehouse_supplier)
+
+
+_BIN_WAREHOUSE_INDEX = {}  # site -> name of the single-column index on tabBin.warehouse
+
+
+def _bin_warehouse_index():
+	"""Name of the ``tabBin.warehouse`` index (``search_index`` in ERPNext's Bin JSON), resolved
+	by column like ``current_operation_guard._draft_index_name`` -- or ``None``. Cached per site."""
+	site = getattr(frappe.local, "site", None)
+	if site not in _BIN_WAREHOUSE_INDEX:
+		try:
+			index = frappe.db.get_column_index("tabBin", "warehouse")
+		except Exception:
+			index = None
+		_BIN_WAREHOUSE_INDEX[site] = index.get("Key_name") if index else None
+	return _BIN_WAREHOUSE_INDEX[site]
+
+
+def _current_bin_holdings(warehouse_supplier):
+	"""Like :func:`_bin_holdings`, but the LATEST committed Bins, read without ever waiting (RULE
+	E -- the Employee IR path holds the work-order block):
+
+	1. ``SELECT name ... FORCE INDEX (warehouse) ... LOCK IN SHARE MODE NOWAIT``: covered by the
+	   index, so it locks index entries only, and it also finds a Bin created after this
+	   transaction's snapshot;
+	2. those rows by primary key, ``LOCK IN SHARE MODE NOWAIT``.
+
+	A Bin being written right now raises ``QueryTimeoutError`` / ``QueryDeadlockError`` -- the
+	caller says "retry". Without the index (never seen) it falls back to the plain read.
+	"""
+	warehouses = tuple(sorted(warehouse_supplier))
+	if not warehouses:
+		return {}
+	index_name = _bin_warehouse_index()
+	if not index_name:
+		return _bin_holdings(warehouse_supplier)
+	names = [
+		r[0]
+		for r in frappe.db.sql(
+			f"""
+			SELECT name FROM `tabBin` FORCE INDEX (`{index_name}`)
+			WHERE warehouse IN %(warehouses)s
+			LOCK IN SHARE MODE NOWAIT
+			""",
+			{"warehouses": warehouses},
+		)
+	]
+	if not names:
+		return {}
+	rows = frappe.db.sql(
+		"""
+		SELECT item_code, warehouse, actual_qty FROM `tabBin`
+		WHERE name IN %(names)s
+		LOCK IN SHARE MODE NOWAIT
+		""",
+		{"names": tuple(sorted(names))},
+		as_dict=True,
+	)
+	return _price_bins(rows, warehouse_supplier)
+
+
+def _price_bins(rows, warehouse_supplier):
+	"""``{supplier: pure grams}`` of Bin ``rows`` (``item_code``, ``warehouse``, ``actual_qty``);
+	non-metal rows and rows without a purity count nothing."""
+	purities = _metal_items(r.item_code for r in rows if flt(r.actual_qty))
 	held = {}
 	for r in rows:
 		purity = purities.get(r.item_code)
@@ -314,9 +400,61 @@ def _lock_suppliers(suppliers, nowait=False):
 	)
 
 
+def _throw_busy(supplier_name):
+	frappe.throw(
+		_(
+			"Another transfer to supplier {0} is being submitted right now. Please retry in a "
+			"moment."
+		).format(frappe.bold(supplier_name)),
+		title=_("Supplier Busy"),
+	)
+
+
+def _issue_seq_key(supplier):
+	"""``tabSeries`` key of ``supplier``'s Employee IR issue counter (``name`` is varchar 100)."""
+	return "SML-" + hashlib.sha1(cstr(supplier).encode("utf-8")).hexdigest()[:24]
+
+
+def _issue_seq_moved(suppliers, nowait=False):
+	"""The suppliers whose issue counter moved after this transaction's snapshot was taken, i.e.
+	an Employee IR Issue to them committed that the snapshot's MOP Logs do not show.
+
+	Call while holding the Supplier rows: only their holders touch the counter, so the locking
+	read never waits on anything (``nowait`` keeps RULE E explicit on the Employee IR path). The
+	plain read goes first -- it is the snapshot's value (or, in a transaction with no read yet,
+	starts the snapshot now and is then equal by construction)."""
+	moved = []
+	for supplier in sorted({s for s in suppliers if s}):
+		key = _issue_seq_key(supplier)
+		snapshot = frappe.db.sql(
+			"SELECT `current` FROM `tabSeries` WHERE `name` = %s", (key,)
+		)
+		latest = frappe.db.sql(
+			f"SELECT `current` FROM `tabSeries` WHERE `name` = %s FOR UPDATE"
+			f"{' NOWAIT' if nowait else ''}",
+			(key,),
+		)
+		if (snapshot[0][0] if snapshot else 0) != (latest[0][0] if latest else 0):
+			moved.append(supplier)
+	return moved
+
+
+def _bump_issue_seq(supplier):
+	"""Mark an Employee IR Issue to ``supplier`` -- in the Issue's own transaction, so a rollback
+	takes the mark back with it (``serial_no.reserve_stamping_sequence``'s atomic upsert)."""
+	frappe.db.sql(
+		"""
+		INSERT INTO `tabSeries` (`name`, `current`) VALUES (%s, 1)
+		ON DUPLICATE KEY UPDATE `current` = `current` + 1
+		""",
+		(_issue_seq_key(supplier),),
+	)
+
+
 def lock_supplier_limits(doc, method=None):
-	"""Stock Entry ``before_submit``, BEFORE ``prelock_bins``: lock the limited suppliers' rows and
-	hand ``prelock_bins`` their metal Bins so they join its single sorted Bin batch."""
+	"""Stock Entry ``before_submit``, BEFORE ``prelock_bins``: lock the limited suppliers' rows,
+	refuse (retry) when an Employee IR Issue to one of them committed after this transaction's
+	snapshot, and hand ``prelock_bins`` their metal Bins so they join its single sorted Bin batch."""
 	# Fresh per submit attempt: a retried submit of the same document object must not reuse the
 	# previous attempt's rows or Bin names.
 	for flag in (_PLAN_FLAG, BIN_PAIRS_FLAG, LOCKED_BINS_FLAG):
@@ -325,27 +463,37 @@ def lock_supplier_limits(doc, method=None):
 	if not plan:
 		return
 	_lock_suppliers(plan)
+	moved = _issue_seq_moved(plan)
+	if moved:
+		_throw_busy(plan[moved[0]]["supplier_name"])
 	warehouses = [wh for whs in supplier_warehouses(plan).values() for wh in whs]
 	doc.flags[BIN_PAIRS_FLAG] = _supplier_metal_bins(warehouses)
 
 
 def validate_supplier_metal_limit(doc, method=None):
 	"""Stock Entry ``before_submit``, AFTER ``prelock_bins``: refuse an entry that would take a
-	supplier's pure metal holding over its limit."""
+	supplier's pure metal holding (its locked Bins + its pending EOD-sync MOP Logs) over its
+	limit."""
 	plan = _plan(doc)
 	if not plan:
 		return
+	warehouses_of = supplier_warehouses(plan)
 	warehouse_supplier = {
-		wh: supplier
-		for supplier, whs in supplier_warehouses(plan).items()
-		for wh in whs
+		wh: supplier for supplier, whs in warehouses_of.items() for wh in whs
 	}
 	held = _bin_holdings(
 		warehouse_supplier, locked_bins=doc.flags.get(LOCKED_BINS_FLAG)
 	)
 	_throw_if_breached(
 		{
-			supplier: dict(entry, current=held.get(supplier, 0.0))
+			supplier: dict(
+				entry,
+				current=flt(
+					held.get(supplier, 0.0)
+					+ pending_sync_pure(warehouses_of.get(supplier) or []),
+					PRECISION,
+				),
+			)
 			for supplier, entry in plan.items()
 		}
 	)
@@ -488,20 +636,21 @@ def validate_employee_ir_supplier_limit(doc, locking=True):
 	incoming = _employee_ir_incoming(doc)
 	if incoming <= EPS:
 		return
+	warehouses = supplier_warehouses([supplier]).get(supplier) or []
+	warehouse_supplier = {wh: supplier for wh in warehouses}
 	if locking:
+		# Supplier row, then its issue counter, then its Bins (parent -> Series -> Bin); all NOWAIT.
 		try:
 			_lock_suppliers([supplier], nowait=True)
+			if _issue_seq_moved([supplier], nowait=True):
+				_throw_busy(supplier_name)
+			held = _current_bin_holdings(warehouse_supplier).get(supplier, 0.0)
 		except (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
-			frappe.throw(
-				_(
-					"Another transfer to supplier {0} is being submitted right now. Please retry in a "
-					"moment."
-				).format(frappe.bold(supplier_name)),
-				title=_("Supplier Busy"),
-			)
-	warehouses = supplier_warehouses([supplier]).get(supplier) or []
+			_throw_busy(supplier_name)
+	else:
+		held = _bin_holdings(warehouse_supplier).get(supplier, 0.0)
 	current = flt(
-		_bin_holdings({wh: supplier for wh in warehouses}).get(supplier, 0.0)
+		held
 		+ pending_sync_pure(
 			warehouses,
 			exclude_operations=[
@@ -521,6 +670,8 @@ def validate_employee_ir_supplier_limit(doc, locking=True):
 			}
 		}
 	)
+	if locking:
+		_bump_issue_seq(supplier)
 
 
 def employee_ir_preflight(doc):
