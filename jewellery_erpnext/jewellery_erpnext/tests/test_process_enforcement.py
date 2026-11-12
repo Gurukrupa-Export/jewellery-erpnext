@@ -1250,7 +1250,29 @@ class TestStockEntryRace(_race._RaceCase if _race else object):  # type: ignore[
 
 		RESIDUE_TABLES = _Day2.RESIDUE_TABLES
 		_purge_and_verify = _Day2._purge_and_verify
-		tearDown = _Day2.tearDown
+
+	def tearDown(self):
+		# Day 2's tearDown body, with the base call made explicit: its zero-argument super() is
+		# bound to TestProcessTransferRace and refuses an instance of this class.
+		if self.race:
+			self.race.close()
+		frappe.db.rollback()
+		prefix = f"{self.world.prefix}%"
+		frappe.db.delete(
+			"Process Transition Log", {"manufacturing_work_order": ["like", prefix]}
+		)
+		frappe.db.delete(
+			"User Process Access", {"department_process": ["like", prefix]}
+		)
+		frappe.db.set_value(
+			"Department Operation",
+			{"name": ["like", prefix]},
+			"department_process",
+			None,
+		)
+		frappe.db.delete("Department Process", {"department": ["like", prefix]})
+		frappe.db.commit()
+		_race._RaceCase.tearDown(self)
 
 	def test_a_stock_entry_waits_for_and_refuses_a_held_work_order(self):
 		w = self.world
