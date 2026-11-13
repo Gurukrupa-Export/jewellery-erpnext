@@ -580,6 +580,14 @@ class ProcessTransfer(Document):
 		names = list(
 			dict.fromkeys(cstr(w).strip() for w in work_orders or () if cstr(w).strip())
 		)
+		# A new form opens with one empty row (the table is mandatory): drop rows naming no work
+		# order, so a scanned job does not land below a blank row that then fails the save.
+		for row in [
+			r
+			for r in self.get("operations") or ()
+			if not cstr(r.manufacturing_work_order).strip()
+		]:
+			self.remove(row)
 		listed = {
 			cstr(r.manufacturing_work_order).strip()
 			for r in self.get("operations") or ()
