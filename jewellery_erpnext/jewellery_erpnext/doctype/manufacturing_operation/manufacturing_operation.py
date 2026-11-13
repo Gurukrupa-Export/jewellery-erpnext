@@ -477,15 +477,30 @@ class ManufacturingOperation(Document):
 					"ref_name": self.ref_name,
 				}
 			)
-			existing_child.save()
+			# System sync of the Item's table: the user receiving the work order may not
+			# have write access to Item itself.
+			existing_child.save(ignore_permissions=True)
 		else:
 			# Create a new child record
 			filter_record = [
 				row.get("operation") for row in record_filter_from_mnf_setting
 			]
-			# An operation flagged CAD / CAM on its Department Operation always syncs; the
+			# An operation flagged CAD / CAM on its Department Operation syncs once it holds
+			# some of those details (so no blank row appears before the receive); the
 			# CAM Weight Details Mapping still decides for every other operation.
-			if self.receive_details_type or self.operation in filter_record:
+			cad_cam_fields = (
+				"cad_file",
+				"cad_numbering_file",
+				"estimated_rpt_wt",
+				"ref_name",
+				"estimated_casting_wt",
+				"support_cam_file",
+				"platform_wt",
+			)
+			has_cad_cam_details = any(self.get(fn) for fn in cad_cam_fields)
+			if (
+				self.receive_details_type and has_cad_cam_details
+			) or self.operation in filter_record:
 				self.add_child_record(
 					"Item",
 					self.item_code,
@@ -540,7 +555,7 @@ class ManufacturingOperation(Document):
 		for fieldname, value in child_fields.items():
 			child_doc.set(fieldname, value)
 		# Save the child document
-		child_doc.insert()
+		child_doc.insert(ignore_permissions=True)
 
 	@frappe.whitelist()
 	def create_fg(self):
