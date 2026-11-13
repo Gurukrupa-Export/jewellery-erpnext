@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "creation": "2026-11-11 12:20:48.548097",
+ "creation": "2023-05-03 15:21:46.465307",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -309,7 +309,6 @@
  "name": "Employee IR Operation",
  "owner": "Administrator",
  "permissions": [],
- "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
