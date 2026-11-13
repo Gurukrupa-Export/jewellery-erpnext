@@ -63,8 +63,10 @@ class RefineryPriceList(Document):
 					)
 
 	def validate_unique_item_scope(self):
-		"""One price list document per (item, refining_type). Two documents for the same
-		scope would make the pick order between them arbitrary.
+		"""One price list document per (item, refining_type, supplier). Two documents for
+		the same scope would make the pick order between them arbitrary. A supplier's own
+		list and the blank-supplier (every supplier) list are different scopes on purpose:
+		the supplier's list overrides the blank one for that supplier only.
 
 		Compared with IFNULL so a blank refining_type — which means "every type" — actually
 		matches the NULL stored in the column. The old supplier/company version of this
@@ -75,24 +77,27 @@ class RefineryPriceList(Document):
 			SELECT name FROM `tabRefinery Price List`
 			WHERE item = %(item)s
 			  AND IFNULL(refining_type, '') = %(refining_type)s
+			  AND IFNULL(supplier, '') = %(supplier)s
 			  AND name != %(name)s
 			LIMIT 1
 			""",
 			{
 				"item": self.item,
 				"refining_type": self.refining_type or "",
+				"supplier": self.supplier or "",
 				"name": self.name or "",
 			},
 		)
 		if existing:
 			frappe.throw(
 				_(
-					"Refinery Price List {0} already covers Item {1} for Refining Type {2}. "
-					"Add slabs there instead."
+					"Refinery Price List {0} already covers Item {1} for Refining Type {2} "
+					"and Supplier {3}. Add slabs there instead."
 				).format(
 					frappe.bold(existing[0][0]),
 					frappe.bold(self.item),
 					frappe.bold(self.refining_type or _("(all types)")),
+					frappe.bold(self.supplier or _("(all suppliers)")),
 				)
 			)
 
@@ -100,8 +105,10 @@ class RefineryPriceList(Document):
 		"""Each covered item code may resolve to exactly one price list in a given scope.
 
 		Two guards: no duplicate within this document, and no clash with another document
-		whose refining_type scope overlaps (a blank type overlaps everything). An exact code
-		in one list and its TEMPLATE in another is NOT a clash — exact always wins.
+		of the SAME supplier scope whose refining_type scope overlaps (a blank type overlaps
+		everything). An exact code in one list and its TEMPLATE in another is NOT a clash —
+		exact always wins. Neither is the same code in a supplier's list and in the blank
+		(every supplier) list: the supplier's list is resolved first for that supplier.
 		"""
 		seen = {}
 		for row in self.covered_items:
@@ -128,6 +135,7 @@ class RefineryPriceList(Document):
 			WHERE c.item_code IN %(codes)s
 			  AND c.parenttype = 'Refinery Price List'
 			  AND p.name != %(name)s
+			  AND IFNULL(p.supplier, '') = %(supplier)s
 			  AND (IFNULL(p.refining_type, '') = '' OR %(refining_type)s = ''
 			       OR p.refining_type = %(refining_type)s)
 			LIMIT 1
@@ -136,6 +144,7 @@ class RefineryPriceList(Document):
 				"codes": tuple(seen),
 				"name": self.name or "",
 				"refining_type": self.refining_type or "",
+				"supplier": self.supplier or "",
 			},
 			as_dict=True,
 		)
@@ -164,44 +173,66 @@ def on_doctype_update():
 		["item", "refining_type"],
 		index_name="refinery_item_type",
 	)
+	frappe.db.add_index(
+		"Refinery Price List",
+		["item", "refining_type", "supplier"],
+		index_name="refinery_item_type_supplier",
+	)
 
 
-def build_refinery_price_index(refining_type=None):
+def build_refinery_price_index(refining_type=None, supplier=None):
 	"""Everything needed to price a whole consignment, in THREE queries.
 
-	Returns ``{order, parents, covered, category, slabs}``:
+	Returns ``{order, parents, covered, category, tiers, slabs}``:
 
-	* ``order``    — parent names, best-scoped first (type-specific before blank).
+	* ``order``    — parent names, best-scoped first (supplier's own before blank-supplier,
+	  then type-specific before blank-type).
 	* ``parents``  — ``{name: parent dict}``.
 	* ``covered``  — ``{item_code or template: parent name}`` from the Covered Items tables.
 	* ``category`` — ``{parent.item: parent name}``, the historical category match.
+	* ``tiers``    — ``[{covered, category}, …]``, one per supplier scope, the supplier's own
+	  lists first. resolve_from_index walks these so the supplier's list wins on ANY match
+	  (even its template match over a blank-supplier exact match); ``covered`` and
+	  ``category`` are the same maps merged, kept for callers that read them directly.
 	* ``slabs``    — ``{parent name: [slab dicts, idx asc]}``.
 
-	Both maps are filled by walking ``order`` with ``setdefault``, so the best-scoped parent
+	All maps are filled by walking ``order`` with ``setdefault``, so the best-scoped parent
 	wins every key and lookups need no sorting of their own.
+
+	``supplier`` blank means only the blank-supplier (every supplier) lists are used, which
+	is how every list behaved before the Supplier field existed.
 	"""
 	filters = {}
 	if refining_type:
 		filters["refining_type"] = ["in", [refining_type, "", None]]
+	if supplier:
+		filters["supplier"] = ["in", [supplier, "", None]]
+	else:
+		filters["supplier"] = ["is", "not set"]
 
 	parents = frappe.get_all(
 		"Refinery Price List",
 		filters=filters,
-		fields=["name", "item", "refining_type"],
+		fields=["name", "item", "refining_type", "supplier"],
 	)
 	index = {
 		"order": [],
 		"parents": {},
 		"covered": {},
 		"category": {},
+		"tiers": [],
 		"slabs": {},
 	}
 	if not parents:
 		return index
 
-	# A type-specific list outranks a blank ("all types") one.
+	# The supplier's own list outranks a blank-supplier one; within a supplier scope a
+	# type-specific list outranks a blank ("all types") one.
 	parents.sort(
-		key=lambda p: 0 if (refining_type and p.refining_type == refining_type) else 1
+		key=lambda p: (
+			0 if (supplier and p.supplier == supplier) else 1,
+			0 if (refining_type and p.refining_type == refining_type) else 1,
+		)
 	)
 	index["order"] = [p.name for p in parents]
 	index["parents"] = {p.name: p for p in parents}
@@ -234,12 +265,20 @@ def build_refinery_price_index(refining_type=None):
 	for row in slab_rows:
 		index["slabs"].setdefault(row.parent, []).append(row)
 
+	tiers = {}
 	for name in names:
+		scope = index["parents"][name].supplier or ""
+		if scope not in tiers:
+			tiers[scope] = {"covered": {}, "category": {}}
+			index["tiers"].append(tiers[scope])
+		tier = tiers[scope]
 		for code in by_parent.get(name, []):
 			index["covered"].setdefault(code, name)
+			tier["covered"].setdefault(code, name)
 		item = index["parents"][name].item
 		if item:
 			index["category"].setdefault(item, name)
+			tier["category"].setdefault(item, name)
 
 	return index
 
@@ -254,21 +293,29 @@ def resolve_from_index(index, item_code, variant_of=None):
 	3. the code equal to a list's category ``item`` — the historical behaviour, which keeps
 	   the physically-stocked REF-* categories working with no configuration at all.
 
+	All three tiers are tried on the supplier's own lists before the blank-supplier ones
+	(``index["tiers"]``), so a supplier who has agreed a rate is never billed at the
+	general rate just because the general list happens to name the exact variant.
+
 	The caller owns the last resort (fall back to the entry's ``pricing_item``), because
 	that is a Refining Entry concept and consumables are deliberately excluded from it.
 	"""
 	if not item_code:
 		return None
-	return (
-		index["covered"].get(item_code)
-		or (variant_of and index["covered"].get(variant_of))
-		or index["category"].get(item_code)
-	)
+	for tier in index.get("tiers") or [index]:
+		found = (
+			tier["covered"].get(item_code)
+			or (variant_of and tier["covered"].get(variant_of))
+			or tier["category"].get(item_code)
+		)
+		if found:
+			return found
+	return None
 
 
-def resolve_refinery_price_list(item_code, refining_type=None):
+def resolve_refinery_price_list(item_code, refining_type=None, supplier=None):
 	"""Convenience wrapper for console/one-off use: builds its own index."""
-	index = build_refinery_price_index(refining_type)
+	index = build_refinery_price_index(refining_type, supplier)
 	return resolve_from_index(
 		index, item_code, frappe.db.get_value("Item", item_code, "variant_of")
 	)
@@ -285,11 +332,13 @@ def pick_price_slab(index, parent, weight):
 	return None
 
 
-def get_refinery_rate(item_code, weight=0, refining_type=None, variant_of=None):
+def get_refinery_rate(
+	item_code, weight=0, refining_type=None, variant_of=None, supplier=None
+):
 	"""Best-matching price slab for ``item_code`` at ``weight`` grams, as a dict, or None.
 
-	Returns ``{name, item, rate, charge_type, weight_basis, refining_type, slab_name,
-	matched_by}`` — ``name`` is the parent document, so existing
+	Returns ``{name, item, rate, charge_type, weight_basis, refining_type, supplier,
+	slab_name, matched_by}`` — ``name`` is the parent document, so existing
 	``Purchase Order Item.custom_refining_price_list`` back-links keep resolving.
 
 	Convenience for single lookups; ``create_external_refining_po`` builds the index once
@@ -298,7 +347,7 @@ def get_refinery_rate(item_code, weight=0, refining_type=None, variant_of=None):
 	if not item_code:
 		return None
 
-	index = build_refinery_price_index(refining_type)
+	index = build_refinery_price_index(refining_type, supplier)
 	if variant_of is None:
 		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 
@@ -309,9 +358,17 @@ def get_refinery_rate(item_code, weight=0, refining_type=None, variant_of=None):
 	if not slab:
 		return None
 
-	if index["covered"].get(item_code) == parent:
+	tier = next(
+		(
+			t
+			for t in index["tiers"]
+			if parent in t["covered"].values() or parent in t["category"].values()
+		),
+		index,
+	)
+	if tier["covered"].get(item_code) == parent:
 		matched_by = "covered_item"
-	elif variant_of and index["covered"].get(variant_of) == parent:
+	elif variant_of and tier["covered"].get(variant_of) == parent:
 		matched_by = "covered_template"
 	else:
 		matched_by = "category_item"
@@ -323,6 +380,7 @@ def get_refinery_rate(item_code, weight=0, refining_type=None, variant_of=None):
 		"charge_type": slab.charge_type,
 		"weight_basis": slab.weight_basis,
 		"refining_type": index["parents"][parent].refining_type,
+		"supplier": index["parents"][parent].supplier,
 		"slab_name": slab.name,
 		"matched_by": matched_by,
 	}

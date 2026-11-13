@@ -58,9 +58,28 @@ def _delete_price_lists(**filters):
 		)
 
 
-def _price_list(item, refining_type=None, slabs=(), covered=()):
+def _ensure_supplier(name):
+	if not frappe.db.exists("Supplier", name):
+		frappe.get_doc(
+			{
+				"doctype": "Supplier",
+				"supplier_name": name,
+				"supplier_group": frappe.db.get_value(
+					"Supplier Group", {"is_group": 0}, "name"
+				),
+			}
+		).insert(ignore_permissions=True)
+	return frappe.db.get_value("Supplier", {"supplier_name": name}, "name")
+
+
+def _price_list(item, refining_type=None, slabs=(), covered=(), supplier=None):
 	doc = frappe.get_doc(
-		{"doctype": "Refinery Price List", "item": item, "refining_type": refining_type}
+		{
+			"doctype": "Refinery Price List",
+			"item": item,
+			"refining_type": refining_type,
+			"supplier": supplier,
+		}
 	)
 	for from_g, to_g, charge_type, rate, basis in slabs:
 		doc.append(
@@ -101,6 +120,7 @@ class TestRefineryPriceList(IntegrationTestCase):
 		# Only the base fixture survives between tests.
 		_delete_price_lists(item=["!=", DUST_ITEM])
 		_delete_price_lists(item=DUST_ITEM, refining_type=["is", "set"])
+		_delete_price_lists(item=DUST_ITEM, supplier=["is", "set"])
 
 	# --- slab band matching (unchanged behaviour) ---
 
@@ -369,10 +389,97 @@ class TestRefineryPriceList(IntegrationTestCase):
 		index = build_refinery_price_index(REFINING_TYPE_SCRAP)
 
 		self.assertEqual(
-			set(index), {"order", "parents", "covered", "category", "slabs"}
+			set(index), {"order", "parents", "covered", "category", "tiers", "slabs"}
 		)
 		self.assertEqual(index["covered"].get(VARIANT_TEMPLATE), doc.name)
 		self.assertEqual(index["category"].get("REF-NB-001"), doc.name)
 		self.assertEqual(len(index["slabs"][doc.name]), 1)
 		# The type-specific list sorts ahead of the blank-type one.
 		self.assertEqual(index["order"][0], doc.name)
+
+	# --- supplier-wise price lists ---
+
+	def test_supplier_list_beats_the_every_supplier_list(self):
+		supplier = _ensure_supplier("_Test Refinery Supplier A")
+		own = _price_list(
+			DUST_ITEM,
+			slabs=[(0, 0, "Per Kg", 999, "Gross Weight")],
+			supplier=supplier,
+		)
+		row = get_refinery_rate(DUST_ITEM, 500, supplier=supplier)
+		self.assertEqual(row["name"], own.name)
+		self.assertEqual(row["rate"], 999)
+		self.assertEqual(row["supplier"], supplier)
+
+	def test_other_suppliers_fall_back_to_the_every_supplier_list(self):
+		supplier = _ensure_supplier("_Test Refinery Supplier A")
+		other = _ensure_supplier("_Test Refinery Supplier B")
+		_price_list(
+			DUST_ITEM,
+			slabs=[(0, 0, "Per Kg", 999, "Gross Weight")],
+			supplier=supplier,
+		)
+		self.assertEqual(get_refinery_rate(DUST_ITEM, 500, supplier=other)["rate"], 1800)
+		# No supplier at all: only the every-supplier lists, as before the field existed.
+		self.assertEqual(get_refinery_rate(DUST_ITEM, 500)["rate"], 1800)
+
+	def test_supplier_template_beats_every_supplier_exact_code(self):
+		"""Supplier scope is checked on all three tiers before the generic lists, so the
+		supplier's TEMPLATE row wins over a generic list naming the exact variant."""
+		supplier = _ensure_supplier("_Test Refinery Supplier A")
+		generic = _price_list(
+			"REF-NB-001",
+			REFINING_TYPE_SCRAP,
+			slabs=[(0, 0, "Per Gram", 3, "Gross Weight")],
+			covered=[VARIANT_ITEM],
+		)
+		own = _price_list(
+			"REF-NB-001",
+			REFINING_TYPE_SCRAP,
+			slabs=[(0, 0, "Per Gram", 7, "Gross Weight")],
+			covered=[VARIANT_TEMPLATE],
+			supplier=supplier,
+		)
+		index = build_refinery_price_index(REFINING_TYPE_SCRAP, supplier)
+		self.assertEqual(index["order"][0], own.name)
+		self.assertEqual(
+			get_refinery_rate(VARIANT_ITEM, 10, REFINING_TYPE_SCRAP, supplier=supplier)[
+				"name"
+			],
+			own.name,
+		)
+		self.assertEqual(
+			get_refinery_rate(VARIANT_ITEM, 10, REFINING_TYPE_SCRAP)["name"],
+			generic.name,
+		)
+
+	def test_duplicate_scope_rejected_per_supplier(self):
+		supplier = _ensure_supplier("_Test Refinery Supplier A")
+		_price_list(
+			DUST_ITEM,
+			slabs=[(0, 0, "Per Kg", 999, "Gross Weight")],
+			supplier=supplier,
+		)
+		with self.assertRaises(frappe.ValidationError):
+			_price_list(
+				DUST_ITEM,
+				slabs=[(0, 0, "Per Kg", 111, "Gross Weight")],
+				supplier=supplier,
+			)
+
+	def test_same_covered_code_allowed_across_supplier_scopes(self):
+		supplier = _ensure_supplier("_Test Refinery Supplier A")
+		_price_list(
+			"REF-NB-001",
+			REFINING_TYPE_SCRAP,
+			slabs=[(0, 0, "Per Gram", 3, "Gross Weight")],
+			covered=[VARIANT_TEMPLATE],
+		)
+		# Would clash inside one supplier scope; across scopes it is the override.
+		_price_list(
+			"REF-NB-001",
+			REFINING_TYPE_SCRAP,
+			slabs=[(0, 0, "Per Gram", 7, "Gross Weight")],
+			covered=[VARIANT_TEMPLATE],
+			supplier=supplier,
+		)

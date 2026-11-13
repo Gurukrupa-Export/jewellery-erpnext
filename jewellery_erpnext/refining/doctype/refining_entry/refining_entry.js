@@ -611,12 +611,91 @@ frappe.ui.form.on("Refining Entry", {
 		].forEach((f) => frm.toggle_display(f, !all_scrap));
 	},
 
+	kggk_po_dialog(frm) {
+		frappe.call({
+			method: "jewellery_erpnext.refining.doctype.refining_entry.refining_entry.list_kggk_refining_pos",
+			args: { company: frm.doc.company },
+			freeze: true,
+			freeze_message: __("Fetching Purchase Orders from KGGK..."),
+		}).then((r) => {
+			const pos = r.message || [];
+			if (!pos.length) {
+				frappe.msgprint(__("KGGK has no open refining Purchase Order for this company."));
+				return;
+			}
+			const rows = pos
+				.map(
+					(po) => `<tr>
+						<td>${frappe.utils.escape_html(po.name)}</td>
+						<td>${frappe.datetime.str_to_user(po.transaction_date) || ""}</td>
+						<td>${frappe.utils.escape_html(po.refining_entry || "")}</td>
+						<td class="text-right">${format_number(po.total_qty || 0, null, 3)}</td>
+						<td class="text-right">${format_currency(po.grand_total || 0)}</td>
+					</tr>`
+				)
+				.join("");
+			const d = new frappe.ui.Dialog({
+				title: __("Get Items from KGGK Purchase Order"),
+				fields: [
+					{
+						fieldname: "purchase_order",
+						fieldtype: "Select",
+						label: __("KGGK Purchase Order"),
+						options: pos.map((po) => po.name),
+						default: frm.doc.source_purchase_order || pos[0].name,
+						reqd: 1,
+					},
+					{
+						fieldname: "po_list",
+						fieldtype: "HTML",
+						options: `<table class="table table-bordered table-sm" style="margin-top:8px">
+							<thead><tr>
+								<th>${__("Purchase Order")}</th><th>${__("Date")}</th>
+								<th>${__("KGGK Refining Entry")}</th>
+								<th class="text-right">${__("Qty")}</th>
+								<th class="text-right">${__("Amount")}</th>
+							</tr></thead><tbody>${rows}</tbody></table>`,
+					},
+				],
+				primary_action_label: __("Get Items"),
+				primary_action(values) {
+					d.get_primary_btn().prop("disabled", true);
+					frm.call({
+						doc: frm.doc,
+						method: "set_from_kggk_purchase_order",
+						args: { purchase_order: values.purchase_order },
+						freeze: true,
+						freeze_message: __("Fetching the Purchase Order from KGGK..."),
+					})
+						.then((res) => {
+							d.hide();
+							frm.refresh_fields();
+							frm.dirty();
+							const info = res.message || {};
+							if (!info.customer) {
+								frappe.msgprint(
+									__("Select the Customer KGGK is on this site, then save.")
+								);
+								return;
+							}
+							frm.save();
+						})
+						.finally(() => d.get_primary_btn().prop("disabled", false));
+				},
+			});
+			d.show();
+		});
+	},
+
 	add_action_buttons(frm) {
 		const status = frm.doc.status;
 
 		// Scrap-specific: fetch balance, only before processing has started
+		// An entry filled from a KGGK Purchase Order gets its material from that PO, not
+		// from this site's warehouses, so the fetch buttons stay hidden on it.
 		const show_dust_btn =
 			frm.doc.refining_type === "Scrap Refining" &&
+			!frm.doc.source_purchase_order &&
 			frm.doc.docstatus === 0 &&
 			(!status || status === "Draft" || status === "Received");
 
@@ -680,6 +759,7 @@ frappe.ui.form.on("Refining Entry", {
 		// Unused/Loose Material: fetch across all departments
 		const show_scrap_btn =
 			frm.doc.refining_type === "Unused/Loose Material Refining" &&
+			!frm.doc.source_purchase_order &&
 			frm.doc.docstatus === 0 &&
 			(!status || status === "Draft");
 
@@ -813,6 +893,18 @@ frappe.ui.form.on("Refining Entry", {
 					}
 				});
 			});
+		}
+
+		// Refiner side of external refining: receive KGGK's refining Purchase Order.
+		if (
+			frm.doc.docstatus === 0 &&
+			!frm.doc.is_external &&
+			!frm.doc.parent_refining_entry &&
+			(!status || status === "Draft")
+		) {
+			frm.add_custom_button(__("Get Items from KGGK Purchase Order"), () =>
+				frm.trigger("kggk_po_dialog")
+			);
 		}
 
 		if (frm.is_new()) return;
