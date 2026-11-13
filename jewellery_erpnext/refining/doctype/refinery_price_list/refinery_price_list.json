@@ -11,6 +11,7 @@
   "item",
   "column_break_keys",
   "refining_type",
+  "supplier",
   "section_break_items",
   "covered_items",
   "section_break_slabs",
@@ -39,6 +40,15 @@
    "options": "\nScrap Refining\nWork Order Refining\nSerial Number Refining\nUnused/Loose Material Refining"
   },
   {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Supplier",
+   "options": "Supplier",
+   "description": "Leave blank to apply to every supplier. A supplier's own list is used before the blank one."
+  },
+  {
    "fieldname": "section_break_items",
    "fieldtype": "Section Break",
    "label": "Covered Items"
@@ -64,7 +74,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-30 17:08:58.091174",
+ "modified": "2026-11-12 12:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Refining",
  "name": "Refinery Price List",

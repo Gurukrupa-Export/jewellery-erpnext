@@ -224,7 +224,11 @@ def execute():
 				f"seed_refinery_price_list: item {item_code} missing; skipped its price list"
 			)
 			continue
-		if frappe.db.exists("Refinery Price List", {"item": item_code}):
+		# Only the every-supplier list is seeded; a supplier's own list for the same item
+		# must not stop the general one from being created.
+		if frappe.db.exists(
+			"Refinery Price List", {"item": item_code, "supplier": ["is", "not set"]}
+		):
 			continue
 		doc = frappe.get_doc({"doctype": "Refinery Price List", "item": item_code})
 		for slab in slabs:
