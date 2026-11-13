@@ -562,10 +562,16 @@ class TestDeferredPosting(tpe.TestStockEntrySubmission):
 		se = self.transfer(self.wo)
 		se.set_posting_time = 1
 		se.posting_date = add_days(nowdate(), -3)
-		with self.assertRaisesRegex(
-			ProcessEnforcementError, "is not the current operation"
-		):
+		# Refused either by process control or, first on kggk_uat, by the Stock Entry's own
+		# current-operation check (``validate_mop_is_current``); a backdate never makes it history.
+		with self.assertRaises(frappe.ValidationError) as caught:
 			se.insert()
+		message = frappe.utils.strip_html(str(caught.exception))
+		self.assertTrue(
+			"is not the current operation" in message
+			or "is no longer active" in message,
+			message,
+		)
 
 	def test_a_posted_sync_entry_cancels_and_reverses_its_ledger(self):
 		name = self.eod_draft()
@@ -573,15 +579,21 @@ class TestDeferredPosting(tpe.TestStockEntrySubmission):
 			frappe.get_doc("Stock Entry", name).submit()
 		frappe.get_doc("Stock Entry", name).cancel()
 		self.assertEqual(self.ledger(name), [])
+		# The posted row and its reversal, both marked cancelled.
 		self.assertEqual(
-			flt(
-				frappe.db.get_value(
+			sorted(
+				flt(q)
+				for q in frappe.get_all(
 					"Stock Ledger Entry",
-					{"voucher_no": name, "is_cancelled": 1, "warehouse": self.wo},
-					"actual_qty",
+					filters={
+						"voucher_no": name,
+						"is_cancelled": 1,
+						"warehouse": self.wo,
+					},
+					pluck="actual_qty",
 				)
 			),
-			1.0,
+			[-1.0, 1.0],
 		)
 
 
