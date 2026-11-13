@@ -942,3 +942,67 @@ class TestProcessRaces(_race._RaceCase if _race else object):  # type: ignore[mi
 				)
 			)
 		frappe.db.rollback()
+
+
+# ------------------------------------------------------------------------------------------------
+# readiness report before switching a department on
+# ------------------------------------------------------------------------------------------------
+
+
+class TestReadiness(_CellHarness):
+	def test_the_report_lists_what_blocks_a_department_and_writes_nothing(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events.process_readiness import (
+			readiness_report,
+		)
+
+		c = self.configure_cell("MM")
+		self.operation("MM Unmapped", key="MM")  # an operation nobody gave a process
+		at_rest, _ = fx.make_work_order(self.w, "MM", seed=False)
+		busy, busy_mop = fx.make_work_order(self.w, "MM", seed=False)
+		frappe.db.set_value(
+			"Manufacturing Operation",
+			busy_mop,
+			{"status": "WIP", "employee": self.w.employees["MM-FIL"]},
+		)
+		done, done_mop = fx.make_work_order(self.w, "MM", seed=False)
+		self.assign(done, done_mop, c.ds)
+		writes = frappe.db.sql("SELECT COUNT(*) FROM `tabProcess Transition Log`")[0][0]
+
+		report = readiness_report(self.w.departments["MM"])
+
+		self.assertTrue(report["process_control_on"])
+		self.assertEqual(
+			report["operations_without_process"], [f"{self.w.prefix} MM Unmapped"]
+		)
+		self.assertEqual(
+			(
+				report["jobs_ready_for_initial_assignment"],
+				report["jobs_to_finish_first"],
+			),
+			(1, 1),
+		)
+		self.assertEqual(report["sample_ready"][0]["manufacturing_work_order"], at_rest)
+		self.assertIn(
+			"is with employee", report["sample_to_finish_first"][0]["why_not_now"]
+		)
+		ds = next(p for p in report["processes"] if p["process"] == c.ds)
+		self.assertEqual(ds["active_jobs"], 1)
+		self.assertEqual(
+			ds["users_with_access"], 2
+		)  # the Diamond Setting operator and the relief
+		self.assertEqual(len(report["blockers"]), 3, report["blockers"])
+		self.assertEqual(
+			frappe.db.sql("SELECT COUNT(*) FROM `tabProcess Transition Log`")[0][0],
+			writes,
+		)
+		self.assertEqual(fx.operation(fx.pointer(at_rest)).status, "Not Started")
+
+	def test_the_report_is_for_system_and_process_access_managers_only(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events.process_readiness import (
+			readiness_report,
+		)
+
+		self.configure_cell("MM")
+		with acting_as(self.user("plain", roles=("Process Transfer User",))):
+			with self.assertRaises(frappe.PermissionError):
+				readiness_report(self.w.departments["MM"])
