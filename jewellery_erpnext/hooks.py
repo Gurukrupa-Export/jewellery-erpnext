@@ -283,6 +283,8 @@ doc_events = {
 			# issued to that worker. At `validate`, after the operation/work-order pairing above, so it
 			# judges the rows update_batches rebuilt and validate_warehouse filled, and again at submit.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_work_order_transfer_destination",
+			# Manual WORK ORDER transfer: department RM source and status-driven target are fixed.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.wo_transfer_warehouse.validate_transfer_warehouses",
 			# F5: a consuming row must draw the owner's material its PMO was placed on. At
 			# `validate` because before_validate's update_batches has by then allocated the
 			# batches this reads, and because the original on_submit wiring only complained
@@ -317,6 +319,8 @@ doc_events = {
 			# metal open Tree Numbers are still owed out of their MSL warehouse.
 			"jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_pool_guard.guard_tree_pool",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
+			# Cell department: the user's process must match the operation's (blocks submit).
+			"jewellery_erpnext.jewellery_erpnext.doc_events.wo_transfer_warehouse.validate_cell_process",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_child_batches",
 			# MUST stay after the two batch creators: a Customer Gold receipt carries no
