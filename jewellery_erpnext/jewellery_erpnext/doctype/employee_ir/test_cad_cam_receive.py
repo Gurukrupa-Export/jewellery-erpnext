@@ -352,6 +352,11 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 		for fieldname, value in CAD_ROW.items():
 			self.assertEqual(fields[fieldname], value)
 
+	def test_flagged_operation_without_details_adds_no_blank_row(self):
+		mop = self._mop(receive_details_type="CAD")
+		self._sync(mop)
+		mop.add_child_record.assert_not_called()
+
 	def test_unflagged_operation_not_in_the_mapping_adds_nothing(self):
 		mop = self._mop(**CAD_ROW)
 		self._sync(mop)
@@ -363,7 +368,7 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 		self._sync(mop, mapping_operations=["Mould Filling"])
 		mop.add_child_record.assert_called_once()
 
-	def test_existing_row_is_updated_not_duplicated(self):
+	def test_existing_row_is_updated_not_duplicated_and_saved_without_item_write(self):
 		child = MagicMock()
 		mop = self._mop(existing_child=child, receive_details_type="CAD", **CAD_ROW)
 		self._sync(mop)
@@ -372,7 +377,7 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 		self.assertEqual(updated["cad_file"], "/files/a.dxf")
 		self.assertEqual(updated["ref_name"], "REF-1")
 		self.assertEqual(updated["estimated_casting_wt"], 3.5)
-		child.save.assert_called_once()
+		child.save.assert_called_once_with(ignore_permissions=True)
 
 	def test_row_is_looked_up_by_the_operation_only(self):
 		"""Not by ref_name: it is typed by the CAD user and used to hide the row."""
@@ -398,7 +403,7 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 		self.assertEqual(filters["mop_reference"], "MOP-1")
 		self.assertNotIn("mop_series", filters)
 
-	def test_new_row_is_inserted(self):
+	def test_new_row_is_inserted_without_item_write(self):
 		child = MagicMock()
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc",
@@ -411,4 +416,4 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 				"Cam Weight Detail",
 				{"cad_file": "/files/a.dxf"},
 			)
-		child.insert.assert_called_once()
+		child.insert.assert_called_once_with(ignore_permissions=True)
