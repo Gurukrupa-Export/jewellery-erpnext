@@ -31,6 +31,7 @@ frappe.ui.form.on("Stock Entry", {
 		}
 	},
 	refresh(frm) {
+		apply_wo_transfer_warehouses(frm);
 		// What the add_to_transit handler compares against: the value as loaded or saved.
 		frm.__add_to_transit_seen = cint(frm.doc.add_to_transit);
 		set_html(frm);
@@ -496,6 +497,7 @@ frappe.ui.form.on("Stock Entry", {
 		}
 	},
 	stock_entry_type(frm) {
+		apply_wo_transfer_warehouses(frm);
 		// On the Customer Gold receipt, offer only items whose master allows Customer Goods --
 		// the same rule the server enforces for every path (scanner, API, import). Evaluated
 		// when the picker opens, so it follows every type change, including the early-return
@@ -823,24 +825,13 @@ frappe.ui.form.on("Stock Entry", {
 					if (r.message.status == "Not Started") {
 						frm.set_df_property("to_employee", "hidden", 1);
 						frm.set_df_property("employee", "hidden", 1);
-						frappe.db
-							.get_value(
-								"Warehouse",
-								{
-									department: r.message.department,
-									warehouse_type: "Manufacturing",
-								},
-								"name"
-							)
-							.then((k) => {
-								if (k.message) frm.set_value("to_warehouse", k.message.name);
-							});
 					} else {
 						frm.set_df_property("to_employee", "hidden", 0);
 						frm.set_df_property("employee", "hidden", 0);
 					}
 					frm.set_value("to_department", r.message.department);
 					frm.set_value("department", r.message.department);
+					apply_wo_transfer_warehouses(frm, true);
 				});
 		}
 		if (frm.doc.stock_entry_type == "Material Receive (WORK ORDER)") {
@@ -1020,6 +1011,7 @@ frappe.ui.form.on("Stock Entry Detail", {
 	},
 	items_add: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
+		apply_wo_transfer_warehouses(frm);
 		row.from_job_card = frm.doc.from_job_card;
 		row.to_job_card = frm.doc.to_job_card;
 		row.inventory_type = frm.doc.inventory_type;
@@ -2246,5 +2238,63 @@ function make_customer_gold_return_mr(frm, row, qty) {
 			needed -= take;
 		});
 		frappe.set_route("Form", "Material Request", mr.name);
+	});
+}
+
+// Manual Material Transfer (WORK ORDER): source = the user's department Raw Material warehouse,
+// target by the operation's status (Not Started -> department WO warehouse, WIP -> the employee's).
+// Both header and item-row warehouses are filled and locked; the server re-checks on save/submit
+// (doc_events/wo_transfer_warehouse.py).
+function apply_wo_transfer_warehouses(frm, force) {
+	const locked =
+		frm.doc.stock_entry_type == "Material Transfer (WORK ORDER)" &&
+		frm.doc.docstatus == 0 &&
+		!cint(frm.doc.auto_created);
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	// Other entry types keep their own read-only handling; only this type is touched here.
+	const set_lock = (on) => {
+		["from_warehouse", "to_warehouse"].forEach((f) => frm.set_df_property(f, "read_only", on ? 1 : 0));
+		if (grid) {
+			["s_warehouse", "t_warehouse"].forEach((f) =>
+				grid.update_docfield_property(f, "read_only", on ? 1 : 0)
+			);
+		}
+	};
+	if (!locked) {
+		if (frm.doc.stock_entry_type == "Material Transfer (WORK ORDER)") set_lock(false);
+		return;
+	}
+	// Only a new entry, a blank field, or an operation just chosen (force) is written. Opening an
+	// already-saved draft must not re-home it to the viewer's department.
+	const write = (cur) => force || !cur;
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doc_events.wo_transfer_warehouse.get_transfer_warehouses",
+		args: { manufacturing_operation: frm.doc.manufacturing_operation || null },
+		callback(r) {
+			const w = r.message || {};
+			// Users with no Employee/department get no values; leave the fields editable for them.
+			set_lock(!!w.source);
+			if (w.source) {
+				if (write(frm.doc.from_warehouse) && frm.doc.from_warehouse != w.source)
+					frm.set_value("from_warehouse", w.source);
+				(frm.doc.items || []).forEach((row) => {
+					if (write(row.s_warehouse) && row.s_warehouse != w.source)
+						frappe.model.set_value(row.doctype, row.name, "s_warehouse", w.source);
+				});
+			}
+			if (w.target) {
+				if (write(frm.doc.to_warehouse) && frm.doc.to_warehouse != w.target)
+					frm.set_value("to_warehouse", w.target);
+				(frm.doc.items || []).forEach((row) => {
+					if (
+						!row.manufacturing_operation ||
+						row.manufacturing_operation == frm.doc.manufacturing_operation
+					) {
+						if (write(row.t_warehouse) && row.t_warehouse != w.target)
+							frappe.model.set_value(row.doctype, row.name, "t_warehouse", w.target);
+					}
+				});
+			}
+		},
 	});
 }
