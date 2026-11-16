@@ -44,7 +44,8 @@
 "finding_loss_booking_section",
 "finding_loss_booking",
 "employee_ir_timing_section",
-"employee_ir_receive_delay"
+"employee_ir_receive_delay",
+"receive_details_type"
 ],
 "fields": [
 {
@@ -245,6 +246,13 @@
 "fieldtype": "Int",
 "label": "Employee IR Receive Delay (Minutes)",
 "non_negative": 1
+},
+{
+"description": "CAD: Employee IR Receive of this operation asks for the CAD details. CAM: it asks for the CAM details. Leave blank for all other operations.",
+"fieldname": "receive_details_type",
+"fieldtype": "Select",
+"label": "Receive Details Type",
+"options": "\nCAD\nCAM"
 },
 {
 "fieldname": "loss_booking_restrictions_section",

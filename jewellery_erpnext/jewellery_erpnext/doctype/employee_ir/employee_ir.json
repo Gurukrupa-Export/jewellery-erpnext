@@ -24,6 +24,7 @@
   "tree_number",
   "section_break_pk7m5",
   "operation",
+  "receive_details_type",
   "department_process",
   "employee",
   "is_repeat_receive",
@@ -161,6 +162,16 @@
    "label": "Operation",
    "options": "Department Operation",
    "reqd": 1
+  },
+  {
+   "fetch_from": "operation.receive_details_type",
+   "fieldname": "receive_details_type",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Receive Details Type",
+   "no_copy": 1,
+   "options": "\nCAD\nCAM",
+   "read_only": 1
   },
   {
    "depends_on": "department_process",
