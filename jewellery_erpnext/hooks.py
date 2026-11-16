@@ -436,6 +436,7 @@ override_whitelisted_methods = {
 }
 
 override_doctype_class = {
+	"Item": "jewellery_erpnext.jewellery_erpnext.customization.item.item.CustomItem",
 	"Stock Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.CustomStockEntry",
 	"Stock Reconciliation": [
 		"jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils.CustomStockReconciliation",

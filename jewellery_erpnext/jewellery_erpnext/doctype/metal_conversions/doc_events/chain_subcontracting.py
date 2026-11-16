@@ -41,8 +41,16 @@ quantity or batch can be corrected and issued again.
 
 The Repack consumes Target Qty of the source, not all of it: consuming Source Qty there
 would leave the Process Loss entry nothing to consume. Repack plus Process Loss together
-consume exactly the Source Qty that Issue moved. The target is typed in, so there is no
-purity conversion to check it against; it may only not hold more fine metal than was issued.
+consume exactly the Source Qty that Issue moved. The target is typed in; it may not hold
+more fine metal than was issued, nor weigh more than Source Qty.
+
+A supplier may lower the purity with alloy of their own (24KT 99.9 issued, 22KT 91.75
+returned), so a subcontracted Receive is bounded by the purity conversion instead of the
+weight: Target Qty may be up to Source Qty x source purity / target purity, the figure the
+form fills in (``max_target_qty``). The weight rule does not apply to a supplier at all, and
+without both purities on the masters the Receive is refused. The Repack then consumes the
+source the received fine metal came from, and the Process Loss is the fine shortfall
+(``receive_split``).
 
 Receive and Cancel each post several Stock Entries in one transaction, so every naming
 counter and then every Bin they touch is locked once, up front, in the canonical order
@@ -277,9 +285,7 @@ def validate_chain(doc):
 		set_to_warehouse(doc)
 
 	doc.chain_process_loss_qty = (
-		flt(flt(doc.source_qty) - flt(doc.target_qty), _precision())
-		if flt(doc.target_qty)
-		else 0
+		receive_split(doc, _precision())[1] if flt(doc.target_qty) else 0
 	)
 
 
@@ -732,14 +738,12 @@ def validate_receive(doc):
 		errors.append(_("Target Item is not selected."))
 	if target_qty <= 0:
 		errors.append(_("Target Qty must be greater than zero."))
-	elif target_qty - source_qty > _qty_unit(precision):
-		errors.append(
-			_("Target Qty {0} cannot be greater than Source Qty {1}.").format(
-				target_qty, source_qty
-			)
-		)
 	else:
-		errors.extend(_fine_metal_errors(doc, source_qty, target_qty, precision))
+		cap_error = _target_cap_error(doc, source_qty, target_qty, precision)
+		if cap_error:
+			errors.append(cap_error)
+		else:
+			errors.extend(_fine_metal_errors(doc, source_qty, target_qty, precision))
 	work_wh = work_warehouse(doc)
 	if not work_wh:
 		errors.append(
@@ -825,16 +829,122 @@ def _metal_purity(item_code):
 	)
 
 
+def subcontracted_purities(doc):
+	"""``(source_purity, target_purity)`` of a subcontracted chain conversion, else None.
+
+	None too when either item has no purity on its masters: there is then no conversion to
+	bound the target by, and Receive refuses it (``_target_cap_error``).
+	"""
+	if not (
+		is_subcontracted(doc) and doc.get("source_item") and doc.get("target_item")
+	):
+		return None
+	source_purity = _metal_purity(doc.source_item)
+	target_purity = _metal_purity(doc.target_item)
+	if not (source_purity and target_purity):
+		return None
+	return source_purity, target_purity
+
+
+def _alloy_added_by_supplier(doc):
+	"""The purities when the supplier lowers the purity -- adds alloy of their own -- else None.
+
+	24KT 99.9 issued, 22KT 91.75 returned: the supplier's alloy makes the target heavier than
+	the source, so Target Qty may exceed Source Qty, up to what the purities convert it to.
+	"""
+	purities = subcontracted_purities(doc)
+	if purities and purities[1] < purities[0]:
+		return purities
+	return None
+
+
+def max_target_qty(doc, source_qty):
+	"""The most a Receive may bring back: what ``source_qty`` converts to at the purities.
+
+	The figure the regular conversion fills (``calculate_metal_conversion``), for a
+	subcontracted conversion whose items carry purity. Otherwise the weight issued.
+	"""
+	purities = subcontracted_purities(doc)
+	if not purities:
+		return flt(source_qty)
+	source_purity, target_purity = purities
+	return flt(source_qty) * source_purity / target_purity
+
+
+def receive_split(doc, precision):
+	"""``(consume_qty, loss_qty)``: the source the Repack consumes and the Process Loss.
+
+	When the supplier added alloy, the Repack consumes the source metal the received fine
+	metal came from (Target Qty x target purity / source purity) and the loss is the fine
+	shortfall, in grams of the source item -- zero when the full conversion came back.
+	Otherwise the Repack consumes Target Qty and the loss is the weight not returned.
+	"""
+	source_qty = flt(doc.source_qty, precision)
+	target_qty = flt(doc.target_qty, precision)
+	purities = _alloy_added_by_supplier(doc)
+	if purities:
+		source_purity, target_purity = purities
+		consume_qty = min(
+			source_qty, flt(target_qty * target_purity / source_purity, precision)
+		)
+	else:
+		consume_qty = target_qty
+	return consume_qty, flt(source_qty - consume_qty, precision)
+
+
+def _target_cap_error(doc, source_qty, target_qty, precision):
+	"""Why Target Qty is more than may come back, else None (one posting unit of slack).
+
+	An employee returns at most the weight issued. A supplier may add alloy, so the weight
+	is no bound: they return at most what the purities convert the source to, and without
+	both purities that figure cannot be worked out, so Receive is refused.
+	"""
+	if not is_subcontracted(doc):
+		if target_qty - flt(source_qty) <= _qty_unit(precision):
+			return None
+		return _("Target Qty {0} cannot be greater than Source Qty {1}.").format(
+			target_qty, source_qty
+		)
+
+	purities = subcontracted_purities(doc)
+	if not purities:
+		missing = [
+			item
+			for item in (doc.get("source_item"), doc.get("target_item"))
+			if item and not _metal_purity(item)
+		]
+		return _(
+			"Metal Purity is missing on {0}, so the Target Qty it converts to cannot be "
+			"calculated. Set the Purity Percentage on its Metal Purity attribute value."
+		).format(", ".join(frappe.bold(item) for item in missing) or _("the items"))
+
+	cap = max_target_qty(doc, source_qty)
+	if target_qty - cap <= _qty_unit(precision):
+		return None
+	return _(
+		"Target Qty {0} cannot be greater than {1}, what {2} of {3} ({4}%) converts to "
+		"as {5} ({6}%)."
+	).format(
+		target_qty,
+		flt(cap, precision),
+		source_qty,
+		doc.source_item,
+		purities[0],
+		doc.target_item,
+		purities[1],
+	)
+
+
 def run_receive(doc):
 	"""Repack -> Process Loss (when there is one) -> return to the issuing department."""
 	precision = _precision()
 	target_qty = flt(doc.target_qty, precision)
-	loss_qty = flt(flt(doc.source_qty, precision) - target_qty, precision)
+	consume_qty, loss_qty = receive_split(doc, precision)
 
 	repack_rows, loss_rows = split_allocations(
-		_source_allocations(doc), [target_qty, max(loss_qty, 0)], precision
+		_source_allocations(doc), [consume_qty, max(loss_qty, 0)], precision
 	)
-	_check_covered(repack_rows, target_qty, precision)
+	_check_covered(repack_rows, consume_qty, precision)
 	_check_covered(loss_rows, max(loss_qty, 0), precision)
 
 	# Before the first entry: each builder below still pins its own counter and Bins, which

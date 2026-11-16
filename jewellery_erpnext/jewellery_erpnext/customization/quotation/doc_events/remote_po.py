@@ -82,7 +82,9 @@ def fetch_remote_ref_customer(po_name):
 			return None
 
 		api_key = frappe.db.get_single_value(SETTINGS, "api_key")
-		api_secret = frappe.db.get_single_value(SETTINGS, "api_secret")
+		api_secret = frappe.get_single(SETTINGS).get_password(
+			"api_secret", raise_exception=False
+		)
 
 		response = requests.post(
 			f"{from_site}/api/method/{REMOTE_METHOD}",

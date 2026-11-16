@@ -199,7 +199,7 @@
    "insert_after": "item_same_as_above",
    "label": "Invoice Item",
    "module": "Jewellery Erpnext",
-   "options": "Sales Invoice Item",
+   "options": "Sales Invoice E Invoice Item",
    "read_only": 1
   },
   {

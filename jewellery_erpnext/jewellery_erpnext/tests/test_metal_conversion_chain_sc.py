@@ -50,6 +50,11 @@ DEPT_RM = {"Chain - GK": "Chain RM - GK", "Polish - GK": "Polish RM - GK"}
 SUPPLIER_RM = {"SUP-1": "SUP-1 MSL WH - GK"}
 EMPLOYEE_WH = {"EMP-2": "EMP-2 MFG WH - GK"}
 
+#: 24KT 99.9 is mastered at 100%: what the supplier is given to alloy down to 22KT 91.75.
+FINE_24KT = "M-G-24KT-99.9-Y"
+ALLOYED_DOWN = {FINE_24KT: 100.0, "CH-22KT": 91.75}
+SAME_PURITY = {"M-G-22KT-91.6-Y": 91.6, "CH-22KT": 91.6}
+
 
 def _det_flt(value, precision=None, rounding_method=None):
 	try:
@@ -134,11 +139,16 @@ class _ChainCase(IntegrationTestCase):
 		_("warm")
 
 	def setUp(self):
+		# Metal Purity by item code; none unless a test sets it, so the purity rules skip.
+		self.purity = {}
 		self._patches = [
 			patch.object(cs, "flt", _det_flt),
 			patch.object(lanes_mod, "flt", _det_flt),
 			patch.object(cs, "_precision", return_value=3),
 			patch.object(cs.frappe.db, "get_value", side_effect=_get_value),
+			patch.object(
+				cs, "_metal_purity", side_effect=lambda item: self.purity.get(item)
+			),
 			patch.object(
 				cs, "get_department_rm_warehouse", side_effect=lambda d: DEPT_RM.get(d)
 			),
@@ -182,6 +192,12 @@ class TestValidateChain(_ChainCase):
 		self.assertEqual(doc.chain_supplier_warehouse, "SUP-1 MSL WH - GK")
 		self.assertEqual(cs.work_warehouse(doc), "SUP-1 MSL WH - GK")
 		self.assertEqual(doc.chain_process_loss_qty, 0.5)
+
+	def test_supplier_alloy_loss_is_the_fine_shortfall_never_negative(self):
+		self.purity = dict(ALLOYED_DOWN)
+		doc = _chain_doc(source_item=FINE_24KT, target_item="CH-22KT", target_qty=10.8)
+		cs.validate_chain(doc)
+		self.assertEqual(doc.chain_process_loss_qty, 0.091)
 
 	def test_employee_mode_resolves_the_employees_own_warehouse(self):
 		doc = _employee_doc(source_warehouse="Hand Picked WH")
@@ -443,8 +459,9 @@ class TestValidateReceive(_ChainCase):
 		super().setUp()
 		self.supplier_stock = {"B-1": 6.0, "B-2": 4.0}
 		self.issue_status = 1
-		# No purity on either item unless a test sets one: the fine-metal check skips.
-		self.purity = {}
+		# A supplier's Receive needs both purities; same purity unless a test sets others,
+		# so the conversion bound is the 10 g issued.
+		self.purity = dict(SAME_PURITY)
 
 		def _receive_get_value(doctype, name=None, fieldname=None, *args, **kwargs):
 			if doctype == "Stock Entry" and fieldname == "docstatus":
@@ -514,14 +531,59 @@ class TestValidateReceive(_ChainCase):
 		cs.validate_receive(self._received())
 
 	def test_target_cannot_hold_more_fine_metal_than_was_issued(self):
-		# 10 g at 75% is 7.5 g fine; 9.5 g at 91.6% would be 8.702 g.
+		# 10 g at 75% is 7.5 g fine; 9.5 g at 91.6% would be 8.702 g. A supplier is held to
+		# the conversion (8.188 g), an employee to the fine metal.
 		self.purity = {"M-G-22KT-91.6-Y": 75.0, "CH-22KT": 91.6}
-		with self.assertRaisesRegex(ValidationError, "fine metal"):
+		with self.assertRaisesRegex(ValidationError, "cannot be greater than 8.188"):
 			cs.validate_receive(self._received())
+		with self.assertRaisesRegex(ValidationError, "fine metal"):
+			cs.validate_receive(self._received_from_employee())
+
+	def test_a_supplier_may_return_the_alloy_they_added(self):
+		# 10 g of 24KT (100%) converts to 10.899 g of 22KT 91.75: heavier than the source.
+		self.purity = dict(ALLOYED_DOWN)
+		for target_qty in (10.5, 10.899, 10.9):
+			cs.validate_receive(
+				self._received(source_item=FINE_24KT, target_qty=target_qty)
+			)
+
+	def test_a_supplier_return_is_capped_at_the_conversion(self):
+		self.purity = dict(ALLOYED_DOWN)
+		with self.assertRaisesRegex(ValidationError, "cannot be greater than 10.899"):
+			cs.validate_receive(
+				self._received(source_item=FINE_24KT, target_qty=10.901)
+			)
+
+	def test_an_employee_return_keeps_the_weight_rule(self):
+		self.purity = dict(ALLOYED_DOWN)
+		with self.assertRaisesRegex(ValidationError, "greater than Source Qty"):
+			cs.validate_receive(
+				self._received_from_employee(source_item=FINE_24KT, target_qty=10.5)
+			)
+
+	def test_a_supplier_receive_needs_both_purities(self):
+		# No purity, no conversion to bound the target by: refused, naming the item -- never
+		# by the weight rule, which a supplier is not held to.
+		self.purity = {FINE_24KT: 100.0}
+		with self.assertRaisesRegex(
+			ValidationError, "Metal Purity is missing on .*CH-22KT"
+		):
+			cs.validate_receive(self._received(source_item=FINE_24KT, target_qty=9.5))
+
+	def test_a_supplier_is_never_held_to_the_weight_rule(self):
+		self.purity = dict(ALLOYED_DOWN)
+		for target_qty in (10.5, 11.0):
+			try:
+				cs.validate_receive(
+					self._received(source_item=FINE_24KT, target_qty=target_qty)
+				)
+			except ValidationError as error:
+				self.assertNotIn("Source Qty", str(error))
 
 	def test_missing_purity_skips_the_fine_metal_check(self):
+		# An employee is held to the weight issued; with no purity there is nothing more.
 		self.purity = {"M-G-22KT-91.6-Y": 75.0}
-		cs.validate_receive(self._received())
+		cs.validate_receive(self._received_from_employee())
 
 	def _received_from_employee(self, **fields):
 		# An issued document keeps the To Employee's warehouse Issue resolved; it is frozen.
@@ -598,6 +660,36 @@ class TestRunReceive(_ChainCase):
 		doc, repack, loss, transfer = self._run(10.0)
 		loss.assert_not_called()
 		transfer.assert_called_once()
+
+	def _alloyed_down(self, target_qty):
+		self.purity = dict(ALLOYED_DOWN)
+		return _chain_doc(
+			workflow_state="Receive",
+			chain_issue_stock_entry="SE-ISSUE-1",
+			chain_supplier_warehouse="SUP-1 MSL WH - GK",
+			source_item=FINE_24KT,
+			target_item="CH-22KT",
+			target_qty=target_qty,
+		)
+
+	def test_supplier_alloy_repacks_the_fine_metal_and_loses_the_shortfall(self):
+		# 10.8 g of 22KT 91.75 holds 9.909 g fine: that much 24KT is repacked into it, and the
+		# 0.091 g of 24KT not returned is the loss.
+		doc, repack, loss, transfer = self._run(10.8, doc=self._alloyed_down(10.8))
+		self.assertAlmostEqual(sum(r["qty"] for r in repack.call_args.args[1]), 9.909)
+		self.assertEqual(repack.call_args.args[2], 10.8)
+		self.assertEqual(loss.call_args.kwargs["loss_qty"], 0.091)
+		self.assertEqual(
+			loss.call_args.kwargs["rows"], [{"batch": "B-2", "qty": 0.091}]
+		)
+		transfer.assert_called_once_with(doc, "SE-REPACK-1", 10.8)
+
+	def test_the_full_conversion_back_repacks_everything_with_no_loss(self):
+		doc, repack, loss, transfer = self._run(10.899, doc=self._alloyed_down(10.899))
+		self.assertAlmostEqual(sum(r["qty"] for r in repack.call_args.args[1]), 10.0)
+		self.assertEqual(repack.call_args.args[2], 10.899)
+		loss.assert_not_called()
+		transfer.assert_called_once_with(doc, "SE-REPACK-1", 10.899)
 
 	def test_an_employee_loss_comes_from_their_warehouse(self):
 		doc = _employee_doc(
@@ -1178,6 +1270,35 @@ class TestGuardTrash(_ChainCase):
 
 	def test_a_never_issued_conversion_can_be_deleted(self):
 		self._guard(None)
+
+
+class TestChainReceiveQtys(_ChainCase):
+	"""``get_chain_receive_qtys``: the Target Qty the form fills, and the loss it shows."""
+
+	def _qtys(self, doc):
+		with (
+			patch.object(mc, "flt", _det_flt),
+			patch.object(mc, "_qty_precision", return_value=3),
+		):
+			return mc.MetalConversions.get_chain_receive_qtys(doc)
+
+	def test_a_supplier_conversion_fills_what_the_source_converts_to(self):
+		# MCON00812: 2 g of 24KT 99.9 (100%) -> 22KT 91.75 is 2.180 g.
+		self.purity = dict(ALLOYED_DOWN)
+		doc = _chain_doc(source_item=FINE_24KT, source_qty=2.0, target_item="CH-22KT")
+		qtys = self._qtys(doc)
+		self.assertAlmostEqual(qtys["max_target_qty"], 2.17984, places=5)
+		self.assertEqual(qtys["loss_qty"], 0)
+
+		doc.target_qty = 2.15
+		self.assertEqual(self._qtys(doc)["loss_qty"], 0.027)
+
+	def test_no_fill_without_purity_or_for_an_employee(self):
+		doc = _chain_doc(source_item=FINE_24KT, target_item="CH-22KT")
+		self.assertIsNone(self._qtys(doc)["max_target_qty"])
+		self.purity = dict(ALLOYED_DOWN)
+		doc = _employee_doc(source_item=FINE_24KT, target_item="CH-22KT")
+		self.assertIsNone(self._qtys(doc)["max_target_qty"])
 
 
 class TestControllerRouting(IntegrationTestCase):

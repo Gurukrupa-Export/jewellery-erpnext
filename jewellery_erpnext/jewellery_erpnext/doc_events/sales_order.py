@@ -975,7 +975,8 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
 	_dmk = _get_data_migration_settings()
 	from_site = _dmk.from_site_1
 	api_key = _dmk.api_key
-	api_secret = _dmk.api_secret
+	# raise_exception=False: no secret stored must read as empty, as before, not abort the save.
+	api_secret = _dmk.get_password("api_secret", raise_exception=False)
 
 	use_api = bool(from_site)
 
@@ -1313,7 +1314,8 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 	_dmk = _get_data_migration_settings()
 	from_site = _dmk.from_site_1
 	api_key = _dmk.api_key
-	api_secret = _dmk.api_secret
+	# raise_exception=False: no secret stored must read as empty, as before, not abort the save.
+	api_secret = _dmk.get_password("api_secret", raise_exception=False)
 	use_api = bool(from_site)
 	if use_api:
 		url = f"{from_site}/api/method/gke_customization.gke_order_forms.doc_events.item.get_finding_charge"
@@ -1597,7 +1599,8 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 	_dmk = _get_data_migration_settings()
 	from_site = _dmk.from_site_1
 	api_key = _dmk.api_key
-	api_secret = _dmk.api_secret
+	# raise_exception=False: no secret stored must read as empty, as before, not abort the save.
+	api_secret = _dmk.get_password("api_secret", raise_exception=False)
 	use_api = bool(from_site)
 
 	HEADERS = {"Authorization": f"token {api_key}:{api_secret}"}
@@ -2024,7 +2027,8 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 	_dmk = _get_data_migration_settings()
 	from_site = _dmk.from_site_1
 	api_key = _dmk.api_key
-	api_secret = _dmk.api_secret
+	# raise_exception=False: no secret stored must read as empty, as before, not abort the save.
+	api_secret = _dmk.get_password("api_secret", raise_exception=False)
 	use_api = bool(from_site)
 
 	# customer_key = (
@@ -2055,15 +2059,24 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 			(customer_key, d.stone_shape),
 			as_dict=True,
 		)
-		if not pl_result:
+		# Internal customers of KGJPL / GEPL are priced from the BOM's own se_rate below, not
+		# from a Diamond Price List, so a missing price-list entry for the shape must not
+		# zero their row (it left Rate/Amount 0 and the invoice diamond row empty).
+		uses_se_rate = ctx.customer_group == "Internal" and self.company in (
+			"KG GK Jewellers Private Limited",
+			"Gurukrupa Export Private Limited",
+		)
+		if not pl_result and not uses_se_rate:
 			d.total_diamond_rate = 0
 			d.diamond_rate_for_specified_quantity = 0
 			continue
 
-		price_list_type = pl_result[0]["diamond_price_list"]
+		price_list_type = pl_result[0]["diamond_price_list"] if pl_result else None
 
 		# -------- fetch latest rate --------
-		if use_api:
+		if price_list_type is None:
+			latest = None
+		elif use_api:
 			try:
 				response = requests.post(
 					url=_DIAMOND_RATE_URL,

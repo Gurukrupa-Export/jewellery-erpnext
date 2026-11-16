@@ -43,7 +43,8 @@
 "finding_loss_booking_section",
 "finding_loss_booking",
 "employee_ir_timing_section",
-"employee_ir_receive_delay"
+"employee_ir_receive_delay",
+"receive_details_type"
 ],
 "fields": [
 {
@@ -238,6 +239,13 @@
 "non_negative": 1
 },
 {
+"description": "CAD: Employee IR Receive of this operation asks for the CAD details. CAM: it asks for the CAM details. Leave blank for all other operations.",
+"fieldname": "receive_details_type",
+"fieldtype": "Select",
+"label": "Receive Details Type",
+"options": "\nCAD\nCAM"
+},
+{
 "fieldname": "loss_booking_restrictions_section",
 "fieldtype": "Section Break",
 "label": "Loss Booking Restrictions"
@@ -269,7 +277,7 @@
 ],
 "index_web_pages_for_search": 1,
 "links": [],
-"modified": "2026-10-14 10:00:00.000000",
+"modified": "2026-11-10 10:00:00.000000",
 "modified_by": "Administrator",
 "module": "Jewellery Erpnext",
 "name": "Department Operation",

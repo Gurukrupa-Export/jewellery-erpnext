@@ -22,9 +22,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ch
 	get_department_chain_flags,
 	guard_trash,
 	is_chain,
+	max_target_qty,
+	receive_split,
 	run_receive,
 	set_issue_warehouses,
 	set_to_warehouse,
+	subcontracted_purities,
 	validate_chain,
 	validate_receive,
 )
@@ -207,6 +210,22 @@ class MetalConversions(Document):
 			return
 		set_to_warehouse(self)
 		set_issue_warehouses(self)
+
+	@frappe.whitelist()
+	def get_chain_receive_qtys(self):
+		"""Receive figures for the form: the Target Qty a subcontracted chain conversion
+		converts to (None when its items carry no purity -- then it is typed in) and the
+		Process Loss the current Target Qty books."""
+		if not is_chain(self):
+			return {"max_target_qty": None, "loss_qty": 0}
+		precision = _qty_precision()
+		fill = (
+			max_target_qty(self, flt(self.source_qty, precision))
+			if subcontracted_purities(self)
+			else None
+		)
+		loss_qty = receive_split(self, precision)[1] if flt(self.target_qty) else 0
+		return {"max_target_qty": fill, "loss_qty": loss_qty}
 
 	@frappe.whitelist()
 	def clear_fields(self):
