@@ -23,7 +23,8 @@ PROCESS_CONTROL_FIELDS = {
 			"fieldname": "custom_process_control_section",
 			"fieldtype": "Section Break",
 			"label": "Process Control",
-			"insert_after": "custom_is_chain_subcontracting",
+			# After the cell flag (patch add_department_cell_flag, listed earlier), not beside it.
+			"insert_after": "custom_is_cell_department",
 			"module": "Jewellery Erpnext",
 		},
 		{

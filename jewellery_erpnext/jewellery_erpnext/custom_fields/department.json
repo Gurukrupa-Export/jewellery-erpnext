@@ -181,9 +181,18 @@
   },
   {
    "dt": "Department",
+   "fieldname": "custom_is_cell_department",
+   "fieldtype": "Check",
+   "insert_after": "custom_is_chain_subcontracting",
+   "label": "Is Cell Department",
+   "description": "Stock Entry material transfers (Work Order) require the user's process to match the Manufacturing Operation's process.",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
    "fieldname": "custom_process_control_section",
    "fieldtype": "Section Break",
-   "insert_after": "custom_is_chain_subcontracting",
+   "insert_after": "custom_is_cell_department",
    "label": "Process Control",
    "module": "Jewellery Erpnext"
   },
