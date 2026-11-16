@@ -150,6 +150,25 @@ class TestScanAndValidate(_WorkflowHarness):
 		self.assertEqual(len(doc.operations), 1)
 		self.assertIn("already listed", str(frappe.local.message_log))
 
+	def test_scan_into_a_new_form_replaces_its_empty_row(self):
+		# The Desk opens a new Process Transfer with one blank row (mandatory table); the scanned
+		# job takes its place instead of becoming row 2 below a row that fails the save.
+		a, b, _c = self.cell3()
+		mwo, mop = self.job_in(a)
+		doc = self.transfer(a, b, [])
+		doc.operations = []
+		doc.append("operations", {})
+		doc.add_work_orders([mwo])
+		self.assertEqual(
+			[
+				(r.idx, r.manufacturing_work_order, r.manufacturing_operation)
+				for r in doc.operations
+			],
+			[(1, mwo, mop)],
+		)
+		doc.insert()
+		self.assertEqual(len(doc.operations), 1)
+
 	def test_scan_does_not_reveal_work_orders_the_user_cannot_read(self):
 		a, b, _c = self.cell3()
 		hidden, _ = self.job_in(a)

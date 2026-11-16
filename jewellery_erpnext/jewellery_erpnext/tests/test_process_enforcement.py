@@ -131,6 +131,12 @@ class _EnforcementHarness(_LiteralRefusals, _WorkflowHarness):
 				for ptype in ("write", "create", "submit", "cancel"):
 					update_permission_property(doctype, role, 0, ptype, 1)
 				self.addCleanup(frappe.clear_cache, doctype=doctype)
+			# Department IR / Employee IR write MOP Logs as the acting user. kggk_uat grants MOP Log
+			# create to the department roles only (Custom DocPerm), not to System Manager.
+			add_permission("MOP Log", role)
+			for ptype in ("write", "create"):
+				update_permission_property("MOP Log", role, 0, ptype, 1)
+			self.addCleanup(frappe.clear_cache, doctype="MOP Log")
 		return role
 
 	def clerk(self, key, *processes):
@@ -1141,6 +1147,21 @@ class TestMaterialRequestTransfer(_EnforcementHarness):
 		_other, other_mop = self.job_in(a)
 		with self.assertRaisesRegex(ProcessEnforcementError, "belongs to work order"):
 			pe.check_material_request_transfer(self.request(mwo), other_mop)
+
+	def test_an_operation_of_another_parent_order_is_refused(self):
+		# A request raised against one Parent Manufacturing Order, naming no work order, cannot
+		# move material into an operation of another order's job.
+		a, _b, _c = self.cell3()
+		mwo, mop = self.job_in(a)
+		doc = self.request(
+			mwo,
+			manufacturing_order="PMO-NOT-THIS-ONE",
+			custom_manufacturing_work_order=None,
+		)
+		with self.assertRaisesRegex(
+			ProcessEnforcementError, "belongs to Parent Manufacturing Order"
+		):
+			pe.check_material_request_transfer(doc, mop)
 
 	def test_the_dispatcher_checks_before_either_builder(self):
 		doc = _mr()

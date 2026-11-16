@@ -758,6 +758,98 @@ def _role_rewrite_operation(actor, *, mop, waiter):
 	actor.set("H_done")
 
 
+def _force_process_pilot():
+	"""Process control's pilot switch reads ON in this actor process only (nothing committed)."""
+	from jewellery_erpnext.jewellery_erpnext.doc_events import process_control as pc_mod
+	from jewellery_erpnext.jewellery_erpnext.doc_events import (
+		process_enforcement as pe_mod,
+	)
+	from jewellery_erpnext.jewellery_erpnext.doctype.process_transfer import (
+		process_transfer as pt_mod,
+	)
+
+	for mod in (pc_mod, pe_mod, pt_mod):
+		mod.is_pilot_enabled = lambda: True
+
+
+def _role_park_after_process_locks(actor, *, world, action, me, other=None):
+	"""Run ``action`` (a Process Transfer submit / cancel, or ``op: "check_stock_entry"``) and park
+	right after process control's lock block is taken -- Process Transfer and the Stock Entry check
+	lock through ``process_control.lock_jobs``, not the guard's ``_after_locks`` seam -- until
+	``<me>_release``; then commit."""
+	from jewellery_erpnext.jewellery_erpnext.doc_events import process_control as pc_mod
+	from jewellery_erpnext.jewellery_erpnext.doc_events import (
+		process_enforcement as pe_mod,
+	)
+	from jewellery_erpnext.jewellery_erpnext.doctype.process_transfer import (
+		process_transfer as pt_mod,
+	)
+
+	_force_process_pilot()
+	original, state = pc_mod.lock_jobs, {"parked": False}
+
+	def parked(doc, operations, work_orders):
+		original(doc, operations, work_orders)
+		if not state["parked"]:
+			state["parked"] = True
+			actor._park(f"{me}_parked", f"{me}_release", doc, "process_lock_jobs")
+
+	for mod in (pc_mod, pe_mod, pt_mod):
+		mod.lock_jobs = parked
+	run = _prepare_process_action(actor, world, action)
+	actor.set(f"{me}_ready")
+	if other:
+		actor.wait(f"{other}_ready")
+	actor.attempt(action["label"], run)
+	actor.set(f"{me}_done")
+
+
+def _role_process_second(actor, *, world, action, me, other):
+	"""The second side of a process-control race: pilot on, prepared before the first commits,
+	started once the first holds its locks."""
+	_force_process_pilot()
+	run = _prepare_process_action(actor, world, action)
+	actor.set(f"{me}_ready")
+	actor.wait(f"{other}_parked")
+	actor.set(f"{me}_started")
+	actor.attempt(action["label"], run)
+	actor.set(f"{me}_done")
+
+
+def _prepare_process_action(actor, world, action):
+	"""``_prepare`` plus the Stock Entry check on an in-memory entry (no stock company here)."""
+	if action["op"] != "check_stock_entry":
+		return _prepare(actor, world, action)
+	from jewellery_erpnext.jewellery_erpnext.doc_events import (
+		process_enforcement as pe_mod,
+	)
+
+	se = frappe.get_doc(
+		{
+			"doctype": "Stock Entry",
+			"stock_entry_type": "Material Transfer (WORK ORDER)",
+			"purpose": "Material Transfer",
+			"company": world.company,
+			"manufacturing_work_order": action["mwo"],
+			"manufacturing_operation": action["mop"],
+			"items": [
+				{
+					"item_code": world.item.metal,
+					"qty": 0.2,
+					"manufacturing_operation": action["mop"],
+					"custom_manufacturing_work_order": action["mwo"],
+				}
+			],
+		}
+	)
+
+	def check():
+		pe_mod.check_stock_entry(se, "before_submit")
+		return se.get(pe_mod.STOCK_ENTRY_PROCESS_FIELD)
+
+	return check
+
+
 def _role_hold_work_order(actor, *, mwo, waiter):
 	"""A Stock-Entry-like transaction parked while it holds the work-order row (the lock
 	``stamp_snc_requirement`` takes), then rolled back."""
