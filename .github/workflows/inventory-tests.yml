@@ -100,6 +100,8 @@ jobs:
           # 0040324c until it was restored. Pure-logic.
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_pmo_customer_goods_material_requests
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry_customer_ownership_guard
+          # Supplier pure metal weight limit (Stock Entry + Employee IR subcontract Issue). Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_metal_limit
           # Customer Gold traceability (receipt -> descendants replay) and its report. Pure-logic;
           # the report module's one integration class skips unless the site is the disposable one.
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_trace

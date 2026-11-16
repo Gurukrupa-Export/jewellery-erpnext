@@ -3037,6 +3037,12 @@ def create_test_data():
 
 			_ensure_supplier_allowed_item_group_field()
 
+			from jewellery_erpnext.patches.add_supplier_metal_weight_limit import (
+				execute as _ensure_supplier_metal_weight_limit_field,
+			)
+
+			_ensure_supplier_metal_weight_limit_field()
+
 			from jewellery_erpnext.patches.add_mr_is_free_item_field import (
 				execute as _ensure_mr_is_free_item_field,
 			)
