@@ -119,7 +119,8 @@
    "options": "reference_doctype",
    "read_only": 1,
    "in_list_view": 1,
-   "search_index": 1
+   "search_index": 1,
+   "in_standard_filter": 1
   },
   {
    "fieldname": "settlement_voucher",
@@ -127,7 +128,9 @@
    "label": "Settlement Journal Entry",
    "options": "Journal Entry",
    "read_only": 1,
-   "description": "The Journal Entry that released this amount. Empty for a raw return, whose own Stock Entry posts the liability leg."
+   "description": "The Journal Entry that released this amount. Empty for a raw return, whose own Stock Entry posts the liability leg.",
+   "in_list_view": 1,
+   "in_standard_filter": 1
   },
   {
    "fieldname": "reversal_of",
@@ -189,7 +192,8 @@
    "fieldname": "fine_qty",
    "fieldtype": "Float",
    "label": "Fine Gold (g)",
-   "read_only": 1
+   "read_only": 1,
+   "in_list_view": 1
   },
   {
    "fieldname": "column_break_qty",
@@ -201,7 +205,8 @@
    "label": "Released Amount",
    "options": "currency",
    "read_only": 1,
-   "description": "Customer Gold Liability released against this receipt, at its booked rate. Positive releases; negative restores."
+   "description": "Customer Gold Liability released against this receipt, at its booked rate. Positive releases; negative restores.",
+   "in_list_view": 1
   },
   {
    "fieldname": "currency",
@@ -220,7 +225,7 @@
  "index_web_pages_for_search": 0,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-09-28 00:00:00",
+ "modified": "2026-11-17 12:00:00",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Customer Gold Allocation",
@@ -244,6 +249,12 @@
    "read": 1,
    "report": 1,
    "role": "Accounts Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User"
   }
  ],
  "row_format": "Dynamic",

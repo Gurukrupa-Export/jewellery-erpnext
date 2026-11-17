@@ -2307,6 +2307,17 @@ def settle_customer_gold_liability(doc, event_names):
 
 	accounts = get_customer_gold_company_settings(doc.company)
 	settled = [row for row in rows if flt(row.cg_carrying_value_delta)]
+
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		reconcile_to_settlement,
+		stamp_settlement_voucher,
+	)
+
+	# BEFORE the JE, not after: the JE now carries one liability line per receipt row, read from
+	# these allocations, so they must already tie to the customer's total to the paisa. It needs
+	# only ``per_customer``, never the JE's name, and it runs in the same transaction -- a JE that
+	# fails to post rolls this back with it.
+	reconcile_to_settlement([row.name for row in settled], per_customer, precision)
 	je = _build_settlement_entry(doc, accounts, per_customer, total, precision, settled)
 
 	# Claim only the events this JE actually settled. An event whose value could not be
@@ -2319,13 +2330,7 @@ def settle_customer_gold_liability(doc, event_names):
 			LEDGER_DOCTYPE, row.name, "cg_settlement_voucher", je, update_modified=False
 		)
 
-	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
-		reconcile_to_settlement,
-		stamp_settlement_voucher,
-	)
-
 	stamp_settlement_voucher([row.name for row in settled], je)
-	reconcile_to_settlement([row.name for row in settled], per_customer, precision)
 	return je
 
 
@@ -2383,10 +2388,24 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 		or "-",
 	)
 
-	for customer, amount in per_customer.items():
-		amount = flt(amount, precision)
-		if not amount:
-			continue
+	# THE NARRATION IS WHAT LETS ACCOUNTS TALLY THIS JE. erpnext builds each GL line's remark
+	# from that line's ``user_remark`` plus the header ``remark`` (``build_gl_map``), and keeps a
+	# typed ``remark`` only under ``custom_remark`` -- the header ``user_remark`` above never
+	# reaches the GL, which is why every settlement JE on kggk-uat had an empty GL remark.
+	from jewellery_erpnext.customer_subcontracting.customer_gold_narration import (
+		settlement_lines,
+		settlement_summary,
+	)
+
+	lines = settlement_lines(doc, [e.name for e in events], per_customer, precision)
+	je.custom_remark = 1
+	je.remark = settlement_summary(doc, lines)
+
+	# One liability line per receipt row the delivery drew on, so the GL shows the breakup line
+	# by line. Per customer they add up to the same amount the single line used to carry; what
+	# no receipt explains is its own line, labelled so (``settlement_lines``).
+	for entry in lines:
+		amount = flt(entry.amount, precision)
 		# NO ``reference_type``/``reference_name`` on the line. ``Journal Entry Account``
 		# restricts that Select to invoice-like doctypes and rejects "Delivery Note" outright
 		# -- the integration suite is what surfaced it. The link that matters is the ledger's
@@ -2396,10 +2415,11 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 			"cost_center": cost_center,
 			"debit_in_account_currency": amount if amount > 0 else 0,
 			"credit_in_account_currency": -amount if amount < 0 else 0,
+			"user_remark": entry.remark,
 		}
 		if party_required:
 			line["party_type"] = "Customer"
-			line["party"] = customer
+			line["party"] = entry.customer
 		je.append("accounts", line)
 
 	je.append(
