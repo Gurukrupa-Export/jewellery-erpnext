@@ -3101,6 +3101,18 @@ def create_test_data():
 
 			po_refining_entry_field()
 
+			from jewellery_erpnext.patches.add_refinery_flow_fields import (
+				execute as refinery_flow_fields,
+			)
+
+			refinery_flow_fields()
+
+			from jewellery_erpnext.patches.add_gk_refining_receipt_fields import (
+				execute as gk_refining_receipt_fields,
+			)
+
+			gk_refining_receipt_fields()
+
 			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures, so — like
 			# the other custom-field patches above — it must be provisioned here for
 			# test_site, else create_manufacturing_entry's set_value raises

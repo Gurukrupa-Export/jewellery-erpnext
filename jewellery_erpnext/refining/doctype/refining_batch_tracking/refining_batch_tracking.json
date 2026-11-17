@@ -6,6 +6,7 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "tracking_type",
   "source_batch",
   "source_item",
   "source_warehouse",
@@ -17,9 +18,11 @@
   "output_qty",
   "section_break_01",
   "stock_entry_in",
-  "stock_entry_out"
+  "stock_entry_out",
+  "refining_loss"
  ],
  "fields": [
+  {"fieldname": "tracking_type", "fieldtype": "Select", "in_list_view": 1, "label": "Tracking Type", "options": "\nConsolidation\nRecovery"},
   {"fieldname": "source_batch", "fieldtype": "Link", "in_list_view": 1, "label": "Source Batch", "options": "Batch"},
   {"fieldname": "source_item", "fieldtype": "Link", "in_list_view": 1, "label": "Source Item", "options": "Item"},
   {"fieldname": "source_warehouse", "fieldtype": "Link", "label": "Source Warehouse", "options": "Warehouse"},
@@ -31,12 +34,13 @@
   {"fieldname": "output_qty", "fieldtype": "Float", "label": "Output Qty", "precision": "3"},
   {"fieldname": "section_break_01", "fieldtype": "Section Break"},
   {"fieldname": "stock_entry_in", "fieldtype": "Link", "label": "SE (In)", "options": "Stock Entry"},
-  {"fieldname": "stock_entry_out", "fieldtype": "Link", "label": "SE (Out)", "options": "Stock Entry"}
+  {"fieldname": "stock_entry_out", "fieldtype": "Link", "label": "SE (Out)", "options": "Stock Entry"},
+  {"fieldname": "refining_loss", "fieldtype": "Float", "label": "Refining Loss", "precision": "3", "read_only": 1}
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-06-16 06:00:00.000000",
+ "modified": "2026-10-29 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Refining",
  "name": "Refining Batch Tracking",
