@@ -801,19 +801,26 @@ class EmployeeIR(Document):
 		self._refresh_msl_tracking()
 
 	def _refresh_msl_tracking(self):
-		"""Re-materialize the employee's Raw Material (MSL) warehouse tracking
-		table from the ledger after Issue/Receive posts stock.
+		"""Schedule a refresh of the employee's Raw Material (MSL) warehouse tracking
+		table for AFTER this Issue/Receive submit or cancel commits.
 
-		``custom_msl_tracking`` is a materialized cache — its only source of
-		truth is ``recalculate_msl_tracking`` (a full recompute from the Stock
-		Ledger). The Employee IR Issue/Receive posts SLEs against the employee's
-		Raw Material (MSL) warehouse but never refreshed this cache, so the
-		on-form Receive/Pending qty drifted from the ledger. Mirror the Employee
-		Loss Entry / warehouse-button pattern. A refresh failure must never roll
-		back the stock posting, so failures are logged, not raised.
+		``custom_msl_tracking`` is a display-only materialized cache: its only source of
+		truth is ``recalculate_msl_tracking``, a full recompute from the Stock Ledger, and
+		the Receive maths read the ledger live. Recomputing it here locked the Warehouse
+		row and rewrote its child rows while this transaction still held the shared Stock
+		Entry naming rows and Bins, and the old ``except Exception`` could swallow a 1213
+		after InnoDB had already rolled the whole submit back (or a 1205 while the submit
+		kept its locks). Nothing is written here now, and a rollback discards the
+		scheduled refresh.
+
+		A refresh problem still never fails the posting, except for lock and connection
+		errors: those mean this transaction is already lost, so they always propagate.
 		"""
+		from jewellery_erpnext.jewellery_erpnext.bounded_retry import (
+			RETRYABLE_LOCK_ERRORS,
+		)
 		from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
-			recalculate_msl_tracking,
+			queue_msl_tracking_refresh,
 		)
 		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 			_resolve_source_warehouse_raw_material,
@@ -821,13 +828,17 @@ class EmployeeIR(Document):
 
 		try:
 			msl_wh = _resolve_source_warehouse_raw_material(self)
-			if msl_wh:
-				recalculate_msl_tracking(msl_wh)
+		except RETRYABLE_LOCK_ERRORS:
+			raise  # 1205/1213: never swallow inside the submit transaction
+		except (frappe.db.OperationalError, frappe.db.InterfaceError):
+			raise  # lost connection: the transaction is gone
 		except Exception:
 			frappe.log_error(
 				title="Employee IR: MSL tracking refresh failed",
 				message=frappe.get_traceback(),
 			)
+			return
+		queue_msl_tracking_refresh(msl_wh)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":
