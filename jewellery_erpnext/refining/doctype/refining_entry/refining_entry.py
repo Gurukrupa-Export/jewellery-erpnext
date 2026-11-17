@@ -22,6 +22,7 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 	refining_line_terms,
 	resolve_from_index,
 )
+from jewellery_erpnext.refining.stock_entry_naming import apply_refining_naming_series
 from jewellery_erpnext.utils import (
 	get_item_from_attribute,
 	get_variant_of_item,
@@ -622,6 +623,7 @@ class RefiningEntry(Document):
 		# auto-cost multiple finished goods; a work-order-less Manufacture keeps our
 		# is_finished_item flags and auto-costs the single FG from the consumed inputs.
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Manufacture"
 		se.purpose = "Manufacture"
 		se.company = self.company
@@ -2571,6 +2573,7 @@ class RefiningEntry(Document):
 			)
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Transfer"
 		se.purpose = "Material Transfer"
 		se.company = self.company
@@ -2703,6 +2706,7 @@ class RefiningEntry(Document):
 		target = target_warehouse or self.refining_warehouse
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Transfer"
 		se.purpose = "Material Transfer"
 		se.company = self.company
@@ -3297,6 +3301,7 @@ class RefiningEntry(Document):
 			return
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Receipt"
 		se.purpose = "Material Receipt"
 		se.company = self.company
@@ -3382,6 +3387,7 @@ class RefiningEntry(Document):
 		frappe.db.savepoint(repack_savepoint)
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Manufacture"
 		se.purpose = "Manufacture"
 		se.company = self.company
@@ -3783,6 +3789,7 @@ class RefiningEntry(Document):
 		dust_item = self.get_dust_item()
 		if scrap_warehouse and dust_item:
 			se = frappe.new_doc("Stock Entry")
+			apply_refining_naming_series(se)
 			se.stock_entry_type = "Material Transfer"
 			se.purpose = "Material Transfer"
 			se.company = self.company

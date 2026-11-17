@@ -28,9 +28,12 @@ app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dial
 #
 # Idempotent. Non-fatal by design, but it prints as well as logging, so a failure is visible
 # in the migrate output rather than only in the Error Log.
-after_migrate = (
-	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
-)
+after_migrate = [
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate",
+	# Refining Stock Entry naming series: option + counter row. A no-op unless
+	# site_config sets refining_se_naming_series (see refining/stock_entry_naming.py).
+	"jewellery_erpnext.refining.stock_entry_naming.after_migrate",
+]
 
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
