@@ -548,12 +548,11 @@ class TestEnsureReadPathIndexes(IntegrationTestCase):
 		self.assertEqual(entries[-1], PATCH)
 
 	def test_after_migrate_wired_and_mr_layout_hook_kept(self):
-		self.assertEqual(
-			list(hooks.after_migrate),
-			[
-				"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate",
-				f"{PATCH}.after_migrate",
-			],
-		)
-		for path in hooks.after_migrate:
+		# Membership and order only: other after_migrate hooks may be added beside these.
+		wired = list(hooks.after_migrate)
+		mr_layout = "jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
+		self.assertEqual(wired[0], mr_layout)
+		self.assertEqual(wired.count(f"{PATCH}.after_migrate"), 1)
+		self.assertEqual(len(wired), len(set(wired)))
+		for path in wired:
 			self.assertTrue(callable(frappe.get_attr(path)))
