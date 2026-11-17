@@ -199,18 +199,21 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"cad_file\"))",
    "fieldname": "cad_file",
    "fieldtype": "Attach",
    "label": "CAD File",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"cad_numbering_file\"))",
    "fieldname": "cad_numbering_file",
    "fieldtype": "Attach",
    "label": "CAD Numbering File",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"estimated_rpt_wt\"))",
    "fieldname": "estimated_rpt_wt",
    "fieldtype": "Float",
    "label": "Estimated RPT WT",
@@ -218,12 +221,14 @@
    "precision": "3"
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"ref_name\"))",
    "fieldname": "ref_name",
    "fieldtype": "Data",
    "label": "Ref Name",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"estimated_casting_wt\"))",
    "fieldname": "estimated_casting_wt",
    "fieldtype": "Float",
    "label": "Estimated Casting WT",
@@ -231,12 +236,14 @@
    "precision": "3"
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"support_cam_file\"))",
    "fieldname": "support_cam_file",
    "fieldtype": "Attach",
    "label": "Support CAM File",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"platform_wt\"))",
    "fieldname": "platform_wt",
    "fieldtype": "Float",
    "label": "Platform WT",

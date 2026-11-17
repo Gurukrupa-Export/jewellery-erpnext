@@ -1,10 +1,17 @@
 """CAD / CAM details captured on an Employee IR Receive.
 
-Which operations ask for these details is a flag on the Department Operation
-(``receive_details_type``: CAD / CAM / blank), not a hardcoded name. The flag is copied onto
-the Employee IR header and the Manufacturing Operation for the form's ``depends_on``, but
-every server decision here re-reads it from the Department Operation, so a posted value
-cannot switch the rules on or off.
+Which operations ask for these details, and which fields, is set on the Department
+Operation, not hardcoded by name:
+
+* ``receive_details_type`` (CAD / CAM / blank) says the operation asks at all, and which
+  group of fields applies.
+* the optional "Receive Detail Fields" table narrows that group to the fields the operation
+  needs. An empty table means every field of the type.
+
+The type and the resulting field list are copied onto the Employee IR header and the
+Manufacturing Operation for the form's ``depends_on``, but every server decision here
+re-reads them from the Department Operation, so a posted value cannot switch the rules on
+or off.
 
 The details are entered per Work Order row on the Employee IR Operation table and written to
 the linked Manufacturing Operation by ``on_submit_receive`` (cleared again on cancel).
@@ -42,6 +49,38 @@ def get_receive_details_type(operation):
 	return value if value in FIELDS_BY_TYPE else None
 
 
+def get_receive_detail_fields(operation):
+	"""Fieldnames the operation asks for on a receive, in table order ([] if unflagged).
+
+	The Department Operation's "Receive Detail Fields" table picks them; fields outside the
+	operation's type are ignored. With no rows, every field of the type is asked for.
+	"""
+	details_type = get_receive_details_type(operation)
+	if not details_type:
+		return []
+	group = FIELDS_BY_TYPE[details_type]
+	label_to_field = {label: fn for fn, label in group.items()}
+	labels = frappe.get_all(
+		"Receive Detail Field",
+		filters={"parent": operation, "parenttype": "Department Operation"},
+		pluck="field_label",
+		order_by="idx",
+	)
+	picked = []
+	for label in labels:
+		fn = label_to_field.get(label)
+		if fn and fn not in picked:
+			picked.append(fn)
+	return picked or list(group)
+
+
+def _fields_for(doc):
+	"""{fieldname: label} the Employee IR asks for: a Receive on a flagged operation."""
+	if doc.type != "Receive":
+		return {}
+	return {fn: ALL_FIELDS[fn] for fn in get_receive_detail_fields(doc.operation)}
+
+
 def _is_empty(fieldname, value):
 	# A weight of 0 is as good as no entry, so floats must be positive.
 	if fieldname in FLOAT_FIELDS:
@@ -52,8 +91,8 @@ def _is_empty(fieldname, value):
 def validate_cad_cam_receive_details(doc):
 	"""Save-time rules: which CAD / CAM fields may be filled at all.
 
-	* Only the fields of the operation's own type may be filled: every CAD / CAM field on an
-	  Issue or an unflagged operation, or the fields of another type, are refused.
+	* Only the fields the operation asks for may be filled: every CAD / CAM field on an
+	  Issue or an unflagged operation, and any field outside the operation's list, is refused.
 
 	Empty fields are NOT an error here. A draft Receive can be saved half filled, and the
 	required fields are enforced when it is submitted (validate_cad_cam_required_on_submit).
@@ -61,10 +100,11 @@ def validate_cad_cam_receive_details(doc):
 	details_type = (
 		get_receive_details_type(doc.operation) if doc.type == "Receive" else None
 	)
-	# The header copy drives the form only; keep it in step with the operation.
+	required = _fields_for(doc)
+	# The header copies drive the form only; keep them in step with the operation.
 	doc.receive_details_type = details_type
+	doc.receive_detail_fields = ",".join(required)
 
-	required = FIELDS_BY_TYPE.get(details_type, {})
 	for row in doc.employee_ir_operations:
 		extra = [
 			label
@@ -80,17 +120,15 @@ def validate_cad_cam_receive_details(doc):
 
 
 def validate_cad_cam_required_on_submit(doc):
-	"""Submit-only rule: every field of the operation's type is required on every row.
+	"""Submit-only rule: every field the operation asks for is required on every row.
 
 	Called from before_submit, so a draft can be saved with these empty and only the submit
 	is refused. Weights must be above 0. Does nothing on an Issue or an unflagged operation.
 	"""
-	details_type = (
-		get_receive_details_type(doc.operation) if doc.type == "Receive" else None
-	)
-	required = FIELDS_BY_TYPE.get(details_type, {})
+	required = _fields_for(doc)
 	if not required:
 		return
+	details_type = get_receive_details_type(doc.operation)
 
 	for row in doc.employee_ir_operations:
 		missing = [
@@ -109,16 +147,20 @@ def cad_cam_values_for_operation(doc, row, cancel=False):
 
 	Submit writes the row's details (overwriting any earlier receive); cancel blanks them
 	(0 for a weight, None for a file or text).
-	``receive_details_type`` is set too: frappe.db.set_value skips the fetch_from that
-	would otherwise fill it on a save.
+	``receive_details_type`` and ``receive_detail_fields`` are set too: frappe.db.set_value
+	skips the fetch_from that would otherwise fill them on a save.
 	"""
 	details_type = (
 		get_receive_details_type(doc.operation) if doc.type == "Receive" else None
 	)
 	if not details_type:
 		return {}
-	values = {"receive_details_type": details_type}
-	for fn in FIELDS_BY_TYPE[details_type]:
+	fields = list(_fields_for(doc))
+	values = {
+		"receive_details_type": details_type,
+		"receive_detail_fields": ",".join(fields),
+	}
+	for fn in fields:
 		if cancel:
 			# Float columns are NOT NULL; an Attach / Data column is blank as None.
 			values[fn] = 0 if fn in FLOAT_FIELDS else None

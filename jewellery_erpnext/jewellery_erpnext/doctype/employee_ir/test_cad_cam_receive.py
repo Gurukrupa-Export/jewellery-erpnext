@@ -84,6 +84,13 @@ class TestValidateCadCamReceiveDetails(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
+	def setUp(self):
+		# No "Receive Detail Fields" rows: the operation asks for every field of its type,
+		# whatever the site's own Department Operation table holds.
+		get_all = patch(f"{MODULE}.frappe.get_all", return_value=[])
+		get_all.start()
+		self.addCleanup(get_all.stop)
+
 	def test_cad_receive_with_all_fields_passes_and_sets_the_header_flag(self, flag):
 		flag.return_value = "CAD"
 		doc = _doc("Receive", "RPT Digital File Generation", CAD_ROW)
@@ -179,6 +186,13 @@ class TestRequiredOnSubmit(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
+	def setUp(self):
+		# No "Receive Detail Fields" rows: the operation asks for every field of its type,
+		# whatever the site's own Department Operation table holds.
+		get_all = patch(f"{MODULE}.frappe.get_all", return_value=[])
+		get_all.start()
+		self.addCleanup(get_all.stop)
+
 	def test_cad_receive_with_all_fields_passes(self, flag):
 		flag.return_value = "CAD"
 		mod.validate_cad_cam_required_on_submit(
@@ -259,12 +273,26 @@ class TestCadCamValuesForOperation(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
+	def setUp(self):
+		# No "Receive Detail Fields" rows: the operation asks for every field of its type,
+		# whatever the site's own Department Operation table holds.
+		get_all = patch(f"{MODULE}.frappe.get_all", return_value=[])
+		get_all.start()
+		self.addCleanup(get_all.stop)
+
 	def test_cad_submit_returns_the_row_values_and_the_flag(self, flag):
 		flag.return_value = "CAD"
 		values = mod.cad_cam_values_for_operation(
 			FrappeDict({"type": "Receive", "operation": "x"}), FrappeDict(CAD_ROW)
 		)
-		self.assertEqual(values, {"receive_details_type": "CAD", **CAD_ROW})
+		self.assertEqual(
+			values,
+			{
+				"receive_details_type": "CAD",
+				"receive_detail_fields": ",".join(CAD_ROW),
+				**CAD_ROW,
+			},
+		)
 
 	def test_cam_submit_returns_only_the_cam_values(self, flag):
 		flag.return_value = "CAM"
@@ -272,7 +300,14 @@ class TestCadCamValuesForOperation(IntegrationTestCase):
 			FrappeDict({"type": "Receive", "operation": "x"}),
 			FrappeDict({**CAM_ROW, "ref_name": "ignored"}),
 		)
-		self.assertEqual(values, {"receive_details_type": "CAM", **CAM_ROW})
+		self.assertEqual(
+			values,
+			{
+				"receive_details_type": "CAM",
+				"receive_detail_fields": ",".join(CAM_ROW),
+				**CAM_ROW,
+			},
+		)
 
 	def test_cancel_blanks_files_and_text_but_zeroes_weights(self, flag):
 		"""Float columns are NOT NULL: writing None to one crashed the cancel."""
@@ -304,6 +339,75 @@ class TestCadCamValuesForOperation(IntegrationTestCase):
 				FrappeDict({"type": "Issue", "operation": "x"}), FrappeDict(CAD_ROW)
 			),
 			{},
+		)
+
+
+@patch(f"{MODULE}.frappe.get_all")
+@patch(f"{MODULE}.get_receive_details_type")
+class TestPerOperationFieldList(IntegrationTestCase):
+	"""An operation's "Receive Detail Fields" table narrows the fields of its type."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_empty_table_asks_for_every_field_of_the_type(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = []
+		self.assertEqual(mod.get_receive_detail_fields("op"), list(mod.CAD_FIELDS))
+
+	def test_table_narrows_the_fields_in_table_order(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = ["Ref Name", "Estimated RPT WT"]
+		self.assertEqual(
+			mod.get_receive_detail_fields("op"), ["ref_name", "estimated_rpt_wt"]
+		)
+
+	def test_fields_of_the_other_type_and_repeats_are_ignored(self, flag, get_all):
+		flag.return_value = "CAM"
+		get_all.return_value = ["Platform WT", "Ref Name", "Platform WT"]
+		self.assertEqual(mod.get_receive_detail_fields("op"), ["platform_wt"])
+
+	def test_unflagged_operation_has_no_fields(self, flag, get_all):
+		flag.return_value = None
+		self.assertEqual(mod.get_receive_detail_fields("op"), [])
+		get_all.assert_not_called()
+
+	def test_save_refuses_a_field_outside_the_operations_list(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = ["Ref Name"]
+		doc = _doc(
+			"Receive", "CAD Review", {"ref_name": "R1", "cad_file": "/files/a.dxf"}
+		)
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_receive_details(doc)
+		self.assertIn("CAD File", str(ctx.exception))
+		self.assertEqual(doc.receive_detail_fields, "ref_name")
+
+	def test_submit_requires_only_the_operations_fields(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = ["Ref Name", "Estimated RPT WT"]
+		ok = _doc("Receive", "CAD Review", {"ref_name": "R1", "estimated_rpt_wt": 1.5})
+		mod.validate_cad_cam_required_on_submit(ok)
+		bad = _doc("Receive", "CAD Review", {"ref_name": "R1", "estimated_rpt_wt": 0})
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_required_on_submit(bad)
+		self.assertIn("Estimated RPT WT", str(ctx.exception))
+		self.assertNotIn("CAD File", str(ctx.exception))
+
+	def test_submit_writes_only_the_operations_fields(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = ["Ref Name"]
+		values = mod.cad_cam_values_for_operation(
+			FrappeDict({"type": "Receive", "operation": "x"}), FrappeDict(CAD_ROW)
+		)
+		self.assertEqual(
+			values,
+			{
+				"receive_details_type": "CAD",
+				"receive_detail_fields": "ref_name",
+				"ref_name": "REF-1",
+			},
 		)
 
 
