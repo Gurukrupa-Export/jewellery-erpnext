@@ -160,10 +160,16 @@ function apply_manufacture_order_options(frm) {
 	frm.set_df_property("select_manufacture_order", "options", options.join("\n"));
 	// Set on every refresh: the form clears its intro message each time it renders.
 	if (frm.is_new() && !frm.allowed_manufacture_orders.length) {
+		// The roles are read from the user's manufacturer's Manufacturing Setting, so without a
+		// Default Manufacturer no option opens whatever the roles say.
 		frm.set_intro(
-			__(
-				"No Select Manufacture Order option is open to your roles. Ask a System Manager to set its roles in Manufacturing Setting."
-			),
+			frappe.defaults.get_user_default("manufacturer")
+				? __(
+						"No Select Manufacture Order option is open to your roles. Ask a System Manager to set its roles in Manufacturing Setting."
+				  )
+				: __(
+						"Set a Default Manufacturer (avatar menu → Session Defaults) to choose Select Manufacture Order."
+				  ),
 			"orange"
 		);
 	}

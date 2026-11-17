@@ -221,7 +221,8 @@ class ManufacturingPlan(Document):
 		roles = get_manufacture_order_roles().get(self.select_manufacture_order)
 		if not roles:
 			frappe.throw(
-				_(
+				get_manufacture_order_setup_gap()
+				or _(
 					"No role may create a {0} plan yet. Ask a System Manager to set its roles in Manufacturing Setting."
 				).format(frappe.bold(self.select_manufacture_order)),
 				frappe.PermissionError,
@@ -896,6 +897,22 @@ def get_manufacture_order_roles():
 	):
 		option_roles.setdefault(option_by_field[row.parentfield], set()).add(row.role)
 	return option_roles
+
+
+def get_manufacture_order_setup_gap():
+	"""Why get_manufacture_order_roles() found no roles before reaching the role fields: the user
+	has no Default Manufacturer, or that manufacturer has no Manufacturing Setting. None when
+	both are in place, i.e. the roles themselves are what is missing."""
+	manufacturer = frappe.defaults.get_user_default("manufacturer")
+	if not manufacturer:
+		return _(
+			"Set a Default Manufacturer in Session Defaults (avatar menu) before choosing Select Manufacture Order."
+		)
+	if not frappe.db.exists("Manufacturing Setting", {"manufacturer": manufacturer}):
+		return _("No Manufacturing Setting exists for Manufacturer {0}.").format(
+			frappe.bold(manufacturer)
+		)
+	return None
 
 
 @frappe.whitelist()
