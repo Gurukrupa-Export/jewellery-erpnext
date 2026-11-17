@@ -2393,6 +2393,8 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 	# typed ``remark`` only under ``custom_remark`` -- the header ``user_remark`` above never
 	# reaches the GL, which is why every settlement JE on kggk-uat had an empty GL remark.
 	from jewellery_erpnext.customer_subcontracting.customer_gold_narration import (
+		lines_as_posted,
+		merges_similar_account_heads,
 		settlement_lines,
 		settlement_summary,
 	)
@@ -2403,7 +2405,11 @@ def _build_settlement_entry(doc, accounts, per_customer, total, precision, event
 
 	# One liability line per receipt row the delivery drew on, so the GL shows the breakup line
 	# by line. Per customer they add up to the same amount the single line used to carry; what
-	# no receipt explains is its own line, labelled so (``settlement_lines``).
+	# no receipt explains is its own line, labelled so (``settlement_lines``). When erpnext merges
+	# similar account heads, those lines would become one GL row carrying only the first line's
+	# remark, so they are folded first into one line whose remark lists every receipt.
+	if merges_similar_account_heads():
+		lines = lines_as_posted(lines, party_required, precision)
 	for entry in lines:
 		amount = flt(entry.amount, precision)
 		# NO ``reference_type``/``reference_name`` on the line. ``Journal Entry Account``

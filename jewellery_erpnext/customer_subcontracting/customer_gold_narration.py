@@ -251,6 +251,48 @@ def settlement_lines(doc, event_names, per_customer, precision):
 	return lines
 
 
+def merges_similar_account_heads():
+	"""Accounts Settings > Merge Similar Account Heads, read exactly as ``JournalEntry`` reads it."""
+	return bool(
+		frappe.get_single_value("Accounts Settings", "merge_similar_account_heads")
+	)
+
+
+def lines_as_posted(lines, by_customer, precision):
+	"""``lines`` as the JE must carry them when erpnext merges similar account heads.
+
+	With "Merge Similar Account Heads" on (it is on kggk-uat and kggk-prod),
+	``JournalEntry.make_gl_entries`` folds lines that share account, cost center, party and
+	``voucher_detail_no`` into ONE GL row, summing the amounts and keeping only the FIRST line's
+	remark (``general_ledger.merge_similar_entries``; remarks are not in the merge key). Separate
+	receipt lines would then show the whole amount against one receipt's text. So they are folded
+	here first, one line per merge key: per customer when the liability line carries a party
+	(``by_customer``), otherwise one line for all of them, since lines without a party merge
+	across customers too. Each folded line's remark keeps every receipt line, one per text line;
+	its amount is their sum, so the JE's totals do not change.
+	"""
+	folded = OrderedDict()
+	for line in lines:
+		key = line.customer if by_customer else None
+		entry = folded.get(key)
+		if entry is None:
+			entry = folded[key] = frappe._dict(
+				customer=line.customer, amount=0.0, receipt_voucher=None, remarks=[]
+			)
+		entry.amount = flt(entry.amount + flt(line.amount), precision)
+		entry.remarks.append(line.remark)
+	return [
+		frappe._dict(
+			customer=entry.customer,
+			amount=entry.amount,
+			receipt_voucher=entry.receipt_voucher,
+			remark="\n".join(entry.remarks),
+		)
+		for entry in folded.values()
+		if entry.amount
+	]
+
+
 def settlement_summary(doc, lines):
 	"""The JE's header remark: the document, then each customer's total and receipts."""
 	per_customer = OrderedDict()
@@ -438,7 +480,7 @@ def backfill_stock_entries(settings):
 	return changed
 
 
-def settlement_remark_for(je_name, precision=2):
+def settlement_remark_for(je_name, precision=None):
 	"""The full narration for an existing settlement JE, rebuilt from its own events.
 
 	Uses the same events, sign and per-customer grouping ``settle_customer_gold_liability`` used
@@ -462,6 +504,12 @@ def settlement_remark_for(je_name, precision=2):
 	)
 	if not events:
 		return None
+	if precision is None:
+		# The precision the live settlement used (``settle_customer_gold_liability``).
+		precision = (
+			frappe.get_precision("Journal Entry Account", "debit_in_account_currency")
+			or 2
+		)
 	per_customer = OrderedDict()
 	for event in events:
 		per_customer[event.customer] = flt(per_customer.get(event.customer)) - flt(

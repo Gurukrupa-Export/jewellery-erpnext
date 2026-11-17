@@ -212,18 +212,23 @@ class TestSettlementEntryCarriesTheNarration(_NarrationCase):
 			else self.entry
 		)
 		real_cached = narr.frappe.get_cached_value
+		self.account_type = ""
+		self.merge = False
 
 		def cached_value(doctype, *args, **kwargs):
 			if doctype == "Company" and args[:2] == ("CG Co", "cost_center"):
 				return "Main - CG"
 			if doctype == "Account":
-				return ""
+				return self.account_type
 			return real_cached(doctype, *args, **kwargs)
 
 		for p in (
 			patch.object(cgf, "validate_settlement_accounts"),
 			patch.object(cgf.frappe, "new_doc", new_doc),
 			patch.object(cgf.frappe, "get_cached_value", side_effect=cached_value),
+			patch.object(
+				narr, "merges_similar_account_heads", side_effect=lambda: self.merge
+			),
 		):
 			p.start()
 			self.addCleanup(p.stop)
@@ -275,6 +280,104 @@ class TestSettlementEntryCarriesTheNarration(_NarrationCase):
 		self.assertEqual(lines[0]["credit_in_account_currency"], 40.0)
 		self.assertEqual(lines[0]["debit_in_account_currency"], 0)
 		self.assertEqual(lines[1]["debit_in_account_currency"], 40.0)
+
+	def _gl(self, lines, merge):
+		"""The GL rows erpnext writes for these JE lines: ``JournalEntry.build_gl_map`` composes
+		each row's remark from the line's ``user_remark`` and the header ``remark``, and
+		``make_gl_entries`` runs ``merge_similar_entries`` when the setting is on."""
+		from erpnext.accounts.general_ledger import merge_similar_entries
+
+		gl_map = [
+			frappe._dict(
+				company="CG Co",
+				voucher_type="Journal Entry",
+				voucher_no="JE-NEW",
+				account=line["account"],
+				cost_center=line.get("cost_center"),
+				party_type=line.get("party_type"),
+				party=line.get("party"),
+				debit=line["debit_in_account_currency"],
+				credit=line["credit_in_account_currency"],
+				debit_in_account_currency=line["debit_in_account_currency"],
+				credit_in_account_currency=line["credit_in_account_currency"],
+				remarks="\n".join(
+					r for r in (line.get("user_remark"), self.entry.remark) if r
+				),
+			)
+			for line in lines
+		]
+		return merge_similar_entries(gl_map, precision=2) if merge else gl_map
+
+	def _two_receipts_two_customers(self):
+		self.allocations = [
+			_alloc("CUST", "CGR-57", "R1", "B-50", 3.0, 3.0, 300.0),
+			_alloc("CUST", "CGR-58", "R2", "B-51", 2.0, 2.0, 200.0),
+			_alloc("CUST-2", "CGR-59", "R1", "B-52", 1.0, 1.0, 40.0),
+		]
+		return {"CUST": 500.0, "CUST-2": 40.0}, 540.0
+
+	def test_with_merge_on_one_liability_line_names_every_receipt(self):
+		"""Merge Similar Account Heads is on at kggk-uat and kggk-prod. Lines without a party merge
+		across customers too, so all of them become one line whose remark keeps every receipt."""
+		self.merge = True
+		per_customer, total = self._two_receipts_two_customers()
+		lines = self._post(per_customer, total)
+		self.assertEqual([line["account"] for line in lines], [LIABILITY, ADJUSTMENT])
+		self.assertEqual(lines[0]["debit_in_account_currency"], 540.0)
+		self.assertEqual(lines[1]["credit_in_account_currency"], 540.0)
+		remark = lines[0]["user_remark"].splitlines()
+		self.assertEqual(len(remark), 3)
+		for text, receipt in zip(remark, ("CGR-57", "CGR-58", "CGR-59"), strict=True):
+			self.assertIn(f"Receipt: {receipt} row", text)
+
+	def test_with_merge_on_and_a_party_account_each_customer_keeps_one_line(self):
+		self.merge = True
+		self.account_type = "Payable"
+		per_customer, total = self._two_receipts_two_customers()
+		lines = self._post(per_customer, total)
+		liability = [line for line in lines if line["account"] == LIABILITY]
+		self.assertEqual(
+			[(line["party"], line["debit_in_account_currency"]) for line in liability],
+			[("CUST", 500.0), ("CUST-2", 40.0)],
+		)
+		self.assertIn("CGR-58", liability[0]["user_remark"])
+		self.assertNotIn("CGR-59", liability[0]["user_remark"])
+
+	def test_the_gl_names_every_receipt_whatever_the_merge_setting(self):
+		"""What reaches GL Entry, as erpnext builds and merges it: no row may carry an amount whose
+		receipts its remark does not name -- the P2 on #1676, where the merged row named only the
+		first receipt."""
+		per_customer, total = self._two_receipts_two_customers()
+		for merge in (False, True):
+			with self.subTest(merge=merge):
+				self.entry.reset_mock()
+				self.merge = merge
+				rows = [
+					row
+					for row in self._gl(self._post(per_customer, total), merge)
+					if row.account == LIABILITY
+				]
+				self.assertEqual(len(rows), 1 if merge else 3)
+				self.assertAlmostEqual(sum(row.debit for row in rows), 540.0, places=2)
+				named = {
+					r: sum(f"Receipt: {r} row" in row.remarks for row in rows)
+					for r in ("CGR-57", "CGR-58", "CGR-59")
+				}
+				self.assertEqual(named, {"CGR-57": 1, "CGR-58": 1, "CGR-59": 1})
+
+	def test_unfolded_lines_would_lose_receipts_when_erpnext_merges_them(self):
+		"""The failure the folding prevents, shown with erpnext's own merge."""
+		per_customer, total = self._two_receipts_two_customers()
+		self.merge = False
+		(row,) = [
+			r
+			for r in self._gl(self._post(per_customer, total), True)
+			if r.account == LIABILITY
+		]
+		self.assertEqual(row.debit, 540.0)
+		self.assertIn("Receipt: CGR-57 row", row.remarks)
+		# The header summary still lists CGR-58, but its line -- its amount, batch and grams -- is gone.
+		self.assertNotIn("Receipt: CGR-58 row", row.remarks)
 
 
 class TestReconcileRunsBeforeTheEntry(unittest.TestCase):
