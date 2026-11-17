@@ -31,6 +31,7 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 	resolve_from_index,
 )
 from jewellery_erpnext.utils import (
+	bulk_map,
 	get_item_from_attribute,
 	get_variant_of_item,
 	resolve_manufacturing_setting,
@@ -4161,7 +4162,9 @@ class RefiningEntry(Document):
 		precision = 3
 		min_qty = 0.001
 		groups = {}
-		for se_name in filter(None, (self.material_transfer_se, self.receiving_se)):
+		lines = [
+			(se_name, d)
+			for se_name in filter(None, (self.material_transfer_se, self.receiving_se))
 			for d in frappe.get_all(
 				"Stock Entry Detail",
 				filters={
@@ -4177,22 +4180,21 @@ class RefiningEntry(Document):
 					"s_warehouse",
 				],
 				order_by="idx asc",
-			):
-				qty = flt(d.transfer_qty, precision)
-				if qty < min_qty:
-					continue
-				owner = (
-					self._batch_customer_owner(d.batch_no)[1]
-					if self._batch_is_customer_owned(d.batch_no)
-					else None
-				)
-				group = groups.setdefault(
-					(d.item_code, owner), {"uom": d.stock_uom, "sources": {}}
-				)
-				key = (d.batch_no, d.s_warehouse, se_name)
-				group["sources"][key] = flt(
-					group["sources"].get(key, 0.0) + qty, precision
-				)
+			)
+		]
+		# One read for every line's batch instead of two per line (a transfer carries
+		# thousands); same rule as _batch_is_customer_owned / _batch_customer_owner.
+		owners = self._customer_owners(d.batch_no for _se, d in lines)
+		for se_name, d in lines:
+			qty = flt(d.transfer_qty, precision)
+			if qty < min_qty:
+				continue
+			owner = owners.get(d.batch_no)
+			group = groups.setdefault(
+				(d.item_code, owner), {"uom": d.stock_uom, "sources": {}}
+			)
+			key = (d.batch_no, d.s_warehouse, se_name)
+			group["sources"][key] = flt(group["sources"].get(key, 0.0) + qty, precision)
 
 		tracking = []
 		for (item_code, customer), group in groups.items():
@@ -5020,6 +5022,26 @@ class RefiningEntry(Document):
 			frappe.db.get_value("Customer", cust, "custom_block_refining")
 		)
 
+	def _blocked_customer_batches(self, batch_nos):
+		"""The subset of ``batch_nos`` that ``_is_blocked_customer_batch`` would flag.
+
+		Two queries for the whole list instead of up to two per batch: a scrap warehouse
+		holds thousands of batches, and FIFO allocation filters every one of them."""
+		batches = bulk_map("Batch", batch_nos, ["custom_customer"])
+		customers = {b.custom_customer for b in batches.values() if b.custom_customer}
+		blocked_customers = {
+			name
+			for name, c in bulk_map(
+				"Customer", customers, ["custom_block_refining"]
+			).items()
+			if c.custom_block_refining
+		}
+		return {
+			name
+			for name, b in batches.items()
+			if b.custom_customer in blocked_customers
+		}
+
 	def _batch_customer_owner(self, batch_no):
 		"""Return (inventory_type, customer) ownership of ``batch_no`` from the Batch
 		master, or (None, None) for a blank/unknown batch. Refining Stock Entries are
@@ -5039,6 +5061,20 @@ class RefiningEntry(Document):
 		consolidation and to tag recovered output as Customer Goods."""
 		inv_type, customer = self._batch_customer_owner(batch_no)
 		return bool(customer) and inv_type in ("Customer Goods", "Customer Stock")
+
+	def _customer_owners(self, batch_nos):
+		"""``{batch_no: customer}`` for the customer-owned batches among ``batch_nos``.
+
+		Bulk form of ``_batch_customer_owner(b)[1] if _batch_is_customer_owned(b)``: one
+		query for the whole list. A batch missing here is not customer-owned."""
+		return {
+			name: b.custom_customer
+			for name, b in bulk_map(
+				"Batch", batch_nos, ["custom_inventory_type", "custom_customer"]
+			).items()
+			if b.custom_customer
+			and b.custom_inventory_type in ("Customer Goods", "Customer Stock")
+		}
 
 	def _item_allows_customer_goods(self, item_code):
 		"""True when the Item permits a Customer Goods inventory type. Minting a Customer
@@ -5061,10 +5097,19 @@ class RefiningEntry(Document):
 		)
 
 		customers = set()
+		# One read for every row's batch (a refining transfer carries thousands), handed
+		# to the resolver, which applies the same precedence as its own per-row read.
+		batches = bulk_map(
+			"Batch",
+			(row.get("batch_no") for row in se.items),
+			["custom_inventory_type", "custom_customer"],
+		)
 		for row in se.items:
 			if not row.get("batch_no"):
 				continue
-			inventory_type, customer = resolve_batch_ownership(row)
+			inventory_type, customer = resolve_batch_ownership(
+				row, batch=batches.get(row.batch_no) or {}
+			)
 			row.inventory_type = inventory_type
 			row.customer = customer
 			if customer:
@@ -6115,11 +6160,8 @@ class RefiningEntry(Document):
 			if flt(b.get("qty")) > 0
 		]
 		if exclude_blocked_customer:
-			batches = [
-				b
-				for b in batches
-				if not self._is_blocked_customer_batch(b.get("batch_no"))
-			]
+			blocked = self._blocked_customer_batches(b.get("batch_no") for b in batches)
+			batches = [b for b in batches if b.get("batch_no") not in blocked]
 
 		allocations = []
 		precision = 3
