@@ -61,6 +61,7 @@ doctype_js = {
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Supplier Quotation": "public/js/doctype_js/supplier_quotation.js",
+	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
 	"Payment Entry": "public/js/doctype_js/payment_entry.js",
 	"Warehouse": "public/js/doctype_js/warehouse.js",
 }
@@ -577,9 +578,16 @@ doc_events = {
 		"validate": [
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_transit_warehouse_empty",
+			# Item Group summary, pure weight, signed Stock Comparison difference and its totals.
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.set_reconciliation_summaries",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_RECON_VALIDATOR],
-		"before_submit": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_RECON_VALIDATOR],
+		"before_submit": [
+			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_RECON_VALIDATOR,
+			# Refuse while a transit transfer from / into one of its departments awaits receipt.
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_no_pending_transit",
+		],
 		"before_cancel": _EOD_LOCK_VALIDATOR,
 		# Reverses the custody event a Customer Gold revaluation wrote. ERPNext already
 		# reverses the stock value and the GL on cancel; without this the ledger kept the
