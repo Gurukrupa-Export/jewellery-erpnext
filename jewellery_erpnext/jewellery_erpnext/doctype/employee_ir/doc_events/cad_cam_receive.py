@@ -49,13 +49,14 @@ def get_receive_details_type(operation):
 	return value if value in FIELDS_BY_TYPE else None
 
 
-def get_receive_detail_fields(operation):
+def get_receive_detail_fields(operation, details_type=None):
 	"""Fieldnames the operation asks for on a receive, in table order ([] if unflagged).
 
 	The Department Operation's "Receive Detail Fields" table picks them; fields outside the
 	operation's type are ignored. With no rows, every field of the type is asked for.
+	Pass ``details_type`` when it is already known, to skip reading it again.
 	"""
-	details_type = get_receive_details_type(operation)
+	details_type = details_type or get_receive_details_type(operation)
 	if not details_type:
 		return []
 	group = FIELDS_BY_TYPE[details_type]
@@ -74,11 +75,28 @@ def get_receive_detail_fields(operation):
 	return picked or list(group)
 
 
-def _fields_for(doc):
-	"""{fieldname: label} the Employee IR asks for: a Receive on a flagged operation."""
+def _receive_config(doc):
+	"""(details_type, {fieldname: label}) the Employee IR asks for; (None, {}) if nothing.
+
+	Only a Receive on a flagged operation asks for anything. Read from the Department
+	Operation once per document (two queries) and kept on ``doc.flags``, because the submit
+	write calls this once per row.
+	"""
 	if doc.type != "Receive":
-		return {}
-	return {fn: ALL_FIELDS[fn] for fn in get_receive_detail_fields(doc.operation)}
+		return None, {}
+	flags = getattr(doc, "flags", None)
+	cached = flags.get("cad_cam_receive_config") if flags is not None else None
+	if cached and cached[0] == doc.operation:
+		return cached[1], cached[2]
+
+	details_type = get_receive_details_type(doc.operation)
+	fields = {
+		fn: ALL_FIELDS[fn]
+		for fn in get_receive_detail_fields(doc.operation, details_type)
+	}
+	if flags is not None:
+		flags["cad_cam_receive_config"] = (doc.operation, details_type, fields)
+	return details_type, fields
 
 
 def _is_empty(fieldname, value):
@@ -97,10 +115,7 @@ def validate_cad_cam_receive_details(doc):
 	Empty fields are NOT an error here. A draft Receive can be saved half filled, and the
 	required fields are enforced when it is submitted (validate_cad_cam_required_on_submit).
 	"""
-	details_type = (
-		get_receive_details_type(doc.operation) if doc.type == "Receive" else None
-	)
-	required = _fields_for(doc)
+	details_type, required = _receive_config(doc)
 	# The header copies drive the form only; keep them in step with the operation.
 	doc.receive_details_type = details_type
 	doc.receive_detail_fields = ",".join(required)
@@ -125,10 +140,9 @@ def validate_cad_cam_required_on_submit(doc):
 	Called from before_submit, so a draft can be saved with these empty and only the submit
 	is refused. Weights must be above 0. Does nothing on an Issue or an unflagged operation.
 	"""
-	required = _fields_for(doc)
+	details_type, required = _receive_config(doc)
 	if not required:
 		return
-	details_type = get_receive_details_type(doc.operation)
 
 	for row in doc.employee_ir_operations:
 		missing = [
@@ -145,22 +159,22 @@ def validate_cad_cam_required_on_submit(doc):
 def cad_cam_values_for_operation(doc, row, cancel=False):
 	"""Values to merge into the Manufacturing Operation update for one row.
 
-	Submit writes the row's details (overwriting any earlier receive); cancel blanks them
+	Submit writes the row's details for the fields the operation asks for (overwriting any
+	earlier receive). Cancel blanks every field of the operation's type, not only the ones
+	listed today: the list may have been narrowed since the receive was submitted, and the
+	Manufacturing Operation must not keep a value the cancel can no longer see
 	(0 for a weight, None for a file or text).
 	``receive_details_type`` and ``receive_detail_fields`` are set too: frappe.db.set_value
 	skips the fetch_from that would otherwise fill them on a save.
 	"""
-	details_type = (
-		get_receive_details_type(doc.operation) if doc.type == "Receive" else None
-	)
+	details_type, listed = _receive_config(doc)
 	if not details_type:
 		return {}
-	fields = list(_fields_for(doc))
 	values = {
 		"receive_details_type": details_type,
-		"receive_detail_fields": ",".join(fields),
+		"receive_detail_fields": ",".join(listed),
 	}
-	for fn in fields:
+	for fn in FIELDS_BY_TYPE[details_type] if cancel else listed:
 		if cancel:
 			# Float columns are NOT NULL; an Attach / Data column is blank as None.
 			values[fn] = 0 if fn in FLOAT_FIELDS else None

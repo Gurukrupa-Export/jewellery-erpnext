@@ -410,6 +410,30 @@ class TestPerOperationFieldList(IntegrationTestCase):
 			},
 		)
 
+	def test_cancel_clears_every_field_of_the_type_after_the_list_was_narrowed(
+		self, flag, get_all
+	):
+		"""Submitted with both CAM fields, list narrowed to Platform WT, then cancelled."""
+		flag.return_value = "CAM"
+		get_all.return_value = ["Platform WT"]
+		values = mod.cad_cam_values_for_operation(
+			FrappeDict({"type": "Receive", "operation": "x"}),
+			FrappeDict(CAM_ROW),
+			cancel=True,
+		)
+		self.assertIsNone(values["support_cam_file"])
+		self.assertEqual(values["platform_wt"], 0)
+		self.assertNotIn("cad_file", values)
+
+	def test_the_operation_is_read_once_per_document_not_per_row(self, flag, get_all):
+		flag.return_value = "CAM"
+		get_all.return_value = ["Platform WT"]
+		doc = FrappeDict({"type": "Receive", "operation": "x", "flags": FrappeDict()})
+		for _row in range(50):
+			mod.cad_cam_values_for_operation(doc, FrappeDict(CAM_ROW))
+		self.assertEqual(flag.call_count, 1)
+		self.assertEqual(get_all.call_count, 1)
+
 
 class TestGetEstimatedRptWt(IntegrationTestCase):
 	@classmethod
