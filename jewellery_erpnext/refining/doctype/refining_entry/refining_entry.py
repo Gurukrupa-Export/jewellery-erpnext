@@ -92,6 +92,24 @@ def secondary_item_row(value="Scrap"):
 	return {fieldname: value}
 
 
+def _refining_series_stubs(company, *stock_entry_types):
+	"""Naming stubs for the Stock Entries a refining transaction will mint, to pass to
+	``lock_order.preallocate_series_for_docs`` before the transaction's first Bin.
+
+	A stub must resolve to the counter row its real Stock Entry takes at insert, or the
+	pre-lock pins the wrong row. Refining Stock Entries take the default naming series
+	today, and so do these stubs.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import series_stubs
+
+	stubs = series_stubs(company, *stock_entry_types)
+	# TODO(C-42, fix/refining-stock-entry-own-counter-kggk-prod): when refining Stock
+	# Entries get their own naming series, call apply_refining_naming_series(stub) on each
+	# stub here. Without it these stubs would pin MAT-STE- again while the gate is on.
+	# tests/test_multi_counter_prelock.py fails until this is done.
+	return stubs
+
+
 def returned_stone_row(rate):
 	"""Valuation fields for a stone the refiner hands back, received at ``rate``.
 
@@ -3056,6 +3074,23 @@ class RefiningEntry(Document):
 						},
 					)
 
+		# Take every naming counter this submit will mint now, before the first Bin: the
+		# SRE cancels below write Bin.reserved_qty, then the transfer locks its own Bins.
+		# That covers the transfer and, for a Scrap shortfall, the dust Material Receipt that
+		# create_dust_opening_receipt_se mints right after it. Left to the inserts, Work
+		# Order Refining took MAT-STE- after the SRE cancels' Bins, and once Stock Entry
+		# naming is sharded per type the receipt's own counter would be taken while the
+		# transfer's Bins are held. The external Purchase Order counter stays terminal.
+		minted = ["Material Transfer"] if se.items else []
+		if self.refining_type == "Scrap Refining" and self._dust_shortfalls:
+			minted.append("Material Receipt")
+		if minted:
+			from jewellery_erpnext.jewellery_erpnext.lock_order import (
+				preallocate_series_for_docs,
+			)
+
+			preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
+
 		# Work Order Refining: release the source MWO Stock Reservation Entries so this
 		# Stock Entry can consume the now unreserved stock (otherwise the submit fails with
 		# "stock is not available").
@@ -3871,6 +3906,20 @@ class RefiningEntry(Document):
 						"use_serial_batch_fields": 1,
 					},
 				)
+
+		# Take this completion's naming counters before the Manufacture's Bins and the MOP
+		# Log rows complete_refining writes after it: the Manufacture itself and, when there
+		# is a refining loss, the scrap Material Transfer complete_refining mints last. With
+		# per-type naming that transfer's counter would otherwise be taken while Bins are
+		# held. The retry below re-enters the same rows.
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			preallocate_series_for_docs,
+		)
+
+		minted = ["Manufacture"]
+		if flt(self.refining_loss) > 0:
+			minted.append("Material Transfer")
+		preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
 
 		se.insert(ignore_permissions=True)
 		try:
