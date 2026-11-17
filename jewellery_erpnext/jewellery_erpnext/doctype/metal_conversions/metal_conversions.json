@@ -238,7 +238,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "depends_on": "eval:doc.source_qty && !doc.is_melting_loss && (doc.is_chain_manufacturing != 'Yes' || ['Issue','Receive','Submitted'].includes(doc.workflow_state))",
+   "depends_on": "eval:doc.source_qty && !doc.is_melting_loss && (doc.is_chain_manufacturing != 'Yes' || ['Issue','Submitted'].includes(doc.workflow_state))",
    "fieldname": "target_item",
    "fieldtype": "Link",
    "label": "Target Item",
