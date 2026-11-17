@@ -510,17 +510,24 @@ class _FakePropertySetters:
 		self.value = value
 		self.saves = 0
 		self.created = []
+		# Anything that is not a Property Setter goes to the real frappe: with a cold
+		# cache frappe itself loads System Settings (now_datetime -> time zone) or meta.
+		self.real_get_value = frappe.local.db.get_value
+		self.real_get_doc = frappe.get_doc
+		self.real_sql = frappe.local.db.sql
 
 	def get_value(self, doctype, filters=None, fieldname="name", *args, **kwargs):
 		if doctype != "Property Setter":
-			raise AssertionError(f"unexpected get_value({doctype!r})")
+			return self.real_get_value(doctype, filters, fieldname, *args, **kwargs)
 		if self.value is None:
 			return None
 		return (
 			self.value if fieldname == "value" else "Stock Entry-naming_series-options"
 		)
 
-	def get_doc(self, doctype, name):
+	def get_doc(self, doctype, *args, **kwargs):
+		if doctype != "Property Setter":
+			return self.real_get_doc(doctype, *args, **kwargs)
 		fake = MagicMock()
 		fake.flags = frappe._dict()
 		fake.value = self.value
@@ -532,9 +539,24 @@ class _FakePropertySetters:
 		fake.save.side_effect = save
 		return fake
 
+	def sql_reads_only(self, query, *args, **kwargs):
+		"""Plain reads run for real (read-only session); writes are recorded, never run."""
+		if _sql_verb(query) in _READ_VERBS:
+			return self.real_sql(query, *args, **kwargs)
+		return None
+
 	def make_property_setter(self, args, **kwargs):
 		self.created.append((args, kwargs))
 		self.value = args["value"]
+
+
+_READ_VERBS = {"SELECT", "SHOW", "EXPLAIN", "WITH"}
+_WRITE_VERBS = {"INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER", "CREATE", "DROP"}
+
+
+def _sql_verb(query):
+	text = str(query).lstrip()
+	return text.split(None, 1)[0].upper() if text else ""
 
 
 @contextmanager
@@ -542,7 +564,7 @@ def fake_store(value):
 	store = _FakePropertySetters(value)
 	with (
 		patch.object(frappe.local.db, "get_value", side_effect=store.get_value),
-		patch.object(frappe.local.db, "sql") as sql,
+		patch.object(frappe.local.db, "sql", side_effect=store.sql_reads_only) as sql,
 		patch.object(frappe, "get_doc", side_effect=store.get_doc),
 		patch.object(
 			frappe, "make_property_setter", side_effect=store.make_property_setter
@@ -553,6 +575,17 @@ def fake_store(value):
 		yield store
 
 
+def assert_no_sql_writes(sql_mock):
+	"""No INSERT/UPDATE/DELETE/REPLACE/DDL went through frappe.db.sql.
+
+	Plain reads are allowed: with a cold cache (no Redis) frappe itself may read
+	defaults or meta through frappe.db.sql, which says nothing about this code.
+	"""
+	for call in sql_mock.call_args_list:
+		query = call.args[0] if call.args else ""
+		assert _sql_verb(query) not in _WRITE_VERBS, query
+
+
 class TestEnsureRefiningNamingSeries(UnitTestCase):
 	CURRENT = "MAT-STE-\nMAT-STE-.YYYY.-"
 
@@ -560,7 +593,7 @@ class TestEnsureRefiningNamingSeries(UnitTestCase):
 		with gate(None), fake_store(self.CURRENT) as store:
 			self.assertIsNone(naming_mod.ensure_refining_naming_series())
 			self.assertEqual(store.saves, 0)
-			store.sql.assert_not_called()
+			assert_no_sql_writes(store.sql)
 		self.assertEqual(store.value, self.CURRENT)
 
 	def test_appends_after_existing_options(self):
@@ -607,7 +640,7 @@ class TestEnsureRefiningNamingSeries(UnitTestCase):
 			self.assertRaises(
 				frappe.ValidationError, naming_mod.ensure_refining_naming_series
 			)
-			store.sql.assert_not_called()
+			assert_no_sql_writes(store.sql)
 		self.assertEqual(store.saves, 0)
 
 	def test_rejects_invalid_series_before_writing(self):
@@ -615,7 +648,7 @@ class TestEnsureRefiningNamingSeries(UnitTestCase):
 			self.assertRaises(
 				InvalidNamingSeriesError, naming_mod.ensure_refining_naming_series
 			)
-			store.sql.assert_not_called()
+			assert_no_sql_writes(store.sql)
 		self.assertEqual(store.saves, 0)
 
 	def test_counter_row_is_monotonic(self):
