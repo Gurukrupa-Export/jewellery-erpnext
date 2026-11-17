@@ -3037,6 +3037,12 @@ def create_test_data():
 
 			_ensure_supplier_allowed_item_group_field()
 
+			from jewellery_erpnext.patches.add_supplier_metal_weight_limit import (
+				execute as _ensure_supplier_metal_weight_limit_field,
+			)
+
+			_ensure_supplier_metal_weight_limit_field()
+
 			from jewellery_erpnext.patches.add_mr_is_free_item_field import (
 				execute as _ensure_mr_is_free_item_field,
 			)
@@ -3084,6 +3090,12 @@ def create_test_data():
 			)
 
 			_add_metal_conversion_chain_sc()
+
+			from jewellery_erpnext.patches.add_process_control_fields import (
+				execute as _add_process_control_fields,
+			)
+
+			_add_process_control_fields()
 
 			from jewellery_erpnext.patches.add_metal_conversion_workflow import (
 				execute as _add_metal_conversion_workflow,
