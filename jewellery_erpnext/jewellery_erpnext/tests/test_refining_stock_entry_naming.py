@@ -82,15 +82,27 @@ class _Stop(Exception):
 	"""Raised by the stub insert to end a creator once its Stock Entry is being named."""
 
 
+class _Captured(list):
+	"""The inserted Stock Entries, plus the naming stubs the refining code pre-locked."""
+
+	def __init__(self):
+		super().__init__()
+		self.prelocked = []
+
+
 @contextmanager
 def capture_stock_entries(stop_at_insert=True):
 	"""Hand the refining code real, unsaved Stock Entries whose insert/submit are stubs.
 
 	Yields a list of ``{"se", "stock_entry_type", "naming_series"}`` dicts, one per
 	insert, with ``naming_series`` read AT insert -- the moment frappe names the doc.
+	The up-front counter pre-lock is recorded in ``.prelocked`` instead of taking rows.
 	"""
 	real_new_doc = frappe.new_doc
-	inserted = []
+	inserted = _Captured()
+
+	def record_prelock(*docs):
+		inserted.prelocked.extend(docs)
 
 	def fake_new_doc(doctype, *args, **kwargs):
 		doc = real_new_doc(doctype, *args, **kwargs)
@@ -116,6 +128,11 @@ def capture_stock_entries(stop_at_insert=True):
 
 	with ExitStack() as stack:
 		stack.enter_context(patch.object(frappe, "new_doc", side_effect=fake_new_doc))
+		stack.enter_context(
+			patch.object(
+				lock_order, "preallocate_series_for_docs", side_effect=record_prelock
+			)
+		)
 		stack.enter_context(patch.object(frappe, "publish_progress"))
 		stack.enter_context(patch.object(frappe, "publish_realtime"))
 		stack.enter_context(patch.object(RefiningEntry, "db_set"))
@@ -401,7 +418,16 @@ class TestCreatorsGateOff(_CreatorHarness):
 		self._assert_default(self.run_receive_from_supplier(None))
 
 	def test_external_scrap_submit(self):
-		self._assert_default(self.run_external_scrap_submit(None), count=2)
+		inserted = self.run_external_scrap_submit(None)
+		self._assert_default(inserted, count=2)
+		# The up-front pre-lock pins the same default row the entries are named from.
+		self.assertEqual(
+			[s.stock_entry_type for s in inserted.prelocked],
+			["Material Transfer", "Material Receipt"],
+		)
+		self.assertEqual(
+			{s.naming_series for s in inserted.prelocked}, {default_series()}
+		)
 
 
 class TestCreatorsGateOn(_CreatorHarness):
@@ -429,6 +455,12 @@ class TestCreatorsGateOn(_CreatorHarness):
 			["Material Transfer", "Material Receipt"],
 		)
 		self.assertEqual({r["naming_series"] for r in inserted}, {SERIES})
+		# The up-front pre-lock takes the refining row before the first Bin, and the
+		# entries then re-enter it: never MAT-STE-.
+		self.assertEqual(
+			[s.stock_entry_type for s in inserted.prelocked],
+			["Material Transfer", "Material Receipt"],
+		)
 		# And lock_order resolves both to the same tabSeries row, so the receipt -- named
 		# after the transfer's Bin locks -- re-enters a row the transaction already holds.
 		with patch.object(
@@ -436,6 +468,10 @@ class TestCreatorsGateOn(_CreatorHarness):
 		):
 			self.assertEqual(
 				{lock_order.series_prefix_for_doc(r["se"]) for r in inserted}, {SERIES}
+			)
+			self.assertEqual(
+				{lock_order.series_prefix_for_doc(s) for s in inserted.prelocked},
+				{SERIES},
 			)
 
 
