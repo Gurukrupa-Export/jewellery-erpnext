@@ -97,16 +97,15 @@ def _refining_series_stubs(company, *stock_entry_types):
 	``lock_order.preallocate_series_for_docs`` before the transaction's first Bin.
 
 	A stub must resolve to the counter row its real Stock Entry takes at insert, or the
-	pre-lock pins the wrong row. Refining Stock Entries take the default naming series
-	today, and so do these stubs.
+	pre-lock pins the wrong row. Refining Stock Entries take the refining naming series
+	when site_config ``refining_se_naming_series`` is set (and the default otherwise), so
+	each stub goes through the same ``apply_refining_naming_series`` as the real entries.
 	"""
 	from jewellery_erpnext.jewellery_erpnext.lock_order import series_stubs
 
 	stubs = series_stubs(company, *stock_entry_types)
-	# TODO(C-42, fix/refining-stock-entry-own-counter-kggk-prod): when refining Stock
-	# Entries get their own naming series, call apply_refining_naming_series(stub) on each
-	# stub here. Without it these stubs would pin MAT-STE- again while the gate is on.
-	# tests/test_multi_counter_prelock.py fails until this is done.
+	for stub in stubs:
+		apply_refining_naming_series(stub)
 	return stubs
 
 
