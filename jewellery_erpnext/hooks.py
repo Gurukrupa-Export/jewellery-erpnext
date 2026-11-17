@@ -17,9 +17,12 @@ app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dial
 # layout and gke's fixture import then resets the two anchors it owns. migrate.py runs
 # after_migrate at the end of post_schema_updates, after sync_fixtures, so it is the only
 # hook that sees the finished site. Idempotent, and swallows its own errors.
-after_migrate = (
-	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
-)
+after_migrate = [
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate",
+	# Refining Stock Entry naming series: option + counter row. A no-op unless
+	# site_config sets refining_se_naming_series (see refining/stock_entry_naming.py).
+	"jewellery_erpnext.refining.stock_entry_naming.after_migrate",
+]
 
 # Provisions this app's custom fields, BEFORE fixtures import (installer.py:360 vs :367).
 # That direction is required: a fixture's Dynamic Link record needs its target Link field to
