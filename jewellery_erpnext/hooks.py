@@ -296,6 +296,11 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.release_allocation",
 	},
 	"Stock Entry": {
+		# lock_order RULE F (C-01): a Stock Entry minted by an Employee IR / Serial Number
+		# Creator / Product Certification cascade whose naming counter that cascade did not
+		# pre-lock takes it NOWAIT, after the Bins, instead of waiting. Inert for every other
+		# Stock Entry: no plan is recorded for it.
+		"before_naming": "jewellery_erpnext.jewellery_erpnext.lock_order.guard_unplanned_stock_entry_counter",
 		"validate": [
 			# No stock moves for a PMO on Hold or Closed. First, so nothing else runs for an
 			# entry that is refused anyway; validate never sees a cancel, so a Close's cancels

@@ -572,7 +572,23 @@ class EmployeeIR(Document):
 		prelocked = not cancel and bool(
 			self.flags.get(current_operation_guard.RECEIVE_PRELOCKS_FLAG)
 		)
-		if not prelocked:
+		if prelocked:
+			# C-01: a REST insert-and-submit took the early pre-locks in before_insert, before
+			# the document had a name, so its plan could not be recorded for the Stock Entry
+			# before_naming guard then. Record it now (idempotent for a saved draft's submit).
+			planned = self.flags.get("planned_stock_entry_types")
+			if planned is not None:
+				from jewellery_erpnext.jewellery_erpnext.lock_order import (
+					record_stock_entry_plan,
+				)
+
+				record_stock_entry_plan(self, self.company, planned)
+		else:
+			if not cancel:
+				# C-06: the in-memory row checks the loop below would make, made before the
+				# first lock, so a bad row fails without holding a Tree, a naming counter or a
+				# Bin. The loop keeps its own copy of the check.
+				_validate_received_gross_wt(self)
 			# Canonical lock order (lock_order.py): the Tree Number is a PARENT CONTROL ROW and
 			# must be locked at position 1 — before any tabSeries / tabBin lock taken further down
 			# by the Main Slip injection and the Process Loss entries. Locking it only at
@@ -1391,6 +1407,8 @@ def take_receive_prelocks(eir):
 	are resolved first because validate re-resolves them on the submit save as well: locking the
 	trees the rows will carry keeps any tree from being taken after the work-order block.
 	"""
+	# C-06: the in-memory row check, before the first lock (also run in on_submit_receive).
+	_validate_received_gross_wt(eir)
 	resolve_receive_tree_numbers(eir)
 	lock_trees_for_eir(eir)
 	lock_finding_repack_trees(eir)
@@ -1443,18 +1461,15 @@ def _lock_receive_series_and_bins(eir, department_wh, actor_wh):
 	by each SE's prelock_bins hook; create_loss_stock_entries reduces SREs in stock_lock_key
 	order (RULE A).
 	"""
-	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
-		PROCESS_LOSS_SE_TYPE,
-	)
 	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
-		MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
-		REPACK_STOCK_ENTRY_TYPE,
 		_resolve_source_warehouse_raw_material,
+	)
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.receive_naming import (
+		receive_mint_types,
 	)
 	from jewellery_erpnext.jewellery_erpnext.lock_order import (
 		lock_bins,
-		preallocate_series_for_docs,
-		series_stubs,
+		preallocate_stock_entry_counters,
 	)
 
 	pairs = [
@@ -1469,17 +1484,14 @@ def _lock_receive_series_and_bins(eir, department_wh, actor_wh):
 	pairs += finding_bin_pairs(
 		eir, _resolve_source_warehouse_raw_material(eir), department_wh
 	)
-	# Pin each nested SE type's naming counter (the per-(company x type) Document Naming Rule
-	# counter post-reshard, or the tabSeries fallback) BEFORE the Bins -- a blank stub matches no
-	# naming rule and would pin the wrong (shared MAT-STE-) row while leaving the real counters
-	# unpinned.
-	preallocate_series_for_docs(
-		*series_stubs(
-			eir.company,
-			MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
-			REPACK_STOCK_ENTRY_TYPE,
-			PROCESS_LOSS_SE_TYPE,
-		)
+	# C-01 (lock_order RULE F): pin the naming counter of each Stock Entry type this receive can
+	# mint -- the per-(company x type) Document Naming Rule counter, or the tabSeries fallback --
+	# BEFORE the Bins, and no other. A receive that mints nothing takes no naming lock at all,
+	# and one that books only a Process Loss no longer waits for the Repack rule.
+	# receive_mint_types is a superset of the mint sites; a Stock Entry it did not plan for is
+	# taken NOWAIT by the before_naming guard.
+	eir.flags.planned_stock_entry_types = preallocate_stock_entry_counters(
+		eir.company, receive_mint_types(eir), plan_for=eir
 	)
 	lock_bins(pairs)
 
@@ -1604,6 +1616,18 @@ def _bulk_no_wastage_batches(batch_nos):
 		)
 	}
 	return {b["name"] for b in batches if b["custom_customer"] in flagged}
+
+
+def _validate_received_gross_wt(eir):
+	"""Throw on a receive row with no Received Gross Wt for a non-zero Gross Wt.
+
+	The same test, and message, as the one in ``on_submit_receive``'s row loop, run over every
+	row before the receive takes any lock (C-06). Nothing in the cascade writes either weight
+	on the document's rows, so the loop's copy can only agree.
+	"""
+	for row in eir.employee_ir_operations:
+		if row.received_gross_wt == 0 and row.gross_wt != 0:
+			frappe.throw(_("Row {0}: Received Gross Wt Missing").format(row.idx))
 
 
 def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):

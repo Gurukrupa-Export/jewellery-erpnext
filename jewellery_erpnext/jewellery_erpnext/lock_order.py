@@ -102,12 +102,21 @@ of a cascade would make every concurrent SNC submit queue on it for the cascade'
 duration -- exactly the hot-row pathology ``patches/shard_stock_entry_naming_by_type.py``
 was written to escape. Minting late holds it for milliseconds instead.
 
+RULE F (C-01) -- pin only the naming counters a cascade will mint. A cascade that
+pre-locks Stock Entry counters before its Bins passes the Stock Entry types it can still
+mint to :func:`preallocate_stock_entry_counters`; that list must be a SUPERSET of what it
+mints. A counter it did not plan for may be taken after the Bins only with NOWAIT
+(:func:`guard_unplanned_stock_entry_counter`, the Stock Entry ``before_naming`` hook), so it
+is granted at once or refused at once and can never queue behind, or close a cycle with, a
+transaction that wants this one's Bins.
+
 These helpers are deliberately tiny and side-effect-free except for the row locks
 they take (which release on the enclosing transaction's COMMIT/ROLLBACK, exactly
 like every other Frappe row lock).
 """
 
 import frappe
+from frappe import _
 
 # Sentinel used so a missing/None warehouse or batch sorts deterministically
 # (before any real value) instead of raising on ``None < str``.
@@ -608,6 +617,142 @@ def preallocate_series_for_docs(*docs):
 	for name in sorted(dnr_names):
 		frappe.db.get_value("Document Naming Rule", name, "counter", for_update=True)
 	preallocate_series(series_prefixes)
+
+
+# ---------------------------------------------------------------------------
+# RULE F (C-01): planned Stock Entry naming counters
+# ---------------------------------------------------------------------------
+# frappe.flags key: {(parent doctype, parent name): {(company, stock_entry_type), ...}}. Lives
+# exactly as long as the counter locks it describes -- cleared on the enclosing COMMIT or
+# ROLLBACK (a savepoint rollback keeps both the locks and the plan).
+PLANNED_COUNTERS_FLAG = "planned_stock_entry_counters"
+
+# The header link each planning cascade sets on the Stock Entries it mints, before insert.
+_PLAN_PARENT_LINKS = (
+	("employee_ir", "Employee IR"),
+	("custom_serial_number_creator", "Serial Number Creator"),
+	("product_certification", "Product Certification"),
+)
+
+
+class NamingCounterBusy(frappe.ValidationError):
+	"""An unplanned naming counter was busy, so the submit stopped instead of waiting."""
+
+
+def record_stock_entry_plan(parent, company, stock_entry_types):
+	"""Remember which ``(company, stock_entry_type)`` counters ``parent``'s cascade pinned.
+
+	An empty plan is recorded too: it means "this cascade mints no Stock Entry", so any that
+	does appear is guarded. A parent without a doctype and name (an unsaved document) records
+	nothing and its Stock Entries are not guarded -- the behaviour before RULE F.
+	"""
+	doctype = parent.get("doctype") if parent is not None else None
+	name = parent.get("name") if parent is not None else None
+	if not doctype or not name:
+		return
+	key = (doctype, name)
+	plans = frappe.flags.get(PLANNED_COUNTERS_FLAG)
+	if plans is None:
+		plans = frappe.flags[PLANNED_COUNTERS_FLAG] = {}
+	plans[key] = {(company, t) for t in stock_entry_types}
+
+	def _forget():
+		current = frappe.flags.get(PLANNED_COUNTERS_FLAG)
+		if current:
+			current.pop(key, None)
+
+	# commit() clears the after_rollback queue and rollback() the after_commit one, so the
+	# plan needs a callback in both.
+	frappe.db.after_commit.add(_forget)
+	frappe.db.after_rollback.add(_forget)
+
+
+def preallocate_stock_entry_counters(company, stock_entry_types, *, plan_for=None):
+	"""Pin ONLY the naming counters of the Stock Entry types this cascade can still mint.
+
+	``stock_entry_types`` must be a SUPERSET of every Stock Entry type the cascade inserts
+	after its Bin locks (RULE F). An empty list takes no lock at all. Otherwise the locking is
+	:func:`preallocate_series_for_docs` over :func:`series_stubs`, unchanged: Document Naming
+	Rule rows sorted by name, then ``tabSeries`` rows sorted by prefix, all before any Bin.
+
+	``plan_for`` is the parent document whose Stock Entries carry its link (see
+	``_PLAN_PARENT_LINKS``). The plan is recorded for it so the Stock Entry ``before_naming``
+	guard can take any type outside it with NOWAIT.
+
+	Returns the sorted, de-duplicated types that were planned.
+	"""
+	types = tuple(sorted({t for t in (stock_entry_types or ()) if t}))
+	if types:
+		preallocate_series_for_docs(*series_stubs(company, *types))
+	if plan_for is not None:
+		record_stock_entry_plan(plan_for, company, types)
+	return types
+
+
+def lock_stock_entry_counter_nowait(doc):
+	"""Take the naming counter ``doc`` is about to increment with ``FOR UPDATE NOWAIT``.
+
+	Granted at once (also when this transaction already holds the row) or refused at once,
+	so a late acquisition can never queue (1205) or close a cycle (1213). The counter is
+	resolved from ``doc`` itself, the way ``set_new_name`` will resolve it: its Document
+	Naming Rule when one matches, otherwise its naming-series ``tabSeries`` row.
+
+	Returns ``(kind, key)`` for the row taken, or ``None`` when ``doc`` names off no counter.
+	"""
+	rule = document_naming_rule_for_doc(doc)
+	if rule:
+		kind, key = "rule", rule
+		sql = "SELECT `counter` FROM `tabDocument Naming Rule` WHERE name = %s FOR UPDATE NOWAIT"
+	else:
+		kind, key = "series", series_prefix_for_doc(doc)
+		if not key:
+			return None
+		sql = "SELECT `current` FROM `tabSeries` WHERE name = %s FOR UPDATE NOWAIT"
+	try:
+		frappe.db.sql(sql, (key,))
+	except (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
+		frappe.throw(
+			_(
+				"{0} numbering is in use by another submission. Nothing was posted; "
+				"please submit again."
+			).format(doc.get("stock_entry_type") or doc.doctype),
+			NamingCounterBusy,
+			title=_("Numbering busy"),
+		)
+	return kind, key
+
+
+def guard_unplanned_stock_entry_counter(doc, method=None):
+	"""Stock Entry ``before_naming`` hook (RULE F): the first step of frappe's ``set_new_name``.
+
+	Inert unless the Stock Entry belongs to a cascade that recorded a plan with
+	:func:`preallocate_stock_entry_counters` in this transaction. For such a Stock Entry whose
+	``(company, stock_entry_type)`` was not planned, the counter is taken NOWAIT before frappe
+	takes it the waiting way, and the plan grows so a second entry of the type passes freely.
+	"""
+	plans = frappe.flags.get(PLANNED_COUNTERS_FLAG)
+	if not plans or doc.get("amended_from"):
+		return
+
+	plan = parent = None
+	for field, parent_doctype in _PLAN_PARENT_LINKS:
+		parent_name = doc.get(field)
+		if parent_name and (parent_doctype, parent_name) in plans:
+			parent = (parent_doctype, parent_name)
+			plan = plans[parent]
+			break
+	if plan is None:
+		return
+
+	counter = (doc.get("company"), doc.get("stock_entry_type"))
+	if counter in plan:
+		return
+	taken = lock_stock_entry_counter_nowait(doc)
+	plan.add(counter)
+	frappe.logger("jewellery_erpnext.lock_order").warning(
+		"C-01: unplanned Stock Entry counter %s for %s %s (type %r, company %r); taken NOWAIT"
+		% (taken, parent[0], parent[1], counter[1], counter[0])
+	)
 
 
 def prelock_stamping_series():
