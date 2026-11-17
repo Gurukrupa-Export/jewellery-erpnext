@@ -28,9 +28,17 @@ app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dial
 #
 # Idempotent. Non-fatal by design, but it prints as well as logging, so a failure is visible
 # in the migrate output rather than only in the Error Log.
-after_migrate = (
-	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
-)
+#
+# ensure_read_path_indexes is here for the install-app reason, which on production is not
+# hypothetical: the MOP Log / Serial and Batch indexes the locked stock-posting path reads
+# through were declared by patches that install-app only marked as done, so they never
+# existed. Re-checking on every migrate builds them on such a site, and retries one whose
+# online build gave up on a metadata lock ("busy").
+# Same contract: idempotent (no DDL once present), non-fatal, printed as well as logged.
+after_migrate = [
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate",
+	"jewellery_erpnext.patches.ensure_read_path_indexes.after_migrate",
+]
 
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
