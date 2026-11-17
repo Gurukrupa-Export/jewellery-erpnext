@@ -30,6 +30,7 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 	refining_line_terms,
 	resolve_from_index,
 )
+from jewellery_erpnext.refining import kggk_po
 from jewellery_erpnext.utils import (
 	get_item_from_attribute,
 	get_variant_of_item,
@@ -220,6 +221,52 @@ def get_refining_consumable_items():
 	)
 
 
+@frappe.whitelist()
+def list_kggk_refining_pos(company=None):
+	"""KGGK's open refining service Purchase Orders on this (refiner) site's supplier.
+
+	The refiner's Supplier record on KGGK is the same Supplier ID as the internal Supplier
+	that represents this company here (masters are shared), so it narrows the list to the
+	orders raised on us. POs another Refining Entry here already uses are left out.
+	"""
+	frappe.has_permission("Refining Entry", "create", throw=True)
+	supplier = None
+	if company:
+		supplier = frappe.db.get_value(
+			"Supplier", {"represents_company": company, "disabled": 0}, "name"
+		)
+	rows = kggk_po.fetch_refining_pos(supplier)
+	if not rows:
+		return []
+	used = set(
+		frappe.get_all(
+			"Refining Entry",
+			filters={
+				"source_purchase_order": ["in", [r.get("name") for r in rows]],
+				"docstatus": ["<", 2],
+				"parent_refining_entry": ["is", "not set"],
+			},
+			pluck="source_purchase_order",
+		)
+	)
+	return [r for r in rows if r.get("name") not in used]
+
+
+def _customer_for_company(company):
+	"""This site's Customer for ``company`` (KGGK), or None when it is ambiguous."""
+	if not company:
+		return None
+	customer = frappe.db.get_value(
+		"Customer", {"represents_company": company, "disabled": 0}, "name"
+	)
+	if customer:
+		return customer
+	matches = frappe.get_all(
+		"Customer", filters={"customer_name": company, "disabled": 0}, pluck="name"
+	)
+	return matches[0] if len(matches) == 1 else None
+
+
 class RefiningEntry(Document):
 	def before_insert(self):
 		# Set the series before autoname runs (autoname happens before validate), so
@@ -229,6 +276,7 @@ class RefiningEntry(Document):
 	def validate(self):
 		self.set_naming_series()
 		self.set_external_from_company()
+		self.validate_source_purchase_order()
 		self.validate_configuration()
 		self.set_source_department_from_user()
 		# Before validate_warehouse: the flow clears multiple-department, after which the
@@ -260,6 +308,9 @@ class RefiningEntry(Document):
 					"Refining Warehouse could not be determined for Refining Department {0}."
 				).format(frappe.bold(self.refining_department))
 			)
+		if self.source_purchase_order:
+			self.before_submit_po_receipt()
+			return
 		# Build the consolidated Material Items at submit for the types that source from
 		# other documents, so an API-created entry (which never scanned) still has rows.
 		if self.refining_type in ("Scrap Refining", "Work Order Refining"):
@@ -321,6 +372,13 @@ class RefiningEntry(Document):
 		if self.parent_refining_entry:
 			return
 
+		if getattr(self, "source_purchase_order", None):
+			# The material arrives from KGGK: receive it here, then tell KGGK. KGGK is told
+			# LAST, so a refusal there rolls this submit (and the receipt) back.
+			self.create_po_receipt_se()
+			kggk_po.push_receipt(self)
+			return
+
 		self.create_material_transfer_se()
 
 		if self.refining_type == "Scrap Refining":
@@ -333,6 +391,249 @@ class RefiningEntry(Document):
 		self._delete_draft_central_transfer()
 		self.cancel_linked_stock_entries()
 		self._cancel_refining_po()
+		if self.source_purchase_order and not self.parent_refining_entry:
+			# Last, for the same reason as push_receipt: a refusal rolls the cancel back.
+			kggk_po.push_reversal(self)
+
+	# --- Received from a KGGK Purchase Order (the refiner's side of external refining) ---
+	#
+	# KGGK raises a refining service Purchase Order on this site's company. Here, an
+	# internal entry is created FROM that PO (Get Items from KGGK Purchase Order): on submit
+	# the material is received into the refining warehouse as KGGK's Customer Goods, KGGK
+	# marks the PO received, and the normal refining lifecycle (Receive Materials ->
+	# Classify -> ... -> Transfer) runs on it unchanged.
+
+	@frappe.whitelist()
+	def set_from_kggk_purchase_order(self, purchase_order):
+		"""Fill this draft from KGGK's ``purchase_order``: PO details, customer, materials."""
+		if self.docstatus != 0:
+			frappe.throw(_("Only a draft Refining Entry can be filled from a Purchase Order."))
+		if cint(self.is_external):
+			frappe.throw(
+				_(
+					"An External Refining entry sends material out; untick Is External "
+					"Refining to receive a KGGK Purchase Order."
+				)
+			)
+		purchase_order = (purchase_order or "").strip()
+		if not purchase_order:
+			frappe.throw(_("Select a KGGK Purchase Order."))
+
+		data = frappe._dict(kggk_po.fetch_refining_po(purchase_order) or {})
+		received_by = data.get("gk_refining_entry")
+		if received_by and received_by != self.name:
+			frappe.throw(
+				_("KGGK Purchase Order {0} is already received by Refining Entry {1}.").format(
+					frappe.bold(purchase_order), frappe.bold(received_by)
+				)
+			)
+		materials = [frappe._dict(row) for row in data.get("materials") or []]
+		if not materials:
+			frappe.throw(
+				_("KGGK Purchase Order {0} carries no material to receive.").format(
+					frappe.bold(purchase_order)
+				)
+			)
+		missing = sorted(
+			{row.item_code for row in materials if not frappe.db.exists("Item", row.item_code)}
+		)
+		if missing:
+			frappe.throw(
+				_("These items are not on this site yet: {0}").format(", ".join(missing))
+			)
+
+		# Scrap and Unused/Loose Material keep their type; a Work Order or Serial Number
+		# consignment arrives as loose material (its metal, findings and stones).
+		self.refining_type = (
+			data.refining_type
+			if data.refining_type in (REFINING_TYPE_SCRAP, REFINING_TYPE_UNUSED)
+			else REFINING_TYPE_UNUSED
+		)
+		self.set_naming_series()
+		self.source_purchase_order = data.purchase_order or purchase_order
+		self.source_refining_entry = data.refining_entry
+		self.source_po_company = data.company
+		self.source_po_supplier = data.supplier_name or data.supplier
+		if not self.customer:
+			self.customer = _customer_for_company(data.company)
+
+		row_source = (
+			SOURCE_TYPE_SCRAP
+			if self.refining_type == REFINING_TYPE_SCRAP
+			else SOURCE_TYPE_UNUSED
+		)
+		self.set("material_items", [])
+		for row in materials:
+			self.append(
+				"material_items",
+				{
+					"item_code": row.item_code,
+					"qty": flt(row.qty, 3),
+					"uom": row.uom
+					or frappe.db.get_value("Item", row.item_code, "stock_uom"),
+					"purity": row.purity
+					if row.purity and frappe.db.exists("Attribute Value", row.purity)
+					else None,
+					"source_type": SOURCE_TYPE_CONSUMABLE
+					if cint(row.is_consumable)
+					else row_source,
+					"is_consumable": cint(row.is_consumable),
+					"warehouse": self.refining_warehouse,
+				},
+			)
+
+		if self.refining_type == REFINING_TYPE_SCRAP:
+			total = flt(sum(flt(row.qty) for row in self.material_items), 3)
+			self.multiple_department = 0
+			self.multiple_operation = 0
+			self.date_from = self.date_from or self.posting_date
+			self.date_to = self.date_to or self.posting_date
+			self.system_quantity = total
+			self.physical_quantity = total
+		return {
+			"purchase_order": self.source_purchase_order,
+			"rows": len(self.material_items),
+			"customer": self.customer,
+		}
+
+	def validate_source_purchase_order(self):
+		if not self.source_purchase_order:
+			return
+		if cint(self.is_external):
+			frappe.throw(
+				_(
+					"Refining Entry {0} receives KGGK Purchase Order {1}; it cannot also be "
+					"an External Refining entry."
+				).format(frappe.bold(self.name), frappe.bold(self.source_purchase_order))
+			)
+		if not self.customer:
+			frappe.throw(
+				_(
+					"Customer is mandatory: the material from KGGK Purchase Order {0} is "
+					"received as that customer's goods."
+				).format(frappe.bold(self.source_purchase_order))
+			)
+		if self.parent_refining_entry:
+			# The processing copy carries its parent's PO; it never receives it again.
+			return
+		other = frappe.db.get_value(
+			"Refining Entry",
+			{
+				"source_purchase_order": self.source_purchase_order,
+				"name": ["!=", self.name or ""],
+				"docstatus": ["<", 2],
+				"parent_refining_entry": ["is", "not set"],
+			},
+			"name",
+		)
+		if other:
+			frappe.throw(
+				_("KGGK Purchase Order {0} is already used by Refining Entry {1}.").format(
+					frappe.bold(self.source_purchase_order), frappe.bold(other)
+				)
+			)
+
+	def before_submit_po_receipt(self):
+		if not self.material_items:
+			frappe.throw(
+				_("No materials to receive. Use Get Items from KGGK Purchase Order.")
+			)
+		not_stock = sorted(
+			{
+				row.item_code
+				for row in self.material_items
+				if not frappe.db.get_value("Item", row.item_code, "is_stock_item")
+			}
+		)
+		if not_stock:
+			frappe.throw(
+				_("These items are not stock items and cannot be received: {0}").format(
+					", ".join(not_stock)
+				)
+			)
+		self.validate_customer_block()
+		self.validate_variant_restriction()
+
+	def create_po_receipt_se(self):
+		"""One Material Receipt of the KGGK material into the refining warehouse.
+
+		Every batched row gets a FRESH batch, minted as the customer's Customer Goods when
+		the item allows it, and that batch is written back onto its Material Items row:
+		create_repack_se consumes a row's own batch, so the processing copy refines exactly
+		this material and the recovered metal inherits the customer through
+		_recovered_output_customer. Received at zero valuation — it is the customer's
+		metal, not stock this company bought.
+		"""
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = "Material Receipt"
+		se.purpose = "Material Receipt"
+		se.company = self.company
+		se.custom_refining_entry = self.name
+		se.auto_created = 1
+		se.manufacturer = self.manufacturer
+		se.remarks = _("Received against KGGK Purchase Order {0} (Refining Entry {1})").format(
+			self.source_purchase_order, self.source_refining_entry or "-"
+		)
+
+		batches = {}
+		for row in self.material_items:
+			qty = flt(row.qty, 3)
+			if not row.item_code or qty < 0.001:
+				continue
+			owned = bool(self.customer) and self._item_allows_customer_goods(row.item_code)
+			customer = self.customer if owned else None
+			batch_no = None
+			if frappe.db.get_value("Item", row.item_code, "has_batch_no"):
+				batch_no = self._auto_create_batch(
+					row.item_code, customer=customer, force=True
+				)
+				batches[row.name] = batch_no
+			line = {
+				"item_code": row.item_code,
+				"qty": qty,
+				"uom": row.uom,
+				"t_warehouse": self.refining_warehouse,
+				"purity": row.purity,
+				"batch_no": batch_no,
+				"use_serial_batch_fields": 1,
+				"allow_zero_valuation_rate": 1,
+			}
+			if not batch_no:
+				line["inventory_type"] = "Customer Goods" if customer else "Regular Stock"
+				line["customer"] = customer
+			se.append("items", line)
+
+		if not se.items:
+			frappe.throw(_("No material to receive."))
+
+		not_owned = sorted(
+			{
+				row.item_code
+				for row in self.material_items
+				if self.customer and not self._item_allows_customer_goods(row.item_code)
+			}
+		)
+		if not_owned:
+			frappe.msgprint(
+				_(
+					"These items do not allow Customer Goods and were received as Regular "
+					"Stock: {0}"
+				).format(", ".join(not_owned)),
+				alert=True,
+				indicator="orange",
+			)
+
+		self.set_dust_receipt_difference_account(se)
+		self._stamp_batch_ownership(se)
+		se.insert(ignore_permissions=True)
+		se.submit()
+
+		self.db_set("po_receipt_se", se.name)
+		for row in self.material_items:
+			updates = {"warehouse": self.refining_warehouse}
+			if batches.get(row.name):
+				updates["batch_no"] = batches[row.name]
+			row.db_set(updates, update_modified=False)
 
 	# --- External Refining (the "Is External Refining" checkbox) ---
 	#
@@ -610,7 +911,8 @@ class RefiningEntry(Document):
 		and writes nothing, so it doubles as the dry-run harness
 		(preview_external_refining_po)."""
 		if index is None:
-			index = build_refinery_price_index(self.refining_type)
+			# The supplier's own price lists first, then the every-supplier ones.
+			index = build_refinery_price_index(self.refining_type, self.supplier)
 
 		groups = self._external_po_groups(index)
 		if not groups and flt(self.qty_to_refine) > 0:
@@ -663,16 +965,20 @@ class RefiningEntry(Document):
 		}
 
 	def create_external_refining_po(self):
-		"""After the material transfer: ALWAYS create the draft service Purchase Order —
-		every external entry gets one, no exceptions.
+		"""After the material transfer: ALWAYS create the service Purchase Order — every
+		external entry gets one, no exceptions.
 
 		It carries ONE LINE PER (price list, UOM, consumable item) present in Material Items
 		(see _external_po_groups), each priced NOW from that group's own Refinery Price List
 		slab on the group's summed weight. qty is the WEIGHT and rate is PER UNIT, so
 		``amount = qty x rate`` — except a Flat Charge, which is a per-consignment fee and
 		stays qty 1 (see refining_line_terms). A group with no matching slab gets a rate-0
-		line for the purchase team to price manually. Left as a draft for the buyer to
-		review; the physical flow never blocks on pricing.
+		line for the purchase team to price manually.
+
+		Fully priced (every line rate > 0) the PO is SUBMITTED, so the refiner can receive
+		against it (the GK Refining Entry selects it and updates its received qty); with any
+		rate-0 line it stays a draft for the buyer to price and submit. A failed submit
+		leaves the PO a draft too — the physical flow never blocks on pricing.
 		"""
 		po = frappe.new_doc("Purchase Order")
 		po.refining_entry = self.name
@@ -692,6 +998,7 @@ class RefiningEntry(Document):
 
 		po.insert(ignore_permissions=True)
 		self.db_set("refining_entry_po", po.name)
+		self._submit_priced_refining_po(po, unpriced)
 
 		if unpriced:
 			frappe.msgprint(
@@ -708,6 +1015,44 @@ class RefiningEntry(Document):
 				alert=True,
 				indicator="orange",
 			)
+
+	def _submit_priced_refining_po(self, po, unpriced):
+		"""Submit ``po`` when every line carries a rate; otherwise leave it a draft.
+
+		Checked on ``po.items`` after insert, not on the lines we built, because ERPNext
+		recomputes rates during insert. The submit runs under a savepoint: a budget,
+		authorization or site-workflow refusal must not undo the material transfer this
+		entry has just booked, so it is logged and the PO stays a draft for the buyer.
+		"""
+		if unpriced or not po.items or any(flt(d.rate) <= 0 for d in po.items):
+			return False
+
+		save_point = "refining_po_submit"
+		frappe.db.savepoint(save_point)
+		try:
+			po.flags.ignore_permissions = True
+			po.submit()
+			return True
+		except Exception as submit_error:
+			try:
+				frappe.db.rollback(save_point=save_point)
+			except Exception:
+				# A deadlock discards the whole transaction and every savepoint; there is
+				# nothing left to keep, so surface the original failure.
+				raise submit_error from None
+			frappe.log_error(
+				title=f"Refining PO auto-submit failed: {po.name}",
+				message=frappe.get_traceback(),
+			)
+			frappe.msgprint(
+				_(
+					"Purchase Order {0} could not be submitted automatically and was left "
+					"as a draft. Review and submit it manually."
+				).format(frappe.bold(po.name)),
+				alert=True,
+				indicator="orange",
+			)
+			return False
 
 	@frappe.whitelist()
 	def receive_from_supplier(self, recovery_weight):
@@ -1057,7 +1402,7 @@ class RefiningEntry(Document):
 		Purity is mandatory" on a plain Save and resolve source warehouses from Stock
 		Reservation Entries whose lifecycle is handled at submit.
 		"""
-		if self.docstatus != 0 or self.material_items:
+		if self.docstatus != 0 or self.material_items or self.source_purchase_order:
 			return
 		if (
 			self.refining_type == "Scrap Refining"
@@ -1072,6 +1417,13 @@ class RefiningEntry(Document):
 		Bin.actual_qty diverged from the fetched material rows, which is what made the
 		System Quantity look wrong against the material table."""
 		if self.refining_type != "Scrap Refining" or self.docstatus != 0:
+			return
+		if self.source_purchase_order:
+			# The material is still at KGGK, not in this site's scrap warehouse: the system
+			# quantity is what the Purchase Order sent.
+			self.system_quantity = flt(
+				sum(flt(row.qty) for row in self.material_items), 3
+			)
 			return
 		self.system_quantity = flt(self._compute_dust_system_quantity(), 3)
 
