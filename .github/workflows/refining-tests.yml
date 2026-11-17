@@ -66,3 +66,5 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_receive_split_backfill
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bounded_retry
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_db_isolation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_blocked_variants
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_form_locks
