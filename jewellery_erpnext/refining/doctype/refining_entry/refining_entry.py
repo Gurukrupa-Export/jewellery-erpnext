@@ -40,6 +40,31 @@ EXTERNAL_PRICING_CATEGORY = {
 	REFINING_TYPE_SCRAP: "REF-MD-001",
 }
 
+#: The GST tax template India Compliance sets on the external refinery's service Purchase
+#: Order. ERPNext requires Select on it for the user who submits the Refining Entry.
+PO_TAX_TEMPLATE_DOCTYPE = "Purchase Taxes and Charges Template"
+
+
+def _denied_po_tax_template(exc):
+	"""Name of the Purchase Taxes and Charges Template whose Select check raised ``exc``.
+
+	The check is ERPNext's ``require_permission(doctype, name, ptype)`` (reached through
+	``get_taxes_and_charges``); its frame in the traceback names the template. None when
+	the PermissionError came from any other check, so that one is never reported as a
+	missing template permission.
+	"""
+	template = None
+	tb = exc.__traceback__
+	while tb is not None:
+		frame = tb.tb_frame
+		if frame.f_code.co_name == "require_permission":
+			f_locals = frame.f_locals
+			name = f_locals.get("name")
+			if name and f_locals.get("doctype") == PO_TAX_TEMPLATE_DOCTYPE:
+				template = name
+		tb = tb.tb_next
+	return template
+
 
 def secondary_item_row(value="Scrap"):
 	"""``{fieldname: value}`` for the Stock Entry Detail secondary-item Select.
@@ -223,6 +248,11 @@ class RefiningEntry(Document):
 		if not self.supplier:
 			frappe.throw(_("Refinery Supplier is mandatory for external refining."))
 
+		# Refuse BEFORE on_submit_external moves any stock (its transfer Stock Entry takes
+		# the shared MAT-STE- counter and can post thousands of lines) when this user could
+		# not create the service Purchase Order that ends the submit.
+		self._preflight_external_po_permissions()
+
 		# Pricing category (the Refinery Price List this consignment bills under),
 		# resolved from the refining type unless the operator picked one (Dust has
 		# several possible categories — the Dust Item is only the default).
@@ -288,6 +318,79 @@ class RefiningEntry(Document):
 					)
 				)
 			frappe.throw(_("No gold weight to send for external refining."))
+
+	def _preflight_external_po_permissions(self):
+		"""Dry run of the part of create_external_refining_po that depends on the user.
+
+		po.insert(ignore_permissions=True) skips the Purchase Order's own permission checks,
+		but BuyingController.set_missing_values still calls
+		erpnext.accounts.party._get_party_details. Its India Compliance hook
+		(update_party_details -> get_gst_details) picks the GST template and calls ERPNext's
+		get_taxes_and_charges -> require_permission(PO_TAX_TEMPLATE_DOCTYPE, <template>,
+		"select") as the SUBMITTING user. Calling the same function with the arguments
+		set_missing_values passes for that order picks the same template and runs the same
+		check, so this cannot refuse a submit that po.insert would accept.
+
+		Reads only and no raised permissions; po.insert stays the authoritative check. Any
+		other error propagates unchanged (po.insert would hit it too, only later).
+		"""
+		from erpnext.accounts.party import _get_party_details
+
+		saved_message_log = frappe.get_message_log()
+		saved_disable_traceback = frappe.flags.disable_traceback
+		try:
+			_get_party_details(
+				self.supplier,
+				party_type="Supplier",
+				doctype="Purchase Order",
+				company=self.company,
+				# What create_external_refining_po's order carries when set_missing_values
+				# runs: no supplier/shipping/dispatch/billing address, no
+				# ignore_default_payment_terms_template, and flags.ignore_permissions=True
+				# from po.insert(ignore_permissions=True).
+				fetch_payment_terms_template=True,
+				ignore_permissions=True,
+			)
+		except frappe.PermissionError as e:
+			template = _denied_po_tax_template(e)
+			if not template:
+				raise
+			# erpnext._refuse() queued a bare "Not permitted" and disabled the traceback.
+			frappe.local.message_log = saved_message_log
+			frappe.flags.disable_traceback = saved_disable_traceback
+			self._throw_missing_po_tax_template_permission(template)
+		else:
+			# po.insert repeats the call and shows whatever it prints; the dry run shows nothing.
+			frappe.local.message_log = saved_message_log
+
+	def _throw_missing_po_tax_template_permission(self, template):
+		reason = (
+			_("none of their roles grants it")
+			if not frappe.has_permission(PO_TAX_TEMPLATE_DOCTYPE, "select")
+			else _(
+				"their roles grant it, but not for this template (check User Permissions "
+				"on {0})"
+			).format(_(PO_TAX_TEMPLATE_DOCTYPE))
+		)
+		frappe.throw(
+			_(
+				"Cannot submit {0}. Submitting an external refining entry creates a draft "
+				"service Purchase Order for supplier {1}, and India Compliance sets its GST "
+				"tax template {2}. That needs {3} (or Read) permission on {4}, and user {5} "
+				"does not have it: {6}. No stock has been moved. Ask a System Manager to "
+				"grant {3} on {4} to one of this user's roles, then submit again."
+			).format(
+				frappe.bold(self.name),
+				frappe.bold(self.supplier),
+				frappe.bold(template),
+				frappe.bold(_("Select")),
+				frappe.bold(_(PO_TAX_TEMPLATE_DOCTYPE)),
+				frappe.bold(frappe.session.user),
+				reason,
+			),
+			frappe.PermissionError,
+			title=_("Missing permission: {0}").format(_(PO_TAX_TEMPLATE_DOCTYPE)),
+		)
 
 	def on_submit_external(self):
 		self.create_material_transfer_se(target_warehouse=self.supplier_warehouse)
