@@ -246,6 +246,65 @@ def get_refining_consumable_items():
 	)
 
 
+def restricted_variants_for(company, refining_type, manufacturer=None):
+	"""Blocked template item codes for one (company, refining type, manufacturer).
+
+	The single implementation behind ``RefiningEntry._restricted_variants`` (the server-side
+	guards) and ``get_blocked_variants_for`` (the desk link filter). Plain reads of the
+	Manufacturing Setting rows only: no document load, no locking read.
+
+	FAILS OPEN: a site that has not migrated yet (no child table), no resolvable Manufacturing
+	Setting, or no rows all give the empty set. A blank ``refining_type`` on a row blocks its
+	variant for every type.
+	"""
+	key = refining_type or ""
+	# A site that has not migrated yet has no child table, and refining must keep
+	# working rather than throw "1146 Table doesn't exist" on every save. Same
+	# defensive shape the Batch.custom_batch_type reads use.
+	setting = (
+		resolve_manufacturing_setting(company, manufacturer)
+		if frappe.db.table_exists("Refining Variant Restriction")
+		else None
+	)
+	if not setting:
+		return frozenset()
+
+	rows = frappe.db.get_all(
+		"Refining Variant Restriction",
+		filters={
+			"parent": setting,
+			"parenttype": "Manufacturing Setting",
+			"parentfield": "refining_variant_restrictions",
+		},
+		fields=["variant", "refining_type"],
+	)
+	return frozenset(
+		row.variant
+		for row in rows
+		if row.variant and (not row.refining_type or row.refining_type == key)
+	)
+
+
+@frappe.whitelist()
+def get_blocked_variants_for(
+	company: str | None = None,
+	refining_type: str | None = None,
+	manufacturer: str | None = None,
+):
+	"""Restricted templates for the Material Items link filter, fetched BY ARGUMENTS.
+
+	Deliberately not a document method. ``frm.call()`` on a saved entry goes through
+	``run_doc_method`` -> ``check_if_latest()``, i.e. ``SELECT ... FOR UPDATE`` on the
+	Refining Entry row and all its child tables, so merely opening an entry whose
+	submission was running waited on that submission's row lock (1205 after 50 s). This
+	needs no saved document and takes no locks. The form passes its own (possibly unsaved)
+	company / refining type / manufacturer, the same values ``run_doc_method`` would have
+	seen.
+	"""
+	frappe.has_permission("Refining Entry", "read", throw=True)
+	return sorted(restricted_variants_for(company, refining_type, manufacturer))
+
+
 class RefiningEntry(Document):
 	def before_insert(self):
 		# Set the series before autoname runs (autoname happens before validate), so
@@ -5274,35 +5333,10 @@ class RefiningEntry(Document):
 		single save share them."""
 		cache = self.__dict__.setdefault("_refining_restriction_cache", {})
 		key = self.refining_type or ""
-		if key in cache:
-			return cache[key]
-
-		# A site that has not migrated yet has no child table, and refining must keep
-		# working rather than throw "1146 Table doesn't exist" on every save. Same
-		# defensive shape the Batch.custom_batch_type reads use.
-		setting = (
-			resolve_manufacturing_setting(self.company, self.get("manufacturer"))
-			if frappe.db.table_exists("Refining Variant Restriction")
-			else None
-		)
-		if not setting:
-			cache[key] = frozenset()
-			return cache[key]
-
-		rows = frappe.db.get_all(
-			"Refining Variant Restriction",
-			filters={
-				"parent": setting,
-				"parenttype": "Manufacturing Setting",
-				"parentfield": "refining_variant_restrictions",
-			},
-			fields=["variant", "refining_type"],
-		)
-		cache[key] = frozenset(
-			row.variant
-			for row in rows
-			if row.variant and (not row.refining_type or row.refining_type == key)
-		)
+		if key not in cache:
+			cache[key] = restricted_variants_for(
+				self.company, self.refining_type, self.get("manufacturer")
+			)
 		return cache[key]
 
 	def _blocked_item_codes(self, item_codes):
@@ -5443,7 +5477,9 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def get_blocked_variants(self):
-		"""Restricted templates for the client-side Material Items link filter."""
+		"""Back-compat thin wrapper for API callers, scripts and browsers still running the
+		old form script. The desk form now calls the module-level ``get_blocked_variants_for``,
+		which does not lock this document. Remove after one release."""
 		return sorted(self._restricted_variants())
 
 	def is_gold_item(self, item_code):

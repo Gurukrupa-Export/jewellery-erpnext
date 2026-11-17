@@ -74,3 +74,5 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_db_isolation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_po_permission_preflight
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_po_permission_preflight_integration
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_blocked_variants
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_form_locks
