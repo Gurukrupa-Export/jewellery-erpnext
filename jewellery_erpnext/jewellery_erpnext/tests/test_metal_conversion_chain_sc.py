@@ -36,19 +36,37 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events im
 from jewellery_erpnext.patches import add_metal_conversion_chain_sc as chain_sc_patch
 from jewellery_erpnext.patches import add_metal_conversion_workflow as workflow_patch
 from jewellery_erpnext.patches import (
+	metal_conversion_receive_submits_directly as receive_patch,
+)
+from jewellery_erpnext.patches import (
 	remove_unused_chain_sc_stock_entry_type as cleanup_patch,
 )
 from jewellery_erpnext.patches import seed_stock_entry_types as seed_patch
 
 _REAL_GET_ALL = frappe.get_all
+# _ChainCase stubs it; kept to test the real lookup.
+_REAL_GET_EMPLOYEE_WAREHOUSE = cs.get_employee_warehouse
 
 _LOCK_ORDER = "jewellery_erpnext.jewellery_erpnext.lock_order"
 _SCRAP_WAREHOUSE = "jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse"
 
-EMPLOYEE_DEPT = {"EMP-1": "Chain - GK", "EMP-2": "Polish - GK", "EMP-X": None}
+EMPLOYEE_DEPT = {
+	"EMP-1": "Chain - GK",
+	# To Employees: Artists of the conversion's department, except where named.
+	"EMP-2": "Chain - GK",
+	"EMP-X": "Chain - GK",  # an Artist with no Raw Material warehouse
+	"EMP-P": "Polish - GK",  # an Artist of another department
+	"EMP-N": "Chain - GK",  # not an Artist
+}
+EMPLOYEE_DESIGNATION = {
+	"EMP-2": "Artist",
+	"EMP-X": "Artist",
+	"EMP-P": "Artist",
+	"EMP-N": "Goldsmith",
+}
 DEPT_RM = {"Chain - GK": "Chain RM - GK", "Polish - GK": "Polish RM - GK"}
 SUPPLIER_RM = {"SUP-1": "SUP-1 MSL WH - GK"}
-EMPLOYEE_WH = {"EMP-2": "EMP-2 MFG WH - GK"}
+EMPLOYEE_WH = {"EMP-2": "EMP-2 RM WH - GK"}
 
 #: 24KT 99.9 is mastered at 100%: what the supplier is given to alloy down to 22KT 91.75.
 FINE_24KT = "M-G-24KT-99.9-Y"
@@ -127,6 +145,10 @@ def _get_value(doctype, name=None, fieldname=None, *args, **kwargs):
 	"""Keyed answers for the master reads the chain module makes."""
 	if doctype == "Employee" and fieldname == "department":
 		return EMPLOYEE_DEPT.get(name)
+	if doctype == "Employee" and fieldname == ["department", "designation"]:
+		if name not in EMPLOYEE_DEPT:
+			return None
+		return EMPLOYEE_DEPT[name], EMPLOYEE_DESIGNATION.get(name)
 	if doctype == "Department" and fieldname == "manufacturer":
 		return "Shubh"
 	raise AssertionError(f"unexpected get_value({doctype!r}, {name!r}, {fieldname!r})")
@@ -203,13 +225,13 @@ class TestValidateChain(_ChainCase):
 		doc = _employee_doc(source_warehouse="Hand Picked WH")
 		cs.validate_chain(doc)
 		self.assertEqual(doc.source_warehouse, "Chain RM - GK")
-		self.assertEqual(doc.to_department, "Polish - GK")
-		self.assertEqual(doc.to_warehouse, "EMP-2 MFG WH - GK")
-		self.assertEqual(cs.work_warehouse(doc), "EMP-2 MFG WH - GK")
+		self.assertEqual(doc.to_department, "Chain - GK")
+		self.assertEqual(doc.to_warehouse, "EMP-2 RM WH - GK")
+		self.assertEqual(cs.work_warehouse(doc), "EMP-2 RM WH - GK")
 
 	def test_one_party_only(self):
 		# Ticked: a supplier, and any To Employee is dropped.
-		doc = _chain_doc(to_employee="EMP-2", to_warehouse="EMP-2 MFG WH - GK")
+		doc = _chain_doc(to_employee="EMP-2", to_warehouse="EMP-2 RM WH - GK")
 		cs.validate_chain(doc)
 		for field in cs.EMPLOYEE_FIELDS:
 			self.assertIsNone(doc.get(field), field)
@@ -259,8 +281,41 @@ class TestValidateChain(_ChainCase):
 	def test_missing_warehouses_are_named(self):
 		with self.assertRaisesRegex(ValidationError, "Raw Material"):
 			cs.validate_chain(_chain_doc(chain_supplier="SUP-NO-WH"))
-		with self.assertRaisesRegex(ValidationError, "Manufacturing"):
+		with self.assertRaisesRegex(ValidationError, "No Raw Material warehouse"):
 			cs.validate_chain(_employee_doc(to_employee="EMP-X"))
+
+	def test_to_employee_is_an_artist_of_the_department(self):
+		for employee in ("EMP-N", "EMP-P", "EMP-UNKNOWN"):
+			with self.assertRaisesRegex(
+				ValidationError, "must be an Artist", msg=employee
+			):
+				cs.validate_chain(_employee_doc(to_employee=employee))
+
+	def test_the_employee_warehouse_is_raw_material(self):
+		"""Issue hands the metal to the To Employee's Raw Material warehouse, not Manufacturing."""
+		reads = []
+
+		def get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Warehouse":
+				reads.append(name)
+				return "EMP-2 RM WH - GK"
+			return _get_value(doctype, name, fieldname, *args, **kwargs)
+
+		with patch.object(cs.frappe.db, "get_value", side_effect=get_value):
+			warehouse = _REAL_GET_EMPLOYEE_WAREHOUSE("EMP-2", "KG GK")
+		self.assertEqual(warehouse, "EMP-2 RM WH - GK")
+		self.assertEqual(
+			reads,
+			[
+				{
+					"disabled": 0,
+					"is_group": 0,
+					"employee": "EMP-2",
+					"warehouse_type": "Raw Material",
+					"company": "KG GK",
+				}
+			],
+		)
 
 
 class TestFrozenAfterIssue(_ChainCase):
@@ -303,13 +358,25 @@ class TestFrozenAfterIssue(_ChainCase):
 			[("B-1", 6.0), ("B-2", 4.0)],
 		)
 
+	def test_issued_to_employee_is_not_rejudged(self):
+		"""An Issue made to an employee who is no longer an Artist here still receives."""
+		fields = dict(
+			chain_issue_stock_entry="SE-ISSUE-1",
+			to_employee="EMP-P",
+			to_department="Polish - GK",
+			to_warehouse="EMP-P MFG WH - GK",
+		)
+		doc = _employee_doc(**fields, _before=_employee_doc(**fields))
+		cs.validate_chain(doc)
+		self.assertEqual(doc.to_warehouse, "EMP-P MFG WH - GK")
+
 	def test_the_to_employee_cannot_change_after_issue(self):
 		before = _employee_doc(
-			chain_issue_stock_entry="SE-ISSUE-1", to_warehouse="EMP-2 MFG WH - GK"
+			chain_issue_stock_entry="SE-ISSUE-1", to_warehouse="EMP-2 RM WH - GK"
 		)
 		doc = _employee_doc(
 			chain_issue_stock_entry="SE-ISSUE-1",
-			to_warehouse="EMP-2 MFG WH - GK",
+			to_warehouse="EMP-2 RM WH - GK",
 			_before=before,
 		)
 		doc.to_employee = "EMP-9"
@@ -485,7 +552,7 @@ class TestValidateReceive(_ChainCase):
 	def _received(self, **fields):
 		# An issued document keeps the supplier warehouse Issue resolved; it is frozen.
 		doc = _chain_doc(
-			workflow_state="Receive",
+			workflow_state="Submitted",
 			chain_issue_stock_entry="SE-ISSUE-1",
 			chain_supplier_warehouse="SUP-1 MSL WH - GK",
 			target_item="CH-22KT",
@@ -499,10 +566,10 @@ class TestValidateReceive(_ChainCase):
 		cs.validate_receive(self._received())
 
 	def test_only_the_receive_action_submits(self):
-		# Draft -> .submit() lands on "Submitted" (first docstatus-1 state): refused.
-		for state in ("Draft", "Issue", "Submitted"):
-			with self.assertRaises(ValidationError, msg=state):
-				cs.validate_receive(self._received(workflow_state=state))
+		# Receive lands on Submitted, as a plain .submit() does: what tells them apart is
+		# the Issue, which only the Issue state -- whose one submit is Receive -- carries.
+		with self.assertRaisesRegex(ValidationError, "submitted by its Receive action"):
+			cs.validate_receive(self._received(chain_issue_stock_entry=None))
 
 	def test_issue_must_be_submitted(self):
 		self.issue_status = 2
@@ -588,9 +655,9 @@ class TestValidateReceive(_ChainCase):
 	def _received_from_employee(self, **fields):
 		# An issued document keeps the To Employee's warehouse Issue resolved; it is frozen.
 		doc = _employee_doc(
-			workflow_state="Receive",
+			workflow_state="Submitted",
 			chain_issue_stock_entry="SE-ISSUE-1",
-			to_warehouse="EMP-2 MFG WH - GK",
+			to_warehouse="EMP-2 RM WH - GK",
 			target_item="CH-22KT",
 			target_qty=9.5,
 		)
@@ -602,14 +669,14 @@ class TestValidateReceive(_ChainCase):
 		cs.validate_receive(self._received_from_employee())
 
 	def test_an_employee_receive_needs_their_warehouse(self):
-		with self.assertRaisesRegex(ValidationError, "Manufacturing warehouse"):
+		with self.assertRaisesRegex(ValidationError, "Raw Material warehouse"):
 			cs.validate_receive(self._received_from_employee(to_warehouse=None))
 
 
 class TestRunReceive(_ChainCase):
 	def _run(self, target_qty, doc=None):
 		doc = doc or _chain_doc(
-			workflow_state="Receive",
+			workflow_state="Submitted",
 			chain_issue_stock_entry="SE-ISSUE-1",
 			chain_supplier_warehouse="SUP-1 MSL WH - GK",
 			target_item="CH-22KT",
@@ -664,7 +731,7 @@ class TestRunReceive(_ChainCase):
 	def _alloyed_down(self, target_qty):
 		self.purity = dict(ALLOYED_DOWN)
 		return _chain_doc(
-			workflow_state="Receive",
+			workflow_state="Submitted",
 			chain_issue_stock_entry="SE-ISSUE-1",
 			chain_supplier_warehouse="SUP-1 MSL WH - GK",
 			source_item=FINE_24KT,
@@ -693,14 +760,14 @@ class TestRunReceive(_ChainCase):
 
 	def test_an_employee_loss_comes_from_their_warehouse(self):
 		doc = _employee_doc(
-			workflow_state="Receive",
+			workflow_state="Submitted",
 			chain_issue_stock_entry="SE-ISSUE-1",
-			to_warehouse="EMP-2 MFG WH - GK",
+			to_warehouse="EMP-2 RM WH - GK",
 			target_item="CH-22KT",
 			target_qty=9.5,
 		)
 		_doc, _repack, loss, _transfer = self._run(9.5, doc=doc)
-		self.assertEqual(loss.call_args.kwargs["source_wh"], "EMP-2 MFG WH - GK")
+		self.assertEqual(loss.call_args.kwargs["source_wh"], "EMP-2 RM WH - GK")
 
 
 class TestReceiveLockOrder(_ChainCase):
@@ -709,7 +776,7 @@ class TestReceiveLockOrder(_ChainCase):
 	def _run(self, target_qty, doc=None):
 		events = []
 		doc = doc or _chain_doc(
-			workflow_state="Receive",
+			workflow_state="Submitted",
 			chain_issue_stock_entry="SE-ISSUE-1",
 			chain_supplier_warehouse="SUP-1 MSL WH - GK",
 			target_item="CH-22KT",
@@ -800,9 +867,9 @@ class TestReceiveLockOrder(_ChainCase):
 
 	def test_an_employee_receive_locks_their_warehouse(self):
 		doc = _employee_doc(
-			workflow_state="Receive",
+			workflow_state="Submitted",
 			chain_issue_stock_entry="SE-ISSUE-1",
-			to_warehouse="EMP-2 MFG WH - GK",
+			to_warehouse="EMP-2 RM WH - GK",
 			target_item="CH-22KT",
 			target_qty=10.0,
 		)
@@ -812,8 +879,8 @@ class TestReceiveLockOrder(_ChainCase):
 			(
 				"bins",
 				{
-					("M-G-22KT-91.6-Y", "EMP-2 MFG WH - GK"),
-					("CH-22KT", "EMP-2 MFG WH - GK"),
+					("M-G-22KT-91.6-Y", "EMP-2 RM WH - GK"),
+					("CH-22KT", "EMP-2 RM WH - GK"),
 					("CH-22KT", "Chain RM - GK"),
 				},
 			),
@@ -875,7 +942,7 @@ class _BuilderCase(_ChainCase):
 
 	def _employee(self, **fields):
 		return _employee_doc(
-			to_warehouse="EMP-2 MFG WH - GK",
+			to_warehouse="EMP-2 RM WH - GK",
 			target_item="CH-22KT",
 			target_qty=9.5,
 			**fields,
@@ -913,7 +980,7 @@ class TestStockEntryBuilders(_BuilderCase):
 		self.assertNotIn("subcontractor", se.payload)
 		for row in se.items:
 			self.assertEqual(row["s_warehouse"], "Chain RM - GK")
-			self.assertEqual(row["t_warehouse"], "EMP-2 MFG WH - GK")
+			self.assertEqual(row["t_warehouse"], "EMP-2 RM WH - GK")
 
 	def test_repack_stays_inside_the_supplier_warehouse(self):
 		with patch.object(
@@ -960,9 +1027,9 @@ class TestStockEntryBuilders(_BuilderCase):
 			cs, "_produced_batches", return_value=[{"batch": "TB-1", "qty": 9.5}]
 		) as produced:
 			cs.make_final_transfer(self._employee(), "SE-REPACK-1", 9.5)
-		produced.assert_called_once_with("SE-REPACK-1", "CH-22KT", "EMP-2 MFG WH - GK")
+		produced.assert_called_once_with("SE-REPACK-1", "CH-22KT", "EMP-2 RM WH - GK")
 		row = self.captured[-1].items[0]
-		self.assertEqual(row["s_warehouse"], "EMP-2 MFG WH - GK")
+		self.assertEqual(row["s_warehouse"], "EMP-2 RM WH - GK")
 		self.assertEqual(row["t_warehouse"], "Chain RM - GK")
 
 	def test_final_transfer_refuses_a_short_repack(self):
@@ -1307,7 +1374,7 @@ class TestControllerRouting(IntegrationTestCase):
 		_("warm")
 
 	def test_chain_submit_goes_to_receive_only(self):
-		doc = _chain_doc(workflow_state="Receive")
+		doc = _chain_doc(workflow_state="Submitted")
 		with (
 			patch.object(mc, "validate_receive") as validate_receive,
 			patch.object(mc, "run_receive") as run_receive,
@@ -1372,10 +1439,25 @@ class TestWorkflowPatch(IntegrationTestCase):
 			]
 			self.assertEqual(offered, [expected], value)
 
-	def test_issue_is_a_save_and_receive_a_submit(self):
+	def test_issue_is_a_save_and_receive_submits_directly(self):
 		status = dict(workflow_patch.STATES)
 		self.assertEqual(status[workflow_patch.ISSUE], "0")
-		self.assertEqual(status[workflow_patch.RECEIVE], "1")
+		self.assertNotIn("Receive", status)
+		on_receive = [
+			row[2]
+			for row in workflow_patch.TRANSITIONS
+			if row[:2] == (workflow_patch.ISSUE, workflow_patch.RECEIVE_ACTION)
+		]
+		self.assertEqual(on_receive, [workflow_patch.SUBMITTED])
+		self.assertEqual(status[workflow_patch.SUBMITTED], "1")
+		# Submitted is the end: no second, stock-less Submit after Receive.
+		self.assertFalse(
+			[
+				row
+				for row in workflow_patch.TRANSITIONS
+				if row[0] == workflow_patch.SUBMITTED
+			]
+		)
 
 	def test_cancel_issue_is_system_manager_only(self):
 		self.assertIn(
@@ -1485,6 +1567,129 @@ class TestWorkflowPatch(IntegrationTestCase):
 				workflow_patch.execute()
 			self.assertEqual(add_missing.call_count, add_calls, exists)
 			self.assertEqual(create_workflow.call_count, create_calls, exists)
+
+
+class TestReceiveSubmitsDirectlyPatch(IntegrationTestCase):
+	"""Existing sites move from Issue -> Receive -> Submit -> Submitted to Issue -> Submitted."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	LEGACY = [
+		("Draft", "Submit", "Submitted"),
+		("Draft", "Issue", "Issue"),
+		("Issue", "Receive", "Receive"),
+		("Issue", "Cancel Issue", "Draft"),
+		("Receive", "Submit", "Submitted"),
+	]
+
+	def _workflow(self, transitions, states=("Draft", "Issue", "Submitted", "Receive")):
+		return SimpleNamespace(
+			name="Metal Conversions",
+			states=[frappe._dict(state=s, idx=i) for i, s in enumerate(states, 1)],
+			transitions=[
+				frappe._dict(state=a, action=b, next_state=c, idx=i)
+				for i, (a, b, c) in enumerate(transitions, 1)
+			],
+		)
+
+	def _run(self, workflow, in_receive=2):
+		real_count, real_set_value = frappe.db.count, frappe.db.set_value
+		moved = []
+
+		def count(doctype, *args, **kwargs):
+			if doctype == receive_patch.DOCTYPE:
+				return in_receive
+			return real_count(doctype, *args, **kwargs)
+
+		def set_value(doctype, *args, **kwargs):
+			if doctype == receive_patch.DOCTYPE:
+				moved.append(args)
+				return None
+			return real_set_value(doctype, *args, **kwargs)
+
+		with (
+			patch.object(receive_patch.frappe.db, "count", side_effect=count),
+			patch.object(receive_patch.frappe.db, "set_value", side_effect=set_value),
+		):
+			changes = receive_patch.submit_on_receive(workflow)
+		return changes, moved
+
+	def _shape(self, workflow):
+		return (
+			[row.state for row in workflow.states],
+			[(r.state, r.action, r.next_state) for r in workflow.transitions],
+		)
+
+	def test_legacy_workflow_moves_to_the_new_shape(self):
+		workflow = self._workflow(self.LEGACY)
+		changes, moved = self._run(workflow)
+		self.assertTrue(changes)
+		self.assertEqual(
+			self._shape(workflow),
+			(
+				["Draft", "Issue", "Submitted"],
+				[
+					("Draft", "Submit", "Submitted"),
+					("Draft", "Issue", "Issue"),
+					("Issue", "Receive", "Submitted"),
+					("Issue", "Cancel Issue", "Draft"),
+				],
+			),
+		)
+		self.assertEqual([r.idx for r in workflow.transitions], [1, 2, 3, 4])
+		# The submitted conversions waiting in Receive are moved, not stranded.
+		self.assertEqual(
+			moved,
+			[
+				(
+					{"workflow_state": "Receive", "docstatus": 1},
+					"workflow_state",
+					"Submitted",
+				)
+			],
+		)
+
+	def test_the_new_shape_matches_what_a_fresh_site_gets(self):
+		workflow = self._workflow(self.LEGACY)
+		self._run(workflow)
+		fresh = (
+			[state for state, _status in workflow_patch.STATES],
+			[row[:3] for row in workflow_patch.TRANSITIONS],
+		)
+		self.assertEqual(self._shape(workflow), fresh)
+
+	def test_a_second_run_changes_nothing(self):
+		workflow = self._workflow(self.LEGACY)
+		self._run(workflow)
+		changes, moved = self._run(workflow)
+		self.assertEqual((changes, moved), ([], []))
+
+	def test_receive_kept_while_an_administrator_routes_through_it(self):
+		"""A transition of their own still uses Receive: the state and its docs stay."""
+		workflow = self._workflow(self.LEGACY + [("Receive", "Close", "Submitted")])
+		_changes, moved = self._run(workflow)
+		self.assertIn("Receive", [row.state for row in workflow.states])
+		self.assertEqual(moved, [])
+
+	def test_execute_saves_only_when_something_changed(self):
+		for transitions, saves in ((self.LEGACY, 1), (workflow_patch.TRANSITIONS, 0)):
+			workflow = self._workflow(
+				[row[:3] for row in transitions],
+				states=[s for s, _ in workflow_patch.STATES]
+				if saves == 0
+				else ("Draft", "Issue", "Submitted", "Receive"),
+			)
+			workflow.save = MagicMock()
+			with (
+				patch.object(receive_patch.frappe.db, "exists", return_value=True),
+				patch.object(receive_patch.frappe, "get_doc", return_value=workflow),
+				patch.object(receive_patch.frappe, "logger"),
+				patch.object(receive_patch.frappe.db, "count", return_value=0),
+			):
+				receive_patch.execute()
+			self.assertEqual(workflow.save.call_count, saves)
 
 
 class _FakeWorkflow(SimpleNamespace):

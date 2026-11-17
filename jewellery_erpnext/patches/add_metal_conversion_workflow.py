@@ -6,7 +6,7 @@ shape as the Gemstone Conversion resize flow, whose workflow has only ever lived
 database::
 
     Draft --Submit--> Submitted                  every non-chain conversion, as today
-    Draft --Issue---> Issue --Receive--> Receive --Submit--> Submitted
+    Draft --Issue---> Issue --Receive--> Submitted
                       Issue --Cancel Issue--> Draft
                                                  Chain Manufacturing only
 
@@ -17,10 +17,10 @@ database::
   and the draft PO deleted (``chain_subcontracting.run_cancel_issue``). System Manager
   only -- the role that may cancel a Metal Conversion at all
   (``patches/metal_conversion_system_manager_cancel.py``).
-* **Receive** is the submit: ``on_submit`` books the Repack, the Process Loss and the final
-  transfer (``chain_subcontracting.run_receive``).
-* **Receive -> Submitted** carries no stock effect; it is kept so the two doctypes read the
-  same in the desk.
+* **Receive** is the submit, straight to Submitted: ``on_submit`` books the Repack, the
+  Process Loss and the final transfer (``chain_subcontracting.run_receive``). The first
+  versions landed it on a "Receive" state with a second, stock-less Submit to Submitted;
+  ``metal_conversion_receive_submits_directly`` moves existing sites off that.
 
 The two Draft transitions are mutually exclusive on ``is_chain_manufacturing``, so a
 document never offers both. ``!= "Yes"`` rather than ``== "No"`` keeps a NULL value --
@@ -31,10 +31,9 @@ a chain; ``_add_missing`` moves a workflow still carrying those conditions onto 
 **State order matters.** ``Workflow.update_default_workflow_status`` back-fills a blank
 ``workflow_state`` with the FIRST state per ``doc_status``, and
 ``set_workflow_state_on_action`` lands a programmatic ``.submit()`` on the first
-docstatus-1 state. ``Submitted`` therefore comes before ``Receive``: the 788 conversions
-already submitted on kggk-prod become "Submitted", and code that submits a conversion
-directly (tests, SNC) still lands there. A chain conversion cannot be submitted that way:
-``MetalConversions.before_submit`` refuses any chain submit that is not the Receive action.
+docstatus-1 state, so every submit -- Receive included -- lands on ``Submitted``. A chain
+conversion cannot be submitted before its Issue: ``MetalConversions.before_submit`` refuses
+it (``chain_subcontracting.validate_receive``).
 
 There is no docstatus-2 state, as on Gemstone Conversion, so
 ``frappe.model.workflow.can_cancel_document`` keeps the standard Cancel button.
@@ -57,7 +56,6 @@ DOCTYPE = "Metal Conversions"
 
 DRAFT = "Draft"
 ISSUE = "Issue"
-RECEIVE = "Receive"
 SUBMITTED = "Submitted"
 
 ISSUE_ACTION = "Issue"
@@ -78,21 +76,19 @@ LEGACY_CONDITIONS = {
 	(DRAFT, ISSUE_ACTION): "doc.is_chain_subcontracting == 1",
 }
 
-# (state, doc_status) -- Submitted before Receive, see the module docstring.
+# (state, doc_status)
 STATES = [
 	(DRAFT, "0"),
 	(ISSUE, "0"),
 	(SUBMITTED, "1"),
-	(RECEIVE, "1"),
 ]
 
 # (state, action, next_state, condition, allowed)
 TRANSITIONS = [
 	(DRAFT, SUBMIT_ACTION, SUBMITTED, NOT_CHAIN, ALL),
 	(DRAFT, ISSUE_ACTION, ISSUE, IS_CHAIN, ALL),
-	(ISSUE, RECEIVE_ACTION, RECEIVE, None, ALL),
+	(ISSUE, RECEIVE_ACTION, SUBMITTED, None, ALL),
 	(ISSUE, CANCEL_ISSUE_ACTION, DRAFT, None, SYSTEM_MANAGER),
-	(RECEIVE, SUBMIT_ACTION, SUBMITTED, None, ALL),
 ]
 
 
