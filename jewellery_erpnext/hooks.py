@@ -22,6 +22,12 @@ after_migrate = [
 	# Refining Stock Entry naming series: option + counter row. A no-op unless
 	# site_config sets refining_se_naming_series (see refining/stock_entry_naming.py).
 	"jewellery_erpnext.refining.stock_entry_naming.after_migrate",
+	# MOP Log / Serial and Batch read indexes of the locked stock-posting path. The patch
+	# restore_missing_perf_indexes builds them once; this re-check also runs on sites where that
+	# patch was only marked done, retries a build that gave up on a metadata lock ("busy"),
+	# and renames the app's sbb_/sbe_voucher_no_idx to ERPNext's voucher_no_voucher_type_index.
+	# Idempotent (no DDL once present), non-fatal, printed as well as logged.
+	"jewellery_erpnext.patches.ensure_read_path_indexes.after_migrate",
 ]
 
 # Provisions this app's custom fields, BEFORE fixtures import (installer.py:360 vs :367).
