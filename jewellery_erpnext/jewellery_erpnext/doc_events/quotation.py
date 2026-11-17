@@ -19,7 +19,9 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation_pricing import (
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import (
 	keep_po_rate,
+	run_cached,
 	set_tracking_bom_rate_in_quotation,
+	tracking_bom_run_cache,
 )
 
 
@@ -771,7 +773,16 @@ def validate_gold_rate_with_gst(self):
 
 
 def create_tracking_bom_directly(self):
-	"""Create Tracking BOM directly from Template BOM."""
+	"""Create Tracking BOM directly from Template BOM.
+
+	The whole run shares one master-data cache (see ``tracking_bom_run_cache``): every Tracking
+	BOM it builds prices off the same price lists, making charges and customer settings.
+	"""
+	with tracking_bom_run_cache():
+		_create_tracking_bom_directly(self)
+
+
+def _create_tracking_bom_directly(self):
 	item_codes = tuple([row.item_code for row in self.items if row.item_code])
 
 	metal_criteria = (
@@ -1195,11 +1206,18 @@ def _apply_customer_pricing(
 	) = pricing_context
 
 	if not attribute_data:
+		# run_cached: when no value is flagged the dict stays empty, which re-ran this query
+		# for every row.
 		attribute_data.update(
 			{
 				v: True
-				for v in frappe.db.get_all(
-					"Attribute Value", {"custom_consider_as_gold_item": 1}, pluck="name"
+				for v in run_cached(
+					("consider_as_gold_attribute_values",),
+					lambda: frappe.db.get_all(
+						"Attribute Value",
+						{"custom_consider_as_gold_item": 1},
+						pluck="name",
+					),
 				)
 			}
 		)
