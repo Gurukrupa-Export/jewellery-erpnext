@@ -374,13 +374,41 @@ class TestManufactureOrderRoles(IntegrationTestCase):
 				self._plan(FINDING_WITHOUT_SO)
 			)
 
+	@patch(f"{MP}.get_manufacture_order_setup_gap", return_value=None)
 	@patch(f"{MP}.frappe.get_roles", return_value=["System Manager", "Administrator"])
 	@patch(f"{MP}.get_manufacture_order_roles", return_value=ROLES)
-	def test_mode_without_roles_is_closed_to_everyone(self, _roles, _user_roles):
+	def test_mode_without_roles_is_closed_to_everyone(self, _roles, _user_roles, _gap):
 		with self.assertRaises(frappe.PermissionError):
 			ManufacturingPlan.validate_manufacture_order_permission(
 				self._plan("Manufacturing")
 			)
+
+	def _assert_closed_with(self, message, manufacturer, setting_exists=True):
+		"""The PermissionError for a mode no role is found for names the setup gap."""
+		exists = keyed(frappe.db.exists, {"Manufacturing Setting": setting_exists})
+		with (
+			patch(f"{MP}.get_manufacture_order_roles", return_value={}),
+			patch(f"{MP}.frappe.defaults.get_user_default", return_value=manufacturer),
+			patch(f"{MP}.frappe.db.exists", side_effect=exists),
+			self.assertRaises(frappe.PermissionError) as raised,
+		):
+			ManufacturingPlan.validate_manufacture_order_permission(
+				self._plan("Manufacturing")
+			)
+		self.assertIn(message, str(raised.exception))
+
+	def test_user_without_manufacturer_is_told_to_set_it(self):
+		"""System Manager listed in every role field still sees no mode: the roles are read from
+		the Default Manufacturer's setting, so the error must name that default, not the roles."""
+		self._assert_closed_with("Set a Default Manufacturer", manufacturer=None)
+
+	def test_manufacturer_without_setting_is_named(self):
+		self._assert_closed_with(
+			"No Manufacturing Setting exists", manufacturer="MNF-1", setting_exists=None
+		)
+
+	def test_setting_without_roles_keeps_the_roles_message(self):
+		self._assert_closed_with("No role may create", manufacturer="MNF-1")
 
 	@patch(f"{MP}.get_manufacture_order_roles")
 	def test_blank_mode_is_left_to_the_mandatory_check(self, mock_roles):
