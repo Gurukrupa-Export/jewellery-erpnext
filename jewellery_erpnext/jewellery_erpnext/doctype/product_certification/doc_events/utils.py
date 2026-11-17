@@ -945,8 +945,7 @@ def create_material_receipt_for_certification(self):
 	# concurrent PCs acquire the shared Bins in the identical sequence.
 	from jewellery_erpnext.jewellery_erpnext.lock_order import (
 		lock_bins,
-		preallocate_series_for_docs,
-		series_stubs,
+		preallocate_stock_entry_counters,
 	)
 
 	_pc_pairs = [
@@ -954,12 +953,15 @@ def create_material_receipt_for_certification(self):
 		for rd in (main_rows + repack_rows)
 		for wh in ("s_warehouse", "t_warehouse")
 	]
-	# Pin the naming counter of BOTH nested SE types built below (the per-(company x
-	# type) Document Naming Rule counter post-reshard, or the tabSeries fallback).
-	# A blank stub matches no rule and would pin the wrong (shared MAT-STE-) row.
-	preallocate_series_for_docs(
-		*series_stubs(self.company, "Material Receipt for Certification", "Repack")
-	)
+	# Pin the naming counter of each nested SE type built below, and only those (lock_order
+	# RULE F): the per-(company x type) Document Naming Rule counter post-reshard, or the
+	# tabSeries fallback. Exact -- the two entries below are built on these same lists.
+	pc_types = []
+	if main_rows:
+		pc_types.append("Material Receipt for Certification")
+	if repack_rows:
+		pc_types.append("Repack")
+	preallocate_stock_entry_counters(self.company, pc_types, plan_for=self)
 	lock_bins(_pc_pairs)
 
 	# ── 1. Material Receipt for Certification — main item only ──
