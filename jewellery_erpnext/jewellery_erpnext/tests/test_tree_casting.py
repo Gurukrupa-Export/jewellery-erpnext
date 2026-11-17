@@ -2419,7 +2419,14 @@ class TestTreeFallbackBatches(IntegrationTestCase):
 	MSL = "EMP-MSL"
 
 	def _call(
-		self, own, available, ownership, limit, offered=None, item_code="GOLD-18KT"
+		self,
+		own,
+		available,
+		ownership,
+		limit,
+		offered=None,
+		item_code="GOLD-18KT",
+		restrict_to=None,
 	):
 		se = SimpleNamespace(posting_date="2026-08-27", posting_time="10:00:00")
 
@@ -2451,6 +2458,7 @@ class TestTreeFallbackBatches(IntegrationTestCase):
 				self.MSL,
 				offered=dict(offered or {}),
 				limit=limit,
+				restrict_to=restrict_to,
 			)
 
 	REG = ("Regular Stock", None)
@@ -2475,6 +2483,26 @@ class TestTreeFallbackBatches(IntegrationTestCase):
 			limit=5.0,
 		)
 		self.assertEqual(out, [])
+
+	def test_restrict_to_keeps_a_mixed_tree_off_its_customer_tier(self):
+		"""The Employee IR finding repack passes the tree's company tiers: on a mixed tree the
+		customer's metal, though of a tier the tree issued, must not stand in -- and it ranks
+		first, so without the restriction it would be taken before the company's."""
+		out = self._call(
+			own={"B-REG-GONE": 1.0, "B-CUST": 3.0},
+			available=[
+				{"batch_no": "B-CUST", "qty": 50.0},
+				{"batch_no": "B-REG", "qty": 50.0},
+			],
+			ownership={
+				"B-REG-GONE": self.REG,
+				"B-CUST": self.CUST1,
+				"B-REG": self.REG,
+			},
+			limit=1.0,
+			restrict_to={self.REG},
+		)
+		self.assertEqual(out, [("B-REG", 1.0)])
 
 	def test_company_metal_never_repays_a_customer_issue(self):
 		"""The GEPL-TR-26-00150 regression, restated for the fallback."""
@@ -3695,7 +3723,9 @@ class TestMopCarriesTheTree(IntegrationTestCase):
 			tree_casting.unlink_tree_on_issue_cancel(eir)
 
 		return [
-			c for c in set_value.call_args_list if c.args[0] == "Manufacturing Operation"
+			c
+			for c in set_value.call_args_list
+			if c.args[0] == "Manufacturing Operation"
 		]
 
 	def test_cancel_clears_the_mop_stamp(self):
@@ -3786,9 +3816,7 @@ class TestTreeLossCap(IntegrationTestCase):
 		get_value.assert_not_called()
 
 	def test_the_cap_is_read_from_the_trees_operation(self):
-		with patch.object(
-			tse.frappe.db, "get_value", return_value=4.5
-		) as get_value:
+		with patch.object(tse.frappe.db, "get_value", return_value=4.5) as get_value:
 			self.assertEqual(tse._tree_loss_allowed(self._tree()), 4.5)
 		get_value.assert_called_once_with(
 			"Department Operation", "Casting", "allow_loss_on_tree_number"

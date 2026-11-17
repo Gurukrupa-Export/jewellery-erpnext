@@ -14,6 +14,85 @@ FINDING_CATEGORY_ATTRIBUTE = "Finding Category"
 class DepartmentOperation(Document):
 	def validate(self):
 		self.validate_finding_loss_booking()
+		self.validate_process()
+
+	def validate_process(self):
+		"""Keep ``department_process`` inside this operation's own department and manufacturer.
+
+		An operation record exists once (it is named by ``operation``), so one link means one
+		process: the operation-to-process mapping cannot be ambiguous. Once the department uses
+		process control the mapping is required, and it cannot be moved while open work sits in
+		this operation under another process."""
+		from jewellery_erpnext.jewellery_erpnext.doc_events.process_control import (
+			ProcessControlError,
+			bold,
+			get_process,
+			is_process_control_enabled,
+			open_operations,
+		)
+
+		if not self.department_process:
+			if self.department and is_process_control_enabled(self.department):
+				frappe.throw(
+					_(
+						"Department {0} uses process control, so Department Operation {1} needs a Process."
+					).format(
+						bold(self.department),
+						bold(self.name or self.operation),
+					),
+					ProcessControlError,
+				)
+			return
+
+		process = get_process(self.department_process)
+		if not process:
+			frappe.throw(
+				_("Department Process {0} does not exist.").format(
+					bold(self.department_process)
+				)
+			)
+		if process.department != self.department:
+			frappe.throw(
+				_(
+					"Process {0} belongs to Department {1}, not this operation's Department {2}."
+				).format(
+					bold(process.name),
+					bold(process.department),
+					bold(self.department),
+				),
+				ProcessControlError,
+			)
+		if self.manufacturer and process.manufacturer != self.manufacturer:
+			frappe.throw(
+				_("Process {0} belongs to Manufacturer {1}, not {2}.").format(
+					bold(process.name),
+					bold(process.manufacturer),
+					bold(self.manufacturer),
+				),
+				ProcessControlError,
+			)
+		changed = self.is_new() or self.has_value_changed("department_process")
+		if changed and process.disabled:
+			frappe.throw(
+				_("Process {0} is disabled.").format(bold(process.name)),
+				ProcessControlError,
+			)
+		if changed and not self.is_new():
+			busy = open_operations(operation=self.name, with_process=True)
+			if busy:
+				before = self.get_doc_before_save()
+				frappe.throw(
+					_(
+						"The Process of {0} cannot change while work is open in it under a process (from "
+						"{1} to {2}): {3}."
+					).format(
+						bold(self.name),
+						bold((before and before.department_process) or _("blank")),
+						bold(self.department_process),
+						", ".join(bold(n) for n in busy),
+					),
+					ProcessControlError,
+				)
 
 	def validate_finding_loss_booking(self):
 		"""Keep the Finding Category Loss Booking table resolvable.

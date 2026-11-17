@@ -488,7 +488,9 @@ def _tree_issued_tiers(owed_batches):
 	return tiers
 
 
-def _tree_fallback_batches(se, tree, item_code, msl_wh, offered, limit):
+def _tree_fallback_batches(
+	se, tree, item_code, msl_wh, offered, limit, restrict_to=None
+):
 	"""``[(batch_no, qty)]`` of SAME-OWNERSHIP-TIER metal at ``msl_wh`` standing in for the tree's
 	own, already-consumed batches.
 
@@ -516,6 +518,9 @@ def _tree_fallback_batches(se, tree, item_code, msl_wh, offered, limit):
 	``limit`` is the caller's UNMET need — bounded by the ledger's ``pending_qty`` at the
 	``receive_material`` guard — never the netted owed. See ``_tree_netted_owed`` on why that number
 	must not be disbursed against.
+
+	``restrict_to`` narrows the tiers further (never widens them): the Employee IR finding repack
+	passes the tree's Regular Stock tiers so a mixed tree's fallback cannot reach its customer metal.
 	"""
 	eps = _pending_eps()
 	prec = _se_precision()
@@ -524,6 +529,8 @@ def _tree_fallback_batches(se, tree, item_code, msl_wh, offered, limit):
 		return []
 
 	tiers = _tree_issued_tiers(_tree_netted_owed(tree, item_code, msl_wh))
+	if restrict_to is not None:
+		tiers &= set(restrict_to)
 	if not tiers:
 		return []
 

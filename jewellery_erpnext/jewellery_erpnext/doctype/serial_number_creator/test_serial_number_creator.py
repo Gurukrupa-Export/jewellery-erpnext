@@ -296,6 +296,7 @@ def create_snc(self):
 			eir_issue.department = "Waxing - T"
 			eir_issue.operation = "Wax Pull Out"
 			eir_issue.employee = "HR-EMP-00002"
+			eir_issue.manufacturer = "Shubh"
 			eir_issue.scan_mwo = mo_wax.manufacturing_work_order
 			scan_mwo_eir(eir_issue)
 			eir_issue.save()
@@ -307,6 +308,7 @@ def create_snc(self):
 			eir_receive.type = "Receive"
 			eir_receive.operation = "Wax Pull out"
 			eir_receive.employee = "HR-EMP-00002"
+			eir_receive.manufacturer = "Shubh"
 			eir_receive.scan_mwo = mo_wax.manufacturing_work_order
 			scan_mwo_eir(eir_receive)
 			eir_receive.save()

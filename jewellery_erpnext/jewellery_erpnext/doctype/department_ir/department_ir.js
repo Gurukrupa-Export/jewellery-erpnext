@@ -290,3 +290,16 @@ async function validate_department_ir_wo_limit(frm) {
 		);
 	}
 }
+
+// Process control: an Issue into a process-controlled department names the destination process
+// (validated on the server: jewellery_erpnext/.../doc_events/process_control.py).
+frappe.ui.form.on("Department IR", {
+	setup(frm) {
+		frm.set_query("destination_process", () => ({
+			filters: { department: frm.doc.next_department, disabled: 0 },
+		}));
+	},
+	next_department(frm) {
+		frm.set_value("destination_process", null);
+	},
+});

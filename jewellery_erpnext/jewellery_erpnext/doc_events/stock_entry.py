@@ -29,6 +29,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.serial_ownership im
 from jewellery_erpnext.jewellery_erpnext.customization.utils.zero_valuation import (
 	should_allow_zero_valuation,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events import supplier_metal_limit
 from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
 	bold,
 	mop_owners,
@@ -41,6 +42,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
+	lock_bins,
 	lock_bins_for_rows,
 	lock_items,
 	preallocate_series_for_docs,
@@ -1455,7 +1457,23 @@ def prelock_bins(self, method=None):
 	# Pinning the shared row here for every submit is what made it the dominant 1213 source
 	# in the Sep-2026 production Error Log; sharding is what actually removes the contention.
 	preallocate_series_for_docs(self)
-	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
+	# Supplier metal limit (supplier_metal_limit.lock_supplier_limits, the hook before this one):
+	# the limited suppliers' existing metal Bins join THIS sorted batch, so the limit check reads
+	# them under lock without a second, out-of-order Bin acquisition (RULE B).
+	supplier_pairs = (getattr(self, "flags", None) or {}).get(
+		supplier_metal_limit.BIN_PAIRS_FLAG
+	)
+	if supplier_pairs:
+		pairs = [
+			(row.item_code, row.get(attr))
+			for row in self.items
+			for attr in ("s_warehouse", "t_warehouse")
+		]
+		self.flags[supplier_metal_limit.LOCKED_BINS_FLAG] = lock_bins(
+			pairs + list(supplier_pairs)
+		)
+	else:
+		lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 
 
 def prelock_bins_on_cancel(self, method=None):

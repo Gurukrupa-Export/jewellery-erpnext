@@ -34,6 +34,15 @@ FIND_B = "F-JUMP-18KT-75.4-Y"
 COMPANY_OWNER = ("Regular Stock", None)
 CUSTOMER_OWNER = ("Customer Goods", "CUST-0001")
 
+# KGJPL-TR-26-00270's netted claim at its MSL: 1 g Regular Stock, 2.707 g of two customers'.
+TREE_270_OWED = {"REG-003VE": 1.0, "CG-S02O0": 1.0, "CG-11A": 1.635, "CG-07A": 0.072}
+TREE_270_OWNERS = {
+	"REG-003VE": COMPANY_OWNER,
+	"CG-S02O0": ("Customer Goods", "AACU0001"),
+	"CG-11A": ("Customer Goods", "GJCU0009"),
+	"CG-07A": ("Customer Goods", "GJCU0009"),
+}
+
 
 def row(idx=1, item1=None, wt1=0, item2=None, wt2=0, mwo="MWO-0001", tree=None):
 	"""An Employee IR Operation row whose ``.get`` reads its own attributes.
@@ -174,6 +183,58 @@ class TestValidation(IntegrationTestCase):
 				fr.validate_finding_repack(eir([row(item1=FIND_A, wt1=2)]))
 		self.assertIn("not on one", str(cm.exception))
 
+	def _validate_on_tree(self, owed, owners, wt):
+		"""Run validate_finding_repack for one ``wt`` g finding row on a tree whose netted claim
+		is ``owed`` (``{batch: qty}``) with batch owners ``owners``; returns the
+		``_validate_draws_against_trees`` mock."""
+		tree = SimpleNamespace(name="TREE-0001", msl_warehouse="MSL - GEPL")
+		tree.get = lambda field, default=None: getattr(tree, field, default)
+		# Keyed, forwarding everything else verbatim: both are also reached by meta loading.
+		real_get_doc, real_get_cached_doc = frappe.get_doc, frappe.get_cached_doc
+
+		def fake_get_doc(*args, **kwargs):
+			if args and args[0] == "Tree Number":
+				return tree
+			return real_get_doc(*args, **kwargs)
+
+		def fake_get_cached_doc(*args, **kwargs):
+			if args and args[0] == "Manufacturing Work Order":
+				return SimpleNamespace()
+			return real_get_cached_doc(*args, **kwargs)
+
+		with patch.object(fr, "is_finding_repack_eir", return_value=True), patch.object(
+			fr, "row_tree_name", return_value=tree.name
+		), patch.object(fr, "_validate_finding_item"), patch.object(
+			fr, "_metal_item", return_value=METAL
+		), patch.object(
+			frappe, "get_cached_doc", side_effect=fake_get_cached_doc
+		), patch.object(frappe, "get_doc", side_effect=fake_get_doc), patch.object(
+			fr, "_tree_netted_owed", return_value=dict(owed)
+		) as netted, patch.object(
+			fr, "batch_priority_map", side_effect=lambda b, **kw: ranks_for(owners)
+		), patch.object(fr, "_validate_draws_against_trees") as draws_check:
+			fr.validate_finding_repack(eir([row(item1=FIND_A, wt1=wt)]))
+		netted.assert_called_once_with(tree, METAL, "MSL - GEPL")
+		return draws_check
+
+	def test_f27_mixed_tree_pours_within_its_regular_share(self):
+		"""KGJPL-TR-26-00270: 1 g Regular Stock beside 2.707 g Customer Goods. A finding that
+		fits the 1 g is allowed -- only customer metal is off limits, not the tree."""
+		draws_check = self._validate_on_tree(TREE_270_OWED, TREE_270_OWNERS, 0.5)
+		draws_check.assert_called_once()
+
+	def test_f28_mixed_tree_past_its_regular_share_is_rejected(self):
+		with self.assertRaises(ValidationError) as cm:
+			self._validate_on_tree(TREE_270_OWED, TREE_270_OWNERS, 1.5)
+		self.assertIn("only 1.0 of Regular Stock", str(cm.exception))
+		self.assertIn("Customer Goods - AACU0001", str(cm.exception))
+
+	def test_f29_customer_goods_tree_is_rejected(self):
+		# Metal Conversion's rule: customer metal never becomes a Finding.
+		with self.assertRaises(ValidationError) as cm:
+			self._validate_on_tree({"CG-1": 5.0}, {"CG-1": CUSTOMER_OWNER}, 0.5)
+		self.assertIn("only 0.0 of Regular Stock", str(cm.exception))
+
 
 class TestFindingItemMustBeAVariantOfF(IntegrationTestCase):
 	"""mop_log.FIELD_MAP buckets by the item code's FIRST CHARACTER, so a non-F item here would
@@ -287,21 +348,17 @@ class TestAppendFindingRows(IntegrationTestCase):
 		self.assertEqual(len(consumes), 2)
 		self.assertAlmostEqual(sum(c["qty"] for c in consumes), 3.0, places=3)
 
-	def test_f23_mixed_ownership_splits_the_produce_row(self):
-		"""A minted batch reads its owner off its produce row, so a finding poured from both a
-		customer's metal and the company's must produce one batch per owner -- folding them would
-		silently change who owns the stock."""
-		se, produced = self._append(
-			[(FIND_A, 3.0)],
-			[("B1", 1.0), ("B2", 2.0)],
-			{"B1": CUSTOMER_OWNER, "B2": COMPANY_OWNER},
-		)
-		self.assertEqual(len(produced), 2)
-		self.assertAlmostEqual(sum(p["qty"] for p in produced), 3.0, places=3)
-		owners = {(p["inventory_type"], p["customer"]) for p in produced}
-		self.assertEqual(owners, {CUSTOMER_OWNER, COMPANY_OWNER})
-		# Distinct batches, one per owner.
-		self.assertEqual(len({p["batch_no"] for p in produced}), 2)
+	def test_f23_customer_metal_is_refused(self):
+		"""Findings are made from Regular Stock only (Metal Conversion's rule): an allocation
+		reaching a customer's metal is refused before any finding batch is minted."""
+		with self.assertRaises(ValidationError) as cm:
+			self._append(
+				[(FIND_A, 3.0)],
+				[("B1", 1.0), ("B2", 2.0)],
+				{"B1": CUSTOMER_OWNER, "B2": COMPANY_OWNER},
+			)
+		self.assertIn("Regular Stock", str(cm.exception))
+		self.assertEqual(self._minted, [])
 
 	def test_f24_short_allocation_is_refused(self):
 		with self.assertRaises(ValidationError) as cm:
@@ -316,6 +373,76 @@ class TestAppendFindingRows(IntegrationTestCase):
 		self.assertEqual(produce["is_finished_item"], 1)
 		self.assertEqual(produce["set_basic_rate_manually"], 1)
 		self.assertEqual(produce["use_serial_batch_fields"], 1)
+
+	def test_f26_customer_stock_is_refused_too(self):
+		"""Both customer types are refused, as in Metal Conversion -- not only Customer Goods."""
+		with self.assertRaises(ValidationError):
+			self._append(
+				[(FIND_A, 2.0)], [("B1", 2.0)], {"B1": ("Customer Stock", "CUST-0001")}
+			)
+		self.assertEqual(self._minted, [])
+
+
+class TestAllocateRegularStock(IntegrationTestCase):
+	"""``_allocate_regular_stock`` -- the submit-time pool is the tree's company batches only."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _allocate(self, need, own_pool, fallback=()):
+		"""``own_pool`` is what ``_tree_owed_batches`` returns (customer-first, as in production);
+		returns ``(allocation, fallback mock)``."""
+		tree = SimpleNamespace(name="KGJPL-TR-26-00270")
+		with patch.object(
+			fr, "_tree_netted_owed", return_value=dict(TREE_270_OWED)
+		), patch.object(
+			fr,
+			"batch_priority_map",
+			side_effect=lambda b, **kw: ranks_for(TREE_270_OWNERS),
+		), patch.object(
+			fr, "_tree_owed_batches", return_value=list(own_pool)
+		), patch.object(
+			fr, "_tree_fallback_batches", return_value=list(fallback)
+		) as fb:
+			alloc, _ranks = fr._allocate_regular_stock(
+				SimpleNamespace(), tree, METAL, "MSL - GEPL", need, 3
+			)
+		return alloc, fb
+
+	def test_mixed_tree_takes_only_its_regular_batch(self):
+		"""The tree-00270 case: customer batches rank first in the pool, yet only the 1 g
+		Regular Stock batch is consumed."""
+		alloc, fb = self._allocate(
+			1.0,
+			[
+				("CG-S02O0", 1.0),
+				("CG-11A", 1.635),
+				("CG-07A", 0.072),
+				("REG-003VE", 1.0),
+			],
+		)
+		self.assertEqual(alloc, [("REG-003VE", 1.0)])
+		fb.assert_not_called()
+
+	def test_drained_regular_batch_falls_back_to_company_metal_only(self):
+		alloc, fb = self._allocate(
+			0.6,
+			[("CG-S02O0", 1.0), ("REG-003VE", 0.2)],
+			fallback=[("REG-OTHER", 0.4)],
+		)
+		self.assertEqual(alloc, [("REG-003VE", 0.2), ("REG-OTHER", 0.4)])
+		kwargs = fb.call_args.kwargs
+		self.assertEqual(kwargs["restrict_to"], {COMPANY_OWNER})
+		self.assertAlmostEqual(kwargs["limit"], 0.4, places=3)
+		self.assertEqual(kwargs["offered"], {"REG-003VE": 0.2})
+
+	def test_need_past_the_regular_share_is_refused_before_allocating(self):
+		with patch.object(fr, "allocate_in_order") as alloc:
+			with self.assertRaises(ValidationError) as cm:
+				self._allocate(1.5, [("CG-S02O0", 1.0), ("REG-003VE", 1.0)])
+		self.assertIn("only 1.0 of Regular Stock", str(cm.exception))
+		alloc.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -566,12 +693,13 @@ class TestFindingBatchRateSources(IntegrationTestCase):
 		)
 		self.assertEqual(sources[0][1], [("B1", 1.0), ("B2", 2.0)])
 
-	def test_mixed_ownership_splits_the_sources_with_the_batches(self):
-		"""One batch per owner, and each is told only about its own owner's metal."""
-		sources = self._sources_for(
-			[(FIND_A, 3.0)],
-			[("B1", 1.0), ("B2", 2.0)],
-			{"B1": CUSTOMER_OWNER, "B2": COMPANY_OWNER},
-		)
-		self.assertEqual(len(sources), 2)
-		self.assertEqual(sorted(s[1] for s in sources), [[("B1", 1.0)], [("B2", 2.0)]])
+	def test_customer_slice_never_reaches_a_finding_batch(self):
+		"""A customer's metal is refused before a finding batch can be minted from it."""
+		harness = TestAppendFindingRows()
+		with self.assertRaises(ValidationError):
+			harness._append(
+				[(FIND_A, 3.0)],
+				[("B1", 1.0), ("B2", 2.0)],
+				{"B1": CUSTOMER_OWNER, "B2": COMPANY_OWNER},
+			)
+		self.assertEqual(harness._batch_sources, [])

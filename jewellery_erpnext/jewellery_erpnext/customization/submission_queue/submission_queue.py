@@ -38,6 +38,15 @@ class CustomSubmissionQueue(SubmissionQueue):
 
 			preflight(to_be_queued_doc)
 
+			if self.ref_doctype == "Employee IR":
+				# Same idea for the supplier pure metal limit: refuse here, in the user's request,
+				# rather than as a Failed queue row. The worker re-checks under the supplier lock.
+				from jewellery_erpnext.jewellery_erpnext.doc_events.supplier_metal_limit import (
+					employee_ir_preflight,
+				)
+
+				employee_ir_preflight(to_be_queued_doc)
+
 		queue = frappe.db.get_value(
 			"Submission Queue",
 			{
