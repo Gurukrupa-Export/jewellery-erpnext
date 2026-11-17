@@ -301,6 +301,14 @@ class TestSncCreateSettlement(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
+	def setUp(self):
+		super().setUp()
+		# create_snc pins its naming counters first (tests/test_multi_counter_prelock.py);
+		# these tests stay DB-free.
+		prelock = patch.object(snc, "_prelock_settlement_counters")
+		prelock.start()
+		self.addCleanup(prelock.stop)
+
 	def _run_create_snc(self, mwo, received, is_customer_gold, owner_batch):
 		original_transfer = _Doc(company="GEPL", branch="BR", to_warehouse="Waxing WO")
 		with patch.object(snc, "_get_mwo", return_value=mwo), patch.object(
@@ -437,6 +445,14 @@ class TestSncOwnerBatchAllocation(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+	def setUp(self):
+		super().setUp()
+		# create_snc pins its naming counters first (tests/test_multi_counter_prelock.py);
+		# these tests stay DB-free.
+		prelock = patch.object(snc, "_prelock_settlement_counters")
+		prelock.start()
+		self.addCleanup(prelock.stop)
 
 	def _find(self, allocated, required, on_hand=3.0, reserve=True):
 		with patch.object(
