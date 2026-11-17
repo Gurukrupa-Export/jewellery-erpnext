@@ -2993,6 +2993,12 @@ class TestDustShortfallFloatResidue(IntegrationTestCase):
 		with (
 			patch("frappe.new_doc", return_value=se),
 			patch.object(frappe.db, "get_value", side_effect=_get_value),
+			# The naming-counter pre-lock (tests/test_multi_counter_prelock.py) would
+			# otherwise build its stubs from the patched new_doc and lock tabSeries.
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.lock_order.preallocate_series_for_docs"
+			),
+			patch("jewellery_erpnext.jewellery_erpnext.lock_order.series_stubs"),
 		):
 			RefiningEntry.create_material_transfer_se(entry)
 		return entry._dust_shortfalls, se

@@ -100,6 +100,24 @@ def secondary_item_row(value="Scrap"):
 	return {fieldname: value}
 
 
+def _refining_series_stubs(company, *stock_entry_types):
+	"""Naming stubs for the Stock Entries a refining transaction will mint, to pass to
+	``lock_order.preallocate_series_for_docs`` before the transaction's first Bin.
+
+	A stub must resolve to the counter row its real Stock Entry takes at insert, or the
+	pre-lock pins the wrong row. Refining Stock Entries take the default naming series
+	today, and so do these stubs.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import series_stubs
+
+	stubs = series_stubs(company, *stock_entry_types)
+	# TODO(C-42, fix/refining-stock-entry-own-counter-kggk-prod): when refining Stock
+	# Entries get their own naming series, call apply_refining_naming_series(stub) on each
+	# stub here. Without it these stubs would pin MAT-STE- again while the gate is on.
+	# tests/test_multi_counter_prelock.py fails until this is done.
+	return stubs
+
+
 def returned_stone_row(rate):
 	"""Valuation fields for a stone the refiner hands back, received at ``rate``.
 
@@ -1139,6 +1157,18 @@ class RefiningEntry(Document):
 		# Refining items default their expense account to the Refining Scrap warehouse's own
 		# Stock account, which ERPNext rejects as a Difference Account.
 		self.set_dust_receipt_difference_account(se)
+
+		# Take every naming counter this receipt mints before the Manufacture's Bins: the
+		# Manufacture and, for Scrap / Unused/Loose Material, the draft hand-back Material
+		# Transfer that _create_central_transit_draft inserts after it below.
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			preallocate_series_for_docs,
+		)
+
+		minted = ["Manufacture"]
+		if self.refining_type in CONSOLIDATED_REFINING_TYPES:
+			minted.append("Material Transfer")
+		preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
 
 		se.insert(ignore_permissions=True)
 		se.submit()
@@ -3454,6 +3484,30 @@ class RefiningEntry(Document):
 						},
 					)
 
+		# Take every naming counter this submit will mint now, before the first Bin: the
+		# SRE cancels below write Bin.reserved_qty, then the transfer locks its own Bins.
+		# That covers the transfer and, for a Scrap shortfall, the dust Material Receipt that
+		# create_dust_opening_receipt_se mints right after it. Left to the inserts, Work
+		# Order Refining took MAT-STE- after the SRE cancels' Bins, and once Stock Entry
+		# naming is sharded per type the receipt's own counter would be taken while the
+		# transfer's Bins are held. The external Purchase Order counter stays terminal.
+		minted = ["Material Transfer"] if se.items else []
+		if self.refining_type == "Scrap Refining" and self._dust_shortfalls:
+			minted.append("Material Receipt")
+		if self._consolidates_batches(target_warehouse):
+			# kggk_uat: on_submit_external then repacks the batches this submit landed into one
+			# per item (consolidate_refinery_batches), after this transfer's Bins. Its Repack
+			# counter (on KG GK the Repack naming rule) is taken here too, before any Bin: left
+			# to the insert it came after MAT-STE- and the Bins, the reverse of Employee IR,
+			# Serial Number Creator and Product Certification.
+			minted.append("Repack")
+		if minted:
+			from jewellery_erpnext.jewellery_erpnext.lock_order import (
+				preallocate_series_for_docs,
+			)
+
+			preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
+
 		# Work Order Refining: release the source MWO Stock Reservation Entries so this
 		# Stock Entry can consume the now unreserved stock (otherwise the submit fails with
 		# "stock is not available").
@@ -4281,6 +4335,20 @@ class RefiningEntry(Document):
 					},
 				)
 
+		# Take this completion's naming counters before the Manufacture's Bins and the MOP
+		# Log rows complete_refining writes after it: the Manufacture itself and, when there
+		# is a refining loss, the scrap Material Transfer complete_refining mints last. With
+		# per-type naming that transfer's counter would otherwise be taken while Bins are
+		# held. The retry below re-enters the same rows.
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			preallocate_series_for_docs,
+		)
+
+		minted = ["Manufacture"]
+		if flt(self.refining_loss) > 0:
+			minted.append("Material Transfer")
+		preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
+
 		se.insert(ignore_permissions=True)
 		try:
 			se.submit()
@@ -4306,6 +4374,16 @@ class RefiningEntry(Document):
 			child = self.append("batch_tracking", bt)
 			child.db_insert()
 
+	def _consolidates_batches(self, target_warehouse):
+		"""Whether consolidate_refinery_batches will repack anything for this submit: its own
+		early-return test, so the Repack counter is planned exactly when it can be minted."""
+		return bool(
+			cint(self.is_external)
+			and self.refining_type in CONSOLIDATED_REFINING_TYPES
+			and not self.parent_refining_entry
+			and target_warehouse
+		)
+
 	def consolidate_refinery_batches(self, target_warehouse):
 		"""Repack every batch this entry brought into ``target_warehouse`` (the refining
 		warehouse, or the supplier's for external refining) into ONE new batch per item.
@@ -4319,12 +4397,7 @@ class RefiningEntry(Document):
 		Repack fills its ``custom_origin_entries`` (update_parent_batch_id). The source ->
 		consolidated pairs are kept as Consolidation rows in Batch Tracking, which the
 		repack and the supplier receipt read to consume the consolidated batch."""
-		if (
-			not cint(self.is_external)
-			or self.refining_type not in CONSOLIDATED_REFINING_TYPES
-			or self.parent_refining_entry
-			or not target_warehouse
-		):
+		if not self._consolidates_batches(target_warehouse):
 			return
 
 		precision = 3
