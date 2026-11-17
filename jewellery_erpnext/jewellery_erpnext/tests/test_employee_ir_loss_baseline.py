@@ -2568,39 +2568,100 @@ _RECALC = (
 	"jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking."
 	"recalculate_msl_tracking"
 )
+_QUEUE = (
+	"jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking."
+	"queue_msl_tracking_refresh"
+)
 
 
 class TestEmployeeIRMSLTracking(IntegrationTestCase):
+	"""The Issue/Receive submit and cancel paths all end in ``_refresh_msl_tracking``,
+	which now only schedules the refresh for after the commit (C-04)."""
+
+	def setUp(self):
+		# Keep whatever is pending outside this test; each test starts with no callbacks.
+		pending = list(frappe.db.after_commit._functions)
+		frappe.db.after_commit.reset()
+
+		def _restore():
+			frappe.db.after_commit.reset()
+			for fn in pending:
+				frappe.db.after_commit.add(fn)
+
+		self.addCleanup(_restore)
+
 	def _make_eir(self):
 		# Bare instance is enough: _refresh_msl_tracking only passes ``self`` to
 		# the (patched) resolver and never touches other attributes.
 		return EmployeeIR.__new__(EmployeeIR)
 
-	def test_refreshes_resolved_msl_warehouse(self):
-		"""When the employee's Raw Material (MSL) warehouse resolves, the cache is
-		recomputed for exactly that warehouse."""
+	def test_schedules_refresh_after_commit(self):
+		"""The resolved MSL warehouse is handed to the after-commit scheduler; the
+		recompute itself never runs inside the submit transaction."""
 		with patch(
 			_RESOLVE, return_value="Assembly MSL WH - 6 - GEPL"
-		) as resolve, patch(_RECALC) as recalc:
+		) as resolve, patch(_RECALC) as recalc, patch(_QUEUE) as queue:
 			self._make_eir()._refresh_msl_tracking()
 
 		resolve.assert_called_once()
-		recalc.assert_called_once_with("Assembly MSL WH - 6 - GEPL")
+		queue.assert_called_once_with("Assembly MSL WH - 6 - GEPL")
+		recalc.assert_not_called()
+
+	def test_registers_a_callback_and_does_no_io(self):
+		"""Unpatched scheduler: one after-commit callback, and no enqueue, no cache
+		write and no recompute until the commit runs it."""
+		with patch(_RESOLVE, return_value="MSL-WH"), patch(_RECALC) as recalc, patch(
+			"frappe.enqueue"
+		) as enqueue, patch.object(frappe.cache, "set_value") as set_value:
+			self._make_eir()._refresh_msl_tracking()
+
+			self.assertEqual(len(frappe.db.after_commit._functions), 1)
+			enqueue.assert_not_called()
+			set_value.assert_not_called()
+
+			frappe.db.after_commit.run()  # what frappe.db.commit() does after COMMIT
+
+		recalc.assert_not_called()
+		enqueue.assert_called_once()
+		self.assertEqual(enqueue.call_args.kwargs["job_id"], "msl::MSL-WH")
+		self.assertTrue(enqueue.call_args.kwargs["deduplicate"])
 
 	def test_no_warehouse_is_a_no_op(self):
 		"""No employee/subcontractor Raw Material warehouse -> nothing to refresh
-		(e.g. a subcontractor with no MSL warehouse); recompute is skipped."""
+		(e.g. a subcontractor with no MSL warehouse); no callback is registered."""
 		with patch(_RESOLVE, return_value=None), patch(_RECALC) as recalc:
 			self._make_eir()._refresh_msl_tracking()
 
 		recalc.assert_not_called()
+		self.assertEqual(len(frappe.db.after_commit._functions), 0)
 
-	def test_refresh_failure_is_swallowed(self):
-		"""A tracking-refresh failure must never propagate out of on_submit /
-		on_cancel and roll back the stock posting — it is logged, not raised."""
-		with patch(_RESOLVE, return_value="MSL-WH"), patch(
-			_RECALC, side_effect=RuntimeError("boom")
-		), patch("frappe.log_error") as log_error:
+	def test_resolver_lock_and_connection_errors_propagate(self):
+		"""1205 / 1213 / a lost connection mean the submit transaction is already lost:
+		they must reach the Submission Queue (Failed), never be logged and swallowed
+		(E-W708: a swallowed 1213 left the row Finished while the receive was undone)."""
+		errors = (
+			frappe.QueryTimeoutError("Lock wait timeout exceeded"),
+			frappe.QueryDeadlockError("Deadlock found when trying to get lock"),
+			frappe.db.OperationalError(2013, "Lost connection to server during query"),
+			frappe.db.InterfaceError(0, ""),
+		)
+		for exc in errors:
+			with self.subTest(error=type(exc).__name__):
+				with patch(_RESOLVE, side_effect=exc), patch(
+					"frappe.log_error"
+				) as log_error, patch(_QUEUE) as queue:
+					with self.assertRaises(type(exc)):
+						self._make_eir()._refresh_msl_tracking()
+
+				log_error.assert_not_called()
+				queue.assert_not_called()
+
+	def test_resolver_other_failure_is_logged_and_skipped(self):
+		"""Any other refresh problem must never roll back the stock posting: it is
+		logged, and nothing is scheduled."""
+		with patch(_RESOLVE, side_effect=RuntimeError("boom")), patch(
+			"frappe.log_error"
+		) as log_error, patch(_QUEUE) as queue:
 			# Must not raise.
 			self._make_eir()._refresh_msl_tracking()
 
@@ -2609,18 +2670,34 @@ class TestEmployeeIRMSLTracking(IntegrationTestCase):
 			log_error.call_args.kwargs.get("title"),
 			"Employee IR: MSL tracking refresh failed",
 		)
+		queue.assert_not_called()
+		self.assertEqual(len(frappe.db.after_commit._functions), 0)
+
+	def test_recompute_lock_error_cannot_reach_the_submit(self):
+		"""The old in-transaction path: a 1213 from the Warehouse save. The submit no
+		longer runs the recompute at all, so it can neither fail nor swallow it."""
+		with patch(_RESOLVE, return_value="MSL-WH"), patch(
+			_RECALC, side_effect=frappe.QueryDeadlockError("deadlock")
+		) as recalc, patch("frappe.log_error") as log_error:
+			self._make_eir()._refresh_msl_tracking()
+
+		recalc.assert_not_called()
+		log_error.assert_not_called()
+		self.assertEqual(len(frappe.db.after_commit._functions), 1)
 
 	def test_a_deadlock_is_reraised_not_swallowed(self):
 		"""1213 (1020 under snapshot isolation) means InnoDB has already rolled the whole submit /
 		cancel back: logging and carrying on would commit the rest of the request in a fresh
 		transaction -- the Version row, a "Finished" queue row -- for a document that never
-		changed."""
-		with patch(_RESOLVE, return_value="MSL-WH"), patch(
-			_RECALC, side_effect=frappe.QueryDeadlockError("1213")
-		), patch("frappe.log_error") as log_error:
+		changed. The recompute itself now runs after commit (C-04), so the deadlock that can
+		still reach the submit is one raised while resolving the MSL warehouse."""
+		with patch(
+			_RESOLVE, side_effect=frappe.QueryDeadlockError("1213")
+		), patch("frappe.log_error") as log_error, patch(_QUEUE) as queue:
 			with self.assertRaises(frappe.QueryDeadlockError):
 				self._make_eir()._refresh_msl_tracking()
 		log_error.assert_not_called()
+		queue.assert_not_called()
 
 	def test_the_sibling_refreshes_reraise_a_deadlock_and_log_the_rest(self):
 		from jewellery_erpnext.jewellery_erpnext.doc_events import warehouse_stock_entry
