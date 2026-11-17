@@ -21,6 +21,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation_pricing import (
 	_apply_standard_pricing,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import (
+	keep_po_rate,
 	set_tracking_bom_rate_in_quotation,
 )
 
@@ -1146,7 +1147,9 @@ def _create_single_tracking_bom(
 	row.other_bom_rate = tracking_bom.other_bom_amount
 	row.making_charge = tracking_bom.making_charge
 	row.bom_rate = tracking_bom.total_bom_amount
-	row.rate = tracking_bom.total_bom_amount
+	# Outwork rows pulled from a Purchase Order keep that order's rate (see keep_po_rate).
+	if not keep_po_rate(self, row):
+		row.rate = tracking_bom.total_bom_amount
 
 	return tracking_bom
 
