@@ -50,11 +50,13 @@ def _is_empty(fieldname, value):
 
 
 def validate_cad_cam_receive_details(doc):
-	"""Server-side rules behind the form's depends_on / mandatory_depends_on.
+	"""Save-time rules: which CAD / CAM fields may be filled at all.
 
-	* Receive on a CAD / CAM operation: every field of that type is required on every row, and
-	  no field of the other type may be filled.
-	* Anything else (Issue, or an operation with no flag): no CAD / CAM value may be present.
+	* Only the fields of the operation's own type may be filled: every CAD / CAM field on an
+	  Issue or an unflagged operation, or the fields of another type, are refused.
+
+	Empty fields are NOT an error here. A draft Receive can be saved half filled, and the
+	required fields are enforced when it is submitted (validate_cad_cam_required_on_submit).
 	"""
 	details_type = (
 		get_receive_details_type(doc.operation) if doc.type == "Receive" else None
@@ -64,17 +66,6 @@ def validate_cad_cam_receive_details(doc):
 
 	required = FIELDS_BY_TYPE.get(details_type, {})
 	for row in doc.employee_ir_operations:
-		missing = [
-			label for fn, label in required.items() if _is_empty(fn, row.get(fn))
-		]
-		if missing:
-			frappe.throw(
-				_("Row {0}: {1} required for {2} receive of {3}").format(
-					row.idx, ", ".join(missing), details_type, doc.operation
-				)
-			)
-		# Whatever is not this operation's own type must stay empty: every CAD / CAM field on
-		# a row with no flag, or the CAM fields on a CAD receive (and the reverse).
 		extra = [
 			label
 			for fn, label in ALL_FIELDS.items()
@@ -84,6 +75,31 @@ def validate_cad_cam_receive_details(doc):
 			frappe.throw(
 				_("Row {0}: {1} not applicable for {2} {3}").format(
 					row.idx, ", ".join(extra), doc.type, doc.operation
+				)
+			)
+
+
+def validate_cad_cam_required_on_submit(doc):
+	"""Submit-only rule: every field of the operation's type is required on every row.
+
+	Called from before_submit, so a draft can be saved with these empty and only the submit
+	is refused. Weights must be above 0. Does nothing on an Issue or an unflagged operation.
+	"""
+	details_type = (
+		get_receive_details_type(doc.operation) if doc.type == "Receive" else None
+	)
+	required = FIELDS_BY_TYPE.get(details_type, {})
+	if not required:
+		return
+
+	for row in doc.employee_ir_operations:
+		missing = [
+			label for fn, label in required.items() if _is_empty(fn, row.get(fn))
+		]
+		if missing:
+			frappe.throw(
+				_("Row {0}: {1} required for {2} receive of {3}").format(
+					row.idx, ", ".join(missing), details_type, doc.operation
 				)
 			)
 

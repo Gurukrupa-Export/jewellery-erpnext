@@ -38,6 +38,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_
 	get_receive_details_type,
 	sync_item_master_for_receive,
 	validate_cad_cam_receive_details,
+	validate_cad_cam_required_on_submit,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
 	get_blocked_finding_batches,
@@ -175,6 +176,8 @@ class EmployeeIR(Document):
 			validate_casting_group_complete(self)
 		else:
 			validate_employee_ir_receive_delay(self)
+			# The CAD / CAM fields are required on submit only; a draft may hold them empty.
+			validate_cad_cam_required_on_submit(self)
 
 	def on_submit(self):
 		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
