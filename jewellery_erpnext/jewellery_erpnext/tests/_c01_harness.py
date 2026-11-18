@@ -40,7 +40,7 @@ from jewellery_erpnext.jewellery_erpnext.tests.naming_lock_probe import (
 )
 
 THROWAWAY_SITE = "kggk-pi-test.localhost"
-FIXTURE_TAG = "C01-HARNESS"  # written into Employee IR remarks of the drafts we build
+FIXTURE_TAG = "C01-HARNESS"  # written into the _user_tags of the drafts we build
 EIR_SCENARIOS = ("I1", "I2", "I3", "I4", "I5")
 
 
@@ -121,6 +121,28 @@ def _open_issues(company, limit=200):
 	)
 
 
+def tag_draft(name, tag):
+	"""Tag an Employee IR in the standard ``_user_tags`` column (Employee IR has no remarks
+	field on KG GK, so a ``remarks`` value would be silently dropped)."""
+	frappe.db.sql(
+		"UPDATE `tabEmployee IR` SET `_user_tags` = %s WHERE name = %s",
+		(f",{tag}", name),
+	)
+
+
+def tagged_drafts(tag_prefix, docstatus=0):
+	"""``[(name, tag)]`` of Receive Employee IRs whose tag starts with ``tag_prefix``, in
+	creation order. ``docstatus=None`` returns every status."""
+	condition = "" if docstatus is None else "AND docstatus = %(docstatus)s"
+	rows = frappe.db.sql(
+		f"""SELECT name, `_user_tags` FROM `tabEmployee IR`
+		WHERE type = 'Receive' AND `_user_tags` LIKE %(like)s {condition}
+		ORDER BY creation, name""",
+		{"like": f",{tag_prefix}%", "docstatus": docstatus},
+	)
+	return [(name, (tags or "").lstrip(",").split(",")[0]) for name, tags in rows]
+
+
 def build_receive_draft(issue, received_delta=0.0, finding=None):
 	"""A Receive draft for every row of ``issue``: received = gross + ``received_delta``.
 
@@ -143,7 +165,6 @@ def build_receive_draft(issue, received_delta=0.0, finding=None):
 			"subcontracting": issue.subcontracting,
 			"employee": issue.employee,
 			"subcontractor": issue.subcontractor,
-			"remarks": FIXTURE_TAG,
 		}
 	)
 	for i, r in enumerate(rows):
@@ -163,6 +184,7 @@ def build_receive_draft(issue, received_delta=0.0, finding=None):
 			row.update({"finding_item1": finding[0], "finding_wt1": finding[1]})
 		doc.append("employee_ir_operations", row)
 	doc.insert(ignore_permissions=True)
+	tag_draft(doc.name, FIXTURE_TAG)
 	return doc.name
 
 
@@ -217,12 +239,7 @@ def build_fixtures(
 
 def fixture_drafts():
 	"""``{scenario: draft name}`` from the committed drafts, by build order."""
-	names = frappe.get_all(
-		"Employee IR",
-		{"docstatus": 0, "type": "Receive", "remarks": FIXTURE_TAG},
-		pluck="name",
-		order_by="creation asc",
-	)
+	names = [name for name, tag in tagged_drafts(FIXTURE_TAG) if tag == FIXTURE_TAG]
 	return dict(zip(EIR_SCENARIOS, names))
 
 
@@ -411,9 +428,11 @@ def capture(eir_names=None):
 	(serial execution must give identical numbers on both builds).
 	"""
 	require_throwaway_site()
-	eir_names = eir_names or frappe.get_all(
-		"Employee IR", {"type": "Receive", "remarks": FIXTURE_TAG}, pluck="name"
-	)
+	eir_names = eir_names or [
+		name
+		for name, tag in tagged_drafts(FIXTURE_TAG, docstatus=None)
+		if tag == FIXTURE_TAG
+	]
 	new_batches, per_item = {}, {}
 	run_entries = set(
 		frappe.get_all("Stock Entry", {"employee_ir": ["in", eir_names]}, pluck="name")
