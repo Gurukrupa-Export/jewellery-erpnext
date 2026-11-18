@@ -820,6 +820,14 @@ class TestSncFindingSettlement(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
+	def setUp(self):
+		super().setUp()
+		# create_snc pins its naming counters first (tests/test_multi_counter_prelock.py);
+		# these tests stay DB-free.
+		prelock = patch.object(snc, "_prelock_settlement_counters")
+		prelock.start()
+		self.addCleanup(prelock.stop)
+
 	def _mwo(self, customer="GJCU0009"):
 		return _Doc(
 			name="MWO-WORK-1",
@@ -1104,6 +1112,14 @@ class TestSncHardening(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+	def setUp(self):
+		super().setUp()
+		# create_snc pins its naming counters first (tests/test_multi_counter_prelock.py);
+		# these tests stay DB-free.
+		prelock = patch.object(snc, "_prelock_settlement_counters")
+		prelock.start()
+		self.addCleanup(prelock.stop)
 
 	def _mwo(self):
 		return _Doc(
