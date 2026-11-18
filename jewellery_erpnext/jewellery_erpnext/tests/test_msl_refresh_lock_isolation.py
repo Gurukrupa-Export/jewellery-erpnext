@@ -46,17 +46,38 @@ _RESOLVE = (
 )
 
 
-class _NoRedisCache:
-	"""Keeps the job to one deterministic pass whether or not Redis is running."""
+class _NoDirtyFlagCache:
+	"""The real cache, except that the MSL dirty flag always reads as unset.
 
-	def set_value(self, *args, **kwargs):
-		pass
+	Keeps the job to one deterministic pass. Everything else goes to the real cache, because
+	the Warehouse save runs other apps' hooks that use it (Jarvis calls ``frappe.cache()``).
+	"""
 
-	def get_value(self, *args, **kwargs):
-		return None
+	def __init__(self, real):
+		self._real = real
 
-	def delete_value(self, *args, **kwargs):
-		pass
+	def __call__(self):
+		return self
+
+	def __getattr__(self, name):
+		return getattr(self._real, name)
+
+	@staticmethod
+	def _is_dirty_flag(key):
+		return str(key).startswith(wt.MSL_REFRESH_DIRTY_KEY.format(""))
+
+	def set_value(self, key, *args, **kwargs):
+		if not self._is_dirty_flag(key):
+			return self._real.set_value(key, *args, **kwargs)
+
+	def get_value(self, key, *args, **kwargs):
+		if self._is_dirty_flag(key):
+			return None
+		return self._real.get_value(key, *args, **kwargs)
+
+	def delete_value(self, key, *args, **kwargs):
+		if not self._is_dirty_flag(key):
+			return self._real.delete_value(key, *args, **kwargs)
 
 
 def _expected_rows(warehouse):
@@ -173,7 +194,7 @@ class TestMslRefreshOutsideSubmitLocks(IntegrationTestCase):
 		"""Nothing holds the row now (each test releases it): the job's committed rows
 		equal a fresh build from the ledger."""
 		with self.primary_connection():
-			with patch.object(frappe, "cache", _NoRedisCache()):
+			with patch.object(frappe, "cache", _NoDirtyFlagCache(frappe.cache)):
 				wt.refresh_msl_tracking_job(self.warehouse)  # commits
 			expected = _expected_rows(self.warehouse)
 			doc = frappe.get_doc("Warehouse", self.warehouse)
