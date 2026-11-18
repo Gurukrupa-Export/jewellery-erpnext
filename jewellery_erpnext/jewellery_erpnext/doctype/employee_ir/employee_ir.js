@@ -906,9 +906,12 @@ async function validate_employee_ir_wo_limit(frm) {
 }
 
 // CAD receive: pre-fill Estimated RPT WT from the Item. The user can still change it.
-// Off a CAD Receive the column is hidden, so there is nothing to fill.
+// Off a CAD Receive, or on an operation that does not ask for it, the column is hidden, so
+// there is nothing to fill. An empty list means every field of the type.
 function fill_estimated_rpt_wt(frm, row) {
 	if (frm.doc.type != "Receive" || frm.doc.receive_details_type != "CAD") return;
+	const fields = frm.doc.receive_detail_fields;
+	if (fields && !fields.split(",").includes("estimated_rpt_wt")) return;
 	frappe.call({
 		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_receive.get_estimated_rpt_wt",
 		args: { manufacturing_operation: row.manufacturing_operation },

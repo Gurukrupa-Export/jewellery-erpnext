@@ -199,54 +199,54 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"cad_file\") || doc.cad_file)",
    "fieldname": "cad_file",
    "fieldtype": "Attach",
    "label": "CAD File",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"cad_numbering_file\") || doc.cad_numbering_file)",
    "fieldname": "cad_numbering_file",
    "fieldtype": "Attach",
    "label": "CAD Numbering File",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"estimated_rpt_wt\") || doc.estimated_rpt_wt)",
    "fieldname": "estimated_rpt_wt",
    "fieldtype": "Float",
    "label": "Estimated RPT WT",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1,
    "precision": "3"
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"ref_name\") || doc.ref_name)",
    "fieldname": "ref_name",
    "fieldtype": "Data",
    "label": "Ref Name",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"estimated_casting_wt\") || doc.estimated_casting_wt)",
    "fieldname": "estimated_casting_wt",
    "fieldtype": "Float",
    "label": "Estimated Casting WT",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1,
    "precision": "3"
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"support_cam_file\") || doc.support_cam_file)",
    "fieldname": "support_cam_file",
    "fieldtype": "Attach",
    "label": "Support CAM File",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\"",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"platform_wt\") || doc.platform_wt)",
    "fieldname": "platform_wt",
    "fieldtype": "Float",
    "label": "Platform WT",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\"",
    "no_copy": 1,
    "precision": "3"
   },
@@ -303,7 +303,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-11-11 12:30:39.456932",
+ "modified": "2026-11-17 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR Operation",
