@@ -54,7 +54,11 @@ def require_throwaway_site():
 
 def environment():
 	"""Facts the report must state next to every result."""
-	isolation = frappe.db.sql("SELECT @@transaction_isolation")[0][0]
+	# MariaDB >= 11.1 (production 11.8) has transaction_isolation; 10.x only tx_isolation.
+	try:
+		isolation = frappe.db.sql("SELECT @@transaction_isolation")[0][0]
+	except Exception:
+		isolation = frappe.db.sql("SELECT @@tx_isolation")[0][0]
 	return {
 		"site": frappe.local.site,
 		"apps": frappe.get_installed_apps(),
