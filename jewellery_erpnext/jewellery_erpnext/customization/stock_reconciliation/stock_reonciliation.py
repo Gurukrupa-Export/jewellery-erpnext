@@ -405,7 +405,7 @@ def get_items_for_reconciliation(
 	company,
 	item_codes=None,
 	select_all=0,
-	ignore_empty_stock=0,
+	ignore_empty_stock=1,
 ):
 	"""ERPNext's ``get_items`` for several items at once: every item of ``warehouse`` when
 	``select_all``, else each of ``item_codes``. Permission checks stay ERPNext's."""
@@ -414,7 +414,7 @@ def get_items_for_reconciliation(
 		"posting_date": posting_date,
 		"posting_time": posting_time,
 		"company": company,
-		"ignore_empty_stock": ignore_empty_stock,
+		"ignore_empty_stock": cint(ignore_empty_stock),
 	}
 	if cint(select_all):
 		return erpnext_get_items(**args)

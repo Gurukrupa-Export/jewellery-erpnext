@@ -309,6 +309,7 @@ class TestGetItemsForReconciliation(_Base):
 		calls = []
 
 		def fake_get_items(**args):
+			self.ignore_empty_stock = args["ignore_empty_stock"]
 			calls.append(args.get("item_code"))
 			return [
 				{
@@ -331,6 +332,14 @@ class TestGetItemsForReconciliation(_Base):
 	def test_select_all_is_one_call_for_the_warehouse(self):
 		calls, _rows = self._calls(item_codes=["M1"], select_all=1)
 		self.assertEqual(calls, [None])
+
+	def test_ignore_empty_stock_defaults_on(self):
+		self._calls(item_codes=["M1"])
+		self.assertEqual(self.ignore_empty_stock, 1)
+
+	def test_ignore_empty_stock_can_be_unticked(self):
+		self._calls(item_codes=["M1"], ignore_empty_stock="0")
+		self.assertEqual(self.ignore_empty_stock, 0)
 
 	def test_nothing_selected(self):
 		with self.assertRaises(frappe.ValidationError):

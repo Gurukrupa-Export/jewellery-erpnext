@@ -185,6 +185,8 @@ function sr_get_items_dialog(frm) {
 				label: __("Ignore Empty Stock"),
 				fieldname: "ignore_empty_stock",
 				fieldtype: "Check",
+				// Ticked by default (items with no stock are skipped); the user can untick it.
+				default: 1,
 			},
 		],
 		primary_action_label: __("Update"),
