@@ -418,15 +418,24 @@ class TestCreatorsGateOff(_CreatorHarness):
 		self._assert_default(self.run_transfer_recovered(None))
 
 	def test_receive_from_supplier(self):
-		self._assert_default(self.run_receive_from_supplier(None))
+		inserted = self.run_receive_from_supplier(None)
+		self._assert_default(inserted)
+		# kggk_uat: a Scrap receipt also hands back a draft Material Transfer to Central
+		# right after the Manufacture; both counters are taken before the Manufacture's Bins.
+		self.assertEqual(
+			[s.stock_entry_type for s in inserted.prelocked],
+			["Manufacture", "Material Transfer"],
+		)
 
 	def test_external_scrap_submit(self):
 		inserted = self.run_external_scrap_submit(None)
 		self._assert_default(inserted, count=2)
-		# The up-front pre-lock pins the same default row the entries are named from.
+		# The up-front pre-lock pins the same default row the entries are named from. On
+		# kggk_uat it also covers the Repack of consolidate_refinery_batches, which an external
+		# Scrap submit runs next.
 		self.assertEqual(
 			[s.stock_entry_type for s in inserted.prelocked],
-			["Material Transfer", "Material Receipt"],
+			["Material Transfer", "Material Receipt", "Repack"],
 		)
 		self.assertEqual(
 			{s.naming_series for s in inserted.prelocked}, {default_series()}
@@ -459,10 +468,11 @@ class TestCreatorsGateOn(_CreatorHarness):
 		)
 		self.assertEqual({r["naming_series"] for r in inserted}, {SERIES})
 		# The up-front pre-lock takes the refining row before the first Bin, and the
-		# entries then re-enter it: never MAT-STE-.
+		# entries then re-enter it: never MAT-STE-. (kggk_uat: plus the consolidation
+		# Repack's counter, which a Repack naming rule still decides.)
 		self.assertEqual(
 			[s.stock_entry_type for s in inserted.prelocked],
-			["Material Transfer", "Material Receipt"],
+			["Material Transfer", "Material Receipt", "Repack"],
 		)
 		# And lock_order resolves both to the same tabSeries row, so the receipt -- named
 		# after the transfer's Bin locks -- re-enters a row the transaction already holds.

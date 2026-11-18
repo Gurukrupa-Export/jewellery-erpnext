@@ -387,6 +387,12 @@ class TestRecomputeUnchanged(IntegrationTestCase):
 			wt, "today", return_value="2026-11-17"
 		), patch.object(
 			wt, "get_warehouse_item_tracking", side_effect=_tracking
+		), patch.object(
+			# kggk_uat builds both views from one ledger scan (_msl_tracking_views), the same
+			# two views get_warehouse_item_tracking returns.
+			wt,
+			"_msl_tracking_views",
+			side_effect=lambda warehouse, month_start: (self.MONTH, self.CUMULATIVE),
 		), patch("frappe.get_doc", side_effect=_get_doc), patch(
 			"frappe.db.commit"
 		), patch.object(frappe, "cache", _FakeCache()):

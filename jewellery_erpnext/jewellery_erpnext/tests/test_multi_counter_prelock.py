@@ -172,10 +172,16 @@ class TestRefiningSubmitPrelock(_PrelockCase):
 			get_dust_opening_batch=lambda item_code: "DUST-B",
 			set_dust_receipt_difference_account=lambda se: None,
 			create_external_refining_po=log.record("po_insert"),
+			# kggk_uat: an external Scrap / Unused-Loose submit consolidates its batches
+			# (Repack) after the transfer and before the Purchase Order.
+			consolidate_refinery_batches=log.record("consolidate"),
 			db_set=MagicMock(),
 		)
 		fields.update(attrs)
 		entry = _Doc(**fields)
+		entry._consolidates_batches = lambda target_warehouse: (
+			RefiningEntry._consolidates_batches(entry, target_warehouse)
+		)
 		entry.create_material_transfer_se = lambda **k: (
 			RefiningEntry.create_material_transfer_se(entry, **k)
 		)
@@ -252,10 +258,12 @@ class TestRefiningSubmitPrelock(_PrelockCase):
 		log = _Log()
 		entry = self._entry(log, REFINING_TYPE_SCRAP, 1.0, [0.6], is_external=1)
 		self._submit(entry, log)
+		# kggk_uat: the consolidation Repack's counter is taken with the transfer's, before
+		# any Bin; the Purchase Order counter stays last.
 		self.assertOnePrelockBefore(
-			log, "insert", COMPANY, ["Material Transfer", "Material Receipt"]
+			log, "insert", COMPANY, ["Material Transfer", "Material Receipt", "Repack"]
 		)
-		self.assertEqual(log.labels()[-1], "po_insert")
+		self.assertEqual(log.labels()[-2:], ["consolidate", "po_insert"])
 		self.assertEveryInsertPrelocked(log)
 
 
