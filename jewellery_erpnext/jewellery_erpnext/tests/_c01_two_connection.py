@@ -137,7 +137,7 @@ def _submit(doctype, name, *, mint_types=None):
 	record["plan"] = sorted(
 		t
 		for _company, t in (
-			frappe.flags.get(lock_order.PLANNED_COUNTERS_FLAG) or {}
+			frappe.flags.get(getattr(lock_order, "PLANNED_COUNTERS_FLAG", None)) or {}
 		).get((doctype, name), set())
 	)
 	record["events"] = probe.report()
@@ -206,8 +206,11 @@ def run_all(wait=3):
 	_case("C2_T01a", "I1", "series")
 	_case("C3_T01b", "I3", "rule")
 	_case("C4_T01b", "I3", "series")
-	_case("C5_held", "I3", "series", mint_types=())
-	_case("C5_free", "I3", None, mint_types=())
+	if hasattr(lock_order, "guard_unplanned_stock_entry_counter"):
+		_case("C5_held", "I3", "series", mint_types=())
+		_case("C5_free", "I3", None, mint_types=())
+	else:  # forces the C-01 plan: nothing to force on the baseline build
+		out["C5_held"] = out["C5_free"] = {"skipped": "baseline build: no C-01 plan"}
 	_case("T01c", "I4", None)
 	sncs = frappe.get_all(
 		"Serial Number Creator", {"docstatus": 0}, pluck="name", limit=1

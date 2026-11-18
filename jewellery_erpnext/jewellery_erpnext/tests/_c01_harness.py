@@ -188,6 +188,20 @@ def build_receive_draft(issue, received_delta=0.0, finding=None):
 	return doc.name
 
 
+#: How many fitting Issues build_fixtures tries per scenario before skipping it.
+MAX_FIXTURE_TRIES = 25
+
+
+def _require_booked_loss(name):
+	"""Raise unless the Process-Loss draft ``name`` books its whole loss automatically, i.e.
+	passes the same check its submit runs (validate_process_loss filled the loss rows)."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
+		validate_loss_tables_required,
+	)
+
+	validate_loss_tables_required(frappe.get_doc("Employee IR", name))
+
+
 def build_fixtures(
 	company="KG GK Jewellers Private Limited", commit=0, finding_item=None
 ):
@@ -211,23 +225,38 @@ def build_fixtures(
 	deltas = {"I1": 0.0, "I2": 0.0, "I3": -0.01, "I4": 0.05, "I5": 0.0}
 	used, built, skipped = set(), {}, {}
 	for scenario, fits in wanted.items():
-		issue = next((i for i in issues if i.name not in used and fits(i)), None)
-		if not issue:
+		candidates = [i for i in issues if i.name not in used and fits(i)]
+		if not candidates:
 			skipped[scenario] = "no open Issue on a fitting operation in the backup"
 			continue
 		if scenario == "I5" and not finding_item:
 			skipped[scenario] = "pass finding_item (an F item matching the tree metal)"
 			continue
-		try:
-			built[scenario] = build_receive_draft(
-				issue,
-				deltas[scenario],
-				finding=(finding_item, 0.05) if scenario == "I5" else None,
-			)
+		last_error = None
+		for issue in candidates[:MAX_FIXTURE_TRIES]:
+			# One savepoint per attempt: a failed draft must not roll back the drafts
+			# already built for the earlier scenarios.
+			frappe.db.savepoint("c01_fixture")
+			try:
+				name = build_receive_draft(
+					issue,
+					deltas[scenario],
+					finding=(finding_item, 0.05) if scenario == "I5" else None,
+				)
+				if deltas[scenario] < 0:
+					_require_booked_loss(name)
+			except Exception as exc:
+				frappe.db.rollback(save_point="c01_fixture")
+				last_error = exc
+				continue
+			built[scenario] = name
 			used.add(issue.name)
-		except Exception as exc:
-			frappe.db.rollback()
-			skipped[scenario] = f"draft failed: {exc!r}"
+			break
+		else:
+			skipped[scenario] = (
+				f"no draft out of {min(len(candidates), MAX_FIXTURE_TRIES)} fitting Issues: "
+				f"{last_error!r}"[:300]
+			)
 	if commit:
 		frappe.db.commit()
 	else:
@@ -303,7 +332,7 @@ def probed_submit(doctype, name, *, mint_types=None, guard=True, snc_spy=False):
 	record["plan"] = sorted(
 		t
 		for _company, t in (
-			frappe.flags.get(lock_order.PLANNED_COUNTERS_FLAG) or {}
+			frappe.flags.get(getattr(lock_order, "PLANNED_COUNTERS_FLAG", None)) or {}
 		).get((doctype, name), set())
 	)
 	record["company"] = doc.company
@@ -398,9 +427,14 @@ def run_scenarios(company="KG GK Jewellers Private Limited"):
 	if not sncs:
 		results["scenarios"]["I7"] = {"skipped": "no Serial Number Creator draft"}
 
-	# I8: negative control on the Process-Loss-only fixture.
+	# I8: negative control on the Process-Loss-only fixture. It forces the C-01 plan and
+	# guard, so it has nothing to force on the baseline build.
 	name = drafts.get("I3")
-	if name:
+	if name and not hasattr(lock_order, "guard_unplanned_stock_entry_counter"):
+		results["scenarios"]["I8"] = {
+			"skipped": "baseline build: no planned pre-locks or guard to force"
+		}
+	elif name:
 		off = probed_submit("Employee IR", name, mint_types=(), guard=False)
 		off = _judge(off, "eir", [], rules, series)
 		on = probed_submit("Employee IR", name, mint_types=(), guard=True)
