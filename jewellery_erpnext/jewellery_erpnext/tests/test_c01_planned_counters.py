@@ -37,6 +37,15 @@ PL = "Process Loss"
 RP = "Repack"
 
 
+def _lighter_row(eir):
+	"""Any operation row received lighter than issued (the only reason kggk_uat over-plans)."""
+	return any(
+		flt(r.get("received_gross_wt")) < flt(r.get("gross_wt"))
+		for r in (eir.get("employee_ir_operations") or [])
+		if r.get("received_gross_wt")
+	)
+
+
 class _Row(frappe._dict):
 	"""A child-row stand-in that also has Document.set (the rounding helper calls it)."""
 
@@ -222,23 +231,33 @@ class TestReceiveMintTypes(_C01TestCase):
 			on_raw = set(
 				self._types(raw, finding_flag=finding_flag, precision=precision)
 			)
-			self.assertEqual(on_rounded, truth, rounded)
+			# kggk_uat plans before validate rebuilds the loss rows, so the plan is a superset:
+			# it may add Process Loss for a row received lighter than issued, nothing else.
+			self.assertTrue(truth <= on_rounded, (rounded, truth, on_rounded))
+			extra = on_rounded - truth
+			self.assertTrue(extra <= {PL}, (rounded, extra))
+			if extra:
+				self.assertTrue(_lighter_row(rounded), (rounded, extra))
 			self.assertTrue(truth <= on_raw, (raw, truth, on_raw))
 
-	def test_u1_16_insert_plans_process_loss_from_the_rows(self):
-		# kggk_uat: a REST insert-and-submit is pre-locked in before_insert, before validate
-		# builds the loss rows, so a row received lighter than issued plans Process Loss.
-		eir = _eir([{"gross_wt": 2.9, "received_gross_wt": 2.8}])
-		eir["__islocal"] = 1
-		self.assertEqual(self._types(eir), (PL,))
-		eir["employee_ir_operations"][0]["received_gross_wt"] = 2.9
-		self.assertEqual(self._types(eir), ())
+	def test_u1_16_lighter_row_plans_process_loss_before_validate(self):
+		# kggk_uat plans in before_insert / check_if_latest, before validate builds the loss
+		# rows: an insert-and-submit has none yet, so a lighter row alone plans Process Loss.
+		for islocal in (1, 0):
+			eir = _eir([{"gross_wt": 2.9, "received_gross_wt": 2.8}])
+			eir["__islocal"] = islocal
+			self.assertEqual(self._types(eir), (PL,))
+			eir["employee_ir_operations"][0]["received_gross_wt"] = 2.9
+			self.assertEqual(self._types(eir), ())
 
-	def test_u1_17_saved_draft_plans_from_its_loss_rows_only(self):
-		# A saved draft carries the loss rows its last save built: planned from those only,
-		# exactly as on kggk_prod.
+	def test_u1_17_saved_draft_with_stale_loss_rows_is_never_under_planned(self):
+		# A Desk save-and-submit posts edited weights with the previous save's loss rows.
+		# Weights lowered after a loss-free save: the lighter row still plans Process Loss.
 		eir = _eir([{"gross_wt": 2.9, "received_gross_wt": 2.8}])
-		self.assertEqual(self._types(eir), ())
+		eir["employee_loss_details"] = []
+		self.assertEqual(self._types(eir), (PL,))
+		# Loss rows from an earlier save also plan it (superset), even if weights were raised.
+		eir["employee_ir_operations"][0]["received_gross_wt"] = 2.9
 		eir["employee_loss_details"] = [_Row(proportionally_loss=0.1)]
 		self.assertEqual(self._types(eir), (PL,))
 
