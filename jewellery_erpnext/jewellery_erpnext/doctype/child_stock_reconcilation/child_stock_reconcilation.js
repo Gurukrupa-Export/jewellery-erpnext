@@ -46,6 +46,30 @@ frappe.ui.form.on("Child Stock Reconcilation", {
 	},
 });
 
+// Pure weight = qty x purity % / 100 (metal and finding items, else 0). The server recomputes it on
+// save (ChildStockReconcilation.set_pure_weight); this keeps the grid current while typing.
+frappe.ui.form.on("Child Stock Reconcilation Item", {
+	item_code: set_child_pure_weight,
+	qty: set_child_pure_weight,
+});
+
+async function set_child_pure_weight(frm, cdt, cdn) {
+	const row = locals[cdt][cdn];
+	frm._purity_cache = frm._purity_cache || {};
+	if (row.item_code && !(row.item_code in frm._purity_cache)) {
+		const found = await frappe.xcall(
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.get_purity_percentages",
+			{ item_codes: [row.item_code] }
+		);
+		frm._purity_cache[row.item_code] = flt((found || {})[row.item_code]);
+	}
+	const purity = row.item_code ? frm._purity_cache[row.item_code] : 0;
+	const pure_weight = purity ? flt((flt(row.qty) * purity) / 100, 3) : 0;
+	if (flt(row.pure_weight) !== pure_weight) {
+		frappe.model.set_value(cdt, cdn, "pure_weight", pure_weight);
+	}
+}
+
 // function:get_items(frm) {
 
 // },

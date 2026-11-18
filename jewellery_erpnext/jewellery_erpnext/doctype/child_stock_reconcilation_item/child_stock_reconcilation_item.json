@@ -16,6 +16,7 @@
   "column_break_6",
   "warehouse",
   "qty",
+  "pure_weight",
   "valuation_rate",
   "amount",
   "allow_zero_valuation_rate",
@@ -100,6 +101,16 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Quantity"
+  },
+  {
+   "columns": 1,
+   "description": "Qty x purity % / 100 (metal and finding items).",
+   "fieldname": "pure_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Pure Weight",
+   "precision": "3",
+   "read_only": 1
   },
   {
    "columns": 2,
@@ -261,7 +272,7 @@
  "grid_page_length": 50,
  "istable": 1,
  "links": [],
- "modified": "2026-04-13 11:45:37.139477",
+ "modified": "2026-11-17 10:00:00.000000",
  "modified_by": "shubham_k@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Child Stock Reconcilation Item",

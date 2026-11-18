@@ -3043,6 +3043,12 @@ def create_test_data():
 
 			_ensure_supplier_metal_weight_limit_field()
 
+			from jewellery_erpnext.patches.add_stock_reconciliation_summary_fields import (
+				execute as _ensure_stock_reconciliation_summary_fields,
+			)
+
+			_ensure_stock_reconciliation_summary_fields()
+
 			from jewellery_erpnext.patches.add_mr_is_free_item_field import (
 				execute as _ensure_mr_is_free_item_field,
 			)
