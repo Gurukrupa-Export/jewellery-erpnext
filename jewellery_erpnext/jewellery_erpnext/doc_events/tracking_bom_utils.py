@@ -1,5 +1,44 @@
+import json
+from contextlib import contextmanager
+
 import frappe
 from frappe.utils import flt
+
+
+@contextmanager
+def tracking_bom_run_cache():
+	"""Share master-data lookups across every Tracking BOM built in one run.
+
+	A Quotation builds one Tracking BOM per row, and each one used to re-read the same price
+	lists, making charges, metal criteria and customer settings for every metal, finding,
+	diamond and gemstone row. Nothing a run reads is written during it (only Tracking BOMs are
+	inserted), so one fetch per key is enough. Outside this block ``run_cached`` fetches every
+	time, exactly as before.
+	"""
+	previous = getattr(frappe.local, "tracking_bom_cache", None)
+	frappe.local.tracking_bom_cache = previous if previous is not None else {}
+	try:
+		yield
+	finally:
+		frappe.local.tracking_bom_cache = previous
+
+
+def run_cached(key, fetch):
+	"""``fetch()`` once per ``key`` inside ``tracking_bom_run_cache``; every call outside it.
+
+	Callers treat the result as read-only: it is shared by every Tracking BOM in the run.
+	"""
+	cache = getattr(frappe.local, "tracking_bom_cache", None)
+	if cache is None:
+		return fetch()
+	if key not in cache:
+		cache[key] = fetch()
+	return cache[key]
+
+
+def filters_key(filters):
+	"""A hashable cache key for a filters dict (its values may hold lists)."""
+	return json.dumps(filters, sort_keys=True, default=str)
 
 
 def keep_po_rate(doc, row):
