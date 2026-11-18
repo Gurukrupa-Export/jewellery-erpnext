@@ -107,9 +107,42 @@ def _expected_target(mop, department):
 	return None
 
 
+def _is_system_manager(user=None):
+	return "System Manager" in frappe.get_roles(user or frappe.session.user)
+
+
 @frappe.whitelist()
 def get_transfer_warehouses(manufacturing_operation=None):
-	"""For the form: the locked source and, for the given operation, the locked target."""
+	"""For the form.
+
+	Normal users (with an Employee + department): the locked source and, for the given
+	operation, the locked target, both from the user's own department.
+	System Managers: values suggested from the operation's own department, left editable.
+	"""
+	mop = None
+	if manufacturing_operation:
+		mop = frappe.db.get_value(
+			"Manufacturing Operation",
+			manufacturing_operation,
+			["name", "status", "employee", "subcontractor", "department"],
+			as_dict=True,
+		)
+
+	if _is_system_manager():
+		dept = mop.department if mop else None
+		if not dept:
+			return {"editable": 1}
+		out = {"editable": 1, "source": None, "target": None}
+		# Suggestions only: a missing / ambiguous warehouse must not block a System Manager.
+		try:
+			out["source"] = _department_warehouse(
+				dept, "Raw Material", _("Raw Material warehouse")
+			)
+			out["target"] = _expected_target(mop, dept)
+		except frappe.ValidationError:
+			frappe.clear_messages()
+		return out
+
 	emp = _user_employee(frappe.session.user)
 	if not emp or not emp.department:
 		return {}
@@ -119,20 +152,15 @@ def get_transfer_warehouses(manufacturing_operation=None):
 		),
 		"target": None,
 	}
-	if manufacturing_operation:
-		mop = frappe.db.get_value(
-			"Manufacturing Operation",
-			manufacturing_operation,
-			["name", "status", "employee"],
-			as_dict=True,
-		)
-		if mop:
-			out["target"] = _expected_target(mop, emp.department)
+	if mop:
+		out["target"] = _expected_target(mop, emp.department)
 	return out
 
 
 def _applies(doc):
 	if doc.get("stock_entry_type") != SE_TYPE or not _is_direct_user_save(doc):
+		return None
+	if _is_system_manager():
 		return None
 	emp = _user_employee(frappe.session.user)
 	return emp if emp and emp.department else None
@@ -155,7 +183,7 @@ def _mops(doc):
 	rows = frappe.get_all(
 		"Manufacturing Operation",
 		filters={"name": ("in", list(names))},
-		fields=["name", "status", "employee", "operation"],
+		fields=["name", "status", "employee", "operation", "subcontractor"],
 	)
 	return {r.name: r for r in rows}
 

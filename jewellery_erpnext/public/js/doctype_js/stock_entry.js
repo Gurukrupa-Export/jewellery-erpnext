@@ -902,6 +902,19 @@ frappe.ui.form.on("Stock Entry", {
 });
 
 frappe.ui.form.on("Stock Entry Detail", {
+	form_render(frm, cdt, cdn) {
+		// The "Editing Row" dialog builds its own field widgets, so the grid-level read-only
+		// set in apply_wo_transfer_warehouses does not reach them; lock them here.
+		if (
+			frm.doc.stock_entry_type == "Material Transfer (WORK ORDER)" &&
+			frm.doc.docstatus == 0 &&
+			!cint(frm.doc.auto_created) &&
+			window.__wo_transfer_lock !== false
+		) {
+			const gr = frm.fields_dict.items.grid.grid_rows_by_docname[cdn];
+			if (gr) ["s_warehouse", "t_warehouse"].forEach((f) => gr.toggle_editable(f, false));
+		}
+	},
 	item_code: function (frm, cdt, cdn) {
 		let child = locals[cdt][cdn];
 		frappe.db.get_value("Item", child.item_code, "item_group", function (r) {
@@ -2264,6 +2277,23 @@ function apply_wo_transfer_warehouses(frm, force) {
 		if (frm.doc.stock_entry_type == "Material Transfer (WORK ORDER)") set_lock(false);
 		return;
 	}
+	// Lock straight away (and on every re-render, e.g. browser back/forward) unless an earlier
+	// reply showed this user has no Employee/department; the reply below confirms or unlocks.
+	set_lock(window.__wo_transfer_lock !== false);
+	// erpnext's toggle_related_fields (run on refresh / type change) re-enables from/to warehouse
+	// after this handler, which is why a form re-opened with Back/Next came up editable. Re-assert.
+	[300, 1000, 2500].forEach((ms) =>
+		setTimeout(() => {
+			if (
+				frm.doc &&
+				frm.doc.stock_entry_type == "Material Transfer (WORK ORDER)" &&
+				frm.doc.docstatus == 0 &&
+				!cint(frm.doc.auto_created) &&
+				window.__wo_transfer_lock !== false
+			)
+				set_lock(true);
+		}, ms)
+	);
 	// Only a new entry, a blank field, or an operation just chosen (force) is written. Opening an
 	// already-saved draft must not re-home it to the viewer's department.
 	const write = (cur) => force || !cur;
@@ -2273,7 +2303,9 @@ function apply_wo_transfer_warehouses(frm, force) {
 		callback(r) {
 			const w = r.message || {};
 			// Users with no Employee/department get no values; leave the fields editable for them.
-			set_lock(!!w.source);
+			// System Managers get suggested values but keep editable fields.
+			window.__wo_transfer_lock = !!w.source && !w.editable;
+			set_lock(window.__wo_transfer_lock);
 			if (w.source) {
 				if (write(frm.doc.from_warehouse) && frm.doc.from_warehouse != w.source)
 					frm.set_value("from_warehouse", w.source);
