@@ -201,6 +201,16 @@ class TestSetReconciliationSummaries(_Base):
 		self.assertEqual(doc.custom_positive_difference_qty, 5)
 		self.assertEqual(doc.custom_negative_difference_qty, 2)
 
+	def test_unchanged_save_keeps_the_summary_rows(self):
+		doc = self._doc()
+		self._run(doc)
+		first = doc.custom_item_group_summary
+		sr.set_reconciliation_summaries(doc)
+		self.assertIs(doc.custom_item_group_summary, first)
+		doc.items[0].qty = 11
+		sr.set_reconciliation_summaries(doc)
+		self.assertIsNot(doc.custom_item_group_summary, first)
+
 	def test_site_without_the_new_fields(self):
 		doc = self._doc()
 		doc.meta = _Meta(())
@@ -216,6 +226,8 @@ LEGS = [
 	# Central RM -> Waxing Transit, not yet received.
 	frappe._dict(
 		name="MAT-STE-1",
+		item_code="M-G-22KT-91.75-Y",
+		qty=12.5,
 		s_warehouse="Central RM - KGJPL",
 		t_warehouse="Waxing Transit - KGJPL",
 		source_department="Central - KGJPL",
@@ -248,8 +260,17 @@ class TestPendingTransit(_Base):
 	def test_blocks_the_sending_department(self):
 		with self.assertRaises(frappe.ValidationError) as raised:
 			self._validate({"Central RM - KGJPL": "Central - KGJPL"})
-		self.assertIn("pending receipt", str(raised.exception))
-		self.assertIn("MAT-STE-1", str(raised.exception))
+		message = str(raised.exception)
+		self.assertIn(
+			"Stock Reconciliation cannot be submitted because a Transit Stock Entry is pending "
+			"receipt for this department.",
+			message,
+		)
+		# what is still in transit, so the message is actionable even without a linked receipt
+		self.assertIn(
+			"MAT-STE-1: M-G-22KT-91.75-Y - 12.5 still in Waxing Transit - KGJPL",
+			message,
+		)
 
 	def test_blocks_the_receiving_department(self):
 		with self.assertRaises(frappe.ValidationError):

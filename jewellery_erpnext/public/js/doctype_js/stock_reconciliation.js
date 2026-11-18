@@ -11,8 +11,10 @@ const SR_PRECISION = 3;
 const SR_GRAM_FACTORS = { Gram: 1, Carat: 0.2 };
 
 frappe.ui.form.on("Stock Reconciliation", {
-	setup(frm) {
-		// ERPNext's "Fetch Items from Warehouse" button calls frm.events.get_items.
+	onload(frm) {
+		// ERPNext's "Fetch Items from Warehouse" button calls frm.events.get_items. Set in onload,
+		// not setup: onload runs after every script's setup, so an older DB Client Script that
+		// still overrides get_items in its setup cannot replace this dialog.
 		frm.events.get_items = (frm) => sr_get_items_dialog(frm);
 	},
 

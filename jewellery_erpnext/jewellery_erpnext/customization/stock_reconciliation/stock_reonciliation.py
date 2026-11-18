@@ -172,6 +172,18 @@ def _fill_item_details(rows):
 		row.stock_uom = row.stock_uom or details.get("stock_uom")
 
 
+def _summary_key(rows):
+	return [
+		(
+			cstr(row.get("item_group")),
+			cstr(row.get("uom")),
+			flt(row.get("total_qty"), PRECISION),
+			flt(row.get("total_qty_in_gram"), PRECISION),
+		)
+		for row in rows
+	]
+
+
 def set_reconciliation_summaries(self, method=None):
 	"""validate: Item Group summary, pure weight (rows + total) and the signed Stock Comparison
 	difference with its positive / negative totals. Each field is set only when it exists, so code
@@ -197,7 +209,11 @@ def set_reconciliation_summaries(self, method=None):
 	if self.meta.has_field("custom_item_group_summary"):
 		_fill_item_details(items)
 		summary, grand_total = build_item_group_summary(items)
-		self.set("custom_item_group_summary", summary)
+		if _summary_key(self.get("custom_item_group_summary") or []) != _summary_key(
+			summary
+		):
+			# Rebuilt only when it changed, so an unchanged save keeps the same rows.
+			self.set("custom_item_group_summary", summary)
 		if self.meta.has_field("custom_grand_total_gram"):
 			self.custom_grand_total_gram = grand_total
 
@@ -231,10 +247,15 @@ def _reconciliation_departments(doc):
 
 
 def get_pending_transit_legs():
-	"""Submitted transfers into a Transit warehouse whose receipt is not complete
-	(``per_transferred < 100``) and whose item still sits in that transit warehouse. The stock
-	check drops stale legs (stock already moved out without a linked receipt), which would
-	otherwise block their departments forever.
+	"""Transfers into a Transit warehouse whose stock is still sitting there, with ``qty`` = the
+	part of that leg still in transit.
+
+	``per_transferred`` alone cannot say that: ERPNext raises it only from a receipt linked through
+	``outgoing_stock_entry``, so a transfer made without Add to Transit stays below 100 forever, and
+	an item's transit stock may come from a newer entry than the one listed. So the stock now in
+	each (item, transit warehouse) Bin is attributed newest-first to the not-fully-received entries
+	that brought it in (window ``newer_qty`` = qty of those newer legs); a leg whose stock has
+	already left transit drops out, and the block lifts as soon as the transit stock is moved on.
 
 	Driven from the small side, in this order (``STRAIGHT_JOIN``): Transit warehouses -> their
 	Bins holding stock (``Bin.warehouse`` index) -> the incoming ledger entries of that item in that
@@ -244,23 +265,32 @@ def get_pending_transit_legs():
 	"""
 	return frappe.db.sql(
 		"""
-		select straight_join distinct se.name, sed.s_warehouse, sed.t_warehouse,
-			src.department as source_department, tw.department as transit_department
-		from `tabWarehouse` tw
-		join `tabBin` bin
-			on bin.warehouse = tw.name and bin.actual_qty > 0
-		join `tabStock Ledger Entry` sle
-			on sle.item_code = bin.item_code and sle.warehouse = tw.name
-			and sle.actual_qty > 0 and sle.is_cancelled = 0
-			and sle.voucher_type = 'Stock Entry'
-		join `tabStock Entry` se
-			on se.name = sle.voucher_no
-		join `tabStock Entry Detail` sed
-			on sed.name = sle.voucher_detail_no
-		left join `tabWarehouse` src on src.name = sed.s_warehouse
-		where tw.warehouse_type = 'Transit'
-			and se.docstatus = 1
-			and ifnull(se.per_transferred, 0) < 100
+		select name, item_code, s_warehouse, t_warehouse, source_department, transit_department,
+			least(leg_qty, in_transit - newer_qty) as qty
+		from (
+			select straight_join se.name, sle.item_code, sed.s_warehouse, sle.warehouse as t_warehouse,
+				src.department as source_department, tw.department as transit_department,
+				bin.actual_qty as in_transit, sle.actual_qty as leg_qty,
+				sum(sle.actual_qty) over (
+					partition by sle.item_code, sle.warehouse
+					order by sle.posting_datetime desc, sle.creation desc
+				) - sle.actual_qty as newer_qty
+			from `tabWarehouse` tw
+			join `tabBin` bin
+				on bin.warehouse = tw.name and bin.actual_qty > 0
+			join `tabStock Ledger Entry` sle
+				on sle.item_code = bin.item_code and sle.warehouse = tw.name
+				and sle.actual_qty > 0 and sle.is_cancelled = 0
+				and sle.voucher_type = 'Stock Entry'
+			join `tabStock Entry` se
+				on se.name = sle.voucher_no and se.docstatus = 1
+				and ifnull(se.per_transferred, 0) < 100
+			join `tabStock Entry Detail` sed
+				on sed.name = sle.voucher_detail_no
+			left join `tabWarehouse` src on src.name = sed.s_warehouse
+			where tw.warehouse_type = 'Transit'
+		) legs
+		where newer_qty < in_transit
 		""",
 		as_dict=True,
 	)
@@ -289,11 +319,26 @@ def validate_no_pending_transit(self, method=None):
 	if not blocking:
 		return
 
-	entries = sorted({leg.name for leg in blocking})
-	listed = "".join(f"<li>{name}</li>" for name in entries[:MAX_LISTED_LEGS])
+	lines = sorted(
+		{
+			(
+				leg.name,
+				cstr(leg.get("item_code")),
+				flt(leg.get("qty"), PRECISION),
+				cstr(leg.t_warehouse),
+			)
+			for leg in blocking
+		}
+	)
+	listed = "".join(
+		"<li>{0}</li>".format(
+			_("{0}: {1} - {2} still in {3}").format(name, item_code, qty, warehouse)
+		)
+		for name, item_code, qty, warehouse in lines[:MAX_LISTED_LEGS]
+	)
 	more = (
-		_("<li>... and {0} more</li>").format(len(entries) - MAX_LISTED_LEGS)
-		if len(entries) > MAX_LISTED_LEGS
+		_("<li>... and {0} more</li>").format(len(lines) - MAX_LISTED_LEGS)
+		if len(lines) > MAX_LISTED_LEGS
 		else ""
 	)
 	frappe.throw(
