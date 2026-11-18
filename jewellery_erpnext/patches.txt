@@ -159,3 +159,4 @@ jewellery_erpnext.patches.add_department_cell_flag #2026-11-12 Department cell f
 jewellery_erpnext.patches.add_process_control_fields
 jewellery_erpnext.patches.grant_process_transfer_user_work_order_read
 jewellery_erpnext.patches.add_process_control_stock_entry_field
+jewellery_erpnext.patches.backfill_customer_gold_gl_narration #2026-11-17 Customer Gold GL narration for receipts, returns and settlement JEs
