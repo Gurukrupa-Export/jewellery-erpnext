@@ -4325,8 +4325,15 @@ class TestEmployeeIRCurrentOperationWiring(IntegrationTestCase):
 	):
 		"""Lock order Tree -> Series -> Bin -> MOP -> MWO (lock_order RULE D/E), then the row loop."""
 		doc = self._receive_doc()
-		with self.assertRaises(_Stop):
-			self._run_receive(doc, ops=[self._held()], wos=[_wo()])
+		# C-01: a receive that mints something takes its planned naming counter here; one
+		# that mints nothing takes none (test_c01_planned_counters).
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+			"receive_naming.receive_mint_types",
+			return_value=("Process Loss",),
+		):
+			with self.assertRaises(_Stop):
+				self._run_receive(doc, ops=[self._held()], wos=[_wo()])
 		self.assertEqual(
 			self.calls,
 			[
@@ -4592,6 +4599,14 @@ class TestEmployeeIRCurrentOperationWiring(IntegrationTestCase):
 				lock_order, "lock_bins", side_effect=_rec(calls, "lock bins")
 			) as bins,
 			patch.object(frappe.db, "get_value", return_value="WH-T"),
+			# C-01: a receive that mints something takes its planned naming counter between
+			# the trees and the Bins; one that mints nothing takes none
+			# (test_c01_planned_counters).
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+				"receive_naming.receive_mint_types",
+				return_value=("Process Loss",),
+			),
 		):
 			take_receive_prelocks(doc)
 		self.assertEqual(

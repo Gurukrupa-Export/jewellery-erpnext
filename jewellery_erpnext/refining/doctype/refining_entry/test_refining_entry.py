@@ -2982,6 +2982,11 @@ class TestDustShortfallFloatResidue(IntegrationTestCase):
 			],
 			_stamp_batch_ownership=lambda se: None,
 		)
+		# kggk_uat: the transfer's pre-lock also asks whether consolidate_refinery_batches will
+		# run (the real gate, on this stand-in).
+		entry._consolidates_batches = lambda target_warehouse: (
+			RefiningEntry._consolidates_batches(entry, target_warehouse)
+		)
 		real_get_value = frappe.db.get_value
 
 		def _get_value(doctype, *args, **kwargs):
@@ -2993,6 +2998,12 @@ class TestDustShortfallFloatResidue(IntegrationTestCase):
 		with (
 			patch("frappe.new_doc", return_value=se),
 			patch.object(frappe.db, "get_value", side_effect=_get_value),
+			# The naming-counter pre-lock (tests/test_multi_counter_prelock.py) would
+			# otherwise build its stubs from the patched new_doc and lock tabSeries.
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.lock_order.preallocate_series_for_docs"
+			),
+			patch("jewellery_erpnext.jewellery_erpnext.lock_order.series_stubs"),
 		):
 			RefiningEntry.create_material_transfer_se(entry)
 		return entry._dust_shortfalls, se
@@ -3763,6 +3774,13 @@ class TestExternalReceiveValuation(IntegrationTestCase):
 			),
 			patch.object(RefiningEntry, "_assert_no_loss_output"),
 			patch.object(RefiningEntry, "set_dust_receipt_difference_account"),
+			# The naming-counter pre-lock before the receipt's insert
+			# (tests/test_multi_counter_prelock.py) would otherwise build its stubs from the
+			# patched new_doc and lock tabSeries.
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.lock_order.preallocate_series_for_docs"
+			),
+			patch("jewellery_erpnext.jewellery_erpnext.lock_order.series_stubs"),
 			patch("frappe.model.document.Document.insert", side_effect=_Built),
 		):
 			with self.assertRaises(_Built):

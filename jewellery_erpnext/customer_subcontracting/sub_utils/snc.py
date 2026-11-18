@@ -287,6 +287,9 @@ def create_snc(mwo):
 	receive_items = [
 		dict(row, t_warehouse=source["warehouse"]) for row, source, _convert in plan
 	]
+	# C-09a: every naming counter this settlement mints, before the Make Receive cancels its
+	# reservations and locks its Bins (nothing is submitted before this point).
+	_prelock_settlement_counters(mwo)
 	created["make_receive"] = trigger_make_receive(
 		mwo, receive_items[0]["t_warehouse"], receive_items=receive_items
 	)
@@ -352,6 +355,33 @@ def create_snc(mwo):
 
 	frappe.db.set_value("Manufacturing Work Order", mwo.name, "snc_done", 1)
 	return created
+
+
+def _prelock_settlement_counters(mwo):
+	"""Take the naming counter of every Stock Entry type ``create_snc`` mints, before the
+	Make Receive cancels its reservations and locks its Bins.
+
+	The settlement mints the Make Receive, two Repack-Metal Conversions per converted row
+	and one closing Material Transfer (WORK ORDER). Today all three share ``MAT-STE-``,
+	which the Make Receive takes first and the later ones re-enter. Once Stock Entry naming
+	is sharded per type, each type has its own counter, and the conversion and transfer
+	counters would be taken while the Make Receive's Bins are held. Pinning them all here,
+	sorted, keeps the canonical order (naming counters, then Bins). Over-covers the
+	conversions on a run that needs none, which only holds an idle counter a little longer.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		preallocate_series_for_docs,
+		series_stubs,
+	)
+
+	preallocate_series_for_docs(
+		*series_stubs(
+			mwo.company,
+			"Material Receive (WORK ORDER)",
+			"Repack-Metal Conversion",
+			"Material Transfer (WORK ORDER)",
+		)
+	)
 
 
 def _owner_label(owner_customer):

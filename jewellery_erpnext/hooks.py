@@ -17,9 +17,18 @@ app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dial
 # layout and gke's fixture import then resets the two anchors it owns. migrate.py runs
 # after_migrate at the end of post_schema_updates, after sync_fixtures, so it is the only
 # hook that sees the finished site. Idempotent, and swallows its own errors.
-after_migrate = (
-	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
-)
+after_migrate = [
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate",
+	# Refining Stock Entry naming series: option + counter row. A no-op unless
+	# site_config sets refining_se_naming_series (see refining/stock_entry_naming.py).
+	"jewellery_erpnext.refining.stock_entry_naming.after_migrate",
+	# MOP Log / Serial and Batch read indexes of the locked stock-posting path. The patch
+	# restore_missing_perf_indexes builds them once; this re-check also runs on sites where that
+	# patch was only marked done, retries a build that gave up on a metadata lock ("busy"),
+	# and renames the app's sbb_/sbe_voucher_no_idx to ERPNext's voucher_no_voucher_type_index.
+	# Idempotent (no DDL once present), non-fatal, printed as well as logged.
+	"jewellery_erpnext.patches.ensure_read_path_indexes.after_migrate",
+]
 
 # Provisions this app's custom fields, BEFORE fixtures import (installer.py:360 vs :367).
 # That direction is required: a fixture's Dynamic Link record needs its target Link field to
@@ -293,6 +302,11 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.release_allocation",
 	},
 	"Stock Entry": {
+		# lock_order RULE F (C-01): a Stock Entry minted by an Employee IR / Serial Number
+		# Creator / Product Certification cascade whose naming counter that cascade did not
+		# pre-lock takes it NOWAIT, after the Bins, instead of waiting. Inert for every other
+		# Stock Entry: no plan is recorded for it.
+		"before_naming": "jewellery_erpnext.jewellery_erpnext.lock_order.guard_unplanned_stock_entry_counter",
 		"validate": [
 			# No stock moves for a PMO on Hold or Closed. First, so nothing else runs for an
 			# entry that is refused anyway; validate never sees a cancel, so a Close's cancels

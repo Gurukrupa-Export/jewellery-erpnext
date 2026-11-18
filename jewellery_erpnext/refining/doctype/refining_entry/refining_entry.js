@@ -84,9 +84,21 @@ frappe.ui.form.on("Refining Entry", {
 	load_variant_restrictions(frm) {
 		// Cached on the form so the item_code query above is synchronous. Restrictions are
 		// scoped by refining type, so re-fetch whenever the type or company changes.
+		// Fetched BY ARGUMENTS (the form's current, possibly unsaved values): frm.call() would
+		// post the whole document to run_doc_method, whose check_if_latest() takes
+		// SELECT ... FOR UPDATE on this entry and its child tables, so opening an entry while
+		// its submission was running waited on that submission's row lock.
 		frm.__blocked_variants = [];
 		if (frm.doc.__islocal && !frm.doc.company) return;
-		frm.call("get_blocked_variants")
+		frappe
+			.call({
+				method: "jewellery_erpnext.refining.doctype.refining_entry.refining_entry.get_blocked_variants_for",
+				args: {
+					company: frm.doc.company,
+					refining_type: frm.doc.refining_type,
+					manufacturer: frm.doc.manufacturer,
+				},
+			})
 			.then((r) => {
 				frm.__blocked_variants = (r && r.message) || [];
 			})

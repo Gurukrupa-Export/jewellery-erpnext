@@ -330,6 +330,19 @@ class MainSlip(Document):
 					"Below mentioned Manufacturing Operations are not finished yet.<br> {0}"
 				).format(",".join(not_finished_mop))
 			)
+		# Each loss row mints a metal-loss Repack and then a Material Transfer to
+		# Department, each after the previous entry's Bins. Take both counters once, here,
+		# before any Bin; with per-type naming the second one would otherwise be taken while
+		# Bins are held.
+		if self.loss_details:
+			from jewellery_erpnext.jewellery_erpnext.lock_order import (
+				preallocate_series_for_docs,
+				series_stubs,
+			)
+
+			preallocate_series_for_docs(
+				*series_stubs(self.company, "Repack", "Material Transfer to Department")
+			)
 		frappe.db.MAX_WRITES_PER_TRANSACTION *= 16
 		for row in self.loss_details:
 			create_loss_stock_entries(

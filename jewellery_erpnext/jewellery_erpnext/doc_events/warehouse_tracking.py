@@ -14,7 +14,11 @@ Consumers:
   * ``recalculate_msl_tracking`` — materializes the rows into the
     ``Warehouse.custom_msl_tracking`` child table (button + auto after an
     Employee Loss Entry).
+  * ``queue_msl_tracking_refresh`` — the same recompute, run by a deduplicated
+    short job after the caller's transaction commits (Employee IR).
 """
+
+import functools
 
 import frappe
 from frappe import _
@@ -445,3 +449,79 @@ def recalculate_msl_tracking(warehouse):
 	doc.flags.ignore_version = True
 	doc.save(ignore_permissions=True)
 	return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Refresh after commit (Employee IR)
+# ---------------------------------------------------------------------------
+
+MSL_REFRESH_JOB = "jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking.refresh_msl_tracking_job"
+MSL_REFRESH_JOB_ID = "msl::{0}"
+#: Set after every committed movement; cleared by the refresh job at the start of each pass.
+MSL_REFRESH_DIRTY_KEY = "je:msl_tracking_dirty:{0}"
+MSL_REFRESH_DIRTY_TTL = 6 * 60 * 60
+MSL_REFRESH_MAX_PASSES = 3
+
+
+def queue_msl_tracking_refresh(warehouse):
+	"""Refresh ``warehouse``'s ``custom_msl_tracking`` AFTER the current transaction commits.
+
+	Registers one after-commit callback and nothing else: no Redis round-trip, no Warehouse
+	row lock and no child-table rewrite inside the caller's transaction (an Employee IR
+	holds the shared Stock Entry naming rows and Bins there). ``frappe.db.rollback()``
+	clears after-commit callbacks, so a rolled-back submit/cancel schedules nothing."""
+	if warehouse:
+		frappe.db.after_commit.add(functools.partial(_enqueue_msl_refresh, warehouse))
+
+
+def _enqueue_msl_refresh(warehouse):
+	"""After-commit callback. It must never raise: frappe runs these inside
+	``frappe.db.commit()``, so an exception would fail the request or job AFTER the business
+	commit and skip every callback queued behind it.
+
+	Deduplication is decided here, after the commit. A QUEUED refresh will read the ledger
+	after this commit; a STARTED one sees the dirty flag and runs another pass."""
+	try:
+		frappe.cache.set_value(
+			MSL_REFRESH_DIRTY_KEY.format(warehouse),
+			1,
+			expires_in_sec=MSL_REFRESH_DIRTY_TTL,
+		)
+		frappe.enqueue(
+			MSL_REFRESH_JOB,
+			queue="short",
+			timeout=300,
+			job_id=MSL_REFRESH_JOB_ID.format(warehouse),
+			deduplicate=True,
+			warehouse=warehouse,
+		)
+	except Exception:
+		frappe.log_error(
+			title="MSL tracking refresh could not be queued",
+			message=frappe.get_traceback(),
+		)
+
+
+def refresh_msl_tracking_job(warehouse):
+	"""Background refresh of the derived MSL cache (not whitelisted).
+
+	Nothing is swallowed here: a residual 1205/1213 is retried by ``run_with_retry`` (the
+	job's transaction holds nothing else), and any final error reaches ``execute_job``, which
+	rolls back, writes an Error Log and marks the RQ job failed.
+
+	Each pass clears the dirty flag and then starts a fresh transaction, so its ledger
+	snapshot includes every movement whose flag it cleared (the job's first transaction is
+	opened when the worker connects and can already hold an older snapshot). The job runs
+	another pass only if a movement committed while it was working."""
+	from jewellery_erpnext.jewellery_erpnext.bounded_retry import run_with_retry
+
+	key = MSL_REFRESH_DIRTY_KEY.format(warehouse)
+	for _pass in range(MSL_REFRESH_MAX_PASSES):  # not `_`: this module imports frappe._
+		# delete_value also drops this process's local copy, so the get_value below
+		# reads Redis.
+		frappe.cache.delete_value(key)
+		frappe.db.commit()
+		run_with_retry(recalculate_msl_tracking, warehouse)
+		frappe.db.commit()
+		if not frappe.cache.get_value(key):
+			return

@@ -5468,6 +5468,26 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 	if not _existing_receive_se(se_data.get("manufacturing_operation"), request_id):
 		_preflight_unused_loose_targets(se_data)
 
+	# Take both naming counters this action mints, the receive's and the Repack's, before
+	# the receive cancels its reservations and locks its Bins. Left to the inserts, the
+	# Repack's rule row came last, after MAT-STE- and the receive's Bins, while Employee IR,
+	# Serial Number Creator and Product Certification take it first (rule row, then
+	# MAT-STE-, then Bins). Opposite orders on the same rows can deadlock.
+	mop = se_data.get("manufacturing_operation")
+	if mop:
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			preallocate_series_for_docs,
+			series_stubs,
+		)
+
+		preallocate_series_for_docs(
+			*series_stubs(
+				frappe.db.get_value("Manufacturing Operation", mop, "company"),
+				"Material Receive (WORK ORDER)",
+				"Repack",
+			)
+		)
+
 	frappe.db.savepoint("receive_unused_loose")
 	try:
 		result = create_mr_wo_stock_entry(se_data, request_id=request_id)

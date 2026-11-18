@@ -30,6 +30,18 @@ class GemstoneConversion(Document):
 		self.validate_gemstone_type()
 
 	def on_submit(self):
+		# A Resize mints the conversion Repack and then a Material Transfer after the
+		# Repack's Bins. Take both counters first; with per-type naming the transfer's
+		# would otherwise be taken while Bins are held.
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			preallocate_series_for_docs,
+			series_stubs,
+		)
+
+		minted = ["Repack-Gemstone Conversion"]
+		if self.conversion_type == "Resize":
+			minted.append("Material Transfer")
+		preallocate_series_for_docs(*series_stubs(self.company, *minted))
 		make_gemstone_stock_entry(self)
 		if self.conversion_type == "Resize":
 			make_target_item_transfer_stock_entry(self)

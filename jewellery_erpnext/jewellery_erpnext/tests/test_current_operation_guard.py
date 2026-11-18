@@ -66,6 +66,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.submission_queue.submissi
 	CustomSubmissionQueue,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+	receive_naming,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.current_operation_guard import (
 	EIR_OPERATION_MWO_COLUMN,
 	EIR_OPERATION_TABLE,
@@ -98,6 +101,24 @@ EOD_MESSAGE = "EOD sync is in progress"
 # A locking statement of any kind (row locks, share locks, the non-waiting variants).
 LOCKING_SQL = ("FOR UPDATE", "LOCK IN SHARE MODE", "NOWAIT", "SKIP LOCKED")
 
+
+
+def _planned_like_before_c01():
+	"""Force the Receive's C-01 plan to the three types every Receive pre-locked before C-01
+	(Material Transfer (WORK ORDER), Repack, Process Loss), for the lock-order tests."""
+	return patch.object(
+		receive_naming,
+		"receive_mint_types",
+		return_value=tuple(
+			sorted(
+				(
+					receive_naming.MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
+					receive_naming.REPACK_STOCK_ENTRY_TYPE,
+					receive_naming.PROCESS_LOSS_SE_TYPE,
+				)
+			)
+		),
+	)
 
 class _RecordingQueue:
 	"""Stands in for an RQ queue: the bench workers run the unpatched code."""
@@ -2759,7 +2780,11 @@ class TestLockingReads(_GuardHarness):
 		receive = fx.reload(receive)
 		statements, patcher = self._record_sql()
 
-		receive.submit()
+		# C-01: a flat Receive mints nothing and takes no Stock Entry counter (see
+		# test_a_flat_receive_takes_no_stock_entry_counter). Plan what every Receive pinned
+		# before C-01 so the pre-locks are taken and their position against the block checked.
+		with _planned_like_before_c01():
+			receive.submit()
 		patcher.stop()
 		own_rows = next(
 			(
@@ -2835,7 +2860,7 @@ class TestLockingReads(_GuardHarness):
 
 		with self.production_eir_naming(), patch.object(
 			frappe.db, "sql", recording_sql
-		):
+		), _planned_like_before_c01():  # C-01: see the test above
 			receive = frappe.client.insert(
 				{
 					"doctype": "Employee IR",
@@ -2890,6 +2915,47 @@ class TestLockingReads(_GuardHarness):
 		self.assertLess(mop_lock, mwo_lock)
 		self.assertLess(mwo_lock, naming)
 		self.assertLess(naming, insert)
+
+	def test_a_flat_receive_takes_no_stock_entry_counter(self):
+		"""C-01: a Receive that mints no Stock Entry takes no Stock Entry naming counter (no
+		tabSeries / Document Naming Rule row), so it never queues behind a long MAT-STE-
+		holder; it still takes its block before writing anything."""
+		w = self.world
+		mwo, _mop = fx.make_work_order(w, "MM")
+		fx.issue(w, mwo, employee="MM1")
+		receive = fx.insert_ir(fx.employee_ir(w, "Receive", [mwo], employee="MM1"))
+		receive = fx.reload(receive)
+		self.assertEqual(receive_naming.receive_mint_types(receive), ())
+		statements, patcher = self._record_sql()
+		receive.submit()
+		patcher.stop()
+		counters = [
+			s
+			for s in statements
+			if "FOR UPDATE" in s
+			and ("FROM `tabSeries`" in s or "FROM `tabDocument Naming Rule`" in s)
+		]
+		self.assertEqual(counters, [])
+		mwo_lock = next(
+			i
+			for i, s in enumerate(statements)
+			if "FOR UPDATE" in s and "FROM `tabManufacturing Work Order`" in s
+		)
+		first_write = next(
+			(
+				i
+				for i, s in enumerate(statements)
+				if s.startswith(
+					(
+						"UPDATE `tabManufacturing Operation`",
+						"INSERT INTO `tabManufacturing Operation`",
+						"INSERT INTO `tabMOP Log`",
+					)
+				)
+			),
+			len(statements),
+		)
+		self.assertLess(mwo_lock, first_write)
 
 	def test_operations_are_locked_before_work_orders(self):
 		w = self.world

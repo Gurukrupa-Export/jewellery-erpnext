@@ -140,20 +140,22 @@ class TestSubmitPathDeadlocks(IntegrationTestCase):
 		pass
 
 	def _refresh(self, error):
+		# The recompute itself now runs after commit (C-04); inside the submit the step that
+		# can still fail is resolving the MSL warehouse.
 		with (
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
 				"main_slip_inject._resolve_source_warehouse_raw_material",
-				return_value="MSL - T",
+				side_effect=error,
 			),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking."
-				"recalculate_msl_tracking",
-				side_effect=error,
-			),
+				"queue_msl_tracking_refresh",
+			) as queue,
 			patch("frappe.log_error") as log_error,
 		):
 			EmployeeIR._refresh_msl_tracking(_Doc())
+		queue.assert_not_called()
 		return log_error
 
 	def test_the_msl_refresh_lets_a_deadlock_through(self):

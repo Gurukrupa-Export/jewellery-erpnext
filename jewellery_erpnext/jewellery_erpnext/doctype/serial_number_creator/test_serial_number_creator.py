@@ -1397,6 +1397,8 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 	@patch(f"{_LOCK_MODULE}.lock_bins")
 	@patch(f"{_LOCK_MODULE}.preallocate_series_for_docs")
 	@patch(f"{_LOCK_MODULE}.series_stubs", return_value=[])
+	# Hermetic: the C-01 Repack pre-lock gate reads reservations of its own.
+	@patch(f"{_SNC_MODULE}._snc_may_book_loss", return_value=False)
 	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
 	@patch(
 		f"{_SNC_MODULE}._warehouses_with_physical_batch",
@@ -1408,7 +1410,7 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 		return_value=[(_WAXING, 3.176, ["a"])],
 	)
 	def test_throws_when_reserved_is_short(
-		self, _caps, _free, _phys, _mwos, _stubs, _pre, _lock
+		self, _caps, _free, _phys, _mwos, _loss_gate, _stubs, _pre, _lock
 	):
 		# The live case: 3.186 needed, 3.176 reserved, every other gram in the warehouse
 		# reserved for OTHER sales orders (free = 0). Physical batch qty is plentiful, so
@@ -1422,6 +1424,8 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 	@patch(f"{_LOCK_MODULE}.lock_bins")
 	@patch(f"{_LOCK_MODULE}.preallocate_series_for_docs")
 	@patch(f"{_LOCK_MODULE}.series_stubs", return_value=[])
+	# Hermetic: the C-01 Repack pre-lock gate reads reservations of its own.
+	@patch(f"{_SNC_MODULE}._snc_may_book_loss", return_value=False)
 	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
 	@patch(f"{_SNC_MODULE}._free_warehouse_qty", return_value=5.0)
 	@patch(
@@ -1429,7 +1433,7 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 		return_value=[(_WAXING, 3.176, ["a"])],
 	)
 	def test_no_throw_when_free_stock_covers_the_excess(
-		self, _caps, _free, _mwos, _stubs, _pre, _lock
+		self, _caps, _free, _mwos, _loss_gate, _stubs, _pre, _lock
 	):
 		# Reservation is short, but the warehouse holds unreserved stock — that is how
 		# these submits passed before the guard existed, so it must not start blocking them.
@@ -1440,10 +1444,12 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 	@patch(f"{_LOCK_MODULE}.lock_bins")
 	@patch(f"{_LOCK_MODULE}.preallocate_series_for_docs")
 	@patch(f"{_LOCK_MODULE}.series_stubs", return_value=[])
+	# Hermetic: the C-01 Repack pre-lock gate reads reservations of its own.
+	@patch(f"{_SNC_MODULE}._snc_may_book_loss", return_value=False)
 	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
 	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps", return_value=[])
 	def test_group_without_reservations_is_not_guarded(
-		self, _caps, _mwos, _stubs, _pre, _lock
+		self, _caps, _mwos, _loss_gate, _stubs, _pre, _lock
 	):
 		# No reservation at all still falls through to the PC Receive / Stock Entry
 		# warehouse fallbacks — the guard must not hijack that path. Reaching
@@ -1455,13 +1461,15 @@ class TestSubmitReservationShortfallGuard(IntegrationTestCase):
 	@patch(f"{_LOCK_MODULE}.lock_bins")
 	@patch(f"{_LOCK_MODULE}.preallocate_series_for_docs")
 	@patch(f"{_LOCK_MODULE}.series_stubs", return_value=[])
+	# Hermetic: the C-01 Repack pre-lock gate reads reservations of its own.
+	@patch(f"{_SNC_MODULE}._snc_may_book_loss", return_value=False)
 	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
 	@patch(
 		f"{_SNC_MODULE}._reserved_warehouse_caps",
 		return_value=[(_WAXING, 3.186, ["a"])],
 	)
 	def test_fully_reserved_group_passes_the_guard(
-		self, _caps, _mwos, _stubs, _pre, _lock
+		self, _caps, _mwos, _loss_gate, _stubs, _pre, _lock
 	):
 		with patch(f"{_SNC_MODULE}._active_sres_for", side_effect=_ReachedPriorityOne):
 			with self.assertRaises(_ReachedPriorityOne):
