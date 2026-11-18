@@ -41,6 +41,8 @@ from jewellery_erpnext.jewellery_erpnext.tests._c01_harness import (
 	_open_issues,
 	build_receive_draft,
 	require_throwaway_site,
+	tag_draft,
+	tagged_drafts,
 )
 
 BURST_TAG = "C01-BURST"
@@ -57,7 +59,7 @@ def build_burst_drafts(n=40, company="KG GK Jewellers Private Limited", seed=17)
 		kind = rng.choice(("no-mint", "process-loss"))
 		try:
 			name = build_receive_draft(issue, 0.0 if kind == "no-mint" else -0.01)
-			frappe.db.set_value("Employee IR", name, "remarks", f"{BURST_TAG}:{kind}")
+			tag_draft(name, f"{BURST_TAG}:{kind}")
 			frappe.db.commit()
 			built.append((name, kind))
 		except Exception as exc:
@@ -151,13 +153,9 @@ def _pct(values, q):
 def run_burst(workers=6, hold_seconds=0, hold_every=60, series="MAT-STE-"):
 	require_throwaway_site()
 	drafts = [
-		(d.name, d.remarks.split(":", 1)[1])
-		for d in frappe.get_all(
-			"Employee IR",
-			{"docstatus": 0, "remarks": ["like", f"{BURST_TAG}:%"]},
-			["name", "remarks"],
-			order_by="name",
-		)
+		(name, tag.split(":", 1)[1])
+		for name, tag in tagged_drafts(f"{BURST_TAG}:")
+		if not tag.endswith(":cross-order")
 	]
 	base = {"site": frappe.local.site, "sites_path": frappe.local.sites_path}
 	chunks = [drafts[i::workers] for i in range(workers)]
@@ -250,7 +248,6 @@ def _receive_from_rows(issue, rows):
 			"subcontracting": issue.subcontracting,
 			"employee": issue.employee,
 			"subcontractor": issue.subcontractor,
-			"remarks": f"{BURST_TAG}:cross-order",
 		}
 	)
 	for r in rows:
@@ -267,6 +264,7 @@ def _receive_from_rows(issue, rows):
 			},
 		)
 	doc.insert(ignore_permissions=True)
+	tag_draft(doc.name, f"{BURST_TAG}:cross-order")
 	return doc.name
 
 
