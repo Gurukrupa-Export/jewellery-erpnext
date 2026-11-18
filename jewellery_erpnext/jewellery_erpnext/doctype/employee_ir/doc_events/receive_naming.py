@@ -19,8 +19,9 @@ guard, which takes that counter NOWAIT. The mint sites and their gates:
   both types.
 * ``loss_stock_entry.create_loss_stock_entries`` -> **Process Loss**, when a row of
   ``employee_loss_details`` / ``manually_book_loss_details`` still has a loss at the Stock Entry
-  Detail ``transfer_qty`` precision -- or, because kggk_uat plans before validate rebuilds those
-  rows, when any operation row was received lighter than issued.
+  Detail ``transfer_qty`` precision -- or, for a document still being inserted (kggk_uat plans
+  in ``before_insert``, before validate builds those rows), when any operation row was received
+  lighter than issued.
 
 Every test reads the same in-memory values the cascade reads, with the cascade's own
 expression. Where validate's 3-dp rounding (``precision.round_employee_ir_weights_to_precision``)
@@ -55,7 +56,9 @@ def receive_mint_types(eir):
 	types = set()
 	if _has_gain(eir, rows) or _has_finding(eir, rows):
 		types.update((MATERIAL_TRANSFER_STOCK_ENTRY_TYPE, REPACK_STOCK_ENTRY_TYPE))
-	if _has_representable_loss(eir) or _has_row_loss(rows):
+	if _has_representable_loss(eir) or (
+		_not_yet_validated(eir) and _has_row_loss(rows)
+	):
 		types.add(PROCESS_LOSS_SE_TYPE)
 	return tuple(sorted(types))
 
@@ -82,15 +85,24 @@ def _has_finding(eir, rows):
 	return any(finding_pairs(r) for r in rows) and is_finding_repack_eir(eir)
 
 
-def _has_row_loss(rows):
-	"""Any row received lighter than it was issued (kggk_uat).
+def _not_yet_validated(eir):
+	"""A document being inserted (kggk_uat's REST insert-and-submit, pre-locked in
+	``before_insert``): validate has not built its loss rows yet. ``__islocal`` is what
+	``Document.is_new`` reads; ``insert`` sets it before ``check_if_latest`` / ``before_insert``.
+	"""
+	return bool(eir.get("__islocal"))
 
-	On kggk_uat the receive pre-locks are taken early (``take_receive_prelocks``, from
-	``check_if_latest`` / ``before_insert``), before validate's ``validate_process_loss``
-	rebuilds the loss rows; a REST insert-and-submit has no loss rows at all by then. The loss
-	rows are derived from exactly this difference, so planning Process Loss on it keeps the
-	plan a superset. It can over-plan (a loss that books no Process Loss), which only holds
-	MAT-STE- the way every receive did before C-01.
+
+def _has_row_loss(rows):
+	"""Any row received lighter than it was issued.
+
+	kggk_uat takes the receive pre-locks early (``take_receive_prelocks``, from
+	``check_if_latest`` / ``before_insert``). On an insert-and-submit that is before validate's
+	``validate_process_loss`` builds the loss rows, which are derived from exactly this
+	difference, so planning Process Loss on it keeps the plan a superset there. It can
+	over-plan (a loss that books no Process Loss), which only holds MAT-STE- the way every
+	receive did before C-01. A saved draft already carries the loss rows its last save built,
+	so it is planned from those, exactly as on kggk_prod.
 	"""
 	return any(
 		flt(r.get("received_gross_wt"))

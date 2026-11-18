@@ -13,6 +13,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import CallbackManager, cint, flt
 
 from jewellery_erpnext.jewellery_erpnext import lock_order
+from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir import (
 	employee_ir as eir_mod,
 )
@@ -223,6 +224,23 @@ class TestReceiveMintTypes(_C01TestCase):
 			)
 			self.assertEqual(on_rounded, truth, rounded)
 			self.assertTrue(truth <= on_raw, (raw, truth, on_raw))
+
+	def test_u1_16_insert_plans_process_loss_from_the_rows(self):
+		# kggk_uat: a REST insert-and-submit is pre-locked in before_insert, before validate
+		# builds the loss rows, so a row received lighter than issued plans Process Loss.
+		eir = _eir([{"gross_wt": 2.9, "received_gross_wt": 2.8}])
+		eir["__islocal"] = 1
+		self.assertEqual(self._types(eir), (PL,))
+		eir["employee_ir_operations"][0]["received_gross_wt"] = 2.9
+		self.assertEqual(self._types(eir), ())
+
+	def test_u1_17_saved_draft_plans_from_its_loss_rows_only(self):
+		# A saved draft carries the loss rows its last save built: planned from those only,
+		# exactly as on kggk_prod.
+		eir = _eir([{"gross_wt": 2.9, "received_gross_wt": 2.8}])
+		self.assertEqual(self._types(eir), ())
+		eir["employee_loss_details"] = [_Row(proportionally_loss=0.1)]
+		self.assertEqual(self._types(eir), (PL,))
 
 	@staticmethod
 	def _ground_truth(eir, finding_flag, precision):
@@ -468,6 +486,9 @@ class TestReceivePrelockWiring(_C01TestCase):
 			patch.object(eir_mod, "pin_tree_numbers_on_receive"),
 			patch.object(eir_mod, "update_tree_on_receive"),
 			patch.object(eir_mod.EmployeeIR, "_refresh_msl_tracking"),
+			# kggk_uat: the authoritative work-order current-operation check after the
+			# pre-locks (its own lock order is covered by test_current_operation_guard).
+			patch.object(current_operation_guard, "check_after_receive_prelocks"),
 		):
 			doc.on_submit_receive()
 		return calls, stub_args
@@ -501,6 +522,40 @@ class TestReceivePrelockWiring(_C01TestCase):
 		):
 			with self.assertRaises(frappe.ValidationError) as ctx:
 				doc.on_submit_receive()
+		self.assertIn("Received Gross Wt Missing", str(ctx.exception))
+		self.assertEqual(calls, [])
+
+	def test_u3_5_early_prelocks_are_not_retaken_and_the_plan_is_recorded(self):
+		# kggk_uat: take_receive_prelocks already ran (from check_if_latest, or from
+		# before_insert when the document had no name and no plan could be recorded).
+		doc = self._receive()
+		doc.flags[current_operation_guard.RECEIVE_PRELOCKS_FLAG] = True
+		doc.flags.planned_stock_entry_types = (PL,)
+		calls, stub_args = self._run(doc, (MT,))
+		self.assertEqual(calls, ["loss"])
+		self.assertEqual(stub_args, [])
+		self.assertEqual(
+			frappe.flags[lock_order.PLANNED_COUNTERS_FLAG][("Employee IR", doc.name)],
+			{("C01-COMPANY", PL)},
+		)
+
+	def test_u3_6_early_prelock_checks_weights_before_any_lock(self):
+		doc = self._receive([{"gross_wt": 1.5, "received_gross_wt": 0}])
+		calls = []
+		with (
+			patch.object(
+				eir_mod,
+				"resolve_receive_tree_numbers",
+				side_effect=lambda d: calls.append("resolve"),
+			),
+			patch.object(
+				eir_mod,
+				"lock_trees_for_eir",
+				side_effect=lambda d: calls.append("tree"),
+			),
+		):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				eir_mod.take_receive_prelocks(doc)
 		self.assertIn("Received Gross Wt Missing", str(ctx.exception))
 		self.assertEqual(calls, [])
 
