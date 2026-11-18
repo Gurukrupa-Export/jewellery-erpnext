@@ -2691,9 +2691,9 @@ class TestEmployeeIRMSLTracking(IntegrationTestCase):
 		transaction -- the Version row, a "Finished" queue row -- for a document that never
 		changed. The recompute itself now runs after commit (C-04), so the deadlock that can
 		still reach the submit is one raised while resolving the MSL warehouse."""
-		with patch(
-			_RESOLVE, side_effect=frappe.QueryDeadlockError("1213")
-		), patch("frappe.log_error") as log_error, patch(_QUEUE) as queue:
+		with patch(_RESOLVE, side_effect=frappe.QueryDeadlockError("1213")), patch(
+			"frappe.log_error"
+		) as log_error, patch(_QUEUE) as queue:
 			with self.assertRaises(frappe.QueryDeadlockError):
 				self._make_eir()._refresh_msl_tracking()
 		log_error.assert_not_called()
