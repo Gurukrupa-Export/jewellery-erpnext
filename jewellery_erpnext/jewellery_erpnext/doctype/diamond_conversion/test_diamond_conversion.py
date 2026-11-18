@@ -9,9 +9,11 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.diamond_conversion_
 from jewellery_erpnext.jewellery_erpnext.doctype.diamond_conversion.diamond_conversion import (
 	SIEVE_TO_SIEVE,
 	_parse_sieve_bounds,
+	set_table_totals,
 	validate_purity,
 	validate_sieve_size_band,
 	validate_source_batches,
+	validate_source_equals_target,
 )
 
 # Every test below patches ``frappe.db.get_all`` rather than ``frappe.get_all``.
@@ -65,6 +67,50 @@ class DiamondConversionUnitTestCase(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+
+def _totals_doc(source, target, **fields):
+	"""A conversion with source and target rows of the given qtys (precision 3)."""
+	doc = frappe._dict(
+		sc_source_table=[frappe._dict(qty=qty) for qty in source],
+		sc_target_table=[frappe._dict(qty=qty) for qty in target],
+		**fields,
+	)
+	doc.precision = lambda fieldname: 3
+	return doc
+
+
+class TestDiamondConversionTotals(DiamondConversionUnitTestCase):
+	"""Source and Target totals come from the saved rows, and must be equal."""
+
+	def _check(self, doc):
+		set_table_totals(doc)
+		validate_source_equals_target(doc)
+
+	def test_deleted_target_row_is_not_counted(self):
+		"""The report: 0.010 + 0.005 + 0.005 with the third row deleted is 0.015, not 0.020,
+		even though the form still stored 0.020."""
+		doc = _totals_doc([0.020], [0.010, 0.005], sum_target_table=0.020)
+		with self.assertRaisesRegex(frappe.ValidationError, "must be equal"):
+			self._check(doc)
+		self.assertEqual(doc.sum_target_table, 0.015)
+
+	def test_stale_totals_are_recomputed(self):
+		doc = _totals_doc(
+			[0.012, 0.008],
+			[0.010, 0.005, 0.005],
+			sum_source_table=1,
+			sum_target_table=9,
+		)
+		self._check(doc)
+		self.assertEqual((doc.sum_source_table, doc.sum_target_table), (0.02, 0.02))
+
+	def test_float_noise_is_not_a_mismatch(self):
+		self._check(_totals_doc([0.1, 0.2], [0.3]))
+
+	def test_more_target_than_source_is_refused(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "must be equal"):
+			self._check(_totals_doc([0.009], [0.020]))
 
 
 class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):

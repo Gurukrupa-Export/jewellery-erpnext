@@ -379,6 +379,10 @@ doc_events = {
 			# Last, after prelock_bins: the receipt-level recheck of a Customer Gold return, under a
 			# lock on the receipt rows so two concurrent returns cannot both pass.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_return.lock_return_entitlement",
+			# After the batch creators and the return linking: writes the customer / receipt /
+			# batch breakup of a Customer Gold receipt or return into `remarks`, which erpnext
+			# copies to every GL line at on_submit. No-op for any other entry.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_narration.apply_stock_entry_narration",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
@@ -634,6 +638,16 @@ override_whitelisted_methods = {
 	# Single Variant "Create": reject Attribute Value "Not Allowed" combinations
 	# before the dialog closes, instead of only when the new item is saved.
 	"erpnext.controllers.item_variant.get_variant": "jewellery_erpnext.jewellery_erpnext.doc_events.item.get_variant",
+}
+
+# Connections tab: the Customer Gold breakup (Customer Gold Allocation) on the documents it
+# links -- receipt, settlement JE, Delivery Note and Sales Invoice. Same effect as
+# Customize Form > Links, but on every site.
+override_doctype_dashboards = {
+	"Stock Entry": "jewellery_erpnext.customer_subcontracting.customer_gold_dashboards.stock_entry",
+	"Journal Entry": "jewellery_erpnext.customer_subcontracting.customer_gold_dashboards.journal_entry",
+	"Delivery Note": "jewellery_erpnext.customer_subcontracting.customer_gold_dashboards.delivery_note",
+	"Sales Invoice": "jewellery_erpnext.customer_subcontracting.customer_gold_dashboards.sales_invoice",
 }
 
 override_doctype_class = {

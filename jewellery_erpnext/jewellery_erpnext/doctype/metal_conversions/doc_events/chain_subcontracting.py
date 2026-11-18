@@ -8,11 +8,11 @@ when Is Chain Subcontracting is ticked -- and takes the converted item back into
 issuing department. It runs on the Gemstone Conversion resize workflow
 (``patches/add_metal_conversion_workflow.py``)::
 
-    Draft --Issue--> Issue --Receive--> Receive --Submit--> Submitted
+    Draft --Issue--> Issue --Receive--> Submitted
                      Issue --Cancel Issue--> Draft          (System Manager)
 
-The party's warehouse is the **work warehouse**: the To Employee's Manufacturing
-warehouse, or the supplier's Raw Material warehouse.
+The party's warehouse is the **work warehouse**: the To Employee's Raw Material
+warehouse, or the supplier's. The To Employee is an Artist of the issuing department.
 
 **Issue** (a save, docstatus 0) -- ``run_issue`` from ``MetalConversions.validate``:
 
@@ -21,7 +21,8 @@ warehouse, or the supplier's Raw Material warehouse.
 * subcontracted only: a draft Purchase Order for the "Semi FG Subcontracting" service,
   left for the buying team to price and submit.
 
-**Receive** (the submit) -- ``run_receive`` from ``MetalConversions.on_submit``:
+**Receive** (the submit, straight to Submitted) -- ``run_receive`` from
+``MetalConversions.on_submit``:
 
 * "Repack-Metal Conversion" inside the work warehouse: Target Qty of the source batches ->
   Target Qty of the Target Item, built with the regular conversion's lane helpers so
@@ -87,11 +88,12 @@ CHAIN_SC_PURCHASE_TYPE = "Subcontracting"
 
 DRAFT_STATE = "Draft"
 ISSUE_STATE = "Issue"
-RECEIVE_STATE = "Receive"
 
 RAW_MATERIAL = "Raw Material"
-MANUFACTURING = "Manufacturing"
 REGULAR_STOCK = "Regular Stock"
+
+# The only designation a chain conversion is handed to (To Employee).
+ARTIST = "Artist"
 
 DEPARTMENT_FLAGS = ("custom_is_chain_manufacturing", "custom_is_chain_subcontracting")
 
@@ -195,18 +197,15 @@ def get_supplier_rm_warehouse(supplier, company=None):
 
 
 def get_employee_warehouse(employee, company=None):
-	"""The employee's own Manufacturing warehouse (``Warehouse.employee``).
-
-	The warehouse Gemstone Conversion hands an unsubcontracted resize to
-	(``set_subcontractor_warehouse``).
-	"""
+	"""The employee's own Raw Material warehouse (``Warehouse.employee``), where a chain
+	conversion's metal is issued to them."""
 	if not employee:
 		return None
 	filters = {
 		"disabled": 0,
 		"is_group": 0,
 		"employee": employee,
-		"warehouse_type": MANUFACTURING,
+		"warehouse_type": RAW_MATERIAL,
 	}
 	if company:
 		filters["company"] = company
@@ -337,21 +336,33 @@ def set_issue_warehouses(doc):
 
 
 def set_to_warehouse(doc):
-	"""To Employee -> their own Manufacturing warehouse, where Issue hands them the metal.
+	"""To Employee -> their own Raw Material warehouse, where Issue hands them the metal.
 
-	To Department is shown for reference only; the warehouse is the employee's.
+	The To Employee must be an Artist of the conversion's Department -- the form offers only
+	those, and this holds the rule for a REST write or a stale form. Called only before
+	Issue, so a conversion already issued is never re-judged. To Department is shown for
+	reference only; the warehouse is the employee's.
 	"""
 	doc.to_department = None
 	doc.to_warehouse = None
 	if not doc.to_employee:
 		return
-	doc.to_department = frappe.db.get_value("Employee", doc.to_employee, "department")
+	department, designation = frappe.db.get_value(
+		"Employee", doc.to_employee, ["department", "designation"]
+	) or (None, None)
+	if designation != ARTIST or department != doc.department:
+		frappe.throw(
+			_("To Employee {0} must be an {1} of Department {2}.").format(
+				frappe.bold(doc.to_employee), ARTIST, frappe.bold(doc.department)
+			)
+		)
+	doc.to_department = department
 	doc.to_warehouse = get_employee_warehouse(doc.to_employee, doc.company)
 	if not doc.to_warehouse:
 		frappe.throw(
 			_(
-				"No Manufacturing warehouse found for To Employee {0}. Configure a Warehouse "
-				"with Warehouse Type = Manufacturing and Employee = {0}."
+				"No Raw Material warehouse found for To Employee {0}. Configure a Warehouse "
+				"with Warehouse Type = Raw Material and Employee = {0}."
 			).format(frappe.bold(doc.to_employee))
 		)
 
@@ -526,7 +537,7 @@ def validate_issue(doc):
 	elif not doc.to_employee:
 		errors.append(_("To Employee is not selected."))
 	elif not doc.to_warehouse:
-		errors.append(_("The To Employee has no Manufacturing warehouse."))
+		errors.append(_("The To Employee has no Raw Material warehouse."))
 
 	rows = _source_rows(doc)
 	if not rows:
@@ -701,13 +712,17 @@ def _linked_address(link_doctype, link_name):
 def validate_receive(doc):
 	"""Spec 16, from ``before_submit``: a chain conversion is submitted only by Receive.
 
+	Receive lands on Submitted -- the state a plain submit lands on too -- so the state
+	cannot tell the two apart. What only Receive has is a completed Issue: the Issue state's
+	sole submitting transition is Receive, and without an Issue there is nothing to receive.
+
 	The Purchase Order is deliberately not read: buying prices and submits it on its own
 	(spec 13) and spec 16 lists no PO check. So Receive neither waits for the PO or its
 	invoice nor adds the job-work charge to the received item -- unlike Gemstone
 	Conversion's subcontracted Resize (``get_subcontracting_pi_amount``). Decision recorded
 	on PR #1433. An employee conversion has no PO at all.
 	"""
-	if doc.get("workflow_state") != RECEIVE_STATE:
+	if not chain_issued(doc):
 		frappe.throw(
 			_(
 				"A Chain Manufacturing conversion is submitted by its Receive action, after "
@@ -721,9 +736,7 @@ def validate_receive(doc):
 	source_qty = flt(doc.source_qty, precision)
 	target_qty = flt(doc.target_qty, precision)
 
-	if not chain_issued(doc):
-		errors.append(_("Issue has not been completed."))
-	elif (
+	if (
 		frappe.db.get_value("Stock Entry", doc.chain_issue_stock_entry, "docstatus")
 		!= 1
 	):
@@ -749,7 +762,7 @@ def validate_receive(doc):
 		errors.append(
 			_("The Supplier has no Raw Material warehouse.")
 			if is_subcontracted(doc)
-			else _("The To Employee has no Manufacturing warehouse.")
+			else _("The To Employee has no Raw Material warehouse.")
 		)
 	if not doc.source_warehouse:
 		errors.append(

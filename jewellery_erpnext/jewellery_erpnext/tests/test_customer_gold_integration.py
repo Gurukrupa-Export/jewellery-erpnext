@@ -130,6 +130,15 @@ FLIP_ITEM = "CG-TEST-GOLD-75.0-FLIP"
 PLAIN_RECEIPT_SE_TYPE = "CG Test Plain Receipt"
 
 
+def _by_account(je, field):
+	"""{account: total of ``field``}. A settlement JE carries one liability line per receipt row,
+	so a dict built line by line would keep only the last line's amount."""
+	totals = {}
+	for r in je.accounts:
+		totals[r.account] = flt(totals.get(r.account, 0.0)) + flt(r.get(field))
+	return totals
+
+
 @contextmanager
 def _customer_goods_flag(item_code, value):
 	"""Set the Item's Customer Goods flag for one block, restoring it however the block ends.
@@ -2932,8 +2941,8 @@ class TestLiabilitySettlement(TestFulfilmentLedger):
 		je = frappe.get_doc("Journal Entry", entries[0])
 		self.assertEqual(je.docstatus, 1)
 
-		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
-		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		debits = _by_account(je, "debit_in_account_currency")
+		credits = _by_account(je, "credit_in_account_currency")
 
 		self.assertAlmostEqual(
 			debits.get(self.liability_account, 0.0),
@@ -5697,8 +5706,8 @@ class TestManufacturedPieceSettles(TestProductionEvents):
 
 		je = frappe.get_doc("Journal Entry", entries[0])
 		self.assertEqual(je.docstatus, 1)
-		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
-		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		debits = _by_account(je, "debit_in_account_currency")
+		credits = _by_account(je, "credit_in_account_currency")
 		self.assertAlmostEqual(
 			debits.get(self.liability_account, 0.0),
 			42988.98,
@@ -6028,8 +6037,8 @@ class TestConvertedPieceSettlesTheSourceValue(TestManufacturedPieceSettles):
 
 		je = frappe.get_doc("Journal Entry", entries[0])
 		self.assertEqual(je.docstatus, 1)
-		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
-		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		debits = _by_account(je, "debit_in_account_currency")
+		credits = _by_account(je, "credit_in_account_currency")
 
 		self.assertAlmostEqual(
 			debits.get(self.liability_account, 0.0),
@@ -6308,8 +6317,8 @@ class TestNosPieceSettlesItsCustomerGold(TestProductionEvents):
 			len(entries), 1, msg=f"expected one settlement JE, got {entries}"
 		)
 		je = frappe.get_doc("Journal Entry", entries[0])
-		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
-		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		debits = _by_account(je, "debit_in_account_currency")
+		credits = _by_account(je, "credit_in_account_currency")
 		self.assertAlmostEqual(
 			debits.get(self.liability_account, 0.0), self.EXPECTED_VALUE, places=2
 		)
