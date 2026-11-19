@@ -21,8 +21,11 @@ Cancelled, create-only): the workflow is rebuilt to the states and transitions b
 PMOs are moved off states the new workflow does not have -- "Open" to Submitted, a legacy
 "On Hold" to Hold / Hold (Draft), anything else by its docstatus.
 
-The roles are a starting point; the server checks transitions, not roles, so they can be
-changed on the Workflow form.
+Roles are not set here: they are configured on the Workflow form and this patch keeps them.
+A transition that is already on the workflow keeps its rows -- and so its roles -- as they
+are, and a state keeps its "Only Allow Edit For"; only a transition the workflow does not
+have yet gets a starting row (System Manager; "All" for Submit and Cancel, as before), and a
+transition the workflow no longer has is dropped. The patch creates no Role.
 
 Close requests (2026-10-29, simplified 2026-10-30). The buttons are only Hold, Open and
 Close. A Close refused because the work orders are not back yet (elsewhere, in progress or
@@ -45,10 +48,6 @@ its condition, so the form shows a single Open.
 The earlier Request Hold / Hold Requested and the Request Close / Withdraw Request buttons
 are gone: a PMO still in Hold Requested goes back to Close Requested when a Close request
 was pending under it, otherwise to Submitted.
-
-The Order Department does the Close (and drops a Close request with Open), the Hold Team the
-Hold and Open; System Manager keeps every transition. A transition row names one role, so a
-transition open to several roles has one row per role.
 """
 
 import frappe
@@ -57,11 +56,10 @@ from frappe.utils import now_datetime
 WORKFLOW = "Parent Manufacturing Order"
 DOCTYPE = "Parent Manufacturing Order"
 SM = "System Manager"
-ORDER_DEPARTMENT = "Order Department"
-HOLD_TEAM = "Hold Team"
-ROLES = (ORDER_DEPARTMENT, HOLD_TEAM)
+ALL = "All"
 
-# (state, doc_status, allow_edit, style for a Workflow State created here)
+# (state, doc_status, allow_edit for a state the workflow does not have yet, style for a
+# Workflow State created here)
 STATES = (
 	("Draft", "0", "All", "Primary"),
 	("Submitted", "1", "All", "Success"),
@@ -84,40 +82,80 @@ RESUME_KEY = "resume_close_request"
 RESUMES = f"'{RESUME_KEY}' in (doc.hold_snapshot or '')"
 NO_RESUME = f"'{RESUME_KEY}' not in (doc.hold_snapshot or '')"
 
-# (state, action, next_state, allowed[, condition])
+# (state, action, next_state[, condition]) -- no roles: those are set on the Workflow form.
 TRANSITIONS = (
-	("Draft", "Submit", "Submitted", "All"),
-	("Draft", "Hold", "Hold (Draft)", SM),
-	("Draft", "Close", "Closed (Draft)", SM),
-	("Hold (Draft)", "Submit", "Submitted", SM),
-	("Hold (Draft)", "Close", "Closed (Draft)", SM),
-	("Submitted", "Hold", "Hold", SM),
-	("Submitted", "Hold", "Hold", HOLD_TEAM),
-	("Submitted", "Close", "Closed", SM),
-	("Submitted", "Close", "Closed", ORDER_DEPARTMENT),
-	("Submitted", "Cancel", "Cancelled", "All"),
-	("Hold", "Open", "Submitted", SM, NO_RESUME),
-	("Hold", "Open", "Submitted", HOLD_TEAM, NO_RESUME),
-	("Hold", "Open", "Close Requested", SM, RESUMES),
-	("Hold", "Open", "Close Requested", HOLD_TEAM, RESUMES),
-	("Hold", "Close", "Closed", SM),
-	("Hold", "Close", "Closed", ORDER_DEPARTMENT),
-	("Close Requested", "Close", "Closed", SM),
-	("Close Requested", "Close", "Closed", ORDER_DEPARTMENT),
-	("Close Requested", "Hold", "Hold", SM),
-	("Close Requested", "Hold", "Hold", HOLD_TEAM),
-	("Close Requested", "Open", "Submitted", SM),
-	("Close Requested", "Open", "Submitted", ORDER_DEPARTMENT),
+	("Draft", "Submit", "Submitted"),
+	("Draft", "Hold", "Hold (Draft)"),
+	("Draft", "Close", "Closed (Draft)"),
+	("Hold (Draft)", "Submit", "Submitted"),
+	("Hold (Draft)", "Close", "Closed (Draft)"),
+	("Submitted", "Hold", "Hold"),
+	("Submitted", "Close", "Closed"),
+	("Submitted", "Cancel", "Cancelled"),
+	("Hold", "Open", "Submitted", NO_RESUME),
+	("Hold", "Open", "Close Requested", RESUMES),
+	("Hold", "Close", "Closed"),
+	("Close Requested", "Close", "Closed"),
+	("Close Requested", "Hold", "Hold"),
+	("Close Requested", "Open", "Submitted"),
 )
+# The one role a transition the workflow does not have yet starts with, until it is set on
+# the Workflow form: Submit and Cancel stay open to everyone, as they always were.
+OPEN_TO_ALL = {("Draft", "Submit"), ("Submitted", "Cancel")}
+
+
+def _transition_rows(existing_rows):
+	"""The workflow's transition rows: every row already configured for a defined transition
+	is kept with its role (only its condition follows the definition); a transition the
+	workflow does not have yet gets one starting row; anything else is dropped."""
+	existing = {}
+	for row in existing_rows:
+		key = (row.get("state"), row.get("action"), row.get("next_state"))
+		existing.setdefault(key, []).append(row)
+	rows = []
+	for state, action, next_state, *condition in TRANSITIONS:
+		condition = condition[0] if condition else None
+		kept = existing.get((state, action, next_state))
+		if kept:
+			rows.extend(
+				{
+					"state": state,
+					"action": action,
+					"next_state": next_state,
+					"allowed": row.get("allowed"),
+					"allow_self_approval": row.get("allow_self_approval"),
+					"condition": condition,
+				}
+				for row in kept
+			)
+		else:
+			rows.append(
+				{
+					"state": state,
+					"action": action,
+					"next_state": next_state,
+					"allowed": ALL if (state, action) in OPEN_TO_ALL else SM,
+					"condition": condition,
+				}
+			)
+	return rows
+
+
+def _state_rows(existing_rows):
+	"""The workflow's states, in the defined order; a state already on the workflow keeps its
+	"Only Allow Edit For", a new one starts with the definition's."""
+	allow_edit = {row.get("state"): row.get("allow_edit") for row in existing_rows}
+	return [
+		{
+			"state": state,
+			"doc_status": doc_status,
+			"allow_edit": allow_edit.get(state) or default_allow_edit,
+		}
+		for state, doc_status, default_allow_edit, _style in STATES
+	]
 
 
 def execute():
-	for role in ROLES:
-		if not frappe.db.exists("Role", role):
-			frappe.get_doc(
-				{"doctype": "Role", "role_name": role, "desk_access": 1}
-			).insert(ignore_permissions=True)
-
 	for state, _doc_status, _allow_edit, style in STATES:
 		if not frappe.db.exists("Workflow State", state):
 			frappe.get_doc(
@@ -143,26 +181,9 @@ def execute():
 	workflow.workflow_state_field = "workflow_state"
 	workflow.is_active = 1
 	workflow.send_email_alert = 0
-	workflow.set(
-		"states",
-		[
-			{"state": state, "doc_status": doc_status, "allow_edit": allow_edit}
-			for state, doc_status, allow_edit, _style in STATES
-		],
-	)
-	workflow.set(
-		"transitions",
-		[
-			{
-				"state": state,
-				"action": action,
-				"next_state": next_state,
-				"allowed": allowed,
-				"condition": condition[0] if condition else None,
-			}
-			for state, action, next_state, allowed, *condition in TRANSITIONS
-		],
-	)
+	# Roles stay as configured on the Workflow form (see the module docstring).
+	workflow.set("states", _state_rows(workflow.get("states") or []))
+	workflow.set("transitions", _transition_rows(workflow.get("transitions") or []))
 	workflow.save(ignore_permissions=True)
 
 	# The workflow state field is created with the workflow.
