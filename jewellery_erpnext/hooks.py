@@ -28,9 +28,20 @@ app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dial
 #
 # Idempotent. Non-fatal by design, but it prints as well as logging, so a failure is visible
 # in the migrate output rather than only in the Error Log.
-after_migrate = (
-	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
-)
+#
+# ensure_read_path_indexes is here for the install-app reason, which on production is not
+# hypothetical: the MOP Log / Serial and Batch indexes the locked stock-posting path reads
+# through were declared by patches that install-app only marked as done, so they never
+# existed. Re-checking on every migrate builds them on such a site, and retries one whose
+# online build gave up on a metadata lock ("busy").
+# Same contract: idempotent (no DDL once present), non-fatal, printed as well as logged.
+after_migrate = [
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate",
+	# Refining Stock Entry naming series: option + counter row. A no-op unless
+	# site_config sets refining_se_naming_series (see refining/stock_entry_naming.py).
+	"jewellery_erpnext.refining.stock_entry_naming.after_migrate",
+	"jewellery_erpnext.patches.ensure_read_path_indexes.after_migrate",
+]
 
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
@@ -198,6 +209,11 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
 	},
 	"Stock Entry": {
+		# lock_order RULE F (C-01): a Stock Entry minted by an Employee IR / Serial Number
+		# Creator / Product Certification cascade whose naming counter that cascade did not
+		# pre-lock takes it NOWAIT, after the Bins, instead of waiting. Inert for every other
+		# Stock Entry: no plan is recorded for it.
+		"before_naming": "jewellery_erpnext.jewellery_erpnext.lock_order.guard_unplanned_stock_entry_counter",
 		"validate": [
 			# No stock moves for a PMO on Hold or Closed. First, so nothing else runs for an
 			# entry that is refused anyway; validate never sees a cancel, so a Close's cancels

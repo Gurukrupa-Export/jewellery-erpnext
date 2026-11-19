@@ -122,3 +122,4 @@ jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Close / Hol
 jewellery_erpnext.patches.seed_pmo_request_blocked_stock_entry_types
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-29 Hold during a Close request keeps it (conditional Open / Withdraw)
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-30 Only Hold, Open and Close buttons; Close makes the Close request
+jewellery_erpnext.patches.ensure_read_path_indexes
