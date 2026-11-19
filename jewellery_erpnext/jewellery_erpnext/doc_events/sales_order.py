@@ -12,6 +12,9 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	clear_kggk_source,
 	set_bom_item_details,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import (
+	keep_po_rate,
+)
 
 # Companies allowed to use Sales Type "Hybrid" (3% on company-owned material +
 # 5% on customer-supplied material within the same BOM). Extend this tuple to
@@ -2753,7 +2756,10 @@ def _process_single_row(self, row, ctx):
 		row.other_bom_rate = doc.other_bom_amount
 		row.making_charge = doc.making_charge
 		row.bom_rate = doc.total_bom_amount
-		row.rate = doc.total_bom_amount
+		# Outwork rows from a Purchase Order keep the rate carried from the Quotation
+		# (see keep_po_rate); amount follows from it in calculate_taxes_and_totals.
+		if not keep_po_rate(self, row):
+			row.rate = doc.total_bom_amount
 
 
 _TRACKING_BOM_AMOUNT_FIELDS = (
