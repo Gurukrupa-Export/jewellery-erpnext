@@ -889,3 +889,113 @@ class TestDuplicateWorkOrderGuard(IntegrationTestCase):
 				]
 			)
 		self.assertIn("appeared multiple times", str(cm.exception))
+
+
+class TestReceiveAlreadyDoneGuard(IntegrationTestCase):
+	"""``validate_receive_not_already_done`` refuses a Receive of operations already received.
+
+	A draft Receive (EMP-IR-Labh-2026-62146) was submitted 24 minutes after another Receive of
+	the same two operations (62150). The duplicate check only runs on a draft save, so the
+	second submit booked the karigar's loss again (MAT-STE-81409, 3.19 g) and both finished
+	pieces were later made with that much less gold.
+	"""
+
+	LOCKS = "jewellery_erpnext.jewellery_erpnext.lock_order"
+
+	@classmethod
+	def setUpClass(cls):
+		# Pure logic: skip the ERPNext master bootstrap, as the other classes here do.
+		pass
+
+	def _doc(self, eir_type="Receive", mops=("MOP-1",)):
+		return FrappeDict(
+			{
+				"name": "EIR-NEW",
+				"type": eir_type,
+				"employee_ir_operations": [
+					FrappeDict({"idx": i, "manufacturing_operation": m})
+					for i, m in enumerate(mops, 1)
+				],
+			}
+		)
+
+	def _run(self, doc, mops, mwos, other="EIR-OLD"):
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+			validation_utils as vu,
+		)
+
+		lock_mops = MagicMock(return_value={m["name"]: FrappeDict(m) for m in mops})
+		lock_mwos = MagicMock(return_value={w["name"]: FrappeDict(w) for w in mwos})
+		with (
+			patch(f"{self.LOCKS}.lock_manufacturing_operations", lock_mops),
+			patch(f"{self.LOCKS}.lock_work_orders", lock_mwos),
+			patch.object(vu, "_submitted_receive_for", return_value=other),
+		):
+			vu.validate_receive_not_already_done(doc)
+		return lock_mops, lock_mwos
+
+	def _mop(self, status="WIP", name="MOP-1", mwo="MWO-1"):
+		return {"name": name, "status": status, "manufacturing_work_order": mwo}
+
+	def test_finished_operation_is_refused_naming_the_other_receive(self):
+		with self.assertRaises(frappe.ValidationError) as cm:
+			self._run(
+				self._doc(),
+				[self._mop("Finished")],
+				[{"name": "MWO-1", "manufacturing_operation": "MOP-NEXT"}],
+			)
+		msg = str(cm.exception)
+		self.assertIn("MOP-1", msg)
+		self.assertIn("EIR-OLD", msg)
+
+	def test_work_order_moved_on_is_refused_even_if_status_is_wip(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._run(
+				self._doc(),
+				[self._mop("WIP")],
+				[{"name": "MWO-1", "manufacturing_operation": "MOP-NEXT"}],
+			)
+
+	def test_generic_message_when_other_receive_not_visible(self):
+		with self.assertRaises(frappe.ValidationError) as cm:
+			self._run(
+				self._doc(),
+				[self._mop("Finished")],
+				[{"name": "MWO-1", "manufacturing_operation": "MOP-1"}],
+				other=None,
+			)
+		self.assertIn("already received", str(cm.exception))
+
+	def test_pending_operation_passes_and_locks_mop_then_mwo(self):
+		lock_mops, lock_mwos = self._run(
+			self._doc(),
+			[self._mop("WIP")],
+			[{"name": "MWO-1", "manufacturing_operation": "MOP-1"}],
+		)
+		lock_mops.assert_called_once_with(["MOP-1"])
+		lock_mwos.assert_called_once_with(["MWO-1"])
+
+	def test_re_receive_after_cancel_passes(self):
+		# Cancel puts the MWO pointer back and leaves the operation at WIP.
+		self._run(
+			self._doc(),
+			[self._mop("WIP")],
+			[{"name": "MWO-1", "manufacturing_operation": "MOP-1"}],
+		)
+
+	def test_one_bad_row_refuses_the_whole_receive(self):
+		with self.assertRaises(frappe.ValidationError) as cm:
+			self._run(
+				self._doc(mops=("MOP-1", "MOP-2")),
+				[self._mop("WIP"), self._mop("Finished", "MOP-2", "MWO-2")],
+				[
+					{"name": "MWO-1", "manufacturing_operation": "MOP-1"},
+					{"name": "MWO-2", "manufacturing_operation": "MOP-9"},
+				],
+			)
+		self.assertIn("Row 2", str(cm.exception))
+		self.assertNotIn("Row 1", str(cm.exception))
+
+	def test_issue_is_not_checked(self):
+		lock_mops, _ = self._run(self._doc(eir_type="Issue"), [], [])
+		lock_mops.assert_not_called()

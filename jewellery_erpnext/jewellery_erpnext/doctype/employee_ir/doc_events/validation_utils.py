@@ -463,3 +463,93 @@ def validate_employee_ir_receive_delay(doc):
 				"This Employee IR Receive entry cannot be submitted at this stage. Please try again later."
 			)
 		)
+
+
+def validate_receive_not_already_done(doc):
+	"""Refuse a Receive whose operations were already received, before it posts anything.
+
+	``validate_duplication_and_gr_wt`` only runs on a draft save (``before_validate`` returns
+	once docstatus is 1), so a draft Receive that sat open while another Receive for the same
+	operations was submitted could still be submitted later. It then booked the karigar's loss
+	a second time and minted a second next operation (EMP-IR-Labh-2026-62150 / 62146).
+
+	Called from ``on_submit_receive`` after the tree, series and Bin locks, where the canonical
+	order (lock_order.py) puts Manufacturing Operation. The decision is taken from the locking
+	reads, which carry the latest committed values even when this transaction's snapshot is
+	older: a concurrent Receive of the same operations waits here, then sees them Finished.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_manufacturing_operations,
+		lock_work_orders,
+	)
+
+	if doc.type != "Receive":
+		return
+
+	rows = [row for row in doc.employee_ir_operations if row.manufacturing_operation]
+	if not rows:
+		return
+
+	mops = lock_manufacturing_operations([row.manufacturing_operation for row in rows])
+	mwos = lock_work_orders(
+		[
+			mop.manufacturing_work_order
+			for mop in mops.values()
+			if mop.manufacturing_work_order
+		]
+	)
+
+	refused = []
+	for row in rows:
+		mop = mops.get(row.manufacturing_operation)
+		if not mop:
+			continue
+		mwo = mwos.get(mop.manufacturing_work_order)
+		moved_on = bool(
+			mwo
+			and mwo.manufacturing_operation
+			and mwo.manufacturing_operation != mop.name
+		)
+		if mop.status == "Finished" or moved_on:
+			# For the message only: a plain read, so in a race it can miss the other entry
+			# (older snapshot) and the generic wording is used. Not MOP.employee_ir: on the
+			# received operation that names the Issue, not the Receive.
+			other = _submitted_receive_for(mop.name, doc.name)
+			refused.append(
+				_("Row {0}: {1} ({2}) was already received by {3}").format(
+					row.idx, mop.name, mop.manufacturing_work_order, other
+				)
+				if other
+				else _("Row {0}: {1} ({2}) was already received").format(
+					row.idx, mop.name, mop.manufacturing_work_order
+				)
+			)
+
+	if refused:
+		frappe.throw(
+			"<br>".join(refused)
+			+ "<br><br>"
+			+ _(
+				"This Receive would book the loss a second time. Delete or cancel this entry instead."
+			),
+			title=_("Operation Already Received"),
+		)
+
+
+def _submitted_receive_for(manufacturing_operation, exclude):
+	EIR = frappe.qb.DocType("Employee IR")
+	EOP = frappe.qb.DocType("Employee IR Operation")
+	found = (
+		frappe.qb.from_(EOP)
+		.join(EIR)
+		.on(EIR.name == EOP.parent)
+		.select(EIR.name)
+		.where(
+			(EOP.manufacturing_operation == manufacturing_operation)
+			& (EIR.type == "Receive")
+			& (EIR.docstatus == 1)
+			& (EIR.name != exclude)
+		)
+		.limit(1)
+	).run(pluck="name")
+	return found[0] if found else None
