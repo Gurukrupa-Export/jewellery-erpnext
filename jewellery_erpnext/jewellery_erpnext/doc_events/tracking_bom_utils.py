@@ -48,10 +48,17 @@ def keep_po_rate(doc, row):
 	rate agreed on that order. The customer supplies the materials, so the Tracking BOM total
 	holds only making/handling charges and is 0 when those are not set up -- it would wipe the
 	Purchase Order rate. Other sales types and rows without a Purchase Order are unaffected.
+
+	Used on the Quotation and on the Sales Order mapped from it (``custom_po_details`` is copied
+	across); the Quotation keeps the sales type in ``custom_sales_type``, the Sales Order in
+	``sales_type``.
 	"""
-	return doc.get("custom_sales_type") == "Outwork" and bool(
-		row.get("custom_po_details")
+	sales_type = (
+		doc.get("sales_type")
+		if doc.doctype == "Sales Order"
+		else doc.get("custom_sales_type")
 	)
+	return sales_type == "Outwork" and bool(row.get("custom_po_details"))
 
 
 def set_tracking_bom_rate_in_quotation(self):
