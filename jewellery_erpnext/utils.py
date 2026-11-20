@@ -912,6 +912,19 @@ def get_serial_bom(serial_no):
 	)
 
 
+def is_purchase_order_repair(sales_order_item):
+	"""True when the Sales Order Item was raised from a customer's Purchase Order.
+
+	Such a repair carries its own two BOMs down from that PO: the Copy BOM it is manufactured on
+	(PMO / MWO ``master_bom``) and the serial's own BOM (``serial_id_bom``) that Unpack Serial No
+	books. It has no Repair Order on this site.
+	"""
+	return bool(
+		sales_order_item
+		and frappe.db.get_value("Sales Order Item", sales_order_item, "custom_po_details")
+	)
+
+
 def ensure_operation_not_in_use(operation, cancelling_doctype, cancelling_name):
 	"""Stop an IR cancel while any other submitted document still uses the operation it created.
 

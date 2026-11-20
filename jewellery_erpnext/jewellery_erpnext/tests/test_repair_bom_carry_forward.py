@@ -1,8 +1,8 @@
 """A repair sent in on a customer's Purchase Order carries two BOMs down to the work order.
 
 The PO's Copy BOM is what the repair is manufactured on (PMO / MWO ``master_bom``); its Serial
-Id BOM is the serial's own BOM, which Unpack Serial No books (``serial_id_bom``). Both arrive
-under the ordering site's BOM names and must be translated to this site's BOMs.
+Id BOM is the serial's own BOM, which Unpack Serial No books (``serial_id_bom``). The ordering site's
+BOM names are translated to this site's by the ``get_purchase_order_items`` Server Script.
 """
 
 from types import SimpleNamespace
@@ -21,75 +21,50 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufa
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	ParentManufacturingOrder,
 )
+from jewellery_erpnext.utils import is_purchase_order_repair
 
 PO_MODULE = "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order"
-
-
-class TestResolveSiteBom(UnitTestCase):
-	def test_the_sync_stamp_wins_over_a_same_named_bom(self):
-		with patch(f"{PO_MODULE}.frappe.db.has_column", return_value=True), patch(
-			f"{PO_MODULE}.frappe.db.sql", return_value=(("BOM-EA1-004",),)
-		) as sql, patch(f"{PO_MODULE}.frappe.db.exists", return_value=True):
-			self.assertEqual(po_events.resolve_site_bom("BOM-EA1-001"), "BOM-EA1-004")
-		self.assertEqual(sql.call_args.args[1], "BOM-EA1-001")
-
-	def test_an_unstamped_name_that_exists_here_is_kept(self):
-		with patch(f"{PO_MODULE}.frappe.db.has_column", return_value=True), patch(
-			f"{PO_MODULE}.frappe.db.sql", return_value=()
-		), patch(f"{PO_MODULE}.frappe.db.exists", return_value=True):
-			self.assertEqual(po_events.resolve_site_bom("BOM-LOCAL-1"), "BOM-LOCAL-1")
-
-	def test_a_site_without_the_stamp_columns_falls_back_to_the_name(self):
-		with patch(f"{PO_MODULE}.frappe.db.has_column", return_value=False), patch(
-			f"{PO_MODULE}.frappe.db.sql"
-		) as sql, patch(f"{PO_MODULE}.frappe.db.exists", return_value=True):
-			self.assertEqual(po_events.resolve_site_bom("BOM-LOCAL-1"), "BOM-LOCAL-1")
-		sql.assert_not_called()
-
-	def test_an_unknown_bom_resolves_to_none(self):
-		with patch(f"{PO_MODULE}.frappe.db.has_column", return_value=True), patch(
-			f"{PO_MODULE}.frappe.db.sql", return_value=()
-		), patch(f"{PO_MODULE}.frappe.db.exists", return_value=False):
-			self.assertIsNone(po_events.resolve_site_bom("BOM-NOT-HERE"))
-		self.assertIsNone(po_events.resolve_site_bom(None))
 
 
 class TestValidateCopyBomSerialIdBom(UnitTestCase):
 	def _po(self, *rows):
 		return SimpleNamespace(name="PO-1", items=[frappe._dict(r) for r in rows])
 
-	def test_both_boms_come_back_translated(self):
-		site = {"BOM-GK-COPY": "BOM-KG-COPY", "BOM-GK-SERIAL": "BOM-KG-SERIAL"}
+	def test_names_are_checked_as_they_are(self):
 		po = self._po(
-			dict(
-				idx=1,
-				name="POI-1",
-				custom_copy_bom="BOM-GK-COPY",
-				custom_serial_id_bom="BOM-GK-SERIAL",
-			),
-			dict(idx=2, name="POI-2", custom_copy_bom="BOM-GK-COPY"),
+			dict(idx=1, custom_copy_bom="BOM-COPY", custom_serial_id_bom="BOM-SERIAL"),
+			dict(idx=2, custom_copy_bom="BOM-COPY"),
 		)
-		with patch(f"{PO_MODULE}.resolve_site_bom", side_effect=site.get):
-			resolved = po_events.validate_copy_bom(po)
-		self.assertEqual(resolved["POI-1"], ("BOM-KG-COPY", "BOM-KG-SERIAL"))
-		self.assertEqual(resolved["POI-2"], ("BOM-KG-COPY", None))
+		with patch(f"{PO_MODULE}.frappe.db.exists", return_value=True) as exists:
+			po_events.validate_copy_bom(po)
+		self.assertEqual(
+			sorted(c.args for c in exists.call_args_list),
+			[("BOM", "BOM-COPY"), ("BOM", "BOM-COPY"), ("BOM", "BOM-SERIAL")],
+		)
 
-	def test_an_unsynced_serial_id_bom_is_refused(self):
+	def test_an_unknown_serial_id_bom_is_refused_with_its_row(self):
 		po = self._po(
-			dict(
-				idx=1,
-				name="POI-1",
-				custom_copy_bom="BOM-GK-COPY",
-				custom_serial_id_bom="BOM-GK-SERIAL",
-			)
+			dict(idx=1, custom_copy_bom="BOM-COPY", custom_serial_id_bom="BOM-NOT-HERE")
 		)
 		with patch(
-			f"{PO_MODULE}.resolve_site_bom",
-			side_effect={"BOM-GK-COPY": "BOM-KG-COPY"}.get,
+			f"{PO_MODULE}.frappe.db.exists",
+			side_effect=lambda dt, name: name == "BOM-COPY",
 		), self.assertRaises(frappe.ValidationError) as ctx:
 			po_events.validate_copy_bom(po)
-		self.assertIn("BOM-GK-SERIAL", str(ctx.exception))
+		self.assertIn("BOM-NOT-HERE", str(ctx.exception))
 		self.assertIn("Row #1", str(ctx.exception))
+
+
+class TestIsPurchaseOrderRepair(UnitTestCase):
+	def test_reads_custom_po_details_of_the_sales_order_item(self):
+		with patch(
+			"jewellery_erpnext.utils.frappe.db.get_value", return_value="POI-1"
+		) as gv:
+			self.assertTrue(is_purchase_order_repair("SOI-1"))
+		gv.assert_called_once_with("Sales Order Item", "SOI-1", "custom_po_details")
+		with patch("jewellery_erpnext.utils.frappe.db.get_value", return_value=None):
+			self.assertFalse(is_purchase_order_repair("SOI-1"))
+		self.assertFalse(is_purchase_order_repair(None))
 
 
 class TestRepairMasterBom(UnitTestCase):
@@ -120,24 +95,29 @@ class TestCarriedSerialIdBomIsKept(UnitTestCase):
 	def _pmo(self, **values):
 		pmo = ParentManufacturingOrder.__new__(ParentManufacturingOrder)
 		pmo.__dict__.update(
-			dict(custom_tracking_bom=None, serial_no="SR-1", sales_order_item="SOI-1", **values)
+			dict(
+				custom_tracking_bom=None,
+				serial_no="SR-1",
+				sales_order_item="SOI-1",
+				**values,
+			)
 		)
 		pmo.db_set = lambda *args, **kwargs: setattr(pmo, "_db_set", args)
 		return pmo
 
 	def test_purchase_order_serial_id_bom_survives_after_insert(self):
 		pmo = self._pmo(serial_id_bom="BOM-KG-SERIAL")
-		with patch(f"{self.PMO_MODULE}.frappe.db.get_value", return_value="POI-1"), patch(
-			f"{self.PMO_MODULE}.get_serial_bom", return_value="BOM-OTHER"
-		):
+		with patch(
+			f"{self.PMO_MODULE}.is_purchase_order_repair", return_value=True
+		), patch(f"{self.PMO_MODULE}.get_serial_bom", return_value="BOM-OTHER"):
 			pmo.after_insert()
 		self.assertFalse(hasattr(pmo, "_db_set"))
 
 	def test_other_repairs_still_take_the_serials_bom(self):
 		pmo = self._pmo(serial_id_bom="BOM-DESIGN")
-		with patch(f"{self.PMO_MODULE}.frappe.db.get_value", return_value=None), patch(
-			f"{self.PMO_MODULE}.get_serial_bom", return_value="BOM-OTHER"
-		):
+		with patch(
+			f"{self.PMO_MODULE}.is_purchase_order_repair", return_value=False
+		), patch(f"{self.PMO_MODULE}.get_serial_bom", return_value="BOM-OTHER"):
 			pmo.after_insert()
 		self.assertEqual(pmo._db_set, ("serial_id_bom", "BOM-OTHER"))
 

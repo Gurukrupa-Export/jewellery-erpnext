@@ -53,7 +53,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
 	update_parent_details,
 )
-from jewellery_erpnext.utils import get_serial_bom, update_existing
+from jewellery_erpnext.utils import (
+	get_serial_bom,
+	is_purchase_order_repair,
+	update_existing,
+)
 
 _VARIANT_TO_ITEM_TYPE = {
 	"M": "metal_item",
@@ -464,19 +468,11 @@ class ParentManufacturingOrder(Document):
 		# A repair from a customer's Purchase Order is the exception: that PO names the
 		# serial's BOM itself (translated to this site's BOM by make_quotation), so the value
 		# it carried is kept.
-		if self.serial_id_bom and self._is_from_purchase_order():
+		if self.serial_id_bom and is_purchase_order_repair(self.sales_order_item):
 			return
 		if serial_bom := get_serial_bom(self.serial_no):
 			if serial_bom != self.serial_id_bom:
 				self.db_set("serial_id_bom", serial_bom)
-
-	def _is_from_purchase_order(self):
-		return bool(
-			self.sales_order_item
-			and frappe.db.get_value(
-				"Sales Order Item", self.sales_order_item, "custom_po_details"
-			)
-		)
 
 	def validate(self):
 		# Kept ABOVE the is_new/ignore_validations early-return so the Mould List ID

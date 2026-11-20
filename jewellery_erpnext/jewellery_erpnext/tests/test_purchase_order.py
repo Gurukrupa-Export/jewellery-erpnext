@@ -284,10 +284,11 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 	@patch(f"{PO_EVENTS}.frappe.get_cached_value", return_value="INR")
 	@patch(f"{PO_EVENTS}.frappe.db.get_value", return_value="Cust1")
 	@patch(f"{PO_EVENTS}.get_exchange_rate", return_value=1)
-	def test_make_quotation_maps_repair_boms_and_serial_translated(
+	def test_make_quotation_maps_repair_boms_and_serial(
 		self, _rate, _get_value, _cached, mock_new_doc, mock_get_doc
 	):
-		"""A repair row brings its serial and both BOMs, under this site's BOM names."""
+		"""A repair row brings its serial and both BOMs; the PO's Link fields already hold this
+		site's BOM names, so they are copied as they are."""
 		po_doc = DummyPO(
 			company="Test Company",
 			items=[
@@ -297,8 +298,8 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 					item_code="Item1",
 					qty=1,
 					rate=500,
-					custom_copy_bom="BOM-GK-COPY",
-					custom_serial_id_bom="BOM-GK-SERIAL",
+					custom_copy_bom="BOM-KG-COPY",
+					custom_serial_id_bom="BOM-KG-SERIAL",
 					serial_no="SR-0001",
 				)
 			],
@@ -309,13 +310,10 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			else (dt if not isinstance(dt, str) else None)
 		)
 		mock_new_doc.return_value = DummyQuotation()
-		site = {"BOM-GK-COPY": "BOM-KG-COPY", "BOM-GK-SERIAL": "BOM-KG-SERIAL"}
 		with patch(
 			"erpnext.controllers.accounts_controller.get_default_taxes_and_charges",
 			return_value={"taxes": []},
-		), patch(f"{PO_EVENTS}.resolve_site_bom", side_effect=site.get), patch(
-			f"{PO_EVENTS}.frappe.db.exists", return_value=True
-		):
+		), patch(f"{PO_EVENTS}.frappe.db.exists", return_value=True):
 			res = po_events.make_quotation("PO-1", None)
 
 		item = res.items[0]
