@@ -9,6 +9,7 @@
  "field_order": [
   "manufacturing_work_order",
   "manufacturing_operation",
+  "department_process",
   "gross_wt",
   "is_finding_mwo",
   "column_break_uz0qw",
@@ -53,6 +54,16 @@
    "in_list_view": 1,
    "label": "Manufacturing Operation",
    "options": "Manufacturing Operation"
+  },
+  {
+   "description": "The work order's process.",
+   "fetch_from": "manufacturing_operation.department_process",
+   "fieldname": "department_process",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Process",
+   "options": "Department Process",
+   "read_only": 1
   },
   {
    "fetch_from": "manufacturing_operation.gross_wt",
@@ -303,7 +314,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-11-11 12:30:39.456932",
+ "modified": "2026-11-20 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR Operation",
