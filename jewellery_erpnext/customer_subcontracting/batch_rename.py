@@ -1,4 +1,3 @@
-import string
 from datetime import datetime
 
 import frappe
@@ -148,6 +147,62 @@ def get_next_serial(customer, year_code, month):
 	return "01"
 
 
+#: ``tabBatch.name`` and ``batch_id`` are varchar(140), as is every column storing a batch.
+_BATCH_NAME_LENGTH = 140
+
+
+def encode_child_suffix(ordinal):
+	"""Child suffix for ``ordinal``: 1 -> A, 26 -> Z, 27 -> AA, 702 -> ZZ, 703 -> AAA.
+
+	Bijective base 26: the letters never run out, and every existing A-Z name keeps
+	its ordinal.
+	"""
+	if ordinal < 1:
+		raise ValueError(f"child suffix ordinal must be positive, got {ordinal}")
+	letters = []
+	while ordinal:
+		ordinal, remainder = divmod(ordinal - 1, 26)
+		letters.append(chr(ord("A") + remainder))
+	return "".join(reversed(letters))
+
+
+def decode_child_suffix(suffix):
+	"""Ordinal of a child suffix, or ``None`` when ``suffix`` is not ASCII letters.
+
+	Case-insensitive like ``tabBatch.name`` (utf8mb4_unicode_ci): ``...-a`` occupies the
+	``...-A`` slot.
+	"""
+	if not suffix or not suffix.isascii() or not suffix.isalpha():
+		return None
+	ordinal = 0
+	for letter in suffix.upper():
+		ordinal = ordinal * 26 + (ord(letter) - ord("A") + 1)
+	return ordinal
+
+
+def highest_child_ordinal(base_name, names):
+	"""Highest ordinal among ``names`` that are exactly ``base_name-<letters>``; 0 if none.
+
+	Compared as numbers, never as text (``Z`` sorts after ``AA``). Deeper descendants
+	(``base-A-B``), non-letter suffixes and prefix siblings do not count. Gaps are left
+	alone, so no name is ever handed out a second time.
+	"""
+	prefix = f"{base_name}-"
+	folded_prefix = prefix.casefold()
+	highest = 0
+	for name in names or ():
+		if not isinstance(name, str) or name[: len(prefix)].casefold() != folded_prefix:
+			continue
+		ordinal = decode_child_suffix(name[len(prefix) :])
+		if ordinal and ordinal > highest:
+			highest = ordinal
+	return highest
+
+
+def _escape_like(value):
+	return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _row_lane_key(row):
 	"""Ownership key of a Stock Entry row: ``(inventory_type, customer)``.
 
@@ -241,44 +296,27 @@ def create_child_batches(doc, method=None):
 			prefix = f"{parts[0]}-{parts[1]}"
 		base_name = f"{prefix}-{item_code}-{parent_serial}"
 
-		batches = frappe.db.sql(
-			"""
-            SELECT name
-            FROM `tabBatch`
-            WHERE name LIKE %s
-            ORDER BY name DESC
-            """,
-			(base_name + "-%",),
-			as_dict=True,
+		existing = frappe.db.sql(
+			"SELECT name FROM `tabBatch` WHERE name LIKE %s",
+			(_escape_like(base_name) + "-%",),
+			pluck=True,
 		)
-
-		alphabet = "A"
-		if batches:
-			last_alpha = batches[0].name.split("-")[-1]
-			if last_alpha in string.ascii_uppercase:
-				idx = string.ascii_uppercase.index(last_alpha)
-				if idx + 1 >= len(string.ascii_uppercase):
-					frappe.throw(
-						_(
-							"Cannot create child batch for {0}: parent batch {1} "
-							"already uses all 26 child suffixes (A-Z)."
-						).format(base_name, parent_batch)
-					)
-				alphabet = string.ascii_uppercase[idx + 1]
-
-		batch_name = f"{base_name}-{alphabet}"
+		# The suffix used to stop at Z: a parent's 27th child (e.g. the 27th Create SNC
+		# conversion off one customer receipt batch in a month) aborted the voucher.
+		ordinal = highest_child_ordinal(base_name, existing) + 1
+		batch_name = f"{base_name}-{encode_child_suffix(ordinal)}"
 
 		while frappe.db.exists("Batch", batch_name):
-			if alphabet == "Z":
-				frappe.throw(
-					_(
-						"Cannot create a unique child batch for {0}: all 26 child "
-						"suffixes (A-Z) are already used."
-					).format(base_name)
-				)
+			ordinal += 1
+			batch_name = f"{base_name}-{encode_child_suffix(ordinal)}"
 
-			alphabet = chr(ord(alphabet) + 1)
-			batch_name = f"{base_name}-{alphabet}"
+		if len(batch_name) > _BATCH_NAME_LENGTH:
+			frappe.throw(
+				_(
+					"Cannot create child batch for {0}: the next name, {1}, is longer "
+					"than the {2} characters a batch name can hold."
+				).format(parent_batch, batch_name, _BATCH_NAME_LENGTH)
+			)
 
 		previous_autoname_flag = frappe.flags.is_batch_autoname
 		frappe.flags.is_batch_autoname = True
