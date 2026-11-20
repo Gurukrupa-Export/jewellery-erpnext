@@ -97,18 +97,39 @@ _SUPPLIER_ALLOWED_ITEM_VALIDATOR = (
 before_request = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 before_job = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 
+# A history row never blocks deleting the operation or document it describes (a branch whose
+# Department IR / Employee IR cancel deletes the operation it minted, for one).
+ignore_links_on_delete = ["Process Transition Log"]
+
 doc_events = {
 	# Block stock/manufacturing transactions while EOD sync is running.
 	# The validator bypasses itself when frappe.flags.in_eod_mop_sync is True
 	# so the sync process can create Stock Entries and update MOP Logs unhindered.
 	"Employee IR": {
+		# Process control (pilot on, controlled departments only): the operation's process is
+		# the job's, the worker holds that exact operation, the acting user has access. Plain
+		# reads on save; locking reads at submit / cancel, which also mark this document as
+		# checked for the Stock Entries it makes in the same request.
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_employee_ir",
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.validate_no_sample_issue",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_employee_ir",
 		],
-		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
+		"before_cancel": [
+			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_MOVEMENT_VALIDATOR,
+			# A Receive whose successor operation has since changed process stays put.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.block_receive_cancel_after_transfer",
+			# This branch deletes the operation the cancel undoes; cancelled transfers must not block it.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.release_cancelled_transfer_rows",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_employee_ir",
+		],
+		# After the controller made this document's own Stock Entries.
+		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.release_parent",
+		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.release_parent",
 	},
 	"Department IR": {
 		# On validate, not before_submit: the operator is told the weight is out of
@@ -116,15 +137,36 @@ doc_events = {
 		# too, so this one entry covers both. See the module docstring for which weights
 		# it sees on each path -- before_validate refreshes them on save but not submit.
 		"validate": [
-			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance.validate_product_tolerance"
+			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance.validate_product_tolerance",
+			# An Issue into a process-controlled department names its destination process.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.validate_department_ir_destination",
+			# Source side out of a controlled department; receiving authority into one.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_department_ir",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils.validate_no_sample_issue",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_department_ir",
 		],
-		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
+		"before_cancel": [
+			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_MOVEMENT_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.block_receive_cancel_after_transfer",
+			# This branch deletes the operation the cancel undoes; cancelled transfers must not block it.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.release_cancelled_transfer_rows",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_department_ir",
+		],
+		# After the controller minted / reverted the next department's operations.
+		"on_submit": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.assign_destination_process",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.release_parent",
+		],
+		"on_cancel": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.restore_after_department_ir_cancel",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.release_parent",
+		],
 	},
 	"MOP Log": {
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
@@ -234,6 +276,9 @@ doc_events = {
 			# batch of the order's Ref Customer. At `validate` so it sees the batches
 			# before_validate's update_batches filled; no-op while that table is empty.
 			"jewellery_erpnext.customer_subcontracting.hybrid_findings.validate_hybrid_finding_batches",
+			# Process control: material moves against a job only in the job's process, by a user
+			# with access to it. Last, so it judges the rows the hooks above settled.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_stock_entry",
 		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
@@ -247,6 +292,9 @@ doc_events = {
 			_EOD_LOCK_VALIDATOR,
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins",
+			# Process control, under the MOP-then-MWO lock: after the Bin locks above, matching
+			# lock_order (Series -> Bin -> MOP -> MWO).
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_stock_entry",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_child_batches",
@@ -270,6 +318,8 @@ doc_events = {
 			# F-002/F-012: pre-order this SE's Bins on cancel too, matching every other
 			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
+			# Cancelling a movement recorded in a process needs access to that process.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_stock_entry",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
@@ -282,14 +332,28 @@ doc_events = {
 		# No-op on a site that has not been sharded. See the patch module docstring.
 		"after_insert": "jewellery_erpnext.patches.shard_stock_entry_naming_by_type.on_stock_entry_type_insert",
 	},
+	"Manufacturing Operation": {
+		# The operation's process is the job's authoritative process state (Process Transfer).
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.guard_process_field",
+	},
+	"Department": {
+		# Process control may be switched on only for a fully configured cell.
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.validate_department",
+	},
 	"Manufacturing Work Order": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_id",
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_id",
+			# The job's current process changes only through the process transition service.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.guard_process_field",
+		],
 		"before_submit": [
 			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.validate_snc_before_submit"
 		],
 		"on_submit": [
 			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.validate_and_repack_on_mwo_submit"
 		],
+		# current_process is allow_on_submit so the transition service can save it; nothing else may.
+		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.process_control.guard_process_field",
 	},
 	"Mould": {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils.clear_item_mould_cache",
@@ -539,6 +603,8 @@ fixtures = [
 					"All",
 					"Refining User",
 					"Refining Manager",
+					"Process Transfer User",
+					"Process Access Manager",
 				],
 			]
 		],

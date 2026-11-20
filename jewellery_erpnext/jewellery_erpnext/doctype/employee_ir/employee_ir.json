@@ -26,6 +26,7 @@
   "operation",
   "receive_details_type",
   "receive_detail_fields",
+  "department_process",
   "employee",
   "is_repeat_receive",
   "worker_performance",
@@ -180,6 +181,16 @@
    "label": "Receive Details Type",
    "no_copy": 1,
    "options": "\nCAD\nCAM",
+   "read_only": 1
+  },
+  {
+   "depends_on": "department_process",
+   "description": "The operation's process. In departments that use process control, every work order on this document must be in this process.",
+   "fetch_from": "operation.department_process",
+   "fieldname": "department_process",
+   "fieldtype": "Link",
+   "label": "Department Process",
+   "options": "Department Process",
    "read_only": 1
   },
   {

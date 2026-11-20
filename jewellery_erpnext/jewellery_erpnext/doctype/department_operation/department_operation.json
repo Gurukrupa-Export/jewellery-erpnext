@@ -13,6 +13,7 @@
 "department",
 "company",
 "manufacturer",
+"department_process",
 "is_last_operation",
 "is_subcontracted",
 "allow_zero_qty_wo",
@@ -214,6 +215,14 @@
 "fieldtype": "Link",
 "label": "Manufacturer",
 "options": "Manufacturer"
+},
+{
+"description": "The process of its department this operation belongs to. Required once the department uses process control.",
+"fieldname": "department_process",
+"fieldtype": "Link",
+"in_standard_filter": 1,
+"label": "Process",
+"options": "Department Process"
 },
 {
 "fieldname": "finding_loss_booking_section",
