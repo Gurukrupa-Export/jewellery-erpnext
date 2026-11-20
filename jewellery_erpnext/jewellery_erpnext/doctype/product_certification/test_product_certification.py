@@ -4088,3 +4088,78 @@ class TestReceivedBatchesCarryOwnerAndRate(IntegrationTestCase):
 			[r.batch_no for r in self._produced(entries)],
 			["B-LATEST-IN-SUPPLIER-WH", "B-LATEST-IN-SUPPLIER-WH"],
 		)
+
+
+def _serial_certification(product_rows, exploded_rows):
+	doc = frappe.new_doc("Product Certification")
+	doc.service_type = "Hall Marking Service"
+	for row in product_rows:
+		doc.append("product_details", row)
+	for row in exploded_rows:
+		doc.append("exploded_product_details", row)
+	return doc
+
+
+class TestOrphanedSerialExplodedRows(IntegrationTestCase):
+	"""Deleting a scanned serial from Product Details removes its exploded row on save."""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def test_deleted_serial_loses_its_exploded_row(self):
+		doc = _serial_certification(
+			[{"item_code": "IT-1", "serial_no": "SN-1"}],
+			[
+				{"item_code": "IT-1", "serial_no": "SN-1", "huid": "H1"},
+				{"item_code": "IT-1", "serial_no": "SN-2", "huid": "H2"},
+			],
+		)
+		doc._remove_orphaned_serial_exploded_rows()
+		self.assertEqual([r.serial_no for r in doc.exploded_product_details], ["SN-1"])
+		# The kept row is the same row, entered values intact.
+		self.assertEqual(doc.exploded_product_details[0].huid, "H1")
+
+	def test_all_rows_deleted_clears_the_table(self):
+		doc = _serial_certification([], [{"item_code": "IT-1", "serial_no": "SN-1"}])
+		doc._remove_orphaned_serial_exploded_rows()
+		self.assertEqual(doc.exploded_product_details, [])
+
+	def test_work_order_rows_match_on_their_order(self):
+		doc = _serial_certification(
+			[{"item_code": "IT-1", "manufacturing_work_order": "MWO-1"}],
+			[
+				{"item_code": "IT-1", "manufacturing_work_order": "MWO-1"},
+				{"item_code": "IT-1", "manufacturing_work_order": "MWO-2"},
+				{"item_code": "IT-1", "parent_manufacturing_order": "PMO-9"},
+			],
+		)
+		doc._remove_orphaned_serial_exploded_rows()
+		self.assertEqual(
+			[r.manufacturing_work_order for r in doc.exploded_product_details],
+			["MWO-1"],
+		)
+
+	def test_blank_field_on_product_row_is_a_wildcard(self):
+		# A partially-filled row keeps every exploded row the builder would treat as its own.
+		doc = _serial_certification(
+			[{"item_code": "IT-1"}],
+			[
+				{"item_code": "IT-1", "serial_no": "SN-1"},
+				{"item_code": "IT-2", "serial_no": "SN-2"},
+			],
+		)
+		doc._remove_orphaned_serial_exploded_rows()
+		self.assertEqual([r.serial_no for r in doc.exploded_product_details], ["SN-1"])
+
+	def test_rows_are_renumbered_after_removal(self):
+		doc = _serial_certification(
+			[{"item_code": "IT-1", "serial_no": "SN-2"}],
+			[
+				{"item_code": "IT-1", "serial_no": "SN-1"},
+				{"item_code": "IT-1", "serial_no": "SN-2"},
+			],
+		)
+		doc._remove_orphaned_serial_exploded_rows()
+		self.assertEqual([r.idx for r in doc.exploded_product_details], [1])
