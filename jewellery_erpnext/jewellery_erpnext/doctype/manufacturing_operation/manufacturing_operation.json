@@ -27,6 +27,7 @@
   "fg_bom",
   "operation",
   "receive_details_type",
+  "receive_detail_fields",
   "tree_number",
   "is_last_operation",
   "type",
@@ -157,6 +158,15 @@
    "options": "Department Operation"
   },
   {
+   "fetch_from": "operation.receive_detail_fields",
+   "fieldname": "receive_detail_fields",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Receive Detail Fields",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
    "fetch_from": "operation.receive_details_type",
    "fieldname": "receive_details_type",
    "fieldtype": "Select",
@@ -279,21 +289,21 @@
    "fieldtype": "Section Break"
   },
   {
-   "depends_on": "eval: doc.receive_details_type == \"CAD\"",
+   "depends_on": "eval: doc.receive_details_type == \"CAD\" && (!doc.receive_detail_fields || doc.receive_detail_fields.split(\",\").includes(\"cad_file\"))",
    "fieldname": "cad_file",
    "fieldtype": "Attach",
    "label": "CAD File",
    "no_copy": 1
   },
   {
-   "depends_on": "eval: doc.receive_details_type == \"CAD\"",
+   "depends_on": "eval: doc.receive_details_type == \"CAD\" && (!doc.receive_detail_fields || doc.receive_detail_fields.split(\",\").includes(\"cad_numbering_file\"))",
    "fieldname": "cad_numbering_file",
    "fieldtype": "Attach",
    "label": "CAD numbering File",
    "no_copy": 1
   },
   {
-   "depends_on": "eval: doc.receive_details_type == \"CAM\"",
+   "depends_on": "eval: doc.receive_details_type == \"CAM\" && (!doc.receive_detail_fields || doc.receive_detail_fields.split(\",\").includes(\"support_cam_file\"))",
    "fieldname": "support_cam_file",
    "fieldtype": "Attach",
    "label": "Support CAM File",
@@ -304,7 +314,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "depends_on": "eval: doc.receive_details_type == \"CAM\" || doc.operation == \"Mould Filling\"",
+   "depends_on": "eval: (doc.receive_details_type == \"CAM\" && (!doc.receive_detail_fields || doc.receive_detail_fields.split(\",\").includes(\"platform_wt\"))) || doc.operation == \"Mould Filling\"",
    "fieldname": "platform_wt",
    "fieldtype": "Float",
    "label": "Platform wt",
@@ -336,7 +346,7 @@
    "precision": "3"
   },
   {
-   "depends_on": "eval: doc.receive_details_type == \"CAD\"",
+   "depends_on": "eval: doc.receive_details_type == \"CAD\" && (!doc.receive_detail_fields || doc.receive_detail_fields.split(\",\").includes(\"estimated_rpt_wt\"))",
    "fieldname": "estimated_rpt_wt",
    "fieldtype": "Float",
    "label": "Estimated RPT WT",
@@ -658,14 +668,14 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval: doc.receive_details_type == \"CAD\"",
+   "depends_on": "eval: doc.receive_details_type == \"CAD\" && (!doc.receive_detail_fields || doc.receive_detail_fields.split(\",\").includes(\"ref_name\"))",
    "fieldname": "ref_name",
    "fieldtype": "Data",
    "label": "Ref Name",
    "no_copy": 1
   },
   {
-   "depends_on": "eval: doc.receive_details_type == \"CAD\"",
+   "depends_on": "eval: doc.receive_details_type == \"CAD\" && (!doc.receive_detail_fields || doc.receive_detail_fields.split(\",\").includes(\"estimated_casting_wt\"))",
    "fieldname": "estimated_casting_wt",
    "fieldtype": "Float",
    "label": "Estimated Casting WT",
@@ -842,7 +852,7 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-11-11 14:30:00.000000",
+ "modified": "2026-11-17 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",

@@ -31,10 +31,14 @@ frappe.ui.form.on("Diamond Conversion", {
 		frm.refresh_field("target_warehouse");
 	},
 });
+// A deleted or duplicated row changes the totals without any qty event. Frappe fires a table's
+// <fieldname>_add / _remove on the CHILD doctype (grid.js, grid_row.js), so they live here.
 frappe.ui.form.on("SC Source Table", {
 	qty: function (frm, cdt, cdn) {
 		calculateSum(frm);
 	},
+	sc_source_table_add: calculateSum,
+	sc_source_table_remove: calculateSum,
 	batch: function (frm, cdt, cdn) {
 		let d = locals[cdt][cdn];
 		if (d.batch) {
@@ -46,6 +50,8 @@ frappe.ui.form.on("SC Target Table", {
 	qty: function (frm, cdt, cdn) {
 		calculateSum(frm);
 	},
+	sc_target_table_add: calculateSum,
+	sc_target_table_remove: calculateSum,
 	// batch:function(frm,cdt,cdn){
 	// 	set_batch_value(frm,cdt,cdn)
 	// }
@@ -123,27 +129,28 @@ function get_detail_tab_value(frm) {
 }
 
 function validate_diamond(frm) {
-	if (flt(frm.doc.sum_source_table, 3) != flt(frm.doc.sum_target_table, 3)) {
-		frappe.throw(__("Source & Target Sum Must be Equal"));
+	// Totalled from the rows, not the stored fields, which a row change may have left behind.
+	// The server holds the same rule (diamond_conversion.validate_source_equals_target).
+	const source = table_total(frm.doc.sc_source_table);
+	const target = table_total(frm.doc.sc_target_table);
+	if (source != target) {
+		frappe.throw(__("Source Qty {0} and Target Qty {1} must be equal.", [source, target]));
 	}
 }
+function table_total(rows) {
+	return flt(
+		(rows || []).reduce((sum, row) => sum + flt(row.qty), 0),
+		3
+	);
+}
 function calculateSum(frm) {
-	if (frm.doc.sc_source_table) {
-		let sum = 0;
-		frm.doc.sc_source_table.forEach(function (row) {
-			sum += flt(row.qty) || 0;
-		});
-		frm.set_value("sum_source_table", flt(sum, 3));
-		frm.refresh_field("sum_source_table");
-	}
-	if (frm.doc.sc_target_table) {
-		let sum = 0;
-		frm.doc.sc_target_table.forEach(function (row) {
-			sum += flt(row.qty) || 0;
-		});
-		frm.set_value("sum_target_table", flt(sum, 3));
-		frm.refresh_field("sum_target_table");
-	}
+	// Gemstone Conversion shares SC Target Table, and child-table handlers are global once this
+	// script has loaded; it has no totals to keep.
+	if (frm.doctype !== "Diamond Conversion") return;
+	frm.set_value({
+		sum_source_table: table_total(frm.doc.sc_source_table),
+		sum_target_table: table_total(frm.doc.sc_target_table),
+	});
 }
 // To Set Batch Bailance and Respective Details into child table
 function set_batch_value(frm, cdt, cdn) {

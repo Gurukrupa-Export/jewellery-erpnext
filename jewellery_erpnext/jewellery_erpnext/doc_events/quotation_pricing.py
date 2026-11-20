@@ -7,6 +7,8 @@ They apply diamond, metal, finding, gemstone pricing based on customer price lis
 """
 import frappe
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import run_cached
+
 
 def _apply_kg_gk_pricing(
 	self,
@@ -182,18 +184,39 @@ def _apply_standard_pricing(
 # --- Diamond pricing helpers ---
 
 
+_DIAMOND_PRICE_MATCH = {
+	"size_in_mm": "size_in_mm = %s",
+	"sieve_size_range": "sieve_size_range = %s",
+	"weight": "%s BETWEEN from_weight AND to_weight",
+}
+
+
+def _latest_diamond_price(customer, price_list_type, match, value):
+	"""The newest Diamond Price List row for a customer, price-list type and size/sieve/weight.
+
+	One query per distinct key for a whole Tracking BOM run (see ``run_cached``) instead of
+	one per diamond row of every Tracking BOM.
+	"""
+	return run_cached(
+		("diamond_price_list", customer, price_list_type, match, value),
+		lambda: frappe.db.sql(
+			f"""
+			SELECT name, from_weight, to_weight, supplier_fg_purchase_rate, rate,
+				outright_handling_charges_rate, outright_handling_charges_in_percentage,
+				outwork_handling_charges_rate, outwork_handling_charges_in_percentage
+			FROM `tabDiamond Price List`
+			WHERE customer = %s AND price_list_type = %s AND {_DIAMOND_PRICE_MATCH[match]}
+			ORDER BY creation DESC LIMIT 1
+		""",
+			(customer, price_list_type, value),
+			as_dict=True,
+		),
+	)
+
+
 def _apply_kg_gk_diamond_size_mm(doc, diamond, price_list_type, customer):
-	entries = frappe.db.sql(
-		"""
-		SELECT name, supplier_fg_purchase_rate, rate,
-			outright_handling_charges_rate, outright_handling_charges_in_percentage,
-			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
-		FROM `tabDiamond Price List`
-		WHERE customer = %s AND price_list_type = %s AND size_in_mm = %s
-		ORDER BY creation DESC LIMIT 1
-	""",
-		(customer, price_list_type, diamond.size_in_mm),
-		as_dict=True,
+	entries = _latest_diamond_price(
+		customer, price_list_type, "size_in_mm", diamond.size_in_mm
 	)
 	if entries:
 		entry = entries[0]
@@ -203,17 +226,8 @@ def _apply_kg_gk_diamond_size_mm(doc, diamond, price_list_type, customer):
 
 
 def _apply_kg_gk_diamond_sieve(doc, diamond, price_list_type, customer):
-	entries = frappe.db.sql(
-		"""
-		SELECT name, supplier_fg_purchase_rate, rate,
-			outright_handling_charges_rate, outright_handling_charges_in_percentage,
-			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
-		FROM `tabDiamond Price List`
-		WHERE customer = %s AND price_list_type = %s AND sieve_size_range = %s
-		ORDER BY creation DESC LIMIT 1
-	""",
-		(customer, price_list_type, diamond.sieve_size_range),
-		as_dict=True,
+	entries = _latest_diamond_price(
+		customer, price_list_type, "sieve_size_range", diamond.sieve_size_range
 	)
 	if entries:
 		entry = entries[0]
@@ -226,17 +240,8 @@ def _apply_kg_gk_diamond_sieve(doc, diamond, price_list_type, customer):
 
 
 def _apply_kg_gk_diamond_weight(doc, diamond, price_list_type, customer):
-	entries = frappe.db.sql(
-		"""
-		SELECT name, from_weight, to_weight, supplier_fg_purchase_rate, rate,
-			outright_handling_charges_rate, outright_handling_charges_in_percentage,
-			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
-		FROM `tabDiamond Price List`
-		WHERE customer = %s AND price_list_type = %s AND %s BETWEEN from_weight AND to_weight
-		ORDER BY creation DESC LIMIT 1
-	""",
-		(customer, price_list_type, diamond.weight_per_pcs),
-		as_dict=True,
+	entries = _latest_diamond_price(
+		customer, price_list_type, "weight", diamond.weight_per_pcs
 	)
 	if entries:
 		entry = entries[0]
@@ -277,17 +282,8 @@ def _apply_handling_charges(diamond, entry, multiplier):
 def _apply_standard_diamond_pricing(doc, diamond, price_list_type, customer=None):
 	"""Weight-based diamond pricing for standard companies."""
 	customer = customer or doc.customer
-	entries = frappe.db.sql(
-		"""
-		SELECT name, from_weight, to_weight, supplier_fg_purchase_rate, rate,
-			outright_handling_charges_rate, outright_handling_charges_in_percentage,
-			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
-		FROM `tabDiamond Price List`
-		WHERE customer = %s AND price_list_type = %s AND %s BETWEEN from_weight AND to_weight
-		ORDER BY creation DESC LIMIT 1
-	""",
-		(customer, price_list_type, diamond.weight_per_pcs),
-		as_dict=True,
+	entries = _latest_diamond_price(
+		customer, price_list_type, "weight", diamond.weight_per_pcs
 	)
 	if entries:
 		entry = entries[0]
@@ -298,17 +294,8 @@ def _apply_standard_diamond_pricing(doc, diamond, price_list_type, customer=None
 
 def _apply_standard_diamond_sieve(doc, diamond, price_list_type, customer=None):
 	customer = customer or doc.customer
-	entries = frappe.db.sql(
-		"""
-		SELECT name, supplier_fg_purchase_rate, rate,
-			outright_handling_charges_rate, outright_handling_charges_in_percentage,
-			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
-		FROM `tabDiamond Price List`
-		WHERE customer = %s AND price_list_type = %s AND sieve_size_range = %s
-		ORDER BY creation DESC LIMIT 1
-	""",
-		(customer, price_list_type, diamond.sieve_size_range),
-		as_dict=True,
+	entries = _latest_diamond_price(
+		customer, price_list_type, "sieve_size_range", diamond.sieve_size_range
 	)
 	if entries:
 		entry = entries[0]
@@ -322,17 +309,8 @@ def _apply_standard_diamond_sieve(doc, diamond, price_list_type, customer=None):
 
 def _apply_standard_diamond_size_mm(doc, diamond, price_list_type, customer=None):
 	customer = customer or doc.customer
-	entries = frappe.db.sql(
-		"""
-		SELECT name, supplier_fg_purchase_rate, rate,
-			outright_handling_charges_rate, outright_handling_charges_in_percentage,
-			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
-		FROM `tabDiamond Price List`
-		WHERE customer = %s AND price_list_type = %s AND size_in_mm = %s
-		ORDER BY creation DESC LIMIT 1
-	""",
-		(customer, price_list_type, diamond.size_in_mm),
-		as_dict=True,
+	entries = _latest_diamond_price(
+		customer, price_list_type, "size_in_mm", diamond.size_in_mm
 	)
 	if entries:
 		entry = entries[0]
@@ -345,6 +323,41 @@ def _apply_standard_diamond_size_mm(doc, diamond, price_list_type, customer=None
 # --- Making charge helpers ---
 
 
+def _making_charge_prices(customer, setting_type, gold_rate=None):
+	"""Making Charge Price names for a customer and setting type, run-cached.
+
+	With ``gold_rate``, only the prices whose gold-rate band holds it. These used to be read
+	for every metal and finding row of every Tracking BOM.
+	"""
+	filters = {"customer": customer, "setting_type": setting_type}
+	if gold_rate is not None:
+		filters["from_gold_rate"] = ["<=", gold_rate]
+		filters["to_gold_rate"] = [">=", gold_rate]
+	return run_cached(
+		("making_charge_price", customer, setting_type, gold_rate),
+		lambda: frappe.get_all("Making Charge Price", filters=filters, fields=["name"]),
+	)
+
+
+def _making_charge_subcategories(price_list_name):
+	"""Item Subcategory rows of one Making Charge Price, run-cached."""
+	return run_cached(
+		("making_charge_price_subcategories", price_list_name),
+		lambda: frappe.get_all(
+			"Making Charge Price Item Subcategory",
+			filters={"parent": price_list_name},
+			fields=[
+				"subcategory",
+				"rate_per_gm",
+				"supplier_fg_purchase_rate",
+				"wastage",
+				"subcontracting_rate",
+				"subcontracting_wastage",
+			],
+		),
+	)
+
+
 def _apply_making_charge_metal(self, doc, metal, customer):
 	"""Apply making charge pricing for metal detail rows."""
 	rate_per_gm = 0
@@ -355,34 +368,11 @@ def _apply_making_charge_metal(self, doc, metal, customer):
 	if self.custom_customer_gold == "Yes":
 		metal.is_customer_item = 1
 
-	making_charge_price_list = frappe.get_all(
-		"Making Charge Price",
-		filters={"customer": customer, "setting_type": doc.setting_type},
-		fields=["name"],
-	)
-	making_charge_price_list_with_gold_rate = frappe.get_all(
-		"Making Charge Price",
-		filters={
-			"customer": customer,
-			"setting_type": doc.setting_type,
-			"from_gold_rate": ["<=", doc.gold_rate_with_gst],
-			"to_gold_rate": [">=", doc.gold_rate_with_gst],
-		},
-		fields=["name"],
-	)
+	making_charge_price_list = _making_charge_prices(customer, doc.setting_type)
 
 	if making_charge_price_list:
-		subcategories = frappe.get_all(
-			"Making Charge Price Item Subcategory",
-			filters={"parent": making_charge_price_list[0]["name"]},
-			fields=[
-				"subcategory",
-				"rate_per_gm",
-				"supplier_fg_purchase_rate",
-				"wastage",
-				"subcontracting_rate",
-				"subcontracting_wastage",
-			],
+		subcategories = _making_charge_subcategories(
+			making_charge_price_list[0]["name"]
 		)
 		if subcategories:
 			match = next(
@@ -426,37 +416,15 @@ def _apply_making_charge_finding(self, doc, find, customer):
 	if self.custom_customer_gold == "Yes":
 		find.is_customer_item = 1
 
-	making_charge_price_list = frappe.get_all(
-		"Making Charge Price",
-		filters={"customer": customer, "setting_type": doc.setting_type},
-		fields=["name"],
-	)
-	making_charge_price_list_with_gold_rate = frappe.get_all(
-		"Making Charge Price",
-		filters={
-			"customer": customer,
-			"setting_type": doc.setting_type,
-			"from_gold_rate": ["<=", doc.gold_rate_with_gst],
-			"to_gold_rate": [">=", doc.gold_rate_with_gst],
-		},
-		fields=["name"],
+	making_charge_price_list = _making_charge_prices(customer, doc.setting_type)
+	making_charge_price_list_with_gold_rate = _making_charge_prices(
+		customer, doc.setting_type, doc.gold_rate_with_gst
 	)
 
 	matching_subcategory = None
 	if making_charge_price_list:
 		price_list_name = making_charge_price_list[0]["name"]
-		subcategories = frappe.get_all(
-			"Making Charge Price Item Subcategory",
-			filters={"parent": price_list_name},
-			fields=[
-				"subcategory",
-				"rate_per_gm",
-				"supplier_fg_purchase_rate",
-				"wastage",
-				"subcontracting_rate",
-				"subcontracting_wastage",
-			],
-		)
+		subcategories = _making_charge_subcategories(price_list_name)
 		if subcategories:
 			matching_subcategory = next(
 				(
@@ -495,30 +463,34 @@ def _apply_making_charge_finding(self, doc, find, customer):
 
 def _apply_gemstone_multiplier(doc, gem, row, customer, price_list_type):
 	"""Apply gemstone multiplier pricing."""
-	query = frappe.db.sql(
-		"""
-		SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
-			gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
-			sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious,
-			sfm.synthetic AS supplier_synthetic
-		FROM `tabGemstone Price List` gpl
-		INNER JOIN `tabGemstone Multiplier` gm
-			ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
-		LEFT JOIN `tabGemstone Multiplier` sfm
-			ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
-		WHERE gpl.customer = %s AND gpl.price_list_type = %s
-		AND gpl.cut_or_cab = %s AND gpl.gemstone_grade = %s
-		ORDER BY gpl.creation DESC LIMIT 1
-	""",
-		(
-			doc.item_category,
-			doc.item_category,
-			customer,
-			price_list_type,
-			gem.cut_or_cab,
-			gem.gemstone_grade,
+	params = (
+		doc.item_category,
+		doc.item_category,
+		customer,
+		price_list_type,
+		gem.cut_or_cab,
+		gem.gemstone_grade,
+	)
+	query = run_cached(
+		("gemstone_multiplier", *params),
+		lambda: frappe.db.sql(
+			"""
+			SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
+				gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
+				sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious,
+				sfm.synthetic AS supplier_synthetic
+			FROM `tabGemstone Price List` gpl
+			INNER JOIN `tabGemstone Multiplier` gm
+				ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
+			LEFT JOIN `tabGemstone Multiplier` sfm
+				ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
+			WHERE gpl.customer = %s AND gpl.price_list_type = %s
+			AND gpl.cut_or_cab = %s AND gpl.gemstone_grade = %s
+			ORDER BY gpl.creation DESC LIMIT 1
+		""",
+			params,
+			as_dict=True,
 		),
-		as_dict=True,
 	)
 
 	if query:

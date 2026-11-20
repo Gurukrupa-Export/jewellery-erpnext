@@ -25,6 +25,7 @@
   "section_break_pk7m5",
   "operation",
   "receive_details_type",
+  "receive_detail_fields",
   "department_process",
   "employee",
   "is_repeat_receive",
@@ -162,6 +163,15 @@
    "label": "Operation",
    "options": "Department Operation",
    "reqd": 1
+  },
+  {
+   "fetch_from": "operation.receive_detail_fields",
+   "fieldname": "receive_detail_fields",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Receive Detail Fields",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fetch_from": "operation.receive_details_type",
@@ -475,7 +485,7 @@
    "link_fieldname": "employee_ir"
   }
  ],
- "modified": "2026-11-12 12:00:00.000000",
+ "modified": "2026-11-17 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR",
