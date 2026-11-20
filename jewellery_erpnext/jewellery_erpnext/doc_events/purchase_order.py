@@ -483,6 +483,10 @@ def make_subcontracting_order(doc):
 					"qty": row.subcontracting_qty,
 					"manufacturing_bom": row.manufacturing_bom,
 					"custom_copy_bom": row.copy_bom,
+					# Repairs: the serial and its own BOM travel with the PO so the job
+					# worker can unpack it.
+					"serial_no": row.get("serial_no"),
+					"custom_serial_id_bom": row.get("serial_id_bom"),
 					"diamond_quality": row.diamond_quality,
 					"custom_manufacturing_plan": doc.name,
 					"custom_m_plan_details": row.name,
@@ -503,6 +507,8 @@ def make_subcontracting_order(doc):
 					# item_code here is the generic service item; this is the Copy BOM of fg_item,
 					# the thing actually being made.
 					"custom_copy_bom": row.copy_bom,
+					"serial_no": row.get("serial_no"),
+					"custom_serial_id_bom": row.get("serial_id_bom"),
 					"schedule_date": row.estimated_delivery_date,
 					"custom_child_po_no": row.child_po,
 					"custom_m_plan_details": row.name,
