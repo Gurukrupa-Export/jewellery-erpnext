@@ -236,7 +236,20 @@ class TestPurchaseInvoiceRate(IntegrationTestCase):
 
 	def test_job_work_row_takes_kggk_invoice_amount(self):
 		row = self._row()
-		with patch.object(frappe.db, "sql", return_value=[(1234.5,)]):
+		real_sql = frappe.db.sql
+
+		def _sql(query, *args, **kwargs):
+			# Only the KGGK Sales Invoice lookup; every other read reaches the real DB.
+			if "tabSales Invoice Item" in query:
+				return [(1234.5,)]
+			return real_sql(query, *args, **kwargs)
+
+		# flt(value, precision) rounds via System Settings' rounding_method, a DB/cache read.
+		# On CI's fresh test_site that read raised under the blanket sql mock and flt swallowed
+		# it into 0.0. Pin a valid method so the rounding is deterministic.
+		with patch.object(frappe.db, "sql", side_effect=_sql), patch.object(
+			frappe, "get_system_settings", return_value="Banker's Rounding (legacy)"
+		):
 			purchase_invoice.update_rate_from_sales_invoice(_Doc(items=[row]), {"PO-1"})
 		self.assertEqual((row.rate, row.amount), (1234.5, 1234.5))
 
