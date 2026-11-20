@@ -14,7 +14,7 @@ def before_validate(doc, method=None):
 	"""Job-work invoices only: rows billed against a Purchase Order raised by an Employee IR
 	(KGGK subcontracting) take KGGK's Sales Invoice amount and the purchase-type expense
 	account. Every other Purchase Invoice is left exactly as before."""
-	if doc.docstatus != 0 or doc.is_return:
+	if doc.get("docstatus") != 0 or doc.get("is_return"):
 		return
 	job_work_pos = _get_job_work_purchase_orders(doc)
 	if not job_work_pos:

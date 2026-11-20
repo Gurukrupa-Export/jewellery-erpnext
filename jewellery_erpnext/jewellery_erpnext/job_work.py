@@ -32,11 +32,11 @@ def is_job_work_order(mwo):
 
 def _job_work_mwos(doc):
 	"""Job-work Manufacturing Work Orders a Customer Goods Issue returns material for."""
-	if doc.stock_entry_type != "Customer Goods Issue":
+	if doc.get("stock_entry_type") != "Customer Goods Issue":
 		return []
 	mwos = {
 		row.custom_manufacturing_work_order
-		for row in doc.items
+		for row in doc.get("items") or []
 		if row.get("custom_manufacturing_work_order")
 	}
 	return [mwo for mwo in mwos if is_job_work_order(mwo)]
@@ -65,7 +65,7 @@ def validate_job_work_purchase_invoice(doc):
 	submit, so a Receive can still be drafted while the invoice is pending, and every work
 	order on the Receive is checked against the Issue that sent it out.
 	"""
-	if doc.type != "Receive" or doc.subcontracting != "Yes":
+	if doc.get("type") != "Receive" or doc.get("subcontracting") != "Yes":
 		return
 	if not frappe.db.exists("Company", {"supplier_code": doc.subcontractor}):
 		return
@@ -145,7 +145,7 @@ def add_job_work_additional_costs(doc):
 	being counted twice. The description records the Purchase Invoice, the KGGK Sales
 	Invoice, the PMO and the MWO.
 	"""
-	if doc.docstatus != 0 or doc.stock_entry_type != "Manufacture":
+	if doc.get("docstatus") != 0 or doc.get("stock_entry_type") != "Manufacture":
 		return
 	pmo = doc.get("manufacturing_order")
 	if not pmo:

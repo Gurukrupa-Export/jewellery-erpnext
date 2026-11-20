@@ -2,10 +2,11 @@
 
 Sales Order Item (KGGK, spec step 8)
 	``custom_parent_manufacturing_order`` -- the KGGK PMO each Subcontracting Income row bills.
+	``custom_design_code`` -- the design (FG item) that row bills job work for.
 
 Sales Invoice Item (KGGK, spec step 14)
-	``custom_parent_manufacturing_order`` -- the KGGK PMO the row bills. Same fieldname as on
-	Sales Order Item, so ERPNext's Sales Order -> Sales Invoice mapping copies it on its own.
+	``custom_parent_manufacturing_order`` and ``custom_design_code`` -- same fieldnames as on
+	Sales Order Item, so ERPNext's Sales Order -> Sales Invoice mapping copies them on its own.
 	``custom_job_work_mwo`` -- Gurukrupa's Manufacturing Work Order the job work was for.
 
 Landed Cost Taxes and Charges (Stock Entry Additional Costs, Gurukrupa, spec step 15)
@@ -45,6 +46,17 @@ FIELDS = {
 			"insert_after": "delivery_date",
 			"read_only": 1,
 		},
+		{
+			# The design (FG item) a Subcontracting Income row bills job work for. The row's own
+			# item is the service item, so without this the order does not show which design.
+			"fieldname": "custom_design_code",
+			"label": "Design Code",
+			"fieldtype": "Link",
+			"options": "Item",
+			"insert_after": "item_code",
+			"read_only": 1,
+			"in_list_view": 1,
+		},
 	],
 	"Sales Invoice Item": [
 		{
@@ -54,6 +66,16 @@ FIELDS = {
 			"options": "Parent Manufacturing Order",
 			"insert_after": "sales_order",
 			"read_only": 1,
+		},
+		{
+			# Same fieldname as on Sales Order Item, so the invoice row carries the design too.
+			"fieldname": "custom_design_code",
+			"label": "Design Code",
+			"fieldtype": "Link",
+			"options": "Item",
+			"insert_after": "item_code",
+			"read_only": 1,
+			"in_list_view": 1,
 		},
 		{
 			"fieldname": "custom_job_work_mwo",
