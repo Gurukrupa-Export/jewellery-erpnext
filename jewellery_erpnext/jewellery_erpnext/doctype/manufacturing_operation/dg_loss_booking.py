@@ -981,14 +981,26 @@ def rebuild_used_up_reservation(sre_name, se_name):
 # ---------------------------------------------------------------------------
 
 
-def _check_permission():
-	frappe.has_permission("Stock Entry", "create", throw=True)
+def has_booking_permission(manufacturing_operation, throw=False):
+	"""Create Stock Entries, and read this operation.
+
+	The entries are inserted with ``ignore_permissions`` and the operation's balance is read
+	through ``frappe.db``, so the operation's own permission -- which carries the user's
+	Department / Company user permissions -- is what keeps a user to the operations they may
+	see. Without it, anyone able to create a Stock Entry could read the balance of, and book
+	loss on, any operation by calling the method directly.
+	"""
+	return frappe.has_permission(
+		"Stock Entry", "create", throw=throw
+	) and frappe.has_permission(
+		"Manufacturing Operation", "read", doc=manufacturing_operation, throw=throw
+	)
 
 
 @frappe.whitelist()
 def can_book_loss(manufacturing_operation):
 	"""Whether the operation's form shows the Book Loss of Diamond/Gemstone button."""
-	if not frappe.has_permission("Stock Entry", "create"):
+	if not has_booking_permission(manufacturing_operation):
 		return False
 	mop = get_operation(manufacturing_operation)
 	return get_operation_block_reason(mop) is None
@@ -997,7 +1009,7 @@ def can_book_loss(manufacturing_operation):
 @frappe.whitelist()
 def get_loss_booking_context(manufacturing_operation):
 	"""What the dialog shows: the diamond / gemstone balance, the Loss Types and the employees."""
-	_check_permission()
+	has_booking_permission(manufacturing_operation, throw=True)
 	mop = get_operation(manufacturing_operation)
 	reason = get_operation_block_reason(mop)
 	if reason:
@@ -1049,7 +1061,7 @@ def get_loss_booking_context(manufacturing_operation):
 @frappe.whitelist(methods=["POST"])
 def book_loss(manufacturing_operation, rows):
 	"""Book the dialog rows as Process Loss Stock Entries, all in this request."""
-	_check_permission()
+	has_booking_permission(manufacturing_operation, throw=True)
 	mop = get_operation(manufacturing_operation)
 	reason = get_operation_block_reason(mop)
 	if reason:

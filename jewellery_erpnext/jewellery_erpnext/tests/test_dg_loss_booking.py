@@ -917,6 +917,55 @@ class TestPreviousMarkers(_NoDB):
 		restored.submit.assert_called_once()
 
 
+class TestBookingPermission(_NoDB):
+	"""Stock Entry create alone is not enough: the user must also read the operation."""
+
+	def _perm(self, se_create=True, mop_read=True):
+		calls = []
+
+		def has_permission(doctype, ptype="read", doc=None, throw=False, **kwargs):
+			calls.append((doctype, ptype, doc))
+			allowed = se_create if doctype == "Stock Entry" else mop_read
+			if not allowed and throw:
+				raise frappe.PermissionError(doctype)
+			return allowed
+
+		return patch(f"{MOD}.frappe.has_permission", side_effect=has_permission), calls
+
+	def test_operation_read_checked_on_the_operation_itself(self):
+		perm, calls = self._perm()
+		with perm:
+			self.assertTrue(mlb.has_booking_permission("MOP-1"))
+		self.assertIn(("Stock Entry", "create", None), calls)
+		self.assertIn(("Manufacturing Operation", "read", "MOP-1"), calls)
+
+	def test_button_hidden_without_operation_read(self):
+		perm, _calls = self._perm(mop_read=False)
+		with perm, patch(f"{MOD}.get_operation") as get_operation:
+			self.assertFalse(mlb.can_book_loss("MOP-1"))
+		get_operation.assert_not_called()
+
+	def test_context_refused_without_operation_read(self):
+		perm, _calls = self._perm(mop_read=False)
+		with perm, patch(f"{MOD}.get_operation") as get_operation:
+			self.assertRaises(
+				frappe.PermissionError, mlb.get_loss_booking_context, "MOP-1"
+			)
+		get_operation.assert_not_called()
+
+	def test_booking_refused_without_operation_read(self):
+		perm, _calls = self._perm(mop_read=False)
+		with perm, patch(f"{MOD}.book") as book:
+			self.assertRaises(frappe.PermissionError, mlb.book_loss, "MOP-1", "[]")
+		book.assert_not_called()
+
+	def test_booking_refused_without_stock_entry_create(self):
+		perm, _calls = self._perm(se_create=False)
+		with perm, patch(f"{MOD}.book") as book:
+			self.assertRaises(frappe.PermissionError, mlb.book_loss, "MOP-1", "[]")
+		book.assert_not_called()
+
+
 class TestOwnerLabel(_NoDB):
 	def test_employee_ir_wording_unchanged_for_stand_ins(self):
 		self.assertEqual(

@@ -130,9 +130,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 		if (frm.is_new() || !frm.doc.department || !frm.doc.manufacturing_work_order) {
 			return;
 		}
-		if (["Finished", "Revert", "Hold"].includes(frm.doc.status)) {
-			return;
-		}
+		// The closed statuses are decided by can_book_loss alone (CLOSED_STATUSES), so the
+		// list lives in one place.
 		frappe
 			.call({
 				method: MOP_LOSS_BOOKING_METHOD + ".can_book_loss",
