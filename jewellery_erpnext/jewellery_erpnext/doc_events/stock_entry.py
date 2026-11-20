@@ -29,6 +29,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.serial_ownership im
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
+from jewellery_erpnext.jewellery_erpnext.job_work import (
+	add_job_work_additional_costs,
+	complete_job_work_mwo,
+)
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	lock_bins_for_rows,
 	lock_items,
@@ -131,6 +135,11 @@ def set_target_inventory_dimensions(self, method=None):
 
 def before_validate(self, method):
 	validate_ir(self)
+
+	if self.stock_entry_type == "Customer Goods Issue":
+		self.flags.throw_batch_error = True
+	add_job_work_additional_costs(self)
+
 	if self.docstatus == 0:
 		# FIFO batch allocation now runs automatically for every draft (incl.
 		# brand-new / unsaved docs) — this replaces the old "Get FIFO Batches"
@@ -963,6 +972,7 @@ def _throw_warehouse_mismatch(row, label, expected, actual):
 
 
 def on_cancel(self, method=None):
+	complete_job_work_mwo(self, cancel=True)
 	update_manufacturing_operation(self, True)
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
 	release_material_request_links(self)
@@ -1072,6 +1082,7 @@ def before_submit(self, method):
 
 def onsubmit(self, method):
 	validate_items(self)
+	complete_job_work_mwo(self)
 	# Hard skip reservation logic for Product Certification Receive
 	# (Fire Assy Service / XRF Services), regardless of reservation settings.
 	pc_name = getattr(self, "product_certification", None)
