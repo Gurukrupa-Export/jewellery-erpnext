@@ -122,6 +122,30 @@ frappe.ui.form.on("Manufacturing Operation", {
 		if (["Draft", "WIP", "Not Started"].includes(frm.doc.status) && frm.doc.manufacturing_work_order) {
 			frm.trigger("setup_buttons");
 		}
+		frm.trigger("setup_loss_booking_button");
+	},
+	// Shown when the department has "Enable Loss Booking for Diamond/Gemstone" ticked and the
+	// operation is still the work order's current one (the server decides both).
+	setup_loss_booking_button(frm) {
+		if (frm.is_new() || !frm.doc.department || !frm.doc.manufacturing_work_order) {
+			return;
+		}
+		if (["Finished", "Revert", "Hold"].includes(frm.doc.status)) {
+			return;
+		}
+		frappe
+			.call({
+				method: MOP_LOSS_BOOKING_METHOD + ".can_book_loss",
+				args: { manufacturing_operation: frm.doc.name },
+			})
+			.then((r) => {
+				if (!r.message) {
+					return;
+				}
+				frm.add_custom_button(__("Book Loss of Diamond/Gemstone"), () =>
+					open_dg_loss_booking_dialog(frm)
+				);
+			});
 	},
 	setup(frm) {
 		frm.set_query("item_code", "loss_details", function (doc, cdt, cdn) {
@@ -355,6 +379,282 @@ frappe.ui.form.on("Manufacturing Operation", {
 		}).addClass("btn-primary");
 	},
 });
+
+const MOP_LOSS_BOOKING_METHOD =
+	"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.dg_loss_booking";
+
+// "Book Loss of Diamond/Gemstone": lists the operation's diamond / gemstone balance, takes a
+// Loss Type, Loss Qty, Loss PCS and Employee per row, and books the filled rows as Process Loss
+// Stock Entries (one per employee), reducing the reservation and the operation's balance. The
+// server re-checks everything.
+function open_dg_loss_booking_dialog(frm) {
+	frappe
+		.call({
+			method: MOP_LOSS_BOOKING_METHOD + ".get_loss_booking_context",
+			args: { manufacturing_operation: frm.doc.name },
+			freeze: true,
+			freeze_message: __("Loading diamond / gemstone balance..."),
+		})
+		.then((r) => {
+			const ctx = r.message || {};
+			const rows = ctx.rows || [];
+			const loss_types = ctx.loss_types || [];
+			const employees = ctx.employees || [];
+			if (!rows.length) {
+				frappe.msgprint(
+					__("No diamond or gemstone balance is left on this Manufacturing Operation.")
+				);
+				return;
+			}
+			if (!loss_types.length) {
+				frappe.msgprint(
+					__(
+						"No Loss Type has a Destination Warehouse Type yet. Set one on the Loss Type master first."
+					)
+				);
+				return;
+			}
+			if (!employees.length) {
+				frappe.msgprint(
+					__(
+						"No employee has worked this operation's work order in department {0}, so there is no one to book the loss against.",
+						[ctx.department]
+					)
+				);
+				return;
+			}
+
+			const allowed = employees.map((e) => e.value);
+			const data = rows.map((e) => ({
+				item_code: e.item_code,
+				batch_no: e.batch_no,
+				variant_of: e.variant_of,
+				stock_uom: e.stock_uom,
+				available_qty: e.available_qty,
+				available_pcs: e.available_pcs,
+				loss_type: "",
+				loss_qty: 0,
+				loss_pcs: 0,
+				employee: ctx.default_employee || "",
+			}));
+
+			const d = new frappe.ui.Dialog({
+				title: __("Book Loss of Diamond/Gemstone"),
+				size: "extra-large",
+				fields: [
+					{
+						fieldtype: "HTML",
+						fieldname: "help",
+						options: `<p class="text-muted small">${__(
+							"Fill Loss Type, Loss Qty, Loss PCS and Employee on the rows to book. Rows left at 0 Loss Qty are skipped."
+						)}</p>`,
+					},
+					{
+						fieldname: "loss_rows",
+						fieldtype: "Table",
+						label: __("Diamond / Gemstone"),
+						cannot_add_rows: 1,
+						cannot_delete_rows: 1,
+						data: data,
+						get_data: () => data,
+						fields: [
+							{
+								label: __("Item Code"),
+								fieldtype: "Link",
+								fieldname: "item_code",
+								options: "Item",
+								read_only: 1,
+								in_list_view: 1,
+								columns: 2,
+							},
+							{
+								label: __("Batch No"),
+								fieldtype: "Link",
+								fieldname: "batch_no",
+								options: "Batch",
+								read_only: 1,
+								in_list_view: 1,
+								columns: 2,
+							},
+							{
+								label: __("Available Qty"),
+								fieldtype: "Float",
+								fieldname: "available_qty",
+								precision: 3,
+								read_only: 1,
+								in_list_view: 1,
+								columns: 1,
+							},
+							{
+								label: __("Available PCS"),
+								fieldtype: "Int",
+								fieldname: "available_pcs",
+								read_only: 1,
+								in_list_view: 1,
+								columns: 1,
+							},
+							{
+								label: __("Loss Type"),
+								fieldtype: "Select",
+								fieldname: "loss_type",
+								options: [""].concat(loss_types).join("\n"),
+								in_list_view: 1,
+								columns: 1,
+							},
+							{
+								label: __("Loss Qty"),
+								fieldtype: "Float",
+								fieldname: "loss_qty",
+								precision: 3,
+								in_list_view: 1,
+								columns: 1,
+							},
+							{
+								label: __("Loss PCS"),
+								fieldtype: "Int",
+								fieldname: "loss_pcs",
+								in_list_view: 1,
+								columns: 1,
+							},
+							{
+								label: __("Employee"),
+								fieldtype: "Link",
+								fieldname: "employee",
+								options: "Employee",
+								in_list_view: 1,
+								columns: 1,
+								get_query: () => ({ filters: { name: ["in", allowed] } }),
+							},
+							{
+								label: __("Variant Of"),
+								fieldtype: "Data",
+								fieldname: "variant_of",
+								read_only: 1,
+							},
+							{
+								label: __("Stock UOM"),
+								fieldtype: "Data",
+								fieldname: "stock_uom",
+								read_only: 1,
+							},
+						],
+					},
+				],
+				primary_action_label: __("Book Loss"),
+				primary_action: (values) => {
+					const selected = [];
+					const problems = [];
+					(values.loss_rows || []).forEach((e) => {
+						const qty = flt(e.loss_qty, 3);
+						const pcs = cint(e.loss_pcs);
+						const label = __("Row {0} ({1})", [e.idx, e.item_code]);
+						if (!(qty > 0)) {
+							if (e.loss_type || pcs) {
+								problems.push(__("{0}: enter a Loss Qty, or clear the row.", [label]));
+							}
+							return;
+						}
+						if (!e.loss_type) {
+							problems.push(__("{0}: select a Loss Type.", [label]));
+						}
+						if (qty > flt(e.available_qty, 3)) {
+							problems.push(
+								__("{0}: Loss Qty {1} exceeds the available qty {2}.", [
+									label,
+									qty,
+									e.available_qty,
+								])
+							);
+						}
+						if (cint(e.available_pcs) > 0) {
+							if (pcs < 1) {
+								problems.push(__("{0}: enter the Loss PCS.", [label]));
+							} else if (pcs > cint(e.available_pcs)) {
+								problems.push(
+									__("{0}: Loss PCS {1} exceeds the available PCS {2}.", [
+										label,
+										pcs,
+										e.available_pcs,
+									])
+								);
+							}
+						} else if (pcs > 0) {
+							problems.push(
+								__("{0}: no PCS are left on this batch, so Loss PCS must be 0.", [label])
+							);
+						}
+						if (!e.employee) {
+							problems.push(__("{0}: select the Employee.", [label]));
+						} else if (!allowed.includes(e.employee)) {
+							problems.push(
+								__("{0}: Employee {1} has not worked this work order in this department.", [
+									label,
+									e.employee,
+								])
+							);
+						}
+						selected.push({
+							item_code: e.item_code,
+							batch_no: e.batch_no,
+							loss_type: e.loss_type,
+							loss_qty: qty,
+							loss_pcs: pcs,
+							employee: e.employee,
+						});
+					});
+
+					if (problems.length) {
+						frappe.msgprint({
+							title: __("Loss Booking"),
+							indicator: "red",
+							message: problems.join("<br>"),
+						});
+						return;
+					}
+					if (!selected.length) {
+						frappe.msgprint(__("Enter a Loss Qty on at least one row."));
+						return;
+					}
+
+					// Disabled until the call returns, so a double click books once.
+					d.disable_primary_action();
+					frappe.call({
+						method: MOP_LOSS_BOOKING_METHOD + ".book_loss",
+						type: "POST",
+						args: {
+							manufacturing_operation: frm.doc.name,
+							rows: selected,
+						},
+						freeze: true,
+						freeze_message: __("Booking loss..."),
+						callback: (resp) => {
+							const res = resp && resp.message;
+							if (!res) {
+								d.enable_primary_action();
+								return;
+							}
+							d.hide();
+							const links = (res.stock_entries || [])
+								.map((se) => frappe.utils.get_form_link("Stock Entry", se, true))
+								.join("<br>");
+							frappe.msgprint({
+								title: __("Loss Booked"),
+								indicator: "green",
+								message: links,
+							});
+							frm.reload_doc();
+						},
+						error: () => {
+							d.enable_primary_action();
+						},
+					});
+				},
+			});
+
+			d.get_field("loss_rows").grid.wrapper.find(".grid-row-check").hide();
+			d.show();
+		});
+}
 
 // Shared dialog body for the "Make Receive Entry" and "Receive Unused/Loose Material"
 // buttons. Both fetch auto-filled rows from the MWO's Stock Reservation
