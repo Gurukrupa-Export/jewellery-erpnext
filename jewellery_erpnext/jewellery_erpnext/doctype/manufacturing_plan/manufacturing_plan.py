@@ -6,9 +6,11 @@ import json
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, flt
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import refetch_fg_purchase_rate
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
+	refetch_fg_purchase_rate,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import (
 	make_subcontracting_order,
 )
@@ -146,6 +148,8 @@ class ManufacturingPlan(Document):
 			self.fetch_fg_purchase_rate()
 			create_subcontracting_order(self)
 
+		self.create_employee_ir_sales_orders()
+
 	def fetch_fg_purchase_rate(self):
 		"""Fetch supplier FG purchase rates into the Manufacturing BOMs before the Purchase Order
 		reads them.
@@ -161,6 +165,147 @@ class ManufacturingPlan(Document):
 			row.manufacturing_bom
 			for row in self.manufacturing_plan_table
 			if row.subcontracting and row.manufacturing_bom
+		)
+
+	def create_employee_ir_sales_orders(self):
+		"""
+		Create a new Sales Order for items linked to Purchase Orders created by Employee IR.
+		Groups items by Sales Order so that only one Sales Order is created per Sales Order.
+		"""
+		so_map = {}
+		for row in self.manufacturing_plan_table:
+			if row.sales_order and row.docname:
+				if row.sales_order not in so_map:
+					so_map[row.sales_order] = set()
+				so_map[row.sales_order].add(row.docname)
+
+		if not so_map:
+			return
+
+		for so_name, so_item_names in so_map.items():
+			self.process_so_for_employee_ir(so_name, list(so_item_names))
+
+	def process_so_for_employee_ir(self, so_name, so_item_names):
+		# Fetch the original Sales Order Items that are in this Manufacturing Plan
+		so_items_in_mp = frappe.get_all(
+			"Sales Order Item",
+			filters={"name": ["in", so_item_names]},
+			fields=["name", "po_no"],
+		)
+
+		po_nos = [qi.po_no for qi in so_items_in_mp if qi.po_no]
+
+		# Check which Purchase Orders are created by Employee IR
+		valid_pos = set()
+		if po_nos:
+			valid_pos = set(
+				frappe.get_all(
+					"Purchase Order",
+					filters={"name": ["in", po_nos], "employee_ir": ["!=", ""]},
+					pluck="name",
+				)
+			)
+
+		# Check if at least one item meets the Employee IR condition
+		has_employee_ir = any(qi.po_no in valid_pos for qi in so_items_in_mp)
+		if not has_employee_ir:
+			return
+
+		# Idempotency check: verify if a Sales Order is already created for this plan and items
+		existing_so = frappe.db.sql(
+			"""
+			SELECT soi.parent
+			FROM `tabSales Order Item` soi
+			JOIN `tabParent Manufacturing Order` pmo ON pmo.name = soi.custom_parent_manufacturing_order
+			JOIN `tabSales Order` so ON so.name = soi.parent
+			WHERE pmo.manufacturing_plan = %s
+			AND pmo.sales_order_item IN %s
+			AND so.docstatus < 2
+			LIMIT 1
+		""",
+			(self.name, tuple(so_item_names)),
+		)
+		if existing_so:
+			return
+
+		# Fetch the parent Sales Order
+		parent_so = frappe.get_doc("Sales Order", so_name)
+
+		# Create a single new Sales Order
+		new_so = frappe.new_doc("Sales Order")
+		new_so.customer = parent_so.customer
+		new_so.company = parent_so.company
+		# Same company and customer as the FG Sales Order, so the same branch and addresses.
+		# Explicitly copied (an empty branch as ""): left unset, new_doc fills the submitting
+		# user's default Branch, which on this shared site can be a Gurukrupa branch -- and
+		# the Sales Order then takes that branch's Gurukrupa address as KGGK's company address.
+		new_so.branch = parent_so.get("branch") or ""
+		for field in ("company_address", "customer_address", "shipping_address_name"):
+			if parent_so.get(field):
+				new_so.set(field, parent_so.get(field))
+		new_so.currency = parent_so.currency
+		# "Subcontracting", not "Hybrid": a Hybrid invoice reads every row's BOM on submit to
+		# split out making charges, and this order bills a service row that has no BOM.
+		new_so.sales_type = "Subcontracting"
+		new_so.transaction_date = frappe.utils.nowdate()
+		new_so.delivery_date = frappe.utils.add_days(new_so.transaction_date, 7)
+
+		# Append a row for only the intended items in the Sales Order
+		for so_item in parent_so.items:
+			if so_item.name not in so_item_names:
+				continue
+			if so_item.po_no not in valid_pos:
+				continue
+
+			pmo_name = frappe.db.get_value(
+				"Parent Manufacturing Order",
+				{"manufacturing_plan": self.name, "sales_order_item": so_item.name},
+				"name",
+			)
+
+			rate = get_job_work_rate(so_item)
+			new_so.append(
+				"items",
+				{
+					"item_code": "Subcontracting Income",
+					"custom_design_code": so_item.item_code,
+					"qty": so_item.qty,
+					"rate": rate,
+					"delivery_date": new_so.delivery_date,
+					# No copy_bom / custom_tracking_bom: this row bills the job-work service,
+					# not the design (the PMO stays on the FG Sales Order). A Tracking BOM here
+					# makes the Sales Order reset the rate to the BOM total on save, replacing
+					# the supplier price-list rate above.
+					"diamond_quality": getattr(so_item, "diamond_quality", None),
+					"custom_parent_manufacturing_order": pmo_name,
+					"po_no": so_item.po_no,
+					"custom_po_details": so_item.custom_po_details,
+				},
+			)
+
+		# Calculate totals and save
+		new_so.set_missing_values()
+		new_so.calculate_taxes_and_totals()
+		new_so.insert(ignore_permissions=True)
+		new_so.submit()
+
+		# Link every Parent Manufacturing Order with the corresponding new Sales Order and Item row
+		# for idx, so_item in enumerate(parent_so.items):
+		# 	new_so_item_name = new_so.items[idx].name
+		# 	frappe.db.sql(
+		# 		"""
+		# 		UPDATE `tabParent Manufacturing Order`
+		# 		SET sales_order = %s, sales_order_item = %s
+		# 		WHERE manufacturing_plan = %s AND sales_order_item = %s
+		# 		""",
+		# 		(new_so.name, new_so_item_name, self.name, so_item.name)
+		# 	)
+
+		frappe.msgprint(
+			_("Successfully created Employee IR Sales Order: {0}").format(
+				f"<a href='/app/sales-order/{new_so.name}'>{new_so.name}</a>"
+			),
+			alert=True,
 		)
 
 	def validate(self):
@@ -896,3 +1041,46 @@ def create_cad_mwo_bulk(manufacturing_plan, item_codes, reason=None):
 			_("Could not create CAD MWO for: {0}").format(", ".join(failed)),
 			indicator="red",
 		)
+
+
+def get_job_work_rate(so_item):
+	"""Subcontracting Income rate for one job-work row, from the supplier price list.
+
+	The supplier is the one on the Purchase Order the row came from (KGGK as Gurukrupa's
+	supplier), and the price is that supplier's Supplier Services Price for the design's
+	Item Subcategory -- the same price list Gurukrupa buys the service at. A missing price
+	stops the Manufacturing Plan instead of submitting a zero-rate Sales Order.
+	"""
+	supplier = frappe.db.get_value("Purchase Order", so_item.po_no, "supplier")
+	item_subcategory = frappe.db.get_value(
+		"Item", so_item.item_code, "item_subcategory"
+	)
+	rate = None
+	if supplier and item_subcategory:
+		rate = frappe.db.sql(
+			"""
+			SELECT child.supplier_fg_purchase_rate
+			FROM `tabSupplier Services Price` parent
+			JOIN `tabSupplier Services Price Item Subcategory` child
+				ON child.parent = parent.name
+			WHERE parent.supplier = %s AND child.sub_category = %s
+			ORDER BY parent.modified DESC
+			LIMIT 1
+			""",
+			(supplier, item_subcategory),
+		)
+	rate = flt(rate[0][0]) if rate else 0
+	if not rate:
+		frappe.throw(
+			_(
+				"Set Supplier FG Purchase Rate for Item Subcategory {0} in the Supplier Services "
+				"Price of supplier {1} (Purchase Order {2}, design {3})."
+			).format(
+				frappe.bold(item_subcategory or _("(none on the Item)")),
+				frappe.bold(supplier or "-"),
+				so_item.po_no,
+				so_item.item_code,
+			),
+			title=_("Job work rate missing"),
+		)
+	return rate

@@ -10,8 +10,17 @@ class CustomPurchaseInvoice(ERPNextPurchaseInvoice):
 		pass
 
 
-def before_validate(self):
-	update_expense_account(self)
+def before_validate(doc, method=None):
+	"""Job-work invoices only: rows billed against a Purchase Order raised by an Employee IR
+	(KGGK subcontracting) take KGGK's Sales Invoice amount and the purchase-type expense
+	account. Every other Purchase Invoice is left exactly as before."""
+	if doc.get("docstatus") != 0 or doc.get("is_return"):
+		return
+	job_work_pos = _get_job_work_purchase_orders(doc)
+	if not job_work_pos:
+		return
+	update_expense_account(doc)
+	update_rate_from_sales_invoice(doc, job_work_pos)
 
 
 def validate(self, method=None):
@@ -83,15 +92,60 @@ def _get_rcm_base_account_head(account_head):
 	return f"{account_name[: -len(' RCM')]} - {abbr}"
 
 
-def update_expense_account(self):
-	if self.is_opening == "No":
+def _get_job_work_purchase_orders(doc):
+	po_names = {row.purchase_order for row in doc.items if row.get("purchase_order")}
+	if not po_names:
+		return set()
+	return set(
+		frappe.get_all(
+			"Purchase Order",
+			filters={"name": ["in", list(po_names)], "employee_ir": ["is", "set"]},
+			pluck="name",
+		)
+	)
+
+
+def update_rate_from_sales_invoice(doc, job_work_pos):
+	"""Bill each job-work row at the amount KGGK invoiced for it.
+
+	The chain is one-to-one per Purchase Order row: make_quotation stamps the PO row name on
+	the Quotation row as ``custom_po_details``, it rides to the Subcontracting Income Sales
+	Order row, and that row is invoiced once. The row's *amount* is taken (not its rate)
+	because the PO row is qty 1 per operation while the Sales Order row carries the PMO qty.
+	Only submitted Sales Invoices count, so a KGGK draft never changes what Gurukrupa pays.
+	"""
+	for row in doc.items:
+		if row.get("purchase_order") not in job_work_pos or not row.get("po_detail"):
+			continue
+		si_amount = frappe.db.sql(
+			"""
+			SELECT sii.amount
+			FROM `tabSales Invoice Item` sii
+			JOIN `tabSales Invoice` si ON si.name = sii.parent
+			JOIN `tabSales Order Item` soi ON soi.name = sii.so_detail
+			WHERE soi.custom_po_details = %s
+				AND soi.item_code = 'Subcontracting Income'
+				AND si.docstatus = 1
+				AND si.is_return = 0
+			ORDER BY si.posting_date DESC, si.creation DESC
+			LIMIT 1
+			""",
+			(row.po_detail,),
+		)
+		if si_amount and flt(row.qty):
+			row.rate = flt(flt(si_amount[0][0]) / flt(row.qty), row.precision("rate"))
+			row.amount = flt(row.rate * flt(row.qty), row.precision("amount"))
+
+
+def update_expense_account(doc):
+	if doc.is_opening == "No":
 		expense_account = frappe.db.get_value(
 			"Account",
-			{"company": self.company, "custom_purchase_type": self.purchase_type},
+			{"company": doc.company, "custom_purchase_type": doc.purchase_type},
 			"name",
 		)
 		if expense_account:
-			for row in self.items:
+			for row in doc.items:
 				row.expense_account = expense_account
 
 
