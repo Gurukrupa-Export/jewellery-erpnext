@@ -462,6 +462,119 @@ class TestDepartmentIR(_EnforcementHarness):
 			self.out_of_mm(mwo, a)  # a process of MM, not of DS
 
 
+class TestProcessShownOnIRs(_EnforcementHarness):
+	"""The processes an IR shows: display fields only (fetched or filled on validate)."""
+
+	def ds_cell(self):
+		"""DS as a second cell with one process D; Administrator may receive into it."""
+		d = self.process("Process D", key="DS")
+		self.map_operation(self.w.operations["DS"], d)
+		self.enable("DS")
+		self.grant("Administrator", d)
+		return d
+
+	def issue_mm_to_ds(self, mwo, destination):
+		return fx.submit_ir(
+			fx.insert_ir(
+				fx.department_ir(
+					self.w,
+					"Issue",
+					[mwo],
+					current="MM",
+					to="DS",
+					destination_process=destination,
+				)
+			)
+		)
+
+	def receive_in_ds(self, issue):
+		mwo = issue.department_ir_operation[0].manufacturing_work_order
+		return fx.insert_ir(
+			fx.department_ir(
+				self.w,
+				"Receive",
+				[mwo],
+				current="DS",
+				previous="MM",
+				receive_against=issue.name,
+			)
+		)
+
+	def test_department_issue_and_receive_show_both_processes(self):
+		a, _b, _c = self.cell3()
+		d = self.ds_cell()
+		mwo, _mop = self.job_in(a)
+		issue = self.issue_mm_to_ds(mwo, d)
+		issue.reload()
+		self.assertEqual(issue.department_ir_operation[0].department_process, a)
+
+		receive = self.receive_in_ds(issue)
+		receive.reload()
+		row = receive.department_ir_operation[0]
+		self.assertEqual(
+			(
+				row.department_process,
+				row.previous_process,
+				receive.receive_destination_process,
+			),
+			(d, a, d),
+		)
+
+	def test_a_receive_of_an_older_issue_falls_back_to_its_source_operation(self):
+		# An Issue saved before the row column existed has no stored process on its rows.
+		a, _b, _c = self.cell3()
+		d = self.ds_cell()
+		mwo, _mop = self.job_in(a)
+		issue = self.issue_mm_to_ds(mwo, d)
+		frappe.db.set_value(
+			"Department IR Operation",
+			issue.department_ir_operation[0].name,
+			"department_process",
+			None,
+		)
+		receive = self.receive_in_ds(issue)
+		self.assertEqual(receive.department_ir_operation[0].previous_process, a)
+
+	def test_a_department_without_process_control_shows_no_process(self):
+		mwo, _mop = fx.make_work_order(self.w, "DS", seed=False)
+		issue = fx.submit_ir(
+			fx.insert_ir(
+				fx.department_ir(self.w, "Issue", [mwo], current="DS", to="MM")
+			)
+		)
+		receive = fx.insert_ir(
+			fx.department_ir(
+				self.w,
+				"Receive",
+				[mwo],
+				current="MM",
+				previous="DS",
+				receive_against=issue.name,
+			)
+		)
+		receive.reload()
+		row = receive.department_ir_operation[0]
+		self.assertEqual(
+			(
+				row.department_process,
+				row.previous_process,
+				receive.receive_destination_process,
+			),
+			(None, None, None),
+		)
+
+	def test_employee_ir_keeps_the_operations_process_whatever_the_client_sent(self):
+		a, b, _c = self.cell3()
+		mwo, _mop = self.job_in(a)
+		doc = self.issue_doc(mwo)  # MM's operation, which is in process A
+		doc.department_process = b  # a tampered or stale value from the form or the API
+		doc = fx.insert_ir(doc)
+		self.assertEqual(
+			frappe.db.get_value("Employee IR", doc.name, "department_process"), a
+		)
+		self.assertEqual(doc.employee_ir_operations[0].department_process, a)
+
+
 # ------------------------------------------------------------------------------------------------
 # Stock Entry: the rule on real rows
 # ------------------------------------------------------------------------------------------------

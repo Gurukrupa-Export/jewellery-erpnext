@@ -883,6 +883,58 @@ def validate_department_ir_destination(
 		)
 
 
+def set_employee_ir_process(doc: Document, method: str | None = None) -> None:
+	"""``validate`` on Employee IR (before the checks): the stored Process is always the Operation's.
+	The form lets the user choose a Process first to narrow the Operation list, so the field is
+	editable and fetched only when empty; this keeps whatever the form or an API call sent from
+	standing. Runs whether or not the pilot is on, as the fetch it replaces did."""
+	if not doc.get("operation"):
+		return
+	doc.department_process = (
+		frappe.db.get_value("Department Operation", doc.operation, "department_process")
+		or None
+	)
+
+
+def fill_department_ir_receive_processes(
+	doc: Document, method: str | None = None
+) -> None:
+	"""``validate`` on Department IR Receive: each row shows the process its work order was in when
+	the Issue sent it (``previous_process``). Display only: it reads the Issue and writes nothing
+	else; the row's own ``department_process`` is fetched from its operation (the process it is
+	received into). An Issue saved before the row column existed falls back to the process its
+	source operation carries."""
+	if doc.get("type") != "Receive" or not doc.get("receive_against"):
+		return
+	rows = doc.get("department_ir_operation") or ()
+	if not rows or not frappe.get_meta("Department IR Operation").has_field(
+		"previous_process"
+	):
+		return
+	IRO = frappe.qb.DocType("Department IR Operation")
+	MOP = frappe.qb.DocType("Manufacturing Operation")
+	issued = (
+		frappe.qb.from_(IRO)
+		.left_join(MOP)
+		.on(MOP.name == IRO.manufacturing_operation)
+		.select(
+			IRO.manufacturing_work_order, IRO.department_process, MOP.department_process
+		)
+		.where(
+			(IRO.parent == doc.receive_against) & (IRO.parenttype == "Department IR")
+		)
+	).run()
+	by_work_order = {
+		mwo: (row_process or source_process or None)
+		for mwo, row_process, source_process in issued
+		if mwo
+	}
+	for row in rows:
+		row.previous_process = by_work_order.get(
+			cstr(row.manufacturing_work_order).strip()
+		)
+
+
 def assign_destination_process(doc: Document, method: str | None = None) -> None:
 	"""``on_submit`` on Department IR Issue, after the controller minted the In-Transit operations
 	in the next department. A controlled next department: set the destination process. Any other
