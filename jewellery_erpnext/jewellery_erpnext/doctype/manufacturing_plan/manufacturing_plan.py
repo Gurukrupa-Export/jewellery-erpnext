@@ -437,6 +437,9 @@ class ManufacturingPlan(Document):
 				# per-row query. See create_manufacturing_order().
 				"order_form_type",
 				"order_form_id",
+				# Set on rows that came from a customer's Purchase Order; a repair from one
+				# is manufactured on its Copy BOM. See _resolve_repair_master_bom().
+				"custom_po_details",
 			],
 		)
 
@@ -991,7 +994,15 @@ def _resolve_repair_master_bom(row, so_det):
 	   (Copy BOM, else serial_id_bom). Previously a repair row that had a Copy BOM but no
 	   serial_id_bom produced master_bom=None, i.e. a PMO -- and every MWO under it --
 	   with no BOM at all. This last fallback closes that hole.
+
+	A repair that came from a customer's Purchase Order (``custom_po_details`` on the Sales
+	Order Item) is different: the PO sends two BOMs. Its Copy BOM (``row.bom`` /
+	``row.manufacturing_bom``) is what the repair is manufactured on, so it is the master BOM;
+	the serial's own BOM stays on ``serial_id_bom``, which is what Unpack Serial No books.
 	"""
+	if so_det.get("custom_po_details") and (row.manufacturing_bom or row.bom):
+		return row.manufacturing_bom or row.bom
+
 	return (
 		get_repair_order_design_bom(
 			so_det.get("order_form_type"), so_det.get("order_form_id")
@@ -1037,7 +1048,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 		if row.mwo:
 			fields.append("master_bom")
 		else:
-			fields += ["order_form_type", "order_form_id"]
+			fields += ["order_form_type", "order_form_id", "custom_po_details"]
 
 		fetched_val = frappe.get_value(doc_type, docname, fields, as_dict=1)
 		if fetched_val:

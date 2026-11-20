@@ -5,6 +5,8 @@ from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import purchase_order as po_events
 
+PO_EVENTS = "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order"
+
 
 class DummyPO:
 	def __init__(self, **kwargs):
@@ -276,6 +278,50 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			self.assertEqual(res.ref_customer, "Customer X")
 			# The Purchase Order's Copy BOM is the origin of the whole manufacturing chain.
 			self.assertEqual(res.items[0]["copy_bom"], "BOM-PO-1")
+
+	@patch(f"{PO_EVENTS}.frappe.get_doc")
+	@patch(f"{PO_EVENTS}.frappe.new_doc")
+	@patch(f"{PO_EVENTS}.frappe.get_cached_value", return_value="INR")
+	@patch(f"{PO_EVENTS}.frappe.db.get_value", return_value="Cust1")
+	@patch(f"{PO_EVENTS}.get_exchange_rate", return_value=1)
+	def test_make_quotation_maps_repair_boms_and_serial_translated(
+		self, _rate, _get_value, _cached, mock_new_doc, mock_get_doc
+	):
+		"""A repair row brings its serial and both BOMs, under this site's BOM names."""
+		po_doc = DummyPO(
+			company="Test Company",
+			items=[
+				frappe._dict(
+					idx=1,
+					name="ItemDet-1",
+					item_code="Item1",
+					qty=1,
+					rate=500,
+					custom_copy_bom="BOM-GK-COPY",
+					custom_serial_id_bom="BOM-GK-SERIAL",
+					serial_no="SR-0001",
+				)
+			],
+		)
+		mock_get_doc.side_effect = (
+			lambda dt, name=None, **kwargs: po_doc
+			if dt == "Purchase Order"
+			else (dt if not isinstance(dt, str) else None)
+		)
+		mock_new_doc.return_value = DummyQuotation()
+		site = {"BOM-GK-COPY": "BOM-KG-COPY", "BOM-GK-SERIAL": "BOM-KG-SERIAL"}
+		with patch(
+			"erpnext.controllers.accounts_controller.get_default_taxes_and_charges",
+			return_value={"taxes": []},
+		), patch(f"{PO_EVENTS}.resolve_site_bom", side_effect=site.get), patch(
+			f"{PO_EVENTS}.frappe.db.exists", return_value=True
+		):
+			res = po_events.make_quotation("PO-1", None)
+
+		item = res.items[0]
+		self.assertEqual(item["copy_bom"], "BOM-KG-COPY")
+		self.assertEqual(item["custom_serial_id_bom"], "BOM-KG-SERIAL")
+		self.assertEqual(item["serial_no"], "SR-0001")
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.get_doc"
