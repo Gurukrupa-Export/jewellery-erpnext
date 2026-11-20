@@ -11,6 +11,19 @@
    "options": "Serial No"
   },
   {
+   "description": "BOM of the serial being repaired (Repair Order BOM). The receiving site unpacks the serial against it.",
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_serial_id_bom",
+   "fieldtype": "Link",
+   "insert_after": "serial_no",
+   "is_system_generated": 1,
+   "label": "Serial Id BOM",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
    "dt": "Purchase Order Item",
    "fieldname": "custom_column_break_27cdo",
    "fieldtype": "Column Break",
