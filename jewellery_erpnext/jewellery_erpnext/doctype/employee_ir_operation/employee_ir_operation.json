@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "creation": "2026-11-11 12:20:48.548097",
+ "creation": "2023-05-03 15:21:46.465307",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -210,54 +210,54 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"cad_file\") || doc.cad_file)",
    "fieldname": "cad_file",
    "fieldtype": "Attach",
    "label": "CAD File",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"cad_numbering_file\") || doc.cad_numbering_file)",
    "fieldname": "cad_numbering_file",
    "fieldtype": "Attach",
    "label": "CAD Numbering File",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"estimated_rpt_wt\") || doc.estimated_rpt_wt)",
    "fieldname": "estimated_rpt_wt",
    "fieldtype": "Float",
    "label": "Estimated RPT WT",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1,
    "precision": "3"
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"ref_name\") || doc.ref_name)",
    "fieldname": "ref_name",
    "fieldtype": "Data",
    "label": "Ref Name",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"estimated_casting_wt\") || doc.estimated_casting_wt)",
    "fieldname": "estimated_casting_wt",
    "fieldtype": "Float",
    "label": "Estimated Casting WT",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAD\"",
    "no_copy": 1,
    "precision": "3"
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"support_cam_file\") || doc.support_cam_file)",
    "fieldname": "support_cam_file",
    "fieldtype": "Attach",
    "label": "Support CAM File",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\"",
    "no_copy": 1
   },
   {
+   "depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\" && (!parent.receive_detail_fields || parent.receive_detail_fields.split(\",\").includes(\"platform_wt\") || doc.platform_wt)",
    "fieldname": "platform_wt",
    "fieldtype": "Float",
    "label": "Platform WT",
-   "mandatory_depends_on": "eval: parent.type == \"Receive\" && parent.receive_details_type == \"CAM\"",
    "no_copy": 1,
    "precision": "3"
   },
@@ -320,7 +320,6 @@
  "name": "Employee IR Operation",
  "owner": "Administrator",
  "permissions": [],
- "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

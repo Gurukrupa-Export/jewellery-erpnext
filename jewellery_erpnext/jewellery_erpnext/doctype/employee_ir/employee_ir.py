@@ -35,9 +35,11 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_receive import (
 	cad_cam_values_for_operation,
+	get_receive_detail_fields,
 	get_receive_details_type,
 	sync_item_master_for_receive,
 	validate_cad_cam_receive_details,
+	validate_cad_cam_required_on_submit,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
 	get_blocked_finding_batches,
@@ -175,6 +177,8 @@ class EmployeeIR(Document):
 			validate_casting_group_complete(self)
 		else:
 			validate_employee_ir_receive_delay(self)
+			# The CAD / CAM fields are required on submit only; a draft may hold them empty.
+			validate_cad_cam_required_on_submit(self)
 
 	def on_submit(self):
 		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
@@ -431,11 +435,17 @@ class EmployeeIR(Document):
 		receive_details_type = (
 			None if cancel else get_receive_details_type(self.operation)
 		)
+		receive_detail_fields = (
+			None
+			if cancel or not receive_details_type
+			else ",".join(get_receive_detail_fields(self.operation))
+		)
 		for row in self.employee_ir_operations:
 			values.update(
 				{
 					"operation": operation,
 					"receive_details_type": receive_details_type,
+					"receive_detail_fields": receive_detail_fields,
 					"rpt_wt_issue": row.rpt_wt_issue,
 					"start_time": start_time,
 				}

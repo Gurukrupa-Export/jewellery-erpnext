@@ -14,7 +14,44 @@ FINDING_CATEGORY_ATTRIBUTE = "Finding Category"
 class DepartmentOperation(Document):
 	def validate(self):
 		self.validate_finding_loss_booking()
+		self.validate_receive_detail_fields()
 		self.validate_process()
+
+	def validate_receive_detail_fields(self):
+		"""Keep the Receive Detail Fields table consistent with the Receive Details Type.
+
+		The table narrows the CAD / CAM fields an Employee IR Receive asks for, so it needs
+		a type, may only name fields of that type, and may not repeat a field. The resulting
+		list is stored on ``receive_detail_fields`` for the Employee IR / Manufacturing
+		Operation forms to fetch.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_receive import (
+			FIELDS_BY_TYPE,
+		)
+
+		rows = self.get("receive_detail_field_list") or []
+		if rows and not self.receive_details_type:
+			frappe.throw(
+				_("Set the Receive Details Type before choosing Receive Detail Fields.")
+			)
+
+		group = FIELDS_BY_TYPE.get(self.receive_details_type, {})
+		label_to_field = {label: fn for fn, label in group.items()}
+		picked = []
+		for row in rows:
+			if row.field_label not in label_to_field:
+				frappe.throw(
+					_("Row {0}: {1} is not a {2} field.").format(
+						row.idx, row.field_label, self.receive_details_type
+					)
+				)
+			if row.field_label in [r.field_label for r in rows[: row.idx - 1]]:
+				frappe.throw(
+					_("Row {0}: {1} is repeated.").format(row.idx, row.field_label)
+				)
+			picked.append(label_to_field[row.field_label])
+
+		self.receive_detail_fields = ",".join(picked or list(group))
 
 	def validate_process(self):
 		"""Keep ``department_process`` inside this operation's own department and manufacturer.

@@ -107,7 +107,7 @@ frm.add_custom_button(__("Get Product Return Order Form"), function () {
                                 d.item_name = (matched_pro && matched_pro.item_name) || row.item_name;
                                 d.serial_no = d.custom_serial_no;
                                 d.qty = -Math.abs(row.qty);
-                                d.income_account = "Sales - KGJPL";
+                                d.income_account = "Commission on Sales - GEPL";
                                 d.sales_order = "";
                                 d.uom = row.uom;
                                 d.conversion_factor =1;

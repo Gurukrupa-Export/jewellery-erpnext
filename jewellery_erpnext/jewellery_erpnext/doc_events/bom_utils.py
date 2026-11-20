@@ -4,6 +4,11 @@ from frappe.query_builder.custom import ConstantColumn
 from frappe.query_builder.functions import Count
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import (
+	filters_key,
+	run_cached,
+)
+
 
 def update_serial_details(self):
 	if not self.tag_no:
@@ -211,14 +216,17 @@ def get_gold_rate(self):
 		item.difference_qty = item.actual_quantity - item.quantity
 		purity_key = (self.customer, item.metal_type, item.metal_touch)
 		if not metal_purity_data.get(purity_key):
-			metal_purity_data[purity_key] = frappe.db.get_value(
-				"Metal Criteria",
-				{
-					"parent": self.customer,
-					"metal_type": item.metal_type,
-					"metal_touch": item.metal_touch,
-				},
-				"metal_purity",
+			metal_purity_data[purity_key] = run_cached(
+				("metal_criteria_purity", *purity_key),
+				lambda: frappe.db.get_value(
+					"Metal Criteria",
+					{
+						"parent": self.customer,
+						"metal_type": item.metal_type,
+						"metal_touch": item.metal_touch,
+					},
+					"metal_purity",
+				),
 			)
 
 		metal_purity = metal_purity_data[purity_key]
@@ -239,8 +247,11 @@ def get_gold_rate(self):
 			"to_gold_rate": [">=", self.gold_rate_with_gst],
 			"metal_touch": item.metal_touch,
 		}
-		mc = frappe.get_all(
-			"Making Charge Price", filters=filters, fields=["name"], limit=1
+		mc = run_cached(
+			("gold_making_charge_price", filters_key(filters)),
+			lambda: frappe.get_all(
+				"Making Charge Price", filters=filters, fields=["name"], limit=1
+			),
 		)
 		# frappe.msgprint(f"{mc}")
 		if not mc:
@@ -250,20 +261,23 @@ def get_gold_rate(self):
 		# frappe.throw("hii")
 		mc_name = mc[0]["name"]
 		# frappe.throw(f"{mc_name},")
-		sub = frappe.db.get_all(
-			"Making Charge Price Item Subcategory",
-			filters={"parent": mc_name, "subcategory": self.item_subcategory},
-			fields=[
-				"rate_per_gm",
-				"rate_per_pc",
-				"supplier_fg_purchase_rate",
-				"wastage",
-				"subcontracting_rate",
-				"subcontracting_wastage",
-				"rate_per_gm_threshold",
-				"to_diamond",
-				"from_diamond",
-			],
+		sub = run_cached(
+			("gold_making_charge_subcategory", mc_name, self.item_subcategory),
+			lambda: frappe.db.get_all(
+				"Making Charge Price Item Subcategory",
+				filters={"parent": mc_name, "subcategory": self.item_subcategory},
+				fields=[
+					"rate_per_gm",
+					"rate_per_pc",
+					"supplier_fg_purchase_rate",
+					"wastage",
+					"subcontracting_rate",
+					"subcontracting_wastage",
+					"rate_per_gm_threshold",
+					"to_diamond",
+					"from_diamond",
+				],
+			),
 		)
 		# frappe.throw(f"hii{sub}")
 		if sub:
@@ -322,8 +336,9 @@ def get_diamond_rate(self):
 	customer = self.customer
 
 	# Get the diamond price list type for the customer
-	self.cust_diamond_price_list_type = frappe.db.get_value(
-		"Customer", customer, "diamond_price_list"
+	self.cust_diamond_price_list_type = run_cached(
+		("customer_diamond_price_list", customer),
+		lambda: frappe.db.get_value("Customer", customer, "diamond_price_list"),
 	)
 
 	# Initialize the diamond amount variable
@@ -339,11 +354,14 @@ def get_diamond_rate(self):
 		diamond.quantity = flt(diamond.quantity, self.diamond_pricision)
 		diamond.difference = actual_qty - diamond.quantity
 		if not attribute_dict.get(diamond.diamond_sieve_size):
-			attribute_dict[diamond.diamond_sieve_size] = frappe.db.get_value(
-				"Attribute Value",
-				diamond.diamond_sieve_size,
-				["sieve_size_range", "diameter"],
-				as_dict=1,
+			attribute_dict[diamond.diamond_sieve_size] = run_cached(
+				("sieve_size_attribute", diamond.diamond_sieve_size),
+				lambda: frappe.db.get_value(
+					"Attribute Value",
+					diamond.diamond_sieve_size,
+					["sieve_size_range", "diameter"],
+					as_dict=1,
+				),
 			)
 
 		diamond.custom_sieve_size_range = attribute_dict[
@@ -407,20 +425,23 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 				filters["diamond_size_in_mm"] = diamond.diamond_size_in_mm
 		else:
 			frappe.msgprint(_("Diamond Price List Type Not Specified in Customer"))
-		diamond_price_list_data[key] = frappe.get_list(
-			"Diamond Price List",
-			filters=filters,
-			fields=[
-				"rate",
-				"handling_rate",
-				"supplier_fg_purchase_rate",
-				"outright_handling_charges_in_percentage",
-				"outright_handling_charges_rate",
-				"outwork_handling_charges_in_percentage",
-				"outwork_handling_charges_rate",
-			],
-			order_by="effective_from desc",
-			limit=1,
+		diamond_price_list_data[key] = run_cached(
+			("diamond_price_list_rate", filters_key(filters)),
+			lambda: frappe.get_list(
+				"Diamond Price List",
+				filters=filters,
+				fields=[
+					"rate",
+					"handling_rate",
+					"supplier_fg_purchase_rate",
+					"outright_handling_charges_in_percentage",
+					"outright_handling_charges_rate",
+					"outwork_handling_charges_in_percentage",
+					"outwork_handling_charges_rate",
+				],
+				order_by="effective_from desc",
+				limit=1,
+			),
 		)
 		if not diamond_price_list_data.get(key):
 			frappe.msgprint(
@@ -481,7 +502,10 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 
 def get_gemstone_rate(self):
 	gemstone_amount = 0
-	item_category = frappe.db.get_value("Item", self.item, "item_category")
+	item_category = run_cached(
+		("item_category", self.item),
+		lambda: frappe.db.get_value("Item", self.item, "item_category"),
+	)
 	for stone in self.gemstone_detail:
 		actual_qty = stone.quantity
 		stone.actual_quantity = actual_qty
@@ -534,47 +558,68 @@ def get_gemstone_rate(self):
 			filters["gemstone_size"] = stone.gemstone_size
 
 		# Retrieve the Gemstone Price List and calculate the rate
-		gemstone_price_list = frappe.get_list(
-			"Gemstone Price List",
-			filters=filters,
-			fields=[
-				"name",
-				"rate",
-				"handling_rate",
-				"supplier_fg_purchase_rate",
-				"outright_handling_charges_in_percentage",
-				"outright_handling_charges_rate",
-				"outwork_handling_charges_in_percentage",
-				"outwork_handling_charges_rate",
-			],
-			order_by="effective_from desc",
-			limit=1,
+		gemstone_price_list = run_cached(
+			("gemstone_price_list_rate", filters_key(filters)),
+			lambda: frappe.get_list(
+				"Gemstone Price List",
+				filters=filters,
+				fields=[
+					"name",
+					"rate",
+					"handling_rate",
+					"supplier_fg_purchase_rate",
+					"outright_handling_charges_in_percentage",
+					"outright_handling_charges_rate",
+					"outwork_handling_charges_in_percentage",
+					"outwork_handling_charges_rate",
+				],
+				order_by="effective_from desc",
+				limit=1,
+			),
 		)
 		multiplier = 0
 		if stone.price_list_type == "Multiplier":
 			quality_field = frappe.scrub(stone.gemstone_quality)
 			for row in gemstone_price_list:
 				multiplier = (
-					frappe.db.get_value(
-						"Gemstone Multiplier",
-						{
-							"parent": row.name,
-							"item_category": item_category,
-							"parentfield": "gemstone_multiplier",
-						},
-						quality_field,
+					run_cached(
+						(
+							"gemstone_multiplier_value",
+							row.name,
+							item_category,
+							"gemstone_multiplier",
+							quality_field,
+						),
+						lambda: frappe.db.get_value(
+							"Gemstone Multiplier",
+							{
+								"parent": row.name,
+								"item_category": item_category,
+								"parentfield": "gemstone_multiplier",
+							},
+							quality_field,
+						),
 					)
 					or 0
 				)
 				fg_multiplier = (
-					frappe.db.get_value(
-						"Gemstone Multiplier",
-						{
-							"parent": row.name,
-							"item_category": item_category,
-							"parentfield": "supplier_fg_multiplier",
-						},
-						quality_field,
+					run_cached(
+						(
+							"gemstone_multiplier_value",
+							row.name,
+							item_category,
+							"supplier_fg_multiplier",
+							quality_field,
+						),
+						lambda: frappe.db.get_value(
+							"Gemstone Multiplier",
+							{
+								"parent": row.name,
+								"item_category": item_category,
+								"parentfield": "supplier_fg_multiplier",
+							},
+							quality_field,
+						),
 					)
 					or 0
 				)
@@ -638,8 +683,11 @@ def get_making_charges(self):
 		if finding.is_customer_item and finding.get("making_rate"):
 			finding.making_amount = finding.making_rate * finding.quantity
 
-	item_details = frappe.db.get_value(
-		"Item", self.item, ["item_subcategory", "setting_type"], as_dict=True
+	item_details = run_cached(
+		("item_making_details", self.item),
+		lambda: frappe.db.get_value(
+			"Item", self.item, ["item_subcategory", "setting_type"], as_dict=True
+		),
 	)
 	sub_category, setting_type = (
 		item_details.get("item_subcategory"),
@@ -654,11 +702,14 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 	making_charge_data = frappe._dict()
 	finding_subcategory_data = frappe._dict()
 	subcategory_data = frappe._dict()
-	customer_data = frappe.db.get_value(
-		"Customer",
-		self.customer,
-		["compute_making_charges_on", "custom_making_rates_based_on_custom_code"],
-		as_dict=1,
+	customer_data = run_cached(
+		("customer_making_settings", self.customer),
+		lambda: frappe.db.get_value(
+			"Customer",
+			self.customer,
+			["compute_making_charges_on", "custom_making_rates_based_on_custom_code"],
+			as_dict=1,
+		),
 	)
 	if customer_data:
 		self.compute_making_charges_on = customer_data.get("compute_making_charges_on")
@@ -696,16 +747,24 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 			not subcategory_data.get(subcat_subcategory)
 			and subcategory_data.get(subcat_subcategory) != False
 		):
-			subquery = (
-				frappe.qb.from_(child_table)
-				.left_join(MCP)
-				.on(child_table.parent == MCP.name)
-				.select(Count(child_table.name))
-				.where(
-					(child_table.subcategory == subcat_subcategory)
-					& (MCP.customer == self.customer)
-				)
-				.run()
+			subquery = run_cached(
+				(
+					"mcp_subcategory_count",
+					row.parentfield,
+					subcat_subcategory,
+					self.customer,
+				),
+				lambda: (
+					frappe.qb.from_(child_table)
+					.left_join(MCP)
+					.on(child_table.parent == MCP.name)
+					.select(Count(child_table.name))
+					.where(
+						(child_table.subcategory == subcat_subcategory)
+						& (MCP.customer == self.customer)
+					)
+					.run()
+				),
 			)
 			subcategory_data[subcat_subcategory] = (
 				True if (subquery and subquery[0][0]) else False
@@ -742,7 +801,17 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 			# 	query = query.where(child_table.metal_touch == row.metal_touch)
 
 			query = query.limit(1)
-			making_charge_data[key] = query.run(as_dict=True)
+			making_charge_data[key] = run_cached(
+				(
+					"mcp_making_rate",
+					row.parentfield,
+					self.customer,
+					setting_type,
+					row.metal_type,
+					subcat_subcategory,
+				),
+				lambda: query.run(as_dict=True),
+			)
 
 		# AND mcp.metal_purity = '{row.metal_purity}'
 		if not making_charge_data.get(key) and row.parentfield != "metal_detail":
@@ -751,16 +820,19 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 				not finding_subcategory_data.get(sub_category)
 				and finding_subcategory_data.get(sub_category) != False
 			):
-				subquery = (
-					frappe.qb.from_(MCPIS)
-					.left_join(MCP)
-					.on(MCPIS.parent == MCP.name)
-					.select(Count(MCPIS.name))
-					.where(
-						(MCPIS.subcategory == sub_category)
-						& (MCP.customer == self.customer)
-					)
-					.run()
+				subquery = run_cached(
+					("mcp_item_subcategory_count", sub_category, self.customer),
+					lambda: (
+						frappe.qb.from_(MCPIS)
+						.left_join(MCP)
+						.on(MCPIS.parent == MCP.name)
+						.select(Count(MCPIS.name))
+						.where(
+							(MCPIS.subcategory == sub_category)
+							& (MCP.customer == self.customer)
+						)
+						.run()
+					),
 				)
 				finding_subcategory_data[sub_category] = True if subquery else False
 
@@ -793,7 +865,17 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 					(MCPIS.subcategory.isnull()) | (MCPIS.subcategory == "")
 				)
 
-			making_charge_data[key] = query.run(as_dict=True)
+			making_charge_data[key] = run_cached(
+				(
+					"mcp_finding_fallback_rate",
+					self.customer,
+					setting_type,
+					row.metal_type,
+					sub_category,
+					bool(finding_subcategory_data.get(sub_category)),
+				),
+				lambda: query.run(as_dict=True),
+			)
 
 			# AND mcp.metal_purity = '{row.metal_purity}'
 

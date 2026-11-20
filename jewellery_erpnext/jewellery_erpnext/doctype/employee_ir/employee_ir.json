@@ -26,6 +26,7 @@
   "department_process",
   "operation",
   "receive_details_type",
+  "receive_detail_fields",
   "employee",
   "is_repeat_receive",
   "worker_performance",
@@ -171,6 +172,15 @@
    "label": "Operation",
    "options": "Department Operation",
    "reqd": 1
+  },
+  {
+   "fetch_from": "operation.receive_detail_fields",
+   "fieldname": "receive_detail_fields",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Receive Detail Fields",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fetch_from": "operation.receive_details_type",
