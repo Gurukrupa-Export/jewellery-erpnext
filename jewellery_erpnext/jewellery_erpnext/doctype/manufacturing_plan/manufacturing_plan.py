@@ -281,6 +281,9 @@ class ManufacturingPlan(Document):
 				"metal_touch",
 				"metal_colour",
 				"diamond_grade",
+				# Set on rows that came from a customer's Purchase Order; a repair from one
+				# is manufactured on its Copy BOM. See _resolve_repair_master_bom().
+				"custom_po_details",
 			],
 		)
 
@@ -653,6 +656,20 @@ def fetch_doc_map(doctype, names, fields, key_field="name"):
 	return {d[key_field]: d for d in data}
 
 
+def _resolve_repair_master_bom(row, so_det):
+	"""Pick the BOM a Repair PMO must be created against.
+
+	A repair is created against its ``serial_id_bom``. A repair that came from a customer's
+	Purchase Order (``custom_po_details`` on the Sales Order Item) is different: the PO sends
+	two BOMs. Its Copy BOM (``row.manufacturing_bom`` / ``row.bom``) is what the repair is
+	manufactured on, so it is the master BOM; the serial's own BOM stays on ``serial_id_bom``,
+	which is what Unpack Serial No books.
+	"""
+	if so_det.get("custom_po_details") and (row.manufacturing_bom or row.bom):
+		return row.manufacturing_bom or row.bom
+	return row.serial_id_bom
+
+
 def create_manufacturing_order(doc, row, cache_data=None):
 	"""Create one Parent Manufacturing Order per unit of the row. Returns the number created."""
 	if cache_data is None:
@@ -688,6 +705,8 @@ def create_manufacturing_order(doc, row, cache_data=None):
 		fields = ["metal_type", "metal_touch", "metal_colour"]
 		if row.mwo:
 			fields.append("master_bom")
+		else:
+			fields.append("custom_po_details")
 
 		fetched_val = frappe.get_value(doc_type, docname, fields, as_dict=1)
 		if fetched_val:
@@ -697,7 +716,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	if doc.select_manufacture_order == "Manufacturing":
 		master_bom = row.manufacturing_bom
 	elif doc.select_manufacture_order == "Repair":
-		master_bom = row.serial_id_bom
+		master_bom = _resolve_repair_master_bom(row, so_det)
 
 	if master_bom:
 		# caching check
