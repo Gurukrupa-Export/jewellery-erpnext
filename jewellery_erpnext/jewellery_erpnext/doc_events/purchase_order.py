@@ -341,7 +341,15 @@ def validate_copy_bom(po_doc):
 	(gke_order_forms/doc_events/item.py), so a mirrored PO can legitimately name a BOM that was
 	never pushed here. Unchecked, that surfaces as a raw DoesNotExistError inside the BOM job.
 
-	Both problems are reported together, per row, so a PO with several bad rows takes one round
+	A repair row's Serial Id BOM is optional, but once named it is checked the same way: it is the
+	BOM the serial is unpacked against.
+
+	BOM names are checked as they are, never translated. This reads a Purchase Order stored on this
+	site, whose BOM fields are Links and so already hold this site's BOM names. Names from the
+	ordering site are translated (through the sync's Source Name stamp) where they arrive: the
+	``get_purchase_order_items`` Server Script.
+
+	All problems are reported together, per row, so a PO with several bad rows takes one round
 	trip to fix rather than one per row.
 	"""
 	missing = []
@@ -353,6 +361,10 @@ def validate_copy_bom(po_doc):
 			missing.append(row.idx)
 		elif not frappe.db.exists("BOM", copy_bom):
 			unknown.append((row.idx, copy_bom))
+
+		serial_id_bom = row.get("custom_serial_id_bom")
+		if serial_id_bom and not frappe.db.exists("BOM", serial_id_bom):
+			unknown.append((row.idx, serial_id_bom))
 
 	errors = []
 	if missing:
@@ -439,6 +451,10 @@ def make_quotation(source_name, target_doc=None):
 	validate_copy_bom(po_doc)
 
 	for row in po_doc.items:
+		serial_no = row.get("serial_no")
+		if serial_no and not frappe.db.exists("Serial No", serial_no):
+			# The serial reaches this site with the goods; until then it cannot be linked.
+			serial_no = None
 		target_doc.append(
 			"items",
 			{
@@ -459,6 +475,10 @@ def make_quotation(source_name, target_doc=None):
 				# -> PMO -> MWO -> MOP), replacing the item's master BOM that the Quotation used
 				# to look up for itself.
 				"copy_bom": row.get("custom_copy_bom"),
+				# Repairs: the serial and the serial's own BOM, which Unpack Serial No on the
+				# work order books; copy_bom is what the repair is manufactured on.
+				"serial_no": serial_no,
+				"custom_serial_id_bom": row.get("custom_serial_id_bom"),
 			},
 		)
 	set_missing_values(po_doc, target_doc)
