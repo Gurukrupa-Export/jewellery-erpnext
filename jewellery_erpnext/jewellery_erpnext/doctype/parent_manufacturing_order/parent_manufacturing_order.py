@@ -473,9 +473,22 @@ class ParentManufacturingOrder(Document):
 		# always did) -- not whatever the quotation / plan row carried, which for a repair
 		# is usually the item's design BOM. The row's value is kept only when the serial
 		# has no BOM of its own.
+		# A repair from a customer's Purchase Order is the exception: that PO names the
+		# serial's BOM itself (translated to this site's BOM by make_quotation), so the value
+		# it carried is kept.
+		if self.serial_id_bom and self._is_from_purchase_order():
+			return
 		if serial_bom := get_serial_bom(self.serial_no):
 			if serial_bom != self.serial_id_bom:
 				self.db_set("serial_id_bom", serial_bom)
+
+	def _is_from_purchase_order(self):
+		return bool(
+			self.sales_order_item
+			and frappe.db.get_value(
+				"Sales Order Item", self.sales_order_item, "custom_po_details"
+			)
+		)
 
 	def validate(self):
 		# Kept ABOVE the is_new/ignore_validations early-return so the Mould List ID
