@@ -38,6 +38,7 @@ from jewellery_erpnext.utils import (
 	carat_to_gram,
 	get_item_from_attribute,
 	get_repair_order_design_bom,
+	is_purchase_order_repair,
 	set_values_in_bulk,
 )
 
@@ -584,6 +585,23 @@ class ManufacturingWorkOrder(Document):
 			)
 		return design_bom, pmo_name
 
+	def _has_repair_order_link(self):
+		order_form_type, order_form_id = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			self.manufacturing_order,
+			["order_form_type", "order_form_id"],
+		) or (None, None)
+		return order_form_type == "Repair Order" and bool(order_form_id)
+
+	def _is_purchase_order_repair(self):
+		return is_purchase_order_repair(
+			frappe.db.get_value(
+				"Parent Manufacturing Order",
+				self.manufacturing_order,
+				"sales_order_item",
+			)
+		)
+
 	def _resolve_serial_bom(self):
 		"""The as-built BOM of the serial being unpacked (Serial No.custom_bom_no).
 
@@ -746,12 +764,22 @@ class ManufacturingWorkOrder(Document):
 		# The Repair Order's design BOM is still persisted onto the PMO + this MWO (it
 		# drives repair pricing/quotation), but it is NOT what gets unpacked: the piece in
 		# hand was built against its own BOM, so the components booked come from that one.
-		design_bom, pmo_name = self._resolve_repair_order_bom()
-		frappe.db.set_value(
-			"Parent Manufacturing Order", pmo_name, "master_bom", design_bom
-		)
-		self.db_set("master_bom", design_bom)
-		serial_bom = self._resolve_serial_bom()
+		if not self._has_repair_order_link() and self._is_purchase_order_repair():
+			# A repair sent in on a customer's Purchase Order has no Repair Order here. That PO
+			# carried the serial's BOM down to this work order as serial_id_bom, and its Copy BOM
+			# is already master_bom (the BOM the repair is manufactured on), so master_bom is
+			# left alone and the serial is unpacked against serial_id_bom.
+			pmo_name = self.manufacturing_order
+			serial_bom = self.serial_id_bom or self._resolve_serial_bom()
+		else:
+			# Every other repair needs its Repair Order; _resolve_repair_order_bom refuses one
+			# without, exactly as before.
+			design_bom, pmo_name = self._resolve_repair_order_bom()
+			frappe.db.set_value(
+				"Parent Manufacturing Order", pmo_name, "master_bom", design_bom
+			)
+			self.db_set("master_bom", design_bom)
+			serial_bom = self._resolve_serial_bom()
 
 		# Source: the RM warehouse that currently holds the serial (not the
 		# manufacturer's repair warehouse used by the legacy method).

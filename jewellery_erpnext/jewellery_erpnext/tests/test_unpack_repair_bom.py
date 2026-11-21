@@ -206,8 +206,15 @@ def _unpack(
 	qty=1,
 	has_batch=False,
 	inventory=("Regular Stock", None),
+	repair_order_link=True,
+	purchase_order_repair=False,
+	serial_id_bom=None,
 ):
 	"""Run create_unpack_serial_no_stock_entry with every read mocked.
+
+	By default the work order belongs to a Repair Order repair. ``repair_order_link=False`` with
+	``purchase_order_repair=True`` makes it a repair sent in on a customer's Purchase Order, which
+	carries ``serial_id_bom`` instead.
 
 	``mop`` is the work order's current operation (status/employee/department);
 	``warehouses`` maps ("department"|"employee", name) to the Manufacturing warehouse.
@@ -233,12 +240,21 @@ def _unpack(
 		company="C",
 		branch="B",
 		manufacturer="M",
+		serial_id_bom=serial_id_bom,
 	)
+	fake._has_repair_order_link = lambda: repair_order_link
+	fake._is_purchase_order_repair = lambda: purchase_order_repair
 	fake.find_existing_unpack_entry = lambda: None
 	fake._assert_serial_matches_item = lambda: None
 	fake._assert_serial_in_department = lambda wh: None
 	fake._assert_components_bookable = lambda *a, **k: None
-	fake._resolve_repair_order_bom = lambda: ("BOM-DESIGN", "PMO-1")
+	def resolve_repair_order_bom():
+		if not repair_order_link:
+			# What the real method does without a link.
+			frappe.throw("No Repair Order is linked to PMO-1; cannot resolve the repair BOM to unpack.")
+		return ("BOM-DESIGN", "PMO-1")
+
+	fake._resolve_repair_order_bom = resolve_repair_order_bom
 	fake._resolve_serial_bom = lambda: ManufacturingWorkOrder._resolve_serial_bom(fake)
 	fake._resolve_unpack_target_warehouse = (
 		lambda: ManufacturingWorkOrder._resolve_unpack_target_warehouse(fake)
@@ -343,6 +359,40 @@ class TestUnpackUsesTheSerialsOwnBom(IntegrationTestCase):
 		self.assertEqual(
 			writes,
 			[("Parent Manufacturing Order", "PMO-1", "master_bom", "BOM-DESIGN")],
+		)
+
+	def test_a_purchase_order_repair_unpacks_its_serial_id_bom_and_keeps_master_bom(self):
+		# No Repair Order on this site: the PO carried the serial's BOM down as serial_id_bom,
+		# and master_bom is already the Copy BOM the repair is manufactured on.
+		se, components_bom, writes = _unpack(
+			serial_bom="BOM-OF-SERIAL",
+			repair_order_link=False,
+			purchase_order_repair=True,
+			serial_id_bom="BOM-FROM-PO",
+		)
+		self.assertEqual(components_bom, "BOM-FROM-PO")
+		self.assertEqual(writes, [])
+		self.assertTrue(se.submitted)
+
+	def test_a_purchase_order_repair_without_serial_id_bom_uses_the_serials_bom(self):
+		_se, components_bom, writes = _unpack(
+			serial_bom="BOM-OF-SERIAL", repair_order_link=False, purchase_order_repair=True
+		)
+		self.assertEqual(components_bom, "BOM-OF-SERIAL")
+		self.assertEqual(writes, [])
+
+	def test_a_repair_with_neither_a_repair_order_nor_a_purchase_order_is_refused(self):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			_unpack(repair_order_link=False, purchase_order_repair=False, serial_id_bom="BOM-X")
+		self.assertIn("No Repair Order is linked", str(ctx.exception))
+
+	def test_a_repair_order_repair_ignores_a_carried_serial_id_bom(self):
+		# Behaviour for Repair Order repairs is unchanged: the serial's own BOM is unpacked and
+		# the design BOM is written to master_bom.
+		_se, components_bom, writes = _unpack(serial_bom="BOM-SERIAL", serial_id_bom="BOM-OTHER")
+		self.assertEqual(components_bom, "BOM-SERIAL")
+		self.assertEqual(
+			writes, [("Parent Manufacturing Order", "PMO-1", "master_bom", "BOM-DESIGN")]
 		)
 
 	def test_a_serial_without_a_bom_stops_the_unpack_and_builds_nothing(self):
