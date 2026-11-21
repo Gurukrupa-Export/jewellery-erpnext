@@ -432,6 +432,9 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_pool_guard.guard_tree_pool_on_cancel",
 			# A Customer Gold receipt with live returns or deliveries against it cannot be cancelled.
 			"jewellery_erpnext.customer_subcontracting.customer_gold_return.block_receipt_cancel_with_dispositions",
+			# A diamond / gemstone loss booked from a Manufacturing Operation cancels only while its
+			# operation is current and its reservations are restorable. Last: it reads, locks nothing.
+			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.dg_loss_booking.guard_loss_entry_cancel",
 		],
 		"on_cancel": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
@@ -440,6 +443,9 @@ doc_events = {
 			"jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment.reverse_receipt",
 			# Central cancelling a Refining Entry's hand-back takes the entry back to Completed.
 			"jewellery_erpnext.refining.doc_events.stock_entry.on_cancel",
+			# A diamond / gemstone loss booked from a Manufacturing Operation gives the loss back to
+			# the work order's reservations. After stock_entry.on_cancel, which flags its MOP Logs.
+			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.dg_loss_booking.restore_loss_entry_reservations",
 		],
 		"on_trash": "jewellery_erpnext.refining.doc_events.stock_entry.on_trash",
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
