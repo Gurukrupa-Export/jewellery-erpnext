@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.model.workflow import apply_workflow
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 from frappe.utils import flt, today
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
@@ -4234,3 +4234,81 @@ class TestRefineryFlow(IntegrationTestCase):
 			self.assertEqual(len(sources), 3)
 			self.assertEqual(flt(sum(sources), 3), flt(loss, 3))
 			self.assertTrue(all(v >= 0 for v in sources))
+
+
+class TestBulkBatchOwnershipLookups(UnitTestCase):
+	"""The bulk ownership helpers used on submit must answer exactly what the per-batch
+	methods they replaced would, batch for batch: a refining transfer filters thousands of
+	batches, so it reads them in one query instead of one or two per batch."""
+
+	BATCHES = {
+		"B-OWN": ("Regular Stock", None),
+		"B-CG": ("Customer Goods", "C-OK"),
+		"B-CS": ("Customer Stock", "C-BLOCK"),
+		"B-REG-CUST": ("Regular Stock", "C-OK"),
+		"B-NOINV-BLOCK": (None, "C-BLOCK"),
+	}
+	CUSTOMERS = {"C-OK": 0, "C-BLOCK": 1}
+
+	def _fakes(self):
+		batches, customers = self.BATCHES, self.CUSTOMERS
+
+		def get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Batch":
+				if name not in batches:
+					return None
+				inv, cust = batches[name]
+				if fieldname == "custom_customer":
+					return cust
+				return (inv, cust)
+			if doctype == "Customer":
+				return customers.get(name)
+			raise AssertionError(f"unexpected get_value({doctype})")
+
+		def bulk_map(doctype, names, fields):
+			names = {n for n in names if n}
+			if doctype == "Batch":
+				return {
+					n: frappe._dict(
+						name=n,
+						custom_inventory_type=batches[n][0],
+						custom_customer=batches[n][1],
+					)
+					for n in names
+					if n in batches
+				}
+			if doctype == "Customer":
+				return {
+					n: frappe._dict(name=n, custom_block_refining=customers[n])
+					for n in names
+					if n in customers
+				}
+			raise AssertionError(f"unexpected bulk_map({doctype})")
+
+		return get_value, bulk_map
+
+	def test_bulk_helpers_match_per_batch_methods(self):
+		from jewellery_erpnext.refining.doctype.refining_entry import (
+			refining_entry as re_module,
+		)
+
+		get_value, bulk_map = self._fakes()
+		re = frappe.new_doc("Refining Entry")
+		batch_nos = [*self.BATCHES, "B-MISSING", None]
+		with (
+			patch.object(re_module.frappe.db, "get_value", side_effect=get_value),
+			patch.object(re_module, "bulk_map", side_effect=bulk_map),
+		):
+			per_batch_blocked = {
+				b for b in batch_nos if re._is_blocked_customer_batch(b)
+			}
+			per_batch_owners = {
+				b: re._batch_customer_owner(b)[1]
+				for b in batch_nos
+				if re._batch_is_customer_owned(b)
+			}
+			self.assertEqual(re._blocked_customer_batches(batch_nos), per_batch_blocked)
+			self.assertEqual(re._customer_owners(batch_nos), per_batch_owners)
+
+		self.assertEqual(per_batch_blocked, {"B-CS", "B-NOINV-BLOCK"})
+		self.assertEqual(per_batch_owners, {"B-CG": "C-OK", "B-CS": "C-BLOCK"})
