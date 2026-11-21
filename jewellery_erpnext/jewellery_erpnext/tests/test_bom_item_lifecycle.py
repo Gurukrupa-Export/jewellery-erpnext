@@ -343,6 +343,45 @@ class TestBOMItemLifecycle(IntegrationTestCase):
 		self.assertTrue(all(row.min_order_qty == 2 for row in values))
 		self.assertEqual(len(template.attributes), 1)
 
+	def test_template_save_skips_variants_unless_a_copied_field_changed(self):
+		template, attribute = self.template_with_numeric_attribute()
+		settings = frappe.get_single("Item Variant Settings")
+		settings.set(
+			"fields",
+			[row for row in settings.fields if row.field_name != "lead_time_days"],
+		)
+		settings.save()
+		names = []
+		for value in (1, 2):
+			variant = create_variant(template.name, {attribute.name: value})
+			variant.insert()
+			names.append(variant.name)
+
+		def variant_state():
+			return {
+				row.name: (row.modified, row.lead_time_days, row.min_order_qty)
+				for row in frappe.get_all(
+					"Item",
+					filters={"name": ["in", names]},
+					fields=["name", "modified", "lead_time_days", "min_order_qty"],
+				)
+			}
+
+		before = variant_state()
+		template.reload()
+		template.lead_time_days = 9  # not copied to variants
+		template.save()
+		self.assertTrue(template.flags.dont_update_variants)
+		self.assertEqual(variant_state(), before)
+
+		template.reload()
+		template.min_order_qty = 3  # copied to variants
+		template.save()
+		self.assertFalse(template.flags.dont_update_variants)
+		after = variant_state()
+		self.assertTrue(all(state[2] == 3 for state in after.values()))
+		self.assertTrue(all(after[name][0] != before[name][0] for name in names))
+
 	def test_template_zero_variants_preserves_initialized_attributes_on_save(self):
 		self.assert_variant_propagation(0)
 
