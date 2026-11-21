@@ -74,3 +74,5 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_not_allowed_attribute_values
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_data_export
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_foreign_attachments
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_log_table_maintenance
