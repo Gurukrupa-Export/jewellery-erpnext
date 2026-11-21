@@ -5326,3 +5326,148 @@ class TestReduceSreBatchHandling(IntegrationTestCase):
 
 		self.assertEqual([s.batch_no for s in clone.sb_entries], ["BATCH-B"])
 		self.assertEqual(clone.reserved_qty, 2.0)
+
+
+# ---------------------------------------------------------------------------
+# TestBatchSreHeadroomWarehouseScope — the cap must name the same warehouse
+# _find_sre will confine itself to, or it promises headroom the validation
+# refuses (EMP-IR-Labh-2026-35766).
+# ---------------------------------------------------------------------------
+
+
+def _headroom_row(warehouse, remaining, operation=None, batch_no="B1"):
+	return frappe._dict(
+		item_code="M-1",
+		batch_no=batch_no,
+		warehouse=warehouse,
+		manufacturing_operation=operation,
+		remaining=remaining,
+	)
+
+
+class TestBatchSreHeadroomWarehouseScope(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _call(self, rows, batch_nos, operation=None):
+		"""Patch the one query, plus the rounding-method lookup it would otherwise eat.
+
+		``flt(x, precision)`` resolves the rounding method through
+		``frappe.get_system_settings``, which reads the DB -- so a bare ``frappe.db.sql``
+		mock feeds these rows back to it and every rounded value collapses to 0.
+		"""
+		with (
+			patch(f"{_LOSS}.frappe.db.sql", return_value=rows),
+			patch(
+				f"{_LOSS}.frappe.get_system_settings",
+				return_value="Banker's Rounding (legacy)",
+			),
+		):
+			return loss_stock_entry.get_batch_sre_headroom(
+				"MWO-1", batch_nos, operation
+			)
+
+	def _run(self, rows, operation=None):
+		return self._call(rows, ["B1"], operation)
+
+	def test_operation_warehouse_wins_over_a_larger_one_elsewhere(self):
+		# The production case: 0.595 stranded at the previous operation's warehouse,
+		# 0.020 actually reserved at this operation's. The cap must be 0.020.
+		rows = [
+			_headroom_row("WH-PREV", 0.595),
+			_headroom_row("WH-DS", 0.020, operation="MOP-DS"),
+		]
+		self.assertEqual(self._run(rows, "MOP-DS"), {("M-1", "B1"): 0.020})
+
+	def test_largest_remaining_warehouse_when_no_operation_tag_matches(self):
+		# Mirrors _find_sre's fallback: the warehouse of the SRE with the largest
+		# remaining reservation.
+		rows = [
+			_headroom_row("WH-PREV", 0.595),
+			_headroom_row("WH-DS", 0.020, operation="MOP-OTHER"),
+		]
+		self.assertEqual(self._run(rows, "MOP-DS"), {("M-1", "B1"): 0.595})
+
+	def test_largest_single_sre_within_the_chosen_warehouse(self):
+		# _validate_sre_qty compares against ONE SRE, never the warehouse total.
+		rows = [
+			_headroom_row("WH-DS", 0.3, operation="MOP-DS"),
+			_headroom_row("WH-DS", 0.7, operation="MOP-DS"),
+			_headroom_row("WH-PREV", 5.0),
+		]
+		self.assertEqual(self._run(rows, "MOP-DS"), {("M-1", "B1"): 0.7})
+
+	def test_operation_tag_spanning_warehouses_matches_the_resolver(self):
+		# _find_sre no longer picks arbitrarily among several op-tagged warehouses: both
+		# sides go through _select_sre_warehouse, which takes the largest remaining
+		# reservation. Capping at the smaller 0.4 would under-state the tier's capacity
+		# and spill the excess onto a later, customer-owned tier.
+		rows = [
+			_headroom_row("WH-A", 2.0, operation="MOP-DS"),
+			_headroom_row("WH-B", 0.4, operation="MOP-DS"),
+		]
+		self.assertEqual(self._run(rows, "MOP-DS"), {("M-1", "B1"): 2.0})
+
+	def test_cap_is_independent_of_row_order(self):
+		# The query feeding _find_sre was unordered, so the resolver's warehouse could
+		# change between runs. Neither side may depend on row order any more.
+		rows = [
+			_headroom_row("WH-A", 2.0, operation="MOP-DS"),
+			_headroom_row("WH-B", 0.4, operation="MOP-DS"),
+		]
+		self.assertEqual(
+			self._run(rows, "MOP-DS"), self._run(list(reversed(rows)), "MOP-DS")
+		)
+
+	def test_equal_remaining_across_warehouses_breaks_on_name(self):
+		# Deterministic tie-break, so an exact draw cannot reintroduce the drift.
+		rows = [
+			_headroom_row("WH-B", 1.0, operation="MOP-DS"),
+			_headroom_row("WH-A", 1.0, operation="MOP-DS"),
+		]
+		self.assertEqual(
+			self._run(rows, "MOP-DS"), self._run(list(reversed(rows)), "MOP-DS")
+		)
+
+	def test_batches_are_capped_independently(self):
+		rows = [
+			_headroom_row("WH-DS", 0.020, operation="MOP-DS", batch_no="B1"),
+			_headroom_row("WH-DS", 2.980, operation="MOP-DS", batch_no="B2"),
+		]
+		result = self._call(rows, ["B1", "B2"], "MOP-DS")
+		self.assertEqual(result, {("M-1", "B1"): 0.020, ("M-1", "B2"): 2.980})
+
+	def test_headroom_and_find_sre_agree_on_the_warehouse(self):
+		"""The invariant F2 is about: the pre-allocation cap and the submit-time
+		resolver must confine themselves to the SAME warehouse.
+
+		They used to disagree -- the cap took the minimum across the operation's
+		warehouses while ``_find_sre`` took the first operation-matched row of an
+		unordered query. A cap below the reservation the submit actually uses starves
+		the company tier and spills gold loss onto customer-owned batches; a cap above
+		it kills the submit in ``_validate_sre_qty``.
+		"""
+		spec = [("WH-A", 2.0), ("WH-B", 0.4)]
+		operation = "MOP-525LX"
+
+		headroom = self._run(
+			[_headroom_row(wh, qty, operation=operation) for wh, qty in spec],
+			operation,
+		)
+
+		sre_rows = [
+			_sre_row(f"SRE-{wh}", qty, operation, warehouse=wh) for wh, qty in spec
+		]
+		chosen_wh = loss_stock_entry._select_sre_warehouse(
+			sre_rows, operation, loss_stock_entry._sre_remaining
+		)
+
+		# The cap equals the largest reservation in the warehouse the resolver picks.
+		expected = max(q for wh, q in spec if wh == chosen_wh)
+		self.assertEqual(headroom, {("M-1", "B1"): expected})
+
+	def test_no_rows_means_no_cap(self):
+		self.assertEqual(self._run([]), {})
+		self.assertEqual(loss_stock_entry.get_batch_sre_headroom(None, ["B1"]), {})
+		self.assertEqual(loss_stock_entry.get_batch_sre_headroom("MWO-1", []), {})
