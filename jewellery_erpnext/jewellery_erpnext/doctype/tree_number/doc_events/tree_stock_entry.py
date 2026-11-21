@@ -54,7 +54,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import escape_html, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
 	capped_auto_batch_nos,
@@ -734,29 +734,154 @@ def _warn_tree_customer_loss(customer_loss, prec):
 	)
 
 
+def _tree_issued_batches(tree, item_code, msl_wh):
+	"""Distinct batches this tree's own Stock Entries ever moved INTO ``msl_wh``.
+
+	Unlike ``_tree_netted_owed`` this ignores what has since been drawn back out, so it still
+	says which ownership the tree holds after every one of its batches has been consumed.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT DISTINCT sed.batch_no
+		FROM `tabStock Entry Detail` sed
+		JOIN `tabStock Entry` se ON se.name = sed.parent
+		WHERE se.custom_tree_number = %(tree)s
+		  AND se.docstatus = 1
+		  AND sed.item_code = %(item_code)s
+		  AND sed.t_warehouse = %(msl)s
+		  AND IFNULL(sed.batch_no, '') != ''
+		""",
+		{"tree": tree.name, "item_code": item_code, "msl": msl_wh},
+		as_dict=True,
+	)
+	return [r.batch_no for r in rows]
+
+
+def _warehouse_batch_balances(item_code, warehouse):
+	"""``[{batch_no, qty}]`` -- every batch's ledger balance of ``item_code`` at ``warehouse``.
+
+	Same ``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``, read for the whole
+	warehouse at once and not bounded by posting time. Unfiltered: zero and negative balances come
+	back too, and each caller drops what it does not show.
+	"""
+	return frappe.db.sql(
+		"""
+		SELECT sbe.batch_no, SUM(sbe.qty) AS qty
+		FROM `tabSerial and Batch Entry` sbe
+		WHERE sbe.docstatus = 1
+		  AND sbe.item_code = %(item_code)s
+		  AND sbe.warehouse = %(warehouse)s
+		  AND sbe.type_of_transaction IN ('Inward', 'Outward')
+		  AND sbe.voucher_type != 'Pick List'
+		  AND IFNULL(sbe.batch_no, '') != ''
+		GROUP BY sbe.batch_no
+		""",
+		{"item_code": item_code, "warehouse": warehouse},
+		as_dict=True,
+	)
+
+
+def _other_ownership_stock(tree, item_code, msl_wh, own_batches, prec):
+	"""``[(batch_no, qty, owner label)]`` of metal at ``msl_wh`` held under a DIFFERENT ownership.
+
+	Only used to explain a shortfall: Stock Balance shows the whole warehouse, so an operator sees
+	plenty of stock and has no way to tell that it belongs to another ownership tier. Batches of
+	the tree's own tier are excluded -- they are what the allocation already offered -- and when the
+	tree's tier cannot be determined nothing is listed, rather than claiming a difference that was
+	never checked. Same ``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``.
+	"""
+	tiers = _tree_issued_tiers(
+		{b: 1 for b in _tree_issued_batches(tree, item_code, msl_wh)}
+	)
+	if not tiers:
+		return []
+
+	eps = _pending_eps()
+	own = set(own_batches)
+	rows = [
+		r
+		for r in _warehouse_batch_balances(item_code, msl_wh)
+		if flt(r.qty, prec) > eps and r.batch_no not in own
+	]
+	if not rows:
+		return []
+
+	ranks = batch_priority_map([r.batch_no for r in rows])
+	out = []
+	for r in rows:
+		meta = ranks.get(r.batch_no)
+		inv, cust = normalize_ownership(
+			meta.inventory_type if meta else None,
+			meta.customer if meta else None,
+			batch_no=r.batch_no,
+			item_code=item_code,
+		)
+		if (inv, cust) in tiers:
+			continue
+		out.append((r.batch_no, flt(r.qty, prec), f"{inv} / {cust}" if cust else inv))
+	return out
+
+
 def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 	"""Fail fast once even same-ownership-tier metal cannot cover the need.
 
 	The tree's own issued batches are drawn first, and substitutes are confined to the same
 	``(inventory_type, customer)`` (``_tree_fallback_batches``). Reaching here means the warehouse
-	holds no metal this tree is entitled to at all — returning anything else would cross an
+	holds no more metal this tree is entitled to -- returning anything else would cross an
 	ownership boundary, which is the defect this whole restriction exists to prevent.
+
+	The message says how much IS available and lists the metal held under another ownership,
+	because the warehouse total on Stock Balance is larger than what this tree may take and the
+	old wording ("already been consumed") read as if the stock were simply gone.
 	"""
-	frappe.throw(
-		_(
-			"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. The batches this tree "
-			"issued have already been consumed there, and no remaining batch at that warehouse "
-			"shares this tree's ownership, so none may stand in for them. Available to this "
-			"tree: {5}."
+	available = flt(sum(flt(q) for _b, q in pool), prec)
+	others = _other_ownership_stock(
+		tree, item_code, msl_wh, [b for b, _q in pool], prec
+	)
+
+	msg = _(
+		"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. Only {5} of metal this "
+		"tree is entitled to is available there ({6})."
+	).format(
+		tree.name,
+		item_code,
+		flt(need, prec),
+		msl_wh,
+		flt(shortfall, prec),
+		available,
+		escape_html(", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing")),
+	)
+	if others:
+		msg += "<br><br>" + _(
+			"The warehouse also holds metal under a different ownership, which cannot be used for "
+			"this tree: {0}."
 		).format(
-			tree.name,
-			item_code,
-			flt(need, prec),
-			msl_wh,
-			flt(shortfall, prec),
-			", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing"),
-		),
-		title=_("Tree Material Not Available"),
+			escape_html(", ".join(f"{b}: {q} ({owner})" for b, q, owner in others))
+		)
+	else:
+		msg += "<br><br>" + _(
+			"No further metal of this tree's ownership is left in this warehouse."
+		)
+
+	msg += "<br><br>" + _batch_wise_section(tree, item_code, msl_wh, pool)
+	frappe.throw(msg, title=_("Tree Material Not Available"))
+
+
+def _batch_wise_section(tree, item_code, msl_wh, pool):
+	"""The Tree Number form's Batch-wise Balance table, with "usable" taken from the allocation.
+
+	The lines above say what this tree could not get. The table puts it next to what the tree moved
+	per batch and what the warehouse holds against every open tree there, which is what shows
+	whether the metal is under another owner or simply missing from the warehouse.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
+		tree_batch_balance,
+	)
+
+	return tree_batch_balance.render_html(
+		tree_batch_balance.batch_balance(
+			tree, item_code, msl_wh, usable={b: q for b, q in pool}
+		)
 	)
 
 
