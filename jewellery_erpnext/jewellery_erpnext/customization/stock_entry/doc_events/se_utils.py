@@ -280,7 +280,16 @@ def row_variant_of(row, item_map=None):
 	return frappe.db.get_value("Item", item_code, "variant_of")
 
 
-def get_fifo_batches(self, row, consumed=None, item_map=None):
+def _cached_value(cache, key, fetch):
+	"""``fetch()`` memoised in ``cache`` under ``key``; no memo when ``cache`` is None."""
+	if cache is None:
+		return fetch()
+	if key not in cache:
+		cache[key] = fetch()
+	return cache[key]
+
+
+def get_fifo_batches(self, row, consumed=None, item_map=None, cache=None):
 	rows_to_append = []
 	# `consumed` tracks how much has already been allocated per (warehouse, batch)
 	# across all rows of the same document. Callers that process multiple rows for
@@ -289,6 +298,9 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 	# single-row callers behave exactly as before.
 	if consumed is None:
 		consumed = {}
+	# `cache` memoises the Main Slip / PMO / Manufacturer reads below, which are the
+	# same for every row of one save. update_batches passes a dict that lives for one
+	# call only; other callers pass nothing and read the database per row as before.
 	row.batch_no = None
 	total_qty = row.qty
 	row_qty = row.qty
@@ -298,7 +310,11 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 	warehouse = row.get("s_warehouse") or self.get("source_warehouse")
 	if (
 		msl
-		and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse")
+		and _cached_value(
+			cache,
+			("Main Slip", msl),
+			lambda: frappe.db.get_value("Main Slip", msl, "raw_material_warehouse"),
+		)
 		== row.s_warehouse
 	):
 		main_slip = self.main_slip or self.to_main_slip
@@ -339,24 +355,35 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 	if pmo:
 		# ``or frappe._dict()``: a row pointing at a deleted order returns None here, and every
 		# ``.get`` below would then raise AttributeError instead of simply finding no flags.
-		customer_item_data = frappe.db.get_value(
-			"Parent Manufacturing Order",
-			pmo,
-			[
-				"is_customer_gold",
-				"is_customer_diamond",
-				"is_customer_gemstone",
-				"is_customer_material",
-				"customer",
-				"manufacturer",
-			],
-			as_dict=1,
-		) or frappe._dict()
+		pmo_data = _cached_value(
+			cache,
+			("Parent Manufacturing Order", pmo),
+			lambda: frappe.db.get_value(
+				"Parent Manufacturing Order",
+				pmo,
+				[
+					"is_customer_gold",
+					"is_customer_diamond",
+					"is_customer_gemstone",
+					"is_customer_material",
+					"customer",
+					"manufacturer",
+				],
+				as_dict=1,
+			),
+		)
+		# A copy per row: the memoised dict is shared across rows and must stay untouched.
+		customer_item_data = frappe._dict(pmo_data) if pmo_data else frappe._dict()
 	if not manufacturer_data.get(customer_item_data.get("manufacturer")):
-		manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
-			"Manufacturer",
-			customer_item_data.get("manufacturer"),
-			"custom_allow_regular_goods_instead_of_customer_goods",
+		manufacturer = customer_item_data.get("manufacturer")
+		manufacturer_data[manufacturer] = _cached_value(
+			cache,
+			("Manufacturer", manufacturer),
+			lambda: frappe.db.get_value(
+				"Manufacturer",
+				manufacturer,
+				"custom_allow_regular_goods_instead_of_customer_goods",
+			),
 		)
 
 	allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
@@ -444,6 +471,10 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 	expected_type, expected_customer = expected_lane
 
 	for batch in batch_data:
+		# Fully allocated: every branch below only acts while total_qty > 0, so the rest of
+		# the batches could change nothing -- but each one still cost a Batch lookup.
+		if total_qty <= 0:
+			break
 		# reduce this batch's availability by what earlier rows already took
 		batch_key = (warehouse, batch.batch_no)
 		batch.qty = flt(batch.qty - consumed.get(batch_key, 0), 4)

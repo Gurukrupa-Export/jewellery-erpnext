@@ -37,15 +37,39 @@ class TestValidatePcsBatchSplit(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def _run(self, items, mri_pcs):
+	def _run(self, items, mri_pcs, bulk_pcs=None):
+		"""Run validate_pcs with MR Item PCS served from ``mri_pcs``.
+
+		The totals arrive through ``bulk_map`` (one query for every split MR Item), which
+		is replaced where validate_pcs imports it: it then never reaches frappe.get_all or
+		DocType metadata. ``bulk_pcs`` limits what that bulk read returns; a name it leaves
+		out takes the per-item ``frappe.db.get_value`` fallback, also served from
+		``mri_pcs``. Returns the names the bulk read was asked for.
+		"""
+		if bulk_pcs is None:
+			bulk_pcs = mri_pcs
+		requested = []
+
+		def _bulk_map(doctype, names, fields):
+			self.assertEqual(doctype, "Material Request Item")
+			self.assertEqual(fields, ["pcs"])
+			requested.extend(names)
+			return {
+				n: frappe._dict(name=n, pcs=bulk_pcs[n]) for n in names if n in bulk_pcs
+			}
+
 		def _gv(doctype, name, field):
 			return mri_pcs.get(name)
 
 		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.bulk_map",
+			side_effect=_bulk_map,
+		), patch(
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_value",
 			side_effect=_gv,
 		):
 			validate_pcs(_SE(items))
+		return requested
 
 	def test_split_gives_extra_row_minimum_one(self):
 		"""MAT-STE-51278: MR item pcs 71 split across two batches → 70 + 1."""
@@ -96,8 +120,27 @@ class TestValidatePcsBatchSplit(IntegrationTestCase):
 			_Row("a", 71, "B2"),
 			_Row("b", 10, "B3"),
 		]
-		self._run(items, {"a": 71, "b": 10})
+		requested = self._run(items, {"a": 71, "b": 10})
 		self.assertEqual([r.pcs for r in items], [70, 1, 10])
+		# Only the split MR Item is looked up; a single-row item needs no total.
+		self.assertEqual(requested, ["a"])
+
+	def test_bulk_miss_falls_back_to_per_item_lookup(self):
+		"""An MR Item the bulk read does not return still gets its total from the
+		original per-item lookup, so the split is the same either way."""
+		items = [
+			_Row("a", 71, "B1"),
+			_Row("a", 71, "B2"),
+			_Row("b", 10, "B3"),
+			_Row("b", 10, "B4"),
+		]
+		self._run(items, {"a": 71, "b": 10}, bulk_pcs={"a": 71})
+		self.assertEqual([r.pcs for r in items], [70, 1, 9, 1])
+
+	def test_zero_total_leaves_rows_untouched(self):
+		items = [_Row("a", 4, "B1"), _Row("a", 6, "B2")]
+		self._run(items, {"a": 0})
+		self.assertEqual([r.pcs for r in items], [4, 6])
 
 
 """Regression guard for Stock Entry Detail ``transfer_qty`` precision.
