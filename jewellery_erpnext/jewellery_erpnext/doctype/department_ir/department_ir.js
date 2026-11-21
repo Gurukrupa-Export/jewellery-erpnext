@@ -301,5 +301,35 @@ frappe.ui.form.on("Department IR", {
 	},
 	next_department(frm) {
 		frm.set_value("destination_process", null);
+		set_single_destination_process(frm);
 	},
 });
+
+// An Issue into a department that uses process control and has exactly one process names it for
+// the user. Convenience only: validate_department_ir_destination decides on the server.
+function set_single_destination_process(frm) {
+	const department = frm.doc.next_department;
+	if (!department || frm.doc.type != "Issue" || frm.doc.docstatus != 0) return;
+	frappe
+		.xcall("jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.my_processes", {
+			department: department,
+		})
+		.then((pc) => {
+			if (!pc || !pc.controlled) return;
+			return frappe.db
+				.get_list("Department Process", {
+					filters: { department: department, disabled: 0 },
+					fields: ["name"],
+					limit: 2,
+				})
+				.then((rows) => {
+					if (
+						rows.length == 1 &&
+						frm.doc.next_department == department &&
+						!frm.doc.destination_process
+					) {
+						frm.set_value("destination_process", rows[0].name);
+					}
+				});
+		});
+}
