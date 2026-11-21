@@ -141,13 +141,30 @@ class TestSalesOrder(IntegrationTestCase):
 		) as setv:
 			so.docstatus = 0
 			so_events.validate_snc(so)
-			setv.assert_any_call("Serial No", "SRL-A", "status", "Reserved")
-			setv.assert_any_call("Serial No", "SRL-B", "status", "Reserved")
+			setv.assert_called_once_with(
+				"Serial No", {"name": ["in", ["SRL-A", "SRL-B"]]}, "status", "Reserved"
+			)
 
+			setv.reset_mock()
 			so.docstatus = 2
 			so_events.validate_snc(so)
-			setv.assert_any_call("Serial No", "SRL-A", "status", "Active")
-			setv.assert_any_call("Serial No", "SRL-B", "status", "Active")
+			setv.assert_called_once_with(
+				"Serial No", {"name": ["in", ["SRL-A", "SRL-B"]]}, "status", "Active"
+			)
+
+	def test_validate_snc_without_serials_writes_nothing(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events import (
+			sales_order as so_events,
+		)
+
+		so = type("SO", (), {"docstatus": 0})()
+		so.items = [type("I", (), {"serial_no": None})()]
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.frappe.db.set_value"
+		) as setv:
+			so_events.validate_snc(so)
+		setv.assert_not_called()
 
 	def test_validate_quotation_item_copies_from_quotation_when_empty(self):
 		from jewellery_erpnext.jewellery_erpnext.doc_events import (
