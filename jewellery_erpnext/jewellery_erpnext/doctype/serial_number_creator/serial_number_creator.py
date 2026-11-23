@@ -1401,22 +1401,60 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		set_values_in_bulk("Manufacturing Work Order", wo_list, {"status": "Completed"})
 
 		# Mark all relevant virtual logs as synced now that they are physically consumed
-		mop_names = [
-			d.manufacturing_operation
-			for d in operation_data
-			if d.manufacturing_operation
-		]
-		if mop_names:
-			frappe.db.sql(
-				"""
-				UPDATE `tabMOP Log`
-				SET is_synced = 1
-				WHERE manufacturing_operation IN %s
-				  AND is_cancelled = 0
-				  AND is_synced = 0
+		mark_mop_logs_synced(
+			[
+				d.manufacturing_operation
+				for d in operation_data
+				if d.manufacturing_operation
+			]
+		)
+
+
+MOP_LOG_SYNC_CHUNK = 500
+
+
+def mark_mop_logs_synced(mop_names):
+	"""Set ``is_synced = 1`` on the open MOP Logs of ``mop_names``, locking only those rows.
+
+	The names come from a plain (non-locking) read, and the UPDATE is keyed on ``name``. An
+	UPDATE filtered on ``manufacturing_operation`` instead has no index to use on production
+	(``mop_balance_idx`` is missing there), so MariaDB range-scans ``mop_eod_sync_idx`` over
+	every unsynced, uncancelled MOP Log and next-key locks all of it until this submit
+	commits. Every new MOP Log is inserted into that range (``is_synced = 0``), so any
+	concurrent Employee IR / Department IR insert waited on it, and an Issue that had already
+	inserted a log deadlocked (20 Nov 2026: EMP-IR-Labh-2026-65488 and -65664, 1213 at the
+	MOP Log INSERT, each a few seconds into a Serial Number Creator submit).
+
+	The read sees this transaction's snapshot plus its own writes: exactly the logs this
+	submit built its entries from, so only those are marked synced.
+	"""
+	mop_names = sorted({m for m in mop_names or [] if m})
+	if not mop_names:
+		return 0
+
+	names = frappe.get_all(
+		"MOP Log",
+		filters={
+			"manufacturing_operation": ["in", mop_names],
+			"is_cancelled": 0,
+			"is_synced": 0,
+		},
+		pluck="name",
+		order_by="name asc",
+	)
+	for start in range(0, len(names), MOP_LOG_SYNC_CHUNK):
+		chunk = names[start : start + MOP_LOG_SYNC_CHUNK]
+		frappe.db.sql(
+			"""
+			UPDATE `tabMOP Log`
+			SET is_synced = 1
+			WHERE name IN %s
+			  AND is_cancelled = 0
+			  AND is_synced = 0
 			""",
-				(tuple(mop_names),),
-			)
+			(tuple(chunk),),
+		)
+	return len(names)
 
 
 def get_shift(employee, start_date, end_date):
