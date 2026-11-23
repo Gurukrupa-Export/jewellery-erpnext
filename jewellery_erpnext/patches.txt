@@ -163,3 +163,4 @@ jewellery_erpnext.patches.add_stock_reconciliation_summary_fields #2026-11-17 St
 jewellery_erpnext.patches.backfill_customer_gold_gl_narration #2026-11-17 Customer Gold GL narration for receipts, returns and settlement JEs
 jewellery_erpnext.patches.add_purchase_order_item_serial_id_bom_field #2026-11-20 Serial Id BOM on Purchase Order Item (repair BOM carry-forward)
 jewellery_erpnext.patches.ensure_read_path_indexes
+jewellery_erpnext.patches.set_do_not_explode_on_old_bom_items #2026-11-23 tick Do Not Explode on existing Template BOM rows

@@ -17,7 +17,24 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 )
 
 
+def set_do_not_explode(self):
+	"""Tick Do Not Explode on every row of a new Template BOM.
+
+	Quotation, Sales Order, Manufacturing Process and Finish Goods BOMs are copied from the
+	Template, and the copy keeps the flag, so ticking the Template is enough. Only on first
+	save: rows added to a saved draft, and BOMs saved before this, are left as they are.
+	Phantom rows are skipped because ERPNext keeps the flag off for them.
+	"""
+	if self.bom_type != "Template" or not self.is_new():
+		return
+
+	for row in self.get("items"):
+		if not row.get("is_phantom_item"):
+			row.do_not_explode = 1
+
+
 def before_validate(self, method):
+	set_do_not_explode(self)
 	validate_rating(self)
 	validate_weight(self)
 	if self.bom_type == "Quotation" or self.docstatus == 1:
