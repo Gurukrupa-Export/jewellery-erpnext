@@ -142,3 +142,4 @@ jewellery_erpnext.patches.set_cad_cam_receive_details_type #2026-11-10 flag RPT 
 jewellery_erpnext.patches.add_process_control_fields
 jewellery_erpnext.patches.grant_process_transfer_user_work_order_read
 jewellery_erpnext.patches.add_process_control_stock_entry_field
+jewellery_erpnext.patches.add_purchase_order_item_serial_id_bom_field #2026-11-20 Serial Id BOM on Purchase Order Item (repair BOM carry-forward)

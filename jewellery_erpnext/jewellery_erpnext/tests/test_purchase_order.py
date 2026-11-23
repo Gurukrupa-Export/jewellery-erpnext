@@ -323,6 +323,50 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			po_doc.save.assert_called_once()
 
 	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.get_single_value"
+	)
+	def test_make_subcontracting_order_carries_repair_serial_and_both_boms(
+		self, mock_get_single_value, mock_new_doc
+	):
+		"""A repair row sends the job worker its Copy BOM, the serial and the serial's own BOM."""
+		mock_get_single_value.return_value = "Subcontracting Service"
+		common = dict(
+			customer="Customer X",
+			customer_po="PO-1",
+			item_code="Item 1",
+			subcontracting_qty=1,
+			copy_bom="BOM-NEW-1",
+			serial_no="SR-0001",
+			serial_id_bom="BOM-SERIAL-1",
+			estimated_delivery_date="2026-08-10",
+		)
+		doc = frappe._dict(
+			name="MPLAN-R",
+			company="Test Company",
+			manufacturing_plan_table=[
+				frappe._dict(
+					supplier="Supplier A", purchase_type="FG Purchase", name="MP-R-1", **common
+				),
+				frappe._dict(
+					supplier="Supplier B", purchase_type="Subcontracting", name="MP-R-2", **common
+				),
+			],
+		)
+		po_docs = [MagicMock(), MagicMock()]
+		mock_new_doc.side_effect = po_docs
+		po_events.make_subcontracting_order(doc)
+
+		for po_doc in po_docs:
+			items = [c.args[1] for c in po_doc.append.call_args_list if c.args[0] == "items"]
+			self.assertEqual(len(items), 1)
+			self.assertEqual(items[0]["custom_copy_bom"], "BOM-NEW-1")
+			self.assertEqual(items[0]["serial_no"], "SR-0001")
+			self.assertEqual(items[0]["custom_serial_id_bom"], "BOM-SERIAL-1")
+
+	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.get_doc"
 	)
 	@patch(
