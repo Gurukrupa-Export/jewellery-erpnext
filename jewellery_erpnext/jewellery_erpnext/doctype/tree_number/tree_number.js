@@ -234,12 +234,17 @@ function render_balance_summary(frm) {
 function render_work_order_summary(frm) {
 	// Issued / Received / Pending work orders, from the tree's Issue Employee IR and the casting
 	// Receives pinned to it. Worked out server-side on every load (tree_number.get_work_order_summary).
+	// Every refresh resets the dashboard, so a reply that lands after a newer refresh (or after the
+	// form moved to another tree) is dropped -- otherwise two quick reloads would show it twice.
+	let token = (frm.__wo_summary_token = (frm.__wo_summary_token || 0) + 1);
+	let name = frm.doc.name;
 	frappe
 		.call({
 			method: "jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_number.get_work_order_summary",
-			args: { tree_number: frm.doc.name },
+			args: { tree_number: name },
 		})
 		.then((r) => {
+			if (token !== frm.__wo_summary_token || frm.doc.name !== name) return;
 			let summary = r.message;
 			if (!summary) return;
 			if (!summary.issued) {

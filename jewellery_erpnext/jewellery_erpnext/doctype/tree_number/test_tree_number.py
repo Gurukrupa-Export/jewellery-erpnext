@@ -12,6 +12,7 @@ that the controller actually routes through it.
 """
 
 import unittest
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.exceptions import ValidationError
@@ -19,6 +20,9 @@ from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
 	tree_material_balance as tree_balance,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
+	tree_number as tree_number_module,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_number import (
 	build_work_order_summary,
@@ -156,3 +160,95 @@ class TestTreeWorkOrderSummary(unittest.TestCase):
 		summary = build_work_order_summary([], [_received("MWO-1", "EIR-R1", None)])
 		self.assertEqual(self._counts(summary), (0, 0, 0))
 		self.assertEqual(summary["work_orders"], [])
+
+	# --- the SQL readers and the whitelisted method --------------------------------------------
+	# Mock-only: each patch covers one call, so nothing else (DocType meta, translations) is hijacked.
+
+	def _sql_call(self, reader, *args):
+		db = MagicMock()
+		db.sql.return_value = [{"manufacturing_work_order": "MWO-1"}]
+		with patch.object(frappe, "db", db):
+			result = reader(*args)
+		return db.sql, result
+
+	def test_issued_reader_without_an_issue_runs_no_query(self):
+		sql, result = self._sql_call(tree_number_module._tree_issued_rows, None)
+		self.assertEqual(result, [])
+		sql.assert_not_called()
+
+	def test_receive_reader_without_work_orders_runs_no_query(self):
+		sql, result = self._sql_call(
+			tree_number_module._tree_receive_rows, "TR-1", "Casting", []
+		)
+		self.assertEqual(result, [])
+		sql.assert_not_called()
+
+	def test_issued_reader_reads_the_submitted_issue_by_parent(self):
+		sql, result = self._sql_call(tree_number_module._tree_issued_rows, "EIR-1")
+		self.assertEqual(result, [{"manufacturing_work_order": "MWO-1"}])
+		query, params = sql.call_args.args
+		self.assertEqual(params, {"eir": "EIR-1"})
+		for clause in (
+			"eiro.parent = %(eir)s",
+			"eir.type = 'Issue'",
+			"eir.docstatus = 1",
+		):
+			self.assertIn(clause, query)
+		self.assertTrue(sql.call_args.kwargs.get("as_dict"))
+
+	def test_receive_reader_keeps_to_this_tree_and_its_operation(self):
+		sql, _result = self._sql_call(
+			tree_number_module._tree_receive_rows, "TR-1", "Casting", ["MWO-2", "MWO-1"]
+		)
+		query, params = sql.call_args.args
+		self.assertEqual(
+			params, {"mwos": ("MWO-2", "MWO-1"), "tree": "TR-1", "operation": "Casting"}
+		)
+		for clause in (
+			"eiro.manufacturing_work_order IN %(mwos)s",
+			"eiro.tree_number = %(tree)s",
+			"eir.operation = %(operation)s",
+			"eir.type = 'Receive'",
+			"eir.docstatus = 1",
+		):
+			self.assertIn(clause, query)
+
+	def _fake_tree(self):
+		tree = MagicMock()
+		tree.name, tree.employee_ir, tree.operation = "TR-1", "EIR-1", "Casting"
+		return tree
+
+	def test_endpoint_checks_read_permission_and_wires_the_readers(self):
+		tree = self._fake_tree()
+		with (
+			patch.object(frappe, "get_doc", return_value=tree) as get_doc,
+			patch.object(
+				tree_number_module,
+				"_tree_issued_rows",
+				return_value=_issued("MWO-2", "MWO-1", "MWO-2"),
+			) as issued,
+			patch.object(
+				tree_number_module,
+				"_tree_receive_rows",
+				return_value=[_received("MWO-1", "EIR-R1", "2026-11-01 10:00:00")],
+			) as received,
+		):
+			summary = tree_number_module.get_work_order_summary("TR-1")
+		get_doc.assert_called_once_with("Tree Number", "TR-1")
+		tree.check_permission.assert_called_once_with("read")
+		issued.assert_called_once_with("EIR-1")
+		received.assert_called_once_with("TR-1", "Casting", ["MWO-1", "MWO-2"])
+		self.assertEqual(self._counts(summary), (2, 1, 1))
+
+	def test_endpoint_without_read_permission_reads_nothing(self):
+		tree = self._fake_tree()
+		tree.check_permission.side_effect = frappe.PermissionError
+		with (
+			patch.object(frappe, "get_doc", return_value=tree),
+			patch.object(tree_number_module, "_tree_issued_rows") as issued,
+			patch.object(tree_number_module, "_tree_receive_rows") as received,
+		):
+			with self.assertRaises(frappe.PermissionError):
+				tree_number_module.get_work_order_summary("TR-1")
+		issued.assert_not_called()
+		received.assert_not_called()
