@@ -57,7 +57,7 @@ def adjust_rounding_in_item_wise_tax_details(self):
 		actual_breakup = tax._total_tax_breakup
 		diff = flt(expected_amount - actual_breakup, 5)
 
-		if abs(diff) <= _allowed_rounding_difference(tax):
+		if abs(diff) <= _allowed_rounding_difference(tax, self.doc.conversion_rate):
 			detail_row = self.doc._item_wise_tax_details[last_idx]
 			detail_row["amount"] = flt(detail_row["amount"] + diff, 5)
 
@@ -79,14 +79,27 @@ def adjust_rounding_in_item_wise_tax_details(self):
 		frappe.throw(_(message))
 
 
-def _allowed_rounding_difference(tax):
-	"""ERPNext's flat limit, widened to the rounding the tax row's item lines can add up to."""
+def _allowed_rounding_difference(tax, conversion_rate=1):
+	"""ERPNext's flat limit, widened to the rounding the tax row's item lines can add up to.
+
+	The rounding happens in the document's currency, but the check compares company-currency
+	amounts. With "Round Row-wise Tax" on, the tax row adds per-line rounded amounts while the
+	breakup rounds only its running total, so the two can sit up to (lines + 1) half-units
+	apart in the document's currency -- one cent on a 2-line USD quotation -- and the
+	conversion rate multiplies that gap (0.94 INR at 93.48). Converting each side to company
+	currency adds at most one more smallest unit. A larger mismatch still throws.
+	"""
 	precision = tax.precision("tax_amount")
+	base_precision = tax.precision("base_tax_amount")
 	# ERPNext: allow up to 1 for zero-precision currencies (e.g. JPY, KRW), else 0.5.
 	erpnext_limit = 1 if precision == 0 else 0.5
 	# Each line's share can be off by at most half of the smallest unit (0.005 at 2 decimals).
 	per_line = 0.5 * 10 ** -(precision or 0)
-	return max(erpnext_limit, tax._breakup_row_count * per_line)
+	rate = max(flt(conversion_rate), 1)
+	rounding = (tax._breakup_row_count + 1) * per_line * rate + 10 ** -(
+		base_precision or 0
+	)
+	return max(erpnext_limit, rounding)
 
 
 def apply():

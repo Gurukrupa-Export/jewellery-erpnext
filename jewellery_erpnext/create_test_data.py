@@ -3055,6 +3055,12 @@ def create_test_data():
 
 			_add_metal_conversion_chain_sc()
 
+			from jewellery_erpnext.patches.add_process_control_fields import (
+				execute as _add_process_control_fields,
+			)
+
+			_add_process_control_fields()
+
 			from jewellery_erpnext.patches.add_metal_conversion_workflow import (
 				execute as _add_metal_conversion_workflow,
 			)
@@ -3138,6 +3144,14 @@ def create_test_data():
 			)
 
 			_ensure_purchase_order_order_dimension_fields()
+
+			# Purchase Order Item.custom_serial_id_bom is patch-only for the same reason;
+			# make_subcontracting_order and make_quotation carry a repair's serial BOM on it.
+			from jewellery_erpnext.patches.add_purchase_order_item_serial_id_bom_field import (
+				execute as _ensure_purchase_order_item_serial_id_bom_field,
+			)
+
+			_ensure_purchase_order_item_serial_id_bom_field()
 
 			# Removes v15 Custom Field rows that shadow the standard sales_type / flow_type /
 			# design_type fields of the planning doctypes. A no-op on fresh and CI sites; it is

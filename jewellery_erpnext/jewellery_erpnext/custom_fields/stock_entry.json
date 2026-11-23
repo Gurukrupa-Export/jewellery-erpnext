@@ -1087,6 +1087,17 @@
    "insert_after": "column_break_gold_rate",
    "label": "Metal Rate",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "The process this material movement is made in. In departments that use process control it must be the work order's current process, and you need access to it.",
+   "dt": "Stock Entry",
+   "fieldname": "custom_department_process",
+   "fieldtype": "Link",
+   "insert_after": "manufacturing_operation",
+   "label": "Department Process",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Department Process"
   }
  ]
 }

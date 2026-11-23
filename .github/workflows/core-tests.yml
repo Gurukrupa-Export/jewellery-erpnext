@@ -65,6 +65,9 @@ jobs:
           # unguarded.
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_loss_gate
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_finding_loss_gate
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_control_foundation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_transfer_workflow
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_enforcement
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_warehouse_stock_entry
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_ownership_priority
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_bom_field_configuration
@@ -73,6 +76,7 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_row_ownership
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_allowed_items
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repair_bom_carry_forward
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_reconcile_v15_order_dimension_custom_fields
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_invoice
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_invoice

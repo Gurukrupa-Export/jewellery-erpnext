@@ -121,6 +121,7 @@ jewellery_erpnext.patches.remove_manufacturing_plan_field_order_setter
 jewellery_erpnext.patches.add_ref_customer_fields
 jewellery_erpnext.patches.add_metal_conversion_chain_sc
 jewellery_erpnext.patches.add_metal_conversion_workflow #2026-10-14 chain to employee or supplier, Cancel Issue
+jewellery_erpnext.patches.metal_conversion_receive_submits_directly
 jewellery_erpnext.patches.remove_unused_chain_sc_stock_entry_type
 jewellery_erpnext.patches.enable_serial_and_batch_no_for_item
 jewellery_erpnext.patches.split_sales_order_finding_weight #2026-10-23 (gms) labels
@@ -136,5 +137,10 @@ jewellery_erpnext.patches.clear_kggk_source_on_non_template_bom #2026-10-28 clea
 jewellery_erpnext.patches.move_sales_invoice_invoice_item_to_e_invoice_child #2026-11-04 invoice_item rows -> Sales Invoice E Invoice Item
 jewellery_erpnext.patches.remove_stale_sales_invoice_invoice_item_rows #2026-11-05 re-move invoice_item rows written after fixture reverted the field
 jewellery_erpnext.patches.add_item_save_indexes #2026-11-06 Item naming sequence and variant attribute lookups
+jewellery_erpnext.patches.add_diamond_price_list_customer_index #2026-11-17 Tracking BOM diamond rate lookups
 jewellery_erpnext.patches.set_cad_cam_receive_details_type #2026-11-10 flag RPT Digital File Generation (CAD) / RPT Support Generation (CAM) and backfill Manufacturing Operation
+jewellery_erpnext.patches.add_process_control_fields
+jewellery_erpnext.patches.grant_process_transfer_user_work_order_read
+jewellery_erpnext.patches.add_process_control_stock_entry_field
+jewellery_erpnext.patches.add_purchase_order_item_serial_id_bom_field #2026-11-20 Serial Id BOM on Purchase Order Item (repair BOM carry-forward)
 jewellery_erpnext.patches.add_slow_path_indexes #2026-11-23 cancel back-link, SABB/SBE voucher, SE Detail MOP, MR Item batch, order_form_id, BOM route, Settle batch/lineage and linked-docs lookups

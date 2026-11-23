@@ -60,12 +60,15 @@ class DiamondConversion(Document):
 		self.flags.exclude_diamond_conversion_target_batches = sieve_to_sieve
 		self.flags.throw_batch_error = sieve_to_sieve
 		update_batch_details(self)
+		# After the FIFO rebuild above, which can split or shrink the source rows.
+		set_table_totals(self)
 
 	def on_submit(self):
 		make_diamond_stock_entry(self)
 
 	def validate(self):
 		to_check_valid_qty_in_table(self)
+		validate_source_equals_target(self)
 		validate_target_item(self)
 		validate_sieve_size_band(self)
 		validate_source_batches(self)
@@ -152,6 +155,37 @@ def to_check_valid_qty_in_table(self):
 		frappe.throw(_("Source table is empty. Please add rows."))
 	if not self.sc_target_table:
 		frappe.throw(_("Target table is empty. Please add rows."))
+
+
+def set_table_totals(doc):
+	"""Source and Target totals from the rows being saved.
+
+	The form keeps them in step on a qty edit only -- a deleted or duplicated row left the old
+	total behind -- and ``update_batch_details`` may rebuild the source rows after the form
+	summed them. ``make_diamond_stock_entry`` divides by ``sum_source_table``, so a stale total
+	would also skew the target qtys it books.
+	"""
+	precision = doc.precision("sum_source_table")
+	doc.sum_source_table = flt(
+		sum(flt(row.qty) for row in doc.sc_source_table), precision
+	)
+	doc.sum_target_table = flt(
+		sum(flt(row.qty) for row in doc.sc_target_table), precision
+	)
+
+
+def validate_source_equals_target(doc):
+	"""A conversion only reshapes stones: what goes in must equal what comes out."""
+	precision = doc.precision("sum_source_table")
+	source = flt(doc.sum_source_table, precision)
+	target = flt(doc.sum_target_table, precision)
+	if source != target:
+		frappe.throw(
+			_("Source Qty {0} and Target Qty {1} must be equal.").format(
+				frappe.bold(source), frappe.bold(target)
+			),
+			title=_("Qty Mismatch"),
+		)
 
 
 def validate_target_item(self):

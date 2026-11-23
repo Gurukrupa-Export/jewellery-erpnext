@@ -26,6 +26,15 @@ frappe.ui.form.on("Metal Conversions", {
 		// Set Metal Tab Filter
 		set_wh_filter(frm, "source_warehouse");
 		set_department_filter(frm, "department");
+		// A chain conversion goes to an Artist of the Employee's department
+		// (chain_subcontracting.set_to_warehouse holds the same rule on save).
+		frm.set_query("to_employee", () => ({
+			filters: {
+				status: "Active",
+				designation: "Artist",
+				department: frm.doc.department || "",
+			},
+		}));
 		set_source_batch_filter(frm);
 		if (frm.doc.multiple_metal_converter == 0) {
 			set_Metal_filter(frm, "source_item");

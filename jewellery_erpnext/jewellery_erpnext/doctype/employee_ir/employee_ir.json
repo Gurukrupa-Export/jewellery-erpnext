@@ -23,8 +23,10 @@
   "subcontracting",
   "tree_number",
   "section_break_pk7m5",
+  "department_process",
   "operation",
   "receive_details_type",
+  "receive_detail_fields",
   "employee",
   "is_repeat_receive",
   "worker_performance",
@@ -156,11 +158,29 @@
    "read_only": 1
   },
   {
+   "description": "The process this Employee IR works in. In a department that uses process control, choose it first: Operation then offers only its operations. On save it is always the Operation's process.",
+   "fetch_from": "operation.department_process",
+   "fetch_if_empty": 1,
+   "fieldname": "department_process",
+   "fieldtype": "Link",
+   "label": "Process",
+   "options": "Department Process"
+  },
+  {
    "fieldname": "operation",
    "fieldtype": "Link",
    "label": "Operation",
    "options": "Department Operation",
    "reqd": 1
+  },
+  {
+   "fetch_from": "operation.receive_detail_fields",
+   "fieldname": "receive_detail_fields",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Receive Detail Fields",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fetch_from": "operation.receive_details_type",
@@ -464,7 +484,7 @@
    "link_fieldname": "employee_ir"
   }
  ],
- "modified": "2026-11-10 10:00:00.000000",
+ "modified": "2026-11-20 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR",

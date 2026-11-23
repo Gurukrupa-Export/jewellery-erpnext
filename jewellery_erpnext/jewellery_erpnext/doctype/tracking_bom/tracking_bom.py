@@ -13,6 +13,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	get_making_charges,
 	get_other_rate,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import run_cached
 
 
 class TrackingBom(Document):
@@ -29,16 +30,21 @@ class TrackingBom(Document):
 		"""The customer's precision and gemstone price-list settings, read in one query."""
 		if not self.customer:
 			return None
-		return frappe.db.get_value(
-			"Customer",
-			self.customer,
-			[
-				"custom_consider_2_digit_for_bom",
-				"custom_consider_2_digit_for_diamond",
-				"custom_consider_2_digit_for_gemstone",
-				"custom_gemstone_price_list_type",
-			],
-			as_dict=1,
+		# Run-cached: a Quotation's Tracking BOMs share one customer, and insert() runs
+		# before_validate a second time.
+		return run_cached(
+			("tracking_bom_customer_settings", self.customer),
+			lambda: frappe.db.get_value(
+				"Customer",
+				self.customer,
+				[
+					"custom_consider_2_digit_for_bom",
+					"custom_consider_2_digit_for_diamond",
+					"custom_consider_2_digit_for_gemstone",
+					"custom_gemstone_price_list_type",
+				],
+				as_dict=1,
+			),
 		)
 
 	def _set_precision(self, precision_data):
