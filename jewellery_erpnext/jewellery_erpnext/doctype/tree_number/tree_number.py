@@ -242,6 +242,144 @@ def get_batch_balance(tree_number):
 	return render_tree(tree)
 
 
+# --- Tree Number Summary: work orders issued / received / pending --------------------------------
+#
+# Worked out from the Employee IRs on every call; nothing is stored, so there is nothing to drift.
+#
+# Issued -- the work orders on the tree's own Issue Employee IR (``Tree Number.employee_ir``). One
+# casting Issue builds exactly one tree and cancelling it deletes the tree, so that document IS the
+# issued set. ``Employee IR Operation.tree_number`` is not used for it: Issues submitted before the
+# row stamp existed (240 of 450 trees on kggk-dummy) carry no tree on their rows.
+#
+# Received -- work orders on a submitted Receive Employee IR of the tree's own operation (Casting)
+# whose row is pinned to this tree. ``tree_number`` travels with the work order into every later
+# operation (Hammer, Pre Polish, Setting ... ~35k rows), so a Receive at another operation is not
+# the tree coming back and must not be counted.
+#
+# Pending -- issued and not yet received, per work order (a repeat receive counts once).
+
+WO_STATUS_RECEIVED = "Received"
+WO_STATUS_PENDING = "Pending"
+
+
+@frappe.whitelist()
+def get_work_order_summary(tree_number):
+	"""Issued / Received / Pending work orders for the form's Tree Number Summary section.
+
+	Read-only. Takes the name for the same reason as ``get_batch_balance``.
+	"""
+	tree = frappe.get_doc("Tree Number", tree_number)
+	tree.check_permission("read")
+	issued_rows = _tree_issued_rows(tree.employee_ir)
+	mwos = sorted({row["manufacturing_work_order"] for row in issued_rows})
+	receive_rows = _tree_receive_rows(tree.name, tree.operation, mwos)
+	return build_work_order_summary(issued_rows, receive_rows)
+
+
+def build_work_order_summary(issued_rows, receive_rows):
+	"""Pure: issued rows + casting receive rows -> ``{issued, received, pending, work_orders}``.
+
+	``issued_rows``: dicts with ``manufacturing_work_order``, ``item_code``.
+	``receive_rows``: dicts with ``manufacturing_work_order``, ``receive_eir``, ``received_on``,
+	``received_gross_wt``.
+	A work order is counted once however many rows name it. A receive for a work order that is not
+	on the Issue is ignored -- the tree's counts can never add up to more than it issued.
+	"""
+	issued = {}
+	for row in issued_rows or ():
+		mwo = row.get("manufacturing_work_order")
+		if mwo and mwo not in issued:
+			issued[mwo] = row
+
+	first_receive = {}
+	for row in receive_rows or ():
+		mwo = row.get("manufacturing_work_order")
+		if mwo not in issued:
+			continue
+		current = first_receive.get(mwo)
+		if current is None or _receive_sort_key(row) < _receive_sort_key(current):
+			first_receive[mwo] = row
+
+	work_orders = []
+	for mwo, row in issued.items():
+		receive = first_receive.get(mwo) or {}
+		work_orders.append(
+			{
+				"manufacturing_work_order": mwo,
+				"item_code": row.get("item_code"),
+				"status": WO_STATUS_RECEIVED if receive else WO_STATUS_PENDING,
+				"receive_eir": receive.get("receive_eir"),
+				"received_on": receive.get("received_on"),
+				# The Issue side carries no weight (a casting Issue goes out as wax), so the only
+				# gross weight there is to show is what came back.
+				"received_gross_wt": receive.get("received_gross_wt"),
+			}
+		)
+	# Pending first: that is the list the user opens the dialog for.
+	work_orders.sort(
+		key=lambda d: (d["status"] != WO_STATUS_PENDING, d["manufacturing_work_order"])
+	)
+
+	received = len(first_receive)
+	return {
+		"issued": len(issued),
+		"received": received,
+		"pending": len(issued) - received,
+		"work_orders": work_orders,
+	}
+
+
+def _receive_sort_key(row):
+	# Earliest receive wins; one without a timestamp sorts last instead of failing a None compare.
+	received_on = row.get("received_on")
+	return (received_on is None, str(received_on or ""), row.get("receive_eir") or "")
+
+
+def _tree_issued_rows(issue_eir):
+	if not issue_eir:
+		return []
+	# Filtered on ``parent`` (indexed). docstatus/type guard a tree whose link was hand-edited.
+	return frappe.db.sql(
+		"""
+		SELECT eiro.manufacturing_work_order, mwo.item_code
+		FROM `tabEmployee IR Operation` eiro
+		JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+		LEFT JOIN `tabManufacturing Work Order` mwo ON mwo.name = eiro.manufacturing_work_order
+		WHERE eiro.parent = %(eir)s
+		  AND eiro.parenttype = 'Employee IR'
+		  AND eir.docstatus = 1
+		  AND eir.type = 'Issue'
+		  AND IFNULL(eiro.manufacturing_work_order, '') != ''
+		ORDER BY eiro.idx
+		""",
+		{"eir": issue_eir},
+		as_dict=True,
+	)
+
+
+def _tree_receive_rows(tree_name, operation, mwos):
+	if not (tree_name and operation and mwos):
+		return []
+	# Driven by the issued work orders so it can use manufacturing_work_order_index;
+	# Employee IR Operation.tree_number has no index.
+	return frappe.db.sql(
+		"""
+		SELECT eiro.manufacturing_work_order, eir.name AS receive_eir, eir.date_time AS received_on,
+			eiro.received_gross_wt
+		FROM `tabEmployee IR Operation` eiro
+		JOIN `tabEmployee IR` eir ON eir.name = eiro.parent
+		WHERE eiro.manufacturing_work_order IN %(mwos)s
+		  AND eiro.parenttype = 'Employee IR'
+		  AND eiro.tree_number = %(tree)s
+		  AND eir.docstatus = 1
+		  AND eir.type = 'Receive'
+		  AND eir.operation = %(operation)s
+		""",
+		{"mwos": tuple(mwos), "tree": tree_name, "operation": operation},
+		as_dict=True,
+	)
+
+
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def tree_metal_item_query(doctype, txt, searchfield, start, page_len, filters):

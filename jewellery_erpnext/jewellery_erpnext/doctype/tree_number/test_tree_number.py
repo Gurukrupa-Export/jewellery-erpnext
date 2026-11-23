@@ -11,12 +11,17 @@ The ledger arithmetic itself is pinned in
 that the controller actually routes through it.
 """
 
+import unittest
+
 import frappe
 from frappe.exceptions import ValidationError
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
 	tree_material_balance as tree_balance,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_number import (
+	build_work_order_summary,
 )
 
 
@@ -76,3 +81,78 @@ class TestTreeNumber(IntegrationTestCase):
 		doc = self._tree([("ITEM-A", 0, 0, 0)])
 		doc.calculate_material_pending()
 		self.assertEqual(tree_balance.tree_status(doc), tree_balance.STATUS_DRAFT)
+
+
+def _issued(*mwos):
+	return [{"manufacturing_work_order": m, "item_code": f"ITEM-{m}"} for m in mwos]
+
+
+def _received(mwo, eir, on, gross=2.5):
+	return {
+		"manufacturing_work_order": mwo,
+		"receive_eir": eir,
+		"received_on": on,
+		"received_gross_wt": gross,
+	}
+
+
+class TestTreeWorkOrderSummary(unittest.TestCase):
+	"""``build_work_order_summary``: pure set logic behind the Tree Number Summary section."""
+
+	def _counts(self, summary):
+		return summary["issued"], summary["received"], summary["pending"]
+
+	def test_all_received(self):
+		summary = build_work_order_summary(
+			_issued("MWO-1", "MWO-2"),
+			[
+				_received("MWO-1", "EIR-R1", "2026-11-01 10:00:00"),
+				_received("MWO-2", "EIR-R1", "2026-11-01 10:00:00"),
+			],
+		)
+		self.assertEqual(self._counts(summary), (2, 2, 0))
+		self.assertTrue(all(d["status"] == "Received" for d in summary["work_orders"]))
+
+	def test_partly_received_lists_pending_first(self):
+		summary = build_work_order_summary(
+			_issued("MWO-1", "MWO-2", "MWO-3"),
+			[_received("MWO-1", "EIR-R1", "2026-11-01 10:00:00")],
+		)
+		self.assertEqual(self._counts(summary), (3, 1, 2))
+		self.assertEqual(
+			[
+				(d["manufacturing_work_order"], d["status"])
+				for d in summary["work_orders"]
+			],
+			[("MWO-2", "Pending"), ("MWO-3", "Pending"), ("MWO-1", "Received")],
+		)
+		self.assertIsNone(summary["work_orders"][0]["receive_eir"])
+		self.assertIsNone(summary["work_orders"][0]["received_gross_wt"])
+
+	def test_nothing_received(self):
+		summary = build_work_order_summary(_issued("MWO-1"), [])
+		self.assertEqual(self._counts(summary), (1, 0, 1))
+
+	def test_repeat_receive_counts_once_and_keeps_the_earliest(self):
+		summary = build_work_order_summary(
+			_issued("MWO-1", "MWO-1"),
+			[
+				_received("MWO-1", "EIR-R2", "2026-11-03 09:00:00", 9.9),
+				_received("MWO-1", "EIR-R1", "2026-11-01 09:00:00", 3.2),
+			],
+		)
+		self.assertEqual(self._counts(summary), (1, 1, 0))
+		self.assertEqual(summary["work_orders"][0]["receive_eir"], "EIR-R1")
+		self.assertEqual(summary["work_orders"][0]["received_gross_wt"], 3.2)
+
+	def test_receive_for_a_work_order_not_issued_is_ignored(self):
+		summary = build_work_order_summary(
+			_issued("MWO-1"), [_received("MWO-OTHER", "EIR-R1", "2026-11-01 09:00:00")]
+		)
+		self.assertEqual(self._counts(summary), (1, 0, 1))
+		self.assertEqual(len(summary["work_orders"]), 1)
+
+	def test_tree_without_an_issue_is_all_zero(self):
+		summary = build_work_order_summary([], [_received("MWO-1", "EIR-R1", None)])
+		self.assertEqual(self._counts(summary), (0, 0, 0))
+		self.assertEqual(summary["work_orders"], [])
