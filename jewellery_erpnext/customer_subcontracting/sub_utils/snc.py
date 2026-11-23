@@ -1,5 +1,4 @@
 import hashlib
-from contextlib import contextmanager
 
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
@@ -1093,51 +1092,22 @@ def _get_snc_source_warehouses(company=None):
 	return frappe.get_all("Warehouse", filters=filters, pluck="name")
 
 
-_ITEM_LOOKUP_CACHE = "snc_item_lookup_cache"
-
-
-@contextmanager
-def item_lookup_cache():
-	"""Reuse the candidate-Item and Item-purity reads inside one call (e.g. one Settle).
-
-	Settle asks for the same purity/colour candidates and the same Item purities once per
-	purity, per finder, per short row, and again when it re-plans after a work-order
-	take-back. Item master data is not written on those paths, so within one call the answer
-	cannot change. Only these two Item-master lookups are cached: batch quantities,
-	reservations, run claims and submit-time checks are always read live. Outside this
-	context nothing is cached; a nested use shares the outer cache. Cleared on exit, also
-	when the call raises.
-	"""
-	if getattr(frappe.local, _ITEM_LOOKUP_CACHE, None) is not None:
-		yield
-		return
-	setattr(frappe.local, _ITEM_LOOKUP_CACHE, {})
-	try:
-		yield
-	finally:
-		setattr(frappe.local, _ITEM_LOOKUP_CACHE, None)
-
-
-def _cached_item_lookup(kind, key, compute):
-	cache = getattr(frappe.local, _ITEM_LOOKUP_CACHE, None)
-	if cache is None:
-		return compute()
-	bucket = cache.setdefault(kind, {})
-	if key not in bucket:
-		bucket[key] = compute()
-	return bucket[key]
-
-
 def _get_gold_items_for_purity(purity, required_item_code):
 	colour = (required_item_code or "").split("-")[-1]
-	# A copy, so a caller can never alter the cached list.
-	return list(
-		_cached_item_lookup(
-			"gold_items",
-			(purity, colour),
-			lambda: _query_gold_items_for_purity(purity, colour),
-		)
-	)
+	# A fresh list, so a caller can never alter the cached tuple.
+	return list(_gold_items_for(purity, colour))
+
+
+@frappe.request_cache
+def _gold_items_for(purity, colour):
+	"""Item master only, cached per request / background job (``frappe.request_cache``).
+
+	Settle asks for the same purity/colour candidates once per purity, per finder, per short
+	row, and again when it re-plans after a work-order take-back. Items are never created or
+	disabled on those paths, so the answer cannot change mid-request; the next request reads
+	afresh. Batch quantities, reservations and run claims are never cached.
+	"""
+	return tuple(_query_gold_items_for_purity(purity, colour))
 
 
 def _query_gold_items_for_purity(purity, colour):
@@ -1208,13 +1178,11 @@ def _item_template(item_code):
 	return frappe.db.get_value("Item", item_code, "variant_of", cache=True)
 
 
+@frappe.request_cache
 def _get_item_purity(item_code):
-	return _cached_item_lookup(
-		"item_purity", item_code, lambda: _read_item_purity(item_code)
-	)
-
-
-def _read_item_purity(item_code):
+	# Cached per request / background job: an Item's Metal Purity attribute cannot change
+	# mid-request, and Settle asks for the same candidates' purity once per purity, per finder,
+	# per short row (the same reasoning as metal_utils.get_purity_percentage).
 	# Read the Metal Purity attribute directly instead of frappe.get_doc("Item", …),
 	# which loads the whole Item document — every child table, including a ~59ms
 	# Design-Attribute-Multiselect load — just to scan for one attribute row. This

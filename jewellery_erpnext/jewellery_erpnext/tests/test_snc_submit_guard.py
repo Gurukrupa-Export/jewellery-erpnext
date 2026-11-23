@@ -1466,9 +1466,18 @@ _EDGE_ITEMS = [
 ]
 
 
+def _clear_item_lookup_cache():
+	"""A test is one long request, so drop what @frappe.request_cache kept for these two."""
+	cache = getattr(snc.frappe.local, "request_cache", None)
+	if cache is None:
+		return
+	for fn in (snc._gold_items_for, snc._get_item_purity):
+		cache.pop(getattr(fn, "__wrapped__", fn), None)
+
+
 class TestGoldItemCandidateLookup(IntegrationTestCase):
-	"""_get_gold_items_for_purity returns exactly what it did before the prefix filter,
-	and the per-call Item cache is scoped to item_lookup_cache()."""
+	"""_get_gold_items_for_purity returns exactly what it did before the prefix filter, and
+	the two Item-master reads are cached per request (frappe.request_cache)."""
 
 	REQUIRED = [
 		"M-G-22KT-91.75-Y",
@@ -1480,6 +1489,14 @@ class TestGoldItemCandidateLookup(IntegrationTestCase):
 		"",
 		None,
 	]
+
+	def setUp(self):
+		super().setUp()
+		_clear_item_lookup_cache()
+
+	def tearDown(self):
+		_clear_item_lookup_cache()
+		super().tearDown()
 
 	def test_same_candidates_and_order_as_before(self):
 		table = _FakeItemTable(_EDGE_ITEMS)
@@ -1517,85 +1534,45 @@ class TestGoldItemCandidateLookup(IntegrationTestCase):
 			],
 		)
 
-	def test_no_cache_outside_the_context(self):
-		with patch.object(
-			snc, "_query_gold_items_for_purity", return_value=["M-G-24KT-99.9-Y"]
-		) as query, patch.object(snc, "_read_item_purity", return_value=99.9) as read:
-			for _ in range(3):
-				snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-Y")
-				snc._get_item_purity("M-G-24KT-99.9-Y")
-		self.assertEqual(query.call_count, 3)
-		self.assertEqual(read.call_count, 3)
-
-	def test_cached_once_per_key_inside_the_context(self):
+	def test_candidates_read_once_per_purity_and_colour_per_request(self):
 		with patch.object(
 			snc,
 			"_query_gold_items_for_purity",
 			side_effect=lambda purity, colour: [f"M-G-{purity}-X-{colour}"],
-		) as query, patch.object(
-			snc, "_read_item_purity", side_effect=lambda item: 91.75
-		) as read:
-			with snc.item_lookup_cache():
-				first = snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-Y")
-				first.append("MUTATED")
-				again = snc._get_gold_items_for_purity("24KT", "M-G-18KT-75.0-Y")
-				other_colour = snc._get_gold_items_for_purity(
-					"24KT", "M-G-22KT-91.75-W"
-				)
-				other_purity = snc._get_gold_items_for_purity(
-					"20KT", "M-G-22KT-91.75-Y"
-				)
-				for _ in range(4):
-					snc._get_item_purity("M-G-24KT-99.9-Y")
-				snc._get_item_purity("M-G-20KT-83.5-Y")
+		) as query:
+			first = snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-Y")
+			first.append("MUTATED")
+			again = snc._get_gold_items_for_purity("24KT", "M-G-18KT-75.0-Y")
+			other_colour = snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-W")
+			other_purity = snc._get_gold_items_for_purity("20KT", "M-G-22KT-91.75-Y")
+			# A new request reads again.
+			_clear_item_lookup_cache()
+			snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-Y")
 		# Same (purity, colour) -> one query, and a caller's change never leaks back.
 		self.assertEqual(again, ["M-G-24KT-X-Y"])
 		self.assertEqual(other_colour, ["M-G-24KT-X-W"])
 		self.assertEqual(other_purity, ["M-G-20KT-X-Y"])
 		self.assertEqual(
 			[c.args for c in query.call_args_list],
-			[("24KT", "Y"), ("24KT", "W"), ("20KT", "Y")],
+			[("24KT", "Y"), ("24KT", "W"), ("20KT", "Y"), ("24KT", "Y")],
 		)
+
+	def test_item_purity_read_once_per_item_per_request(self):
+		real_get_value = snc.frappe.db.get_value
+		reads = []
+
+		def get_value(doctype, filters=None, *args, **kwargs):
+			if doctype == "Item Variant Attribute":
+				reads.append(filters["parent"])
+				return "91.75"
+			return real_get_value(doctype, filters, *args, **kwargs)
+
+		with patch.object(snc.frappe.db, "get_value", side_effect=get_value):
+			values = [snc._get_item_purity("M-G-22KT-91.75-Y") for _ in range(4)]
+			snc._get_item_purity("M-G-24KT-99.9-Y")
+			_clear_item_lookup_cache()
+			snc._get_item_purity("M-G-22KT-91.75-Y")
+		self.assertEqual(values, [91.75] * 4)
 		self.assertEqual(
-			[c.args for c in read.call_args_list],
-			[("M-G-24KT-99.9-Y",), ("M-G-20KT-83.5-Y",)],
+			reads, ["M-G-22KT-91.75-Y", "M-G-24KT-99.9-Y", "M-G-22KT-91.75-Y"]
 		)
-
-	def test_cache_cleared_on_exit_and_on_error_and_shared_when_nested(self):
-		with patch.object(snc, "_read_item_purity", return_value=91.75) as read:
-			with snc.item_lookup_cache():
-				snc._get_item_purity("A")
-				with snc.item_lookup_cache():
-					snc._get_item_purity("A")
-				# The inner exit must not drop the outer cache.
-				snc._get_item_purity("A")
-			self.assertEqual(read.call_count, 1)
-			self.assertIsNone(getattr(snc.frappe.local, snc._ITEM_LOOKUP_CACHE, None))
-
-			with self.assertRaises(RuntimeError):
-				with snc.item_lookup_cache():
-					snc._get_item_purity("A")
-					raise RuntimeError("settle failed")
-			self.assertIsNone(getattr(snc.frappe.local, snc._ITEM_LOOKUP_CACHE, None))
-			snc._get_item_purity("A")
-		self.assertEqual(read.call_count, 3)
-
-	def test_settle_runs_inside_the_cache_and_clears_it(self):
-		from jewellery_erpnext.customer_subcontracting.sub_utils import cg_settle
-
-		seen = []
-
-		def body(mr_name):
-			seen.append(getattr(snc.frappe.local, snc._ITEM_LOOKUP_CACHE, None))
-			if mr_name == "MR-FAIL":
-				raise RuntimeError("blocked")
-			return {"settled": [1]}
-
-		with patch.object(cg_settle, "_settle_material_request", side_effect=body):
-			self.assertEqual(
-				cg_settle.settle_material_request("MR-1"), {"settled": [1]}
-			)
-			with self.assertRaises(RuntimeError):
-				cg_settle.settle_material_request("MR-FAIL")
-		self.assertEqual(seen, [{}, {}])
-		self.assertIsNone(getattr(snc.frappe.local, snc._ITEM_LOOKUP_CACHE, None))
