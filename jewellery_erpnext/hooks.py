@@ -110,7 +110,11 @@ doc_events = {
 		# the job's, the worker holds that exact operation, the acting user has access. Plain
 		# reads on save; locking reads at submit / cancel, which also mark this document as
 		# checked for the Stock Entries it makes in the same request.
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_employee_ir",
+		"validate": [
+			# The stored Process is always the Operation's (the form may choose a Process first).
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.set_employee_ir_process",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_employee_ir",
+		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
@@ -140,6 +144,8 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance.validate_product_tolerance",
 			# An Issue into a process-controlled department names its destination process.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.validate_department_ir_destination",
+			# A Receive shows each work order's process before the Issue (display only).
+			"jewellery_erpnext.jewellery_erpnext.doc_events.process_control.fill_department_ir_receive_processes",
 			# Source side out of a controlled department; receiving authority into one.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_department_ir",
 		],
