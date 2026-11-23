@@ -399,33 +399,156 @@ def _active_sres_for(item_code, batch_no, mwo_names, warehouse=None, exclude=Non
 
 	out = []
 	for sre in sres:
-		header_remaining = flt(sre["reserved_qty"]) - flt(sre["delivered_qty"])
-		kids = children.get(sre["name"])
-		if kids:
-			if batch_no and batch_no not in {k["batch_no"] for k in kids}:
-				continue
-			scoped = sum(
-				flt(k["qty"]) - flt(k["delivered_qty"])
-				for k in kids
-				if not batch_no or k["batch_no"] == batch_no
-			)
-			remaining = min(header_remaining, scoped)
-		else:
-			remaining = header_remaining
-		# Round to the site's 3dp stock precision BEFORE the liveness test, so the
-		# threshold and the returned value agree. Filtering on the raw remainder and
-		# returning the rounded one lets a remainder in (TOLERANCE, 0.0005) come back
-		# as 0.0: the caller would see a "live" reservation that contributes no
-		# capacity, marking sre_matched True — which consumes the SRE and skips the
-		# PC-Receive / Stock-Entry warehouse fallbacks on the strength of nothing.
-		# ``_reserved_warehouse_caps`` already rounds-then-filters; match it.
-		remaining = flt(remaining, 3)
-		if remaining <= TOLERANCE:
+		remaining = _sre_remaining_for_batch(sre, children.get(sre["name"]), batch_no)
+		if remaining is None:
 			continue
 		out.append((sre, remaining))
 
 	out.sort(key=lambda t: (-t[1], t[0]["warehouse"] or ""))
 	return out
+
+
+def _sre_remaining_for_batch(sre, kids, batch_no):
+	"""What one live reservation still holds for ``batch_no``, or ``None`` when it holds none.
+
+	``kids`` are the SRE's Serial and Batch Entry children (empty for a Qty-based SRE). Shared
+	by :func:`_active_sres_for` and :func:`_snc_loss_upper_bounds`, so the bound the C-01
+	pre-lock plans from can never drift from the value the loss step compares.
+	"""
+	header_remaining = flt(sre["reserved_qty"]) - flt(sre["delivered_qty"])
+	if kids:
+		if batch_no and batch_no not in {k["batch_no"] for k in kids}:
+			return None
+		scoped = sum(
+			flt(k["qty"]) - flt(k["delivered_qty"])
+			for k in kids
+			if not batch_no or k["batch_no"] == batch_no
+		)
+		remaining = min(header_remaining, scoped)
+	else:
+		remaining = header_remaining
+	# Round to the site's 3dp stock precision BEFORE the liveness test, so the
+	# threshold and the returned value agree. Filtering on the raw remainder and
+	# returning the rounded one lets a remainder in (TOLERANCE, 0.0005) come back
+	# as 0.0: the caller would see a "live" reservation that contributes no
+	# capacity, marking sre_matched True — which consumes the SRE and skips the
+	# PC-Receive / Stock-Entry warehouse fallbacks on the strength of nothing.
+	# ``_reserved_warehouse_caps`` already rounds-then-filters; match it.
+	remaining = flt(remaining, 3)
+	if remaining <= TOLERANCE:
+		return None
+	return remaining
+
+
+def _snc_loss_upper_bounds(snc, row_groups, mwo_names, pmo):
+	"""``{(item, batch): bound}``: at least the reservation total the loss step will compare.
+
+	The loss step (``loss_qty = sre_reserved_qty_total - group_qty``) reads that total either
+	from :func:`_active_sres_for` (live SREs, minus those an earlier group consumed) or, when
+	none is live, from the latest Product Certification Receive row. This takes the larger of
+	the same SRE sum without the ``exclude`` set and the LARGEST such PC row, so it can only be
+	higher: exclusion and the transaction's own SRE consumption only lower the loop's figure.
+
+	Plain reads, made before any lock. Under REPEATABLE READ the loop reads the same snapshot,
+	so the bound holds; under READ COMMITTED a reservation committed in between can exceed it,
+	and the Stock Entry ``before_naming`` guard then takes the Repack counter NOWAIT.
+	"""
+	items = sorted({item_code for item_code, _batch in row_groups if item_code})
+	sre_totals = {}
+	if items and mwo_names:
+		sres = frappe.get_all(
+			"Stock Reservation Entry",
+			filters={
+				"item_code": ["in", items],
+				"docstatus": 1,
+				"status": ["not in", ["Cancelled", "Delivered"]],
+				"manufacturing_work_order": ["in", mwo_names],
+			},
+			fields=["name", "item_code", "warehouse", "reserved_qty", "delivered_qty"],
+		)
+		children = {}
+		if sres:
+			for child in frappe.get_all(
+				"Serial and Batch Entry",
+				filters={
+					"parent": ["in", [s["name"] for s in sres]],
+					"parenttype": "Stock Reservation Entry",
+				},
+				fields=["parent", "batch_no", "qty", "delivered_qty"],
+			):
+				children.setdefault(child["parent"], []).append(child)
+		for item_code, batch_no in row_groups:
+			total = 0.0
+			for sre in sres:
+				if sre["item_code"] != item_code:
+					continue
+				remaining = _sre_remaining_for_batch(
+					sre, children.get(sre["name"]), batch_no
+				)
+				if remaining is not None:
+					total += remaining
+			sre_totals[(item_code, batch_no)] = total
+
+	pc_max = {}
+	if items:
+		# PRIORITY 2's query (latest row per item) with the largest row instead.
+		for r in frappe.db.sql(
+			"""
+			SELECT se_item.item_code, MAX(se_item.qty) AS qty
+			FROM `tabStock Entry` se
+			JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
+			JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
+			WHERE pc.type = 'Receive'
+			  AND se.docstatus = 1
+			  AND EXISTS(
+			      SELECT 1 FROM `tabProduct Details` pd
+			      WHERE pd.parent = pc.name
+			        AND (pd.manufacturing_work_order = %(mwo)s
+			             OR pd.parent_manufacturing_order = %(pmo)s)
+			  )
+			  AND se_item.item_code IN %(items)s
+			GROUP BY se_item.item_code
+			""",
+			{
+				"mwo": snc.manufacturing_work_order,
+				"pmo": pmo,
+				"items": tuple(items),
+			},
+			as_dict=True,
+		):
+			pc_max[r["item_code"]] = flt(r["qty"])
+
+	return {
+		key: max(flt(sre_totals.get(key)), flt(pc_max.get(key[0])))
+		for key in row_groups
+	}
+
+
+def _snc_may_book_loss(snc, row_groups, mwo_names, pmo):
+	"""Whether this submit can mint a Repack(Loss) Stock Entry -- the C-01 Repack pre-lock gate.
+
+	True when any ``(item, batch)`` group's upper bound (:func:`_snc_loss_upper_bounds`) exceeds
+	what the group consumes. The margin is TOLERANCE, below the 0.0005 a loss needs to survive
+	``flt(loss_qty, 3) > 0``, so float noise can only widen the answer. Fails open: a bound that
+	cannot be computed plans the Repack counter, exactly as before C-01.
+	"""
+	if not row_groups:
+		return False
+	try:
+		bounds = _snc_loss_upper_bounds(snc, row_groups, mwo_names, pmo)
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
+	except Exception:
+		frappe.logger("jewellery_erpnext.lock_order").warning(
+			"C-01: SNC %s loss bound failed; planning the Repack counter\n%s"
+			% (snc.name, frappe.get_traceback())
+		)
+		return True
+	for key, rows in row_groups.items():
+		group_qty = flt(sum(flt(r["qty"]) for r in rows), 3)
+		if flt(bounds.get(key)) - group_qty > TOLERANCE:
+			return True
+	return False
 
 
 def _reserved_warehouse_caps(item_code, batch_no, mwo_names):
@@ -773,24 +896,16 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		# Stock Entries — a Repack(Loss) SE per loss row plus the main Manufacture SE in
 		# create_manufacturing_entry — each of which would otherwise lock its Bins
 		# independently. Two concurrent SNCs drawing on the same WIP stock then interleaved
-		# their per-SE Bin locks into 1213 deadlock cycles. Pin the Stock Entry series first
-		# (canonical position 2), then pre-lock every source Bin this cascade draws from, in
+		# their per-SE Bin locks into 1213 deadlock cycles. Pin the naming counters it can mint
+		# first (canonical position 2), then pre-lock every source Bin this cascade draws from, in
 		# sorted order, BEFORE the first nested submit, so all concurrent SNCs acquire the
 		# shared Bins in the identical sequence. Over-locking a Bin that ends up unused is
 		# harmless (released on COMMIT); per-SE prelock_bins still locks each SE's own Bins.
 		from jewellery_erpnext.jewellery_erpnext.lock_order import (
 			lock_bins,
-			preallocate_series_for_docs,
-			series_stubs,
+			preallocate_stock_entry_counters,
 		)
 
-		# Pin the naming counter of each nested SE type this cascade mints (the loss
-		# Repack SEs and the Manufacture SE) -- per-(company x type) Document Naming
-		# Rule counter post-reshard, or the tabSeries fallback. A blank stub matches
-		# no rule and would pin the wrong (shared MAT-STE-) row instead.
-		preallocate_series_for_docs(
-			*series_stubs(self.company, "Repack", "Manufacture")
-		)
 		_pmo, all_pmo_mwos = _pmo_mwo_names(self)
 
 		# Group the source rows by (item, batch). One (item, batch) can span several rows
@@ -805,6 +920,17 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 			row_groups.setdefault((row["item_code"], row.get("batch_no")), []).append(
 				row
 			)
+
+		# Pin the naming counter of each nested SE type this cascade can mint, and only
+		# those (lock_order RULE F): per-(company x type) Document Naming Rule counter
+		# post-reshard, or the tabSeries fallback. The Manufacture SE is always minted
+		# (create_manufacturing_entry below); a Repack(Loss) SE only for a group whose
+		# reservation total exceeds what it consumes, which _snc_may_book_loss bounds from
+		# above before any lock is taken.
+		snc_types = ["Manufacture"]
+		if _snc_may_book_loss(self, row_groups, all_pmo_mwos, pmo):
+			snc_types.append("Repack")
+		preallocate_stock_entry_counters(self.company, snc_types, plan_for=self)
 
 		# Pre-lock every Bin this cascade may draw from — each row's own warehouse plus
 		# every reserved warehouse a row could still be re-pointed at below.
@@ -1189,22 +1315,60 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		set_values_in_bulk("Manufacturing Work Order", wo_list, {"status": "Completed"})
 
 		# Mark all relevant virtual logs as synced now that they are physically consumed
-		mop_names = [
-			d.manufacturing_operation
-			for d in operation_data
-			if d.manufacturing_operation
-		]
-		if mop_names:
-			frappe.db.sql(
-				"""
-				UPDATE `tabMOP Log`
-				SET is_synced = 1
-				WHERE manufacturing_operation IN %s
-				  AND is_cancelled = 0
-				  AND is_synced = 0
+		mark_mop_logs_synced(
+			[
+				d.manufacturing_operation
+				for d in operation_data
+				if d.manufacturing_operation
+			]
+		)
+
+
+MOP_LOG_SYNC_CHUNK = 500
+
+
+def mark_mop_logs_synced(mop_names):
+	"""Set ``is_synced = 1`` on the open MOP Logs of ``mop_names``, locking only those rows.
+
+	The names come from a plain (non-locking) read, and the UPDATE is keyed on ``name``. An
+	UPDATE filtered on ``manufacturing_operation`` instead has no index to use on production
+	(``mop_balance_idx`` is missing there), so MariaDB range-scans ``mop_eod_sync_idx`` over
+	every unsynced, uncancelled MOP Log and next-key locks all of it until this submit
+	commits. Every new MOP Log is inserted into that range (``is_synced = 0``), so any
+	concurrent Employee IR / Department IR insert waited on it, and an Issue that had already
+	inserted a log deadlocked (20 Nov 2026: EMP-IR-Labh-2026-65488 and -65664, 1213 at the
+	MOP Log INSERT, each a few seconds into a Serial Number Creator submit).
+
+	The read sees this transaction's snapshot plus its own writes: exactly the logs this
+	submit built its entries from, so only those are marked synced.
+	"""
+	mop_names = sorted({m for m in mop_names or [] if m})
+	if not mop_names:
+		return 0
+
+	names = frappe.get_all(
+		"MOP Log",
+		filters={
+			"manufacturing_operation": ["in", mop_names],
+			"is_cancelled": 0,
+			"is_synced": 0,
+		},
+		pluck="name",
+		order_by="name asc",
+	)
+	for start in range(0, len(names), MOP_LOG_SYNC_CHUNK):
+		chunk = names[start : start + MOP_LOG_SYNC_CHUNK]
+		frappe.db.sql(
+			"""
+			UPDATE `tabMOP Log`
+			SET is_synced = 1
+			WHERE name IN %s
+			  AND is_cancelled = 0
+			  AND is_synced = 0
 			""",
-				(tuple(mop_names),),
-			)
+			(tuple(chunk),),
+		)
+	return len(names)
 
 
 def get_shift(employee, start_date, end_date):

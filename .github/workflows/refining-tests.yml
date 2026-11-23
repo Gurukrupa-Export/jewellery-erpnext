@@ -57,12 +57,24 @@ jobs:
 
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_stock_entry_naming
+          # Skips itself on test_site: runs only on kggk-pi-test.localhost (real row locks).
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_stock_entry_naming_lock
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_c01_planned_counters
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_mop_log_sync_lock
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_multi_counter_prelock
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_shard_stock_entry_naming
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_reshard_gurukrupa_naming
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_queue_dedup
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_queue
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_failure_messages
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_casting
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_material_balance
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_employee_ir_receive
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_receive_split_backfill
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bounded_retry
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_db_isolation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_po_permission_preflight
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_po_permission_preflight_integration
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_blocked_variants
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_form_locks

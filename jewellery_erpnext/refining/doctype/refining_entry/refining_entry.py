@@ -22,6 +22,7 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 	refining_line_terms,
 	resolve_from_index,
 )
+from jewellery_erpnext.refining.stock_entry_naming import apply_refining_naming_series
 from jewellery_erpnext.utils import (
 	get_item_from_attribute,
 	get_variant_of_item,
@@ -39,6 +40,31 @@ EXTERNAL_PRICING_CATEGORY = {
 	REFINING_TYPE_UNUSED: "REF-RMS-001",
 	REFINING_TYPE_SCRAP: "REF-MD-001",
 }
+
+#: The GST tax template India Compliance sets on the external refinery's service Purchase
+#: Order. ERPNext requires Select on it for the user who submits the Refining Entry.
+PO_TAX_TEMPLATE_DOCTYPE = "Purchase Taxes and Charges Template"
+
+
+def _denied_po_tax_template(exc):
+	"""Name of the Purchase Taxes and Charges Template whose Select check raised ``exc``.
+
+	The check is ERPNext's ``require_permission(doctype, name, ptype)`` (reached through
+	``get_taxes_and_charges``); its frame in the traceback names the template. None when
+	the PermissionError came from any other check, so that one is never reported as a
+	missing template permission.
+	"""
+	template = None
+	tb = exc.__traceback__
+	while tb is not None:
+		frame = tb.tb_frame
+		if frame.f_code.co_name == "require_permission":
+			f_locals = frame.f_locals
+			name = f_locals.get("name")
+			if name and f_locals.get("doctype") == PO_TAX_TEMPLATE_DOCTYPE:
+				template = name
+		tb = tb.tb_next
+	return template
 
 
 def secondary_item_row(value="Scrap"):
@@ -64,6 +90,23 @@ def secondary_item_row(value="Scrap"):
 		else "type"
 	)
 	return {fieldname: value}
+
+
+def _refining_series_stubs(company, *stock_entry_types):
+	"""Naming stubs for the Stock Entries a refining transaction will mint, to pass to
+	``lock_order.preallocate_series_for_docs`` before the transaction's first Bin.
+
+	A stub must resolve to the counter row its real Stock Entry takes at insert, or the
+	pre-lock pins the wrong row. Refining Stock Entries take the refining naming series
+	when site_config ``refining_se_naming_series`` is set (and the default otherwise), so
+	each stub goes through the same ``apply_refining_naming_series`` as the real entries.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import series_stubs
+
+	stubs = series_stubs(company, *stock_entry_types)
+	for stub in stubs:
+		apply_refining_naming_series(stub)
+	return stubs
 
 
 def returned_stone_row(rate):
@@ -98,6 +141,65 @@ def _default_receiving_warehouse(company):
 		"name",
 		order_by="name asc",
 	)
+
+
+def restricted_variants_for(company, refining_type, manufacturer=None):
+	"""Blocked template item codes for one (company, refining type, manufacturer).
+
+	The single implementation behind ``RefiningEntry._restricted_variants`` (the server-side
+	guards) and ``get_blocked_variants_for`` (the desk link filter). Plain reads of the
+	Manufacturing Setting rows only: no document load, no locking read.
+
+	FAILS OPEN: a site that has not migrated yet (no child table), no resolvable Manufacturing
+	Setting, or no rows all give the empty set. A blank ``refining_type`` on a row blocks its
+	variant for every type.
+	"""
+	key = refining_type or ""
+	# A site that has not migrated yet has no child table, and refining must keep
+	# working rather than throw "1146 Table doesn't exist" on every save. Same
+	# defensive shape the Batch.custom_batch_type reads use.
+	setting = (
+		resolve_manufacturing_setting(company, manufacturer)
+		if frappe.db.table_exists("Refining Variant Restriction")
+		else None
+	)
+	if not setting:
+		return frozenset()
+
+	rows = frappe.db.get_all(
+		"Refining Variant Restriction",
+		filters={
+			"parent": setting,
+			"parenttype": "Manufacturing Setting",
+			"parentfield": "refining_variant_restrictions",
+		},
+		fields=["variant", "refining_type"],
+	)
+	return frozenset(
+		row.variant
+		for row in rows
+		if row.variant and (not row.refining_type or row.refining_type == key)
+	)
+
+
+@frappe.whitelist()
+def get_blocked_variants_for(
+	company: str | None = None,
+	refining_type: str | None = None,
+	manufacturer: str | None = None,
+):
+	"""Restricted templates for the Material Items link filter, fetched BY ARGUMENTS.
+
+	Deliberately not a document method. ``frm.call()`` on a saved entry goes through
+	``run_doc_method`` -> ``check_if_latest()``, i.e. ``SELECT ... FOR UPDATE`` on the
+	Refining Entry row and all its child tables, so merely opening an entry whose
+	submission was running waited on that submission's row lock (1205 after 50 s). This
+	needs no saved document and takes no locks. The form passes its own (possibly unsaved)
+	company / refining type / manufacturer, the same values ``run_doc_method`` would have
+	seen.
+	"""
+	frappe.has_permission("Refining Entry", "read", throw=True)
+	return sorted(restricted_variants_for(company, refining_type, manufacturer))
 
 
 class RefiningEntry(Document):
@@ -223,6 +325,11 @@ class RefiningEntry(Document):
 		if not self.supplier:
 			frappe.throw(_("Refinery Supplier is mandatory for external refining."))
 
+		# Refuse BEFORE on_submit_external moves any stock (its transfer Stock Entry takes
+		# the shared MAT-STE- counter and can post thousands of lines) when this user could
+		# not create the service Purchase Order that ends the submit.
+		self._preflight_external_po_permissions()
+
 		# Pricing category (the Refinery Price List this consignment bills under),
 		# resolved from the refining type unless the operator picked one (Dust has
 		# several possible categories — the Dust Item is only the default).
@@ -288,6 +395,79 @@ class RefiningEntry(Document):
 					)
 				)
 			frappe.throw(_("No gold weight to send for external refining."))
+
+	def _preflight_external_po_permissions(self):
+		"""Dry run of the part of create_external_refining_po that depends on the user.
+
+		po.insert(ignore_permissions=True) skips the Purchase Order's own permission checks,
+		but BuyingController.set_missing_values still calls
+		erpnext.accounts.party._get_party_details. Its India Compliance hook
+		(update_party_details -> get_gst_details) picks the GST template and calls ERPNext's
+		get_taxes_and_charges -> require_permission(PO_TAX_TEMPLATE_DOCTYPE, <template>,
+		"select") as the SUBMITTING user. Calling the same function with the arguments
+		set_missing_values passes for that order picks the same template and runs the same
+		check, so this cannot refuse a submit that po.insert would accept.
+
+		Reads only and no raised permissions; po.insert stays the authoritative check. Any
+		other error propagates unchanged (po.insert would hit it too, only later).
+		"""
+		from erpnext.accounts.party import _get_party_details
+
+		saved_message_log = frappe.get_message_log()
+		saved_disable_traceback = frappe.flags.disable_traceback
+		try:
+			_get_party_details(
+				self.supplier,
+				party_type="Supplier",
+				doctype="Purchase Order",
+				company=self.company,
+				# What create_external_refining_po's order carries when set_missing_values
+				# runs: no supplier/shipping/dispatch/billing address, no
+				# ignore_default_payment_terms_template, and flags.ignore_permissions=True
+				# from po.insert(ignore_permissions=True).
+				fetch_payment_terms_template=True,
+				ignore_permissions=True,
+			)
+		except frappe.PermissionError as e:
+			template = _denied_po_tax_template(e)
+			if not template:
+				raise
+			# erpnext._refuse() queued a bare "Not permitted" and disabled the traceback.
+			frappe.local.message_log = saved_message_log
+			frappe.flags.disable_traceback = saved_disable_traceback
+			self._throw_missing_po_tax_template_permission(template)
+		else:
+			# po.insert repeats the call and shows whatever it prints; the dry run shows nothing.
+			frappe.local.message_log = saved_message_log
+
+	def _throw_missing_po_tax_template_permission(self, template):
+		reason = (
+			_("none of their roles grants it")
+			if not frappe.has_permission(PO_TAX_TEMPLATE_DOCTYPE, "select")
+			else _(
+				"their roles grant it, but not for this template (check User Permissions "
+				"on {0})"
+			).format(_(PO_TAX_TEMPLATE_DOCTYPE))
+		)
+		frappe.throw(
+			_(
+				"Cannot submit {0}. Submitting an external refining entry creates a draft "
+				"service Purchase Order for supplier {1}, and India Compliance sets its GST "
+				"tax template {2}. That needs {3} (or Read) permission on {4}, and user {5} "
+				"does not have it: {6}. No stock has been moved. Ask a System Manager to "
+				"grant {3} on {4} to one of this user's roles, then submit again."
+			).format(
+				frappe.bold(self.name),
+				frappe.bold(self.supplier),
+				frappe.bold(template),
+				frappe.bold(_("Select")),
+				frappe.bold(_(PO_TAX_TEMPLATE_DOCTYPE)),
+				frappe.bold(frappe.session.user),
+				reason,
+			),
+			frappe.PermissionError,
+			title=_("Missing permission: {0}").format(_(PO_TAX_TEMPLATE_DOCTYPE)),
+		)
 
 	def on_submit_external(self):
 		self.create_material_transfer_se(target_warehouse=self.supplier_warehouse)
@@ -622,6 +802,7 @@ class RefiningEntry(Document):
 		# auto-cost multiple finished goods; a work-order-less Manufacture keeps our
 		# is_finished_item flags and auto-costs the single FG from the consumed inputs.
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Manufacture"
 		se.purpose = "Manufacture"
 		se.company = self.company
@@ -2571,6 +2752,7 @@ class RefiningEntry(Document):
 			)
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Transfer"
 		se.purpose = "Material Transfer"
 		se.company = self.company
@@ -2703,6 +2885,7 @@ class RefiningEntry(Document):
 		target = target_warehouse or self.refining_warehouse
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Transfer"
 		se.purpose = "Material Transfer"
 		se.company = self.company
@@ -2889,6 +3072,23 @@ class RefiningEntry(Document):
 							"use_serial_batch_fields": 1,
 						},
 					)
+
+		# Take every naming counter this submit will mint now, before the first Bin: the
+		# SRE cancels below write Bin.reserved_qty, then the transfer locks its own Bins.
+		# That covers the transfer and, for a Scrap shortfall, the dust Material Receipt that
+		# create_dust_opening_receipt_se mints right after it. Left to the inserts, Work
+		# Order Refining took MAT-STE- after the SRE cancels' Bins, and once Stock Entry
+		# naming is sharded per type the receipt's own counter would be taken while the
+		# transfer's Bins are held. The external Purchase Order counter stays terminal.
+		minted = ["Material Transfer"] if se.items else []
+		if self.refining_type == "Scrap Refining" and self._dust_shortfalls:
+			minted.append("Material Receipt")
+		if minted:
+			from jewellery_erpnext.jewellery_erpnext.lock_order import (
+				preallocate_series_for_docs,
+			)
+
+			preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
 
 		# Work Order Refining: release the source MWO Stock Reservation Entries so this
 		# Stock Entry can consume the now unreserved stock (otherwise the submit fails with
@@ -3297,6 +3497,7 @@ class RefiningEntry(Document):
 			return
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Receipt"
 		se.purpose = "Material Receipt"
 		se.company = self.company
@@ -3382,6 +3583,7 @@ class RefiningEntry(Document):
 		frappe.db.savepoint(repack_savepoint)
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Manufacture"
 		se.purpose = "Manufacture"
 		se.company = self.company
@@ -3704,6 +3906,20 @@ class RefiningEntry(Document):
 					},
 				)
 
+		# Take this completion's naming counters before the Manufacture's Bins and the MOP
+		# Log rows complete_refining writes after it: the Manufacture itself and, when there
+		# is a refining loss, the scrap Material Transfer complete_refining mints last. With
+		# per-type naming that transfer's counter would otherwise be taken while Bins are
+		# held. The retry below re-enters the same rows.
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			preallocate_series_for_docs,
+		)
+
+		minted = ["Manufacture"]
+		if flt(self.refining_loss) > 0:
+			minted.append("Material Transfer")
+		preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
+
 		se.insert(ignore_permissions=True)
 		try:
 			se.submit()
@@ -3783,6 +3999,7 @@ class RefiningEntry(Document):
 		dust_item = self.get_dust_item()
 		if scrap_warehouse and dust_item:
 			se = frappe.new_doc("Stock Entry")
+			apply_refining_naming_series(se)
 			se.stock_entry_type = "Material Transfer"
 			se.purpose = "Material Transfer"
 			se.company = self.company
@@ -4494,35 +4711,10 @@ class RefiningEntry(Document):
 		single save share them."""
 		cache = self.__dict__.setdefault("_refining_restriction_cache", {})
 		key = self.refining_type or ""
-		if key in cache:
-			return cache[key]
-
-		# A site that has not migrated yet has no child table, and refining must keep
-		# working rather than throw "1146 Table doesn't exist" on every save. Same
-		# defensive shape the Batch.custom_batch_type reads use.
-		setting = (
-			resolve_manufacturing_setting(self.company, self.get("manufacturer"))
-			if frappe.db.table_exists("Refining Variant Restriction")
-			else None
-		)
-		if not setting:
-			cache[key] = frozenset()
-			return cache[key]
-
-		rows = frappe.db.get_all(
-			"Refining Variant Restriction",
-			filters={
-				"parent": setting,
-				"parenttype": "Manufacturing Setting",
-				"parentfield": "refining_variant_restrictions",
-			},
-			fields=["variant", "refining_type"],
-		)
-		cache[key] = frozenset(
-			row.variant
-			for row in rows
-			if row.variant and (not row.refining_type or row.refining_type == key)
-		)
+		if key not in cache:
+			cache[key] = restricted_variants_for(
+				self.company, self.refining_type, self.get("manufacturer")
+			)
 		return cache[key]
 
 	def _blocked_item_codes(self, item_codes):
@@ -4663,7 +4855,9 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def get_blocked_variants(self):
-		"""Restricted templates for the client-side Material Items link filter."""
+		"""Back-compat thin wrapper for API callers, scripts and browsers still running the
+		old form script. The desk form now calls the module-level ``get_blocked_variants_for``,
+		which does not lock this document. Remove after one release."""
 		return sorted(self._restricted_variants())
 
 	def is_gold_item(self, item_code):
