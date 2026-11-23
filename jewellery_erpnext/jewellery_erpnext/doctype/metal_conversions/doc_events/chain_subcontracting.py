@@ -53,6 +53,18 @@ without both purities on the masters the Receive is refused. The Repack then con
 source the received fine metal came from, and the Process Loss is the fine shortfall
 (``receive_split``).
 
+An employee cannot add alloy of their own, so one making a lower-purity target (24KT 99.9 to
+22KT 91.75) is given ours with the metal. The Target Item is not known at Issue -- it is
+picked at Receive -- so the employee's Target Metal Touch and Target Metal Purity are chosen
+before Issue instead (both mandatory at Issue). The Alloy Qty is the normal conversion's figure
+at that purity (Source Qty x sp / tp - Source Qty) and Source Alloy is mandatory
+(``_set_employee_alloy``, ``_employee_alloy_issue_errors``). Issue moves the alloy batches with
+the source in the same entry. At Receive the Target Item must be of the chosen touch and
+purity, it may bring back at most Source Qty + Alloy Qty, the Repack consumes all of that alloy
+beside the source fine metal, and the Process Loss is the fine shortfall as for a supplier. A
+lower-purity target with no alloy issued is refused at Receive. Same or higher purity keeps
+the weight rule, with no alloy.
+
 Receive and Cancel each post several Stock Entries in one transaction, so every naming
 counter and then every Bin they touch is locked once, up front, in the canonical order
 (``lock_order`` RULE A/B) -- each entry pinning only its own would take a later counter
@@ -72,6 +84,7 @@ from frappe import _
 from frappe.utils import cint, flt, nowdate
 
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.lanes import (
+	apportion,
 	build_lanes,
 	split_allocations,
 	split_conversion,
@@ -115,10 +128,22 @@ FROZEN_AFTER_ISSUE = (
 	"chain_purchase_order",
 	"multiple_metal_converter",
 	"is_melting_loss",
+	# An employee's alloy went with the metal, sized for the chosen purity; empty for every
+	# other chain conversion.
+	"chain_metal_touch",
+	"chain_metal_purity",
+	"source_alloy",
+	"source_alloy_qty",
 )
 
 # One party converts the metal: these are cleared for the mode not chosen.
-EMPLOYEE_FIELDS = ("to_employee", "to_department", "to_warehouse")
+EMPLOYEE_FIELDS = (
+	"to_employee",
+	"to_department",
+	"to_warehouse",
+	"chain_metal_touch",
+	"chain_metal_purity",
+)
 SUPPLIER_FIELDS = ("chain_supplier", "chain_supplier_warehouse")
 # Cleared whenever a document is not a chain conversion.
 CHAIN_FIELDS = EMPLOYEE_FIELDS + SUPPLIER_FIELDS
@@ -278,7 +303,7 @@ def validate_chain(doc):
 					"Loss."
 				)
 			)
-		_clear_alloy(doc)
+		_set_employee_alloy(doc)
 		set_issue_warehouses(doc)
 		# After Issue the To Employee's warehouse holds the metal, so it is frozen.
 		set_to_warehouse(doc)
@@ -380,7 +405,7 @@ def _check_issue_frozen(doc):
 	changed = []
 	for field in FROZEN_AFTER_ISSUE:
 		old, new = before.get(field), doc.get(field)
-		if field == "source_qty":
+		if field in ("source_qty", "source_alloy_qty"):
 			same = flt(old, _precision()) == flt(new, _precision())
 		elif field in (
 			"is_chain_subcontracting",
@@ -404,6 +429,15 @@ def _check_issue_frozen(doc):
 				for row in before.get("source_batch_details") or []
 			],
 		)
+	if _alloy_key(before) != _alloy_key(doc):
+		# Likewise the alloy batches Issue moved.
+		doc.set(
+			"alloy_batch_details",
+			[
+				{"batch": row.get("batch"), "qty": row.get("qty")}
+				for row in before.get("alloy_batch_details") or []
+			],
+		)
 
 	if changed:
 		frappe.throw(
@@ -424,6 +458,13 @@ def _allocation_key(doc):
 	]
 
 
+def _alloy_key(doc):
+	return [
+		(row.get("batch"), flt(row.get("qty"), _precision()))
+		for row in _alloy_rows(doc)
+	]
+
+
 def _clear_alloy(doc):
 	"""A chain conversion carries no alloy; the API does not clear hidden fields."""
 	doc.source_alloy_check = 0
@@ -434,6 +475,27 @@ def _clear_alloy(doc):
 	doc.target_alloy = None
 	doc.target_alloy_qty = 0
 	doc.alloy_batch_details = []
+
+
+def _set_employee_alloy(doc):
+	"""Before Issue: size the alloy an employee needs, else carry none.
+
+	An employee making a lower purity (the Target Metal Purity) gets our alloy with the metal,
+	sized as the normal conversion sizes it. The figure is always recomputed -- never taken
+	from the form -- and Source Alloy is left for the user to pick (``update_alloy_betch`` then
+	allocates its batches). The Target Item and Target Qty wait for Receive. Every other chain
+	conversion carries no alloy, as before.
+	"""
+	precision = _precision()
+	alloy_qty = employee_alloy_qty(doc, precision)
+	if alloy_qty <= 0:
+		_clear_alloy(doc)
+		return
+	doc.source_alloy_check = 1
+	doc.source_alloy_qty = alloy_qty
+	doc.target_alloy_check = 0
+	doc.target_alloy = None
+	doc.target_alloy_qty = 0
 
 
 def after_validate(doc):
@@ -495,6 +557,8 @@ def run_cancel_issue(doc):
 	doc.target_item = None
 	doc.target_qty = 0
 	doc.chain_process_loss_qty = 0
+	# An employee's alloy was sized for that target and came back with the metal.
+	_clear_alloy(doc)
 
 
 def validate_issue(doc):
@@ -534,10 +598,12 @@ def validate_issue(doc):
 		errors.append(_("The Employee's Department has no Raw Material warehouse."))
 	if subcontracted:
 		errors.extend(_supplier_issue_errors(doc, precision))
-	elif not doc.to_employee:
-		errors.append(_("To Employee is not selected."))
-	elif not doc.to_warehouse:
-		errors.append(_("The To Employee has no Raw Material warehouse."))
+	else:
+		if not doc.to_employee:
+			errors.append(_("To Employee is not selected."))
+		elif not doc.to_warehouse:
+			errors.append(_("The To Employee has no Raw Material warehouse."))
+		errors.extend(_chosen_touch_purity_errors(doc))
 
 	rows = _source_rows(doc)
 	if not rows:
@@ -579,8 +645,114 @@ def validate_issue(doc):
 					)
 				)
 
+	errors.extend(_employee_alloy_issue_errors(doc, precision))
+
 	if errors:
 		frappe.throw("<br>".join(errors), title=_("Cannot Issue"))
+
+
+def _chosen_touch_purity_errors(doc):
+	"""An employee's Target Metal Touch and Purity, mandatory at Issue: the Target Item is
+	picked only at Receive, so they are what tells whether alloy must go with the metal."""
+	touch, purity = doc.get("chain_metal_touch"), doc.get("chain_metal_purity")
+	if not (touch and purity):
+		return [
+			_(
+				"Target Metal Touch and Target Metal Purity are mandatory: they decide the "
+				"alloy issued to the employee with the metal."
+			)
+		]
+	errors = []
+	purity_touch = frappe.db.get_value("Attribute Value", purity, "metal_touch")
+	if purity_touch and purity_touch != touch:
+		errors.append(
+			_("Target Metal Purity {0} belongs to Metal Touch {1}, not {2}.").format(
+				frappe.bold(purity), frappe.bold(purity_touch), frappe.bold(touch)
+			)
+		)
+	if not _purity_percentage(purity):
+		errors.append(
+			_(
+				"Purity Percentage is missing on Target Metal Purity {0}, so the alloy it "
+				"needs cannot be calculated."
+			).format(frappe.bold(purity))
+		)
+	return errors
+
+
+def _employee_alloy_issue_errors(doc, precision):
+	"""An employee making a lower purity must be given the alloy with the metal: the Source
+	Alloy, its Alloy Qty (the normal conversion's figure) and batches holding it."""
+	purities = employee_alloy_purities(doc)
+	if not purities:
+		return []
+	needed = employee_alloy_qty(doc, precision)
+	if needed <= 0:
+		return []
+	if not doc.get("source_alloy"):
+		return [
+			_(
+				"Source Alloy is mandatory: converting {0} {1} ({2}%) to {3} {4} ({5}%) needs {6} "
+				"of alloy, issued to the employee with the metal."
+			).format(
+				flt(doc.source_qty, precision),
+				doc.source_item,
+				purities[0],
+				doc.chain_metal_touch,
+				doc.chain_metal_purity,
+				purities[1],
+				needed,
+			)
+		]
+
+	errors = []
+	alloy_qty = flt(doc.get("source_alloy_qty"), precision)
+	if abs(alloy_qty - needed) > _qty_unit(precision):
+		errors.append(
+			_("Alloy Qty {0} is not the {1} that {2} of {3} needs. Save again.").format(
+				alloy_qty, needed, flt(doc.source_qty, precision), doc.source_item
+			)
+		)
+	rows = _alloy_rows(doc)
+	allocated = flt(sum(flt(row.qty) for row in rows), precision)
+	if abs(allocated - alloy_qty) > _qty_unit(precision):
+		errors.append(
+			_(
+				"The allocated batches of {0} hold {1}, not the Alloy Qty {2}. Save again."
+			).format(doc.source_alloy, allocated, alloy_qty)
+		)
+	if not rows or not doc.source_warehouse:
+		return errors
+
+	batch_items = dict(
+		frappe.get_all(
+			"Batch",
+			filters={"name": ["in", list({row.batch for row in rows})]},
+			fields=["name", "item"],
+			as_list=True,
+		)
+	)
+	for row in rows:
+		if batch_items.get(row.batch) != doc.source_alloy:
+			errors.append(
+				_("Batch {0} does not belong to Source Alloy {1}.").format(
+					frappe.bold(row.batch), frappe.bold(doc.source_alloy)
+				)
+			)
+			continue
+		available = flt(
+			get_batch_qty(batch_no=row.batch, warehouse=doc.source_warehouse)
+		)
+		if flt(row.qty, precision) - available > _qty_unit(precision):
+			errors.append(
+				_("Batch {0} has only {1} in {2}; {3} is needed.").format(
+					frappe.bold(row.batch),
+					flt(available, precision),
+					doc.source_warehouse,
+					flt(row.qty, precision),
+				)
+			)
+	return errors
 
 
 def _supplier_issue_errors(doc, precision):
@@ -627,6 +799,17 @@ def make_issue_stock_entry(doc):
 	else:
 		se_type = ISSUE_TO_EMPLOYEE_SE_TYPE
 		header = {"to_employee": doc.to_employee}
+	extra_items = []
+	if issued_alloy_qty(doc):
+		# The alloy a lower-purity target needs goes to the employee with the metal.
+		extra_items.append(
+			(
+				doc.source_alloy,
+				_sorted_allocations(
+					doc.source_alloy, doc.source_warehouse, _alloy_allocations(doc)
+				),
+			)
+		)
 	return _make_transfer(
 		doc,
 		se_type=se_type,
@@ -635,6 +818,7 @@ def make_issue_stock_entry(doc):
 		rows=rows,
 		from_wh=doc.source_warehouse,
 		to_wh=work_warehouse(doc),
+		extra_items=extra_items,
 	)
 
 
@@ -749,6 +933,8 @@ def validate_receive(doc):
 		errors.append(_("Source Qty is not available."))
 	if not doc.target_item:
 		errors.append(_("Target Item is not selected."))
+	else:
+		errors.extend(_chosen_target_mismatch(doc))
 	if target_qty <= 0:
 		errors.append(_("Target Qty must be greater than zero."))
 	else:
@@ -785,9 +971,69 @@ def validate_receive(doc):
 						flt(row.qty, precision),
 					)
 				)
+		if issued_alloy_qty(doc):
+			for row in _alloy_rows(doc):
+				available = flt(get_batch_qty(batch_no=row.batch, warehouse=work_wh))
+				if flt(row.qty, precision) - available > _qty_unit(precision):
+					errors.append(
+						_(
+							"Batch {0} has only {1} of {2} in {3}; {4} was issued."
+						).format(
+							frappe.bold(row.batch),
+							flt(available, precision),
+							doc.source_alloy,
+							work_wh,
+							flt(row.qty, precision),
+						)
+					)
 
 	if errors:
 		frappe.throw("<br>".join(errors), title=_("Cannot Receive"))
+
+
+def _chosen_target_mismatch(doc):
+	"""An employee's Target Item must be of the touch and purity the metal (and its alloy) was
+	issued for. A target whose masters carry neither attribute is not checked."""
+	if is_subcontracted(doc) or not (
+		doc.get("chain_metal_touch") or doc.get("chain_metal_purity")
+	):
+		return []
+	attributes = dict(
+		frappe.get_all(
+			"Item Variant Attribute",
+			filters={
+				"parent": doc.target_item,
+				"attribute": ["in", ["Metal Touch", "Metal Purity"]],
+			},
+			fields=["attribute", "attribute_value"],
+			as_list=True,
+		)
+	)
+	target_touch = attributes.get("Metal Touch")
+	target_purity = attributes.get("Metal Purity")
+	mismatched = (
+		target_touch
+		and doc.get("chain_metal_touch")
+		and target_touch != doc.chain_metal_touch
+	) or (
+		target_purity
+		and doc.get("chain_metal_purity")
+		and target_purity != doc.chain_metal_purity
+	)
+	if not mismatched:
+		return []
+	return [
+		_(
+			"Target Item {0} is {1} {2}, but the metal was issued to make {3} {4}. Choose a "
+			"{3} {4} item."
+		).format(
+			frappe.bold(doc.target_item),
+			target_touch or "",
+			target_purity or "",
+			doc.get("chain_metal_touch") or "",
+			doc.get("chain_metal_purity") or "",
+		)
+	]
 
 
 def _fine_metal_errors(doc, source_qty, target_qty, precision):
@@ -835,11 +1081,24 @@ def _metal_purity(item_code):
 		{"parent": item_code, "attribute": "Metal Purity"},
 		"attribute_value",
 	)
-	if not value:
+	return _purity_percentage(value)
+
+
+def _purity_percentage(attribute_value):
+	"""A Metal Purity attribute value's Purity Percentage, or None when it has none."""
+	if not attribute_value:
 		return None
 	return (
-		flt(frappe.db.get_value("Attribute Value", value, "purity_percentage")) or None
+		flt(
+			frappe.db.get_value("Attribute Value", attribute_value, "purity_percentage")
+		)
+		or None
 	)
+
+
+def chosen_target_purity(doc):
+	"""The purity an employee makes, in percent: the Target Metal Purity chosen before Issue."""
+	return _purity_percentage(doc.get("chain_metal_purity"))
 
 
 def subcontracted_purities(doc):
@@ -859,6 +1118,67 @@ def subcontracted_purities(doc):
 	return source_purity, target_purity
 
 
+def employee_alloy_purities(doc):
+	"""``(source_purity, target_purity)`` when an employee needs alloy from us, else None.
+
+	An employee handed 24KT 99.9 to make 22KT 91.75 cannot add alloy of their own (a supplier
+	can), so the alloy the normal conversion would consume goes with the metal at Issue. The
+	target purity is the Target Metal Purity chosen before Issue; only a document issued
+	without one (before that field existed) falls back to its Target Item's, so its Receive is
+	refused rather than let through without alloy. None for a supplier, for a purity the same
+	or higher, and when a purity is unknown -- those keep the weight rule.
+	"""
+	if not (is_chain(doc) and not is_subcontracted(doc)):
+		return None
+	if not doc.get("source_item"):
+		return None
+	source_purity = _metal_purity(doc.source_item)
+	if doc.get("chain_metal_purity"):
+		target_purity = chosen_target_purity(doc)
+	elif chain_issued(doc):
+		target_purity = _metal_purity(doc.get("target_item"))
+	else:
+		# Draft: the Target Item is picked at Receive; the purity decides.
+		return None
+	if source_purity and target_purity and target_purity < source_purity:
+		return source_purity, target_purity
+	return None
+
+
+def employee_alloy_qty(doc, precision):
+	"""The alloy an employee conversion needs: the normal conversion's figure
+	(``MetalConversions.calculate_metal_conversion``), Source Qty x sp / tp - Source Qty,
+	rounded to 3. Zero when no alloy is needed."""
+	purities = employee_alloy_purities(doc)
+	if not purities:
+		return 0.0
+	source_qty = flt(doc.source_qty, precision)
+	source_purity, target_purity = purities
+	return round(float(source_qty * source_purity / target_purity - source_qty), 3)
+
+
+def issued_alloy_qty(doc):
+	"""The alloy that went to the employee with the metal (0 when none did)."""
+	if not (is_chain(doc) and not is_subcontracted(doc) and doc.get("source_alloy")):
+		return 0.0
+	return max(flt(doc.get("source_alloy_qty")), 0.0)
+
+
+def _alloy_rows(doc):
+	return [
+		row
+		for row in (doc.get("alloy_batch_details") or [])
+		if row.get("batch") and flt(row.get("qty")) > 0
+	]
+
+
+def _alloy_allocations(doc):
+	return [
+		{"batch": row.get("batch"), "qty": flt(row.get("qty"))}
+		for row in _alloy_rows(doc)
+	]
+
+
 def _alloy_added_by_supplier(doc):
 	"""The purities when the supplier lowers the purity -- adds alloy of their own -- else None.
 
@@ -875,11 +1195,12 @@ def max_target_qty(doc, source_qty):
 	"""The most a Receive may bring back: what ``source_qty`` converts to at the purities.
 
 	The figure the regular conversion fills (``calculate_metal_conversion``), for a
-	subcontracted conversion whose items carry purity. Otherwise the weight issued.
+	subcontracted conversion whose items carry purity. For an employee, the weight issued:
+	the source plus the alloy that went with it.
 	"""
 	purities = subcontracted_purities(doc)
 	if not purities:
-		return flt(source_qty)
+		return flt(source_qty) + issued_alloy_qty(doc)
 	source_purity, target_purity = purities
 	return flt(source_qty) * source_purity / target_purity
 
@@ -889,12 +1210,17 @@ def receive_split(doc, precision):
 
 	When the supplier added alloy, the Repack consumes the source metal the received fine
 	metal came from (Target Qty x target purity / source purity) and the loss is the fine
-	shortfall, in grams of the source item -- zero when the full conversion came back.
+	shortfall, in grams of the source item -- zero when the full conversion came back. The
+	same holds for an employee given our alloy with the metal: the Repack consumes all of that
+	alloy beside the source, so only source metal is lost.
 	Otherwise the Repack consumes Target Qty and the loss is the weight not returned.
 	"""
 	source_qty = flt(doc.source_qty, precision)
 	target_qty = flt(doc.target_qty, precision)
-	purities = _alloy_added_by_supplier(doc)
+	# Alloy Qty, not issued_alloy_qty: a Draft shows its loss before Source Alloy is picked.
+	purities = _alloy_added_by_supplier(doc) or (
+		flt(doc.get("source_alloy_qty")) > 0 and employee_alloy_purities(doc)
+	)
 	if purities:
 		source_purity, target_purity = purities
 		consume_qty = min(
@@ -913,11 +1239,7 @@ def _target_cap_error(doc, source_qty, target_qty, precision):
 	both purities that figure cannot be worked out, so Receive is refused.
 	"""
 	if not is_subcontracted(doc):
-		if target_qty - flt(source_qty) <= _qty_unit(precision):
-			return None
-		return _("Target Qty {0} cannot be greater than Source Qty {1}.").format(
-			target_qty, source_qty
-		)
+		return _employee_cap_error(doc, source_qty, target_qty, precision)
 
 	purities = subcontracted_purities(doc)
 	if not purities:
@@ -945,6 +1267,45 @@ def _target_cap_error(doc, source_qty, target_qty, precision):
 		purities[0],
 		doc.target_item,
 		purities[1],
+	)
+
+
+def _employee_cap_error(doc, source_qty, target_qty, precision):
+	"""An employee returns at most what they were given: the source, plus the alloy that went
+	with it when the purity made is lower -- an alloy they cannot do without."""
+	alloy_qty = issued_alloy_qty(doc)
+	purities = employee_alloy_purities(doc)
+	if purities and not alloy_qty:
+		return _(
+			"Converting {0} ({1}%) to {2} ({3}%) needs {4} of alloy, which was not issued with "
+			"the metal. Cancel Issue, set the Target Metal Touch, Target Metal Purity and "
+			"Source Alloy, then Issue again."
+		).format(
+			doc.source_item,
+			purities[0],
+			doc.get("chain_metal_purity") or doc.target_item,
+			purities[1],
+			employee_alloy_qty(doc, precision),
+		)
+	if not alloy_qty:
+		if target_qty - flt(source_qty) <= _qty_unit(precision):
+			return None
+		return _("Target Qty {0} cannot be greater than Source Qty {1}.").format(
+			target_qty, source_qty
+		)
+	cap = flt(flt(source_qty) + alloy_qty, precision)
+	if target_qty - cap <= _qty_unit(precision):
+		return None
+	return _(
+		"Target Qty {0} cannot be greater than {1}: the {2} of {3} and {4} of {5} issued to {6}."
+	).format(
+		target_qty,
+		cap,
+		source_qty,
+		doc.source_item,
+		alloy_qty,
+		doc.source_alloy,
+		doc.to_employee,
 	)
 
 
@@ -1010,6 +1371,8 @@ def _lock_receive(doc, loss_qty):
 		(doc.target_item, work_wh),
 		(doc.target_item, doc.source_warehouse),
 	]
+	if issued_alloy_qty(doc):
+		pairs.append((doc.source_alloy, work_wh))
 	if loss_qty > 0:
 		from jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion import (
 			get_scrap_warehouse,
@@ -1053,11 +1416,33 @@ def make_repack_stock_entry(doc, rows, target_qty):
 	_check_lane_owners(lanes)
 	split_conversion(lanes, target_qty, precision)
 
+	# An employee's alloy went with the metal at Issue and is consumed here in full, each
+	# lane taking its share by source qty, as the regular conversion shares it out.
+	alloy_item, lane_alloy_rows = None, [[] for _ in lanes]
+	alloy_qty = issued_alloy_qty(doc)
+	if alloy_qty:
+		alloy_item = doc.source_alloy
+		needs = apportion(alloy_qty, [lane["source_qty"] for lane in lanes], precision)
+		lane_alloy_rows = split_allocations(_alloy_allocations(doc), needs, precision)
+		handed = flt(
+			sum(flt(r["qty"]) for rows_ in lane_alloy_rows for r in rows_), precision
+		)
+		if abs(handed - flt(alloy_qty, precision)) > _qty_unit(precision):
+			frappe.throw(
+				_(
+					"The issued alloy batches cover {0} of {1}, but {2} was issued. The Alloy "
+					"Batch Details no longer match the Alloy Qty."
+				).format(handed, alloy_item, flt(alloy_qty, precision))
+			)
+
 	_series_stub = frappe.new_doc("Stock Entry")
 	_series_stub.company = doc.company
 	_series_stub.stock_entry_type = CONVERSION_SE_TYPE
 	preallocate_series_for_docs(_series_stub)
-	lock_bins([(doc.source_item, work_wh), (doc.target_item, work_wh)])
+	pairs = [(doc.source_item, work_wh), (doc.target_item, work_wh)]
+	if alloy_item:
+		pairs.append((alloy_item, work_wh))
+	lock_bins(pairs)
 
 	se = frappe.get_doc(_conversion_header(doc, lanes))
 	common = {
@@ -1066,7 +1451,7 @@ def make_repack_stock_entry(doc, rows, target_qty):
 		"manufacturer": doc.manufacturer,
 	}
 	booked = 0.0
-	for lane in lanes:
+	for idx, lane in enumerate(lanes):
 		booked = flt(
 			booked
 			+ _append_lane_rows(
@@ -1076,8 +1461,8 @@ def make_repack_stock_entry(doc, rows, target_qty):
 				common,
 				source_item=doc.source_item,
 				source_wh=work_wh,
-				alloy_item=None,
-				alloy_rows=[],
+				alloy_item=alloy_item,
+				alloy_rows=lane_alloy_rows[idx],
 				target_item=doc.target_item,
 				target_wh=work_wh,
 				precision=precision,
@@ -1152,20 +1537,25 @@ def _produced_batches(stock_entry, item_code, warehouse):
 	return out
 
 
-def _make_transfer(doc, *, se_type, item_code, rows, from_wh, to_wh, header=None):
+def _make_transfer(
+	doc, *, se_type, item_code, rows, from_wh, to_wh, header=None, extra_items=None
+):
 	"""A Material Transfer of ``rows`` of one item, typed ``se_type``; ``header`` adds
-	fields such as who receives it (``to_employee`` / ``subcontractor``)."""
+	fields such as who receives it (``to_employee`` / ``subcontractor``). ``extra_items`` --
+	``[(item_code, rows)]`` -- moves more items the same way in the same entry (an employee's
+	alloy at Issue)."""
 	from jewellery_erpnext.jewellery_erpnext.lock_order import (
 		lock_bins,
 		preallocate_series_for_docs,
 	)
 
 	precision = _precision()
+	moves = [(item_code, rows)] + list(extra_items or [])
 	_series_stub = frappe.new_doc("Stock Entry")
 	_series_stub.company = doc.company
 	_series_stub.stock_entry_type = se_type
 	preallocate_series_for_docs(_series_stub)
-	lock_bins([(item_code, from_wh), (item_code, to_wh)])
+	lock_bins([(code, wh) for code, _rows in moves for wh in (from_wh, to_wh)])
 
 	se = frappe.get_doc(
 		{
@@ -1182,20 +1572,21 @@ def _make_transfer(doc, *, se_type, item_code, rows, from_wh, to_wh, header=None
 			**(header or {}),
 		}
 	)
-	for row in rows:
-		item = {
-			"item_code": item_code,
-			"qty": flt(row["qty"], precision),
-			"s_warehouse": from_wh,
-			"t_warehouse": to_wh,
-			"inventory_type": REGULAR_STOCK,
-			"department": doc.department,
-			"employee": doc.employee,
-			"manufacturer": doc.manufacturer,
-		}
-		if row.get("batch"):
-			item.update({"batch_no": row["batch"], "use_serial_batch_fields": 1})
-		se.append("items", item)
+	for move_item, move_rows in moves:
+		for row in move_rows:
+			item = {
+				"item_code": move_item,
+				"qty": flt(row["qty"], precision),
+				"s_warehouse": from_wh,
+				"t_warehouse": to_wh,
+				"inventory_type": REGULAR_STOCK,
+				"department": doc.department,
+				"employee": doc.employee,
+				"manufacturer": doc.manufacturer,
+			}
+			if row.get("batch"):
+				item.update({"batch_no": row["batch"], "use_serial_batch_fields": 1})
+			se.append("items", item)
 
 	se.save()
 	se.submit()

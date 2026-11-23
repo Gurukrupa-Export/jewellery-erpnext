@@ -72,6 +72,9 @@ EMPLOYEE_WH = {"EMP-2": "EMP-2 RM WH - GK"}
 FINE_24KT = "M-G-24KT-99.9-Y"
 ALLOYED_DOWN = {FINE_24KT: 100.0, "CH-22KT": 91.75}
 SAME_PURITY = {"M-G-22KT-91.6-Y": 91.6, "CH-22KT": 91.6}
+#: Metal Purity attribute values: Purity Percentage, and the Metal Touch each belongs to.
+ATTRIBUTE_PURITY = {"91.75": 91.75, "91.6": 91.6, "75.4": 75.4}
+PURITY_TOUCH = {"91.75": "22KT", "91.6": "22KT", "75.4": "18KT"}
 
 
 def _det_flt(value, precision=None, rounding_method=None):
@@ -134,6 +137,9 @@ EMPLOYEE_MODE = {
 	"chain_supplier": None,
 	"to_employee": "EMP-2",
 }
+#: The Target Metal Touch / Purity an employee chooses before Issue.
+ALLOYED_TOUCH = {"chain_metal_touch": "22KT", "chain_metal_purity": "91.75"}
+SAME_TOUCH = {"chain_metal_touch": "22KT", "chain_metal_purity": "91.6"}
 
 
 def _employee_doc(**fields):
@@ -151,6 +157,8 @@ def _get_value(doctype, name=None, fieldname=None, *args, **kwargs):
 		return EMPLOYEE_DEPT[name], EMPLOYEE_DESIGNATION.get(name)
 	if doctype == "Department" and fieldname == "manufacturer":
 		return "Shubh"
+	if doctype == "Attribute Value" and fieldname == "metal_touch":
+		return PURITY_TOUCH.get(name)
 	raise AssertionError(f"unexpected get_value({doctype!r}, {name!r}, {fieldname!r})")
 
 
@@ -170,6 +178,11 @@ class _ChainCase(IntegrationTestCase):
 			patch.object(cs.frappe.db, "get_value", side_effect=_get_value),
 			patch.object(
 				cs, "_metal_purity", side_effect=lambda item: self.purity.get(item)
+			),
+			patch.object(
+				cs,
+				"_purity_percentage",
+				side_effect=lambda value: ATTRIBUTE_PURITY.get(value),
 			),
 			patch.object(
 				cs, "get_department_rm_warehouse", side_effect=lambda d: DEPT_RM.get(d)
@@ -512,7 +525,7 @@ class TestValidateIssue(_ChainCase):
 	def test_employee_mode_passes_without_a_po_item(self):
 		# No supplier, so no Purchase Order and no service item to check.
 		self.po_uom = (None, 0)
-		cs.validate_issue(self._ready(**EMPLOYEE_MODE))
+		cs.validate_issue(self._ready(**EMPLOYEE_MODE, **SAME_TOUCH))
 
 	def test_employee_mode_needs_the_to_employee(self):
 		doc = self._ready(**EMPLOYEE_MODE)
@@ -622,10 +635,22 @@ class TestValidateReceive(_ChainCase):
 			)
 
 	def test_an_employee_return_keeps_the_weight_rule(self):
-		self.purity = dict(ALLOYED_DOWN)
+		# Same purity: no alloy, so an employee returns at most the weight issued.
 		with self.assertRaisesRegex(ValidationError, "greater than Source Qty"):
 			cs.validate_receive(
-				self._received_from_employee(source_item=FINE_24KT, target_qty=10.5)
+				self._received_from_employee(
+					source_item="M-G-22KT-91.6-Y", target_qty=10.5
+				)
+			)
+
+	def test_an_employee_lower_purity_target_needs_the_alloy_issued(self):
+		# 24KT -> 22KT 91.75 chosen only after Issue: the 0.899 of alloy never went out.
+		self.purity = dict(ALLOYED_DOWN)
+		with self.assertRaisesRegex(
+			ValidationError, "needs 0.899 of alloy, which was not issued"
+		):
+			cs.validate_receive(
+				self._received_from_employee(source_item=FINE_24KT, target_qty=9.5)
 			)
 
 	def test_a_supplier_receive_needs_both_purities(self):
@@ -1360,12 +1385,411 @@ class TestChainReceiveQtys(_ChainCase):
 		doc.target_qty = 2.15
 		self.assertEqual(self._qtys(doc)["loss_qty"], 0.027)
 
-	def test_no_fill_without_purity_or_for_an_employee(self):
+	def test_no_fill_without_purity_or_for_an_employee_needing_no_alloy(self):
 		doc = _chain_doc(source_item=FINE_24KT, target_item="CH-22KT")
 		self.assertIsNone(self._qtys(doc)["max_target_qty"])
+		self.purity = dict(SAME_PURITY)
+		doc = _employee_doc(**SAME_TOUCH)
+		qtys = self._qtys(doc)
+		self.assertIsNone(qtys["max_target_qty"])
+		self.assertEqual(qtys["alloy_qty"], 0)
+
+	def test_an_employee_making_a_lower_purity_gets_source_plus_alloy(self):
 		self.purity = dict(ALLOYED_DOWN)
-		doc = _employee_doc(source_item=FINE_24KT, target_item="CH-22KT")
-		self.assertIsNone(self._qtys(doc)["max_target_qty"])
+		# Draft: no Target Item yet; the chosen purity sizes the alloy.
+		doc = _employee_doc(source_item=FINE_24KT, source_qty=2.0, **ALLOYED_TOUCH)
+		with patch.object(mc, "chain_issued", return_value=False):
+			qtys = self._qtys(doc)
+		self.assertEqual(qtys["alloy_qty"], 0.18)
+		self.assertEqual(qtys["max_target_qty"], 2.18)
+
+		# After Issue: what was issued, not a recomputation.
+		doc.update(
+			chain_issue_stock_entry="SE-ISSUE-1",
+			target_item="CH-22KT",
+			source_alloy="ALLOY-1",
+			source_alloy_qty="0.180",
+		)
+		qtys = self._qtys(doc)
+		self.assertEqual(qtys["alloy_qty"], 0.18)
+		self.assertEqual(qtys["max_target_qty"], 2.18)
+
+
+#: 10 g of 24KT (100%) to 22KT 91.75 needs 10 x 100 / 91.75 - 10 = 0.899 of alloy.
+EMPLOYEE_ALLOY = 0.899
+EMPLOYEE_TARGET = 10.899
+
+
+class TestEmployeeAlloy(_ChainCase):
+	"""An employee making a lower purity is given our alloy with the metal (item 4)."""
+
+	def setUp(self):
+		super().setUp()
+		self.purity = dict(ALLOYED_DOWN)
+		self.batch_item = {"B-1": FINE_24KT, "B-2": FINE_24KT, "AB-1": "ALLOY-1"}
+		self.stock = {"B-1": 6.0, "B-2": 4.0, "AB-1": 5.0}
+		self.issue_status = 1
+		# The Target Item's Metal Touch / Purity attributes, checked at Receive.
+		self.attributes = {"CH-22KT": {"Metal Touch": "22KT", "Metal Purity": "91.75"}}
+
+		def _get_all(doctype, *args, **kwargs):
+			if doctype == "Batch":
+				return [[name, item] for name, item in self.batch_item.items()]
+			if doctype == "Item Variant Attribute":
+				item = kwargs["filters"]["parent"]
+				return [list(pair) for pair in self.attributes.get(item, {}).items()]
+			return _REAL_GET_ALL(doctype, *args, **kwargs)
+
+		def _alloy_get_value(doctype, name=None, fieldname=None, *args, **kwargs):
+			if doctype == "Stock Entry" and fieldname == "docstatus":
+				return self.issue_status
+			return _get_value(doctype, name, fieldname, *args, **kwargs)
+
+		for p in (
+			patch.object(cs.frappe, "get_all", side_effect=_get_all),
+			patch.object(cs.frappe.db, "get_value", side_effect=_alloy_get_value),
+			patch.object(
+				cs,
+				"get_batch_qty",
+				side_effect=lambda batch_no, warehouse: self.stock[batch_no],
+			),
+		):
+			p.start()
+			self._patches.append(p)
+
+	def _draft(self, **fields):
+		# No Target Item before Issue: the chosen touch and purity size the alloy.
+		doc = _employee_doc(**{"source_item": FINE_24KT, **ALLOYED_TOUCH, **fields})
+		cs.validate_chain(doc)
+		return doc
+
+	def _issued(self, **fields):
+		doc = _employee_doc(
+			workflow_state="Submitted",
+			chain_issue_stock_entry="SE-ISSUE-1",
+			to_warehouse="EMP-2 RM WH - GK",
+			source_item=FINE_24KT,
+			target_item="CH-22KT",
+			target_qty=EMPLOYEE_TARGET,
+			source_alloy_check=1,
+			source_alloy="ALLOY-1",
+			source_alloy_qty=str(EMPLOYEE_ALLOY),
+			alloy_batch_details=[_row("AB-1", EMPLOYEE_ALLOY)],
+			**ALLOYED_TOUCH,
+		)
+		doc.update(fields)
+		return doc
+
+	# -- Draft ---------------------------------------------------------------------------
+
+	def test_draft_sizes_the_alloy_as_the_normal_conversion(self):
+		doc = self._draft(source_alloy="ALLOY-1", source_alloy_qty="5")
+		self.assertIsNone(doc.target_item)
+		self.assertEqual(doc.source_alloy_check, 1)
+		self.assertEqual(doc.source_alloy_qty, EMPLOYEE_ALLOY)
+		self.assertEqual(doc.source_alloy, "ALLOY-1")
+		self.assertEqual(doc.target_alloy_qty, 0)
+
+	def test_draft_leaves_the_target_qty_to_receive(self):
+		self.assertFalse(self._draft().target_qty)
+		self.assertEqual(self._draft(target_qty=3).target_qty, 3)
+
+	def test_draft_ignores_a_target_item_without_a_chosen_purity(self):
+		# The Target Item is picked at Receive; before Issue only the purity sizes alloy.
+		doc = self._draft(
+			chain_metal_touch=None,
+			chain_metal_purity=None,
+			target_item="CH-22KT",
+			source_alloy="ALLOY-1",
+			source_alloy_qty="0.899",
+		)
+		self.assertIsNone(doc.source_alloy)
+		self.assertIsNone(doc.source_alloy_qty)
+
+	def test_a_supplier_or_a_same_purity_employee_carries_no_alloy(self):
+		doc = _chain_doc(
+			source_item=FINE_24KT,
+			target_item="CH-22KT",
+			source_alloy="ALLOY-1",
+			source_alloy_qty="0.899",
+			**ALLOYED_TOUCH,
+		)
+		cs.validate_chain(doc)
+		self.assertIsNone(doc.source_alloy)
+		self.assertIsNone(doc.source_alloy_qty)
+		# A supplier never chooses a touch / purity: the fields are cleared.
+		self.assertIsNone(doc.chain_metal_touch)
+		self.assertIsNone(doc.chain_metal_purity)
+
+		self.purity = dict(SAME_PURITY)
+		doc = _employee_doc(source_alloy="ALLOY-1", source_alloy_qty="1", **SAME_TOUCH)
+		cs.validate_chain(doc)
+		self.assertIsNone(doc.source_alloy)
+		self.assertIsNone(doc.source_alloy_qty)
+
+	# -- Issue ---------------------------------------------------------------------------
+
+	def test_issue_needs_the_touch_and_purity(self):
+		with self.assertRaisesRegex(
+			ValidationError,
+			"Target Metal Touch and Target Metal Purity are mandatory",
+		):
+			cs.validate_issue(self._draft(chain_metal_purity=None))
+		with self.assertRaisesRegex(
+			ValidationError, "91.75.*belongs to Metal Touch .*22KT.*, not .*18KT"
+		):
+			cs.validate_issue(self._draft(chain_metal_touch="18KT"))
+
+	def test_issue_needs_the_source_alloy(self):
+		with self.assertRaisesRegex(ValidationError, "Source Alloy is mandatory"):
+			cs.validate_issue(self._draft())
+
+	def test_issue_passes_with_the_alloy_allocated(self):
+		cs.validate_issue(
+			self._draft(
+				source_alloy="ALLOY-1",
+				alloy_batch_details=[_row("AB-1", EMPLOYEE_ALLOY)],
+			)
+		)
+
+	def test_issue_refuses_short_or_foreign_alloy_batches(self):
+		with self.assertRaisesRegex(
+			ValidationError, "hold 0.5, not the Alloy Qty 0.899"
+		):
+			cs.validate_issue(
+				self._draft(
+					source_alloy="ALLOY-1", alloy_batch_details=[_row("AB-1", 0.5)]
+				)
+			)
+		self.stock["AB-1"] = 0.4
+		with self.assertRaisesRegex(ValidationError, "AB-1.*has only 0.4"):
+			cs.validate_issue(
+				self._draft(
+					source_alloy="ALLOY-1",
+					alloy_batch_details=[_row("AB-1", EMPLOYEE_ALLOY)],
+				)
+			)
+		self.batch_item["AB-1"] = "ALLOY-2"
+		with self.assertRaisesRegex(ValidationError, "does not belong to Source Alloy"):
+			cs.validate_issue(
+				self._draft(
+					source_alloy="ALLOY-1",
+					alloy_batch_details=[_row("AB-1", EMPLOYEE_ALLOY)],
+				)
+			)
+
+	# -- Receive -------------------------------------------------------------------------
+
+	def test_receive_may_bring_back_source_plus_alloy(self):
+		cs.validate_receive(self._issued())
+		cs.validate_receive(self._issued(target_qty=10.5))
+		with self.assertRaisesRegex(
+			ValidationError,
+			"Target Qty 10.901 cannot be greater than 10.899: the 10.0 of .* and 0.899 of "
+			"ALLOY-1 issued to EMP-2",
+		):
+			cs.validate_receive(self._issued(target_qty=10.901))
+
+	def test_receive_needs_a_target_of_the_chosen_purity(self):
+		self.attributes["CH-22KT"]["Metal Purity"] = "91.6"
+		with self.assertRaisesRegex(
+			ValidationError,
+			"CH-22KT.* is 22KT 91.6, but the metal was issued to make 22KT 91.75",
+		):
+			cs.validate_receive(self._issued())
+
+	def test_receive_accepts_a_target_without_purity_attributes(self):
+		# Nothing to compare: the weight issued (source + alloy) still bounds it.
+		self.attributes = {}
+		self.purity = {FINE_24KT: 100.0}
+		cs.validate_receive(self._issued())
+		with self.assertRaisesRegex(ValidationError, "cannot be greater than 10.899"):
+			cs.validate_receive(self._issued(target_qty=10.95))
+
+	def test_receive_refuses_a_lower_purity_issued_without_alloy(self):
+		# Issued before the touch / purity existed: no alloy went with the metal.
+		doc = self._issued(
+			chain_metal_touch=None,
+			chain_metal_purity=None,
+			source_alloy_check=0,
+			source_alloy=None,
+			source_alloy_qty=None,
+			alloy_batch_details=[],
+			target_qty=10.0,
+		)
+		with self.assertRaisesRegex(
+			ValidationError,
+			"needs 0.899 of alloy, which was not issued .*Cancel Issue, set the Target Metal "
+			"Touch",
+		):
+			cs.validate_receive(doc)
+
+	def test_receive_needs_the_alloy_in_the_employee_warehouse(self):
+		self.stock["AB-1"] = 0.5
+		with self.assertRaisesRegex(ValidationError, "AB-1.*has only 0.5 of ALLOY-1"):
+			cs.validate_receive(self._issued())
+
+	def test_receive_split_loses_the_fine_shortfall_of_source(self):
+		# 10.8 g of 22KT 91.75 holds 9.909 g fine: that much 24KT is repacked with all the
+		# alloy, and the 0.091 g of 24KT not returned is the loss.
+		self.assertEqual(
+			cs.receive_split(self._issued(target_qty=10.8), 3), (9.909, 0.091)
+		)
+		self.assertEqual(cs.receive_split(self._issued(), 3), (10.0, 0.0))
+
+	def test_run_receive_repacks_the_fine_metal(self):
+		with (
+			patch.object(cs, "_lock_receive"),
+			patch.object(
+				cs, "make_repack_stock_entry", return_value="SE-REPACK-1"
+			) as repack,
+			patch.object(
+				melting_loss, "make_process_loss_entry", return_value="SE-LOSS-1"
+			) as loss,
+			patch.object(cs, "make_final_transfer", return_value="SE-TRANSFER-1"),
+		):
+			cs.run_receive(self._issued(target_qty=10.8))
+		self.assertAlmostEqual(sum(r["qty"] for r in repack.call_args.args[1]), 9.909)
+		self.assertEqual(repack.call_args.args[2], 10.8)
+		self.assertEqual(loss.call_args.kwargs["loss_qty"], 0.091)
+		self.assertEqual(loss.call_args.kwargs["source_wh"], "EMP-2 RM WH - GK")
+
+	def test_receive_locks_the_alloy_bin(self):
+		with (
+			patch(f"{_LOCK_ORDER}.lock_bins") as lock_bins,
+			patch(f"{_LOCK_ORDER}.preallocate_series_for_docs"),
+			patch(f"{_LOCK_ORDER}.series_stubs", return_value=[]),
+		):
+			cs._lock_receive(self._issued(), 0)
+		self.assertIn(("ALLOY-1", "EMP-2 RM WH - GK"), lock_bins.call_args.args[0])
+
+	# -- Cancel Issue / frozen -------------------------------------------------------------
+
+	def test_alloy_touch_and_purity_are_frozen_after_issue(self):
+		before = self._issued(workflow_state="Issue", target_qty=EMPLOYEE_TARGET)
+		for changes in (
+			{"source_alloy": "ALLOY-2"},
+			{"source_alloy_qty": "0.5"},
+			{"chain_metal_touch": "18KT"},
+			{"chain_metal_purity": "91.6"},
+		):
+			doc = self._issued(workflow_state="Issue", _before=before)
+			doc.update(changes)
+			with self.assertRaises(ValidationError, msg=str(changes)):
+				cs.validate_chain(doc)
+
+		doc = self._issued(
+			workflow_state="Issue", _before=before, alloy_batch_details=[]
+		)
+		cs.validate_chain(doc)
+		self.assertEqual(
+			[(row["batch"], row["qty"]) for row in doc.alloy_batch_details],
+			[("AB-1", EMPLOYEE_ALLOY)],
+		)
+
+	def test_the_target_item_is_still_picked_at_receive(self):
+		before = self._issued(workflow_state="Issue", target_item=None)
+		doc = self._issued(workflow_state="Issue", _before=before)
+		cs.validate_chain(doc)
+		self.assertEqual(doc.target_item, "CH-22KT")
+
+	def test_a_target_without_alloy_issued_may_still_change(self):
+		# The weight rule's flow: no alloy went out, so the target is picked at Receive.
+		self.purity = dict(SAME_PURITY)
+		before = _employee_doc(chain_issue_stock_entry="SE-ISSUE-1")
+		doc = _employee_doc(
+			chain_issue_stock_entry="SE-ISSUE-1", _before=before, target_item="CH-22KT"
+		)
+		cs.validate_chain(doc)
+
+	def test_cancel_issue_clears_the_alloy(self):
+		doc = self._issued(workflow_state="Draft", chain_purchase_order=None)
+		with patch.object(cs, "_cancel_stock_entry") as cancelled:
+			cs.run_cancel_issue(doc)
+		cancelled.assert_called_once_with("SE-ISSUE-1")
+		self.assertIsNone(doc.source_alloy)
+		self.assertIsNone(doc.source_alloy_qty)
+		self.assertEqual(doc.alloy_batch_details, [])
+
+
+class TestEmployeeAlloyEntries(_BuilderCase):
+	def setUp(self):
+		super().setUp()
+		self.purity = dict(ALLOYED_DOWN)
+
+	def _issued(self, **fields):
+		doc = self._employee(
+			source_item=FINE_24KT,
+			source_alloy_check=1,
+			source_alloy="ALLOY-1",
+			source_alloy_qty=str(EMPLOYEE_ALLOY),
+			alloy_batch_details=[_row("AB-1", EMPLOYEE_ALLOY)],
+			**ALLOYED_TOUCH,
+		)
+		doc.update(fields)
+		return doc
+
+	def test_issue_moves_the_alloy_with_the_metal(self):
+		cs.make_issue_stock_entry(self._issued())
+		se = self.captured[-1]
+		self.assertEqual(
+			[(r["item_code"], r["batch_no"], r["qty"]) for r in se.items],
+			[
+				(FINE_24KT, "B-1", 6.0),
+				(FINE_24KT, "B-2", 4.0),
+				("ALLOY-1", "AB-1", EMPLOYEE_ALLOY),
+			],
+		)
+		for row in se.items:
+			self.assertEqual(row["s_warehouse"], "Chain RM - GK")
+			self.assertEqual(row["t_warehouse"], "EMP-2 RM WH - GK")
+
+	def test_issue_without_alloy_moves_only_the_metal(self):
+		self.purity = dict(SAME_PURITY)
+		cs.make_issue_stock_entry(self._employee())
+		self.assertEqual(
+			{r["item_code"] for r in self.captured[-1].items}, {"M-G-22KT-91.6-Y"}
+		)
+
+	def test_repack_consumes_all_the_alloy(self):
+		with patch.object(
+			cs,
+			"get_batch_lane_map",
+			return_value={
+				"B-1": ("Regular Stock", None),
+				"B-2": ("Regular Stock", None),
+			},
+		), patch.object(mc, "flt", _det_flt):
+			cs.make_repack_stock_entry(
+				self._issued(target_qty=10.8),
+				[{"batch": "B-1", "qty": 6.0}, {"batch": "B-2", "qty": 3.909}],
+				10.8,
+			)
+		se = self.captured[-1]
+		consume = [r for r in se.items if r.get("s_warehouse")]
+		alloy = [r for r in consume if r["item_code"] == "ALLOY-1"]
+		self.assertEqual([(r["batch_no"], r["qty"]) for r in alloy], [("AB-1", 0.899)])
+		self.assertEqual({r["s_warehouse"] for r in consume}, {"EMP-2 RM WH - GK"})
+		produce = [r for r in se.items if r.get("t_warehouse")]
+		self.assertEqual(
+			[(r["item_code"], r["qty"]) for r in produce], [("CH-22KT", 10.8)]
+		)
+
+	def test_repack_refuses_an_alloy_allocation_short_of_the_issue(self):
+		with patch.object(
+			cs,
+			"get_batch_lane_map",
+			return_value={
+				"B-1": ("Regular Stock", None),
+				"B-2": ("Regular Stock", None),
+			},
+		), patch.object(mc, "flt", _det_flt):
+			with self.assertRaisesRegex(ValidationError, "alloy batches cover 0.5"):
+				cs.make_repack_stock_entry(
+					self._issued(alloy_batch_details=[_row("AB-1", 0.5)]),
+					[{"batch": "B-1", "qty": 6.0}, {"batch": "B-2", "qty": 4.0}],
+					10.899,
+				)
 
 
 class TestControllerRouting(IntegrationTestCase):
