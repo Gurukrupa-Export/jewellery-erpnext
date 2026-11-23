@@ -7,6 +7,9 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.utils import flt, nowdate, strip_html_tags
 from frappe.utils.background_jobs import is_job_enqueued
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement import (
+	check_material_request_transfer,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
 	get_submitted_from_reserve_se,
 	make_department_mop_stock_entry,
@@ -623,6 +626,11 @@ def before_update_after_submit(self, method):
 	# several departments, keyed on its missing ``previous_mop``. That is the hole
 	# wrong-department operations went through, so it is gone.
 	validate_mop_department(self, mop_fields.department)
+
+	# Process control (pilot on, controlled departments only): the job is judged as it is now,
+	# under the MOP-then-MWO lock a competing transfer takes, not as it was when the request was
+	# raised. The Stock Entry built below is checked again when it submits.
+	check_material_request_transfer(self, self.custom_manufacturing_operation)
 
 	if self.custom_department:
 		make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
