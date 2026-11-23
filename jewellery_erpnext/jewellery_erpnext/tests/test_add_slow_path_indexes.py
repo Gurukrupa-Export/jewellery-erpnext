@@ -270,6 +270,28 @@ class TestAddSlowPathIndexes(IntegrationTestCase):
 			if len(spec) == 1:
 				self.assertIn((table, spec[0][0]), TEXT_COLUMNS, name)
 
+	def test_no_index_on_stock_reservation_entry(self):
+		# Unordered Stock Reservation Entry reads decide which reservation is used; a new index
+		# could change the order they come back in.
+		self.assertFalse(
+			[
+				name
+				for table, name, _spec in idx.SPECS
+				if table == "tabStock Reservation Entry"
+			]
+		)
+
+	def test_bundle_voucher_type_keeps_a_composite_index_for_erpnext_v16_55(self):
+		# v16.55 drops the single-column voucher_type index; the cancel dialog's
+		# SELECT DISTINCT voucher_type ... ORDER BY creation must still be index-only.
+		self.assertIn(
+			(
+				"tabSerial and Batch Bundle",
+				(("voucher_type", None), ("creation", None)),
+			),
+			[(table, spec) for table, _name, spec in idx.SPECS],
+		)
+
 	def test_registered_once_in_post_model_sync(self):
 		path = os.path.join(os.path.dirname(idx.__file__), "..", "patches.txt")
 		with open(path) as f:
