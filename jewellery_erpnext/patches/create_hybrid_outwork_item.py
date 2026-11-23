@@ -5,8 +5,12 @@ portion of a Hybrid order into one aggregated row for this item, so the real row
 Outright (3%) template and this row carries the Outwork (5%) one. The item was never created
 by the app, so a site without it fails the save with ``Item Subcontracting Charges not found``.
 
-KGGK only: skipped on any site that does not have the KG GK Jewellers company, so other
-deployments of the app are untouched. Idempotent: does nothing if the item already exists. Run ad-hoc with::
+It also makes sure the ``Sales Order Item.custom_is_subcontracting_charge_row`` flag exists.
+The Sales Order purges the previous save's outwork row by that flag; where the field is
+missing the flag is never stored, so every save appends another row.
+
+KGGK only: skipped on any site without the KG GK Jewellers company. Idempotent: each step is
+skipped if it is already done. Run ad-hoc with::
 
     bench --site <site> execute jewellery_erpnext.patches.create_hybrid_outwork_item.execute
 """
@@ -18,10 +22,34 @@ HSN_CODE = "9988"  # job-work / manufacturing services on goods owned by others
 KGGK_COMPANY = "KG GK Jewellers Private Limited"
 # Outwork (5%) Item Tax Template, same name as SALES_TYPE_ITEM_TAX_TEMPLATE["Outwork"][KGGK_COMPANY]
 OUTWORK_TEMPLATES = ("GST 5% - KGJPL",)
+FLAG_FIELD = "custom_is_subcontracting_charge_row"
+
+
+def ensure_flag_field():
+	if frappe.db.exists(
+		"Custom Field", {"dt": "Sales Order Item", "fieldname": FLAG_FIELD}
+	):
+		return
+	frappe.get_doc(
+		{
+			"doctype": "Custom Field",
+			"dt": "Sales Order Item",
+			"fieldname": FLAG_FIELD,
+			"fieldtype": "Check",
+			"label": "Is Subcontracting Charge Row",
+			"insert_after": "custom_mfg_complexity_code",
+			"module": "Jewellery Erpnext",
+		}
+	).insert(ignore_permissions=True)
+	frappe.clear_cache(doctype="Sales Order Item")
 
 
 def execute():
-	if not frappe.db.exists("Company", KGGK_COMPANY) or frappe.db.exists("Item", ITEM):
+	if not frappe.db.exists("Company", KGGK_COMPANY):
+		return
+
+	ensure_flag_field()
+	if frappe.db.exists("Item", ITEM):
 		return
 
 	item_group = (
