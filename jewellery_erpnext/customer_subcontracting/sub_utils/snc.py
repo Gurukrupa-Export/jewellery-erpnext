@@ -1,4 +1,5 @@
 import hashlib
+from contextlib import contextmanager
 
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
@@ -1092,11 +1093,65 @@ def _get_snc_source_warehouses(company=None):
 	return frappe.get_all("Warehouse", filters=filters, pluck="name")
 
 
+_ITEM_LOOKUP_CACHE = "snc_item_lookup_cache"
+
+
+@contextmanager
+def item_lookup_cache():
+	"""Reuse the candidate-Item and Item-purity reads inside one call (e.g. one Settle).
+
+	Settle asks for the same purity/colour candidates and the same Item purities once per
+	purity, per finder, per short row, and again when it re-plans after a work-order
+	take-back. Item master data is not written on those paths, so within one call the answer
+	cannot change. Only these two Item-master lookups are cached: batch quantities,
+	reservations, run claims and submit-time checks are always read live. Outside this
+	context nothing is cached; a nested use shares the outer cache. Cleared on exit, also
+	when the call raises.
+	"""
+	if getattr(frappe.local, _ITEM_LOOKUP_CACHE, None) is not None:
+		yield
+		return
+	setattr(frappe.local, _ITEM_LOOKUP_CACHE, {})
+	try:
+		yield
+	finally:
+		setattr(frappe.local, _ITEM_LOOKUP_CACHE, None)
+
+
+def _cached_item_lookup(kind, key, compute):
+	cache = getattr(frappe.local, _ITEM_LOOKUP_CACHE, None)
+	if cache is None:
+		return compute()
+	bucket = cache.setdefault(kind, {})
+	if key not in bucket:
+		bucket[key] = compute()
+	return bucket[key]
+
+
 def _get_gold_items_for_purity(purity, required_item_code):
 	colour = (required_item_code or "").split("-")[-1]
-	filters = {"disabled": 0}
+	# A copy, so a caller can never alter the cached list.
+	return list(
+		_cached_item_lookup(
+			"gold_items",
+			(purity, colour),
+			lambda: _query_gold_items_for_purity(purity, colour),
+		)
+	)
+
+
+def _query_gold_items_for_purity(purity, colour):
+	# The "M-G-<purity>" prefix lets the database read only that range of the Item primary
+	# key; the colour match alone ("%-Y") starts with a wildcard, so it scanned every Item.
+	# The prefix is only a pre-filter (LIKE ignores case and treats "_" as a wildcard): the
+	# Python check below still decides, exactly as before, so the result and its order
+	# (Item's default sort) are unchanged.
+	filters = [
+		["disabled", "=", 0],
+		["name", "like", "M-G-{0}%".format(purity or "")],
+	]
 	if colour:
-		filters["name"] = ["like", "%-{0}".format(colour)]
+		filters.append(["name", "like", "%-{0}".format(colour)])
 
 	items = frappe.get_all("Item", filters=filters, pluck="name")
 	return [
@@ -1154,6 +1209,12 @@ def _item_template(item_code):
 
 
 def _get_item_purity(item_code):
+	return _cached_item_lookup(
+		"item_purity", item_code, lambda: _read_item_purity(item_code)
+	)
+
+
+def _read_item_purity(item_code):
 	# Read the Metal Purity attribute directly instead of frappe.get_doc("Item", …),
 	# which loads the whole Item document — every child table, including a ~59ms
 	# Design-Attribute-Multiselect load — just to scan for one attribute row. This

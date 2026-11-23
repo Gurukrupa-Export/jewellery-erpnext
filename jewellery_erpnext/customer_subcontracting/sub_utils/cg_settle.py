@@ -70,6 +70,7 @@ from jewellery_erpnext.customer_subcontracting.sub_utils.snc import (
 	_mwo_needs_settlement,
 	_submit_consuming_stock_entry,
 	find_owner_rm_warehouse,
+	item_lookup_cache,
 )
 
 CUSTOMER_GOODS = "Customer Goods"
@@ -127,6 +128,13 @@ OPERATION_NOT_STARTED = "Not Started"
 @frappe.whitelist()
 def settle_material_request(mr_name):
 	"""Top up ``set_from_warehouse`` for every short row of a return Material Request."""
+	# One Settle reads the same candidate Items and Item purities many times (each purity,
+	# each finder, each row, and again after a work-order take-back); read them once.
+	with item_lookup_cache():
+		return _settle_material_request(mr_name)
+
+
+def _settle_material_request(mr_name):
 	mr = frappe.get_doc("Material Request", mr_name)
 	mr.check_permission("write")
 	_validate_settleable(mr)
