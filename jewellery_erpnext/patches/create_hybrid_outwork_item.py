@@ -37,6 +37,8 @@ def ensure_flag_field():
 			"fieldname": FLAG_FIELD,
 			"fieldtype": "Check",
 			"label": "Is Subcontracting Charge Row",
+			"read_only": 1,
+			"hidden": 1,
 			"insert_after": "custom_mfg_complexity_code",
 			"module": "Jewellery Erpnext",
 		}
