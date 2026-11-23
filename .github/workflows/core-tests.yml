@@ -91,3 +91,4 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom_do_not_explode
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_not_allowed_attribute_values
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_data_export
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_add_slow_path_indexes
