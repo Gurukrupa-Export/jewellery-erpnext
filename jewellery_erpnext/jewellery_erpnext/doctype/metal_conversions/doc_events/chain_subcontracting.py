@@ -483,8 +483,9 @@ def _set_employee_alloy(doc):
 	An employee making a lower purity (the Target Metal Purity) gets our alloy with the metal,
 	sized as the normal conversion sizes it. The figure is always recomputed -- never taken
 	from the form -- and Source Alloy is left for the user to pick (``update_alloy_betch`` then
-	allocates its batches). The Target Item and Target Qty wait for Receive. Every other chain
-	conversion carries no alloy, as before.
+	allocates its batches). A Draft saves without it: Issue refuses it
+	(``_employee_alloy_issue_errors``). The Target Item and Target Qty wait for Receive. Every
+	other chain conversion carries no alloy, as before.
 	"""
 	precision = _precision()
 	alloy_qty = employee_alloy_qty(doc, precision)
@@ -496,6 +497,9 @@ def _set_employee_alloy(doc):
 	doc.target_alloy_check = 0
 	doc.target_alloy = None
 	doc.target_alloy_qty = 0
+	if not doc.get("source_alloy"):
+		# No alloy item, so no batches of it: drop any left from an earlier pick.
+		doc.alloy_batch_details = []
 
 
 def after_validate(doc):
@@ -1148,13 +1152,13 @@ def employee_alloy_purities(doc):
 def employee_alloy_qty(doc, precision):
 	"""The alloy an employee conversion needs: the normal conversion's figure
 	(``MetalConversions.calculate_metal_conversion``), Source Qty x sp / tp - Source Qty,
-	rounded to 3. Zero when no alloy is needed."""
+	at posting precision. Zero when no alloy is needed."""
 	purities = employee_alloy_purities(doc)
 	if not purities:
 		return 0.0
 	source_qty = flt(doc.source_qty, precision)
 	source_purity, target_purity = purities
-	return round(float(source_qty * source_purity / target_purity - source_qty), 3)
+	return flt(source_qty * source_purity / target_purity - source_qty, precision)
 
 
 def issued_alloy_qty(doc):

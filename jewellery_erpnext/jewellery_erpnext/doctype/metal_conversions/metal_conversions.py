@@ -172,7 +172,10 @@ class MetalConversions(Document):
 		# record, not a plan: re-allocating against the department warehouse would find
 		# nothing there.
 		if not chain_issued(self):
-			update_alloy_betch(self)
+			# A chain conversion's Alloy Qty is sized by the server; Source Alloy is checked at
+			# Issue (with a message naming the conversion), so a Draft saves without it.
+			if not (is_chain(self) and not self.source_alloy):
+				update_alloy_betch(self)
 			update_source_betch(self)
 		validate_customer_metal_target(self)
 		validate_customer_finding_source(self)

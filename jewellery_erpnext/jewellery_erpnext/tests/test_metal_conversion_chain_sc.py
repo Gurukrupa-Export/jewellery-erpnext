@@ -1490,6 +1490,12 @@ class TestEmployeeAlloy(_ChainCase):
 		self.assertEqual(doc.source_alloy, "ALLOY-1")
 		self.assertEqual(doc.target_alloy_qty, 0)
 
+	def test_draft_without_source_alloy_drops_stale_alloy_batches(self):
+		# Source Alloy is checked at Issue; until then no alloy item means no alloy batches.
+		doc = self._draft(alloy_batch_details=[_row("AB-1", EMPLOYEE_ALLOY)])
+		self.assertEqual(doc.source_alloy_qty, EMPLOYEE_ALLOY)
+		self.assertEqual(doc.alloy_batch_details, [])
+
 	def test_draft_leaves_the_target_qty_to_receive(self):
 		self.assertFalse(self._draft().target_qty)
 		self.assertEqual(self._draft(target_qty=3).target_qty, 3)
@@ -1815,6 +1821,44 @@ class TestControllerRouting(IntegrationTestCase):
 		with patch.object(mc, "validate_receive") as validate_receive:
 			mc.MetalConversions.before_submit(doc)
 		validate_receive.assert_not_called()
+
+	def _validate(self, doc):
+		names = (
+			"validate_melting_loss",
+			"validate_chain",
+			"validate_source_target_differ",
+			"validate_finding_to_finding",
+			"update_alloy_betch",
+			"update_source_betch",
+			"validate_customer_metal_target",
+			"validate_customer_finding_source",
+			"after_chain_validate",
+		)
+		mocks = {}
+		patches = [patch.object(mc, name) for name in names]
+		for name, p in zip(names, patches, strict=True):
+			mocks[name] = p.start()
+		try:
+			doc.set_remarks = lambda: None
+			mc.MetalConversions.validate(doc)
+		finally:
+			for p in reversed(patches):
+				p.stop()
+		return mocks
+
+	def test_a_chain_draft_saves_before_source_alloy_is_picked(self):
+		# The employee's Alloy Qty is set, Source Alloy not yet: Issue reports it, not save.
+		doc = _employee_doc(source_alloy_qty=0.45, source_alloy=None)
+		mocks = self._validate(doc)
+		mocks["update_alloy_betch"].assert_not_called()
+		mocks["update_source_betch"].assert_called_once_with(doc)
+
+		doc = _employee_doc(source_alloy_qty=0.45, source_alloy="ALLOY-1")
+		self._validate(doc)["update_alloy_betch"].assert_called_once_with(doc)
+
+	def test_a_regular_conversion_still_needs_its_alloy_on_save(self):
+		doc = _chain_doc(is_chain_manufacturing="No", source_alloy=None)
+		self._validate(doc)["update_alloy_betch"].assert_called_once_with(doc)
 
 	def test_chain_cancel_goes_through_cancel_chain(self):
 		doc = _chain_doc()
