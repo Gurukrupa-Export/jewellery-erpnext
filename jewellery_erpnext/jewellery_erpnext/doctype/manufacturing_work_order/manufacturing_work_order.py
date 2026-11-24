@@ -38,7 +38,6 @@ from jewellery_erpnext.utils import (
 	carat_to_gram,
 	get_item_from_attribute,
 	get_repair_order_design_bom,
-	is_purchase_order_repair,
 	set_values_in_bulk,
 )
 
@@ -554,39 +553,25 @@ class ManufacturingWorkOrder(Document):
 			)
 		return serial_item
 
-	def _resolve_repair_order_bom(self):
-		"""Return (design BOM, PMO name) for this repair unpack.
+	def _sync_repair_order_master_bom(self):
+		"""Write the Repair Order's design BOM to master_bom (PMO + this MWO), if there is one.
 
-		The BOM to unpack against is the Repair Order's ``bom`` -- the design BOM, reached
-		from the PMO's ``order_form_type`` / ``order_form_id`` dynamic link. Its detail
-		tables carry the item's FULL composition, which is what
-		``_resolve_full_repair_components`` books.
-
-		We deliberately do NOT require the Repair Order's ``new_bom``. That field is only
-		ever written by the Repair Order's own ``on_submit`` when ``required_design == 'No'``,
-		so a Manual/CAD-design repair never gets one and demanding it blocked the unpack
-		outright. Throws only if there is no Repair Order link, or it carries no ``bom``.
+		Not a gate: the unpack books the serial's own BOM, so a repair with no Repair Order (a
+		customer Purchase Order repair, or any other) unpacks all the same and keeps its
+		master_bom. The design BOM is written only because it drives repair pricing/quotation.
 		"""
-		pmo_name = self.manufacturing_order
-		order_form_type, order_form_id = frappe.db.get_value(
-			"Parent Manufacturing Order",
-			pmo_name,
-			["order_form_type", "order_form_id"],
-		) or (None, None)
-		if order_form_type != "Repair Order" or not order_form_id:
-			frappe.throw(
-				_(
-					"No Repair Order is linked to {0}; cannot resolve the repair BOM to unpack."
-				).format(pmo_name)
-			)
-		design_bom = get_repair_order_design_bom(order_form_type, order_form_id)
+		if not self._has_repair_order_link():
+			return
+		order_form_id = frappe.db.get_value(
+			"Parent Manufacturing Order", self.manufacturing_order, "order_form_id"
+		)
+		design_bom = get_repair_order_design_bom("Repair Order", order_form_id)
 		if not design_bom:
-			frappe.throw(
-				_(
-					"Repair Order {0} has no BOM to unpack; set its design BOM first."
-				).format(order_form_id)
-			)
-		return design_bom, pmo_name
+			return
+		frappe.db.set_value(
+			"Parent Manufacturing Order", self.manufacturing_order, "master_bom", design_bom
+		)
+		self.db_set("master_bom", design_bom)
 
 	def _has_repair_order_link(self):
 		order_form_type, order_form_id = frappe.db.get_value(
@@ -596,22 +581,16 @@ class ManufacturingWorkOrder(Document):
 		) or (None, None)
 		return order_form_type == "Repair Order" and bool(order_form_id)
 
-	def _is_purchase_order_repair(self):
-		return is_purchase_order_repair(
-			frappe.db.get_value(
-				"Parent Manufacturing Order",
-				self.manufacturing_order,
-				"sales_order_item",
-			)
-		)
-
 	def _resolve_serial_bom(self):
-		"""The as-built BOM of the serial being unpacked (Serial No.custom_bom_no).
+		"""The BOM of the serial being unpacked: the work order's Serial No BOM
+		(serial_id_bom), else the serial's own BOM (Serial No.custom_bom_no).
 
 		That, and not the Repair Order's design BOM, describes what is physically in the
-		piece. No fallback: unpacking against another BOM would book the wrong materials.
+		piece. Never the design BOM: unpacking against it would book the wrong materials.
 		"""
-		serial_bom = frappe.db.get_value("Serial No", self.serial_no, "custom_bom_no")
+		serial_bom = getattr(self, "serial_id_bom", None) or frappe.db.get_value(
+			"Serial No", self.serial_no, "custom_bom_no"
+		)
 		if not serial_bom:
 			frappe.throw(
 				_(
@@ -633,8 +612,7 @@ class ManufacturingWorkOrder(Document):
 		order's Diamond Grade (design diamond rows carry the sieve/type/shape but not
 		the grade -- that comes from the order). The in-memory copy is never saved.
 
-		``design_bom`` comes from ``_resolve_repair_order_bom``, which has already
-		validated the Repair Order link.
+		``design_bom`` is the serial's BOM (``_resolve_serial_bom``).
 
 		Returns (components, gross_wt, bom_qty) where
 		``components = [{"item_code", "qty"}]`` aggregated by item.
@@ -691,19 +669,6 @@ class ManufacturingWorkOrder(Document):
 		]
 		return component_rows, flt(design.gross_weight), flt(design.quantity) or 1.0
 
-	def _assert_serial_in_department(self, source_wh):
-		"""Block unpacking unless the serial's current warehouse belongs to THIS work
-		order's department. Department stored as "" and NULL are normalized together.
-		"""
-		sn_dept = frappe.db.get_value("Warehouse", source_wh, "department")
-		if (sn_dept or None) != (self.department or None):
-			frappe.throw(
-				_(
-					"Serial No {0} is in {1} (department {2}), not this work order's "
-					"department {3}. Move it into a {3} warehouse before unpacking."
-				).format(self.serial_no, source_wh, sn_dept or "-", self.department)
-			)
-
 	def _assert_components_bookable(self, item_codes, bom_name):
 		"""Fail fast (before building the SE) if any component is serial-tracked with no
 		Serial No Series. erpnext cannot auto-generate a serial bundle for such an inward
@@ -730,7 +695,7 @@ class ManufacturingWorkOrder(Document):
 		Regular Stock.
 
 		Consumes the finished-good serial from the RM warehouse that currently holds
-		it and books the raw materials of the serial's as-built BOM (Serial No.custom_bom_no)
+		it and books the raw materials of the serial's BOM (serial_id_bom, else Serial No.custom_bom_no)
 		into the work order's warehouse (see _resolve_unpack_target_warehouse), so the repair
 		operations have their inputs without a separate stock transfer. Only valid for Repair work orders (see the Unpack
 		Serial No button). This is a Customer-Goods sibling of
@@ -762,29 +727,14 @@ class ManufacturingWorkOrder(Document):
 				).format(self.serial_no, get_link_to_form("Stock Entry", existing))
 			)
 
-		# The Repair Order's design BOM is still persisted onto the PMO + this MWO (it
-		# drives repair pricing/quotation), but it is NOT what gets unpacked: the piece in
-		# hand was built against its own BOM, so the components booked come from that one.
-		if not self._has_repair_order_link() and self._is_purchase_order_repair():
-			# A repair sent in on a customer's Purchase Order has no Repair Order here. That PO
-			# carried the serial's BOM down to this work order as serial_id_bom, and its Copy BOM
-			# is already master_bom (the BOM the repair is manufactured on), so master_bom is
-			# left alone and the serial is unpacked against serial_id_bom.
-			pmo_name = self.manufacturing_order
-			serial_bom = self.serial_id_bom or self._resolve_serial_bom()
-		else:
-			# Every other repair needs its Repair Order; _resolve_repair_order_bom refuses one
-			# without, exactly as before.
-			design_bom, pmo_name = self._resolve_repair_order_bom()
-			frappe.db.set_value(
-				"Parent Manufacturing Order", pmo_name, "master_bom", design_bom
-			)
-			self.db_set("master_bom", design_bom)
-			serial_bom = self._resolve_serial_bom()
-
+		# Only the serial and its BOM decide what is unpacked; no Repair Order is needed. The
+		# Repair Order's design BOM, when there is one, is still written to master_bom.
+		serial_bom = self._resolve_serial_bom()
 		# The serial must be the item its BOM makes. The work order's own item is not
 		# compared: a design-change repair makes another item from this serial.
 		serial_item = self._assert_serial_matches_bom(serial_bom)
+		self._sync_repair_order_master_bom()
+		pmo_name = self.manufacturing_order
 
 		# Source: the RM warehouse that currently holds the serial (not the
 		# manufacturer's repair warehouse used by the legacy method).
@@ -796,9 +746,9 @@ class ManufacturingWorkOrder(Document):
 				).format(self.serial_no)
 			)
 
-		# The serial must physically sit in a warehouse of THIS work order's
-		# department before it can be unpacked here.
-		self._assert_serial_in_department(source_wh)
+		# The serial leaves from its own warehouse's department; the work order's department
+		# is not compared.
+		source_department = frappe.db.get_value("Warehouse", source_wh, "department")
 
 		target_wh = self._resolve_unpack_target_warehouse()
 
@@ -872,7 +822,7 @@ class ManufacturingWorkOrder(Document):
 				"inventory_type": source_inventory_type,
 				"customer": source_customer,
 				"serial_no": self.serial_no,
-				"department": self.department,
+				"department": source_department,
 				"manufacturer": self.manufacturer,
 				"use_serial_batch_fields": 1,
 				"s_warehouse": source_wh,

@@ -889,8 +889,8 @@ def get_repair_order_design_bom(order_form_type, order_form_id):
 
 	Returns None rather than throwing so creation-time callers (Manufacturing Plan ->
 	PMO) can fall back to the row's own BOM for repairs raised without a Repair Order
-	link. The unpack path re-resolves through ``_resolve_repair_order_bom`` and raises
-	its own business error there, where a missing design BOM is genuinely fatal.
+	link. The unpack path uses it only to refresh ``master_bom`` and never requires it:
+	what is unpacked is the serial's own BOM.
 	"""
 	if order_form_type != "Repair Order" or not order_form_id:
 		return None
