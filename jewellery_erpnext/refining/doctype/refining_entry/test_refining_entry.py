@@ -4272,9 +4272,12 @@ class TestWorkOrderMaterialOwnedGuard(IntegrationTestCase):
 			)
 		return re
 
-	def _check(self, re, owned, physical):
+	def _check(self, re, owned, physical, unsynced=None):
+		module = type(re).__module__
 		with patch.object(
 			type(re), "_owned_batch_reservations", return_value=owned
+		), patch(
+			f"{module}._unsynced_mop_log_counts", return_value=unsynced or {}
 		), patch(
 			"erpnext.stock.doctype.batch.batch.get_batch_qty",
 			side_effect=lambda batch_no, warehouse, item_code, **kw: physical.get(
@@ -4303,6 +4306,33 @@ class TestWorkOrderMaterialOwnedGuard(IntegrationTestCase):
 		msg = str(ctx.exception)
 		for part in ("5.014", "3.943", self.MWO.format(3), self.HAMMER, "EOD"):
 			self.assertIn(part, msg)
+
+	def test_pending_share_points_at_eod(self):
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._check(
+				re,
+				self._incident_owned(minus_03_at=self.HAMMER),
+				{self.CENTRAL: 3.943},
+				unsynced={self.MWO.format(3): 4},
+			)
+		self.assertIn("EOD pending: 4 unsynced MOP Logs", str(ctx.exception))
+
+	def test_share_skipped_by_an_earlier_eod_is_not_sent_to_eod(self):
+		# Logs all synced: a selective EOD finds nothing to move, so the message must say
+		# the transfer needs a repair instead of "run EOD".
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._check(
+				re, self._incident_owned(minus_03_at=self.HAMMER), {self.CENTRAL: 3.943}
+			)
+		msg = str(ctx.exception)
+		self.assertIn("MOP Logs all synced: an earlier EOD skipped this transfer", msg)
+		self.assertNotIn("EOD pending:", msg)
+
+	def test_sub_precision_residue_is_not_a_shortfall(self):
+		re = self._entry([{"qty": 5.0144, "warehouse": self.CENTRAL}])
+		self._check(re, self._incident_owned(), {self.CENTRAL: 5.014})
 
 	def test_after_eod_the_same_row_passes(self):
 		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
@@ -4350,6 +4380,8 @@ class TestWorkOrderMaterialOwnedGuard(IntegrationTestCase):
 			return_value=self._incident_owned(self.HAMMER),
 		), patch(
 			"erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=3.943
+		), patch(
+			f"{type(re).__module__}._unsynced_mop_log_counts", return_value={}
 		), patch.object(
 			type(re), "_cancel_source_mwo_sres", autospec=True
 		) as cancel, patch("frappe.new_doc", wraps=frappe.new_doc) as new_doc:
