@@ -2704,7 +2704,9 @@ class RefiningEntry(Document):
 		# Before anything moves or is released: every Work Order batch row must be the
 		# scanned MWOs' own stock at the warehouse it names.
 		if self.refining_type == "Work Order Refining":
-			self._validate_work_order_material_owned()
+			# Class-qualified: callers that drive this method with a stand-in document
+			# (the lock-order tests) get the same check instead of an AttributeError.
+			RefiningEntry._validate_work_order_material_owned(self)
 
 		se = frappe.new_doc("Stock Entry")
 		se.stock_entry_type = "Material Transfer"
@@ -3163,8 +3165,8 @@ class RefiningEntry(Document):
 		if not required:
 			return
 
-		owned = self._owned_batch_reservations(
-			keys={(item_code, batch_no) for item_code, batch_no, _wh in required}
+		owned = RefiningEntry._owned_batch_reservations(
+			self, {(item_code, batch_no) for item_code, batch_no, _wh in required}
 		)
 		problems = []
 		for (item_code, batch_no, warehouse), (qty, idxs) in required.items():
