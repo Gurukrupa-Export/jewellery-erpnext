@@ -573,6 +573,29 @@ class ManufacturingWorkOrder(Document):
 		)
 		self.db_set("master_bom", design_bom)
 
+	def _assert_serial_matches_repair_order(self):
+		"""When the repair has a Repair Order, its serial must be this work order's serial.
+
+		The serial-vs-BOM check holds for almost any serial, so on its own it would not catch a
+		mistyped or pasted serial. The Repair Order's serial survives a design change, so it
+		keeps that protection. A repair without a Repair Order is not checked here.
+		"""
+		order_form_type, order_form_id = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			self.manufacturing_order,
+			["order_form_type", "order_form_id"],
+		) or (None, None)
+		if order_form_type != "Repair Order" or not order_form_id:
+			return
+		order_serial = frappe.db.get_value("Repair Order", order_form_id, "serial_no")
+		if order_serial and order_serial != self.serial_no:
+			frappe.throw(
+				_(
+					"Serial No {0} is not the serial of Repair Order {1} ({2}). "
+					"Refusing to unpack an unrelated serial."
+				).format(self.serial_no, order_form_id, order_serial)
+			)
+
 	def _has_repair_order_link(self):
 		order_form_type, order_form_id = frappe.db.get_value(
 			"Parent Manufacturing Order",
@@ -715,6 +738,15 @@ class ManufacturingWorkOrder(Document):
 			frappe.throw(
 				_("Unpack Serial No requires a submitted Manufacturing Work Order.")
 			)
+		# A finding work order carries the same serial as the main one, but only makes a
+		# finding: unpacking there would book the whole piece onto the wrong operation.
+		if self.is_finding_mwo:
+			frappe.throw(
+				_(
+					"{0} is a finding work order. Unpack Serial No from the main work order "
+					"of this repair."
+				).format(self.name)
+			)
 
 		# Idempotency: a double-click, a page reload mid-post or a retried request must not
 		# produce a second Stock Entry -- that would consume the serial twice, mint a second
@@ -733,6 +765,7 @@ class ManufacturingWorkOrder(Document):
 		# The serial must be the item its BOM makes. The work order's own item is not
 		# compared: a design-change repair makes another item from this serial.
 		serial_item = self._assert_serial_matches_bom(serial_bom)
+		self._assert_serial_matches_repair_order()
 		self._sync_repair_order_master_bom()
 		pmo_name = self.manufacturing_order
 
@@ -810,8 +843,8 @@ class ManufacturingWorkOrder(Document):
 		)
 		# Source row: consume the FG serial under its ACTUAL inventory type so the
 		# outward ledger entry nets against real stock (inventory_type is a
-		# ledger-enforced Inventory Dimension). Gross weight is the full design gross
-		# so the disassembly is mass-balanced against the resolved components.
+		# ledger-enforced Inventory Dimension). Gross weight is the full gross of the
+		# serial's BOM so the disassembly is mass-balanced against the resolved components.
 		# The item consumed is the SERIAL's item, which differs from the work order's
 		# item when the repair changes the design.
 		se.append(
@@ -1149,6 +1182,8 @@ def get_unpack_eligibility(mwo):
 		reason = _("Not a Repair work order.")
 	elif doc.docstatus != 1:
 		reason = _("Work order is not submitted.")
+	elif doc.is_finding_mwo:
+		reason = _("Finding work order; unpack from the main work order.")
 	elif not doc.serial_no:
 		reason = _("No repair Serial No is set on this work order.")
 	elif existing:

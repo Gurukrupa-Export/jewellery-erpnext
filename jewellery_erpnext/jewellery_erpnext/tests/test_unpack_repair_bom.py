@@ -176,6 +176,7 @@ def _unpack(
 		item_code="EA02144-006",
 		qty=qty,
 		docstatus=1,
+		is_finding_mwo=0,
 		department="Dept",
 		company="C",
 		branch="B",
@@ -185,6 +186,7 @@ def _unpack(
 	fake._has_repair_order_link = lambda: repair_order_link
 	fake.find_existing_unpack_entry = lambda: None
 	fake._assert_serial_matches_bom = lambda bom: serial_item
+	fake._assert_serial_matches_repair_order = lambda: None
 	fake._assert_components_bookable = lambda *a, **k: None
 	fake._sync_repair_order_master_bom = (
 		lambda: ManufacturingWorkOrder._sync_repair_order_master_bom(fake)
