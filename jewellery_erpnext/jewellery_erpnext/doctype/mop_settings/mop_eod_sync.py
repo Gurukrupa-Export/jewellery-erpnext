@@ -1000,10 +1000,21 @@ def _plan_mwo_group(
 				)
 		return None
 
-	# One query for all (item_code, batch_no) → warehouse for this MWO
+	# One query for all (item_code, batch_no) → warehouse for this MWO, plus this MWO's
+	# live reservation qty per (item, batch, warehouse) -- the ownership the row builder
+	# splits balances across and the only target share it may treat as already moved.
 	sre_map = _preload_sre_warehouse_map(mwo)
+	active_map = _preload_active_sre_warehouse_map(mwo)
+	noop_rows, short_rows = [], []
 	items, skipped_rows = _build_eod_se_rows(
-		mwo, last_mop_name, last_logs, t_warehouse, sre_map
+		mwo,
+		last_mop_name,
+		last_logs,
+		t_warehouse,
+		sre_map,
+		active_map,
+		noop_rows,
+		short_rows,
 	)
 
 	if skipped_rows and _heal_missing_sre_in_plan(
@@ -1011,8 +1022,17 @@ def _plan_mwo_group(
 	):
 		# At least one reservation was created; re-resolve once with the new SREs.
 		sre_map = _preload_sre_warehouse_map(mwo)
+		active_map = _preload_active_sre_warehouse_map(mwo)
+		noop_rows, short_rows = [], []
 		items, skipped_rows = _build_eod_se_rows(
-			mwo, last_mop_name, last_logs, t_warehouse, sre_map
+			mwo,
+			last_mop_name,
+			last_logs,
+			t_warehouse,
+			sre_map,
+			active_map,
+			noop_rows,
+			short_rows,
 		)
 
 	# Missing-SRE rows have no source warehouse and cannot be transferred or even placed
@@ -1101,6 +1121,57 @@ def _plan_mwo_group(
 					),
 				}
 			)
+	# Balances this MWO's OWN reservations cannot cover. No row was built for them, so the
+	# physical check above never saw them; they must hold the MWO here, or an empty
+	# ``items`` would fall through to the no-op branch and mark the logs synced.
+	for short in short_rows:
+		invalid = True
+		detail = _format_eod_short_rows([short])
+		failures.append(
+			{
+				"step": "batch_short",
+				"mwo": mwo,
+				"company": company,
+				"last_mop": last_mop_name,
+				"affected_mops": all_mop_names,
+				"item_code": short["item_code"],
+				"batch_no": short["batch_no"],
+				"s_warehouse": short.get("warehouse"),
+				"t_warehouse": t_warehouse,
+				"error_message": (
+					f"This MWO's own reservations cannot cover the transfer to {t_warehouse}: "
+					f"{detail}."
+				),
+				"suggested_fix": (
+					"Reconcile this MWO's Stock Reservation Entries with the batch's physical "
+					"stock (stale reservation, manual movement or loss), then retry EOD sync."
+				),
+			}
+		)
+		if sync_log_name:
+			_insert_sync_log_item(
+				sync_log_name,
+				{
+					"manufacturing_work_order": mwo,
+					"manufacturing_operation": last_mop_name,
+					"company": company,
+					"item_code": short["item_code"],
+					"batch_no": short["batch_no"],
+					"source_warehouse": short.get("warehouse"),
+					"target_warehouse": t_warehouse,
+					"qty": flt(short["qty"], 3),
+					"status": "Failed",
+					"sync_stage": "Build Stock Entry Row",
+					"error_type": "Validation Failed",
+					"error_message": (
+						f"Not covered by this MWO's reservations: {detail}."
+					)[:500],
+					"suggested_fix": (
+						"Reconcile the MWO's reservations with physical batch stock, then "
+						"retry EOD sync."
+					),
+				},
+			)
 
 	# FAILED: any unresolvable / short / invalid row holds the whole MWO. Its buildable
 	# rows go to the per-bucket draft "issues" SE; its MOP Logs are NOT marked synced.
@@ -1141,9 +1212,14 @@ def _plan_mwo_group(
 	if not items:
 		# Genuine no-op: every row was same-warehouse or non-positive qty — nothing to
 		# move. Safe to mark the MWO's logs synced.
+		noop_detail = "; ".join(
+			f"{row.get('item_code')} / {row.get('batch_no')} = {flt(row.get('qty'), 3)}"
+			for row in noop_rows
+		)
 		frappe.logger().info(
-			"MOP EOD Sync MWO %s: no SE rows to create (same WH); marking logs synced.",
+			"MOP EOD Sync MWO %s: no SE rows to create (same WH); marking logs synced. %s",
 			mwo,
+			noop_detail or "no positive-qty rows",
 		)
 		_mark_all_mwo_mop_logs_synced([mwo], selective=selective)
 		stats["processed_mwos"] += 1
@@ -1161,7 +1237,8 @@ def _plan_mwo_group(
 				"sync_stage": "Completed",
 				"error_message": (
 					"Stock already at the target warehouse; no Material Transfer needed."
-				),
+					+ (f" Rows: {noop_detail}." if noop_detail else "")
+				)[:500],
 				"completed_on": now_datetime(),
 			},
 		)
@@ -1730,12 +1807,18 @@ def _commit_se_chunk(
 	try:
 		frappe.db.savepoint("eod_submit_phase")
 		snaps_by_mwo = {}
+		required_by_mwo = {}
 		for m in chunk:
 			snaps = _snapshot_mwo_sres_for_relocation(
 				m["mwo"], m["items"], m["t_warehouse"]
 			)
 			snaps_by_mwo[m["mwo"]] = snaps
 			_cancel_sre_snapshots(snaps)
+			# Read AFTER the cancel: what the MWO still holds untouched plus everything this
+			# relocation released is what must be reserved once the transfer has landed.
+			required_by_mwo[m["mwo"]] = _eod_reservation_required_after_relocation(
+				m["mwo"], snaps
+			)
 		submitted_se = frappe.get_doc("Stock Entry", draft_se_name)
 		submitted_se.submit()
 		# Reserve at each MWO's target FROM THIS CHUNK'S submitted SE rows
@@ -1762,26 +1845,39 @@ def _commit_se_chunk(
 		# savepoint rolls back (SREs restored, submit undone) rather than committing the
 		# loss. Runs BEFORE _hard_delete_cancelled_snapshots makes the cancellation
 		# permanent. Scoped to this chunk's MWOs only.
+		#
+		# Compared per (item, batch) in TOTAL, not per snapshot: one batch can be released
+		# from several warehouses in one run (4.323 g + 0.020 g), and checking each snapshot
+		# alone against the MWO-wide remainder lets a 4.343 g relocation come back as 4.323 g.
 		for m in chunk:
-			for snap in snaps_by_mwo[m["mwo"]]:
-				for sb in snap.get("sb_entries") or []:
-					batch_no = sb.get("batch_no")
-					if not batch_no:
-						continue
-					item_code = snap["sre"].item_code
-					snap_op = snap["sre"].manufacturing_operation
-					# MWO-scoped: this asks whether THIS relocation put back what it took,
-					# so a sibling MWO's reservation must not paper over the loss.
-					gap = flt(
-						flt(sb.get("qty"))
-						- _sre_remaining_for_batch(
-							m["mwo"], item_code, batch_no, pmo_wide=False
-						),
-						3,
-					)
-					if gap <= 0:
-						continue
-					healed = _reserve_batch_at_physical_warehouse(
+			for (item_code, batch_no), (required, snap_op) in required_by_mwo[
+				m["mwo"]
+			].items():
+				# MWO-scoped: this asks whether THIS relocation put back what it took,
+				# so a sibling MWO's reservation must not paper over the loss.
+				gap = flt(
+					required
+					- _sre_remaining_for_batch(
+						m["mwo"], item_code, batch_no, pmo_wide=False
+					),
+					3,
+				)
+				if gap <= 0:
+					continue
+				healed = _reserve_batch_at_physical_warehouse(
+					m["mwo"],
+					item_code,
+					batch_no,
+					gap,
+					snap_op,
+					company,
+					sync_log_name=sync_log_name,
+				)
+				if not healed:
+					# That healer refuses outright when ANY active SRE exists for the
+					# batch — which is exactly the came-back-short case. Reserve just
+					# the missing difference instead of the whole balance.
+					healed = _reserve_batch_shortfall(
 						m["mwo"],
 						item_code,
 						batch_no,
@@ -1789,31 +1885,18 @@ def _commit_se_chunk(
 						snap_op,
 						company,
 						sync_log_name=sync_log_name,
-					)
-					if not healed:
-						# That healer refuses outright when ANY active SRE exists for the
-						# batch — which is exactly the came-back-short case. Reserve just
-						# the missing difference instead of the whole balance.
-						healed = _reserve_batch_shortfall(
-							m["mwo"],
-							item_code,
-							batch_no,
-							gap,
-							snap_op,
-							company,
-							sync_log_name=sync_log_name,
-						).get("created")
-					if healed:
-						continue
-					frappe.throw(
-						_(
-							"EOD reservation lost: MWO {0}, item {1}, batch {2} — {3} of "
-							"the cancelled reservation could not be re-reserved after "
-							"relocation. The chunk is rolled back; investigate the batch's "
-							"physical stock before re-running."
-						).format(m["mwo"], item_code, batch_no, gap),
-						title=_("EOD Reservation Not Replaceable"),
-					)
+					).get("created")
+				if healed:
+					continue
+				frappe.throw(
+					_(
+						"EOD reservation lost: MWO {0}, item {1}, batch {2} — {3} of "
+						"the cancelled reservation could not be re-reserved after "
+						"relocation. The chunk is rolled back; investigate the batch's "
+						"physical stock before re-running."
+					).format(m["mwo"], item_code, batch_no, gap),
+					title=_("EOD Reservation Not Replaceable"),
+				)
 		for m in chunk:
 			_hard_delete_cancelled_snapshots(snaps_by_mwo[m["mwo"]])
 		for m in chunk:
@@ -1908,7 +1991,7 @@ def _commit_company_issues_se(
 			issues_rows,
 			header_manufacturer=manufacturer,
 			sync_log_name=sync_log_name,
-			eod_sync_source="MOP EOD Sync (Unresolved)",
+			eod_sync_source=EOD_UNRESOLVED_SOURCE,
 		)
 		frappe.db.release_savepoint("eod_issues_phase")
 		stats["draft_ses"].append(draft_se_name)
@@ -3184,6 +3267,166 @@ def _preload_sre_warehouse_map(mwo):
 	return sre_map
 
 
+def _preload_active_sre_warehouse_map(mwo):
+	"""``{(item_code, batch_no): {warehouse: live_reserved_qty}}`` for ONE MWO.
+
+	``_preload_sre_warehouse_map`` answers "where has this MWO ever reserved the batch?"
+	and keeps stale warehouses as fallbacks. ``_build_eod_se_rows`` also needs "how much
+	does THIS MWO still hold reserved, and where?" -- the only evidence of which physical
+	stock is this job's. A batch is a shared pool: the department warehouse usually holds
+	the same batch for sibling MWOs, so its gross qty proves nothing about this MWO.
+
+	"Live" is exactly the Serial Number Creator's ``_active_sres_for`` reading, so the two
+	cannot drift: submitted, not Delivered/Cancelled, each batch capped by its own
+	undelivered child qty and by the header remainder, rounded to 3 dp before the
+	liveness test. Only Serial-and-Batch reservations (batch children) appear; a Qty-based
+	reservation names no batch, so it confers no batch entitlement and the row keeps the
+	legacy warehouse resolution.
+
+	Two queries per MWO (headers, then children), never one per row.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+		TOLERANCE,
+	)
+
+	if not mwo:
+		return {}
+	sres = frappe.get_all(
+		"Stock Reservation Entry",
+		filters={
+			"manufacturing_work_order": mwo,
+			"docstatus": 1,
+			"status": ["not in", ["Cancelled", "Delivered"]],
+		},
+		fields=["name", "item_code", "warehouse", "reserved_qty", "delivered_qty"],
+		limit_page_length=0,
+	)
+	if not sres:
+		return {}
+
+	children = {}
+	for child in frappe.get_all(
+		"Serial and Batch Entry",
+		filters={
+			"parent": ["in", [s.name for s in sres]],
+			"parenttype": "Stock Reservation Entry",
+		},
+		fields=["parent", "batch_no", "qty", "delivered_qty"],
+		limit_page_length=0,
+	):
+		children.setdefault(child.parent, []).append(child)
+
+	live = {}
+	for sre in sres:
+		if not sre.warehouse:
+			continue
+		header_remaining = flt(sre.reserved_qty) - flt(sre.delivered_qty)
+		per_batch = {}
+		for kid in children.get(sre.name) or []:
+			if not kid.batch_no:
+				continue
+			per_batch[kid.batch_no] = (
+				per_batch.get(kid.batch_no, 0.0) + flt(kid.qty) - flt(kid.delivered_qty)
+			)
+		for batch_no, scoped in per_batch.items():
+			remaining = flt(min(header_remaining, scoped), 3)
+			if remaining <= TOLERANCE:
+				continue
+			bucket = live.setdefault((sre.item_code, batch_no), {})
+			bucket[sre.warehouse] = flt(bucket.get(sre.warehouse, 0.0) + remaining, 3)
+	return live
+
+
+def _plan_owned_batch_legs(item_code, batch_no, qty, live, t_warehouse):
+	"""Expand one logical MOP Log balance into the physical legs THIS MWO owns.
+
+	``live`` is this MWO's ``{warehouse: live_reserved_qty}`` for the batch.
+
+	* Already at the target: only this MWO's own live reservation there, capped by the
+	  physical batch qty there. Another work order's stock of the same batch at the
+	  target is never credited -- that is how a shared batch used to turn a pending
+	  transfer into a "completed" no-op.
+	* Still to move: ``need = qty - at_target``, split across the other reservation
+	  warehouses, each capped by ``min(live reservation, physical batch qty)``, largest
+	  first, then warehouse name (deterministic). The split is the Serial Number Creator's
+	  pure ``_allocate_qty_across_warehouses``: legs sum to ``need`` exactly, no zero legs.
+	* ``short`` when those caps cannot cover ``need``; no legs are proposed then, because
+	  moving part of a balance would strand the rest behind synced MOP Logs.
+
+	Returns ``{"qty", "at_target", "need", "legs": [(wh, qty)], "caps": [(wh, cap)],
+	"short"}``.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+		TOLERANCE,
+		_allocate_qty_across_warehouses,
+	)
+
+	qty = flt(qty, 3)
+	physical_at_target = flt(
+		_eod_physical_batch_qty(item_code, batch_no, t_warehouse) or 0, 3
+	)
+	at_target = flt(min(flt(live.get(t_warehouse), 3), physical_at_target, qty), 3)
+	need = flt(qty - at_target, 3)
+	plan = {
+		"qty": qty,
+		"at_target": at_target,
+		"need": need,
+		"legs": [],
+		"caps": [],
+		"short": False,
+	}
+	if need <= TOLERANCE:
+		return plan
+
+	caps = []
+	for warehouse, reserved in live.items():
+		if not warehouse or warehouse == t_warehouse:
+			continue
+		physical = flt(_eod_physical_batch_qty(item_code, batch_no, warehouse) or 0, 3)
+		cap = flt(min(flt(reserved, 3), physical), 3)
+		if cap > TOLERANCE:
+			caps.append((warehouse, cap, []))
+	caps.sort(key=lambda t: (-t[1], t[0]))
+	plan["caps"] = [(wh, cap) for wh, cap, _sres in caps]
+
+	legs = _allocate_qty_across_warehouses(need, caps)
+	if legs is None:
+		plan["short"] = True
+		return plan
+	plan["legs"] = [(wh, flt(leg_qty, 3)) for wh, leg_qty in legs]
+	return plan
+
+
+def _eod_leg_pcs(log, plan):
+	"""Piece count per leg, or ``None`` per leg to keep the Stock Entry default.
+
+	Diamond/Gemstone: the MOP Log's batch-based count, split by weight across the target
+	share (when part is already there) and the legs -- the Serial Number Creator's
+	``_allocate_pcs_across_rows``, total preserved. Metal and everything else: an unsplit
+	row keeps today's default "1"; a split row puts that 1 on the largest leg and 0 on the
+	rest, so the item-wise summary still shows one piece. Integers, never ``0.0``: the
+	summary does ``int(row.pcs)``.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+		TOLERANCE,
+		_allocate_pcs_across_rows,
+	)
+
+	legs = plan["legs"]
+	if (log.item_code or "")[:1] in ("D", "G"):
+		total = cint(log.pcs_after_transaction_batch_based)
+		if plan["at_target"] > TOLERANCE:
+			parts = _allocate_pcs_across_rows(
+				log.item_code, total, [(None, plan["at_target"])] + list(legs)
+			)[1:]
+		else:
+			parts = _allocate_pcs_across_rows(log.item_code, total, legs)
+		return [cint(p) for p in parts]
+	if len(legs) > 1:
+		return [cint(p) for p in _allocate_pcs_across_rows(log.item_code, 1, legs)]
+	return [None] * len(legs)
+
+
 # ---------------------------------------------------------------------------
 # SRE relocation (release reservation at source so the transfer can consume,
 # then re-reserve at the target where the stock physically lands)
@@ -3284,6 +3527,34 @@ def _snapshot_mwo_sres_for_relocation(mwo, items, t_warehouse):
 			}
 		)
 	return snapshots
+
+
+def _eod_reservation_required_after_relocation(mwo, snapshots):
+	"""``{(item_code, batch_no): (required_qty, manufacturing_operation)}`` for the guard.
+
+	Call AFTER ``_cancel_sre_snapshots``. ``required`` = what this MWO still holds live for
+	the batch (the reservations the relocation did not touch) + everything the snapshots
+	released for it, summed across ALL source warehouses. After the transfer and the
+	re-reservation, the MWO must hold at least that much again: a relocation moves a
+	reservation, it never consumes one. The operation is the first snapshot's, used only
+	to label a heal.
+	"""
+	released = {}
+	for snap in snapshots or []:
+		item_code = snap["sre"].item_code
+		for sb in snap.get("sb_entries") or []:
+			batch_no = sb.get("batch_no")
+			if not batch_no:
+				continue
+			key = (item_code, batch_no)
+			qty, op = released.get(key, (0.0, snap["sre"].manufacturing_operation))
+			released[key] = (flt(qty + flt(sb.get("qty")), 3), op)
+
+	required = {}
+	for (item_code, batch_no), (qty, op) in released.items():
+		untouched = _sre_remaining_for_batch(mwo, item_code, batch_no, pmo_wide=False)
+		required[(item_code, batch_no)] = (flt(flt(untouched) + qty, 3), op)
+	return required
 
 
 def _cancel_sre_snapshots(snapshots):
@@ -4459,14 +4730,97 @@ def _stamp_eod_row_ownership(row, ownership):
 	return row
 
 
-def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse, sre_map):
-	"""Build Stock Entry item rows for the EOD material transfer."""
+def _build_eod_se_rows(
+	mwo,
+	last_mop_name,
+	last_logs,
+	t_warehouse,
+	sre_map,
+	active_map=None,
+	noop_rows=None,
+	short_rows=None,
+):
+	"""Build Stock Entry item rows for the EOD material transfer.
+
+	**Batch rows this MWO holds a live reservation for** are planned from that ownership
+	(``_plan_owned_batch_legs``): the MOP Log balance is ONE logical snapshot, expanded
+	into one transfer row per physical source warehouse. A balance whose metal was issued
+	in two lots (e.g. 4.323 g to the setting warehouse and 0.020 g to a karigar
+	warehouse) therefore moves as two legs instead of failing every night because no
+	single warehouse holds 4.343 g. Only this MWO's reservation at the target counts as
+	"already there"; another work order's stock of the same batch never does.
+
+	**Every other row** -- no live batch reservation for this MWO (stock-based MWOs,
+	Qty-based or stale reservations), serialised or non-batch lines -- keeps the legacy
+	single-warehouse resolution in ``_pick_eod_source_warehouse``.
+
+	``active_map`` is ``_preload_active_sre_warehouse_map(mwo)``; loaded here when the
+	caller does not pass it, so no caller silently gets the gross-stock behaviour.
+	``noop_rows`` collects balances already fully at the target (so the caller can name
+	them). ``short_rows`` collects balances this MWO's own reservations cannot cover; the
+	caller MUST fail the MWO for them -- no row is built, so ``_check_eod_source_batch_stock``
+	cannot see them. A caller that passes no ``short_rows`` list gets a hard error instead
+	of a silently dropped row, which would otherwise let the MWO be marked synced.
+	"""
 	rows = []
 	skipped = []
+	if active_map is None:
+		active_map = _preload_active_sre_warehouse_map(mwo)
+	collect_short = short_rows if short_rows is not None else []
 	ownership = _eod_batch_ownership(log.batch_no for log in last_logs)
 	for log in last_logs:
 		qty = flt(log.qty_after_transaction_batch_based, 3)
 		if qty <= 0:
+			continue
+
+		live = None
+		if log.batch_no and not getattr(log, "serial_no", None):
+			live = (active_map or {}).get((log.item_code, log.batch_no))
+		if live:
+			plan = _plan_owned_batch_legs(
+				log.item_code, log.batch_no, qty, live, t_warehouse
+			)
+			if plan["short"]:
+				collect_short.append(
+					{
+						"item_code": log.item_code,
+						"batch_no": log.batch_no,
+						"warehouse": plan["caps"][0][0] if plan["caps"] else None,
+						"qty": plan["qty"],
+						"at_target": plan["at_target"],
+						"need": plan["need"],
+						"caps": plan["caps"],
+						"reserved": dict(live),
+					}
+				)
+				continue
+			if not plan["legs"]:
+				# This MWO's own reservation at the target already covers the balance.
+				if noop_rows is not None:
+					noop_rows.append(
+						{
+							"item_code": log.item_code,
+							"batch_no": log.batch_no,
+							"qty": plan["at_target"],
+						}
+					)
+				continue
+			for (s_warehouse, leg_qty), pcs in zip(
+				plan["legs"], _eod_leg_pcs(log, plan)
+			):
+				row = {
+					"item_code": log.item_code,
+					"qty": leg_qty,
+					"s_warehouse": s_warehouse,
+					"t_warehouse": t_warehouse,
+					"manufacturing_operation": last_mop_name,
+					"custom_manufacturing_work_order": mwo,
+					"use_serial_batch_fields": 1,
+					"batch_no": log.batch_no,
+				}
+				if pcs is not None:
+					row["pcs"] = pcs
+				rows.append(_stamp_eod_row_ownership(row, ownership))
 			continue
 
 		candidates = list(sre_map.get((log.item_code, log.batch_no)) or [])
@@ -4487,6 +4841,10 @@ def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse, sre_map):
 
 		if s_warehouse == t_warehouse:
 			# Stock already sits at the target — nothing to transfer (completed no-op).
+			if noop_rows is not None:
+				noop_rows.append(
+					{"item_code": log.item_code, "batch_no": log.batch_no, "qty": qty}
+				)
 			continue
 
 		row = {
@@ -4508,7 +4866,39 @@ def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse, sre_map):
 		if getattr(log, "serial_no", None):
 			row["serial_no"] = log.serial_no
 		rows.append(_stamp_eod_row_ownership(row, ownership))
+	if short_rows is None and collect_short:
+		frappe.throw(
+			_(
+				"EOD planning for MWO {0}: its own reservations cannot cover {1}. "
+				"The caller must collect short rows and hold the MWO."
+			).format(mwo, _format_eod_short_rows(collect_short))
+		)
 	return rows, skipped
+
+
+def _format_eod_short_rows(short_rows):
+	"""One readable line per short balance: what is needed and where this MWO holds it."""
+	parts = []
+	for short in short_rows:
+		held = (
+			", ".join(f"{wh} {cap}" for wh, cap in short.get("caps") or [])
+			or "nothing usable"
+		)
+		reserved = (
+			", ".join(
+				f"{wh} {flt(qty, 3)}"
+				for wh, qty in (short.get("reserved") or {}).items()
+			)
+			or "none"
+		)
+		parts.append(
+			f"{short.get('item_code')} / {short.get('batch_no')}: balance {short.get('qty')}, "
+			f"already at target {short.get('at_target')}, to move {short.get('need')}; "
+			f"usable from this MWO's reservations: {held} "
+			f"(reserved: {reserved}); short "
+			f"{flt(flt(short.get('need')) - sum(cap for _wh, cap in short.get('caps') or []), 3)}"
+		)
+	return "; ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -4677,6 +5067,45 @@ def _save_draft_eod_se(
 	se.flags.ignore_permissions = True
 	se.save()
 	return se.name
+
+
+EOD_UNRESOLVED_SOURCE = "MOP EOD Sync (Unresolved)"
+
+
+def refuse_unresolved_eod_draft_submit(doc, method=None):
+	"""Stock Entry ``before_submit``: an EOD "Unresolved" draft is evidence, not a voucher.
+
+	``_commit_company_issues_se`` saves the buildable rows of every MWO EOD had to HOLD
+	into one draft so the problem is visible. EOD never submits it, and the retry patch
+	skips it. Submitting it by hand moves the stock without the EOD Phase 2 that goes
+	with a real transfer -- releasing the source reservations, re-reserving at the target
+	and marking the MOP Logs synced -- so the reservations and the MOP Logs no longer
+	describe where the metal is, and the next EOD run plans the same MWO again. The MWO
+	was held because something about it is wrong (typically a short or unowned batch);
+	the fix is to correct that and re-run EOD for it.
+	"""
+	if (doc.get("custom_eod_sync_source") or "") != EOD_UNRESOLVED_SOURCE:
+		return
+	mwos = sorted(
+		{
+			row.get("custom_manufacturing_work_order")
+			for row in doc.get("items") or []
+			if row.get("custom_manufacturing_work_order")
+		}
+	)
+	frappe.throw(
+		_(
+			"{0} is an EOD diagnostic draft ({1}) and cannot be submitted. EOD held these "
+			"Manufacturing Work Orders: {2}. Fix the cause shown in the EOD Sync Log {3}, "
+			"then re-run EOD for them (MOP Settings → EOD Work Order Filter)."
+		).format(
+			doc.name,
+			EOD_UNRESOLVED_SOURCE,
+			", ".join(mwos) or _("none listed"),
+			doc.get("custom_eod_sync_log") or "",
+		),
+		title=_("EOD Diagnostic Draft"),
+	)
 
 
 # ---------------------------------------------------------------------------
