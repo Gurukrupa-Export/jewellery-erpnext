@@ -100,6 +100,26 @@ def _default_receiving_warehouse(company):
 	)
 
 
+def _unsynced_mop_log_counts(mwos):
+	"""``{mwo: unsynced, non-cancelled MOP Log count}`` -- one query for all ``mwos``."""
+	mwos = sorted(m for m in mwos if m)
+	if not mwos:
+		return {}
+	return dict(
+		frappe.db.sql(
+			"""
+			SELECT manufacturing_work_order, COUNT(*)
+			FROM `tabMOP Log`
+			WHERE manufacturing_work_order IN %(mwos)s
+			  AND is_synced = 0
+			  AND is_cancelled = 0
+			GROUP BY manufacturing_work_order
+			""",
+			{"mwos": mwos},
+		)
+	)
+
+
 class RefiningEntry(Document):
 	def before_insert(self):
 		# Set the series before autoname runs (autoname happens before validate), so
@@ -3120,11 +3140,15 @@ class RefiningEntry(Document):
 				- flt(child.delivered_qty)
 			)
 
+		from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+			TOLERANCE,
+		)
+
 		owned = {}
 		for mwo, sre in sre_rows:
 			for batch_no, qty in (scoped.get(sre.name) or {}).items():
 				remaining = flt(min(headers.get(sre.name, 0.0), qty), 3)
-				if remaining <= 0.0001:
+				if remaining <= TOLERANCE:
 					continue
 				by_wh = owned.setdefault((sre.item_code, batch_no), {})
 				by_mwo = by_wh.setdefault(sre.warehouse, {})
@@ -3187,18 +3211,64 @@ class RefiningEntry(Document):
 				3,
 			)
 			usable = flt(min(reserved_here, physical), 3)
-			if qty <= usable + 0.0005:
+			# Compared at the 3 dp stock precision: any shortfall that survives rounding.
+			if flt(qty - usable, 3) <= 0:
 				continue
+			away = [
+				(wh, mwo, held)
+				for wh, by_mwo in sorted(holders.items())
+				if wh != warehouse
+				for mwo, held in sorted(by_mwo.items())
+			]
+			problems.append(
+				(
+					idxs,
+					item_code,
+					batch_no,
+					warehouse,
+					qty,
+					reserved_here,
+					here,
+					physical,
+					away,
+				)
+			)
+		if not problems:
+			return
+
+		# A share held elsewhere is either waiting for EOD (the work order still has unsynced
+		# MOP Logs, so a selective EOD run moves it) or was skipped by an earlier EOD that
+		# marked the logs synced without moving anything -- EOD will never pick that one up
+		# again, so the message must not send the operator to EOD for it.
+		pending = _unsynced_mop_log_counts(
+			{mwo for p in problems for _wh, mwo, _q in p[8]}
+		)
+		lines = []
+		for (
+			idxs,
+			item_code,
+			batch_no,
+			warehouse,
+			qty,
+			reserved_here,
+			here,
+			physical,
+			away,
+		) in problems:
 			held_here = ", ".join(f"{m} {q}" for m, q in sorted(here.items())) or _(
 				"none"
 			)
-			elsewhere = "; ".join(
-				f"{m} {q} at {wh}"
-				for wh, by_mwo in sorted(holders.items())
-				if wh != warehouse
-				for m, q in sorted(by_mwo.items())
+			away_text = "; ".join(
+				_("{0} {1} at {2} (EOD pending: {3} unsynced MOP Logs)").format(
+					mwo, held, wh, pending[mwo]
+				)
+				if pending.get(mwo)
+				else _(
+					"{0} {1} at {2} (MOP Logs all synced: an earlier EOD skipped this transfer)"
+				).format(mwo, held, wh)
+				for wh, mwo, held in away
 			)
-			problems.append(
+			lines.append(
 				_(
 					"Row {0}: {1} / {2} at {3} — required {4}, held here by the scanned "
 					"Manufacturing Work Orders {5} ({6}; physical {7}).{8}"
@@ -3211,22 +3281,23 @@ class RefiningEntry(Document):
 					reserved_here,
 					held_here,
 					physical,
-					(" " + _("Still held elsewhere: {0}.").format(elsewhere))
-					if elsewhere
+					(" " + _("Still held elsewhere: {0}.").format(away_text))
+					if away
 					else "",
 				)
 			)
-		if problems:
-			frappe.throw(
-				_(
-					"Work Order material is not at its source warehouse for the scanned "
-					"Manufacturing Work Orders:<br>{0}<br><br>A share held at another warehouse "
-					"means that work order's EOD transfer has not run yet: resolve its EOD sync "
-					"first. If the material has moved since the table was built, clear Material "
-					"Items and save to re-fetch."
-				).format("<br>".join(problems)),
-				title=_("Work Order Material Not Available"),
-			)
+		frappe.throw(
+			_(
+				"Work Order material is not at its source warehouse for the scanned "
+				"Manufacturing Work Orders:<br>{0}<br><br>A share marked EOD pending moves once "
+				"EOD runs for its work order (MOP Settings → EOD Work Order Filter); then clear "
+				"Material Items and save to re-fetch. A share whose MOP Logs are all synced was "
+				"skipped by an earlier EOD and will not move on its own: that transfer has to be "
+				"repaired before the work order can be refined. If the material has moved since "
+				"the table was built, clear Material Items and save to re-fetch."
+			).format("<br>".join(lines)),
+			title=_("Work Order Material Not Available"),
+		)
 
 	def _append_serial_metal_row(self, sn_row, bom_no):
 		"""External only: stand in for the gold of a serial whose BOM lists no metal line.
