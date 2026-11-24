@@ -21,6 +21,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation_pricing import (
 	_apply_standard_pricing,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.tracking_bom_utils import (
+	keep_po_rate,
 	set_tracking_bom_rate_in_quotation,
 )
 
@@ -822,7 +823,10 @@ def create_tracking_bom_directly(self):
 			# Same as frappe.db.exists: only a Tracking BOM that no longer exists is rebuilt.
 			if (
 				_lookup(
-					tracking_bom_map, "Tracking Bom", row.custom_tracking_bom, "docstatus"
+					tracking_bom_map,
+					"Tracking Bom",
+					row.custom_tracking_bom,
+					"docstatus",
 				)
 				is None
 			):
@@ -1032,7 +1036,9 @@ def _create_single_tracking_bom(
 	row.other_bom_rate = tracking_bom.other_bom_amount
 	row.making_charge = tracking_bom.making_charge
 	row.bom_rate = tracking_bom.total_bom_amount
-	row.rate = tracking_bom.total_bom_amount
+	# Outwork rows pulled from a Purchase Order keep that order's rate (see keep_po_rate).
+	if not keep_po_rate(self, row):
+		row.rate = tracking_bom.total_bom_amount
 
 	return tracking_bom
 
