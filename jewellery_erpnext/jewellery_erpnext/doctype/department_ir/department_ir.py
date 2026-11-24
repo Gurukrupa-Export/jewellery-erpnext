@@ -164,8 +164,14 @@ class DepartmentIR(Document):
 			refuse_department_ir_while_requested,
 		)
 
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+			validate_refinery_department_ir,
+		)
+
 		validate_no_reverted_operations(self, "department_ir_operation")
 		block_closed_mwo_operations(self, "department_ir_operation")
+		# A Refinery Work Order moves only within its refinery department.
+		validate_refinery_department_ir(self, "department_ir_operation")
 		# A PMO with a Close / Hold request: its work orders go only to the request department.
 		refuse_department_ir_while_requested(self, "department_ir_operation")
 

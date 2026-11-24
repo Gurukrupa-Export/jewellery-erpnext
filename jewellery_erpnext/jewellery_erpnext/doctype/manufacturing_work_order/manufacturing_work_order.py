@@ -14,6 +14,11 @@ from frappe.utils import cint, flt, get_datetime, get_link_to_form, now, strip_h
 from frappe.utils.background_jobs import is_job_enqueued
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import owner_of, same
+from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+	exclude_refinery_filter,
+	refuse_refinery_mwo,
+	set_refinery_operation_department,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.utils import (
 	add_time_log,
 	create_se_entry,
@@ -170,14 +175,17 @@ class ManufacturingWorkOrder(Document):
 		self.db_set("status", "Not Started")
 
 	def sync_mwo_weights(self):
+		# A Refinery Work Order's weights never reach the FG / tagging roll-up.
 		sibling_mwos = frappe.db.get_all(
 			"Manufacturing Work Order",
-			{
-				"manufacturing_order": self.manufacturing_order,
-				"name": ["!=", self.name],
-				"for_fg": 0,
-				"docstatus": 1,
-			},
+			exclude_refinery_filter(
+				{
+					"manufacturing_order": self.manufacturing_order,
+					"name": ["!=", self.name],
+					"for_fg": 0,
+					"docstatus": 1,
+				}
+			),
 			pluck="name",
 		)
 
@@ -329,15 +337,19 @@ class ManufacturingWorkOrder(Document):
 		)
 		if not last_department:
 			frappe.throw(_("Please set last operation first in Department Operation"))
+		# An open Refinery Work Order does not hold up the Serial Number work order unless it
+		# is in the Tagging (last) department, and there this rule already lets it through.
 		pending_wo = frappe.get_all(
 			"Manufacturing Work Order",
-			{
-				"name": ["!=", self.name],
-				"manufacturing_order": self.manufacturing_order,
-				"docstatus": ["!=", 2],
-				"department": ["!=", last_department],
-				"has_split_mwo": 0,
-			},
+			exclude_refinery_filter(
+				{
+					"name": ["!=", self.name],
+					"manufacturing_order": self.manufacturing_order,
+					"docstatus": ["!=", 2],
+					"department": ["!=", last_department],
+					"has_split_mwo": 0,
+				}
+			),
 			pluck="name",
 		)
 		if pending_wo:
@@ -353,6 +365,8 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def transfer_to_mwo(self):
+		refuse_refinery_mwo(self.name, _("Transfer Finding"))
+		refuse_refinery_mwo(self.get("transfer_mwo"), _("Transfer Finding"))
 		create_stock_transfer_entry(self)
 
 	@frappe.whitelist()
@@ -1291,6 +1305,9 @@ def create_manufacturing_operation(doc):
 	mop.operation = operation
 	mop.custom_tracking_bom = doc.custom_tracking_bom
 	mop.department = department
+	# A Refinery Work Order starts in its refinery department, with no operation.
+	if set_refinery_operation_department(doc, mop):
+		department, operation = mop.department, None
 
 	# Explicitly copy weights from MWO to MOP
 	mop.gross_wt = doc.gross_wt
@@ -1320,11 +1337,13 @@ def create_manufacturing_operation(doc):
 	if doc.for_fg:
 		all_mwos = frappe.get_all(
 			"Manufacturing Work Order",
-			filters={
-				"manufacturing_order": doc.manufacturing_order,
-				"docstatus": 1,
-				"name": ["!=", doc.name],
-			},
+			filters=exclude_refinery_filter(
+				{
+					"manufacturing_order": doc.manufacturing_order,
+					"docstatus": 1,
+					"name": ["!=", doc.name],
+				}
+			),
 			pluck="name",
 		)
 
@@ -1476,6 +1495,7 @@ def _validate_split_basics(docname):
 	on the parent's MOP is not carried to the split children -- they start from the
 	parent's header weights -- so splitting it would strand that weight on a closed MWO.
 	"""
+	refuse_refinery_mwo(docname, _("Split Work Order"))
 	mwo = frappe.db.get_value(
 		"Manufacturing Work Order",
 		docname,

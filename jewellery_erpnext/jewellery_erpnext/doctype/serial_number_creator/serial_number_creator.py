@@ -396,10 +396,15 @@ def _pmo_mwo_names(doc):
 		if mwo_name
 		else None
 	)
+	from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+		exclude_refinery_filter,
+	)
+
+	# A Refinery Work Order's material is refinery stock, never this serial's.
 	names = (
 		frappe.get_all(
 			"Manufacturing Work Order",
-			{"manufacturing_order": pmo, "docstatus": 1},
+			exclude_refinery_filter({"manufacturing_order": pmo, "docstatus": 1}),
 			pluck="name",
 		)
 		if pmo
@@ -970,6 +975,14 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	target_item = resolve_target_item_code(self)
 	if target_item:
 		mop_filters["item_code"] = target_item
+	# Refinery Work Order operations are not part of this serial's manufacturing.
+	refinery_wos = frappe.get_all(
+		"Manufacturing Work Order",
+		{"manufacturing_order": pmo, "is_refinery_mwo": 1},
+		pluck="name",
+	)
+	if refinery_wos:
+		mop_filters["manufacturing_work_order"] = ["not in", refinery_wos]
 
 	operation_data = frappe.get_all(
 		"Manufacturing Operation",
@@ -1395,8 +1408,15 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 			set_values_in_bulk,
 		)
 
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+			exclude_refinery_filter,
+		)
+
+		# A Refinery Work Order runs on its own; the serial does not complete it.
 		wo_list = frappe.get_all(
-			"Manufacturing Work Order", {"manufacturing_order": pmo}, pluck="name"
+			"Manufacturing Work Order",
+			exclude_refinery_filter({"manufacturing_order": pmo}),
+			pluck="name",
 		)
 		set_values_in_bulk("Manufacturing Work Order", wo_list, {"status": "Completed"})
 

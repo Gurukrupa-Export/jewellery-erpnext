@@ -23,6 +23,7 @@
   "finding_transfer_entry",
   "section_break_fsrwq",
   "for_fg",
+  "is_refinery_mwo",
   "snc_requirement",
   "snc_done",
   "seq",
@@ -108,7 +109,9 @@
   "mwo_mop_balance_table",
   "bom_summary",
   "show_detail_section",
-  "stock_entry_details"
+  "stock_entry_details",
+  "refinery_section",
+  "refinery_source_mwos"
  ],
  "fields": [
   {
@@ -768,6 +771,32 @@
    "fieldname": "jewelex_batch_no",
    "fieldtype": "Data",
    "label": "Jewelex Batch No"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_refinery_mwo",
+   "fieldtype": "Check",
+   "label": "Is Refinery Work Order",
+   "no_copy": 1,
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.is_refinery_mwo",
+   "fieldname": "refinery_section",
+   "fieldtype": "Section Break",
+   "label": "Refinery Transfers"
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.is_refinery_mwo",
+   "fieldname": "refinery_source_mwos",
+   "fieldtype": "Table",
+   "label": "Transferred From",
+   "no_copy": 1,
+   "options": "Refinery Source MWO",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
@@ -795,7 +824,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-11-11 12:00:03.000000",
+ "modified": "2026-11-24 10:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

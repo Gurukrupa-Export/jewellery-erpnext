@@ -127,6 +127,27 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 				);
 			});
 		}
+		// Set by the server's onload: the Manufacturer's Refinery Department holds one of this
+		// PMO's work orders. The server checks it again.
+		if (frm.doc.docstatus == 1 && frm.doc.__onload?.can_create_refinery_wo) {
+			frm.add_custom_button(__("Create Refinery Work Order"), () => {
+				frappe.confirm(
+					__("Create a Refinery Work Order for {0}?", [frm.doc.name]),
+					() =>
+						frappe.call({
+							method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo.create_refinery_work_order",
+							args: { pmo: frm.doc.name },
+							freeze: true,
+							freeze_message: __("Creating Refinery Work Order"),
+							callback: (r) => {
+								if (r.message) {
+									frappe.set_route("Form", "Manufacturing Work Order", r.message);
+								}
+							},
+						})
+				);
+			});
+		}
 		// Hiding the item is cosmetic; the server methods call frappe.only_for("System Manager").
 		if (frm.doc.docstatus == 1 && frappe.user.has_role("System Manager")) {
 			frm.page.add_menu_item(__("Hybrid Cancel"), () => confirm_cancel_all_linked(frm));

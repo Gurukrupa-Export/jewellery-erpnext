@@ -60,6 +60,7 @@ _MWO_FIELDS = (
 	"metal_type",
 	"is_finding_mwo",
 	"for_fg",
+	"is_refinery_mwo",
 	"qty",
 )
 
@@ -164,7 +165,8 @@ def bucket_rows_by_pmo(rows, mwo_map):
 	grouped = {}
 	for row in rows:
 		mwo = mwo_map.get(row.manufacturing_work_order)
-		if not mwo or cint(mwo.is_finding_mwo):
+		# Refinery Work Orders carry refinery material, not the product's weight.
+		if not mwo or cint(mwo.is_finding_mwo) or cint(mwo.get("is_refinery_mwo")):
 			continue
 		pmo = mwo.manufacturing_order or row.get("parent_manufacturing_order")
 		if pmo:

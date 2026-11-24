@@ -11,6 +11,15 @@
   },
   {
    "dt": "Manufacturer",
+   "fieldname": "custom_refinery_department",
+   "fieldtype": "Link",
+   "insert_after": "custom_central_department",
+   "label": "Refinery Department",
+   "module": "Jewellery Erpnext",
+   "options": "Department"
+  },
+  {
+   "dt": "Manufacturer",
    "fieldname": "metal_criteria",
    "fieldtype": "Table",
    "insert_after": "company",

@@ -321,8 +321,14 @@ class EmployeeIR(Document):
 			refuse_employee_ir_while_requested,
 		)
 
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+			block_refinery_in_employee_ir,
+		)
+
 		validate_no_reverted_operations(self, "employee_ir_operations")
 		block_closed_mwo_operations(self, "employee_ir_operations")
+		# A Refinery Work Order is never issued to or received from an employee.
+		block_refinery_in_employee_ir(self, "employee_ir_operations")
 		# A PMO with a Close / Hold request: its work orders are not issued to an employee.
 		refuse_employee_ir_while_requested(self, "employee_ir_operations")
 		# self.validate_gross_wt()
