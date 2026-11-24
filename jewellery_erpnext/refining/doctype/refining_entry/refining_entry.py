@@ -378,6 +378,7 @@ class RefiningEntry(Document):
 		# Reject blocked customers' batches early; the material transfer
 		# enforces it authoritatively for FIFO-resolved (batch-less) rows.
 		self.validate_customer_block()
+		self.validate_mwo_material_stock()
 		# Re-checked here because build_material_table above CLEARS and rebuilds the table
 		# after validate() already ran.
 		self.validate_variant_restriction()
@@ -407,6 +408,101 @@ class RefiningEntry(Document):
 						f"The material_transfer_se may have included the serial incorrectly.",
 						"Serial Warehouse Mismatch - Check Transfer SE",
 					)
+
+	def validate_mwo_material_stock(self):
+		"""Stop the submit when Work Order material is no longer in the warehouses the
+		Material Items table names, and say where it is now.
+
+		The table is a snapshot from when the MWOs were scanned. A draft left open while
+		the EOD sync moves the material keeps the old warehouses: RFN-MWO-26-00008 was
+		saved at 15:11, EOD moved its material to Central WO at 19:04, and every submit
+		after that failed deep inside the transfer with "Insufficient batch stock" for
+		one row at a time. This checks every row up front and lists them all.
+
+		Physical stock (Bin actual qty) is compared, not the reservation-netted figure:
+		the transfer cancels this entry's own reservations and reads physical stock, so
+		reserved grams are available to it. Qty is checked per item and warehouse, the
+		same scope the transfer's FIFO fallback draws from.
+		"""
+		if (
+			self.refining_type != "Work Order Refining"
+			or self.parent_refining_entry
+			or self.source_purchase_order
+		):
+			return
+
+		precision = 3
+		required = {}
+		batches = {}
+		for row in self.material_items:
+			if row.get("source_type") == "BOM Component" or not row.item_code:
+				continue
+			if flt(row.qty, precision) < 0.001:
+				continue
+			key = (row.item_code, row.warehouse or self.warehouse)
+			required[key] = flt(required.get(key, 0.0) + flt(row.qty), precision)
+			if row.batch_no:
+				batches.setdefault(key, set()).add(row.batch_no)
+
+		short = []
+		for (item_code, warehouse), qty in required.items():
+			available = flt(
+				frappe.db.get_value(
+					"Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty"
+				),
+				precision,
+			)
+			if available >= qty:
+				continue
+			short.append(
+				"<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>".format(
+					item_code,
+					warehouse,
+					qty,
+					available,
+					"<br>".join(
+						self._batch_locations(item_code, batch_no)
+						for batch_no in sorted(batches.get((item_code, warehouse), ()))
+					)
+					or "-",
+				)
+			)
+
+		if short:
+			frappe.throw(
+				_(
+					"Material Items point to warehouses that no longer hold this stock. The "
+					"material was moved after this entry was saved (for example by the EOD "
+					"sync). Clear the Material Items table and Save to fetch it again from "
+					"the current warehouses, then submit."
+				)
+				+ "<br><table class='table table-bordered'><tr><th>{0}</th><th>{1}</th>"
+				"<th>{2}</th><th>{3}</th><th>{4}</th></tr>{5}</table>".format(
+					_("Item"),
+					_("Warehouse in Material Items"),
+					_("Required"),
+					_("In Warehouse"),
+					_("Batch is now at"),
+					"".join(short),
+				),
+				title=_("Material Moved After Saving"),
+			)
+
+	@staticmethod
+	def _batch_locations(item_code, batch_no):
+		"""``"BATCH: WH-1 (4.323), WH-2 (0.02)"`` for the error message."""
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+		try:
+			rows = get_batch_qty(batch_no=batch_no, item_code=item_code) or []
+		except Exception:
+			rows = []
+		places = [
+			f"{row.get('warehouse')} ({flt(row.get('qty'), 3)})"
+			for row in rows
+			if flt(row.get("qty"), 3) > 0
+		]
+		return f"{batch_no}: " + (", ".join(places) or _("no stock"))
 
 	def on_submit(self):
 		# The transfer moves one Stock Entry line per batch, and each line writes its own
@@ -488,6 +584,7 @@ class RefiningEntry(Document):
 			self.validate_dust_opening_material()
 		self.validate_refinery_flow()
 		self.validate_customer_block()
+		self.validate_mwo_material_stock()
 		# Same reason as before_submit: the build above rebuilds the table.
 		self.validate_variant_restriction()
 
