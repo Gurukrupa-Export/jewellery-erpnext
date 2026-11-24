@@ -533,23 +533,26 @@ class ManufacturingWorkOrder(Document):
 			"name",
 		)
 
-	def _assert_serial_matches_item(self):
-		"""The serial being unpacked must BE the finished good this work order makes.
+	def _assert_serial_matches_bom(self, serial_bom):
+		"""The serial being unpacked must be the item its Serial No BOM manufactures.
 
-		Both fields are hand-settable on the PMO/MWO, so a mistyped or pasted serial can
-		otherwise point at an unrelated piece -- and unpacking it would consume that
-		customer's jewellery and book this order's components against it.
+		The work order's own item is deliberately NOT compared: a repair can change the
+		design (attribute change), so the MWO makes e.g. BA05820-002 while the piece in hand
+		is a BA05820-001 serial. What is unpacked is the serial against ITS BOM, so the two
+		of them must agree. Returns the serial's item code.
 		"""
 		serial_item = frappe.db.get_value("Serial No", self.serial_no, "item_code")
 		if not serial_item:
 			frappe.throw(_("Serial No {0} does not exist.").format(self.serial_no))
-		if serial_item != self.item_code:
+		bom_item = frappe.db.get_value("BOM", serial_bom, "item")
+		if serial_item != bom_item:
 			frappe.throw(
 				_(
-					"Serial No {0} belongs to Item {1}, but this work order makes {2}. "
-					"Refusing to unpack an unrelated serial."
-				).format(self.serial_no, serial_item, self.item_code)
+					"Serial No {0} is Item {1}, but its Serial No BOM {2} makes {3}. "
+					"Refusing to unpack against a BOM of another item."
+				).format(self.serial_no, serial_item, serial_bom, bom_item or "-")
 			)
+		return serial_item
 
 	def _resolve_repair_order_bom(self):
 		"""Return (design BOM, PMO name) for this repair unpack.
@@ -759,8 +762,6 @@ class ManufacturingWorkOrder(Document):
 				).format(self.serial_no, get_link_to_form("Stock Entry", existing))
 			)
 
-		self._assert_serial_matches_item()
-
 		# The Repair Order's design BOM is still persisted onto the PMO + this MWO (it
 		# drives repair pricing/quotation), but it is NOT what gets unpacked: the piece in
 		# hand was built against its own BOM, so the components booked come from that one.
@@ -780,6 +781,10 @@ class ManufacturingWorkOrder(Document):
 			)
 			self.db_set("master_bom", design_bom)
 			serial_bom = self._resolve_serial_bom()
+
+		# The serial must be the item its BOM makes. The work order's own item is not
+		# compared: a design-change repair makes another item from this serial.
+		serial_item = self._assert_serial_matches_bom(serial_bom)
 
 		# Source: the RM warehouse that currently holds the serial (not the
 		# manufacturer's repair warehouse used by the legacy method).
@@ -857,10 +862,12 @@ class ManufacturingWorkOrder(Document):
 		# outward ledger entry nets against real stock (inventory_type is a
 		# ledger-enforced Inventory Dimension). Gross weight is the full design gross
 		# so the disassembly is mass-balanced against the resolved components.
+		# The item consumed is the SERIAL's item, which differs from the work order's
+		# item when the repair changes the design.
 		se.append(
 			"items",
 			{
-				"item_code": self.item_code,
+				"item_code": serial_item,
 				"qty": self.qty,
 				"inventory_type": source_inventory_type,
 				"customer": source_customer,

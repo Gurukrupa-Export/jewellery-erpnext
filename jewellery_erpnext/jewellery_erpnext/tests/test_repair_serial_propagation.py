@@ -272,25 +272,39 @@ class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
 
 
 class TestUnpackSerialItemGuard(IntegrationTestCase):
-	def _assert_item(self, serial_item, mwo_item="MU00128-001"):
+	"""The serial must be the item its Serial No BOM makes; the MWO item is not compared."""
+
+	def _assert_item(self, serial_item, bom_item, mwo_item="MU00128-002"):
+		def gv(doctype, name, fieldname):
+			if doctype == "Serial No":
+				return serial_item
+			if doctype == "BOM":
+				return bom_item
+			return None
+
 		mock_db = MagicMock()
-		mock_db.get_value.return_value = serial_item
+		mock_db.get_value.side_effect = gv
 		fake = SimpleNamespace(serial_no="SN-1", item_code=mwo_item)
 		with patch(f"{MWO_MOD}.frappe.db", mock_db):
-			ManufacturingWorkOrder._assert_serial_matches_item(fake)
+			return ManufacturingWorkOrder._assert_serial_matches_bom(fake, "BOM-SN")
 
 	def test_matching_item_is_allowed(self):
-		self._assert_item("MU00128-001")
+		self.assertEqual(self._assert_item("MU00128-001", "MU00128-001"), "MU00128-001")
 
-	def test_unrelated_serial_is_refused(self):
-		"""Both fields are hand-settable, so a pasted serial can point at another
-		customer's piece -- unpacking it would consume their jewellery."""
+	def test_design_change_repair_is_allowed(self):
+		"""Attribute change: the MWO makes -002 but the serial and its BOM are -001."""
+		self.assertEqual(
+			self._assert_item("MU00128-001", "MU00128-001", mwo_item="MU00128-002"),
+			"MU00128-001",
+		)
+
+	def test_serial_bom_of_another_item_is_refused(self):
 		with self.assertRaises(frappe.ValidationError):
-			self._assert_item("XX99999-001")
+			self._assert_item("MU00128-001", "XX99999-001")
 
 	def test_missing_serial_is_refused(self):
 		with self.assertRaises(frappe.ValidationError):
-			self._assert_item(None)
+			self._assert_item(None, "MU00128-001")
 
 
 class TestFindExistingUnpackEntry(IntegrationTestCase):

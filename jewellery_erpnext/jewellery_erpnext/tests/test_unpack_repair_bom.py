@@ -209,6 +209,7 @@ def _unpack(
 	repair_order_link=True,
 	purchase_order_repair=False,
 	serial_id_bom=None,
+	serial_item="EA02144-006",
 ):
 	"""Run create_unpack_serial_no_stock_entry with every read mocked.
 
@@ -245,7 +246,7 @@ def _unpack(
 	fake._has_repair_order_link = lambda: repair_order_link
 	fake._is_purchase_order_repair = lambda: purchase_order_repair
 	fake.find_existing_unpack_entry = lambda: None
-	fake._assert_serial_matches_item = lambda: None
+	fake._assert_serial_matches_bom = lambda bom: serial_item
 	fake._assert_serial_in_department = lambda wh: None
 	fake._assert_components_bookable = lambda *a, **k: None
 	def resolve_repair_order_bom():
@@ -415,6 +416,14 @@ class TestUnpackUsesTheSerialsOwnBom(IntegrationTestCase):
 				ManufacturingWorkOrder._resolve_serial_bom(fake), "BOM-SERIAL"
 			)
 		self.assertEqual(asked, [("Serial No", "SN-1", "custom_bom_no")])
+
+	def test_the_consumed_item_is_the_serials_item_not_the_work_orders(self):
+		"""Attribute-change repair: the MWO makes EA02144-006 but the piece in hand is
+		an EA02144-001 serial. The source row must consume the serial's own item."""
+		se, _bom, _w = _unpack(serial_item="EA02144-001")
+		source = [r for r in se.items if r.get("s_warehouse")]
+		self.assertEqual([r.item_code for r in source], ["EA02144-001"])
+		self.assertEqual([r.serial_no for r in source], ["SN-1"])
 
 
 class TestUnpackWarehouses(IntegrationTestCase):
