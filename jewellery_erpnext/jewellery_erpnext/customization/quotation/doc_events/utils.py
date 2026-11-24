@@ -114,34 +114,6 @@ def update_si(self):
 			# update_einvoice_items(self, invoice_data)
 
 
-def update_einvoice_items(self, invoice_data):
-	# self.custom_invoice_item = []
-	for row in invoice_data:
-		if invoice_data[row]["amount"] > 0:
-			self.append(
-				"custom_invoice_item",
-				{
-					"item_code": row,
-					"item_name": row,
-					"uom": invoice_data[row]["uom"] or "Nos",
-					"gst_hsn_code": invoice_data[row]["hsn_code"],
-					"conversion_factor": 1,
-					"qty": invoice_data[row]["qty"],
-					"rate": flt(
-						invoice_data[row]["amount"] / invoice_data[row]["qty"], 3
-					),
-					"base_rate": flt(
-						invoice_data[row]["amount"] / invoice_data[row]["qty"], 3
-					),
-					"amount": flt(invoice_data[row]["amount"], 3),
-					"base_amount": invoice_data[row]["amount"],
-					"diamond_quality": self.diamond_quality,
-					# "income_account": invoice_data[row]["income_account"],
-					# "cost_center": invoice_data[row]["cost_center"],
-				},
-			)
-
-
 def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 	gold_item = None
 	gold_making_item = None
