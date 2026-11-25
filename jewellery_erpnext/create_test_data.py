@@ -3317,6 +3317,14 @@ def create_test_data():
 
 			_ensure_ref_customer_fields()
 
+			# Serial No.custom_ref_customer, read by Product Certification when a serial is
+			# scanned. Patch-only like the fields above, so provision it here for test_site too.
+			from jewellery_erpnext.patches.add_serial_no_ref_customer_field import (
+				execute as _ensure_serial_no_ref_customer_field,
+			)
+
+			_ensure_serial_no_ref_customer_field()
+
 			# Batch.custom_worker_cost / custom_total_cost (Finding Manufacturing - Without
 			# SO). Patch-only like the fields above, so provision them here for test_site too,
 			# else apply_worker_cost_to_batch writes a missing column.
