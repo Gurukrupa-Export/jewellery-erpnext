@@ -1,7 +1,10 @@
 """Move work orders from Waxing to Manufacturing Plan & Management with Department IR.
 
-One-off maintenance script, NOT a migrate patch: it is deliberately not listed in
-patches.txt, so a deploy or `bench migrate` never runs it. It runs only when called.
+One-off data patch, registered in patches.txt: the first `bench migrate` after the deploy
+runs ``execute()`` once -- it adds MOP Log's ``mop_balance_idx`` if missing, then applies
+the transfer. It never fails the migrate: rows that could not be moved are reported (Error
+Log "Waxing to MPM transfer" + the CSV in File) and can be re-run from System Console with
+``enqueue(mode="apply", ...)`` -- the transfer is idempotent.
 
 The work orders are listed in ``transfer_waxing_to_mpm_mwos.txt`` next to this file (the
 1,294 "Not exists in jwelex" rows of Cancel 2.xlsx). Each batch becomes one Department IR
@@ -198,6 +201,39 @@ CHUNK = 500
 
 
 # --------------------------------------------------------------------------- entry points
+
+
+def execute():
+	"""patches.txt entry point: index first, then apply on this site."""
+	_ensure_mop_balance_index()
+	try:
+		summary = run(mode="apply", confirm=frappe.local.site)
+	except Exception:
+		# A data fix must never roll back a deploy. Whatever was committed stays; the
+		# rest can be re-run from System Console with enqueue(mode="apply", ...).
+		frappe.db.rollback()
+		frappe.log_error(title=REPORT_TITLE + " (patch failed)")
+		frappe.db.commit()
+		print(f"{REPORT_TITLE}: failed, see Error Log '{REPORT_TITLE} (patch failed)'")
+		return
+	print(f"{REPORT_TITLE}: {summary['counts']} report={summary['report']}")
+
+
+def _ensure_mop_balance_index():
+	"""MOP Log's balance index, as in add_make_receive_entry_indexes.
+
+	That patch is recorded as run on prod but the index is missing there, so every
+	Department IR balance read full-scans MOP Log (~6 s per operation on 717k rows;
+	with the index the whole transfer took 5.5 min on a restore of prod).
+	"""
+	from jewellery_erpnext.patches.add_make_receive_entry_indexes import _index_exists
+
+	if _index_exists("tabMOP Log", "mop_balance_idx"):
+		return
+	frappe.db.sql_ddl(
+		"ALTER TABLE `tabMOP Log` ADD INDEX `mop_balance_idx` "
+		"(`manufacturing_operation`, `is_cancelled`, `item_code`, `batch_no`, `creation`)"
+	)
 
 
 @frappe.whitelist()
