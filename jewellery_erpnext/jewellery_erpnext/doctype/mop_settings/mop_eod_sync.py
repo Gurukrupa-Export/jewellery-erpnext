@@ -3282,16 +3282,23 @@ def _get_last_logs_per_item_batch(logs):
 	return list(latest.values())
 
 
-# Voucher types whose MOP Logs are clones of the balance onto the operation the job moved to.
-# A clone row carries qty_change 0; loss rows posted by the same vouchers carry a negative one.
-_IR_CLONE_VOUCHER_TYPES = ("Department IR", "Employee IR")
+# Voucher types whose MOP Logs copy the balance onto an operation: a Department / Employee IR
+# hop, or the opening balance of a new operation or work order. A copy carries qty_change 0;
+# the loss rows an Employee IR also posts carry a negative one.
+_CLONE_VOUCHER_TYPES = (
+	"Department IR",
+	"Employee IR",
+	"Manufacturing Operation",
+	"Manufacturing Work Order",
+)
 
 
 def _gathered_snapshot_is_stale(operation, gathered_logs):
-	"""True when an already-synced IR clone on ``operation`` is newer than every gathered log.
+	"""True when an already-synced balance copy on ``operation`` is newer than every gathered log.
 
 	The gathered logs are then leftovers of an earlier hop: a later Department / Employee IR
-	on the same operation was already synced by a run whose window did not cover them.
+	(or opening balance) on the same operation was already synced by a run whose window did
+	not cover them.
 	"""
 	newest = max(
 		(str(log.get("creation") or "") for log in gathered_logs or []), default=""
@@ -3305,7 +3312,7 @@ def _gathered_snapshot_is_stale(operation, gathered_logs):
 				"manufacturing_operation": operation,
 				"is_cancelled": 0,
 				"is_synced": 1,
-				"voucher_type": ["in", list(_IR_CLONE_VOUCHER_TYPES)],
+				"voucher_type": ["in", list(_CLONE_VOUCHER_TYPES)],
 				"qty_change": 0,
 				"creation": [">", newest],
 			},
@@ -3335,8 +3342,8 @@ def _current_balance_logs(mwo, operation, gathered_logs, gathered_last_logs):
 	already holds at the target and moves the rest. Two limits keep it to that case:
 
 	* Fresh snapshot only. The target comes from the gathered IR logs, so the balance may only
-	  be read when those logs are the operation's latest hop. If an already-synced IR clone on
-	  the operation is newer than every gathered log, the gathered rows are leftovers that a
+	  be read when those logs are the operation's latest hop. If an already-synced balance
+	  copy on the operation is newer than every gathered log, the gathered rows are leftovers that a
 	  later run moved past (unsynced logs outside an earlier run's window): reading the
 	  balance would add rows of that later hop and send them to the old target. Such an MWO
 	  keeps the gathered snapshot, as before.

@@ -3780,7 +3780,15 @@ class TestEodPlansFromTheOperationBalance(IntegrationTestCase):
 				"manufacturing_operation": "MOP-9",
 				"is_cancelled": 0,
 				"is_synced": 1,
-				"voucher_type": ["in", ["Department IR", "Employee IR"]],
+				"voucher_type": [
+					"in",
+					[
+						"Department IR",
+						"Employee IR",
+						"Manufacturing Operation",
+						"Manufacturing Work Order",
+					],
+				],
 				"qty_change": 0,
 				"creation": [">", "2026-09-21 12:30:00"],
 			},
