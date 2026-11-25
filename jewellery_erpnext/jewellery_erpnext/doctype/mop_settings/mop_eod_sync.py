@@ -1053,6 +1053,13 @@ def _plan_mwo_group(
 				)
 		return None
 
+	# What to move is the operation's balance, not the gathered logs' last snapshot: those
+	# are only the unsynced ones, and every Stock Entry writes its MOP Logs already synced.
+	# The target stays the gathered logs' (where the Department / Employee IR put the job).
+	balance_logs = _current_balance_logs(
+		mwo, last_mop_name, last_mop_data["logs"], last_logs
+	)
+
 	# One query for all (item_code, batch_no) → warehouse for this MWO, plus this MWO's
 	# live reservation qty per (item, batch, warehouse) -- the ownership the row builder
 	# splits balances across and the only target share it may treat as already moved.
@@ -1062,7 +1069,7 @@ def _plan_mwo_group(
 	items, skipped_rows = _build_eod_se_rows(
 		mwo,
 		last_mop_name,
-		last_logs,
+		balance_logs,
 		t_warehouse,
 		sre_map,
 		active_map,
@@ -1080,7 +1087,7 @@ def _plan_mwo_group(
 		items, skipped_rows = _build_eod_se_rows(
 			mwo,
 			last_mop_name,
-			last_logs,
+			balance_logs,
 			t_warehouse,
 			sre_map,
 			active_map,
@@ -1289,8 +1296,17 @@ def _plan_mwo_group(
 				"is_synced": 1,
 				"sync_stage": "Completed",
 				"error_message": (
-					"Stock already at the target warehouse; no Material Transfer needed."
-					+ (f" Rows: {noop_detail}." if noop_detail else "")
+					(
+						"Stock already at the target warehouse; no Material Transfer needed."
+						f" Rows: {noop_detail}."
+					)
+					if noop_detail
+					# No row was at the target: every balance on the operation is 0 (the
+					# metal was returned or consumed), so there is nothing left to move.
+					else (
+						"Nothing left to move: the operation's balance is 0 for every "
+						"item (returned or consumed); no Material Transfer needed."
+					)
 				)[:500],
 				"completed_on": now_datetime(),
 			},
@@ -3264,6 +3280,93 @@ def _get_last_logs_per_item_batch(logs):
 		if cur_sort is None or new_sort > cur_sort:
 			latest[key] = log
 	return list(latest.values())
+
+
+# Voucher types whose MOP Logs copy the balance onto an operation: a Department / Employee IR
+# hop, or the opening balance of a new operation or work order. A copy carries qty_change 0;
+# the loss rows an Employee IR also posts carry a negative one.
+_CLONE_VOUCHER_TYPES = (
+	"Department IR",
+	"Employee IR",
+	"Manufacturing Operation",
+	"Manufacturing Work Order",
+)
+
+
+def _gathered_snapshot_is_stale(operation, gathered_logs):
+	"""True when an already-synced balance copy on ``operation`` is newer than every gathered log.
+
+	The gathered logs are then leftovers of an earlier hop: a later Department / Employee IR
+	(or opening balance) on the same operation was already synced by a run whose window did
+	not cover them.
+	"""
+	newest = max(
+		(str(log.get("creation") or "") for log in gathered_logs or []), default=""
+	)
+	if not newest:
+		return False
+	return bool(
+		frappe.db.exists(
+			"MOP Log",
+			{
+				"manufacturing_operation": operation,
+				"is_cancelled": 0,
+				"is_synced": 1,
+				"voucher_type": ["in", list(_CLONE_VOUCHER_TYPES)],
+				"qty_change": 0,
+				"creation": [">", newest],
+			},
+		)
+	)
+
+
+def _current_balance_logs(mwo, operation, gathered_logs, gathered_last_logs):
+	"""The operation's balance per (item_code, batch_no): what EOD must have moved.
+
+	EOD gathers only UNSYNCED MOP Logs, but every Stock Entry writes its MOP Logs already
+	synced (``doc_events/stock_entry.sync_mop_log_for_stock_entry``: the Stock Entry moved
+	its own stock). A Material Transfer (WORK ORDER), a Material Receive (WORK ORDER) return
+	or a Customer Gold Settle swap posted after a Department / Employee IR is therefore
+	invisible in the gather, and its last snapshot is stale:
+
+	* MWO-KGJPL-RI05630-004-3-91.75-Y-01: the Department IR receive cloned 2.0 g onto Model
+	  Making; MAT-STE-74000 then issued 2.3 g more (balance 4.3, synced). EOD moved "2.0",
+	  found the MWO's own 2.3 g reserved at the target, called it done, and left the waxing
+	  2.0 g in Waxing WO.
+	* A return after the receive made EOD ask for metal already back in the store and hold
+	  the MWO as short; a Settle swap made it plan the returned customer batch and never move
+	  the Regular Stock batch that replaced it.
+
+	The canonical balance (``mop_log.get_current_mop_balance_rows``, the MOP balance view's
+	reader) includes those rows; ``_plan_owned_batch_legs`` then credits only what this MWO
+	already holds at the target and moves the rest. Two limits keep it to that case:
+
+	* Fresh snapshot only. The target comes from the gathered IR logs, so the balance may only
+	  be read when those logs are the operation's latest hop. If an already-synced balance
+	  copy on the operation is newer than every gathered log, the gathered rows are leftovers that a
+	  later run moved past (unsynced logs outside an earlier run's window): reading the
+	  balance would add rows of that later hop and send them to the old target. Such an MWO
+	  keeps the gathered snapshot, as before.
+	* Refining. Rows from before the MWO's Work Order Refining describe metal that refining
+	  took away; ``drop_pre_refining_rows`` removes them, as the IR clone writers do.
+
+	Falls back to the gathered snapshot when the operation has no readable balance.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		drop_pre_refining_rows,
+		get_current_mop_balance_rows,
+	)
+
+	if _gathered_snapshot_is_stale(operation, gathered_logs):
+		return gathered_last_logs
+
+	rows = drop_pre_refining_rows(
+		get_current_mop_balance_rows(
+			operation, include_fields=list(_MOP_LOG_GATHER_FIELDS)
+		),
+		mwo,
+	)
+	return rows or gathered_last_logs
 
 
 def _get_t_warehouse_from_logs(logs):

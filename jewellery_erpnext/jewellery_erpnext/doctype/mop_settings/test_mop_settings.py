@@ -60,6 +60,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_mop_manufacturer_label,
 	_mwo_realized_by_artifact,
 	_pick_shortfall_warehouse,
+	_current_balance_logs,
+	_gathered_snapshot_is_stale,
 	_plan_mwo_group,
 	_plan_owned_batch_legs,
 	_preload_active_sre_warehouse_map,
@@ -3710,6 +3712,371 @@ class TestCollectMopNames(IntegrationTestCase):
 	def test_entries_without_name_skipped(self):
 		self.assertEqual(
 			_collect_mop_names([{"mop_name": None}, {"mop_name": "MOP-A"}]), "MOP-A"
+		)
+
+
+# ---------------------------------------------------------------------------
+# TestEodPlansFromTheOperationBalance (Stock Entry logs are written synced)
+# ---------------------------------------------------------------------------
+
+_MOP_LOG_MOD = "jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log"
+_BALANCE_READER = f"{_MOP_LOG_MOD}.get_current_mop_balance_rows"
+_REFINING_CUTOFF = f"{_MOP_LOG_MOD}.get_mwo_refining_cutoff"
+
+
+class TestEodPlansFromTheOperationBalance(IntegrationTestCase):
+	"""EOD gathers unsynced MOP Logs; Stock Entries write theirs synced. The transfer is
+	sized from the operation's balance, the target from the gathered IR logs."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _balance(self, gathered, canonical, stale=False, cutoff=None):
+		with patch(_BALANCE_READER, return_value=canonical) as reader, patch(
+			f"{_MOD}._gathered_snapshot_is_stale", return_value=stale
+		), patch(_REFINING_CUTOFF, return_value=cutoff):
+			return _current_balance_logs("MWO-1", "MOP-1", gathered, gathered), reader
+
+	def test_canonical_rows_are_used_when_present(self):
+		gathered = [_log(qty_after_transaction_batch_based=2.0)]
+		canonical = [_log(qty_after_transaction_batch_based=4.3)]
+		rows, reader = self._balance(gathered, canonical)
+		self.assertEqual(rows, canonical)
+		reader.assert_called_once()
+		self.assertEqual(reader.call_args.args, ("MOP-1",))
+		self.assertIn(
+			"qty_after_transaction_batch_based",
+			reader.call_args.kwargs["include_fields"],
+		)
+
+	def test_gathered_snapshot_is_the_fallback(self):
+		gathered = [_log(qty_after_transaction_batch_based=2.0)]
+		rows, _reader = self._balance(gathered, [])
+		self.assertIs(rows, gathered)
+
+	def test_a_stale_snapshot_keeps_the_gathered_rows(self):
+		# A later IR on the operation was already synced: the balance would carry that hop's
+		# rows to the old target, so the gathered snapshot is kept and the reader not read.
+		gathered = [_log(qty_after_transaction_batch_based=2.0)]
+		rows, reader = self._balance(
+			gathered, [_log(qty_after_transaction_batch_based=9.0)], stale=True
+		)
+		self.assertIs(rows, gathered)
+		reader.assert_not_called()
+
+	def test_stale_means_a_newer_synced_ir_clone_on_the_operation(self):
+		gathered = [
+			_log(creation="2026-09-10 10:00:00"),
+			_log(name="LOG-2", creation="2026-09-21 12:30:00"),
+		]
+		with patch(f"{_MOD}.frappe.db.exists", return_value="ML-1") as exists:
+			self.assertTrue(_gathered_snapshot_is_stale("MOP-9", gathered))
+		doctype, filters = exists.call_args.args
+		self.assertEqual(doctype, "MOP Log")
+		self.assertEqual(
+			filters,
+			{
+				"manufacturing_operation": "MOP-9",
+				"is_cancelled": 0,
+				"is_synced": 1,
+				"voucher_type": [
+					"in",
+					[
+						"Department IR",
+						"Employee IR",
+						"Manufacturing Operation",
+						"Manufacturing Work Order",
+					],
+				],
+				"qty_change": 0,
+				"creation": [">", "2026-09-21 12:30:00"],
+			},
+		)
+		with patch(f"{_MOD}.frappe.db.exists", return_value=None):
+			self.assertFalse(_gathered_snapshot_is_stale("MOP-9", gathered))
+		with patch(f"{_MOD}.frappe.db.exists") as exists:
+			self.assertFalse(_gathered_snapshot_is_stale("MOP-9", []))
+		exists.assert_not_called()
+
+	def test_rows_from_before_refining_are_dropped(self):
+		gathered = [_log(qty_after_transaction_batch_based=1.0)]
+		dead = _log(name="OLD", batch_no="B-OLD", creation="2026-10-23 10:15:19")
+		live = _log(name="NEW", batch_no="B-NEW", creation="2026-10-23 12:00:00")
+		rows, _reader = self._balance(
+			gathered, [dead, live], cutoff="2026-10-23 11:22:57"
+		)
+		self.assertEqual([r.name for r in rows], ["NEW"])
+
+	def test_the_real_reader_gives_the_latest_balance_per_batch(self):
+		# get_current_mop_balance_rows itself runs; only its one query is answered.
+		newest_first = [
+			_log(
+				name="2f0qvut4o1",
+				creation="2026-11-24 18:11:38",
+				qty_after_transaction_batch_based=4.3,
+			),
+			_log(
+				name="0ejor102si",
+				creation="2026-11-24 18:10:56",
+				qty_after_transaction_batch_based=2.0,
+			),
+			_log(
+				name="fehl6nn28k",
+				creation="2026-11-24 18:10:50",
+				qty_after_transaction_batch_based=2.0,
+			),
+			_log(
+				name="D1",
+				item_code="D-1",
+				batch_no="BD",
+				creation="2026-11-24 18:10:50",
+				qty_after_transaction_batch_based=0.25,
+			),
+		]
+		with patch(f"{_MOD}._gathered_snapshot_is_stale", return_value=False), patch(
+			_REFINING_CUTOFF, return_value=None
+		), patch(
+			f"{_MOP_LOG_MOD}.frappe.db.get_all", return_value=newest_first
+		) as get_all:
+			rows = _current_balance_logs("MWO-1", "MOP-1", newest_first[1:3], [])
+		self.assertEqual(
+			sorted((r.item_code, r.qty_after_transaction_batch_based) for r in rows),
+			[("D-1", 0.25), ("M-TEST", 4.3)],
+		)
+		kwargs = get_all.call_args.kwargs
+		self.assertEqual(kwargs["order_by"], "creation desc, name desc")
+		self.assertEqual(kwargs["filters"]["manufacturing_operation"], "MOP-1")
+		self.assertIn("qty_after_transaction_batch_based", kwargs["fields"])
+
+	def _plan(
+		self, gathered, canonical, live, phys, mop="MOP-2611-GOYHNZ", sre_map=None
+	):
+		mop_data_list = [{"mop_name": mop, "mop_doc": _mop_doc(), "logs": gathered}]
+		failures, stats = (
+			[],
+			{"processed_mwos": 0, "failed_mwos": 0, "submitted_ses": []},
+		)
+		with patch(_BALANCE_READER, return_value=canonical), patch(
+			f"{_MOD}._mwo_realized_by_artifact", return_value=None
+		), patch(f"{_MOD}._open_non_pointer_operations", return_value=(mop, [])), patch(
+			f"{_MOD}._preload_sre_warehouse_map", return_value=sre_map or {}
+		), patch(f"{_MOD}._preload_active_sre_warehouse_map", return_value=live), patch(
+			f"{_MOD}._eod_physical_batch_qty",
+			side_effect=lambda item_code, batch_no, warehouse: phys.get(
+				(batch_no, warehouse), 0.0
+			),
+		), patch(f"{_MOD}._eod_batch_ownership", return_value={}), patch(
+			f"{_MOD}._check_eod_source_batch_stock", return_value={}
+		), patch(f"{_MOD}._validate_eod_items_for_mwo_reservation"), patch(
+			f"{_MOD}._mark_all_mwo_mop_logs_synced"
+		) as mark, patch(f"{_MOD}._stamp_last_eod_sync"), patch(
+			f"{_MOD}._gathered_snapshot_is_stale", return_value=False
+		), patch(_REFINING_CUTOFF, return_value=None), patch(
+			f"{_MOD}._insert_sync_log_item"
+		) as log_row:
+			result = _plan_mwo_group(
+				("KG GK", "MWO-1"), mop_data_list, failures, stats, sync_log_name=None
+			)
+		self.sync_log_rows = [c.args[1] for c in log_row.call_args_list]
+		return result, failures, mark
+
+	# MWO-KGJPL-RI05630-004-3-91.75-Y-01 (MOP-EOD-SYNC-2026-00133).
+	_GOLD, _B = "M-G-22KT-91.75-Y", "KG2F092-MGL229175Y0-701DJ"
+	_WAX, _MM = "Waxing WO - KGJPL", "Model Making WO - KGJPL"
+
+	def _incident_gathered(self):
+		return [
+			_log(
+				name="fehl6nn28k",
+				item_code=self._GOLD,
+				batch_no=self._B,
+				flow_index=1,
+				creation="2026-11-24 18:10:50",
+				qty_after_transaction_batch_based=2.0,
+				to_warehouse="Model Making Transit - KGJPL",
+			),
+			_log(
+				name="0ejor102si",
+				item_code=self._GOLD,
+				batch_no=self._B,
+				flow_index=2,
+				creation="2026-11-24 18:10:56",
+				qty_after_transaction_batch_based=2.0,
+				to_warehouse=self._MM,
+			),
+		]
+
+	def _incident_world(self):
+		live = {(self._GOLD, self._B): {self._WAX: 2.0, self._MM: 2.3}}
+		phys = {(self._B, self._WAX): 2.0, (self._B, self._MM): 2.3}
+		return live, phys
+
+	def test_metal_issued_after_the_receive_moves_the_previous_departments_gold(self):
+		# MAT-STE-74000 (Material Transfer (WORK ORDER), synced) raised the balance to 4.3.
+		canonical = [
+			_log(
+				name="2f0qvut4o1",
+				item_code=self._GOLD,
+				batch_no=self._B,
+				flow_index=0,
+				creation="2026-11-24 18:11:38",
+				voucher_type="Stock Entry",
+				voucher_no="MAT-STE-74000",
+				qty_after_transaction_batch_based=4.3,
+				to_warehouse=self._MM,
+			)
+		]
+		result, failures, mark = self._plan(
+			self._incident_gathered(), canonical, *self._incident_world()
+		)
+		self.assertEqual(failures, [])
+		self.assertEqual(result["kind"], "resolvable")
+		self.assertEqual(
+			[(r["s_warehouse"], r["t_warehouse"], r["qty"]) for r in result["items"]],
+			[(self._WAX, self._MM, 2.0)],
+		)
+		mark.assert_not_called()
+
+	def test_control_the_gathered_snapshot_alone_is_the_false_noop(self):
+		# What kggk_uat did: the gathered 2.0 is "covered" by the MWO's own 2.3 at the target.
+		result, failures, mark = self._plan(
+			self._incident_gathered(), [], *self._incident_world()
+		)
+		self.assertIsNone(result)
+		mark.assert_called_once()
+
+	def test_a_return_after_the_receive_is_not_asked_for_again(self):
+		# MWO-KGJPL-NE00655-002-4-91.75-Y-03: Employee IR receive cloned 5.123, then
+		# MAT-STE-72475 returned 1.0 g to Model Making RM (synced) -> balance 4.123.
+		b, assembly = "GJCU0009-2F10-M-G-22KT-91.75-Y-31-A", "Assembly WIP WH 9 - KGJPL"
+		gathered = [
+			_log(
+				item_code=self._GOLD,
+				batch_no=b,
+				qty_after_transaction_batch_based=5.123,
+				voucher_type="Employee IR",
+				to_warehouse=self._MM,
+			)
+		]
+		canonical = [
+			_log(
+				item_code=self._GOLD,
+				batch_no=b,
+				qty_after_transaction_batch_based=4.123,
+				voucher_type="Stock Entry",
+				to_warehouse="Model Making RM - KGJPL",
+			)
+		]
+		live = {(self._GOLD, b): {assembly: 4.123}}
+		phys = {(b, assembly): 4.123}
+		result, failures, _mark = self._plan(gathered, canonical, live, phys)
+		self.assertEqual(failures, [])
+		self.assertEqual(
+			[(r["s_warehouse"], r["t_warehouse"], r["qty"]) for r in result["items"]],
+			[(assembly, self._MM, 4.123)],
+		)
+		# Control: the gathered 5.123 cannot be covered by the 4.123 held -> held as short.
+		result, failures, _mark = self._plan(gathered, [], live, phys)
+		self.assertEqual(result["kind"], "failed")
+
+	def test_a_settle_swap_moves_the_replacing_batch_not_the_returned_one(self):
+		# MWO-KGJPL-RI07240-001-2-91.75-Y-01: the customer's -02-A / -03-A went back to the
+		# store (MAT-STE-71825) and Regular Stock 50H1H replaced them (MAT-STE-71826).
+		a, c, reg = (
+			"GJCU0009-2F10-M-G-22KT-91.75-Y-02-A",
+			"GJCU0009-2F10-M-G-22KT-91.75-Y-03-A",
+			"KG2F081-MGL229175Y0-50H1H",
+		)
+		tagging = "Tagging WO - KGJPL"
+		gathered = [
+			_log(
+				item_code=self._GOLD,
+				batch_no=a,
+				qty_after_transaction_batch_based=3.422,
+				to_warehouse=tagging,
+			),
+			_log(
+				item_code=self._GOLD,
+				batch_no=c,
+				qty_after_transaction_batch_based=1.538,
+				to_warehouse=tagging,
+			),
+		]
+		canonical = [
+			_log(
+				item_code=self._GOLD, batch_no=a, qty_after_transaction_batch_based=0.0
+			),
+			_log(
+				item_code=self._GOLD, batch_no=c, qty_after_transaction_batch_based=0.0
+			),
+			_log(
+				item_code=self._GOLD,
+				batch_no=reg,
+				qty_after_transaction_batch_based=4.96,
+			),
+		]
+		live = {(self._GOLD, reg): {self._WAX: 4.96}}
+		phys = {(reg, self._WAX): 4.96, (a, self._WAX): 50.0, (c, self._WAX): 50.0}
+		result, failures, _mark = self._plan(
+			gathered, canonical, live, phys, mop="MOP-2610-3AP7T1"
+		)
+		self.assertEqual(failures, [])
+		self.assertEqual(
+			[
+				(r["batch_no"], r["s_warehouse"], r["t_warehouse"], r["qty"])
+				for r in result["items"]
+			],
+			[(reg, self._WAX, tagging, 4.96)],
+		)
+
+	def test_a_zero_balance_says_nothing_is_left_to_move(self):
+		# Every batch was returned to the store after the receive: nothing to move, and the
+		# sync log must not claim the stock is at the target.
+		canonical = [
+			_log(
+				item_code=self._GOLD,
+				batch_no=self._B,
+				qty_after_transaction_batch_based=0.0,
+			),
+		]
+		result, failures, mark = self._plan(
+			self._incident_gathered(), canonical, {}, {}
+		)
+		self.assertIsNone(result)
+		self.assertEqual(failures, [])
+		mark.assert_called_once()
+		(row,) = self.sync_log_rows
+		self.assertEqual(row["status"], "Synced")
+		self.assertTrue(row["error_message"].startswith("Nothing left to move"))
+
+	def test_a_balance_key_without_a_live_reservation_takes_the_legacy_pick(self):
+		# A finding issued by a Stock Entry whose reservation is not batch-scoped: the row
+		# still plans, from the reservation warehouse that physically covers it.
+		finding, fb = "F-G-22KT-91.75-Y-SW", "KG2F103-FSW-1"
+		canonical = [
+			_log(
+				item_code=self._GOLD,
+				batch_no=self._B,
+				qty_after_transaction_batch_based=4.3,
+			),
+			_log(item_code=finding, batch_no=fb, qty_after_transaction_batch_based=1.0),
+		]
+		live, phys = self._incident_world()
+		phys = {**phys, (fb, "Waxing RM - KGJPL"): 5.0}
+		result, failures, _mark = self._plan(
+			self._incident_gathered(),
+			canonical,
+			live,
+			phys,
+			sre_map={(finding, fb): ["Waxing RM - KGJPL"]},
+		)
+		self.assertEqual(failures, [])
+		self.assertEqual(
+			sorted(
+				(r["item_code"], r["s_warehouse"], r["qty"]) for r in result["items"]
+			),
+			[(finding, "Waxing RM - KGJPL", 1.0), (self._GOLD, self._WAX, 2.0)],
 		)
 
 
