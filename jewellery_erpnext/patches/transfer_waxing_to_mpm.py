@@ -1,10 +1,20 @@
 """Move work orders from Waxing to Manufacturing Plan & Management with Department IR.
 
-One-off data patch, registered in patches.txt: the first `bench migrate` after the deploy
-runs ``execute()`` once -- it adds MOP Log's ``mop_balance_idx`` if missing, then applies
-the transfer. It never fails the migrate: rows that could not be moved are reported (Error
-Log "Waxing to MPM transfer" + the CSV in File) and can be re-run from System Console with
-``enqueue(mode="apply", ...)`` -- the transfer is idempotent.
+One-off data patch, registered in patches.txt: MERGING RUNS IT ON THE LIVE SITE. The first
+`bench migrate` after the deploy runs ``execute()`` once, unattended (no confirm, no
+rehearse):
+  1. adds MOP Log's ``mop_balance_idx`` if missing; if that fails the transfer is NOT run
+     (a full-scan run inside the deploy is too slow),
+  2. applies the transfer to the REVIEWED set only: the listed MWOs minus the 14 in
+     EXPECTED_NOT_TRANSFERRED. A listed one that has become Ready live is skipped, not
+     moved; it shows in the summary's drift.now_ready for someone to look at.
+It never fails the migrate, so the Patch Log marks it done whatever happened. The outcome
+is in the Error Log, one title per case:
+    "Waxing to MPM transfer"                every row moved or skipped as planned
+    "Waxing to MPM transfer (rows failed)"  at least one row Failed -- see the CSV in File
+    "Waxing to MPM transfer (not run)"      the index step failed; nothing was moved
+    "Waxing to MPM transfer (patch failed)" the run itself crashed
+Recovery is always the System Console re-run below -- the transfer is idempotent.
 
 The work orders are listed in ``transfer_waxing_to_mpm_mwos.txt`` next to this file (the
 1,294 "Not exists in jwelex" rows of Cancel 2.xlsx). Each batch becomes one Department IR
@@ -204,27 +214,45 @@ CHUNK = 500
 
 
 def execute():
-	"""patches.txt entry point: index first, then apply on this site."""
-	_ensure_mop_balance_index()
+	"""patches.txt entry point: index first, then apply the reviewed set on this site.
+
+	A data fix must never roll back a deploy, so nothing here raises: every outcome is an
+	Error Log (titles in the module docstring) plus one line in the migrate output.
+	"""
 	try:
-		summary = run(mode="apply", confirm=frappe.local.site)
+		_ensure_mop_balance_index()
 	except Exception:
-		# A data fix must never roll back a deploy. Whatever was committed stays; the
-		# rest can be re-run from System Console with enqueue(mode="apply", ...).
 		frappe.db.rollback()
-		frappe.log_error(title=REPORT_TITLE + " (patch failed)")
-		frappe.db.commit()
-		print(f"{REPORT_TITLE}: failed, see Error Log '{REPORT_TITLE} (patch failed)'")
+		_log_outcome(" (not run)")
 		return
-	print(f"{REPORT_TITLE}: {summary['counts']} report={summary['report']}")
+
+	try:
+		summary = run(mode="apply", confirm=frappe.local.site, reviewed_only=True)
+	except Exception:
+		# Whatever was committed stays; the rest re-runs from System Console.
+		frappe.db.rollback()
+		_log_outcome(" (patch failed)")
+		return
+	print(
+		f"{summary['log_title']}: {summary['counts']} "
+		f"matches_expected={summary['matches_expected']} report={summary['report']}"
+	)
+
+
+def _log_outcome(suffix):
+	title = REPORT_TITLE + suffix
+	frappe.log_error(title=title)
+	frappe.db.commit()
+	print(f"{title}: see the Error Log '{title}'; re-run from System Console with enqueue()")
 
 
 def _ensure_mop_balance_index():
 	"""MOP Log's balance index, as in add_make_receive_entry_indexes.
 
 	That patch is recorded as run on prod but the index is missing there, so every
-	Department IR balance read full-scans MOP Log (~6 s per operation on 717k rows;
-	with the index the whole transfer took 5.5 min on a restore of prod).
+	Department IR balance read full-scans MOP Log. The whole transfer took about 29 min
+	without the index (review run on a prod copy) and 5.5 min with it (restore of prod,
+	2026-11-24; the index itself took 26.5 s to build on 717k rows).
 	"""
 	from jewellery_erpnext.patches.add_make_receive_entry_indexes import _index_exists
 
@@ -289,8 +317,14 @@ def plan(mwo_list=None):
 	}
 
 
-def run(mode="rehearse", confirm=None, batch_size=BATCH_SIZE, mwo_list=None):
-	"""rehearse or apply. Called by the queued job, or directly with bench execute."""
+def run(
+	mode="rehearse", confirm=None, batch_size=BATCH_SIZE, mwo_list=None, reviewed_only=False
+):
+	"""rehearse or apply. Called by the queued job, by execute(), or with bench execute.
+
+	reviewed_only (the unattended patch run): never move an MWO listed in
+	EXPECTED_NOT_TRANSFERRED, even if it has become Ready since the list was reviewed.
+	"""
 	_check_mode(mode, confirm)
 	batch_size = cint(batch_size) or BATCH_SIZE
 	started = now_datetime()
@@ -298,6 +332,8 @@ def run(mode="rehearse", confirm=None, batch_size=BATCH_SIZE, mwo_list=None):
 	rows = _build_plan(_load_mwo_names(mwo_list))
 	# Drift is judged on the plan, before any row's result turns into Moved / Failed.
 	drift = _drift(rows)
+	if reviewed_only:
+		_restrict_to_reviewed(rows)
 	ready = [r for r in rows if r["result"] == READY]
 	# Nothing the plan read is held open across the batches.
 	frappe.db.rollback()
@@ -328,11 +364,28 @@ def run(mode="rehearse", confirm=None, batch_size=BATCH_SIZE, mwo_list=None):
 		"receives": sorted({r["receive"] for r in rows if r.get("receive")}),
 	}
 	summary["report"] = _save_report(rows, mode)
+	summary["log_title"] = REPORT_TITLE + (
+		" (rows failed)" if summary["counts"].get(FAILED) else ""
+	)
 	frappe.log_error(
-		title=REPORT_TITLE, message=json.dumps(summary, indent=1, default=str)
+		title=summary["log_title"], message=json.dumps(summary, indent=1, default=str)
 	)
 	frappe.db.commit()
 	return summary
+
+
+def _restrict_to_reviewed(rows):
+	"""Skip every Ready row that the reviewed list says must not be moved."""
+	listed = {entry[0] for entries in EXPECTED_NOT_TRANSFERRED.values() for entry in entries}
+	for r in rows:
+		if r["result"] == READY and r["mwo"] in listed:
+			r.update(
+				result=SKIPPED,
+				reason=(
+					"in EXPECTED_NOT_TRANSFERRED but Ready live; not moved unattended -- "
+					"review it and move it from System Console"
+				),
+			)
 
 
 # --------------------------------------------------------------------------- the transfer
