@@ -85,7 +85,10 @@ frappe.ui.form.on("Material Request", {
 		const doc = frm.doc;
 		if (
 			doc.docstatus !== 1 ||
-			doc.workflow_state !== "Material Transferred" ||
+			// "Material Transfer In Progress" is where "Transfer Material" now lands; the job
+			// moves the request to "Material Transferred" once the entry is submitted. Requests
+			// that reached "Material Transferred" before that state existed can still be waiting.
+			!["Material Transfer In Progress", "Material Transferred"].includes(doc.workflow_state) ||
 			!doc.custom_reserve_se ||
 			doc.custom_transfer_se
 		) {
@@ -100,7 +103,9 @@ frappe.ui.form.on("Material Request", {
 							strip_html(doc.custom_transfer_se_error || "") || __("no error recorded")
 						),
 				  ])
-				: __("Material Transfer From Reserve is still being created. Reload in a minute."),
+				: __(
+						"Material Transfer From Reserve is being created in the background. The status changes to Material Transferred once it is done."
+				  ),
 			failed ? "red" : "orange"
 		);
 
