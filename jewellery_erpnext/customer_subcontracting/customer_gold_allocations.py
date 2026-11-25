@@ -23,6 +23,7 @@ from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 
 ALLOCATION_DOCTYPE = "Customer Gold Allocation"
 
@@ -43,8 +44,8 @@ DRAWING_DISPOSITIONS = (
 	DISPOSITION_REVERSAL,
 )
 
-AMOUNT_PRECISION = 2
-QTY_PRECISION = 6
+AMOUNT_PRECISION = 3
+QTY_PRECISION = 3
 
 
 def is_allocation_schema_ready():
@@ -377,9 +378,9 @@ def reconcile_to_settlement(event_names, per_customer, precision=AMOUNT_PRECISIO
 			frappe.log_error(
 				title="Customer Gold: allocations do not tie to settlement",
 				message=(
-					f"Customer {customer}: the settlement posted {flt(amount, precision)} but its "
+					f"Customer {customer}: the settlement posted {fmt3(amount)} but its "
 					f"{len(mine)} allocation row(s) sum to "
-					f"{flt(amount, precision) - residual}, a difference of {residual}. "
+					f"{fmt3(flt(amount, precision) - residual)}, a difference of {fmt3(residual)}. "
 					f"Events: {', '.join(sorted(event_names))}."
 				),
 			)

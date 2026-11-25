@@ -890,7 +890,7 @@ class TestReceiptBatchDriftIsHeld(unittest.TestCase):
 	def test_a_receipt_batch_carried_above_its_booked_rate_is_held(self):
 		message = self._held()
 
-		for fragment in ("D08", "KGJPL-SE-CGR-26-00052", "14625.21", "14622.5"):
+		for fragment in ("D08", "KGJPL-SE-CGR-26-00052", "14625.206", "14622.500"):
 			self.assertIn(fragment, message)
 
 	def test_a_receipt_batch_carried_below_its_booked_rate_is_held(self):

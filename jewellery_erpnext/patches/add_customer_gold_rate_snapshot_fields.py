@@ -35,7 +35,7 @@ Idempotent: ``create_custom_fields`` keys on ``(dt, fieldname)``.
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
-RATE_PRECISION = "4"
+RATE_PRECISION = "3"
 
 
 def execute():

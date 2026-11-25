@@ -388,7 +388,9 @@ function set_chain_loss(frm) {
 		});
 		return;
 	}
-	const loss = frm.doc.target_qty ? flt(frm.doc.source_qty) - flt(frm.doc.target_qty) : 0;
+	const loss = frm.doc.target_qty
+		? flt(flt(frm.doc.source_qty) - flt(frm.doc.target_qty), 3)
+		: 0;
 	frm.set_value("chain_process_loss_qty", loss);
 }
 
@@ -508,14 +510,15 @@ function calculate_metal(frm) {
 					if (r.message[1] < 0) {
 						clear_alloy(frm);
 						frm.set_value("target_alloy_check", 1);
-						frm.set_value("target_alloy_qty", Math.abs(r.message[1]));
+						frm.set_value("target_alloy_qty", flt(Math.abs(r.message[1]), 3));
 						frm.refresh_field("target_alloy_check");
 						frm.refresh_field("target_alloy_qty");
 						// frm.save();
 					} else if (r.message[1] > 0) {
 						clear_alloy(frm);
 						frm.set_value("source_alloy_check", 1);
-						frm.set_value("source_alloy_qty", r.message[1]);
+						// Data field: keep the 3-decimal text the rest of the form shows.
+						frm.set_value("source_alloy_qty", flt(r.message[1], 3).toFixed(3));
 
 						frm.refresh_field("source_alloy_check");
 						frm.refresh_field("source_alloy_qty");

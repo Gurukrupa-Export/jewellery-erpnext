@@ -371,9 +371,9 @@ def _rate_outliers(receipts):
 			flagged[receipt.key] = _(
 				"booked {0}/g is {1}x the reference {2} ({3})"
 			).format(
-				flt(per_gram, 2),
-				flt(ratio, 2),
-				flt(reference.rate, 2),
+				flt(per_gram, 3),
+				flt(ratio, 3),
+				flt(reference.rate, 3),
 				reference.source,
 			)
 	return flagged
@@ -476,10 +476,10 @@ def _money_by_receipt(receipts, replay, filters, all_receipts=None):
 		if m.nominal is None:
 			m.pending = None
 			continue
-		m.pending = flt(m.nominal + m.revaluation - m.released_fg - m.released_raw, 2)
-		m.revaluation = flt(m.revaluation, 2)
-		m.released_fg = flt(m.released_fg, 2)
-		m.released_raw = flt(m.released_raw, 2)
+		m.pending = flt(m.nominal + m.revaluation - m.released_fg - m.released_raw, 3)
+		m.revaluation = flt(m.revaluation, 3)
+		m.released_fg = flt(m.released_fg, 3)
+		m.released_raw = flt(m.released_raw, 3)
 	return result
 
 
@@ -971,12 +971,12 @@ def _fg_valuation(filters, show_money):
 		if show_money:
 			row.update(
 				{
-					"basic_rate": flt(item.basic_rate, 4),
-					"basic_amount": flt(item.basic_amount, 2),
-					"additional_cost": flt(item.additional_cost, 2),
-					"valuation_amount": flt(item.amount, 2),
-					"ledger_value": flt(ledger.stock_value_difference, 2),
-					"running_rate": flt(ledger.valuation_rate, 4),
+					"basic_rate": flt(item.basic_rate, 3),
+					"basic_amount": flt(item.basic_amount, 3),
+					"additional_cost": flt(item.additional_cost, 3),
+					"valuation_amount": flt(item.amount, 3),
+					"ledger_value": flt(ledger.stock_value_difference, 3),
+					"running_rate": flt(ledger.valuation_rate, 3),
 				}
 			)
 			if (
@@ -1010,7 +1010,7 @@ def _bridge_row(label, amount):
 		"side": _("Bridge"),
 		"item_code": None,
 		"note": label,
-		"valuation_amount": flt(amount, 2),
+		"valuation_amount": flt(amount, 3),
 	}
 
 

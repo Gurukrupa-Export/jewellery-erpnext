@@ -2187,13 +2187,13 @@ class TestRemarksFieldConfiguration(IntegrationTestCase):
 		"""
 		self.assertNotIn("options", self.fields["remarks"])
 
-	def test_percentage_precision_pinned_to_two(self):
-		"""Loss-book percentages are written to 2 decimals.
+	def test_percentage_precision_pinned_to_three(self):
+		"""Loss-book percentages are written to 3 decimals, like every Customer Goods number.
 
-		Without this the sentence reads "NR 1.800%", because the site runs System
-		Settings float_precision 3 for gram/carat weights (ensure_float_precision_three).
+		The sentence reads "NR 1.800%". A remark stored at 2 decimals ("NR 1.80%") still
+		matches its template and is re-rendered at 3 on the next save.
 		"""
-		self.assertEqual(self.fields["percentage"].get("precision"), "2")
+		self.assertEqual(self.fields["percentage"].get("precision"), "3")
 
 
 class TestRenderRemarkOptions(IntegrationTestCase):

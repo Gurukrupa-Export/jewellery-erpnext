@@ -75,6 +75,7 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 
 
 def get_booked_rate(company, customer, batch_no):
@@ -232,10 +233,10 @@ def make_customer_gold_return(
 				"Only {0} of batch {1} is free to return -- the rest is either already "
 				"delivered or has left {2} for manufacturing. Requested {3}."
 			).format(
-				frappe.bold(available),
+				frappe.bold(fmt3(available)),
 				frappe.bold(batch_no),
 				frappe.bold(warehouse),
-				frappe.bold(qty),
+				frappe.bold(fmt3(qty)),
 			),
 			title=frappe._("Insufficient Free Customer Gold"),
 		)
@@ -744,9 +745,9 @@ def _check_plans(doc, plans, for_update):
 					"open accounting decision (D08); the return is held until it is made."
 				).format(
 					plan.row.idx,
-					frappe.bold(flt(actual or 0, 2)),
+					frappe.bold(fmt3(actual or 0)),
 					frappe.bold(plan.receipt.reference_docname),
-					frappe.bold(flt(plan.booked_rate, 2)),
+					frappe.bold(fmt3(plan.booked_rate)),
 				),
 				title=frappe._("Customer Gold Return: Valuation Differs"),
 			)
@@ -821,8 +822,8 @@ def _check_shared_batch_rates(doc, plans):
 				).format(
 					plan.row.idx,
 					len(rates),
-					frappe.bold(flt(min(rates), 2)),
-					frappe.bold(flt(max(rates), 2)),
+					frappe.bold(fmt3(min(rates))),
+					frappe.bold(fmt3(max(rates))),
 					frappe.bold(plan.receipt.reference_docname),
 				),
 				title=frappe._("Customer Gold Return: Valuation Differs"),
@@ -1110,12 +1111,12 @@ def _released_per_row(doc, plans):
 	)
 	gl_total = flt(debit[0][0]) if debit and debit[0][0] is not None else None
 
-	rounded = {name: flt(value, 2) for name, value in values.items()}
+	rounded = {name: flt(value, 3) for name, value in values.items()}
 	if gl_total is not None and rounded:
-		residual = flt(gl_total - sum(rounded.values()), 2)
+		residual = flt(gl_total - sum(rounded.values()), 3)
 		if residual and abs(residual) <= 0.01 * len(rounded):
 			largest = max(rounded, key=lambda name: rounded[name])
-			rounded[largest] = flt(rounded[largest] + residual, 2)
+			rounded[largest] = flt(rounded[largest] + residual, 3)
 	return rounded
 
 

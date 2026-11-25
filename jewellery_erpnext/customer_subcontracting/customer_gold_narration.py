@@ -78,10 +78,10 @@ def _qty(value, uom=None):
 def _money(value, direction=None):
 	"""Amount as erpnext formats it. With ``direction`` (the JE's settled total), the sign is
 	shown only when ``value`` runs against it -- a difference the receipts over-cover."""
-	value = flt(value, 2)
+	value = flt(value, 3)
 	if direction is not None and value * flt(direction) < 0:
-		return "-" + fmt_money(abs(value), precision=2)
-	return fmt_money(abs(value), precision=2)
+		return "-" + fmt_money(abs(value), precision=3)
+	return fmt_money(abs(value), precision=3)
 
 
 def _receipt_rows(names):

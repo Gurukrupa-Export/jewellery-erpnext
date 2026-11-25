@@ -631,11 +631,12 @@ class TestTheRefusalSaysWhereTheMetalIs(_Base):
 
 		# Free: 3.09 g of 22KT is 2.835 g of 24KT on the row's pure basis (3.5 for 3.5).
 		self.assertIn(
-			f"- 3.09 of {ITEM_22KT} (batch {R02_A}) in {WAXING} = 2.835 of {ITEM}", text
+			f"- 3.090 of {ITEM_22KT} (batch {R02_A}) in {WAXING} = 2.835 of {ITEM}",
+			text,
 		)
 		# The work order's 2.36 g is shown, with its warehouse type, but never offered.
 		self.assertIn(
-			f"- 2.36 of {ITEM_22KT} (batch {R02_A}) in {WAXING_WO} (Manufacturing) "
+			f"- 2.360 of {ITEM_22KT} (batch {R02_A}) in {WAXING_WO} (Manufacturing) "
 			f"= 2.165 of {ITEM}",
 			text,
 		)
@@ -1075,11 +1076,11 @@ class TestTakingTheBatchBackFromAWorkOrder(_Base):
 			"its MOP Logs waiting for the end-of-day sync sit on another open "
 			"operation": {"pending_elsewhere": True},
 			"a draft Employee IR or Department IR holds it": {"draft_ir": True},
-			f"its operation's MOP Log shows 1.0 and {WAXING_WO} holds 2.36, not the "
-			"2.36 reserved": {"operation_balance": 1.0},
+			f"its operation's MOP Log shows 1.000 and {WAXING_WO} holds 2.360, not the "
+			"2.360 reserved": {"operation_balance": 1.0},
 			# More on the MOP Log than reserved: the batch would not end at 0.
-			f"its operation's MOP Log shows 3.0 and {WAXING_WO} holds 2.36, not the "
-			"2.36 reserved": {"operation_balance": 3.0},
+			f"its operation's MOP Log shows 3.000 and {WAXING_WO} holds 2.360, not the "
+			"2.360 reserved": {"operation_balance": 3.0},
 		}
 		for reason, fields in cases.items():
 			with self.subTest(reason=reason):
@@ -1389,8 +1390,8 @@ class TestPullingFromAWorkOrder(_Base):
 		text = _text(cg_settle._pull_summary([pulled]))
 
 		self.assertIn(
-			f"Took 2.36 of {ITEM_22KT} (batch {R02_A}) back from work order {WORK_ORDER} "
-			f"into {WAXING}, and gave the work order 2.36 of Regular Stock (batch REG-22) in "
+			f"Took 2.360 of {ITEM_22KT} (batch {R02_A}) back from work order {WORK_ORDER} "
+			f"into {WAXING}, and gave the work order 2.360 of Regular Stock (batch REG-22) in "
 			"its place: SE-REG, SE-CUST.",
 			text,
 		)
@@ -1622,7 +1623,7 @@ class TestTheCustomersMetalLossScrap(_Base):
 			"The customer's metal-loss scrap, which Settle converts back:", text
 		)
 		self.assertIn(
-			f"0.1 of {ITEM_22KT_ML} (batch {R04_AA}) in {DIAMOND_SCRAP} (Scrap)", text
+			f"0.100 of {ITEM_22KT_ML} (batch {R04_AA}) in {DIAMOND_SCRAP} (Scrap)", text
 		)
 
 	def test_which_metal_loss_items_convert(self):
@@ -1731,13 +1732,17 @@ class TestTheLastThousandth(_Base):
 	def test_a_thousandth_short_with_nothing_left_is_refused(self):
 		text = self._refusal({(R08, CENTRAL): 2.88})
 
-		self.assertIn(f"at most 2.88 of {ITEM} now: reduce its quantity to that.", text)
+		self.assertIn(
+			f"at most 2.880 of {ITEM} now: reduce its quantity to that.", text
+		)
 
 	def test_parts_a_thousandth_short_are_refused(self):
 		# 0.019 g of scrap makes 0.017: 2.835 + 0.028 + 0.017 is 2.880 of the 2.881.
 		text = self._refusal({**self.LEDGER, (R08_AA, WAXING_SCRAP): 0.019})
 
-		self.assertIn(f"at most 2.88 of {ITEM} now: reduce its quantity to that.", text)
+		self.assertIn(
+			f"at most 2.880 of {ITEM} now: reduce its quantity to that.", text
+		)
 
 	def test_a_thousandth_in_a_batch_is_a_holding(self):
 		with patch.object(frappe.db, "sql", return_value=[]) as sql, patch(
@@ -1942,9 +1947,9 @@ class TestTheCustomersOtherBatches(_Base):
 		text = _text(str(raised.exception))
 		self.assertIn("never another customer's", text)
 		self.assertIn("The customer's other batches, used once", text)
-		self.assertIn(f"1.0 of {ITEM} (batch {R05}) in {WAXING}", text)
+		self.assertIn(f"1.000 of {ITEM} (batch {R05}) in {WAXING}", text)
 		# 5.0 g of its own metal + 1.0 g of -05.
-		self.assertIn(f"at most 6.0 of {ITEM} now", text)
+		self.assertIn(f"at most 6.000 of {ITEM} now", text)
 
 
 class TestFetchingTheCustomersOtherBatches(_Base):

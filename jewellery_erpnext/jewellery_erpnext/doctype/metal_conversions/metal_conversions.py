@@ -58,6 +58,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 	update_batch_details,
 	update_source_betch,
 )
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 
 #: The Stock Entry Type every conversion voucher is booked under.
 CONVERSION_SE_TYPE = "Repack-Metal Conversion"
@@ -445,8 +446,11 @@ class MetalConversions(Document):
 		if source_item_purity:
 			if target_item_purity:
 				if target_item_purity != 0:
-					target_qty = float(
-						(self.source_qty * source_item_purity) / target_item_purity
+					target_qty = round(
+						float(
+							(self.source_qty * source_item_purity) / target_item_purity
+						),
+						3,
 					)
 					alloy_qty = round(float((target_qty - self.source_qty)), 3)
 				else:
@@ -498,7 +502,7 @@ class MetalConversions(Document):
 				if alloy_qty_bail:
 					if flt(_alloy_qty) > alloy_qty_bail:
 						frappe.throw(
-							f"Alloy <b>{_alloy}</b> Bailance qty is {alloy_qty_bail}</br>We need {_alloy_qty} Respective <b>{self.source_warehouse}</b> Warehouse."
+							f"Alloy <b>{_alloy}</b> Bailance qty is {fmt3(alloy_qty_bail)}</br>We need {fmt3(_alloy_qty)} Respective <b>{self.source_warehouse}</b> Warehouse."
 						)
 				else:
 					frappe.throw(
@@ -517,7 +521,7 @@ class MetalConversions(Document):
 				if actual_qty:
 					if self.alloy_qty > actual_qty:
 						frappe.throw(
-							f"Alloy <b>{self.alloy}</b> Bailance qty is {actual_qty}</br>We need {self.alloy_qty} Respective <b>{self.source_warehouse}</b> Warehouse."
+							f"Alloy <b>{self.alloy}</b> Bailance qty is {fmt3(actual_qty)}</br>We need {fmt3(self.alloy_qty)} Respective <b>{self.source_warehouse}</b> Warehouse."
 						)
 				else:
 					frappe.throw(
@@ -765,7 +769,7 @@ def make_metal_stock_entry(self):
 		frappe.throw(
 			_(
 				"Target Qty {0} does not match the {1} booked across conversion lanes. Please re-save the document."
-			).format(flt(self.target_qty, precision), booked_target)
+			).format(fmt3(self.target_qty), fmt3(booked_target))
 		)
 
 	se.save()

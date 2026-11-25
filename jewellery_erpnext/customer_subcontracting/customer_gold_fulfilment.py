@@ -53,7 +53,7 @@ Precisely which "without them" means, because it differs by fieldtype and an ear
 of this docstring said "left NULL" for both, which is true of only one:
 
 * ``cg_currency`` is a Data/Link column, genuinely nullable, and really is NULL.
-* ``cg_carrying_value_delta`` is Currency, which Frappe renders ``decimal(21,4) NOT NULL
+* ``cg_carrying_value_delta`` is Currency, which Frappe renders ``decimal(21,3) NOT NULL
   DEFAULT 0``. It reads **0.0**, not NULL.
 
 So ``cg_currency`` -- not the amount -- is the discriminator between "valued at zero" and
@@ -632,7 +632,7 @@ def _share_of_components(doc, components, customer, moved_qty, valued, basis_of)
 			(source, source_qty * fraction, source_qty * fraction * flt(rate))
 		)
 
-	share.value = flt(total, 2)
+	share.value = flt(total, 3)
 	return share
 
 
@@ -937,9 +937,9 @@ def quantity_basis(item_code, gross_qty, company):
 
 	Every numeric column on this doctype is ``NOT NULL DEFAULT 0``::
 
-	    cg_fine_gold_delta      decimal(21,6)  Null=NO  Default=0.000000
-	    cg_reference_qty_delta  decimal(21,6)  Null=NO  Default=0.000000
-	    cg_reference_purity     decimal(21,6)  Null=NO  Default=0.000000
+	    cg_fine_gold_delta      decimal(21,3)  Null=NO  Default=0.000
+	    cg_reference_qty_delta  decimal(21,3)  Null=NO  Default=0.000
+	    cg_reference_purity     decimal(21,3)  Null=NO  Default=0.000
 
 	and ``base_document.get_valid_dict()`` sends float-like values through ``flt()``, where
 	``flt(None)`` is ``0.0``. So a ``None`` here was stored as a zero indistinguishable from a
@@ -2283,7 +2283,7 @@ def settle_customer_gold_liability(doc, event_names):
 		return
 
 	precision = (
-		frappe.get_precision("Journal Entry Account", "debit_in_account_currency") or 2
+		frappe.get_precision("Journal Entry Account", "debit_in_account_currency") or 3
 	)
 
 	# Grouped by customer so each debit line carries its own party. One document, one JE --
