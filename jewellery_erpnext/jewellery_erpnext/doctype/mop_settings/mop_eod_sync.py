@@ -3254,13 +3254,26 @@ def _find_last_operation(mop_data_list):
 
 
 def _get_last_logs_per_item_batch(logs):
-	"""Return one log per (item_code, batch_no) — the latest balance snapshot."""
+	"""Return one log per (item_code, batch_no) — the latest balance snapshot.
+
+	"Latest" is the newest ``creation`` (``name`` breaks a tie), the same rule as
+	``mop_log.get_current_mop_balance_rows``, the operation's canonical balance. It is
+	not ``flow_index``: a Stock Entry log takes ``0`` whenever the operation's highest
+	index is not ``0`` (``create_mop_log_for_stock_transfer_to_mo``), so metal issued
+	after a Department IR receive (index 2) ranked BELOW the receive. EOD then moved the
+	receive's balance, credited the newer issue's own stock at the target, and marked a
+	pending transfer synced (MWO-KGJPL-RI05630-004-3-91.75-Y-01: 2.0 g left in Waxing WO).
+	"""
 	latest = {}
 	for log in logs:
 		key = (log.item_code, log.batch_no)
 		cur = latest.get(key)
-		cur_sort = (cur.flow_index, str(cur.get("creation") or "")) if cur else None
-		new_sort = (log.flow_index, str(log.get("creation") or ""))
+		cur_sort = (
+			(str(cur.get("creation") or ""), str(cur.get("name") or ""))
+			if cur
+			else None
+		)
+		new_sort = (str(log.get("creation") or ""), str(log.get("name") or ""))
 		if cur_sort is None or new_sort > cur_sort:
 			latest[key] = log
 	return list(latest.values())

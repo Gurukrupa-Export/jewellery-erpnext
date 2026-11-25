@@ -1041,6 +1041,81 @@ class TestGetLastLogsPerItemBatch(IntegrationTestCase):
 	def test_empty_input_returns_empty_list(self):
 		self.assertEqual(_get_last_logs_per_item_batch([]), [])
 
+	def test_newer_issue_with_reset_flow_index_wins(self):
+		# MOP-2611-GOYHNZ: the Department IR receive cloned the waxing balance at index 2,
+		# then a Material Transfer (WORK ORDER) issued 2.3 g more and was logged at index 0.
+		receive = _log(
+			name="0ejor102si",
+			flow_index=2,
+			creation="2026-11-24 18:10:56.891282",
+			qty_after_transaction_batch_based=2.0,
+		)
+		issue = _log(
+			name="2f0qvut4o1",
+			flow_index=0,
+			creation="2026-11-24 18:11:38.604751",
+			voucher_type="Stock Entry",
+			voucher_no="MAT-STE-74000",
+			qty_after_transaction_batch_based=4.3,
+		)
+		for logs in ([receive, issue], [issue, receive]):
+			result = _get_last_logs_per_item_batch(logs)
+			self.assertEqual(len(result), 1)
+			self.assertIs(result[0], issue)
+
+	def test_creation_tie_is_broken_by_name(self):
+		a = _log(name="aaa", creation="2026-11-24 18:11:38", flow_index=3)
+		b = _log(name="bbb", creation="2026-11-24 18:11:38", flow_index=0)
+		for logs in ([a, b], [b, a]):
+			self.assertIs(_get_last_logs_per_item_batch(logs)[0], b)
+
+	def test_incident_plans_the_waxing_leg_not_a_noop(self):
+		# End to end through the owned-leg planner: own SREs 2.0 @ Waxing WO and 2.3 @
+		# Model Making WO; the latest balance (4.3) needs the waxing 2.0 moved.
+		waxing, model, batch = "Waxing WO - KGJPL", "Model Making WO - KGJPL", "KG2F092"
+		logs = [
+			_log(
+				name="0ejor102si",
+				item_code="M-G-22KT-91.75-Y",
+				batch_no=batch,
+				flow_index=2,
+				creation="2026-11-24 18:10:56.891282",
+				qty_after_transaction_batch_based=2.0,
+				to_warehouse=model,
+			),
+			_log(
+				name="2f0qvut4o1",
+				item_code="M-G-22KT-91.75-Y",
+				batch_no=batch,
+				flow_index=0,
+				creation="2026-11-24 18:11:38.604751",
+				qty_after_transaction_batch_based=4.3,
+				to_warehouse=model,
+			),
+		]
+		live = {("M-G-22KT-91.75-Y", batch): {waxing: 2.0, model: 2.3}}
+		phys = {waxing: 2.0, model: 2.3}
+		noop_rows, short_rows = [], []
+		with patch(
+			f"{_MOD}._eod_physical_batch_qty",
+			side_effect=lambda item_code, batch_no, warehouse: phys.get(warehouse, 0.0),
+		), patch(f"{_MOD}._eod_batch_ownership", return_value={}):
+			rows, skipped = _build_eod_se_rows(
+				"MWO-KGJPL-RI05630-004-3-91.75-Y-01",
+				"MOP-2611-GOYHNZ",
+				_get_last_logs_per_item_batch(logs),
+				model,
+				{},
+				live,
+				noop_rows,
+				short_rows,
+			)
+		self.assertEqual((skipped, noop_rows, short_rows), ([], [], []))
+		self.assertEqual(
+			[(r["s_warehouse"], r["t_warehouse"], r["qty"]) for r in rows],
+			[(waxing, model, 2.0)],
+		)
+
 
 # ---------------------------------------------------------------------------
 # TestGetTWarehouseFromLogs (3 cases)
