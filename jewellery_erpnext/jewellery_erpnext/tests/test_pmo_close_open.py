@@ -2544,7 +2544,7 @@ class TestWorkflowPatch(_Base):
 		cls.wf = create_pmo_close_open_workflow
 
 	def test_every_reason_action_is_recognised_by_the_flow(self):
-		for state, action, next_state, _allowed, *_condition in self.wf.TRANSITIONS:
+		for state, action, next_state, *_condition in self.wf.TRANSITIONS:
 			if action not in close_open.REASON_ACTIONS:
 				continue
 			with self.subTest(state=state, action=action, next_state=next_state):
@@ -2566,16 +2566,12 @@ class TestWorkflowPatch(_Base):
 			"Submitted ": None,
 		}
 		for state, action in (("Hold", "Open"),):
-			rows = [
-				t
-				for t in self.wf.TRANSITIONS
-				if t[0] == state and t[1] == action and t[3] == self.wf.HOLD_TEAM
-			]
+			rows = [t for t in self.wf.TRANSITIONS if t[0] == state and t[1] == action]
 			for expected, snapshot in snapshots.items():
 				with self.subTest(state=state, snapshot=snapshot):
 					doc = frappe._dict(hold_snapshot=snapshot)
 					passing = [
-						t[2] for t in rows if frappe.safe_eval(t[4], None, {"doc": doc})
+						t[2] for t in rows if frappe.safe_eval(t[3], None, {"doc": doc})
 					]
 					self.assertEqual(passing, [expected.strip()])
 
@@ -2587,12 +2583,87 @@ class TestWorkflowPatch(_Base):
 		self.assertIn("Close Requested", states)
 
 	def test_close_requested_closes_holds_or_opens(self):
-		rows = {
-			(t[1], t[2], t[3]) for t in self.wf.TRANSITIONS if t[0] == "Close Requested"
-		}
-		self.assertIn(("Close", "Closed", self.wf.ORDER_DEPARTMENT), rows)
-		self.assertIn(("Hold", "Hold", self.wf.HOLD_TEAM), rows)
-		self.assertIn(("Open", "Submitted", self.wf.ORDER_DEPARTMENT), rows)
+		rows = {(t[1], t[2]) for t in self.wf.TRANSITIONS if t[0] == "Close Requested"}
+		self.assertEqual(
+			rows, {("Close", "Closed"), ("Hold", "Hold"), ("Open", "Submitted")}
+		)
+
+	def test_no_roles_are_defined_or_created(self):
+		"""Roles are set by hand on the Workflow form; the patch carries none."""
+		for t in self.wf.TRANSITIONS:
+			self.assertIn(len(t), (3, 4), t)
+		self.assertFalse(hasattr(self.wf, "ROLES"))
+
+	def test_configured_roles_are_kept_and_only_new_transitions_get_one(self):
+		existing = [
+			frappe._dict(
+				state="Submitted",
+				action="Hold",
+				next_state="Hold",
+				allowed="Hold Team",
+				allow_self_approval=1,
+			),
+			frappe._dict(
+				state="Submitted",
+				action="Hold",
+				next_state="Hold",
+				allowed="Production Head",
+				allow_self_approval=0,
+			),
+			# configured before the Open conditions existed
+			frappe._dict(
+				state="Hold", action="Open", next_state="Submitted", allowed="Hold Team"
+			),
+			# a transition the workflow no longer has
+			frappe._dict(
+				state="Submitted",
+				action="Request Close",
+				next_state="Close Requested",
+				allowed="Order Department",
+			),
+		]
+		rows = self.wf._transition_rows(existing)
+		by_key = {}
+		for row in rows:
+			by_key.setdefault(
+				(row["state"], row["action"], row["next_state"]), []
+			).append(row)
+		hold = by_key[("Submitted", "Hold", "Hold")]
+		self.assertEqual(
+			[(r["allowed"], r["allow_self_approval"]) for r in hold],
+			[("Hold Team", 1), ("Production Head", 0)],
+		)
+		(open_row,) = by_key[("Hold", "Open", "Submitted")]
+		self.assertEqual(open_row["allowed"], "Hold Team")
+		self.assertEqual(open_row["condition"], self.wf.NO_RESUME)
+		self.assertNotIn(("Submitted", "Request Close", "Close Requested"), by_key)
+		# new transitions: one starting row each
+		self.assertEqual(
+			[r["allowed"] for r in by_key[("Submitted", "Close", "Closed")]],
+			["System Manager"],
+		)
+		self.assertEqual(
+			[r["allowed"] for r in by_key[("Draft", "Submit", "Submitted")]], ["All"]
+		)
+		self.assertEqual(
+			[r["allowed"] for r in by_key[("Submitted", "Cancel", "Cancelled")]],
+			["All"],
+		)
+		self.assertEqual(len(by_key), len(self.wf.TRANSITIONS))
+
+	def test_configured_edit_rights_of_a_state_are_kept(self):
+		rows = self.wf._state_rows(
+			[
+				frappe._dict(state="Closed", allow_edit="Accounts Manager"),
+				frappe._dict(state="Hold Requested", allow_edit="All"),
+			]
+		)
+		allow_edit = {r["state"]: r["allow_edit"] for r in rows}
+		self.assertEqual(allow_edit["Closed"], "Accounts Manager")
+		self.assertEqual(allow_edit["Closed (Draft)"], "System Manager")
+		self.assertEqual(allow_edit["Draft"], "All")
+		self.assertNotIn("Hold Requested", allow_edit)
+		self.assertEqual([r["state"] for r in rows], [t[0] for t in self.wf.STATES])
 
 
 class TestOpenDropsTheCloseRequest(_Base):
