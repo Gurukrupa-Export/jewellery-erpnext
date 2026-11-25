@@ -30,6 +30,32 @@ import frappe
 DEFAULT_SYNC_LOG = "MOP-EOD-SYNC-2026-03606"
 
 
+def _edited_by_a_person(stock_entry):
+	"""True when anyone other than the user who created the EOD draft has saved it.
+
+	EOD saves its draft once, as the job's user, and never edits it again. A later save by a
+	different user leaves ``modified_by`` on the row, and Stock Entry tracks changes, so any
+	save leaves a Version owned by whoever made it (``(ref_doctype, docname)`` is indexed).
+	"""
+	row = frappe.db.get_value(
+		"Stock Entry", stock_entry, ["owner", "modified_by"], as_dict=True
+	)
+	if not row:
+		return False
+	if row.modified_by and row.modified_by != row.owner:
+		return True
+	return bool(
+		frappe.db.exists(
+			"Version",
+			{
+				"ref_doctype": "Stock Entry",
+				"docname": stock_entry,
+				"owner": ["!=", row.owner],
+			},
+		)
+	)
+
+
 def _classify(sync_log_name=None):
 	"""Return (retryable, skipped): ``{mwo: [draft_se, ...]}``.
 
@@ -48,6 +74,8 @@ def _classify(sync_log_name=None):
 	   relocation; re-running would build a second transfer. Manual reconciliation only.
 	3. **Still unsynced.** An MWO whose MOP Logs are already ``is_synced = 1`` has been
 	   accounted for; re-planning it would transfer the same balance again.
+	4. **Untouched.** A draft someone else saved after EOD created it (see
+	   :func:`_edited_by_a_person`) may be a fix in progress, so its MWO is skipped.
 	"""
 	filters = {"status": "Draft Created"}
 	if sync_log_name:
@@ -110,6 +138,17 @@ def _classify(sync_log_name=None):
 			)
 			continue
 		if not main_drafts:
+			continue
+		# (4) edited by a person -> EOD's own failure message tells users to open the draft,
+		# fix it and submit it, so someone may be mid-way through. Deleting their work and
+		# re-planning underneath them is not this script's call: report it instead.
+		edited = [se for se in main_drafts if _edited_by_a_person(se)]
+		if edited:
+			skipped[mwo] = edited
+			print(
+				f"[retry-stuck-eod] {mwo}: draft(s) {edited} were edited after EOD created "
+				"them. Skipped: confirm with whoever edited them before retrying."
+			)
 			continue
 		# (3) nothing left to sync means it was already accounted for.
 		if not frappe.db.exists(
