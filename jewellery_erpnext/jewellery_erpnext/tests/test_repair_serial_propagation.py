@@ -272,25 +272,71 @@ class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
 
 
 class TestUnpackSerialItemGuard(IntegrationTestCase):
-	def _assert_item(self, serial_item, mwo_item="MU00128-001"):
+	"""The serial must be the item its Serial No BOM makes; the MWO item is not compared."""
+
+	def _assert_item(self, serial_item, bom_item, mwo_item="MU00128-002"):
+		def gv(doctype, name, fieldname):
+			if doctype == "Serial No":
+				return serial_item
+			if doctype == "BOM":
+				return bom_item
+			return None
+
 		mock_db = MagicMock()
-		mock_db.get_value.return_value = serial_item
+		mock_db.get_value.side_effect = gv
 		fake = SimpleNamespace(serial_no="SN-1", item_code=mwo_item)
 		with patch(f"{MWO_MOD}.frappe.db", mock_db):
-			ManufacturingWorkOrder._assert_serial_matches_item(fake)
+			return ManufacturingWorkOrder._assert_serial_matches_bom(fake, "BOM-SN")
 
 	def test_matching_item_is_allowed(self):
-		self._assert_item("MU00128-001")
+		self.assertEqual(self._assert_item("MU00128-001", "MU00128-001"), "MU00128-001")
 
-	def test_unrelated_serial_is_refused(self):
-		"""Both fields are hand-settable, so a pasted serial can point at another
-		customer's piece -- unpacking it would consume their jewellery."""
+	def test_design_change_repair_is_allowed(self):
+		"""Attribute change: the MWO makes -002 but the serial and its BOM are -001."""
+		self.assertEqual(
+			self._assert_item("MU00128-001", "MU00128-001", mwo_item="MU00128-002"),
+			"MU00128-001",
+		)
+
+	def test_serial_bom_of_another_item_is_refused(self):
 		with self.assertRaises(frappe.ValidationError):
-			self._assert_item("XX99999-001")
+			self._assert_item("MU00128-001", "XX99999-001")
 
 	def test_missing_serial_is_refused(self):
 		with self.assertRaises(frappe.ValidationError):
-			self._assert_item(None)
+			self._assert_item(None, "MU00128-001")
+
+
+class TestUnpackSerialRepairOrderGuard(IntegrationTestCase):
+	"""With a Repair Order, its serial must be the work order's serial."""
+
+	def _check(self, pmo_link, order_serial, mwo_serial="SN-1"):
+		def gv(doctype, name, fieldname):
+			if doctype == "Parent Manufacturing Order":
+				return pmo_link
+			if doctype == "Repair Order":
+				return order_serial
+			return None
+
+		mock_db = MagicMock()
+		mock_db.get_value.side_effect = gv
+		fake = SimpleNamespace(manufacturing_order="PMO-1", serial_no=mwo_serial)
+		with patch(f"{MWO_MOD}.frappe.db", mock_db):
+			ManufacturingWorkOrder._assert_serial_matches_repair_order(fake)
+
+	def test_same_serial_is_allowed(self):
+		self._check(("Repair Order", "RO-1"), "SN-1")
+
+	def test_another_serial_is_refused(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._check(("Repair Order", "RO-1"), "SN-OTHER")
+
+	def test_repair_order_without_serial_is_not_checked(self):
+		self._check(("Repair Order", "RO-1"), None)
+
+	def test_no_repair_order_is_not_checked(self):
+		self._check(("", None), "SN-OTHER")
+		self._check(None, "SN-OTHER")
 
 
 class TestFindExistingUnpackEntry(IntegrationTestCase):
@@ -333,6 +379,7 @@ class TestUnpackIdempotency(IntegrationTestCase):
 			serial_no="SN-1",
 			item_code="MU00128-001",
 			docstatus=1,
+			is_finding_mwo=0,
 			find_existing_unpack_entry=lambda: "STE-0001",
 		)
 		mock_db = MagicMock()
@@ -344,6 +391,28 @@ class TestUnpackIdempotency(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				ManufacturingWorkOrder.create_unpack_serial_no_stock_entry(fake)
 		# Nothing may have been built: no Stock Entry, and no Customer Goods batches.
+		new_doc.assert_not_called()
+		mock_db.set_value.assert_not_called()
+
+	def test_finding_work_order_is_refused_before_anything_is_created(self):
+		fake = SimpleNamespace(
+			name="MWO-F-1",
+			manufacturing_order="PMO-1",
+			serial_no="SN-1",
+			item_code="F-CHAIN",
+			docstatus=1,
+			is_finding_mwo=1,
+			find_existing_unpack_entry=lambda: None,
+		)
+		mock_db = MagicMock()
+		mock_db.get_value.return_value = "Repair"
+		new_doc = MagicMock()
+		with patch(f"{MWO_MOD}.frappe.db", mock_db), patch(
+			f"{MWO_MOD}.frappe.new_doc", new_doc
+		):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				ManufacturingWorkOrder.create_unpack_serial_no_stock_entry(fake)
+		self.assertIn("finding work order", str(ctx.exception))
 		new_doc.assert_not_called()
 		mock_db.set_value.assert_not_called()
 
@@ -367,6 +436,7 @@ class TestUnpackIdempotency(IntegrationTestCase):
 			serial_no="SN-1",
 			item_code="MU00128-001",
 			docstatus=1,
+			is_finding_mwo=0,
 			find_existing_unpack_entry=lambda: None,
 		)
 		mock_db = MagicMock()
@@ -381,6 +451,7 @@ class TestUnpackIdempotency(IntegrationTestCase):
 			serial_no=None,
 			item_code="MU00128-001",
 			docstatus=1,
+			is_finding_mwo=0,
 			find_existing_unpack_entry=lambda: None,
 		)
 		mock_db = MagicMock()
@@ -396,7 +467,7 @@ class TestUnpackIdempotency(IntegrationTestCase):
 
 
 class TestUnpackEligibility(IntegrationTestCase):
-	def _eligibility(self, pmo_type, docstatus, serial_no, existing):
+	def _eligibility(self, pmo_type, docstatus, serial_no, existing, is_finding_mwo=0):
 		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
 			manufacturing_work_order as mwo_module,
 		)
@@ -405,6 +476,7 @@ class TestUnpackEligibility(IntegrationTestCase):
 			manufacturing_order="PMO-1",
 			docstatus=docstatus,
 			serial_no=serial_no,
+			is_finding_mwo=is_finding_mwo,
 			check_permission=lambda perm: None,
 			find_existing_unpack_entry=lambda: existing,
 		)
@@ -429,6 +501,13 @@ class TestUnpackEligibility(IntegrationTestCase):
 		self.assertFalse(
 			self._eligibility("Finding Manufacturing", 1, "SN-1", None)["eligible"]
 		)
+
+	def test_finding_work_order_of_a_repair_hides_it_and_says_why(self):
+		# It carries the repair's serial, but unpacking there books the whole piece onto
+		# the finding's operation.
+		result = self._eligibility("Repair", 1, "SN-1", None, is_finding_mwo=1)
+		self.assertFalse(result["eligible"])
+		self.assertIn("Finding work order", result["reason"])
 
 	def test_draft_repair_hides_it(self):
 		self.assertFalse(self._eligibility("Repair", 0, "SN-1", None)["eligible"])

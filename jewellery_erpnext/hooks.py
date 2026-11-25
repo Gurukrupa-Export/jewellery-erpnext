@@ -368,6 +368,9 @@ doc_events = {
 			"jewellery_erpnext.customer_subcontracting.customer_gold_return.prepare_return_entry",
 		],
 		"before_submit": [
+			# An EOD "Unresolved" draft is diagnostic evidence: submitting it moves stock
+			# without relocating reservations or syncing MOP Logs. First, before any lock.
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.refuse_unresolved_eod_draft_submit",
 			_EOD_LOCK_VALIDATOR,
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			# Supplier pure metal limit, part 1: lock the limited suppliers' rows (the canonical

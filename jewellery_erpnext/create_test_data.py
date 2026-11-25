@@ -3184,6 +3184,14 @@ def create_test_data():
 
 			_ensure_design_type_fields()
 
+			# Purchase Order Item.custom_serial_id_bom is patch-only for the same reason;
+			# make_subcontracting_order and make_quotation carry a repair's serial BOM on it.
+			from jewellery_erpnext.patches.add_purchase_order_item_serial_id_bom_field import (
+				execute as _ensure_purchase_order_item_serial_id_bom_field,
+			)
+
+			_ensure_purchase_order_item_serial_id_bom_field()
+
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
 			# Without them every Sales Order / Delivery Note / Sales Invoice save raises
