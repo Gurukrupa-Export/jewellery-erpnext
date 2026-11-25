@@ -22,12 +22,25 @@ short warehouse is topped back up. System flows are left alone: they carry their
 
 Compared per ``(warehouse, item)`` in stock UOM, the same unit
 ``tree_batch_reconciliation.report`` calls the warehouse gap. Ownership tiers are not split here.
+
+Both sides of the comparison must be current, not this transaction's REPEATABLE READ snapshot. The
+snapshot is taken early (loading the entry), so a tree Issue committed since then -- stock AND
+pending into the same warehouse -- would show in the locked Bin but not in a plain read of the
+claims, and its newly owed metal would look free. Every tree flow posts its stock under the
+warehouse's Bin before it writes ``pending_qty``, and the guard runs holding that Bin, so the
+committed claims cannot move under it; they only have to be read past the snapshot. Hence the
+claims are a locking read, ``NOWAIT`` because it comes after the Bin (lock_order: tree before Bin):
+it never waits, so it cannot close a cycle with a tree flow, and a row being written right now
+refuses the entry as busy instead.
 """
 
 import frappe
 from frappe import _
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
+	is_msl_warehouse,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
 	tree_material_balance as tree_balance,
 )
@@ -86,26 +99,55 @@ def _net_reductions(doc, cancelling):
 	return {key: -q for key, q in net.items() if q < -eps}
 
 
+def _msl_index_name():
+	"""Name of the index on ``Tree Number.msl_warehouse`` (``search_index``), or ``None`` before
+	``migrate`` has added it. Resolved by column: Frappe 16 names it ``<field>_index``."""
+	try:
+		index = frappe.db.get_column_index("tabTree Number", "msl_warehouse")
+	except Exception:
+		return None
+	return index.get("Key_name") if index else None
+
+
 def _open_tree_claims(pairs):
 	"""``{(warehouse, item_code): [(tree, pending)]}`` still owed by open trees at those pairs.
 
-	A plain read: taking the tree rows FOR UPDATE here, after the Bin locks, would invert the
-	tree -> Series -> Bin order every tree flow acquires in (``lock_order`` RULE A).
+	Only MSL warehouses are read. Which warehouses those are comes from the Warehouse (employee +
+	Raw Material, the rule a tree's first Issue resolves its ``msl_warehouse`` by), never from the
+	trees themselves: a snapshot showing no tree there yet would otherwise skip a warehouse a tree
+	has just started issuing into.
+
+	A ``LOCK IN SHARE MODE NOWAIT`` read over the ``msl_warehouse`` index range: it returns the
+	latest committed rows, never waits (it runs after the Bin locks; see the module docstring),
+	and raises ``QueryTimeoutError`` on a row another transaction is writing. FORCE INDEX and
+	STRAIGHT_JOIN keep the shared locks on these warehouses' trees and their material rows: left
+	to itself the optimizer drives from a full scan of ``tabTree Material Detail`` and would hold
+	every tree's rows on the site until commit. Without the index (before ``migrate``) it falls
+	back to the old plain read.
 	"""
+	warehouses = sorted({wh for wh, _item in pairs if is_msl_warehouse(wh)})
+	if not warehouses:
+		return {}
+
+	index = _msl_index_name()
+	force_index, lock = (
+		(f"FORCE INDEX (`{index}`)", "LOCK IN SHARE MODE NOWAIT") if index else ("", "")
+	)
 	rows = frappe.db.sql(
-		"""
+		f"""
 		SELECT tn.msl_warehouse, tmd.item_code, tn.name AS tree, tmd.pending_qty
-		FROM `tabTree Material Detail` tmd
-		JOIN `tabTree Number` tn ON tn.name = tmd.parent
+		FROM `tabTree Number` tn {force_index}
+		STRAIGHT_JOIN `tabTree Material Detail` tmd ON tmd.parent = tn.name
 		WHERE tn.status IN %(statuses)s
 		  AND tn.msl_warehouse IN %(warehouses)s
 		  AND tmd.item_code IN %(items)s
 		  AND tmd.pending_qty > %(eps)s
 		ORDER BY tn.name
+		{lock}
 		""",
 		{
 			"statuses": OPEN_STATUSES,
-			"warehouses": tuple({wh for wh, _item in pairs}),
+			"warehouses": tuple(warehouses),
 			"items": tuple({item for _wh, item in pairs}),
 			"eps": tree_balance.pending_eps(),
 		},
@@ -127,7 +169,20 @@ def _check(doc, cancelling):
 	if not reductions:
 		return
 
-	claims = _open_tree_claims(reductions)
+	try:
+		claims = _open_tree_claims(reductions)
+	except (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
+		frappe.throw(
+			_(
+				"A Tree Number at {0} is being updated by another user right now. Try again in a "
+				"moment."
+			).format(
+				", ".join(
+					frappe.bold(wh) for wh in sorted({wh for wh, _i in reductions})
+				)
+			),
+			title=_("Busy"),
+		)
 	if not claims:
 		return
 
