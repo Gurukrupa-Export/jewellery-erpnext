@@ -86,14 +86,10 @@ def before_validate(self, method):
 			if flt(row.base_amount) > 0:
 				row.base_amount = -1 * flt(row.base_amount)
 		return
-	if self.sales_type == "Hybrid":
-		has_real_items = any(
-			row.item_code != "Subcontracting Charges" for row in self.items
-		)
-		if has_real_items:
-			self.items = [
-				row for row in self.items if row.item_code != "Subcontracting Charges"
-			]
+	# A Hybrid invoice keeps the "Subcontracting Charges" row it was mapped with (from the
+	# Sales Order or the Delivery Note). on_submit() only builds the separate outwork
+	# invoice when that row is missing, so stripping it here used to split every Hybrid
+	# invoice in two.
 	if self.sales_type != "Certification":
 		sales_order = _linked_sales_order(self)
 		if sales_order and _so_gold_rate_changed(self.gold_rate, sales_order):
@@ -747,11 +743,50 @@ def set_gst_details(self):
 				"cost_center": t.cost_center,
 			},
 		)
+	# A Hybrid invoice keeps its "Subcontracting Charges" row next to the real rows. That row
+	# is the customer-supplied (job-work) part, so it takes the Outwork (5%) template while
+	# the real rows keep the Outright (3%) one chosen above.
+	outwork_template = outwork_rates = None
+	if self.sales_type == "Hybrid" and template_key == "Outright":
+		outwork_template = item_template_map["Outwork"].get(self.company)
+		if outwork_template:
+			outwork_rates = {"cgst": 0.0, "sgst": 0.0, "igst": 0.0}
+			for r in frappe.get_all(
+				"Item Tax Template Detail",
+				filters={"parent": outwork_template},
+				fields=["tax_type", "tax_rate"],
+			):
+				tax_type = r.tax_type or ""
+				# The 5% template also lists "... Refund" / RCM lines with negative rates.
+				if (
+					"Output" not in tax_type
+					or "RCM" in tax_type
+					or "Refund" in tax_type
+				):
+					continue
+				for key in ("CGST", "SGST", "IGST"):
+					if key in tax_type:
+						outwork_rates[key.lower()] = flt(r.tax_rate)
+
 	for item in self.items:
 		if not item.item_code:
 			continue
 
-		item.item_tax_template = item_tax_template
+		row_template, row_cgst, row_sgst, row_igst = (
+			item_tax_template,
+			cgst_rate,
+			sgst_rate,
+			igst_rate,
+		)
+		if outwork_rates and item.item_code == "Subcontracting Charges":
+			row_template = outwork_template
+			row_cgst, row_sgst, row_igst = (
+				outwork_rates["cgst"],
+				outwork_rates["sgst"],
+				outwork_rates["igst"],
+			)
+
+		item.item_tax_template = row_template
 		item.gst_treatment = "Taxable"
 		item.cgst_rate = 0.0
 		item.sgst_rate = 0.0
@@ -762,13 +797,13 @@ def set_gst_details(self):
 
 		taxable_value = self.total
 		if self.tax_category == "In-State":
-			item.cgst_rate = cgst_rate
-			item.sgst_rate = sgst_rate
-			item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
-			item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
+			item.cgst_rate = row_cgst
+			item.sgst_rate = row_sgst
+			item.cgst_amount = flt(taxable_value * row_cgst / 100, 2)
+			item.sgst_amount = flt(taxable_value * row_sgst / 100, 2)
 		else:
-			item.igst_rate = igst_rate
-			item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
+			item.igst_rate = row_igst
+			item.igst_amount = flt(taxable_value * row_igst / 100, 2)
 
 
 @frappe.whitelist()
@@ -1266,7 +1301,69 @@ def update_si_data(self):
 					3,
 				)
 				row.amount = row.qty * row.rate
+	_add_hybrid_outwork_einvoice_line(self, payment_terms_data, cache)
 	return payment_terms_data
+
+
+def _add_hybrid_outwork_einvoice_line(self, payment_terms_data, cache=None):
+	"""Hybrid: the labour e-invoice line for the "Subcontracting Charges" row.
+
+	update_bom_details() leaves the making / labour line out of a Hybrid invoice on purpose
+	(the job-work value lives on the "Subcontracting Charges" row), and on_submit() used to
+	add it on the separate outwork invoice. That invoice is no longer split off, so the
+	line is added here, to the same invoice that carries the row.
+	"""
+	if self.sales_type != "Hybrid" or self.get("item_same_as_above"):
+		return
+	outwork_rows = [
+		row for row in self.items if row.item_code == "Subcontracting Charges"
+	]
+	outwork_amount = sum(flt(row.amount) for row in outwork_rows)
+	if not outwork_amount:
+		return
+	# A return mirrors the invoice: same line, negative qty and amount.
+	sign = -1 if self.is_return else 1
+	outwork_amount = sign * abs(outwork_amount)
+	metal_touch = next(
+		(
+			_cached_get_value(cache, "BOM", row.bom, "metal_touch")
+			for row in self.items
+			if row.item_code != "Subcontracting Charges" and row.bom
+		),
+		None,
+	)
+	if not metal_touch:
+		return
+	custom_item, hsn_code, uom = _cached_get_value(
+		cache,
+		"E Invoice Item",
+		{"is_for_labour": 1, "metal_purity": metal_touch},
+		["name", "hsn_code", "uom"],
+	) or (None, None, None)
+	if not custom_item or any(
+		line.item_code == custom_item for line in self.get("invoice_item") or []
+	):
+		return
+	self.append(
+		"invoice_item",
+		{
+			"item_code": custom_item,
+			"item_name": custom_item,
+			"uom": uom or "Nos",
+			"gst_hsn_code": hsn_code,
+			"conversion_factor": 1,
+			"qty": sign,
+			"rate": abs(outwork_amount),
+			"base_rate": abs(outwork_amount),
+			"amount": outwork_amount,
+			"base_amount": outwork_amount,
+			"income_account": outwork_rows[0].income_account,
+			"cost_center": outwork_rows[0].cost_center,
+		},
+	)
+	payment_terms_data[custom_item] = payment_terms_data.get(custom_item, 0) + abs(
+		outwork_amount
+	)
 
 
 _EINVOICE_ITEM_FLAG_FIELDS = [
