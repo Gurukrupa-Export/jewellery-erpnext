@@ -1053,6 +1053,11 @@ def _plan_mwo_group(
 				)
 		return None
 
+	# What to move is the operation's balance, not the gathered logs' last snapshot: those
+	# are only the unsynced ones, and every Stock Entry writes its MOP Logs already synced.
+	# The target stays the gathered logs' (where the Department / Employee IR put the job).
+	balance_logs = _current_balance_logs(last_mop_name, last_logs)
+
 	# One query for all (item_code, batch_no) → warehouse for this MWO, plus this MWO's
 	# live reservation qty per (item, batch, warehouse) -- the ownership the row builder
 	# splits balances across and the only target share it may treat as already moved.
@@ -1062,7 +1067,7 @@ def _plan_mwo_group(
 	items, skipped_rows = _build_eod_se_rows(
 		mwo,
 		last_mop_name,
-		last_logs,
+		balance_logs,
 		t_warehouse,
 		sre_map,
 		active_map,
@@ -1080,7 +1085,7 @@ def _plan_mwo_group(
 		items, skipped_rows = _build_eod_se_rows(
 			mwo,
 			last_mop_name,
-			last_logs,
+			balance_logs,
 			t_warehouse,
 			sre_map,
 			active_map,
@@ -3254,29 +3259,48 @@ def _find_last_operation(mop_data_list):
 
 
 def _get_last_logs_per_item_batch(logs):
-	"""Return one log per (item_code, batch_no) — the latest balance snapshot.
-
-	"Latest" is the newest ``creation`` (``name`` breaks a tie), the same rule as
-	``mop_log.get_current_mop_balance_rows``, the operation's canonical balance. It is
-	not ``flow_index``: a Stock Entry log takes ``0`` whenever the operation's highest
-	index is not ``0`` (``create_mop_log_for_stock_transfer_to_mo``), so metal issued
-	after a Department IR receive (index 2) ranked BELOW the receive. EOD then moved the
-	receive's balance, credited the newer issue's own stock at the target, and marked a
-	pending transfer synced (MWO-KGJPL-RI05630-004-3-91.75-Y-01: 2.0 g left in Waxing WO).
-	"""
+	"""Return one log per (item_code, batch_no) — the latest balance snapshot."""
 	latest = {}
 	for log in logs:
 		key = (log.item_code, log.batch_no)
 		cur = latest.get(key)
-		cur_sort = (
-			(str(cur.get("creation") or ""), str(cur.get("name") or ""))
-			if cur
-			else None
-		)
-		new_sort = (str(log.get("creation") or ""), str(log.get("name") or ""))
+		cur_sort = (cur.flow_index, str(cur.get("creation") or "")) if cur else None
+		new_sort = (log.flow_index, str(log.get("creation") or ""))
 		if cur_sort is None or new_sort > cur_sort:
 			latest[key] = log
 	return list(latest.values())
+
+
+def _current_balance_logs(operation, gathered_last_logs):
+	"""The operation's balance per (item_code, batch_no): what EOD must have moved.
+
+	EOD gathers only UNSYNCED MOP Logs, but every Stock Entry writes its MOP Logs already
+	synced (``doc_events/stock_entry.sync_mop_log_for_stock_entry``: the Stock Entry moved
+	its own stock). A Material Transfer (WORK ORDER), a Material Receive (WORK ORDER) return
+	or a Customer Gold Settle swap posted after a Department / Employee IR is therefore
+	invisible in the gather, and its last snapshot is stale:
+
+	* MWO-KGJPL-RI05630-004-3-91.75-Y-01: the Department IR receive cloned 2.0 g onto Model
+	  Making; MAT-STE-74000 then issued 2.3 g more (balance 4.3, synced). EOD moved "2.0",
+	  found the MWO's own 2.3 g reserved at the target, called it done, and left the waxing
+	  2.0 g in Waxing WO.
+	* A return after the receive made EOD ask for metal already back in the store, holding
+	  the MWO as short every night; a Settle swap made it plan the returned customer batch
+	  and never move the Regular Stock batch that replaced it.
+
+	The canonical balance (``mop_log.get_current_mop_balance_rows``, the MOP balance view's
+	reader) includes those rows; ``_plan_owned_batch_legs`` then credits only what this MWO
+	already holds at the target and moves the rest. Falls back to the gathered snapshot when
+	the operation has no readable balance.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_current_mop_balance_rows,
+	)
+
+	rows = get_current_mop_balance_rows(
+		operation, include_fields=list(_MOP_LOG_GATHER_FIELDS)
+	)
+	return rows or gathered_last_logs
 
 
 def _get_t_warehouse_from_logs(logs):

@@ -60,6 +60,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_mop_manufacturer_label,
 	_mwo_realized_by_artifact,
 	_pick_shortfall_warehouse,
+	_current_balance_logs,
 	_plan_mwo_group,
 	_plan_owned_batch_legs,
 	_preload_active_sre_warehouse_map,
@@ -1040,81 +1041,6 @@ class TestGetLastLogsPerItemBatch(IntegrationTestCase):
 
 	def test_empty_input_returns_empty_list(self):
 		self.assertEqual(_get_last_logs_per_item_batch([]), [])
-
-	def test_newer_issue_with_reset_flow_index_wins(self):
-		# MOP-2611-GOYHNZ: the Department IR receive cloned the waxing balance at index 2,
-		# then a Material Transfer (WORK ORDER) issued 2.3 g more and was logged at index 0.
-		receive = _log(
-			name="0ejor102si",
-			flow_index=2,
-			creation="2026-11-24 18:10:56.891282",
-			qty_after_transaction_batch_based=2.0,
-		)
-		issue = _log(
-			name="2f0qvut4o1",
-			flow_index=0,
-			creation="2026-11-24 18:11:38.604751",
-			voucher_type="Stock Entry",
-			voucher_no="MAT-STE-74000",
-			qty_after_transaction_batch_based=4.3,
-		)
-		for logs in ([receive, issue], [issue, receive]):
-			result = _get_last_logs_per_item_batch(logs)
-			self.assertEqual(len(result), 1)
-			self.assertIs(result[0], issue)
-
-	def test_creation_tie_is_broken_by_name(self):
-		a = _log(name="aaa", creation="2026-11-24 18:11:38", flow_index=3)
-		b = _log(name="bbb", creation="2026-11-24 18:11:38", flow_index=0)
-		for logs in ([a, b], [b, a]):
-			self.assertIs(_get_last_logs_per_item_batch(logs)[0], b)
-
-	def test_incident_plans_the_waxing_leg_not_a_noop(self):
-		# End to end through the owned-leg planner: own SREs 2.0 @ Waxing WO and 2.3 @
-		# Model Making WO; the latest balance (4.3) needs the waxing 2.0 moved.
-		waxing, model, batch = "Waxing WO - KGJPL", "Model Making WO - KGJPL", "KG2F092"
-		logs = [
-			_log(
-				name="0ejor102si",
-				item_code="M-G-22KT-91.75-Y",
-				batch_no=batch,
-				flow_index=2,
-				creation="2026-11-24 18:10:56.891282",
-				qty_after_transaction_batch_based=2.0,
-				to_warehouse=model,
-			),
-			_log(
-				name="2f0qvut4o1",
-				item_code="M-G-22KT-91.75-Y",
-				batch_no=batch,
-				flow_index=0,
-				creation="2026-11-24 18:11:38.604751",
-				qty_after_transaction_batch_based=4.3,
-				to_warehouse=model,
-			),
-		]
-		live = {("M-G-22KT-91.75-Y", batch): {waxing: 2.0, model: 2.3}}
-		phys = {waxing: 2.0, model: 2.3}
-		noop_rows, short_rows = [], []
-		with patch(
-			f"{_MOD}._eod_physical_batch_qty",
-			side_effect=lambda item_code, batch_no, warehouse: phys.get(warehouse, 0.0),
-		), patch(f"{_MOD}._eod_batch_ownership", return_value={}):
-			rows, skipped = _build_eod_se_rows(
-				"MWO-KGJPL-RI05630-004-3-91.75-Y-01",
-				"MOP-2611-GOYHNZ",
-				_get_last_logs_per_item_batch(logs),
-				model,
-				{},
-				live,
-				noop_rows,
-				short_rows,
-			)
-		self.assertEqual((skipped, noop_rows, short_rows), ([], [], []))
-		self.assertEqual(
-			[(r["s_warehouse"], r["t_warehouse"], r["qty"]) for r in rows],
-			[(waxing, model, 2.0)],
-		)
 
 
 # ---------------------------------------------------------------------------
@@ -3785,6 +3711,213 @@ class TestCollectMopNames(IntegrationTestCase):
 	def test_entries_without_name_skipped(self):
 		self.assertEqual(
 			_collect_mop_names([{"mop_name": None}, {"mop_name": "MOP-A"}]), "MOP-A"
+		)
+
+
+# ---------------------------------------------------------------------------
+# TestEodPlansFromTheOperationBalance (Stock Entry logs are written synced)
+# ---------------------------------------------------------------------------
+
+_BALANCE_READER = "jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.get_current_mop_balance_rows"
+
+
+class TestEodPlansFromTheOperationBalance(IntegrationTestCase):
+	"""EOD gathers unsynced MOP Logs; Stock Entries write theirs synced. The transfer is
+	sized from the operation's balance, the target from the gathered IR logs."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_canonical_rows_are_used_when_present(self):
+		gathered = [_log(qty_after_transaction_batch_based=2.0)]
+		canonical = [_log(qty_after_transaction_batch_based=4.3)]
+		with patch(_BALANCE_READER, return_value=canonical) as reader:
+			self.assertIs(_current_balance_logs("MOP-1", gathered), canonical)
+		reader.assert_called_once()
+		self.assertEqual(reader.call_args.args, ("MOP-1",))
+		self.assertIn(
+			"qty_after_transaction_batch_based",
+			reader.call_args.kwargs["include_fields"],
+		)
+
+	def test_gathered_snapshot_is_the_fallback(self):
+		gathered = [_log(qty_after_transaction_batch_based=2.0)]
+		with patch(_BALANCE_READER, return_value=[]):
+			self.assertIs(_current_balance_logs("MOP-1", gathered), gathered)
+
+	def _plan(self, gathered, canonical, live, phys, mop="MOP-2611-GOYHNZ"):
+		mop_data_list = [{"mop_name": mop, "mop_doc": _mop_doc(), "logs": gathered}]
+		failures, stats = (
+			[],
+			{"processed_mwos": 0, "failed_mwos": 0, "submitted_ses": []},
+		)
+		with patch(_BALANCE_READER, return_value=canonical), patch(
+			f"{_MOD}._mwo_realized_by_artifact", return_value=None
+		), patch(f"{_MOD}._open_non_pointer_operations", return_value=(mop, [])), patch(
+			f"{_MOD}._preload_sre_warehouse_map", return_value={}
+		), patch(f"{_MOD}._preload_active_sre_warehouse_map", return_value=live), patch(
+			f"{_MOD}._eod_physical_batch_qty",
+			side_effect=lambda item_code, batch_no, warehouse: phys.get(
+				(batch_no, warehouse), 0.0
+			),
+		), patch(f"{_MOD}._eod_batch_ownership", return_value={}), patch(
+			f"{_MOD}._check_eod_source_batch_stock", return_value={}
+		), patch(f"{_MOD}._validate_eod_items_for_mwo_reservation"), patch(
+			f"{_MOD}._mark_all_mwo_mop_logs_synced"
+		) as mark, patch(f"{_MOD}._stamp_last_eod_sync"):
+			result = _plan_mwo_group(
+				("KG GK", "MWO-1"), mop_data_list, failures, stats, sync_log_name=None
+			)
+		return result, failures, mark
+
+	# MWO-KGJPL-RI05630-004-3-91.75-Y-01 (MOP-EOD-SYNC-2026-00133).
+	_GOLD, _B = "M-G-22KT-91.75-Y", "KG2F092-MGL229175Y0-701DJ"
+	_WAX, _MM = "Waxing WO - KGJPL", "Model Making WO - KGJPL"
+
+	def _incident_gathered(self):
+		return [
+			_log(
+				name="fehl6nn28k",
+				item_code=self._GOLD,
+				batch_no=self._B,
+				flow_index=1,
+				creation="2026-11-24 18:10:50",
+				qty_after_transaction_batch_based=2.0,
+				to_warehouse="Model Making Transit - KGJPL",
+			),
+			_log(
+				name="0ejor102si",
+				item_code=self._GOLD,
+				batch_no=self._B,
+				flow_index=2,
+				creation="2026-11-24 18:10:56",
+				qty_after_transaction_batch_based=2.0,
+				to_warehouse=self._MM,
+			),
+		]
+
+	def _incident_world(self):
+		live = {(self._GOLD, self._B): {self._WAX: 2.0, self._MM: 2.3}}
+		phys = {(self._B, self._WAX): 2.0, (self._B, self._MM): 2.3}
+		return live, phys
+
+	def test_metal_issued_after_the_receive_moves_the_previous_departments_gold(self):
+		# MAT-STE-74000 (Material Transfer (WORK ORDER), synced) raised the balance to 4.3.
+		canonical = [
+			_log(
+				name="2f0qvut4o1",
+				item_code=self._GOLD,
+				batch_no=self._B,
+				flow_index=0,
+				creation="2026-11-24 18:11:38",
+				voucher_type="Stock Entry",
+				voucher_no="MAT-STE-74000",
+				qty_after_transaction_batch_based=4.3,
+				to_warehouse=self._MM,
+			)
+		]
+		result, failures, mark = self._plan(
+			self._incident_gathered(), canonical, *self._incident_world()
+		)
+		self.assertEqual(failures, [])
+		self.assertEqual(result["kind"], "resolvable")
+		self.assertEqual(
+			[(r["s_warehouse"], r["t_warehouse"], r["qty"]) for r in result["items"]],
+			[(self._WAX, self._MM, 2.0)],
+		)
+		mark.assert_not_called()
+
+	def test_control_the_gathered_snapshot_alone_is_the_false_noop(self):
+		# What kggk_uat did: the gathered 2.0 is "covered" by the MWO's own 2.3 at the target.
+		result, failures, mark = self._plan(
+			self._incident_gathered(), [], *self._incident_world()
+		)
+		self.assertIsNone(result)
+		mark.assert_called_once()
+
+	def test_a_return_after_the_receive_is_not_asked_for_again(self):
+		# MWO-KGJPL-NE00655-002-4-91.75-Y-03: Employee IR receive cloned 5.123, then
+		# MAT-STE-72475 returned 1.0 g to Model Making RM (synced) -> balance 4.123.
+		b, assembly = "GJCU0009-2F10-M-G-22KT-91.75-Y-31-A", "Assembly WIP WH 9 - KGJPL"
+		gathered = [
+			_log(
+				item_code=self._GOLD,
+				batch_no=b,
+				qty_after_transaction_batch_based=5.123,
+				voucher_type="Employee IR",
+				to_warehouse=self._MM,
+			)
+		]
+		canonical = [
+			_log(
+				item_code=self._GOLD,
+				batch_no=b,
+				qty_after_transaction_batch_based=4.123,
+				voucher_type="Stock Entry",
+				to_warehouse="Model Making RM - KGJPL",
+			)
+		]
+		live = {(self._GOLD, b): {assembly: 4.123}}
+		phys = {(b, assembly): 4.123}
+		result, failures, _mark = self._plan(gathered, canonical, live, phys)
+		self.assertEqual(failures, [])
+		self.assertEqual(
+			[(r["s_warehouse"], r["t_warehouse"], r["qty"]) for r in result["items"]],
+			[(assembly, self._MM, 4.123)],
+		)
+		# Control: the gathered 5.123 cannot be covered by the 4.123 held -> held as short.
+		result, failures, _mark = self._plan(gathered, [], live, phys)
+		self.assertEqual(result["kind"], "failed")
+
+	def test_a_settle_swap_moves_the_replacing_batch_not_the_returned_one(self):
+		# MWO-KGJPL-RI07240-001-2-91.75-Y-01: the customer's -02-A / -03-A went back to the
+		# store (MAT-STE-71825) and Regular Stock 50H1H replaced them (MAT-STE-71826).
+		a, c, reg = (
+			"GJCU0009-2F10-M-G-22KT-91.75-Y-02-A",
+			"GJCU0009-2F10-M-G-22KT-91.75-Y-03-A",
+			"KG2F081-MGL229175Y0-50H1H",
+		)
+		tagging = "Tagging WO - KGJPL"
+		gathered = [
+			_log(
+				item_code=self._GOLD,
+				batch_no=a,
+				qty_after_transaction_batch_based=3.422,
+				to_warehouse=tagging,
+			),
+			_log(
+				item_code=self._GOLD,
+				batch_no=c,
+				qty_after_transaction_batch_based=1.538,
+				to_warehouse=tagging,
+			),
+		]
+		canonical = [
+			_log(
+				item_code=self._GOLD, batch_no=a, qty_after_transaction_batch_based=0.0
+			),
+			_log(
+				item_code=self._GOLD, batch_no=c, qty_after_transaction_batch_based=0.0
+			),
+			_log(
+				item_code=self._GOLD,
+				batch_no=reg,
+				qty_after_transaction_batch_based=4.96,
+			),
+		]
+		live = {(self._GOLD, reg): {self._WAX: 4.96}}
+		phys = {(reg, self._WAX): 4.96, (a, self._WAX): 50.0, (c, self._WAX): 50.0}
+		result, failures, _mark = self._plan(
+			gathered, canonical, live, phys, mop="MOP-2610-3AP7T1"
+		)
+		self.assertEqual(failures, [])
+		self.assertEqual(
+			[
+				(r["batch_no"], r["s_warehouse"], r["t_warehouse"], r["qty"])
+				for r in result["items"]
+			],
+			[(reg, self._WAX, tagging, 4.96)],
 		)
 
 
