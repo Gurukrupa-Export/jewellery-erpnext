@@ -67,6 +67,22 @@ frappe.ui.form.on("Manufacturing Work Order", {
 					}
 				});
 		}
+		if (frm.doc.docstatus == 1 && frm.doc.status != "Closed") {
+			frm.add_custom_button(__("Finish"), function () {
+				frappe.confirm(__("Mark open Manufacturing Operation(s) as Finished?"), () => {
+					frm.call({
+						doc: frm.doc,
+						method: "finish_operations",
+						freeze: true,
+						freeze_message: __("Finishing...."),
+						callback: (r) => {
+							if (!r.exc) frm.reload_doc();
+						},
+					});
+				});
+			});
+		}
+		
 		if (frm.doc.docstatus == 1 && frm.doc.is_finding_mwo == 1) {
 			if (!frm.doc.final_transfer_entry) {
 				frm.add_custom_button(__("Finish PMO"), function () {
@@ -79,6 +95,7 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				});
 			}
 		}
+		
 		// if (frm.doc.docstatus == 0 && frm.doc.department && frm.doc.department.startsWith("Serial Number")) {
 		// 	frm.add_custom_button(__("Create Repack"), function () {
 		// 		frappe.call({

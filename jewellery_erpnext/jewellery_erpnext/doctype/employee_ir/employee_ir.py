@@ -1405,6 +1405,7 @@ def _bulk_no_wastage_batches(batch_nos):
 
 
 def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
+
 	new_mop_doc = frappe.copy_doc(
 		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
 	)
@@ -1418,9 +1419,29 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 	new_mop_doc.employee = None
 	new_mop_doc.previous_mop = docname
 	new_mop_doc.operation = None
+	new_mop_doc.department_source_table = []
+	new_mop_doc.department_target_table = []
+	new_mop_doc.employee_source_table = []
+	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
-	new_mop_doc.save()
+	new_mop_doc.main_slip_no = None
+	if frappe.db.get_value("Manufacturing Operation", docname, "operation") == "CAD Updation":
+		new_mop_doc.manufacturing_plan_kggk = frappe.db.get_value(
+			"Manufacturing Work Order", new_mop_doc.manufacturing_work_order, "manufacturing_plan"
+		)
+		new_mop_doc.manufacturing_plan = None
+		new_mop_doc.flags.ignore_links = True
+		new_mop_doc.insert()
+		new_mop_doc.db_set("manufacturing_plan", None)
+	elif new_mop_doc.department == "Computer Aided Manufacturing - GEPL":
+		# Manufacturing Plan link may not exist on this site; skip link validation for CAM.
+		new_mop_doc.flags.ignore_links = True
+		new_mop_doc.insert()
+	else:
+		new_mop_doc.insert()
+	
 	return new_mop_doc
+
 
 
 @frappe.whitelist()
