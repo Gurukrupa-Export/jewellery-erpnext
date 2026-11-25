@@ -990,6 +990,47 @@ class TestSetGstDetails(_SIBase):
 				self.assertEqual(si.taxes_and_charges, "TAX_TMPL")
 				self.assertEqual(si.items[0].item_tax_template, expected_template)
 
+	def test_hybrid_rows_get_gst_on_their_own_amount(self):
+		# Two rows at different rates: each row's GST amount is on its own value, not on
+		# the invoice total (which would give 3,000 x 1.5% and 3,000 x 2.5% = 45 / 75).
+		si = DummySalesInvoice(
+			sales_type="Hybrid",
+			company=KG_COMPANY,
+			total=3000.0,
+			items=[
+				StubItemRow(item_code="Gold Ring", amount=2800.0),
+				StubItemRow(item_code="Subcontracting Charges", amount=200.0),
+			],
+		)
+		rates = {
+			"GST 3% - KGJPL": [
+				frappe._dict(tax_type="Output Tax CGST - KGJPL", tax_rate=1.5),
+				frappe._dict(tax_type="Output Tax SGST - KGJPL", tax_rate=1.5),
+			],
+			"GST 5% - KGJPL": [
+				frappe._dict(tax_type="Output Tax CGST - KGJPL", tax_rate=2.5),
+				frappe._dict(tax_type="Output Tax SGST - KGJPL", tax_rate=2.5),
+				frappe._dict(tax_type="Output Tax CGST Refund - KGJPL", tax_rate=-2.5),
+			],
+		}
+
+		def get_all(doctype, filters=None, **kwargs):
+			if doctype == "Item Tax Template Detail":
+				return rates[filters["parent"]]
+			return []
+
+		with (
+			patch(f"{SI}.frappe.db.get_value", side_effect=["GJ", "GJ", "STC-TMPL"]),
+			patch(f"{SI}.frappe.get_all", side_effect=get_all),
+		):
+			si_events.set_gst_details(si)
+		ring, charge = si.items
+		self.assertEqual(ring.item_tax_template, "GST 3% - KGJPL")
+		self.assertEqual((ring.cgst_rate, ring.cgst_amount), (1.5, 42.0))
+		self.assertEqual(charge.item_tax_template, "GST 5% - KGJPL")
+		# The negative "Refund" line must not overwrite the 2.5% rate.
+		self.assertEqual((charge.cgst_rate, charge.cgst_amount), (2.5, 5.0))
+
 	def test_out_state_populates_igst_rates(self):
 		si = DummySalesInvoice(
 			sales_type="Outright",

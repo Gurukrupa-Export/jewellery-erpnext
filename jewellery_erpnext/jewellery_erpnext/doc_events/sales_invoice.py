@@ -487,13 +487,15 @@ def on_submit(self, method):
 			{"status": "Active", "warehouse": "Product Allocation FG - KGJPL"},
 		)
 		return
-	if self.sales_type == "Hybrid":
+	# An invoice that already carries its "Subcontracting Charges" row needs no separate
+	# outwork invoice, but must still reach the hallmarking / certification block below.
+	if self.sales_type == "Hybrid" and not any(
+		row.item_code == "Subcontracting Charges" for row in self.items
+	):
 		# _template = SALES_TYPE_ITEM_TAX_TEMPLATE["Outwork"].get(self.company)
 
 		total_making_charge = 0
 		for row in self.items:
-			if row.item_code == "Subcontracting Charges":
-				return
 			# frappe.msgprint(f"Row: {row.idx}, Item: {row.item_code}, BOM: {row.bom}")
 			bom_doc = frappe.get_doc("BOM", row.bom)
 			total_making_charge += bom_doc.making_charge
@@ -795,7 +797,13 @@ def set_gst_details(self):
 		item.sgst_amount = 0.0
 		item.igst_amount = 0.0
 
-		taxable_value = self.total
+		# A Hybrid invoice has several rows at different rates, so each row's GST amount
+		# is taken on that row's own value, not on the invoice total.
+		taxable_value = (
+			flt(item.get("net_amount")) or flt(item.get("amount"))
+			if self.sales_type == "Hybrid"
+			else self.total
+		)
 		if self.tax_category == "In-State":
 			item.cgst_rate = row_cgst
 			item.sgst_rate = row_sgst
