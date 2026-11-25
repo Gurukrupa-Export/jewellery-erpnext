@@ -217,6 +217,52 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 		new_se.submit.assert_called_once()
 		mock_lookup.assert_called_once_with("MR-001")
 
+	@patch(f"{_MR}._entry_belongs_to", return_value=True)
+	@patch(f"{_MR}.mri_warehouse_map", return_value={})
+	@patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None)
+	@patch(f"{_MR}.frappe.copy_doc")
+	@patch(f"{_MR}.frappe.get_doc")
+	def test_copy_carries_the_requests_manufacturer(
+		self, mock_get_doc, mock_copy, _mock_lookup, _mock_map, _mock_owned
+	):
+		"""gepl-prod 4gco4fe5bn: the reserve entry has no manufacturer, so the background
+		copy hit stock_entry's pure-gold lookup with "(not set)" and threw."""
+		values = {"custom_manufacturer": "Shubh", "manufacturing_order": "PMO-1"}
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = MagicMock(side_effect=values.get)
+		mr.items = []
+		reserve = MagicMock()
+		reserve.get = MagicMock(return_value=None)
+		new_se = MagicMock()
+		new_se.manufacturer = None
+		new_se.items = []
+		mock_get_doc.side_effect = [mr, reserve]
+		mock_copy.return_value = new_se
+
+		with patch(f"{_MR}.frappe.db.get_value") as pmo_lookup:
+			mr_mod._create_transfer_se("MR-001")
+
+		self.assertEqual(new_se.manufacturer, "Shubh")
+		pmo_lookup.assert_not_called()
+
+	def test_manufacturer_falls_back_to_reserve_entry_then_pmo(self):
+		reserve = MagicMock()
+		reserve.get = MagicMock(side_effect={"manufacturer": "Amrut"}.get)
+		mr = MagicMock()
+		mr.get = MagicMock(side_effect={"manufacturing_order": "PMO-1"}.get)
+		self.assertEqual(mr_mod._transfer_se_manufacturer(mr, reserve), "Amrut")
+
+		reserve.get = MagicMock(return_value=None)
+		with patch(f"{_MR}.frappe.db.get_value", return_value="Siddhi") as pmo_lookup:
+			self.assertEqual(mr_mod._transfer_se_manufacturer(mr, reserve), "Siddhi")
+		pmo_lookup.assert_called_once_with(
+			"Parent Manufacturing Order", "PMO-1", "manufacturer"
+		)
+
+		mr.get = MagicMock(return_value=None)
+		self.assertIsNone(mr_mod._transfer_se_manufacturer(mr, reserve))
+
 	def tearDown(self):
 		return super().tearDown()
 

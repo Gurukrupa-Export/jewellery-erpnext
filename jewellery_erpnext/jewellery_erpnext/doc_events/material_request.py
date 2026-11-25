@@ -7,9 +7,6 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.utils import flt, nowdate, strip_html_tags
 from frappe.utils.background_jobs import is_job_enqueued
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement import (
-	check_material_request_transfer,
-)
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
 	get_submitted_from_reserve_se,
 	make_department_mop_stock_entry,
@@ -25,6 +22,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.be
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.prefetch import (
 	mri_warehouse_map,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement import (
+	check_material_request_transfer,
 )
 
 
@@ -895,6 +895,17 @@ def materialize_transfer_se(mr_name):
 		raise
 
 
+def _transfer_se_manufacturer(mr, se_doc):
+	"""The manufacturer the 'Material Transfer From Reserve' entry is booked under: the
+	request's own, else the reserve entry's, else its Parent Manufacturing Order's."""
+	manufacturer = mr.get("custom_manufacturer") or se_doc.get("manufacturer")
+	if not manufacturer and mr.get("manufacturing_order"):
+		manufacturer = frappe.db.get_value(
+			"Parent Manufacturing Order", mr.get("manufacturing_order"), "manufacturer"
+		)
+	return manufacturer
+
+
 def _create_transfer_se(mr_name):
 	"""Core copy + submit, factored out so it can be retried as one idempotent unit."""
 	mr = frappe.get_doc("Material Request", mr_name)
@@ -929,6 +940,16 @@ def _create_transfer_se(mr_name):
 	# 0 come back; the flag holds it regardless of type.
 	new_se_doc.add_to_transit = 0
 	new_se_doc.flags.no_transit = True
+
+	# The pure-gold lookup in stock_entry.validate keys on the entry's manufacturer. A reserve
+	# entry carries none, and this type is neither "Material Transfer" nor linked to a
+	# manufacturing order, so it falls back to a session default that the background worker
+	# does not have -- and a company with only per-manufacturer Manufacturing Settings then
+	# throws "Set Pure Gold Item ... manufacturer (not set)" (gepl-prod 4gco4fe5bn). The
+	# request knows its manufacturer; hand it over.
+	manufacturer = _transfer_se_manufacturer(mr, se_doc)
+	if manufacturer:
+		new_se_doc.manufacturer = manufacturer
 
 	mr_item_to_alternative = {}
 	for item_row in mr.items:
