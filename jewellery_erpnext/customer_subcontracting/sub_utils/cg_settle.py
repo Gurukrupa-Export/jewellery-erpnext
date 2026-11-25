@@ -55,6 +55,7 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
 	CUSTOMER_GOODS_FLAG_LABEL,
 	can_be_customer_goods,
@@ -71,7 +72,6 @@ from jewellery_erpnext.customer_subcontracting.sub_utils.snc import (
 	_submit_consuming_stock_entry,
 	find_owner_rm_warehouse,
 )
-from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 
 CUSTOMER_GOODS = "Customer Goods"
 REGULAR_STOCK = "Regular Stock"

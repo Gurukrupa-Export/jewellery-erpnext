@@ -27,6 +27,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_datetime, getdate
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_trace import (
 	DISPOSITION_DELIVERED,
 	DISPOSITION_LOSS,
@@ -251,11 +252,11 @@ def _settlement_rows(receipts, replay, filters, show_money, all_receipts=None):
 				_(
 					"{0} sits in finished pieces with no batch -- their delivery will not "
 					"release this receipt's liability (R-2)"
-				).format(_q(serial_only))
+				).format(fmt3(serial_only))
 			)
 		if abs(replay.balance(key)) > QTY_TOLERANCE:
 			flags.append(
-				_("trace does not balance by {0}").format(_q(replay.balance(key)))
+				_("trace does not balance by {0}").format(fmt3(replay.balance(key)))
 			)
 		if show_money:
 			m = money.get(receipt.name) or frappe._dict()
@@ -371,9 +372,9 @@ def _rate_outliers(receipts):
 			flagged[receipt.key] = _(
 				"booked {0}/g is {1}x the reference {2} ({3})"
 			).format(
-				flt(per_gram, 3),
-				flt(ratio, 3),
-				flt(reference.rate, 3),
+				fmt3(per_gram),
+				fmt3(ratio),
+				fmt3(reference.rate),
 				reference.source,
 			)
 	return flagged
@@ -699,7 +700,8 @@ def _settlement_summary(rows, show_money):
 		summary.append(
 			{
 				"label": _("Pending liability"),
-				"value": flt(sum(flt(r.get("pending_amount")) for r in rows), 2),
+				# At the rows' own 3 decimals, so the summary is their sum to the last digit.
+				"value": flt(sum(flt(r.get("pending_amount")) for r in rows), 3),
 				"datatype": "Currency",
 			}
 		)
@@ -986,7 +988,7 @@ def _fg_valuation(filters, show_money):
 				row["note"] = _(
 					"Running rate is the warehouse average after this entry ({0} units held), "
 					"not this row's rate."
-				).format(_q(ledger.qty_after_transaction))
+				).format(fmt3(ledger.qty_after_transaction))
 		rows.append(row)
 
 	additional = sum(flt(c.amount) for c in entry.get("additional_costs") or [])

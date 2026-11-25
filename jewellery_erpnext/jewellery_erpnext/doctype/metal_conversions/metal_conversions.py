@@ -11,6 +11,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt, nowtime
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
 	get_company_component_qty,
 )
@@ -58,7 +59,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 	update_batch_details,
 	update_source_betch,
 )
-from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 
 #: The Stock Entry Type every conversion voucher is booked under.
 CONVERSION_SE_TYPE = "Repack-Metal Conversion"
@@ -279,10 +279,10 @@ class MetalConversions(Document):
 					"Target Qty {0} is not what {1} of {2} converts to at the configured purities ({3}). "
 					"Select the Target Item again to recalculate."
 				).format(
-					flt(self.target_qty, precision),
-					flt(self.source_qty, precision),
+					fmt3(self.target_qty),
+					fmt3(self.source_qty),
 					self.source_item,
-					flt(expected, precision),
+					fmt3(expected),
 				)
 			)
 
@@ -924,7 +924,7 @@ def _check_target_total(target_qty, booked_total, precision):
 			_(
 				"Target Qty {0} does not match the {1} that the source quantity and the stored alloy "
 				"quantity make. Recalculate the conversion and try again."
-			).format(flt(target_qty, precision), flt(booked_total, precision))
+			).format(fmt3(target_qty), fmt3(booked_total))
 		)
 
 
@@ -939,7 +939,7 @@ def _check_alloy_covered(alloy_item, rows, needs, precision):
 			_(
 				"Alloy {0}: the allocated batches cover {1} but this conversion needs {2}. "
 				"Please re-save the document."
-			).format(alloy_item, handed, needed)
+			).format(alloy_item, fmt3(handed), fmt3(needed))
 		)
 
 
@@ -1382,7 +1382,7 @@ def make_multiple_customer_metal_stock_entry(self, lane_map):
 			_(
 				"Target Qty {0} is not what the source rows convert to at the configured "
 				"purities ({1}). Press Calculate again."
-			).format(flt(self.m_target_qty, precision), flt(expected, precision))
+			).format(fmt3(self.m_target_qty), fmt3(expected))
 		)
 
 	needs = []
@@ -1455,7 +1455,7 @@ def make_multiple_customer_metal_stock_entry(self, lane_map):
 		frappe.throw(
 			_(
 				"Target Qty {0} does not match the {1} booked across conversion lanes. Please re-save the document."
-			).format(flt(self.m_target_qty, precision), booked_target)
+			).format(fmt3(self.m_target_qty), fmt3(booked_target))
 		)
 
 	se.save()

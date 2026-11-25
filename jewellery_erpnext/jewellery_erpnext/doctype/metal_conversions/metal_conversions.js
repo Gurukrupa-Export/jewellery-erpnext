@@ -418,7 +418,7 @@ function correct_chain_target_qty(frm) {
 				{
 					message: __("Target Qty set to {0}: what {1} of {2} converts to. Save, then Receive.", [
 						format_number(fill, null, 3),
-						frm.doc.source_qty,
+						format_number(frm.doc.source_qty, null, 3),
 						frm.doc.source_item,
 					]),
 					indicator: "orange",

@@ -1135,7 +1135,7 @@ class TestSingleModeGuards(_BuilderCase):
 		doc.alloy_batch_details = [_alloc(6.7, "AL1")]
 		self._refused(
 			doc,
-			r"Target Qty 26\.667 does not match the 26\.7 that the source quantity and the "
+			r"Target Qty 26\.667 does not match the 26\.700 that the source quantity and the "
 			r"stored alloy quantity make",
 		)
 
@@ -1147,7 +1147,7 @@ class TestSingleModeGuards(_BuilderCase):
 		)
 		self._refused(
 			doc,
-			r"Target Qty 15\.0 does not match the 14\.99 that the source quantity and the "
+			r"Target Qty 15\.000 does not match the 14\.990 that the source quantity and the "
 			r"stored alloy quantity make",
 		)
 
@@ -1162,7 +1162,7 @@ class TestSingleModeGuards(_BuilderCase):
 		doc.alloy_batch_details = [_alloc(5.0, "AL1")]
 		self._refused(
 			doc,
-			r"Alloy M-Genia-221: the allocated batches cover 5\.0 but this conversion "
+			r"Alloy M-Genia-221: the allocated batches cover 5\.000 but this conversion "
 			r"needs 6\.667",
 		)
 

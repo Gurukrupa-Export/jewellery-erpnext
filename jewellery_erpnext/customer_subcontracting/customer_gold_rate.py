@@ -31,6 +31,7 @@ import frappe
 from frappe import _
 from frappe.utils import add_days, flt, getdate, to_timedelta
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	GOLD_RATE_FIELDS,
 	GOLD_RATE_UNITS,
@@ -426,7 +427,7 @@ def _get_raw_rate(row, rate_field, source, gold_rates_name):
 				frappe.bold(rate_field),
 				frappe.bold(source),
 				frappe.bold(gold_rates_name),
-				frappe.bold(numeric_rate),
+				frappe.bold(fmt3(numeric_rate)),
 			),
 			title=_("Customer Gold Rate Unavailable"),
 		)

@@ -30,6 +30,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate, now_datetime, nowdate
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
 	OUTLIER_BAND,
 	is_outlier,
@@ -54,7 +55,6 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	DEFAULT_INVENTORY_TYPE,
 )
-from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 
 CUSTOMER_GOODS = "Customer Goods"
 

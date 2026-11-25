@@ -167,7 +167,7 @@ class TestRoutesCountOnlyThisReceipt(unittest.TestCase):
 		]
 		route, limit = cgr._choose_route(self.event, holdings, 10.0, "CUSTODY")
 		self.assertEqual(route, "Shortfall")
-		self.assertIn("covers only 0", limit)
+		self.assertIn("covers only 0.000 of the 10.000 requested", limit)
 
 
 class TestSharedBatchGuards(unittest.TestCase):
@@ -890,7 +890,7 @@ class TestReceiptBatchDriftIsHeld(unittest.TestCase):
 	def test_a_receipt_batch_carried_above_its_booked_rate_is_held(self):
 		message = self._held()
 
-		for fragment in ("D08", "KGJPL-SE-CGR-26-00052", "14625.206", "14622.500"):
+		for fragment in ("D08", "KGJPL-SE-CGR-26-00052", "14,625.206", "14,622.500"):
 			self.assertIn(fragment, message)
 
 	def test_a_receipt_batch_carried_below_its_booked_rate_is_held(self):

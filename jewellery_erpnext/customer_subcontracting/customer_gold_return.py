@@ -53,6 +53,7 @@ land, this check tightens rather than changes shape.
 import frappe
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
 	EVENT_RECEIPT,
 	EVENT_RETURN,
@@ -75,7 +76,6 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
-from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 
 
 def get_booked_rate(company, customer, batch_no):
@@ -709,7 +709,9 @@ def _check_plans(doc, plans, for_update):
 					"Only {0} of the selected batch is free in {1} -- the rest is reserved, "
 					"on the shop floor or already delivered. This return asks for {2}."
 				).format(
-					frappe.bold(flt(free, 3)), frappe.bold(warehouse), frappe.bold(qty)
+					frappe.bold(fmt3(free)),
+					frappe.bold(warehouse),
+					frappe.bold(fmt3(qty)),
 				),
 				title=frappe._("Insufficient Free Customer Gold"),
 			)
@@ -784,8 +786,8 @@ def _check_plans(doc, plans, for_update):
 				).format(
 					frappe.bold(receipt.reference_docname),
 					receipt.cg_source_row,
-					frappe.bold(flt(max(left, 0), precision)),
-					frappe.bold(flt(qty, precision)),
+					frappe.bold(fmt3(max(left, 0))),
+					frappe.bold(fmt3(qty)),
 				),
 				title=frappe._("Customer Gold Return Exceeds Receipt"),
 			)
@@ -867,10 +869,10 @@ def _check_receipt_share(plans, replay):
 					"to other receipts of the same customer. This return asks for {4}."
 				).format(
 					plan.row.idx,
-					frappe.bold(flt(own, 3)),
+					frappe.bold(fmt3(own)),
 					frappe.bold(warehouse),
 					frappe.bold(plan.receipt.reference_docname),
-					frappe.bold(flt(qty, 3)),
+					frappe.bold(fmt3(qty)),
 				),
 				title=frappe._("Customer Gold Return Exceeds Receipt"),
 			)
@@ -1376,6 +1378,6 @@ def _choose_route(event, holdings, requested, custody_warehouse):
 		"Shortfall",
 		"Free metal traceable to this receipt covers only {0} of the {1} requested; the rest "
 		"is reserved, in work or already dispatched.".format(
-			flt(same_item + converted, 3), flt(requested, 3)
+			fmt3(same_item + converted), fmt3(requested)
 		),
 	)

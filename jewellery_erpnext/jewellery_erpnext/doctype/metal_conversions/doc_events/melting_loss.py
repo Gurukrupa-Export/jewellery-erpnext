@@ -26,6 +26,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
+
 MELTING_LOSS_SE_TYPE = "Process Loss"
 MELTING_LOSS_LOSS_TYPE = "Loss"
 
@@ -84,7 +86,7 @@ def validate_melting_loss(doc):
 	if loss <= 0:
 		frappe.throw(
 			_("Loss Quantity {0} is not a positive quantity at precision {1}.").format(
-				doc.loss_qty, prec
+				fmt3(doc.loss_qty), prec
 			)
 		)
 
@@ -92,7 +94,7 @@ def validate_melting_loss(doc):
 	if loss > flt(doc.source_qty, prec):
 		frappe.throw(
 			_("Loss Quantity {0} cannot exceed Source Qty {1}.").format(
-				doc.loss_qty, doc.source_qty
+				fmt3(doc.loss_qty), fmt3(doc.source_qty)
 			)
 		)
 
@@ -152,7 +154,7 @@ def make_melting_loss_stock_entry(doc):
 			_(
 				"Allocated batch quantity {0} does not match Loss Quantity {1}. "
 				"Please save the document again."
-			).format(allocated, loss_qty)
+			).format(fmt3(allocated), fmt3(loss_qty))
 		)
 
 	se_name = make_process_loss_entry(

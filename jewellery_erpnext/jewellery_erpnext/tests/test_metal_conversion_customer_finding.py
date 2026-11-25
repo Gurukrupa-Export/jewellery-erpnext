@@ -385,7 +385,7 @@ class TestSingleModeEnteredBatches(IntegrationTestCase):
 		self, capped, _map, _samples, msgprint, _variant
 	):
 		capped.return_value = self.stock
-		self._refused(self._doc(METAL, 6, [("B-REG", 6)]), "only 5.0 is available")
+		self._refused(self._doc(METAL, 6, [("B-REG", 6)]), "only 5.000 is available")
 
 	def test_repeated_batch_refused(self, capped, _map, _samples, msgprint, _variant):
 		capped.return_value = self.stock

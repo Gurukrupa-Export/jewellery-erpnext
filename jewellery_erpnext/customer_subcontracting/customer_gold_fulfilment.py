@@ -1889,7 +1889,9 @@ def _pin_to_original_value(share, original, returned_qty, nominal):
 		share.value = None
 		share.reason = "the original delivery recorded no value"
 		return share
-	share.value = flt(abs(flt(released)) * fraction, 2)
+	# At the 3 decimals the delivery's share was priced at (``_share_of_components``): at 2 a
+	# full return of a 1,234.567 delivery restored 1,234.57 and left 0.003 open for ever.
+	share.value = flt(abs(flt(released)) * fraction, 3)
 	share.reason = None
 	return share
 
