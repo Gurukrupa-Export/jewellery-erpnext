@@ -26,9 +26,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ch
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.chain_subcontracting import (
 	cancel_chain,
 	chain_issued,
+	employee_alloy_purities,
+	employee_alloy_qty,
 	get_department_chain_flags,
 	guard_trash,
 	is_chain,
+	issued_alloy_qty,
 	max_target_qty,
 	receive_split,
 	run_receive,
@@ -165,10 +168,14 @@ class MetalConversions(Document):
 		validate_chain(self)
 		validate_source_target_differ(self)
 		validate_finding_to_finding(self)
-		update_alloy_betch(self)
-		# Once Issue has moved the metal to the supplier the allocation is a record, not a
-		# plan: re-allocating against the department warehouse would find nothing there.
+		# Once Issue has moved the metal (and an employee's alloy) out, the allocation is a
+		# record, not a plan: re-allocating against the department warehouse would find
+		# nothing there.
 		if not chain_issued(self):
+			# A chain conversion's Alloy Qty is sized by the server; Source Alloy is checked at
+			# Issue (with a message naming the conversion), so a Draft saves without it.
+			if not (is_chain(self) and not self.source_alloy):
+				update_alloy_betch(self)
 			update_source_betch(self)
 		validate_customer_metal_target(self)
 		validate_customer_finding_source(self)
@@ -236,18 +243,29 @@ class MetalConversions(Document):
 	@frappe.whitelist()
 	def get_chain_receive_qtys(self):
 		"""Receive figures for the form: the Target Qty a subcontracted chain conversion
-		converts to (None when its items carry no purity -- then it is typed in) and the
-		Process Loss the current Target Qty books."""
+		converts to (None when its items carry no purity -- then it is typed in), the
+		Process Loss the current Target Qty books, and the alloy an employee conversion
+		needs. An employee making a lower Target Metal Purity gets Source Qty + that
+		alloy."""
 		if not is_chain(self):
-			return {"max_target_qty": None, "loss_qty": 0}
+			return {"max_target_qty": None, "loss_qty": 0, "alloy_qty": 0}
 		precision = _qty_precision()
-		fill = (
-			max_target_qty(self, flt(self.source_qty, precision))
-			if subcontracted_purities(self)
-			else None
-		)
+		source_qty = flt(self.source_qty, precision)
+		alloy_qty = 0
+		fill = None
+		if subcontracted_purities(self):
+			fill = max_target_qty(self, source_qty)
+		elif employee_alloy_purities(self):
+			# Draft: the alloy to issue; after Issue: what was issued.
+			alloy_qty = (
+				issued_alloy_qty(self)
+				if chain_issued(self)
+				else employee_alloy_qty(self, precision)
+			)
+			if alloy_qty:
+				fill = flt(source_qty + alloy_qty, precision)
 		loss_qty = receive_split(self, precision)[1] if flt(self.target_qty) else 0
-		return {"max_target_qty": fill, "loss_qty": loss_qty}
+		return {"max_target_qty": fill, "loss_qty": loss_qty, "alloy_qty": alloy_qty}
 
 	def validate_target_qty(self):
 		"""Target Qty must be what the purity masters make of Source Qty, to one posting unit.
