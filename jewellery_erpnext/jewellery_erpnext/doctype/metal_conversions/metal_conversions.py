@@ -11,6 +11,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt, nowtime
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_components import (
 	get_company_component_qty,
 )
@@ -278,10 +279,10 @@ class MetalConversions(Document):
 					"Target Qty {0} is not what {1} of {2} converts to at the configured purities ({3}). "
 					"Select the Target Item again to recalculate."
 				).format(
-					flt(self.target_qty, precision),
-					flt(self.source_qty, precision),
+					fmt3(self.target_qty),
+					fmt3(self.source_qty),
 					self.source_item,
-					flt(expected, precision),
+					fmt3(expected),
 				)
 			)
 
@@ -445,8 +446,11 @@ class MetalConversions(Document):
 		if source_item_purity:
 			if target_item_purity:
 				if target_item_purity != 0:
-					target_qty = float(
-						(self.source_qty * source_item_purity) / target_item_purity
+					target_qty = round(
+						float(
+							(self.source_qty * source_item_purity) / target_item_purity
+						),
+						3,
 					)
 					alloy_qty = round(float((target_qty - self.source_qty)), 3)
 				else:
@@ -498,7 +502,7 @@ class MetalConversions(Document):
 				if alloy_qty_bail:
 					if flt(_alloy_qty) > alloy_qty_bail:
 						frappe.throw(
-							f"Alloy <b>{_alloy}</b> Bailance qty is {alloy_qty_bail}</br>We need {_alloy_qty} Respective <b>{self.source_warehouse}</b> Warehouse."
+							f"Alloy <b>{_alloy}</b> Bailance qty is {fmt3(alloy_qty_bail)}</br>We need {fmt3(_alloy_qty)} Respective <b>{self.source_warehouse}</b> Warehouse."
 						)
 				else:
 					frappe.throw(
@@ -517,7 +521,7 @@ class MetalConversions(Document):
 				if actual_qty:
 					if self.alloy_qty > actual_qty:
 						frappe.throw(
-							f"Alloy <b>{self.alloy}</b> Bailance qty is {actual_qty}</br>We need {self.alloy_qty} Respective <b>{self.source_warehouse}</b> Warehouse."
+							f"Alloy <b>{self.alloy}</b> Bailance qty is {fmt3(actual_qty)}</br>We need {fmt3(self.alloy_qty)} Respective <b>{self.source_warehouse}</b> Warehouse."
 						)
 				else:
 					frappe.throw(
@@ -765,7 +769,7 @@ def make_metal_stock_entry(self):
 		frappe.throw(
 			_(
 				"Target Qty {0} does not match the {1} booked across conversion lanes. Please re-save the document."
-			).format(flt(self.target_qty, precision), booked_target)
+			).format(fmt3(self.target_qty), fmt3(booked_target))
 		)
 
 	se.save()
@@ -920,7 +924,7 @@ def _check_target_total(target_qty, booked_total, precision):
 			_(
 				"Target Qty {0} does not match the {1} that the source quantity and the stored alloy "
 				"quantity make. Recalculate the conversion and try again."
-			).format(flt(target_qty, precision), flt(booked_total, precision))
+			).format(fmt3(target_qty), fmt3(booked_total))
 		)
 
 
@@ -935,7 +939,7 @@ def _check_alloy_covered(alloy_item, rows, needs, precision):
 			_(
 				"Alloy {0}: the allocated batches cover {1} but this conversion needs {2}. "
 				"Please re-save the document."
-			).format(alloy_item, handed, needed)
+			).format(alloy_item, fmt3(handed), fmt3(needed))
 		)
 
 
@@ -1378,7 +1382,7 @@ def make_multiple_customer_metal_stock_entry(self, lane_map):
 			_(
 				"Target Qty {0} is not what the source rows convert to at the configured "
 				"purities ({1}). Press Calculate again."
-			).format(flt(self.m_target_qty, precision), flt(expected, precision))
+			).format(fmt3(self.m_target_qty), fmt3(expected))
 		)
 
 	needs = []
@@ -1451,7 +1455,7 @@ def make_multiple_customer_metal_stock_entry(self, lane_map):
 		frappe.throw(
 			_(
 				"Target Qty {0} does not match the {1} booked across conversion lanes. Please re-save the document."
-			).format(flt(self.m_target_qty, precision), booked_target)
+			).format(fmt3(self.m_target_qty), fmt3(booked_target))
 		)
 
 	se.save()

@@ -5,6 +5,7 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import flt, nowtime
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
 	capped_auto_batch_nos,
 )
@@ -115,7 +116,7 @@ def update_alloy_betch(self):
 				frappe.throw(
 					_(
 						"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
-							total_qty
+							fmt3(total_qty)
 						)
 					)
 				)
@@ -238,7 +239,7 @@ def update_source_betch(self):
 			_(
 				"Source Batch Details added up to {0}, not the required {1}, so the batches were "
 				"allocated again automatically."
-			).format(flt(entered_qty, 3), flt(required_qty, 3)),
+			).format(fmt3(entered_qty), fmt3(required_qty)),
 			alert=True,
 			indicator="orange",
 		)
@@ -279,26 +280,26 @@ def update_source_betch(self):
 				+ _(
 					"Only Regular Stock of {0} can be used. The Regular Stock available in {1} "
 					"is {2}."
-				).format(self.source_item, self.source_warehouse, total_qty)
+				).format(self.source_item, self.source_warehouse, fmt3(total_qty))
 			)
 		if is_finding_target:
 			frappe.throw(
 				_(
 					"Customer stock cannot be converted into a Finding item, so only Regular Stock "
 					"of {0} can be used. The Regular Stock available in {1} is {2}."
-				).format(self.source_item, self.source_warehouse, total_qty)
+				).format(self.source_item, self.source_warehouse, fmt3(total_qty))
 			)
 		if is_chain:
 			frappe.throw(
 				_(
 					"Chain Manufacturing uses Regular Stock only. The Regular Stock of {0} "
 					"available in {1} is {2}."
-				).format(self.source_item, self.source_warehouse, total_qty)
+				).format(self.source_item, self.source_warehouse, fmt3(total_qty))
 			)
 		frappe.throw(
 			_(
 				"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
-					total_qty
+					fmt3(total_qty)
 				)
 			)
 		)
@@ -348,7 +349,7 @@ def _validate_entered_source_batches(
 			continue
 		if qty - available[batch] > _QTY_TOLERANCE:
 			errors.append(
-				_("{0}: only {1} is available.").format(label, flt(available[batch], 3))
+				_("{0}: only {1} is available.").format(label, fmt3(available[batch]))
 			)
 		if batch in sample_batches:
 			errors.append(

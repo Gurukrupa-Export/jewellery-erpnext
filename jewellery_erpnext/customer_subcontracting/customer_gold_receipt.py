@@ -30,6 +30,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate, now_datetime, nowdate
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_rate import (
 	OUTLIER_BAND,
 	is_outlier,
@@ -212,9 +213,9 @@ def check_customer_gold_rate(doc, settings, rate):
 		"Rates outside {4}x-{5}x of the reference are refused: a rate quoted per 10 grams but "
 		"read as per gram is exactly ten times too high."
 	).format(
-		frappe.bold(flt(rate.per_gram_rate, 2)),
-		frappe.bold(flt(ratio, 2)),
-		frappe.bold(flt(reference.rate, 2)),
+		frappe.bold(fmt3(rate.per_gram_rate)),
+		frappe.bold(fmt3(ratio)),
+		frappe.bold(fmt3(reference.rate)),
 		reference.source,
 		OUTLIER_BAND[0],
 		OUTLIER_BAND[1],

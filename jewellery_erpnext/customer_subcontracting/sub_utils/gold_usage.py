@@ -1,4 +1,5 @@
 import frappe
+from frappe.utils import flt
 
 
 def is_gold_item(item_code):
@@ -181,8 +182,8 @@ def find_pending_settlements(item):
 
 def update_pending_settlement(log_name, settled_qty, repack_entry, batch_no):
 	log = frappe.get_doc("Subcontracting Log", log_name)
-	log.settled_pure_qty += settled_qty
-	log.balance_pure_qty = log.pending_pure_qty - log.settled_pure_qty
+	log.settled_pure_qty = flt(flt(log.settled_pure_qty) + flt(settled_qty), 3)
+	log.balance_pure_qty = flt(flt(log.pending_pure_qty) - log.settled_pure_qty, 3)
 	log.settlement_batch = batch_no
 	log.settled_by_repack = repack_entry
 	if log.balance_pure_qty <= 0:

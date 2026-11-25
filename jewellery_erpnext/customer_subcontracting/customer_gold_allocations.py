@@ -15,6 +15,7 @@ from contextlib import suppress
 import frappe
 from frappe.utils import flt, now_datetime
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
 	EVENT_RECEIPT,
 	EVENT_REVERSAL,
@@ -43,8 +44,8 @@ DRAWING_DISPOSITIONS = (
 	DISPOSITION_REVERSAL,
 )
 
-AMOUNT_PRECISION = 2
-QTY_PRECISION = 6
+AMOUNT_PRECISION = 3
+QTY_PRECISION = 3
 
 
 def is_allocation_schema_ready():
@@ -254,8 +255,15 @@ def write_allocation(
 	currency,
 	part_key=None,
 	reversal_of=None,
+	fine_qty=None,
 ):
-	"""One (event, receipt) row. ``event`` is the ledger row (dict-like) being decomposed."""
+	"""One (event, receipt) row. ``event`` is the ledger row (dict-like) being decomposed.
+
+	``fine_qty`` is the row's fine gold when the caller has already tied it to the event's
+	(``allocate_event``); otherwise it is worked out from ``gross_qty``.
+	"""
+	if fine_qty is None:
+		fine_qty = fine_of(receipt.item_code, gross_qty)
 	return _insert(
 		{
 			"allocation_key": allocation_key(
@@ -273,7 +281,7 @@ def write_allocation(
 			"receipt_row": receipt.cg_source_row,
 			"source_batch": receipt.batch_no,
 			"gross_qty": flt(gross_qty, QTY_PRECISION),
-			"fine_qty": flt(fine_of(receipt.item_code, gross_qty), QTY_PRECISION),
+			"fine_qty": flt(fine_qty, QTY_PRECISION),
 			"amount": flt(amount, AMOUNT_PRECISION) if currency else 0,
 			"currency": currency,
 			"reversal_of": reversal_of,
@@ -282,38 +290,52 @@ def write_allocation(
 	)
 
 
+def _tie_to_total(values, total, precision):
+	"""``values`` rounded at ``precision``, the rounding residual on the largest, so they sum
+	to ``total`` (rounded at ``precision`` too) exactly."""
+	rounded = [flt(v, precision) for v in values]
+	residual = flt(flt(total, precision) - sum(rounded), precision)
+	if residual:
+		largest = max(range(len(values)), key=lambda i: abs(flt(values[i])))
+		rounded[largest] = flt(rounded[largest] + residual, precision)
+	return rounded
+
+
 def allocate_event(event, parts, disposition, basis, currency, total_amount=None):
 	"""Write ``parts`` -- [(receipt_event, gross_qty, amount)] -- against ``event``.
 
 	When ``total_amount`` is given, the rounding residual lands on the largest part, so the rows
 	under one event sum to that event's value to the paisa. Rounding each part on its own would
 	leave the JE and its decomposition a few paise apart for ever.
+
+	Gross and fine quantities are tied the same way, to what the parts add up to: three thirds
+	of 1 g are 0.334 + 0.333 + 0.333 at 3 decimals, not 0.999.
 	"""
 	parts = [p for p in parts if flt(p[1]) or flt(p[2])]
 	if not parts:
 		return []
 	amounts = [flt(p[2], AMOUNT_PRECISION) for p in parts]
 	if currency and total_amount is not None:
-		residual = flt(
-			flt(total_amount, AMOUNT_PRECISION) - sum(amounts), AMOUNT_PRECISION
+		amounts = _tie_to_total(
+			[flt(p[2]) for p in parts], total_amount, AMOUNT_PRECISION
 		)
-		if residual:
-			largest = max(range(len(parts)), key=lambda i: abs(flt(parts[i][2])))
-			amounts[largest] = flt(amounts[largest] + residual, AMOUNT_PRECISION)
+	gross = [flt(p[1]) for p in parts]
+	fine = [fine_of(p[0].item_code, qty) for p, qty in zip(parts, gross, strict=True)]
+	gross_rows = _tie_to_total(gross, sum(gross), QTY_PRECISION)
+	fine_rows = _tie_to_total(fine, sum(fine), QTY_PRECISION)
 	return [
 		write_allocation(
 			event,
 			receipt,
 			disposition,
 			basis,
-			gross_qty,
-			amount,
+			gross_rows[index],
+			amounts[index],
 			currency,
 			part_key=index,
+			fine_qty=fine_rows[index],
 		)
-		for index, ((receipt, gross_qty, _), amount) in enumerate(
-			zip(parts, amounts, strict=True)
-		)
+		for index, (receipt, _qty, _amount) in enumerate(parts)
 	]
 
 
@@ -377,9 +399,9 @@ def reconcile_to_settlement(event_names, per_customer, precision=AMOUNT_PRECISIO
 			frappe.log_error(
 				title="Customer Gold: allocations do not tie to settlement",
 				message=(
-					f"Customer {customer}: the settlement posted {flt(amount, precision)} but its "
+					f"Customer {customer}: the settlement posted {fmt3(amount)} but its "
 					f"{len(mine)} allocation row(s) sum to "
-					f"{flt(amount, precision) - residual}, a difference of {residual}. "
+					f"{fmt3(flt(amount, precision) - residual)}, a difference of {fmt3(residual)}. "
 					f"Events: {', '.join(sorted(event_names))}."
 				),
 			)

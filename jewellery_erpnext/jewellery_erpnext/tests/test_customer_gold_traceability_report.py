@@ -820,7 +820,7 @@ class TestRateOutliers(unittest.TestCase):
 		reference = frappe._dict(rate=7164.83, source="PR-1 (2026-09-01)")
 		flagged = self._outliers(receipts, reference)
 		self.assertEqual(set(flagged), {"SE-C|r1", "SE-D|r1", "SE-E|r1"})
-		self.assertIn("10.0x", flagged["SE-C|r1"])
+		self.assertIn("10.000x", flagged["SE-C|r1"])
 		self.assertIn("PR-1", flagged["SE-C|r1"])
 
 	def test_no_reference_flags_nothing(self):
@@ -1347,7 +1347,7 @@ class TestFGValuation(unittest.TestCase):
 		_columns, rows = self._run(_manufacture([_fg("fg", 3, 3507.11)]), sle=sle)
 		by_idx = {r["idx"]: r for r in rows if r["side"] != "Bridge"}
 		self.assertIn("Running rate is the warehouse average", by_idx[3]["note"])
-		self.assertIn("5.0 units held", by_idx[3]["note"])
+		self.assertIn("5.000 units held", by_idx[3]["note"])
 		self.assertAlmostEqual(by_idx[3]["running_rate"], 2800.0, places=4)
 		self.assertAlmostEqual(by_idx[3]["ledger_value"], 3507.11, places=2)
 		self.assertEqual(by_idx[1]["note"], "")

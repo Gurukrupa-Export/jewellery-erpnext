@@ -208,7 +208,7 @@ class TestReceiptRateCheck(unittest.TestCase):
 	def test_submitting_an_outlier_is_refused(self, *_mocks):
 		with self.assertRaises(frappe.ValidationError) as raised:
 			self._validate(self.OUTLIER, action="submit")
-		self.assertIn("<strong>10.0</strong>x the reference", str(raised.exception))
+		self.assertIn("<strong>10.000</strong>x the reference", str(raised.exception))
 
 	#: The tail of the outlier refusal. Asserted so an earlier, unrelated throw cannot pass these.
 	NEEDS_APPROVER = "may submit it after entering a Rate Override Reason"

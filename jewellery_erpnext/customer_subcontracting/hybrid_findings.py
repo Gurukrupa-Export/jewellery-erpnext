@@ -40,6 +40,7 @@ import frappe
 from erpnext.controllers.queries import get_batch_no as erpnext_get_batch_no
 from frappe import _
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	get_customer_gold_settings,
 	has_settings_capability,
@@ -378,8 +379,8 @@ def throw_no_customer_batch(requirement, item_code, warehouse, need, available=0
 		).format(
 			frappe.bold(item_code),
 			frappe.bold(warehouse),
-			frappe.format(need, {"fieldtype": "Float"}),
-			frappe.format(available or 0, {"fieldtype": "Float"}),
+			fmt3(need),
+			fmt3(available),
 		)
 		+ "<br>"
 		+ shortfall_hint(requirement),

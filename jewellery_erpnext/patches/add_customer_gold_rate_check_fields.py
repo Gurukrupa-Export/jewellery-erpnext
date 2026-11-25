@@ -21,7 +21,7 @@ Wired in two idempotent places per the app convention (``after_migrate`` is disa
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
-RATE_PRECISION = "4"
+RATE_PRECISION = "3"
 APPROVER_ROLE = "Customer Gold Rate Approver"
 
 

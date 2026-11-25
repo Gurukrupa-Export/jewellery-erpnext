@@ -61,6 +61,7 @@ import frappe
 from frappe.query_builder.functions import Max, Sum
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	VALUATION_NOMINAL,
 	get_customer_gold_valuation_policy,
@@ -681,7 +682,7 @@ def _validated_rows(components, voucher_type, nominal):
 				frappe._(
 					"Cannot record batch components: component quantity for source batch {0} "
 					"is negative ({1})."
-				).format(row.get("source_batch") or "unknown", row.get("qty")),
+				).format(row.get("source_batch") or "unknown", fmt3(row.get("qty"))),
 				title=frappe._("Invalid Component Quantity"),
 			)
 
