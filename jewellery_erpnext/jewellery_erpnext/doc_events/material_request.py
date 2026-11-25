@@ -248,7 +248,11 @@ def _current_material_warehouse(self):
 # _workflow_action_just_applied was written for. custom_manufacturing_operation is read_only
 # in that state anyway, so there would be nothing for the operator to change. The transition
 # *into* the state is still guarded, from the dispatch below.
-MOP_DEPARTMENT_STATES = ("Material Transferred", "Material Transferred to Department")
+MOP_DEPARTMENT_STATES = (
+	"Material Transfer In Progress",
+	"Material Transferred",
+	"Material Transferred to Department",
+)
 
 # Distinguishes "the caller has already read the department" from "the department is
 # genuinely empty", which None alone cannot express. A plain ``mop_department=None`` default
@@ -473,6 +477,33 @@ TRANSFER_SE_DEPENDENT_STATES = (
 	"Material Transferred to Department",
 	"Material Transferred to MOP",
 )
+
+# "Transfer Material" submits the request into TRANSFER_IN_PROGRESS_STATE, not straight into
+# "Material Transferred": the "Material Transfer From Reserve" entry is only queued by that
+# submit, so showing "Material Transferred" then claimed a transfer that might never happen.
+# The deferred job moves the request on once the entry is submitted; if it fails the request
+# stays here, with the error and the Retry button. Both states are docstatus 1, so a failure
+# cannot fall back to "Material Reserved" (docstatus 0) -- the request is already submitted.
+# patches/add_mr_transfer_in_progress_state adds the state to the workflow.
+TRANSFER_IN_PROGRESS_STATE = "Material Transfer In Progress"
+TRANSFERRED_STATE = "Material Transferred"
+
+# Where a request can still be waiting on its transfer entry: the new state, and requests that
+# reached "Material Transferred" before it existed.
+TRANSFER_RETRY_STATES = (TRANSFER_IN_PROGRESS_STATE, TRANSFERRED_STATE)
+
+
+def _transfer_done_values(mr, transfer_se):
+	"""Field values for a request whose transfer entry ``transfer_se`` is submitted.
+
+	Moves the workflow on only from TRANSFER_IN_PROGRESS_STATE. A request in any other state
+	was moved by something else (an older request already in "Material Transferred", or an
+	administrator), and is left where it is.
+	"""
+	values = {"custom_transfer_se": transfer_se, "custom_transfer_se_state": "Done"}
+	if mr.get("workflow_state") == TRANSFER_IN_PROGRESS_STATE:
+		values["workflow_state"] = TRANSFERRED_STATE
+	return values
 
 
 def validate_transfer_se_created(self):
@@ -726,7 +757,11 @@ def validate_target_item(self):
 
 
 def on_submit(self, method=None):
-	if not self.custom_reserve_se:
+	if not self.custom_reserve_se or getattr(self, "custom_transfer_se", None):
+		# Nothing to queue, so no job will ever move the request out of the in-progress
+		# state: move it now.
+		if self.get("workflow_state") == TRANSFER_IN_PROGRESS_STATE:
+			self.db_set("workflow_state", TRANSFERRED_STATE, update_modified=False)
 		return
 
 	# Defer the secondary "Material Transfer From Reserve" SE to a background job.
@@ -736,9 +771,6 @@ def on_submit(self, method=None):
 	# same-request consumer — it is read later by PMO / mapped-SE creation — so it is
 	# safe to materialise it just after the MR commits (eventual consistency, seconds).
 	# Idempotent + reconcilable via custom_transfer_se / custom_transfer_se_state.
-	if getattr(self, "custom_transfer_se", None):
-		return
-
 	self.db_set("custom_transfer_se_state", "Pending", update_modified=False)
 	_enqueue_transfer_se(self.name)
 
@@ -763,10 +795,11 @@ def retry_transfer_se(mr_name):
 	"""Re-queue the deferred "Material Transfer From Reserve" Stock Entry for one request.
 
 	The way out of ``validate_transfer_se_created`` for a request whose job failed or never
-	finished. Only in "Material Transferred": past that state the next step has already been
-	booked from somewhere else, and a late transfer would put a second copy of the material
-	into set_warehouse -- those requests are what ``patches/repair_missing_mr_transfer_se``
-	is for.
+	finished. Only in TRANSFER_RETRY_STATES ("Material Transfer In Progress", or "Material
+	Transferred" for a request that got there before the in-progress state existed): past
+	those the next step has already been booked from somewhere else, and a late transfer
+	would put a second copy of the material into set_warehouse -- those requests are what
+	``patches/repair_missing_mr_transfer_se`` is for.
 	"""
 	mr = frappe.get_doc("Material Request", mr_name)
 	mr.check_permission("write")
@@ -786,12 +819,14 @@ def retry_transfer_se(mr_name):
 			).format(mr.custom_transfer_se)
 		)
 
-	if mr.workflow_state != "Material Transferred":
+	if mr.workflow_state not in TRANSFER_RETRY_STATES:
 		frappe.throw(
 			_(
-				"The transfer can only be retried in the Material Transferred state. This "
-				"request is in {0}."
-			).format(mr.workflow_state)
+				"The transfer can only be retried in the {0} or {1} state. This request is "
+				"in {2}."
+			).format(
+				_(TRANSFER_IN_PROGRESS_STATE), _(TRANSFERRED_STATE), mr.workflow_state
+			)
 		)
 
 	# Checked here rather than left to the job, so the operator is told now instead of
@@ -916,8 +951,7 @@ def _create_transfer_se(mr_name):
 	existing = get_submitted_from_reserve_se(mr_name)
 	if existing:
 		mr.db_set(
-			{"custom_transfer_se": existing, "custom_transfer_se_state": "Done"},
-			update_modified=False,
+			_transfer_done_values(mr, existing), update_modified=False, notify=True
 		)
 		return
 
@@ -976,9 +1010,10 @@ def _create_transfer_se(mr_name):
 	new_se_doc.save()
 	new_se_doc.submit()
 
+	# Only now, with the entry submitted, does the request read "Material Transferred".
+	# notify so a form left open on the request reloads into the new state by itself.
 	mr.db_set(
-		{"custom_transfer_se": new_se_doc.name, "custom_transfer_se_state": "Done"},
-		update_modified=False,
+		_transfer_done_values(mr, new_se_doc.name), update_modified=False, notify=True
 	)
 
 
