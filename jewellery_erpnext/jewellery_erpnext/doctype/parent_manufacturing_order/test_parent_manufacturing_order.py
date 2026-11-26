@@ -2332,7 +2332,12 @@ class TestRequestedQtyByItem(UnitTestCase):
 		doc = SimpleNamespace(name="PMO-TEST-0001", manufacturer="MNF")
 		lines = [
 			frappe._dict(
-				{"custom_is_customer_item": 0, "custom_sub_setting_type": None, **line}
+				{
+					"custom_is_customer_item": 0,
+					"custom_sub_setting_type": None,
+					"conversion_factor": 1,
+					**line,
+				}
 			)
 			for line in lines
 		]
@@ -2346,15 +2351,15 @@ class TestRequestedQtyByItem(UnitTestCase):
 		self.assertIn("`manufacturing_order`=%(param1)s", query)
 		self.assertEqual(params["param1"], "PMO-TEST-0001")
 		self.assertIn("`docstatus`<2", query)
-		self.last_query = query
+		self.last_query, self.last_params = query, params
 		return requested
 
 	def test_lines_of_the_same_item_are_summed(self):
 		requested = self._run(
 			[
-				{"item_code": "M-G-22KT", "description": "M", "stock_qty": 1.5},
-				{"item_code": "M-G-22KT", "description": "M", "stock_qty": 0.5},
-				{"item_code": "F-SCREW", "description": "F", "stock_qty": 1.1},
+				{"item_code": "M-G-22KT", "description": "M", "qty": 1.5},
+				{"item_code": "M-G-22KT", "description": "M", "qty": 0.5},
+				{"item_code": "F-SCREW", "description": "F", "qty": 1.1},
 			]
 		)
 		self.assertEqual(requested, {("M-G-22KT", 0, ""): 2.0, ("F-SCREW", 0, ""): 1.1})
@@ -2365,7 +2370,7 @@ class TestRequestedQtyByItem(UnitTestCase):
 				{
 					"item_code": "G-PER-DUM-PRE-CC",
 					"description": "<p>G-RUBY</p>",
-					"stock_qty": 0.38,
+					"qty": 0.38,
 				}
 			]
 		)
@@ -2377,7 +2382,7 @@ class TestRequestedQtyByItem(UnitTestCase):
 				{
 					"item_code": "G-PER-DUM-PRE-CC",
 					"description": "G-RUBY",
-					"stock_qty": 0.38,
+					"qty": 0.38,
 				}
 			],
 			default_gemstone_item=None,
@@ -2387,17 +2392,17 @@ class TestRequestedQtyByItem(UnitTestCase):
 	def test_ownership_and_sub_setting_type_keep_lines_apart(self):
 		requested = self._run(
 			[
-				{"item_code": "D-A", "description": "D", "stock_qty": 1.0},
+				{"item_code": "D-A", "description": "D", "qty": 1.0},
 				{
 					"item_code": "D-A",
 					"description": "D",
-					"stock_qty": 0.5,
+					"qty": 0.5,
 					"custom_is_customer_item": 1,
 				},
 				{
 					"item_code": "D-A",
 					"description": "D",
-					"stock_qty": 0.2,
+					"qty": 0.2,
 					"custom_sub_setting_type": "Open",
 				},
 			]
@@ -2408,12 +2413,62 @@ class TestRequestedQtyByItem(UnitTestCase):
 		)
 
 	def test_stock_uom_quantity_is_counted(self):
-		"""A line in another UOM counts by its stock qty, the unit the BOM uses."""
+		"""A line in another UOM counts in stock UOM (qty x conversion factor), the unit
+		the BOM uses."""
 		requested = self._run(
-			[{"item_code": "M-G-22KT", "description": "M", "qty": 2, "stock_qty": 2000}]
+			[
+				{
+					"item_code": "M-G-22KT",
+					"description": "M",
+					"qty": 2,
+					"conversion_factor": 1000,
+				}
+			]
 		)
 		self.assertEqual(requested, {("M-G-22KT", 0, ""): 2000})
-		self.assertIn("`stock_qty`", self.last_query)
+		self.assertIn("`qty`", self.last_query)
+		self.assertIn("`conversion_factor`", self.last_query)
+		self.assertNotIn("`stock_qty`", self.last_query)
+
+	def test_missing_conversion_factor_counts_as_stock_uom(self):
+		requested = self._run(
+			[
+				{
+					"item_code": "M-G-22KT",
+					"description": "M",
+					"qty": 1.5,
+					"conversion_factor": None,
+				}
+			]
+		)
+		self.assertEqual(requested, {("M-G-22KT", 0, ""): 1.5})
+
+	def test_split_work_order_copy_with_zero_qty_counts_nothing(self):
+		"""create_mr_for_split_work_order copies a diamond request with qty 0 under
+		ignore_validate, so its stale stock_qty still holds the original's full quantity.
+		The copy must count as 0, or the diamond is never pending again."""
+		requested = self._run(
+			[
+				{
+					"item_code": "D-A",
+					"description": "D",
+					"qty": 0,
+					"stock_qty": 1.25,
+				}
+			]
+		)
+		self.assertEqual(requested, {("D-A", 0, ""): 0})
+
+	def test_stopped_requests_are_not_counted(self):
+		"""A Stopped request's quantity will never arrive, so the query leaves it out;
+		IfNull keeps requests with no status (saved under ignore_validate)."""
+		self._run([])
+		self.assertIn(
+			"IFNULL(`tabMaterial Request`.`status`,%(param2)s)<>%(param3)s",
+			self.last_query,
+		)
+		self.assertEqual(self.last_params["param2"], "")
+		self.assertEqual(self.last_params["param3"], "Stopped")
 
 	def test_creation_reads_the_requests_with_a_locking_read(self):
 		self._run([], for_update=True)
