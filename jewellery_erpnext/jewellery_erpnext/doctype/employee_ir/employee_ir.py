@@ -174,6 +174,13 @@ class EmployeeIR(Document):
 		if self.type == "Issue":
 			self.issue_submitted_on = now_datetime()
 			validate_casting_group_complete(self)
+			# A subcontracting Issue posts no Stock Entry (only unsynced MOP Logs the EOD sync
+			# moves later), so the Stock Entry guard would not see this metal leave for the supplier.
+			from jewellery_erpnext.jewellery_erpnext.doc_events.supplier_metal_limit import (
+				validate_employee_ir_supplier_limit,
+			)
+
+			validate_employee_ir_supplier_limit(self)
 		else:
 			validate_employee_ir_receive_delay(self)
 			# The CAD / CAM fields are required on submit only; a draft may hold them empty.
@@ -1359,7 +1366,6 @@ def _bulk_no_wastage_batches(batch_nos):
 
 
 def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
-
 	new_mop_doc = frappe.copy_doc(
 		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
 	)
@@ -1379,9 +1385,14 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
 	new_mop_doc.main_slip_no = None
-	if frappe.db.get_value("Manufacturing Operation", docname, "operation") == "CAD Updation":
+	if (
+		frappe.db.get_value("Manufacturing Operation", docname, "operation")
+		== "CAD Updation"
+	):
 		new_mop_doc.manufacturing_plan_kggk = frappe.db.get_value(
-			"Manufacturing Work Order", new_mop_doc.manufacturing_work_order, "manufacturing_plan"
+			"Manufacturing Work Order",
+			new_mop_doc.manufacturing_work_order,
+			"manufacturing_plan",
 		)
 		new_mop_doc.manufacturing_plan = None
 		new_mop_doc.flags.ignore_links = True
@@ -1393,9 +1404,8 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 		new_mop_doc.insert()
 	else:
 		new_mop_doc.insert()
-	
-	return new_mop_doc
 
+	return new_mop_doc
 
 
 @frappe.whitelist()
