@@ -108,6 +108,17 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validati
 	validate_loss_tables_required,
 	validate_manually_book_loss_details,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_costing import (
+	apply_without_so_working_time,
+	is_without_so_mwo,
+	reset_without_so_costing_on_receive_cancel,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.without_so_repack import (
+	create_without_so_finding_repack,
+	release_without_so_repack_reservations,
+	restamp_without_so_batches_on_receive_cancel,
+	stamp_without_so_worker_cost,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	update_new_mop_wtg,
 )
@@ -210,6 +221,9 @@ class EmployeeIR(Document):
 				self.create_subcontracting_order()
 		else:
 			self.on_submit_receive()
+			# After the receive closed each operation's timer, so the work order's worker
+			# cost includes this operation.
+			stamp_without_so_worker_cost(self)
 			# A Receive may hand back the last work order of a PMO with a Close / Hold
 			# request: its requester is told once the submit commits.
 			queue_ready_check_after_transfer(self, "employee_ir_operations")
@@ -350,7 +364,12 @@ class EmployeeIR(Document):
 		if self.type == "Issue":
 			self.on_submit_issue_new(cancel=True)
 		else:
+			# Before the receive cancel reverses the Without-SO repack: ERPNext will not take
+			# a reserved finding batch back out of the warehouse.
+			release_without_so_repack_reservations(self)
 			self.on_submit_receive(cancel=True)
+			reset_without_so_costing_on_receive_cancel(self)
+			restamp_without_so_batches_on_receive_cancel(self)
 
 	def on_submit_issue_new(self, cancel=False):
 		# if self.mop_data:
@@ -696,6 +715,11 @@ class EmployeeIR(Document):
 				stock_entry_name = inject_extra_metal_for_eir_receive(
 					self, row, extra_transfer_rows=finding_rows
 				)
+
+				# Finding Manufacturing - Without SO: the metal this receive brought in becomes
+				# the work order's finding item. Before the MOP Log calls below, so the balance
+				# carried to the next operation is the finding.
+				create_without_so_finding_repack(self, row, stock_entry_name)
 
 				# Combined-loss receive: create_mop_log_for_employee_ir_receive
 				# now subtracts employee_loss_details + manually_book_loss_details
@@ -1359,7 +1383,6 @@ def _bulk_no_wastage_batches(batch_nos):
 
 
 def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
-
 	new_mop_doc = frappe.copy_doc(
 		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
 	)
@@ -1379,9 +1402,14 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
 	new_mop_doc.main_slip_no = None
-	if frappe.db.get_value("Manufacturing Operation", docname, "operation") == "CAD Updation":
+	if (
+		frappe.db.get_value("Manufacturing Operation", docname, "operation")
+		== "CAD Updation"
+	):
 		new_mop_doc.manufacturing_plan_kggk = frappe.db.get_value(
-			"Manufacturing Work Order", new_mop_doc.manufacturing_work_order, "manufacturing_plan"
+			"Manufacturing Work Order",
+			new_mop_doc.manufacturing_work_order,
+			"manufacturing_plan",
 		)
 		new_mop_doc.manufacturing_plan = None
 		new_mop_doc.flags.ignore_links = True
@@ -1393,9 +1421,8 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 		new_mop_doc.insert()
 	else:
 		new_mop_doc.insert()
-	
-	return new_mop_doc
 
+	return new_mop_doc
 
 
 @frappe.whitelist()
@@ -1617,6 +1644,8 @@ def batch_add_time_logs(self, mop_args_list):
 				if not row.to_time:
 					row.to_time = get_datetime(args.get("complete_time"))
 					calculation_time_log(doc, row, self)
+					if is_without_so_mwo(doc.manufacturing_work_order):
+						apply_without_so_working_time(doc, row, self.employee)
 					break
 
 		elif args.get("start_time"):

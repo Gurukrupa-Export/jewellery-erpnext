@@ -27,6 +27,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_
 	pmo_request_state,
 	request_message,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
+	validate_without_so_source_submitted,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
 )
@@ -91,6 +94,12 @@ class ManufacturingWorkOrder(Document):
 				title=_("Parent Manufacturing Order Restricted"),
 			)
 		self.validate_photoshop_images()
+		if self.is_without_so:
+			validate_without_so_source_submitted(
+				"Parent Manufacturing Order",
+				self.manufacturing_order,
+				_("Parent Manufacturing Order"),
+			)
 
 	def on_submit(self):
 		last_operation = None
@@ -313,7 +322,7 @@ class ManufacturingWorkOrder(Document):
 			"Manufacturing Operation",
 			filters={
 				"manufacturing_work_order": self.name,
-				"status": ["in", ["WIP", "QC Pending", "QC Completed","Not Started"]],
+				"status": ["in", ["WIP", "QC Pending", "QC Completed", "Not Started"]],
 			},
 			pluck="name",
 		)
@@ -328,7 +337,10 @@ class ManufacturingWorkOrder(Document):
 			mop.save()
 		# closed MWO can no longer be used in Employee IR
 		self.db_set("status", "Closed")
-		frappe.msgprint(_("{0} Manufacturing Operation(s) marked as Finished.").format(len(mops)))
+		frappe.msgprint(
+			_("{0} Manufacturing Operation(s) marked as Finished.").format(len(mops))
+		)
+
 	@frappe.whitelist()
 	def transfer_to_mwo(self):
 		create_stock_transfer_entry(self)
@@ -1106,6 +1118,13 @@ def create_manufacturing_operation(doc, last_operation=None):
 		# New Status
 		status = "Finished"
 
+	if doc.is_without_so and doc.department != department:
+		# A Without-SO order starts in its plan's department, where the default operation
+		# does not belong; the Employee IR issue picks the operation, as after a Department
+		# IR receive.
+		department = doc.department
+		operation = None
+
 	if doc.split_from:
 		department = doc.department
 		operation = None
@@ -1113,13 +1132,16 @@ def create_manufacturing_operation(doc, last_operation=None):
 	mop.status = status
 	mop.type = "Manufacturing Work Order"
 
-	if doc.department in ("Computer Aided Designing - GEPL","Computer Aided Designing - KGJPL"):
+	if doc.department in (
+		"Computer Aided Designing - GEPL",
+		"Computer Aided Designing - KGJPL",
+	):
 		mop.operation = doc.department
 		mop.department = doc.department
 	else:
 		mop.operation = operation
 		mop.department = department
-	
+
 	mop.custom_tracking_bom = doc.custom_tracking_bom
 	# mop.department = department
 
