@@ -146,4 +146,7 @@ jewellery_erpnext.patches.add_slow_path_indexes #2026-11-23 cancel back-link, SA
 jewellery_erpnext.patches.set_do_not_explode_on_old_bom_items #2026-11-23 tick Do Not Explode on existing Template BOM rows
 jewellery_erpnext.patches.add_mr_transfer_in_progress_state #2026-11-25 hold Transfer Material in Material Transfer In Progress until the transfer Stock Entry is submitted
 jewellery_erpnext.patches.add_refinery_flow_fields
+jewellery_erpnext.patches.add_batch_worker_cost_fields
+jewellery_erpnext.patches.disable_mp_get_item_table_server_script
+jewellery_erpnext.patches.set_without_so_pmo_type
 jewellery_erpnext.patches.restore_missing_perf_indexes
