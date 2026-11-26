@@ -308,6 +308,28 @@ class ManufacturingWorkOrder(Document):
 		self.db_set("status", "Cancelled")
 
 	@frappe.whitelist()
+	def finish_operations(self):
+		mops = frappe.get_all(
+			"Manufacturing Operation",
+			filters={
+				"manufacturing_work_order": self.name,
+				"status": ["in", ["WIP", "QC Pending", "QC Completed","Not Started"]],
+			},
+			pluck="name",
+		)
+		if not mops and self.status == "Closed":
+			frappe.throw(_("Manufacturing Work Order is already finished."))
+		for name in mops:
+			mop = frappe.get_doc("Manufacturing Operation", name)
+			mop.status = "Finished"
+			if mop.department == "Computer Aided Manufacturing - GEPL":
+				# CAM operations may reference a Manufacturing Plan that no longer exists
+				mop.flags.ignore_links = True
+			mop.save()
+		# closed MWO can no longer be used in Employee IR
+		self.db_set("status", "Closed")
+		frappe.msgprint(_("{0} Manufacturing Operation(s) marked as Finished.").format(len(mops)))
+	@frappe.whitelist()
 	def transfer_to_mwo(self):
 		create_stock_transfer_entry(self)
 
@@ -1090,9 +1112,16 @@ def create_manufacturing_operation(doc, last_operation=None):
 
 	mop.status = status
 	mop.type = "Manufacturing Work Order"
-	mop.operation = operation
+
+	if doc.department in ("Computer Aided Designing - GEPL","Computer Aided Designing - KGJPL"):
+		mop.operation = doc.department
+		mop.department = doc.department
+	else:
+		mop.operation = operation
+		mop.department = department
+	
 	mop.custom_tracking_bom = doc.custom_tracking_bom
-	mop.department = department
+	# mop.department = department
 
 	# Explicitly copy weights from MWO to MOP
 	mop.gross_wt = doc.gross_wt

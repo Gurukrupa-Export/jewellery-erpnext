@@ -157,7 +157,7 @@ frappe.ui.form.on("Employee IR", {
 		// Whether this is a casting (tree) operation changes with it.
 		toggle_tree_number_column(frm);
 	},
-	async scan_mwo(frm) {
+	scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
 			let scanned = frm.doc.scan_mwo;
 			// Clear the field BEFORE any throw. frappe.throw aborts the handler, so the clear at
@@ -213,15 +213,34 @@ frappe.ui.form.on("Employee IR", {
 					});
 				}
 			}
+			frm.doc.employee_ir_operations.forEach(function (item) {
+				if (item.manufacturing_work_order == frm.doc.scan_mwo)
+					frappe.throw(
+						__("{0} Manufacturing Work Order already exists", [frm.doc.scan_mwo])
+					);
+			});
+			// if (frm.doc.employee_ir_operations.length > 30) {
+			// 	frappe.throw(__("Only 30 MOP allowed in one document"));
+			// }
 			var query_filters = {
 				department: frm.doc.department,
-				manufacturing_work_order: scanned,
+				manufacturing_work_order: frm.doc.scan_mwo,
 			};
 			if (frm.doc.type == "Issue") {
 				query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
 				query_filters["status"] = ["in", ["Not Started"]];
-				query_filters["operation"] = ["is", "not set"];
-				// query_filters["department_ir_status"] = ["=", "Received"]
+				if (
+					!["Computer Aided Designing - GEPL", "Computer Aided Manufacturing - GEPL"].includes(
+						frm.doc.department
+					)
+				)
+					query_filters["operation"] = ["is", "not set"];
+				if (
+					!["Computer Aided Designing - GEPL", "Computer Aided Manufacturing - GEPL"].includes(
+						frm.doc.department
+					)
+				)
+					query_filters["department_ir_status"] = ["=", "Received"];
 
 				if (frm.doc.subcontracting == "Yes") {
 					query_filters["employee"] = ["is", "not set"];
@@ -230,9 +249,11 @@ frappe.ui.form.on("Employee IR", {
 				}
 				add_process_filter(frm, query_filters);
 			} else {
+				// if (frm.doc.operation != "CAD Updation")
 				query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
 				query_filters["operation"] = frm.doc.operation;
-				if (frm.doc.employee) query_filters["employee"] = frm.doc.employee;
+				if (frm.doc.employee && frm.doc.operation != "CAD Updation")
+					query_filters["employee"] = frm.doc.employee;
 				if (frm.doc.subcontractor && frm.doc.subcontracting == "Yes")
 					query_filters["subcontractor"] = frm.doc.subcontractor;
 			}
@@ -250,8 +271,25 @@ frappe.ui.form.on("Employee IR", {
 				])
 				.then((r) => {
 					let values = r.message;
+					// console.log("scan_mwo debug", { query_filters, result: values });
 
 					if (values.manufacturing_work_order) {
+						
+						add_qc_row(values);
+					} else {
+						frappe.throw({
+							title: __("Message"),
+							message:
+								__("No Manufacturing Operation Found") +
+								"<br><br><b>Debug filters:</b><pre>" +
+								JSON.stringify(query_filters, null, 2) +
+								"</pre>",
+						});
+					}
+					frm.set_value("scan_mwo", "");
+				});
+
+			function add_qc_row(values) {
 						frappe.db.get_value(
 							"QC",
 							{
@@ -278,18 +316,10 @@ frappe.ui.form.on("Employee IR", {
 								fill_estimated_rpt_wt(frm, row);
 								apply_tree_header(frm);
 								load_repeat_flag(frm);
+								scroll_grid_to_last_row(frm, "employee_ir_operations");
 							}
 						);
-					} else {
-						// frappe.throw("No Manufacturing Operation Found");
-						frappe.throw({
-							title: __("Message"),
-							message: __("No Manufacturing Operation Found"),
-						});
-					}
-					// already cleared at entry; kept for the case where a prior handler re-set it
-					frm.set_value("scan_mwo", "");
-				});
+			}
 		}
 	},
 	get_operations(frm) {
@@ -631,7 +661,13 @@ function set_child_table_batch_filter(frm) {
 		};
 	};
 }
-
+function scroll_grid_to_last_row(frm, fieldname) {
+	var grid_wrapper = frm.fields_dict[fieldname].grid.wrapper;
+	var last_row = grid_wrapper.find(".grid-body .rows > .grid-row").last();
+	if (last_row.length) {
+		last_row[0].scrollIntoView({ behavior: "smooth", block: "center" });
+	}
+}
 // This button pulls in the still-at-casting siblings of whatever casting tree(s) are already on
 // the form so the operator can complete the tree in one click. The submit-time validator
 // (doc_events/tree_casting.py) blocks a partial re-issue only when

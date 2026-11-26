@@ -23,6 +23,7 @@
   "manufacturing_work_order",
   "manufacturing_order",
   "manufacturing_plan",
+  "manufacturing_plan_kggk",
   "for_fg",
   "fg_bom",
   "operation",
@@ -834,6 +835,11 @@
    "fieldtype": "Check",
    "label": "Is received gross greater than gross ",
    "read_only": 1
+  },
+  {
+   "fieldname": "manufacturing_plan_kggk",
+   "fieldtype": "Data",
+   "label": "Manufacturing Plan (KGGK)"
   }
  ],
  "index_web_pages_for_search": 1,
