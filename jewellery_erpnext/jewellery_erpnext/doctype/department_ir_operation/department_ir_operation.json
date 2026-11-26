@@ -9,6 +9,8 @@
  "field_order": [
   "manufacturing_work_order",
   "manufacturing_operation",
+  "department_process",
+  "previous_process",
   "status",
   "parent_manufacturing_order",
   "gross_wt",
@@ -29,6 +31,26 @@
    "label": "Manufacturing Operation",
    "no_copy": 1,
    "options": "Manufacturing Operation"
+  },
+  {
+   "description": "The work order's process: on an Issue the process it leaves, on a Receive the process it is received into.",
+   "fetch_from": "manufacturing_operation.department_process",
+   "fieldname": "department_process",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Process",
+   "options": "Department Process",
+   "read_only": 1
+  },
+  {
+   "description": "On a Receive: the process the work order was in when it was issued.",
+   "fieldname": "previous_process",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Previous Process",
+   "no_copy": 1,
+   "options": "Department Process",
+   "read_only": 1
   },
   {
    "fieldname": "status",
@@ -104,7 +126,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-10-15 12:00:00.000000",
+ "modified": "2026-11-20 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department IR Operation",
