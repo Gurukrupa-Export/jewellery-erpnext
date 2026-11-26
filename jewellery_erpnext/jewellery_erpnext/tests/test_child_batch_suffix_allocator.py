@@ -164,6 +164,11 @@ class TestCreateChildBatchesSuffix(UnitTestCase):
 			batch_rename.frappe.db, "exists", side_effect=lambda dt, name: name in taken
 		), patch.object(
 			batch_rename.frappe, "new_doc", side_effect=_new_doc
+		), patch.object(
+			# The produce item is batch-tracked; the serial-only guard reads has_batch_no.
+			batch_rename.frappe.db,
+			"get_value",
+			return_value=1,
 		), patch.object(batch_rename, "_source_row_rate", return_value=0.0):
 			batch_rename.create_child_batches(doc)
 		return doc, inserted, sql
