@@ -7,7 +7,7 @@ from frappe import _
 from frappe.model import no_value_fields, table_fields
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
-from frappe.query_builder.functions import Max
+from frappe.query_builder.functions import IfNull, Max
 from frappe.utils import cint, flt, get_link_to_form, strip_html
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
@@ -2044,12 +2044,16 @@ def _get_requested_qty_by_item(doc, for_update=False):
 		.select(
 			MaterialRequestItem.item_code,
 			MaterialRequestItem.description,
-			MaterialRequestItem.stock_qty,
+			MaterialRequestItem.qty,
+			MaterialRequestItem.conversion_factor,
 			MaterialRequestItem.custom_is_customer_item,
 			MaterialRequestItem.custom_sub_setting_type,
 		)
 		.where(MaterialRequest.manufacturing_order == doc.name)
 		.where(MaterialRequest.docstatus < 2)
+		# A Stopped request's quantity will never arrive, so it is still pending. IfNull
+		# because a request saved under ignore_validate may carry no status at all.
+		.where(IfNull(MaterialRequest.status, "") != "Stopped")
 	)
 	if for_update:
 		query = query.for_update()
@@ -2070,7 +2074,12 @@ def _get_requested_qty_by_item(doc, for_update=False):
 		key = _requirement_key(
 			item_code, line.custom_is_customer_item, line.custom_sub_setting_type
 		)
-		requested[key] = requested.get(key, 0) + flt(line.stock_qty)
+		# qty x conversion_factor, not stock_qty: create_mr_for_split_work_order copies a
+		# request with qty 0 under ignore_validate, so its stock_qty keeps the original's
+		# full quantity and would count that requirement as requested a second time.
+		requested[key] = requested.get(key, 0) + flt(line.qty) * flt(
+			line.conversion_factor or 1
+		)
 	return requested
 
 
