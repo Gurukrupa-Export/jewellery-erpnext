@@ -30,6 +30,10 @@ proportional split, so a site with no customer-owned batches sees no change.
 * The EOD sync (``mop_settings/mop_eod_sync.py``) is a pass-through: it moves the
   exact batch its MOP Log names, in full. A priority branch there would desync
   ``qty_after_transaction_batch_based``.
+* Employee IR process loss (``employee_ir.book_metal_loss``) splits loss flat
+  across every item, whatever its inventory type, by business decision
+  (2026-10-15). It calls ``tiered_allocate`` with a single tier for the precision
+  reconciliation only; ``LOSS_PRIORITY`` does not apply there.
 """
 
 import frappe
