@@ -1135,7 +1135,7 @@ class TestSingleModeGuards(_BuilderCase):
 		doc.alloy_batch_details = [_alloc(6.7, "AL1")]
 		self._refused(
 			doc,
-			r"Target Qty 26\.667 does not match the 26\.7 that the source quantity and the "
+			r"Target Qty 26\.667 does not match the 26\.700 that the source quantity and the "
 			r"stored alloy quantity make",
 		)
 
@@ -1147,7 +1147,7 @@ class TestSingleModeGuards(_BuilderCase):
 		)
 		self._refused(
 			doc,
-			r"Target Qty 15\.0 does not match the 14\.99 that the source quantity and the "
+			r"Target Qty 15\.000 does not match the 14\.990 that the source quantity and the "
 			r"stored alloy quantity make",
 		)
 
@@ -1162,7 +1162,7 @@ class TestSingleModeGuards(_BuilderCase):
 		doc.alloy_batch_details = [_alloc(5.0, "AL1")]
 		self._refused(
 			doc,
-			r"Alloy M-Genia-221: the allocated batches cover 5\.0 but this conversion "
+			r"Alloy M-Genia-221: the allocated batches cover 5\.000 but this conversion "
 			r"needs 6\.667",
 		)
 
@@ -2187,13 +2187,13 @@ class TestRemarksFieldConfiguration(IntegrationTestCase):
 		"""
 		self.assertNotIn("options", self.fields["remarks"])
 
-	def test_percentage_precision_pinned_to_two(self):
-		"""Loss-book percentages are written to 2 decimals.
+	def test_percentage_precision_pinned_to_three(self):
+		"""Loss-book percentages are written to 3 decimals, like every Customer Goods number.
 
-		Without this the sentence reads "NR 1.800%", because the site runs System
-		Settings float_precision 3 for gram/carat weights (ensure_float_precision_three).
+		The sentence reads "NR 1.800%". A remark stored at 2 decimals ("NR 1.80%") still
+		matches its template and is re-rendered at 3 on the next save.
 		"""
-		self.assertEqual(self.fields["percentage"].get("precision"), "2")
+		self.assertEqual(self.fields["percentage"].get("precision"), "3")
 
 
 class TestRenderRemarkOptions(IntegrationTestCase):

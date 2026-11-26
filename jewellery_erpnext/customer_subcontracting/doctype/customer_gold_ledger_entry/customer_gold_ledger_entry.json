@@ -235,28 +235,28 @@
    "fieldtype": "Float",
    "label": "Gross Qty Delta",
    "read_only": 1,
-   "precision": "6"
+   "precision": "3"
   },
   {
    "fieldname": "cg_fine_gold_delta",
    "fieldtype": "Float",
    "label": "Fine Gold Delta",
    "read_only": 1,
-   "precision": "6"
+   "precision": "3"
   },
   {
    "fieldname": "cg_reference_qty_delta",
    "fieldtype": "Float",
    "label": "Reference Qty Delta",
    "read_only": 1,
-   "precision": "6"
+   "precision": "3"
   },
   {
    "fieldname": "cg_reference_purity",
    "fieldtype": "Float",
    "label": "Reference Purity",
    "read_only": 1,
-   "precision": "6"
+   "precision": "3"
   },
   {
    "fieldname": "cg_fine_measurement_status",
@@ -293,7 +293,7 @@
    "label": "Carrying Value Delta",
    "options": "cg_currency",
    "read_only": 1,
-   "precision": "4"
+   "precision": "3"
   },
   {
    "fieldname": "cg_currency",
@@ -316,7 +316,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-09-14 00:00:00",
+ "modified": "2026-11-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Customer Gold Ledger Entry",

@@ -312,7 +312,7 @@
    "fieldtype": "Percent",
    "label": "Percentage",
    "non_negative": 1,
-   "precision": "2"
+   "precision": "3"
   },
   {
    "fieldname": "remarks",
@@ -588,7 +588,7 @@
    "link_fieldname": "custom_metal_conversion_reference"
   }
  ],
- "modified": "2026-10-14 12:00:00.000000",
+ "modified": "2026-11-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Metal Conversions",

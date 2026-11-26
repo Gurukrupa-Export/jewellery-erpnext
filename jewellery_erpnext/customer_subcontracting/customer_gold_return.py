@@ -53,6 +53,7 @@ land, this check tightens rather than changes shape.
 import frappe
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
 	EVENT_RECEIPT,
 	EVENT_RETURN,
@@ -232,10 +233,10 @@ def make_customer_gold_return(
 				"Only {0} of batch {1} is free to return -- the rest is either already "
 				"delivered or has left {2} for manufacturing. Requested {3}."
 			).format(
-				frappe.bold(available),
+				frappe.bold(fmt3(available)),
 				frappe.bold(batch_no),
 				frappe.bold(warehouse),
-				frappe.bold(qty),
+				frappe.bold(fmt3(qty)),
 			),
 			title=frappe._("Insufficient Free Customer Gold"),
 		)
@@ -708,7 +709,9 @@ def _check_plans(doc, plans, for_update):
 					"Only {0} of the selected batch is free in {1} -- the rest is reserved, "
 					"on the shop floor or already delivered. This return asks for {2}."
 				).format(
-					frappe.bold(flt(free, 3)), frappe.bold(warehouse), frappe.bold(qty)
+					frappe.bold(fmt3(free)),
+					frappe.bold(warehouse),
+					frappe.bold(fmt3(qty)),
 				),
 				title=frappe._("Insufficient Free Customer Gold"),
 			)
@@ -744,9 +747,9 @@ def _check_plans(doc, plans, for_update):
 					"open accounting decision (D08); the return is held until it is made."
 				).format(
 					plan.row.idx,
-					frappe.bold(flt(actual or 0, 2)),
+					frappe.bold(fmt3(actual or 0)),
 					frappe.bold(plan.receipt.reference_docname),
-					frappe.bold(flt(plan.booked_rate, 2)),
+					frappe.bold(fmt3(plan.booked_rate)),
 				),
 				title=frappe._("Customer Gold Return: Valuation Differs"),
 			)
@@ -783,8 +786,8 @@ def _check_plans(doc, plans, for_update):
 				).format(
 					frappe.bold(receipt.reference_docname),
 					receipt.cg_source_row,
-					frappe.bold(flt(max(left, 0), precision)),
-					frappe.bold(flt(qty, precision)),
+					frappe.bold(fmt3(max(left, 0))),
+					frappe.bold(fmt3(qty)),
 				),
 				title=frappe._("Customer Gold Return Exceeds Receipt"),
 			)
@@ -821,8 +824,8 @@ def _check_shared_batch_rates(doc, plans):
 				).format(
 					plan.row.idx,
 					len(rates),
-					frappe.bold(flt(min(rates), 2)),
-					frappe.bold(flt(max(rates), 2)),
+					frappe.bold(fmt3(min(rates))),
+					frappe.bold(fmt3(max(rates))),
 					frappe.bold(plan.receipt.reference_docname),
 				),
 				title=frappe._("Customer Gold Return: Valuation Differs"),
@@ -866,10 +869,10 @@ def _check_receipt_share(plans, replay):
 					"to other receipts of the same customer. This return asks for {4}."
 				).format(
 					plan.row.idx,
-					frappe.bold(flt(own, 3)),
+					frappe.bold(fmt3(own)),
 					frappe.bold(warehouse),
 					frappe.bold(plan.receipt.reference_docname),
-					frappe.bold(flt(qty, 3)),
+					frappe.bold(fmt3(qty)),
 				),
 				title=frappe._("Customer Gold Return Exceeds Receipt"),
 			)
@@ -1110,12 +1113,12 @@ def _released_per_row(doc, plans):
 	)
 	gl_total = flt(debit[0][0]) if debit and debit[0][0] is not None else None
 
-	rounded = {name: flt(value, 2) for name, value in values.items()}
+	rounded = {name: flt(value, 3) for name, value in values.items()}
 	if gl_total is not None and rounded:
-		residual = flt(gl_total - sum(rounded.values()), 2)
+		residual = flt(gl_total - sum(rounded.values()), 3)
 		if residual and abs(residual) <= 0.01 * len(rounded):
 			largest = max(rounded, key=lambda name: rounded[name])
-			rounded[largest] = flt(rounded[largest] + residual, 2)
+			rounded[largest] = flt(rounded[largest] + residual, 3)
 	return rounded
 
 
@@ -1375,6 +1378,6 @@ def _choose_route(event, holdings, requested, custody_warehouse):
 		"Shortfall",
 		"Free metal traceable to this receipt covers only {0} of the {1} requested; the rest "
 		"is reserved, in work or already dispatched.".format(
-			flt(same_item + converted, 3), flt(requested, 3)
+			fmt3(same_item + converted), fmt3(requested)
 		),
 	)

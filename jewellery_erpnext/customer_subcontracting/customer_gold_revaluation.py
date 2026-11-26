@@ -45,6 +45,7 @@ before, worth more or less than it was.
 import frappe
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_fulfilment import (
 	EVENT_REVALUATION,
 	LEDGER_DOCTYPE,
@@ -171,7 +172,9 @@ def revalue_customer_gold(
 		new_rate = flt(resolve_customer_gold_rate_for_date(posting_date).per_gram_rate)
 	new_rate = flt(new_rate)
 
-	delta = flt((new_rate - flt(booked_rate)) * free, 2)
+	# At the flow's 3 decimals, the precision ``cg_carrying_value_delta`` is stored at; at 2 the
+	# custody event dropped the third decimal of the difference it records.
+	delta = flt((new_rate - flt(booked_rate)) * free, 3)
 
 	# IDENTITY OF THE BUSINESS OPERATION, NOT OF THE DOCUMENT IT CREATES.
 	#
@@ -300,7 +303,7 @@ def _resolve_revaluation_event_key(company, batch_no, posting_date, new_rate):
 					"would post the difference a second time against metal that has not moved."
 				).format(
 					frappe.bold(batch_no),
-					frappe.bold(frappe.utils.fmt_money(new_rate)),
+					frappe.bold(fmt3(new_rate)),
 					frappe.bold(str(posting_date)),
 				),
 				title=frappe._("Customer Gold Already Revalued"),
@@ -315,7 +318,7 @@ def _resolve_revaluation_event_key(company, batch_no, posting_date, new_rate):
 			"allocate another attempt -- investigate why the correction keeps being undone."
 		).format(
 			frappe.bold(batch_no),
-			frappe.bold(frappe.utils.fmt_money(new_rate)),
+			frappe.bold(fmt3(new_rate)),
 			frappe.bold(str(posting_date)),
 			_MAX_REVALUATION_ATTEMPTS,
 		),
@@ -403,7 +406,11 @@ def _reject_partial(batch_no, warehouse, item_code, free):
 			frappe._(
 				"Only part of this batch is free in {0} ({1} of {2}), and a revaluation "
 				"restates the whole batch. Split the free quantity into its own batch first."
-			).format(frappe.bold(warehouse), frappe.bold(free), frappe.bold(total)),
+			).format(
+				frappe.bold(warehouse),
+				frappe.bold(fmt3(free)),
+				frappe.bold(fmt3(total)),
+			),
 			title=frappe._("Partial Revaluation Not Supported"),
 		)
 

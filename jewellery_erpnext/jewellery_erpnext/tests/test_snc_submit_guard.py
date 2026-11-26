@@ -1420,7 +1420,7 @@ class TestSncHardening(IntegrationTestCase):
 				None, _receive_row(M_ITEM, 2.0, "W", None, "B")
 			)
 		self.assertIn(F_ITEM, finding)
-		self.assertIn("1.25", finding)
+		self.assertIn("to settle 1.250 g of", finding)
 		self.assertIn("Customer GJCU0009", finding)
 		self.assertIn("same metal type and colour", finding)
 		self.assertIn("Regular Stock", metal)

@@ -20,7 +20,9 @@ import frappe
 from frappe import _
 from frappe.exceptions import ValidationError
 from frappe.tests import IntegrationTestCase
+from frappe.utils.number_format import NumberFormat
 
+from jewellery_erpnext.customer_subcontracting import cg_format
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions import (
 	metal_conversions as mc,
 )
@@ -166,6 +168,14 @@ class _ChainCase(IntegrationTestCase):
 		self._patches = [
 			patch.object(cs, "flt", _det_flt),
 			patch.object(lanes_mod, "flt", _det_flt),
+			# The refusals print their figures through ``fmt3``: the same shim, and a fixed
+			# number format -- reading the site's would go through the get_value stub below.
+			patch.object(cg_format, "flt", _det_flt),
+			patch.object(
+				cg_format,
+				"get_number_format",
+				return_value=NumberFormat.from_string("#,###.##"),
+			),
 			patch.object(cs, "_precision", return_value=3),
 			patch.object(cs.frappe.db, "get_value", side_effect=_get_value),
 			patch.object(
