@@ -1118,7 +1118,7 @@ def create_manufacturing_operation(doc, last_operation=None):
 		mop.department = doc.department
 	else:
 		mop.operation = operation
-		mop.department = doc.department
+		mop.department = department
 	
 	mop.custom_tracking_bom = doc.custom_tracking_bom
 	# mop.department = department

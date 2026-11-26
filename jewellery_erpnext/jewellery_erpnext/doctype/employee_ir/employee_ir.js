@@ -159,6 +159,60 @@ frappe.ui.form.on("Employee IR", {
 	},
 	scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
+			let scanned = frm.doc.scan_mwo;
+			// Clear the field BEFORE any throw. frappe.throw aborts the handler, so the clear at
+			// the end of the success path never runs on a rejected scan -- the field keeps the
+			// rejected code, scanning it again fires no change event, and the scanner looks dead.
+			frm.set_value("scan_mwo", "");
+			let already = (frm.doc.employee_ir_operations || []).some(
+				(item) => item.manufacturing_work_order == scanned
+			);
+			if (already) {
+				frappe.throw({
+					title: __("Work Order Already Scanned"),
+					message: __("Manufacturing Work Order {0} is already scanned on this Employee IR.", [
+						scanned,
+					]),
+				});
+			}
+			let wo_limit = await get_employee_ir_wo_limit(frm);
+			let tree_number = await scanned_tree_number(frm, scanned);
+			if (wo_limit > 0 && frm.doc.employee_ir_operations.length >= wo_limit) {
+				frappe.throw(
+					__("Only {0} work order(s) allowed per Employee IR for department {1}.", [
+						wo_limit,
+						frm.doc.department,
+					])
+				);
+			}
+			// One Employee IR = one casting tree. The server twin is
+			// tree_casting.validate_single_casting_tree, reached from EmployeeIR.validate on every
+			// save; this is the fail-fast copy so the scanner refuses the code at the desk instead
+			// of the operator finding out at save -- the same division of labour the
+			// duplicate-work-order check above has with validate_duplication_and_gr_wt.
+			//
+			// Self-scoping: scanned_tree_number already answers null off a Receive and off a
+			// non-casting operation, so this is inert on an Issue and on a finding repack. A work
+			// order on NO tree abstains exactly as the server does -- its casting Issue may have
+			// been cancelled underneath the operator, which is a different problem.
+			//
+			// Best-effort by nature: rows added through Get Operations carry no tree_number until
+			// the next save, so a scan onto such a form cannot see the conflict. The server guard
+			// is the enforcement point.
+			if (tree_number) {
+				let other = (frm.doc.employee_ir_operations || []).find(
+					(item) => item.tree_number && item.tree_number !== tree_number
+				);
+				if (other) {
+					frappe.throw({
+						title: __("Different Casting Tree"),
+						message: __(
+							"Manufacturing Work Order {0} is on casting tree {1}, but this Employee IR is already receiving tree {2}. One Employee IR can receive only ONE casting tree — finish this one and start a new Employee IR for {1}.",
+							[scanned, tree_number, other.tree_number]
+						),
+					});
+				}
+			}
 			frm.doc.employee_ir_operations.forEach(function (item) {
 				if (item.manufacturing_work_order == frm.doc.scan_mwo)
 					frappe.throw(
@@ -193,6 +247,7 @@ frappe.ui.form.on("Employee IR", {
 				} else {
 					query_filters["subcontractor"] = ["is", "not set"];
 				}
+				add_process_filter(frm, query_filters);
 			} else {
 				// if (frm.doc.operation != "CAD Updation")
 				query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
@@ -208,45 +263,18 @@ frappe.ui.form.on("Employee IR", {
 					"name",
 					"manufacturing_work_order",
 					"status",
+					"gross_wt",
+					"diamond_wt",
+					"diamond_pcs",
+					"gemstone_wt",
+					"gemstone_pcs",
 				])
 				.then((r) => {
 					let values = r.message;
 					// console.log("scan_mwo debug", { query_filters, result: values });
 
 					if (values.manufacturing_work_order) {
-						// if (frm.doc.type != "Issue" && frm.doc.operation == "CAD Updation") {
-						// 	frappe.db
-						// 		.get_list("Timesheet", {
-						// 			filters: {
-						// 				employee: frm.doc.employee,
-						// 				department: frm.doc.department,
-						// 				custom_manufacturing_work_order: frm.doc.scan_mwo,
-						// 			},
-						// 			fields: ["name", "workflow_state"],
-						// 		})
-						// 		.then((timesheets) => {
-						// 			console.log("scan_mwo debug", timesheets);
-						// 			if (!timesheets.length) {
-						// 				frm.set_value("scan_mwo", "");
-						// 				frappe.throw(
-						// 					__("No Timesheet found for {0}", [frm.doc.scan_mwo])
-						// 				);
-						// 			}
-						// 			let pending = timesheets.filter((t) => t.workflow_state != "Approved");
-						// 			if (pending.length) {
-						// 				frm.set_value("scan_mwo", "");
-						// 				frappe.throw(
-						// 					__("Timesheet {0} is {1}, all Timesheets must be Approved", [
-						// 						pending[0].name,
-						// 						pending[0].workflow_state,
-						// 					])
-						// 				);
-						// 			}
-						// 			add_qc_row(values);
-						// 			frm.set_value("scan_mwo", "");
-						// 		});
-						// 	return;
-						// }
+						
 						add_qc_row(values);
 					} else {
 						frappe.throw({
@@ -277,8 +305,17 @@ frappe.ui.form.on("Employee IR", {
 									manufacturing_operation: values.name,
 									qc: a.name,
 									received_gross_wt: a.received_gross_wt,
+									gross_wt: values.gross_wt,
+									diamond_wt: values.diamond_wt,
+									diamond_pcs: values.diamond_pcs,
+									gemstone_wt: values.gemstone_wt,
+									gemstone_pcs: values.gemstone_pcs,
+									tree_number: tree_number,
 								});
 								frm.refresh_field("employee_ir_operations");
+								fill_estimated_rpt_wt(frm, row);
+								apply_tree_header(frm);
+								load_repeat_flag(frm);
 								scroll_grid_to_last_row(frm, "employee_ir_operations");
 							}
 						);
@@ -624,7 +661,13 @@ function set_child_table_batch_filter(frm) {
 		};
 	};
 }
-
+function scroll_grid_to_last_row(frm, fieldname) {
+	var grid_wrapper = frm.fields_dict[fieldname].grid.wrapper;
+	var last_row = grid_wrapper.find(".grid-body .rows > .grid-row").last();
+	if (last_row.length) {
+		last_row[0].scrollIntoView({ behavior: "smooth", block: "center" });
+	}
+}
 // This button pulls in the still-at-casting siblings of whatever casting tree(s) are already on
 // the form so the operator can complete the tree in one click. The submit-time validator
 // (doc_events/tree_casting.py) blocks a partial re-issue only when

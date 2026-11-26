@@ -193,8 +193,8 @@ def update_mop_balance(mop_name, ignore_links=False):
 	elif doc.department == "Computer Aided Manufacturing - GEPL":
 		doc.flags.ignore_links = True
 		doc.save()
-	else:
-		doc.save()
+	# else:
+	# 	doc.save()
 
 	return doc
 

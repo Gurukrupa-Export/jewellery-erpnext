@@ -67,7 +67,7 @@ frappe.ui.form.on("Manufacturing Work Order", {
 					}
 				});
 		}
-		if (frm.doc.docstatus == 1 && frm.doc.status != "Closed") {
+		if (frm.doc.docstatus == 1 && frm.doc.department == "Computer Aided Designing - GEPL") {
 			frm.add_custom_button(__("Finish"), function () {
 				frappe.confirm(__("Mark open Manufacturing Operation(s) as Finished?"), () => {
 					frm.call({
