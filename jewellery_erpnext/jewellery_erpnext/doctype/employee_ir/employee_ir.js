@@ -157,7 +157,7 @@ frappe.ui.form.on("Employee IR", {
 		// Whether this is a casting (tree) operation changes with it.
 		toggle_tree_number_column(frm);
 	},
-	scan_mwo(frm) {
+	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
 			let scanned = frm.doc.scan_mwo;
 			// Clear the field BEFORE any throw. frappe.throw aborts the handler, so the clear at
