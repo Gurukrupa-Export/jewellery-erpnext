@@ -124,6 +124,7 @@ class GemstoneConversion(Document):
 
 	@frappe.whitelist()
 	def get_detail_tab_value(self):
+		_check_gemstone_conversion_permission()
 		errors = []
 		dpt, branch = frappe.get_value(
 			"Employee", self.employee, ["department", "branch"]
@@ -157,6 +158,7 @@ class GemstoneConversion(Document):
 
 	@frappe.whitelist()
 	def get_batch_detail(self):
+		_check_gemstone_conversion_permission()
 		bal_qty = None
 		supplier = None
 		customer = None
@@ -431,8 +433,16 @@ def make_gemstone_stock_entry(self):
 		}
 
 
+def _check_gemstone_conversion_permission():
+	"""Whitelisted Gemstone Conversion endpoints are form helpers: only users who can
+	edit a Gemstone Conversion may call them. Doctype-level, because the form calls
+	them on documents that are not saved yet."""
+	frappe.has_permission("Gemstone Conversion", "write", throw=True)
+
+
 @frappe.whitelist()
 def get_loss_item(company, souce_item, loss_type=None):
+	_check_gemstone_conversion_permission()
 	return get_item_loss_item(company, souce_item, "G", loss_type)
 
 
