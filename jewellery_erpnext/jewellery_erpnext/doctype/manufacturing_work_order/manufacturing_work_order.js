@@ -3,6 +3,20 @@
 
 frappe.ui.form.on("Manufacturing Work Order", {
 	refresh: function (frm) {
+		// A Refinery Work Order only takes material from its PMO's work orders; the regular
+		// buttons (SNC, Split, Transfer Finding, unpack) do not apply to it.
+		if (frm.doc.is_refinery_mwo) {
+			frm.dashboard.set_headline_alert(
+				__("Refinery Work Order: kept out of tagging and the regular manufacturing flow."),
+				"orange"
+			);
+			if (frm.doc.docstatus == 1) {
+				frm.add_custom_button(__("Material Transfer"), () =>
+					refinery_material_transfer(frm)
+				);
+			}
+			return;
+		}
 		if (frm.doc.docstatus == 1) {
 			frappe.call({
 				method: "jewellery_erpnext.customer_subcontracting.sub_utils.snc.validate_button_visibility",
@@ -521,4 +535,69 @@ function set_html(frm) {
 			},
 		});
 	}
+}
+
+const REFINERY_METHOD =
+	"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo";
+
+function refinery_material_transfer(frm) {
+	frappe.call({
+		method: `${REFINERY_METHOD}.get_refinery_transfer_candidates`,
+		args: { refinery_mwo: frm.doc.name },
+		callback: (r) => {
+			const rows = r.message || [];
+			if (!rows.length) {
+				frappe.msgprint(
+					__("No work order of {0} is waiting in the refinery department.", [
+						frm.doc.manufacturing_order,
+					])
+				);
+				return;
+			}
+			const dialog = new frappe.ui.Dialog({
+				title: __("Transfer to Refinery Work Order"),
+				size: "large",
+				fields: [
+					{
+						fieldname: "mwos",
+						fieldtype: "Table",
+						label: __("Work Orders"),
+						cannot_add_rows: true,
+						in_place_edit: false,
+						data: rows.map((d) => ({ ...d, transfer: 1 })),
+						fields: [
+							{ fieldname: "transfer", fieldtype: "Check", label: __("Transfer"), in_list_view: 1, columns: 1 },
+							{ fieldname: "name", fieldtype: "Link", options: "Manufacturing Work Order", label: __("Work Order"), in_list_view: 1, read_only: 1, columns: 4 },
+							{ fieldname: "manufacturing_operation", fieldtype: "Link", options: "Manufacturing Operation", label: __("Operation"), in_list_view: 1, read_only: 1, columns: 3 },
+							{ fieldname: "status", fieldtype: "Data", label: __("Status"), in_list_view: 1, read_only: 1, columns: 2 },
+						],
+					},
+				],
+				primary_action_label: __("Transfer"),
+				primary_action: (values) => {
+					const source_mwos = (values.mwos || []).filter((d) => d.transfer).map((d) => d.name);
+					if (!source_mwos.length) {
+						frappe.msgprint(__("Tick at least one work order."));
+						return;
+					}
+					frappe.call({
+						method: `${REFINERY_METHOD}.transfer_to_refinery_mwo`,
+						args: { refinery_mwo: frm.doc.name, source_mwos },
+						freeze: true,
+						freeze_message: __("Transferring material"),
+						callback: (res) => {
+							if (res.exc) return;
+							dialog.hide();
+							frappe.show_alert({
+								message: __("Stock Entries: {0}", [(res.message || []).join(", ")]),
+								indicator: "green",
+							});
+							frm.reload_doc();
+						},
+					});
+				},
+			});
+			dialog.show();
+		},
+	});
 }

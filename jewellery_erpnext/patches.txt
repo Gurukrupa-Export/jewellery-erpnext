@@ -166,3 +166,4 @@ jewellery_erpnext.patches.create_hybrid_outwork_item #2026-11-23 Subcontracting 
 jewellery_erpnext.patches.set_do_not_explode_on_old_bom_items #2026-11-23 tick Do Not Explode on existing Template BOM rows
 jewellery_erpnext.patches.set_customer_gold_rate_precision_3 #2026-11-25 Customer Gold rate fields at 3 decimals
 jewellery_erpnext.patches.ensure_read_path_indexes
+jewellery_erpnext.patches.add_refinery_work_order_fields #2026-11-24 Manufacturer Refinery Department for the PMO Refinery Work Order

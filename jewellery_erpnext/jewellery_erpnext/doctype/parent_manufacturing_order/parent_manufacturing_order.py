@@ -577,6 +577,15 @@ class ParentManufacturingOrder(Document):
 			and tracking_bom_is_draft(self)
 			and can_create_pmo_material_request(),
 		)
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+			can_create_refinery_work_order,
+		)
+
+		# Shown only when the Manufacturer's Refinery Department holds one of its work orders.
+		self.set_onload(
+			"can_create_refinery_wo",
+			not pmo_blocking_state(self.name) and can_create_refinery_work_order(self),
+		)
 
 	def on_update_after_submit(self):
 		if self._state_change_only():
