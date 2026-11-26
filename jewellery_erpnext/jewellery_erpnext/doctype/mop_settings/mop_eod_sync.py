@@ -2267,7 +2267,34 @@ def _active_sre_exists(mwo, item_code, batch_no):
 	)
 
 
-@frappe.whitelist()
+#: Spellings that switch a repair from report-only to writing. Everything else -- including
+#: "true", "yes", None and anything unexpected -- stays a dry run.
+_LIVE_RUN_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def _parse_dry_run(value):
+	"""Read ``dry_run`` so that only an explicit "no" writes.
+
+	``cint`` turned any non-numeric string into 0, so ``dry_run=true`` arriving over HTTP ran
+	the repair for real. Booleans and ints keep their meaning; strings are dry unless they
+	spell 0 / false / no / off.
+	"""
+	if isinstance(value, bool):
+		return value
+	if isinstance(value, (int, float)):
+		return bool(value)
+	if isinstance(value, str):
+		return value.strip().lower() not in _LIVE_RUN_VALUES
+	return True
+
+
+def _require_repair_role():
+	"""The repairs create and cancel Stock Reservation Entries. ``bench execute`` runs as
+	Administrator, which ``frappe.only_for`` always lets through."""
+	frappe.only_for("System Manager")
+
+
+@frappe.whitelist(methods=["POST"])
 def backfill_missing_wip_reservations(mwo=None, dry_run=True):
 	"""Re-create the destination SREs that EOD sync skipped for batched WIP.
 
@@ -2297,7 +2324,8 @@ def backfill_missing_wip_reservations(mwo=None, dry_run=True):
 		get_current_mop_balance_rows,
 	)
 
-	dry_run = cint(dry_run)
+	_require_repair_role()
+	dry_run = _parse_dry_run(dry_run)
 	if mwo:
 		mwos = [mwo]
 	else:
@@ -2657,7 +2685,7 @@ def _reserve_batch_shortfall(
 	return result
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def heal_reservation_shortfall(mwo=None, dry_run=True, limit=None, warehouse=None):
 	"""Top up reservations that cover LESS than the MOP Log balance for an (item, batch).
 
@@ -2690,7 +2718,8 @@ def heal_reservation_shortfall(mwo=None, dry_run=True, limit=None, warehouse=Non
 		get_current_mop_balance_rows,
 	)
 
-	dry_run = cint(dry_run)
+	_require_repair_role()
+	dry_run = _parse_dry_run(dry_run)
 	if mwo:
 		mwos = [mwo]
 	else:

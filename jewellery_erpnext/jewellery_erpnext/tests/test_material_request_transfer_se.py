@@ -64,6 +64,47 @@ class TestOnSubmitDefersTransferSE(IntegrationTestCase):
 		mr_mod.on_submit(mr)
 		mock_enqueue.assert_not_called()
 
+	@patch(f"{_MR}.frappe.enqueue")
+	def test_queued_transfer_keeps_the_request_in_progress(self, mock_enqueue):
+		"""The status must not read "Material Transferred" before the entry exists."""
+		mr = MagicMock()
+		mr.name = "MR-001"
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.custom_transfer_se = None
+		mr.get = {"workflow_state": mr_mod.TRANSFER_IN_PROGRESS_STATE}.get
+		mr_mod.on_submit(mr)
+
+		mock_enqueue.assert_called_once()
+		mr.db_set.assert_called_once_with(
+			"custom_transfer_se_state", "Pending", update_modified=False
+		)
+
+	@patch(f"{_MR}.frappe.enqueue")
+	def test_nothing_to_queue_moves_an_in_progress_request_on(self, mock_enqueue):
+		"""No job will run, so nothing else would ever move it out of the in-progress state."""
+		for reserve_se, transfer_se in ((None, None), ("SE-RESERVE", "SE-TRANSFER")):
+			with self.subTest(reserve_se=reserve_se, transfer_se=transfer_se):
+				mr = MagicMock()
+				mr.custom_reserve_se = reserve_se
+				mr.custom_transfer_se = transfer_se
+				mr.get = {"workflow_state": mr_mod.TRANSFER_IN_PROGRESS_STATE}.get
+				mr_mod.on_submit(mr)
+
+				mr.db_set.assert_called_once_with(
+					"workflow_state", "Material Transferred", update_modified=False
+				)
+		mock_enqueue.assert_not_called()
+
+	@patch(f"{_MR}.frappe.enqueue")
+	def test_nothing_to_queue_leaves_other_states_alone(self, mock_enqueue):
+		mr = MagicMock()
+		mr.custom_reserve_se = None
+		mr.get = {"workflow_state": "Submitted"}.get
+		mr_mod.on_submit(mr)
+
+		mr.db_set.assert_not_called()
+		mock_enqueue.assert_not_called()
+
 	def tearDown(self):
 		return super().tearDown()
 
@@ -109,6 +150,9 @@ class TestMaterializeTransferSE(IntegrationTestCase):
 		self.assertEqual(args[1], "MR-001")
 		self.assertEqual(args[2]["custom_transfer_se_state"], "Failed")
 		self.assertIn("boom", args[2]["custom_transfer_se_error"])
+		# A failed transfer never moves the workflow on: the request stays in
+		# "Material Transfer In Progress", where the Retry button is.
+		self.assertNotIn("workflow_state", args[2])
 
 	def tearDown(self):
 		return super().tearDown()
@@ -153,8 +197,96 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 		mr.db_set.assert_called_once_with(
 			{"custom_transfer_se": "SE-TRANSFER-9", "custom_transfer_se_state": "Done"},
 			update_modified=False,
+			notify=True,
 		)
 		mock_copy.assert_not_called()
+
+	@patch(f"{_MR}.frappe.copy_doc")
+	@patch(f"{_MR}.frappe.db.sql")
+	@patch(f"{_MR}.frappe.get_doc")
+	def test_linking_an_existing_transfer_moves_an_in_progress_request_on(
+		self, mock_get_doc, mock_sql, mock_copy
+	):
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = {"workflow_state": mr_mod.TRANSFER_IN_PROGRESS_STATE}.get
+		mock_get_doc.return_value = mr
+		mock_sql.return_value = [("SE-TRANSFER-9",)]
+
+		mr_mod._create_transfer_se("MR-001")
+
+		mr.db_set.assert_called_once_with(
+			{
+				"custom_transfer_se": "SE-TRANSFER-9",
+				"custom_transfer_se_state": "Done",
+				"workflow_state": "Material Transferred",
+			},
+			update_modified=False,
+			notify=True,
+		)
+		mock_copy.assert_not_called()
+
+	def _create_new_transfer(self, workflow_state):
+		"""Run _create_transfer_se through to a new, submitted entry; return (mr, new_se)."""
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = {"workflow_state": workflow_state}.get
+		mr.items = []
+		new_se = MagicMock()
+		new_se.name = "SE-TRANSFER-NEW"
+		new_se.items = []
+		with patch(f"{_MR}.frappe.get_doc", side_effect=[mr, MagicMock()]), patch(
+			f"{_MR}.frappe.copy_doc", return_value=new_se
+		), patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None), patch(
+			f"{_MR}._entry_belongs_to", return_value=True
+		), patch(f"{_MR}.mri_warehouse_map", return_value={}):
+			mr_mod._create_transfer_se("MR-001")
+		return mr, new_se
+
+	def test_new_transfer_moves_an_in_progress_request_on_after_submit(self):
+		mr, new_se = self._create_new_transfer(mr_mod.TRANSFER_IN_PROGRESS_STATE)
+
+		new_se.submit.assert_called_once()
+		mr.db_set.assert_called_once_with(
+			{
+				"custom_transfer_se": "SE-TRANSFER-NEW",
+				"custom_transfer_se_state": "Done",
+				"workflow_state": "Material Transferred",
+			},
+			update_modified=False,
+			notify=True,
+		)
+
+	def test_new_transfer_leaves_a_request_already_in_material_transferred(self):
+		"""Requests that reached "Material Transferred" before the in-progress state existed."""
+		mr, _new_se = self._create_new_transfer("Material Transferred")
+
+		mr.db_set.assert_called_once_with(
+			{
+				"custom_transfer_se": "SE-TRANSFER-NEW",
+				"custom_transfer_se_state": "Done",
+			},
+			update_modified=False,
+			notify=True,
+		)
+
+	def test_a_failed_submit_leaves_the_request_in_progress(self):
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = {"workflow_state": mr_mod.TRANSFER_IN_PROGRESS_STATE}.get
+		mr.items = []
+		new_se = MagicMock()
+		new_se.items = []
+		new_se.submit.side_effect = frappe.ValidationError("negative stock")
+		with patch(f"{_MR}.frappe.get_doc", side_effect=[mr, MagicMock()]), patch(
+			f"{_MR}.frappe.copy_doc", return_value=new_se
+		), patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None), patch(
+			f"{_MR}._entry_belongs_to", return_value=True
+		), patch(f"{_MR}.mri_warehouse_map", return_value={}):
+			with self.assertRaises(frappe.ValidationError):
+				mr_mod._create_transfer_se("MR-001")
+
+		mr.db_set.assert_not_called()
 
 	@patch(f"{_MR}.frappe.copy_doc")
 	@patch(f"{_MR}.frappe.db.sql", return_value=[])
@@ -216,6 +348,52 @@ class TestCreateTransferSEIdempotency(IntegrationTestCase):
 		new_se.save.assert_called_once()
 		new_se.submit.assert_called_once()
 		mock_lookup.assert_called_once_with("MR-001")
+
+	@patch(f"{_MR}._entry_belongs_to", return_value=True)
+	@patch(f"{_MR}.mri_warehouse_map", return_value={})
+	@patch(f"{_MR}.get_submitted_from_reserve_se", return_value=None)
+	@patch(f"{_MR}.frappe.copy_doc")
+	@patch(f"{_MR}.frappe.get_doc")
+	def test_copy_carries_the_requests_manufacturer(
+		self, mock_get_doc, mock_copy, _mock_lookup, _mock_map, _mock_owned
+	):
+		"""gepl-prod 4gco4fe5bn: the reserve entry has no manufacturer, so the background
+		copy hit stock_entry's pure-gold lookup with "(not set)" and threw."""
+		values = {"custom_manufacturer": "Shubh", "manufacturing_order": "PMO-1"}
+		mr = MagicMock()
+		mr.custom_reserve_se = "SE-RESERVE"
+		mr.get = MagicMock(side_effect=values.get)
+		mr.items = []
+		reserve = MagicMock()
+		reserve.get = MagicMock(return_value=None)
+		new_se = MagicMock()
+		new_se.manufacturer = None
+		new_se.items = []
+		mock_get_doc.side_effect = [mr, reserve]
+		mock_copy.return_value = new_se
+
+		with patch(f"{_MR}.frappe.db.get_value") as pmo_lookup:
+			mr_mod._create_transfer_se("MR-001")
+
+		self.assertEqual(new_se.manufacturer, "Shubh")
+		pmo_lookup.assert_not_called()
+
+	def test_manufacturer_falls_back_to_reserve_entry_then_pmo(self):
+		reserve = MagicMock()
+		reserve.get = MagicMock(side_effect={"manufacturer": "Amrut"}.get)
+		mr = MagicMock()
+		mr.get = MagicMock(side_effect={"manufacturing_order": "PMO-1"}.get)
+		self.assertEqual(mr_mod._transfer_se_manufacturer(mr, reserve), "Amrut")
+
+		reserve.get = MagicMock(return_value=None)
+		with patch(f"{_MR}.frappe.db.get_value", return_value="Siddhi") as pmo_lookup:
+			self.assertEqual(mr_mod._transfer_se_manufacturer(mr, reserve), "Siddhi")
+		pmo_lookup.assert_called_once_with(
+			"Parent Manufacturing Order", "PMO-1", "manufacturer"
+		)
+
+		mr.get = MagicMock(return_value=None)
+		self.assertIsNone(mr_mod._transfer_se_manufacturer(mr, reserve))
 
 	def tearDown(self):
 		return super().tearDown()
@@ -498,6 +676,17 @@ class TestRetryTransferSE(IntegrationTestCase):
 		)
 		self.enqueue.assert_called_once_with("MR-1")
 		self.is_queued.assert_called_once_with("mr_transfer_se::MR-1")
+
+	def test_requeues_from_material_transfer_in_progress(self):
+		"""Where "Transfer Material" now leaves a request whose job failed."""
+		mr = self._mr(workflow_state=mr_mod.TRANSFER_IN_PROGRESS_STATE)
+		self._retry(mr)
+
+		mr.db_set.assert_called_once_with(
+			{"custom_transfer_se_state": "Pending", "custom_transfer_se_error": None},
+			update_modified=False,
+		)
+		self.enqueue.assert_called_once_with("MR-1")
 
 	def test_refuses_an_unsubmitted_request(self):
 		self._assert_refused(self._mr(docstatus=0))

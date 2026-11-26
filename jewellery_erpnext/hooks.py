@@ -52,6 +52,7 @@ doctype_js = {
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Supplier Quotation": "public/js/doctype_js/supplier_quotation.js",
+	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
 	"Payment Entry": "public/js/doctype_js/payment_entry.js",
 	"Warehouse": "public/js/doctype_js/warehouse.js",
 }
@@ -317,6 +318,8 @@ doc_events = {
 			# A metal return or adjustment for a PMO with a Close / Hold request: its requester
 			# is told once the last of the work is back (queued after commit; no-op otherwise).
 			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.queue_ready_check_after_stock_entry",
+			# Central submitting a Refining Entry's draft hand-back marks the entry Transferred.
+			"jewellery_erpnext.refining.doc_events.stock_entry.on_submit",
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,
@@ -327,7 +330,12 @@ doc_events = {
 			# Cancelling a movement recorded in a process needs access to that process.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_stock_entry",
 		],
-		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
+		"on_cancel": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
+			# Central cancelling a Refining Entry's hand-back takes the entry back to Completed.
+			"jewellery_erpnext.refining.doc_events.stock_entry.on_cancel",
+		],
+		"on_trash": "jewellery_erpnext.refining.doc_events.stock_entry.on_trash",
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},

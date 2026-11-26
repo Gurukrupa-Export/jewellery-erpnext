@@ -61,14 +61,15 @@ class SketchOrder(Document):
 	def make_items(self):
 		if self.order_type != "Purchase":
 			for row in self.final_sketch_approval_cmo:
-				item_template = create_item_template_from_sketch_order(self, row.name)
-				update_item_template(self, item_template)
-				frappe.db.set_value(row.doctype, row.name, "item", item_template)
-				frappe.msgprint(
-					_("New Item Created: {0}").format(
-						get_link_to_form("Item", item_template)
+				if row.item_remark != "Copy Paste Item":
+					item_template = create_item_template_from_sketch_order(self, row.name)
+					update_item_template(self, item_template)
+					frappe.db.set_value(row.doctype, row.name, "item", item_template)
+					frappe.msgprint(
+						_("New Item Created: {0}").format(
+							get_link_to_form("Item", item_template)
+						)
 					)
-				)
 		if self.order_type == "Purchase":
 			item_template = create_item_for_po(self, self.name)
 			update_item_template(self, item_template)

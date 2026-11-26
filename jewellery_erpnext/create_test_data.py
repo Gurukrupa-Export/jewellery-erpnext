@@ -3043,6 +3043,14 @@ def create_test_data():
 
 			_add_mr_department_to_mop_transition()
 
+			# Same as the workflow patches above: only the Workflow State master on a site
+			# with no Material Request workflow.
+			from jewellery_erpnext.patches.add_mr_transfer_in_progress_state import (
+				execute as _add_mr_transfer_in_progress_state,
+			)
+
+			_add_mr_transfer_in_progress_state()
+
 			from jewellery_erpnext.patches.seed_stock_entry_types import (
 				execute as _seed_stock_entry_types,
 			)
@@ -3106,6 +3114,12 @@ def create_test_data():
 			)
 
 			po_refining_entry_field()
+
+			from jewellery_erpnext.patches.add_refinery_flow_fields import (
+				execute as refinery_flow_fields,
+			)
+
+			refinery_flow_fields()
 
 			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures, so — like
 			# the other custom-field patches above — it must be provisioned here for
