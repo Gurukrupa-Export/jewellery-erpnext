@@ -256,6 +256,9 @@ class CustomStockEntry(StockEntry):
 			# rows (via get_fifo_batches) and already-filled rows kept below record
 			# their consumption here.
 			consumed = {}
+			# Main Slip / PMO / Manufacturer reads shared by get_fifo_batches across the rows
+			# of this one call; fresh per call, so never stale across saves.
+			fifo_cache = {}
 			# Prefetch the Item / Department fields read per row below (and again in
 			# the rebuild loop) so the loops issue one query each instead of O(rows).
 			# get_fifo_batches only splits a source row into more rows of the SAME
@@ -312,7 +315,7 @@ class CustomStockEntry(StockEntry):
 							# entry's first save, and without the letter the Customer Goods
 							# lane never applies. Already prefetched above, so this is free.
 							rows_to_append += get_fifo_batches(
-								self, row, consumed, item_map=item_map
+								self, row, consumed, item_map=item_map, cache=fifo_cache
 							)
 					elif row.t_warehouse:
 						rows_to_append += [row.__dict__]
@@ -358,6 +361,8 @@ class CustomStockEntry(StockEntry):
 						else:
 							sieve_map.setdefault(r.parent, r.attribute_value)
 
+				# Per-pcs weight by (grade, sieve size): split rows of one item share it.
+				weight_map = {}
 				self.items = []
 				for item in rows_to_append:
 					if isinstance(item, dict):
@@ -369,17 +374,20 @@ class CustomStockEntry(StockEntry):
 					if (item_map.get(item.item_code) or {}).get("variant_of") == "D":
 						attribute = grade_map.get(item.item_code)
 						diamond_sieve_size = sieve_map.get(item.item_code)
-						weight = (
-							frappe.db.get_value(
-								"Attribute Value Diamond Sieve Size",
-								{
-									"parent": attribute,
-									"diamond_sieve_size": diamond_sieve_size,
-								},
-								"per_pcs_average_weight",
+						weight_key = (attribute, diamond_sieve_size)
+						if weight_key not in weight_map:
+							weight_map[weight_key] = (
+								frappe.db.get_value(
+									"Attribute Value Diamond Sieve Size",
+									{
+										"parent": attribute,
+										"diamond_sieve_size": diamond_sieve_size,
+									},
+									"per_pcs_average_weight",
+								)
+								or 0
 							)
-							or 0
-						)
+						weight = weight_map[weight_key]
 
 						if weight > 0 and item.qty and int(item.pcs) < 1:
 							item.pcs = int(item.qty / weight)
@@ -389,6 +397,8 @@ class CustomStockEntry(StockEntry):
 				self.db_update()
 
 	def validate_with_material_request(self):
+		mreq_fields = ["item_code", "custom_alternative_item", "warehouse", "idx"]
+		refs = []
 		for item in self.get("items"):
 			material_request = item.material_request or None
 			material_request_item = item.material_request_item or None
@@ -402,14 +412,27 @@ class CustomStockEntry(StockEntry):
 				if parent_se:
 					material_request = parent_se.material_request
 					material_request_item = parent_se.material_request_item
+			refs.append((item, material_request, material_request_item))
 
+		# One query for every referenced Material Request Item instead of one per row.
+		mreq_map = bulk_map(
+			"Material Request Item",
+			[mri for _item, mr, mri in refs if mr],
+			["parent", *mreq_fields],
+		)
+
+		for item, material_request, material_request_item in refs:
 			if material_request:
-				mreq_item = frappe.db.get_value(
-					"Material Request Item",
-					{"name": material_request_item, "parent": material_request},
-					["item_code", "custom_alternative_item", "warehouse", "idx"],
-					as_dict=True,
-				)
+				mreq_item = mreq_map.get(material_request_item)
+				if not mreq_item or mreq_item.parent != material_request:
+					# Not an exact hit: ask the database exactly as before, so a mismatched
+					# parent (or a differently-cased name) resolves the same way it always did.
+					mreq_item = frappe.db.get_value(
+						"Material Request Item",
+						{"name": material_request_item, "parent": material_request},
+						mreq_fields,
+						as_dict=True,
+					)
 				if item.item_code not in [
 					mreq_item.item_code,
 					mreq_item.custom_alternative_item,
