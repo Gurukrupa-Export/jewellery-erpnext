@@ -22,6 +22,15 @@ LONG_SUBMISSION_DOCTYPES = (
 
 class CustomSubmissionQueue(SubmissionQueue):
 	def insert(self, to_be_queued_doc: Document, action: str):
+		if self.ref_doctype == "Employee IR" and (action or "").lower() == "submit":
+			# Supplier pure metal limit: refuse here, in the user's request, rather than as a
+			# Failed queue row. The worker re-checks under the supplier lock.
+			from jewellery_erpnext.jewellery_erpnext.doc_events.supplier_metal_limit import (
+				employee_ir_preflight,
+			)
+
+			employee_ir_preflight(to_be_queued_doc)
+
 		queue = frappe.db.get_value(
 			"Submission Queue",
 			{
