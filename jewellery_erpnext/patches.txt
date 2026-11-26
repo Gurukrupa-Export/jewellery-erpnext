@@ -147,3 +147,4 @@ jewellery_erpnext.patches.set_do_not_explode_on_old_bom_items #2026-11-23 tick D
 jewellery_erpnext.patches.add_mr_transfer_in_progress_state #2026-11-25 hold Transfer Material in Material Transfer In Progress until the transfer Stock Entry is submitted
 jewellery_erpnext.patches.add_refinery_flow_fields
 jewellery_erpnext.patches.add_supplier_metal_weight_limit #2026-11-12 Supplier Metal Weight Limit (Pure Weight) field
+jewellery_erpnext.patches.restore_missing_perf_indexes
