@@ -76,6 +76,51 @@ def _cached_run(cache, query):
 	return cache[key]
 
 
+def _price_customer_purity_rows(
+	self, row_s, bom_doc, rows, gold_gst_rate, purity_cache
+):
+	"""Re-price the metal or finding rows of ``bom_doc`` at the customer's own purity.
+
+	Shared by the metal and finding loops of ``before_validate``. ``purity_cache`` memoises the
+	Metal Criteria lookup per (metal_type, metal_touch) for one save: it is a master that the
+	save never writes, so a repeat returns exactly what a fresh query would.
+	"""
+	for row in rows:
+		update_making_charges(row_s, bom_doc, row, self.gold_rate_with_gst)
+		if row.is_customer_item:
+			# SOP S4: "Customer gold is sold at zero. Only company-owned
+			# material and approved charges are billed."
+			#
+			# ``update_making_charges`` has just set ``rate = 0`` for this row
+			# and priced the SUBCONTRACTING charge into ``making_amount``, which
+			# is billed and is deliberately left alone here. Without this guard
+			# the block below overwrote that zero with the full gold rate two
+			# lines later and recomputed ``amount`` from it, so the saved BOM
+			# carried the customer's own metal at full value.
+			#
+			# ``amount`` is zeroed explicitly: ``update_making_charges`` sets
+			# only ``rate``, so a stale non-zero ``amount`` would otherwise
+			# survive into ``total_metal_amount`` below.
+			row.amount = 0
+			row.wastage_amount = 0
+			continue
+
+		purity_key = (row.metal_type, row.metal_touch)
+		if purity_key not in purity_cache:
+			purity_cache[purity_key] = frappe.db.sql(
+				f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
+				as_dict=True,
+			)[0]["metal_purity"]
+		customer_metal_purity = purity_cache[purity_key]
+		row.customer_metal_purity = customer_metal_purity
+		rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (
+			100 + int(gold_gst_rate)
+		)
+		row.rate = round(rate, 2)
+		row.amount = round(row.rate * row.quantity, 2)
+		row.wastage_amount = row.amount * row.wastage_rate
+
+
 def before_validate(self, method):
 	if self.is_return:
 		for row in self.get("invoice_item") or []:
@@ -114,6 +159,7 @@ def before_validate(self, method):
 		prec = frappe.db.get_value(
 			"Customer", self.customer, "custom_precision_variable"
 		)
+		purity_cache = {}
 		if not (
 			self.company == "KG GK Jewellers Private Limited"
 			or customer_group == "Internal"
@@ -124,75 +170,25 @@ def before_validate(self, method):
 					gold_gst_rate = frappe.db.get_single_value(
 						"Jewellery Settings", "gold_gst_rate"
 					)
-					for row in bom_doc.metal_detail:
-						update_making_charges(
-							row_s, bom_doc, row, self.gold_rate_with_gst
-						)
-						if row.is_customer_item:
-							# SOP S4: "Customer gold is sold at zero. Only company-owned
-							# material and approved charges are billed."
-							#
-							# ``update_making_charges`` has just set ``rate = 0`` for this row
-							# and priced the SUBCONTRACTING charge into ``making_amount``, which
-							# is billed and is deliberately left alone here. Without this guard
-							# the block below overwrote that zero with the full gold rate two
-							# lines later and recomputed ``amount`` from it, so the saved BOM
-							# carried the customer's own metal at full value.
-							#
-							# ``amount`` is zeroed explicitly: ``update_making_charges`` sets
-							# only ``rate``, so a stale non-zero ``amount`` would otherwise
-							# survive into ``total_metal_amount`` below.
-							row.amount = 0
-							row.wastage_amount = 0
-							continue
-
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
-						row.customer_metal_purity = customer_metal_purity
-						rate = (
-							float(row.customer_metal_purity) * self.gold_rate_with_gst
-						) / (100 + int(gold_gst_rate))
-						row.rate = round(rate, 2)
-						row.amount = round(row.rate * row.quantity, 2)
-						row.wastage_amount = row.amount * row.wastage_rate
+					_price_customer_purity_rows(
+						self,
+						row_s,
+						bom_doc,
+						bom_doc.metal_detail,
+						gold_gst_rate,
+						purity_cache,
+					)
 					bom_doc.total_metal_amount = sum(
 						row.amount for row in bom_doc.metal_detail
 					)
-					for row in bom_doc.finding_detail:
-						update_making_charges(
-							row_s, bom_doc, row, self.gold_rate_with_gst
-						)
-						if row.is_customer_item:
-							# SOP S4: "Customer gold is sold at zero. Only company-owned
-							# material and approved charges are billed."
-							#
-							# ``update_making_charges`` has just set ``rate = 0`` for this row
-							# and priced the SUBCONTRACTING charge into ``making_amount``, which
-							# is billed and is deliberately left alone here. Without this guard
-							# the block below overwrote that zero with the full gold rate two
-							# lines later and recomputed ``amount`` from it, so the saved BOM
-							# carried the customer's own metal at full value.
-							#
-							# ``amount`` is zeroed explicitly: ``update_making_charges`` sets
-							# only ``rate``, so a stale non-zero ``amount`` would otherwise
-							# survive into ``total_metal_amount`` below.
-							row.amount = 0
-							row.wastage_amount = 0
-							continue
-
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
-						row.customer_metal_purity = customer_metal_purity
-						rate = (
-							float(row.customer_metal_purity) * self.gold_rate_with_gst
-						) / (100 + int(gold_gst_rate))
-						row.rate = round(rate, 2)
-						row.amount = round(row.rate * row.quantity, 2)
-						row.wastage_amount = row.amount * row.wastage_rate
+					_price_customer_purity_rows(
+						self,
+						row_s,
+						bom_doc,
+						bom_doc.finding_detail,
+						gold_gst_rate,
+						purity_cache,
+					)
 					bom_doc.total_finding_amount = sum(
 						row.amount for row in bom_doc.finding_detail
 					)
@@ -229,8 +225,6 @@ def before_validate(self, method):
 def validate(self, method):
 	if self.is_return:
 		set_gst_details(self)
-		# payment_terms_data = update_si_data(self )
-		# update_payment_terms(self, payment_terms_data)
 		self.calculate_taxes_and_totals()
 		totals = dict.fromkeys(
 			(
@@ -410,7 +404,6 @@ def on_submit(self, method):
 		for row in self.items:
 			if row.item_code == "Subcontracting Charges":
 				return
-			# frappe.msgprint(f"Row: {row.idx}, Item: {row.item_code}, BOM: {row.bom}")
 			bom_doc = frappe.get_doc("BOM", row.bom)
 			total_making_charge += round(bom_doc.making_charge, 2)
 		new_si = frappe.copy_doc(self)
@@ -443,8 +436,6 @@ def on_submit(self, method):
 				"sales_order": row.sales_order,
 				"delivery_note": row.delivery_note,
 				"dn_detail": dn_detail,
-				# "gst_hsn_code": gst_hsn_code,
-				# "item_tax_template": sc_template,
 				"custom_is_subcontracting_charge_row": 1,
 			},
 		)
@@ -464,8 +455,6 @@ def on_submit(self, method):
 				"item_name": custom_item,
 				"conversion_factor": 1,
 				"item_code": custom_item,
-				# "hsn_code": hsn_code,
-				# "income_account": row.income_account,
 				"uom": uom,
 			},
 		)
@@ -529,8 +518,6 @@ def on_submit(self, method):
 				"sales_order": row.sales_order,
 				"delivery_note": row.delivery_note,
 				"dn_detail": dn_detail,
-				# "gst_hsn_code": gst_hsn_code,
-				# "item_tax_template": sc_template,
 				"custom_is_subcontracting_charge_row": 1,
 			},
 		)
@@ -550,8 +537,6 @@ def on_submit(self, method):
 				"item_name": custom_item,
 				"conversion_factor": 1,
 				"item_code": custom_item,
-				# "hsn_code": hsn_code,
-				# "income_account": row.income_account,
 				"uom": uom,
 			},
 		)
@@ -1501,7 +1486,6 @@ def update_bom_details(
 	precision = _cached_get_value(
 		cache, "Customer", self.customer, "custom_precision_variable"
 	)
-	# so_doc = frappe.get_doc("Sales Order", row.sales_order)
 	so_item_map = {}
 
 	if not self.is_return and row.sales_order:
@@ -1760,7 +1744,6 @@ def update_bom_details(
 			amount = i.diamond_rate_for_specified_quantity
 			qty = i.quantity
 			rate = amount / qty
-			# rate = 0
 
 		if not i.is_customer_item:
 			if einvoice_item in invoice_data:
@@ -1785,33 +1768,6 @@ def update_bom_details(
 					"income_account": row.income_account,
 					"cost_center": row.cost_center,
 				}
-
-		# if self.sales_type == "Hybrid":
-		# 	# Handling charge is always job-work value, whether the stone
-		# 	# is company-owned or customer-supplied — route it to the same
-		# 	# labour/Subcontracting bucket used for metal/finding making
-		# 	# above (mirrors the diamond handling split added to
-		# 	# validate_item_dharm() in sales_order.py). Not filtered by uom —
-		# 	# "Subcontracting Income" is Gram-based even though diamonds
-		# 	# are Carat, matching the existing is_for_labour convention
-		# 	# elsewhere in this function.
-		# 	labour_item, labour_hsn, labour_uom = frappe.db.get_value(
-		# 		"E Invoice Item",
-		# 		{"is_for_labour": 1},
-		# 		["name", "hsn_code", "uom"],
-		# 	) or (None, None, None)
-		# 	if labour_item:
-		# 		so_labour = so_item_map.get(labour_item)
-		# 		handling_amount = round(flt(i.quantity) * flt(i.handling_rate), precision)
-		# 		add_to_invoice(
-		# 			labour_item,
-		# 			so_labour,
-		# 			fallback_amount=handling_amount,
-		# 			fallback_qty=i.quantity,
-		# 			fallback_rate=i.handling_rate,
-		# 			hsn=labour_hsn,
-		# 			uom=labour_uom,
-		# 		)
 
 		if i.is_customer_item:
 			self.is_customer_diamond = True
@@ -1944,10 +1900,8 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate, cache=None):
 
 		if bom_row.parentfield != "metal_detail":
 			query = query.where(child_table.metal_touch == bom_row.metal_touch)
-			# frappe.msgprint(f"huyt{bom_row.making_amount}")
 
 		query = query.limit(1)
-		# frappe.msgprint(f"yt{query}")
 		making_charge_details = _cached_run(cache, query)
 
 		# ---------------- FALLBACK FOR FINDING ----------------
@@ -1985,21 +1939,6 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate, cache=None):
 			)
 
 			making_charge_details = _cached_run(cache, query)
-			if len(making_charge_details) > 0:
-				making_charges = making_charge_details[0]
-				rate_per_gm = flt(making_charges.get("rate_per_gm") or 0)
-				rate_per_pc = flt(making_charges.get("rate_per_pc") or 0)
-				threshold = flt(making_charges.get("rate_per_gm_threshold") or 2)
-				subcontracting_rate = flt(
-					making_charges.get("subcontracting_rate") or 0
-				)
-				subcontracting_wastage = flt(
-					making_charges.get("subcontracting_wastage") or 0
-				)
-
-				# 🔥 IMPORTANT FIX: ALWAYS COMPARE WITH BOM LEVEL WEIGHT
-				weight = flt(bom_doc.metal_and_finding_weight or 0)
-				# ---------------- THRESHOLD LOGIC (FIXED FOR FINDING) ----------------
 
 		# ---------------- APPLY RESULT ----------------
 		if len(making_charge_details) > 0:
@@ -2013,7 +1952,6 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate, cache=None):
 			)
 			# 🔥 IMPORTANT FIX: ALWAYS COMPARE WITH BOM LEVEL WEIGHT
 			weight = flt(bom_doc.metal_and_finding_weight or 0)
-			# frappe.throw(f"{weight}")
 
 			# ---------------- THRESHOLD LOGIC (FIXED FOR FINDING) ----------------
 			if bom_row.is_customer_item:
@@ -2024,7 +1962,6 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate, cache=None):
 			else:
 				if weight <= threshold:
 					metal_making_charges = rate_per_pc
-					# metal_making_charges = 5
 					bom_row.making_rate = rate_per_pc
 					bom_row.making_amount = bom_row.making_rate
 					wastage_rate = flt(making_charges.get("wastage_per_pcs") or 0)
@@ -2115,20 +2052,6 @@ def update_payment_terms(self, payment_terms_data=None):
 				"Following Items not mentioned in Customer Payment Terms. <br><b>{0}</b>"
 			).format("<br>".join(remaining_terms))
 		)
-	# if custom_term:
-	# 	for row in custom_term.customer_payment_details:
-	# 		if not payment_term_dict.get(row.payment_term):
-	# 			payment_term_dict.update(
-	# 				{
-	# 					row.payment_term: {
-	# 						"item_type": [row.item_type],
-	# 						"due_days": row.due_days,
-	# 						"due_date_based_on": row.due_date_based_on,
-	# 					}
-	# 				}
-	# 			)
-	# 		else:
-	# 			payment_term_dict[row.payment_term]["item_type"].append(row.item_type)
 
 	total_metal_amount = 0
 	total_making_amount = 0
@@ -2167,13 +2090,10 @@ def update_payment_terms(self, payment_terms_data=None):
 					and total_making_amount > 0
 				):
 					if charge_type == "Making Charges" and not self.is_customer_metal:
-						# payment_amount += total_making_amount
 						payment_amount += payment_terms_data.get(item_type)
-						# payment_amount += self.total_taxes_and_charges
 						description.append(item_type)
 					elif charge_type != "Making Charges" and self.is_customer_metal:
 						payment_amount += total_making_amount
-						# payment_amount += self.total_taxes_and_charges
 						description.append(item_type)
 				elif charge_type == "Studded Metal" and total_metal_amount > 0:
 					payment_amount += payment_terms_data.get(item_type)
@@ -2187,7 +2107,6 @@ def update_payment_terms(self, payment_terms_data=None):
 						and not self.is_customer_diamond
 					):
 						payment_amount += payment_terms_data.get(item_type)
-						# payment_amount += total_diamond_amount
 						description.append(item_type)
 					elif self.is_customer_diamond and charge_type != "Studded Diamond":
 						payment_amount += total_diamond_amount
@@ -2215,7 +2134,6 @@ def update_payment_terms(self, payment_terms_data=None):
 
 			due_date_list.append(due_date)
 			if payment_amount > 0:
-				# if self.disable_rounded_total == 0:
 				payment_amount = flt(payment_amount, 3)
 
 				item_to_append.append(
