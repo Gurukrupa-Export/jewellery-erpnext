@@ -149,3 +149,4 @@ jewellery_erpnext.patches.add_refinery_flow_fields
 jewellery_erpnext.patches.add_batch_worker_cost_fields
 jewellery_erpnext.patches.disable_mp_get_item_table_server_script
 jewellery_erpnext.patches.set_without_so_pmo_type
+jewellery_erpnext.patches.restore_missing_perf_indexes

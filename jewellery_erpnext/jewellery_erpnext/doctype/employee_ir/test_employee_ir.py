@@ -358,6 +358,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir_issue.department = "Waxing - T"
 		eir_issue.operation = "Wax Pull Out"
 		eir_issue.employee = "HR-EMP-00001"
+		eir_issue.manufacturer = "Shubh"
 		eir_issue.scan_mwo = mo_wax.manufacturing_work_order
 		scan_mwo_eir(eir_issue)
 		eir_issue.save()
@@ -375,6 +376,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir_receive.type = "Receive"
 		eir_receive.operation = "Wax Pull out"
 		eir_receive.employee = "HR-EMP-00001"
+		eir_receive.manufacturer = "Shubh"
 		eir_receive.scan_mwo = mo_wax.manufacturing_work_order
 		scan_mwo_eir(eir_receive)
 		eir_receive.save()
@@ -407,6 +409,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir_issue.department = "Waxing - T"
 		eir_issue.operation = "Wax Pull Out"
 		eir_issue.employee = "HR-EMP-00001"
+		eir_issue.manufacturer = "Shubh"
 		eir_issue.scan_mwo = mo_wax.manufacturing_work_order
 		scan_mwo_eir(eir_issue)
 		eir_issue.save()
@@ -418,6 +421,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir_receive.type = "Receive"
 		eir_receive.operation = "Wax Pull Out"
 		eir_receive.employee = "HR-EMP-00001"
+		eir_receive.manufacturer = "Shubh"
 		eir_receive.scan_mwo = mo_wax.manufacturing_work_order
 		scan_mwo_eir(eir_receive)
 		eir_receive.save()
@@ -457,6 +461,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir_issue.department = mo_wax.department
 		eir_issue.operation = "Wax Pull Out"
 		eir_issue.employee = "HR-EMP-00001"
+		eir_issue.manufacturer = "Shubh"
 		eir_issue = get_manufacturing_operations(mo_wax.name, eir_issue)
 		eir_issue.save()
 		if not eir_issue.employee_ir_operations[0].rpt_wt_issue:
@@ -476,6 +481,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir_receive.type = "Receive"
 		eir_receive.operation = "Wax Pull out"
 		eir_receive.employee = "HR-EMP-00001"
+		eir_receive.manufacturer = "Shubh"
 		eir_receive = get_manufacturing_operations(mo_wax.name, eir_receive)
 		eir_receive.save()
 		if not eir_receive.employee_ir_operations[0].rpt_wt_issue:
@@ -562,6 +568,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir.department = "Waxing - T"
 		eir.operation = "Wax Setting/Filling/Diamond Setting/Final Polish without Rhodium/Plating SC"
 		eir.employee = "HR-EMP-00002"
+		eir.manufacturer = "Shubh"
 		eir.subcontracting = "Yes"
 		eir.subcontractor = "Test_Supplier"
 		eir.scan_mwo = mo_wax.manufacturing_work_order
@@ -658,6 +665,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir_issue.department = "Waxing - T"
 		eir_issue.operation = "Wax Pull Out"
 		eir_issue.employee = "HR-EMP-00002"
+		eir_issue.manufacturer = "Shubh"
 		eir_issue.scan_mwo = mo_wax.manufacturing_work_order
 		scan_mwo_eir(eir_issue)
 		eir_issue.save()
@@ -720,6 +728,7 @@ class TestEmployeeIR(IntegrationTestCase):
 		eir.type = "Receive"
 		eir.operation = "Wax Pull out"
 		eir.employee = "HR-EMP-00002"
+		eir.manufacturer = "Shubh"
 		eir = get_manufacturing_operations(mo_wax.name, eir)
 
 		if eir.employee_ir_operations:
