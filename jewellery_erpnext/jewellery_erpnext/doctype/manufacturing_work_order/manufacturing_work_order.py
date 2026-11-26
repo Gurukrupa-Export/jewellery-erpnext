@@ -1113,11 +1113,12 @@ def create_manufacturing_operation(doc, last_operation=None):
 	mop.status = status
 	mop.type = "Manufacturing Work Order"
 
-	if doc.department =='Computer Aided Designing - GEPL' or doc.department =='Computer Aided Designing - KGJPL':
+	if doc.department in ("Computer Aided Designing - GEPL","Computer Aided Designing - KGJPL"):
 		mop.operation = doc.department
+		mop.department = doc.department
 	else:
 		mop.operation = operation
-	mop.department = doc.department
+		mop.department = doc.department
 	
 	mop.custom_tracking_bom = doc.custom_tracking_bom
 	# mop.department = department
