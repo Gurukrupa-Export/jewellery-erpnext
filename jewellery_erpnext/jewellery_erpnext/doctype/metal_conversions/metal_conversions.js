@@ -35,6 +35,15 @@ frappe.ui.form.on("Metal Conversions", {
 				department: frm.doc.department || "",
 			},
 		}));
+		// An employee's Target Metal Touch / Purity, as Main Slip picks them.
+		frm.set_query("chain_metal_touch", () => ({
+			query: "jewellery_erpnext.query.item_attribute_query",
+			filters: { item_attribute: "Metal Touch" },
+		}));
+		frm.set_query("chain_metal_purity", () => ({
+			query: "jewellery_erpnext.query.item_attribute_query",
+			filters: { item_attribute: "Metal Purity", metal_touch: frm.doc.chain_metal_touch },
+		}));
 		set_source_batch_filter(frm);
 		if (frm.doc.multiple_metal_converter == 0) {
 			set_Metal_filter(frm, "source_item");
@@ -79,6 +88,7 @@ frappe.ui.form.on("Metal Conversions", {
 	source_qty(frm) {
 		// Clear All Fields
 		clear_metal_field(frm);
+		fill_employee_alloy(frm);
 	},
 	is_melting_loss(frm) {
 		if (frm.doc.is_melting_loss) {
@@ -141,7 +151,7 @@ frappe.ui.form.on("Metal Conversions", {
 	is_chain_subcontracting(frm) {
 		// One party converts the metal: the Supplier when ticked, else the To Employee.
 		if (frm.doc.is_chain_subcontracting) {
-			frm.set_value("to_employee", null);
+			frm.set_value({ to_employee: null, chain_metal_touch: null, chain_metal_purity: null });
 		} else {
 			frm.set_value("chain_supplier", null);
 		}
@@ -153,6 +163,13 @@ frappe.ui.form.on("Metal Conversions", {
 			return;
 		}
 		refresh_chain_details(frm);
+	},
+	chain_metal_touch(frm) {
+		// A purity belongs to one touch.
+		frm.set_value("chain_metal_purity", null);
+	},
+	chain_metal_purity(frm) {
+		fill_employee_alloy(frm);
 	},
 	chain_supplier(frm) {
 		if (!frm.doc.chain_supplier) {
@@ -371,9 +388,10 @@ function refresh_chain_details(frm) {
 
 function set_chain_loss(frm) {
 	if (!is_chain(frm)) return;
-	if (frm.doc.is_chain_subcontracting) {
-		// The loss is the fine shortfall when the supplier added alloy, so the server works it
-		// out from the purities (chain_subcontracting.receive_split).
+	if (frm.doc.is_chain_subcontracting || flt(frm.doc.source_alloy_qty) > 0) {
+		// The loss is the fine shortfall when the supplier added alloy, or when an employee was
+		// given ours, so the server works it out from the purities
+		// (chain_subcontracting.receive_split).
 		frm.call("get_chain_receive_qtys").then((r) => {
 			if (r.message) frm.set_value("chain_process_loss_qty", r.message.loss_qty);
 		});
@@ -383,13 +401,24 @@ function set_chain_loss(frm) {
 	frm.set_value("chain_process_loss_qty", loss);
 }
 
+// An employee chain conversion that was given our alloy with the metal (a lower-purity target).
+function employee_alloy_issued(frm) {
+	return (
+		is_chain(frm) &&
+		!frm.doc.is_chain_subcontracting &&
+		!!frm.doc.source_alloy &&
+		flt(frm.doc.source_alloy_qty) > 0
+	);
+}
+
 // On open, an issued subcontracted conversion whose Target Qty is blank or above what the
 // Source Qty converts to (e.g. typed before the purity cap existed) is set to that figure. A
-// lower value -- what actually came back -- is kept.
+// lower value -- what actually came back -- is kept. An employee given alloy is set to Source
+// Qty + Alloy Qty the same way.
 function correct_chain_target_qty(frm) {
 	if (
 		!is_chain(frm) ||
-		!frm.doc.is_chain_subcontracting ||
+		!(frm.doc.is_chain_subcontracting || employee_alloy_issued(frm)) ||
 		!frm.doc.chain_issue_stock_entry ||
 		frm.doc.docstatus !== 0 ||
 		!frm.doc.target_item
@@ -403,13 +432,22 @@ function correct_chain_target_qty(frm) {
 			return;
 		}
 		frm.set_value("target_qty", fill).then(() => {
-			frappe.show_alert(
-				{
-					message: __("Target Qty set to {0}: what {1} of {2} converts to. Save, then Receive.", [
+			const message = frm.doc.is_chain_subcontracting
+				? __("Target Qty set to {0}: what {1} of {2} converts to. Save, then Receive.", [
 						format_number(fill, null, 3),
 						frm.doc.source_qty,
 						frm.doc.source_item,
-					]),
+				  ])
+				: __("Target Qty set to {0}: the {1} of {2} and {3} of {4} issued. Save, then Receive.", [
+						format_number(fill, null, 3),
+						frm.doc.source_qty,
+						frm.doc.source_item,
+						frm.doc.source_alloy_qty,
+						frm.doc.source_alloy,
+				  ]);
+			frappe.show_alert(
+				{
+					message: message,
 					indicator: "orange",
 				},
 				8
@@ -437,6 +475,45 @@ function fill_chain_target_qty(frm) {
 	});
 }
 
+// Before Issue, an employee chain conversion to a lower Target Metal Purity is given our alloy
+// with the metal, sized as the normal conversion sizes it (chain_subcontracting.
+// _set_employee_alloy); Source Alloy is then mandatory. The Target Item and Target Qty wait for
+// Receive. Any other purity carries no alloy.
+function fill_employee_alloy(frm) {
+	if (!is_chain(frm) || frm.doc.is_chain_subcontracting || frm.doc.chain_issue_stock_entry) {
+		return;
+	}
+	if (!frm.doc.chain_metal_purity || !frm.doc.source_item || !flt(frm.doc.source_qty)) {
+		if (frm.doc.source_alloy_check) clear_alloy(frm);
+		return;
+	}
+	frm.call("get_chain_receive_qtys").then((r) => {
+		const qtys = r.message || {};
+		if (!flt(qtys.alloy_qty)) {
+			clear_alloy(frm);
+			return;
+		}
+		frm.set_value({
+			target_alloy_check: 0,
+			target_alloy: null,
+			target_alloy_qty: null,
+			source_alloy_check: 1,
+			source_alloy_qty: qtys.alloy_qty,
+		});
+		frappe.show_alert(
+			{
+				message: __("{0} of alloy is needed to make {1} {2}. Select the Source Alloy before Issue.", [
+					qtys.alloy_qty,
+					frm.doc.chain_metal_touch || "",
+					frm.doc.chain_metal_purity,
+				]),
+				indicator: "orange",
+			},
+			8
+		);
+	});
+}
+
 function toggle_chain_fields(frm) {
 	const chain = is_chain(frm);
 	const issued = !!frm.doc.chain_issue_stock_entry;
@@ -457,7 +534,13 @@ function toggle_chain_fields(frm) {
 		"chain_supplier",
 		"source_item",
 		"source_qty",
+		"chain_metal_touch",
+		"chain_metal_purity",
 	].forEach((field) => frm.set_df_property(field, "read_only", issued ? 1 : 0));
+
+	// An employee's alloy is sized by the server, and once issued it cannot change.
+	frm.set_df_property("source_alloy_qty", "read_only", chain ? 1 : 0);
+	frm.set_df_property("source_alloy", "read_only", chain && issued ? 1 : 0);
 }
 
 // Cancel Issue undoes the Issue entry and deletes the draft PO, so it asks first. workflow.js
