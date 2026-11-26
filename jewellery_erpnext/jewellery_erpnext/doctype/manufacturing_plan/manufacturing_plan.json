@@ -13,11 +13,11 @@
   "posting_date",
   "column_break_ymty6",
   "branch",
-  "department",
   "abbr",
   "amended_from",
   "section_break_tkb7i",
   "select_manufacture_order",
+  "department",
   "is_subcontracting",
   "setting_type",
   "supplier",
@@ -34,6 +34,7 @@
   "design_type",
   "section_break_edsf8",
   "manufacturing_plan_table",
+  "finding_details",
   "section_break_cjenr",
   "total_planned_qty",
   "column_break_ahq2y",
@@ -56,10 +57,19 @@
    "label": "Get Sales Order"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
    "fieldname": "manufacturing_plan_table",
    "fieldtype": "Table",
    "label": "Manufacturing Plan Table",
    "options": "Manufacturing Plan Table"
+  },
+  {
+   "depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
+   "fieldname": "finding_details",
+   "fieldtype": "Table",
+   "label": "Finding Details",
+   "mandatory_depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
+   "options": "Manufacturing Plan Finding Detail"
   },
   {
    "fieldname": "company",
@@ -124,18 +134,21 @@
    "label": "Company Details"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
+   "description": "Fetched from the logged-in user's Employee. Pick it if you have no Employee with a Department. The Parent Manufacturing Orders and Work Orders this plan raises start here.",
    "fieldname": "department",
    "fieldtype": "Link",
    "label": "Department",
-   "options": "Department",
-   "read_only": 1
+   "mandatory_depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing - Without SO\"",
+   "no_copy": 1,
+   "options": "Department"
   },
   {
    "fieldname": "select_manufacture_order",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Select Manufacture Order",
-   "options": "\nManufacturing\nRepair\nFinding Manufacturing",
+   "options": "\nManufacturing\nRepair\nFinding Manufacturing\nFinding Manufacturing - Without SO",
    "reqd": 1
   },
   {
@@ -145,17 +158,19 @@
    "label": "Get Repair Order"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
    "fieldname": "setting_type",
    "fieldtype": "Link",
    "label": "Setting Type",
    "options": "Attribute Value"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
    "fieldname": "is_subcontracting",
    "fieldtype": "Select",
    "label": "Is Subcontracting",
-   "options": "\nYes\nNo",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
+   "options": "\nYes\nNo"
   },
   {
    "depends_on": "eval: doc.is_subcontracting == \"Yes\";",
@@ -205,6 +220,7 @@
    "read_only": 1
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order!=\"Finding Manufacturing - Without SO\"",
    "fieldname": "get_mwo",
    "fieldtype": "Button",
    "label": "Get MWO"
@@ -236,7 +252,7 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2026-10-23 12:00:00.000000",
+ "modified": "2026-11-26 12:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",
