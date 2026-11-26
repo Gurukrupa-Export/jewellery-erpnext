@@ -149,6 +149,12 @@ function sr_warehouse_filters(frm) {
 	return filters;
 }
 
+function sr_main_slip(frm) {
+	// The form's "Main Slip" box (fieldname custom_main_screen, from gke_customization): when
+	// ticked, Get Items also fetches the selected warehouse's employee warehouses.
+	return cint(frm.doc.custom_main_screen) ? 1 : 0;
+}
+
 function sr_get_items_dialog(frm) {
 	const dialog = new frappe.ui.Dialog({
 		title: __("Get Items"),
@@ -168,7 +174,9 @@ function sr_get_items_dialog(frm) {
 				label: __("Select All Items"),
 				fieldname: "select_all",
 				fieldtype: "Check",
-				description: __("Fetch every item in the warehouse"),
+				description: __(
+					"Fetch every item in the warehouse (and its employee warehouses when Main Slip is ticked)"
+				),
 			},
 			{
 				label: __("Items"),
@@ -178,7 +186,11 @@ function sr_get_items_dialog(frm) {
 				get_data(txt) {
 					const warehouse = dialog.get_value("warehouse");
 					if (!warehouse) return [];
-					return frappe.xcall(`${SR_METHODS}.get_warehouse_items`, { warehouse, txt });
+					return frappe.xcall(`${SR_METHODS}.get_warehouse_items`, {
+						warehouse,
+						txt,
+						main_slip: sr_main_slip(frm),
+					});
 				},
 			},
 			{
@@ -204,6 +216,7 @@ function sr_get_items_dialog(frm) {
 				item_codes,
 				select_all: values.select_all ? 1 : 0,
 				ignore_empty_stock: values.ignore_empty_stock ? 1 : 0,
+				main_slip: sr_main_slip(frm),
 			});
 			dialog.hide();
 			sr_add_fetched_items(frm, rows || []);

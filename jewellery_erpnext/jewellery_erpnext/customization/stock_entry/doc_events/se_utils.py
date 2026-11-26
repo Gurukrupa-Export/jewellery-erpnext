@@ -18,6 +18,7 @@ from frappe import _
 # from frappe.query_builder.functions import CombineDatetime, Locate, Sum
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
 	batch_is_eligible,
 	get_batch_ownership_map,
@@ -590,8 +591,8 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 				row.item_code,
 				frappe.bold(pmo),
 				frappe.bold(expected_customer or _("the customer")),
-				flt(flt(row_qty) - total_qty, 3),
-				flt(row_qty, 3),
+				fmt3(flt(row_qty) - total_qty),
+				fmt3(row_qty),
 				frappe.bold(warehouse),
 			),
 			title=_("Customer Goods Not Available"),
@@ -608,8 +609,8 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 				row.get("idx"),
 				row.item_code,
 				frappe.bold(pmo),
-				flt(flt(row_qty) - total_qty, 3),
-				flt(row_qty, 3),
+				fmt3(flt(row_qty) - total_qty),
+				fmt3(row_qty),
 				frappe.bold(warehouse),
 			),
 			title=_("Company Stock Not Available"),
@@ -617,7 +618,7 @@ def get_fifo_batches(self, row, consumed=None, item_map=None):
 
 	if round(total_qty, 3) > 0:
 		message = _("For <b>{0}</b> {1} is missing in <b>{2}</b>").format(
-			row.item_code, flt(total_qty, 2), warehouse
+			row.item_code, fmt3(total_qty), warehouse
 		)
 		if row.get("manufacturing_operation"):
 			message += _("<br><b>Ref : {0}</b>").format(row.manufacturing_operation)

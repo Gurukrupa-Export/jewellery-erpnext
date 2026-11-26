@@ -27,6 +27,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_datetime, getdate
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_trace import (
 	DISPOSITION_DELIVERED,
 	DISPOSITION_LOSS,
@@ -251,11 +252,11 @@ def _settlement_rows(receipts, replay, filters, show_money, all_receipts=None):
 				_(
 					"{0} sits in finished pieces with no batch -- their delivery will not "
 					"release this receipt's liability (R-2)"
-				).format(_q(serial_only))
+				).format(fmt3(serial_only))
 			)
 		if abs(replay.balance(key)) > QTY_TOLERANCE:
 			flags.append(
-				_("trace does not balance by {0}").format(_q(replay.balance(key)))
+				_("trace does not balance by {0}").format(fmt3(replay.balance(key)))
 			)
 		if show_money:
 			m = money.get(receipt.name) or frappe._dict()
@@ -371,9 +372,9 @@ def _rate_outliers(receipts):
 			flagged[receipt.key] = _(
 				"booked {0}/g is {1}x the reference {2} ({3})"
 			).format(
-				flt(per_gram, 2),
-				flt(ratio, 2),
-				flt(reference.rate, 2),
+				fmt3(per_gram),
+				fmt3(ratio),
+				fmt3(reference.rate),
 				reference.source,
 			)
 	return flagged
@@ -476,10 +477,10 @@ def _money_by_receipt(receipts, replay, filters, all_receipts=None):
 		if m.nominal is None:
 			m.pending = None
 			continue
-		m.pending = flt(m.nominal + m.revaluation - m.released_fg - m.released_raw, 2)
-		m.revaluation = flt(m.revaluation, 2)
-		m.released_fg = flt(m.released_fg, 2)
-		m.released_raw = flt(m.released_raw, 2)
+		m.pending = flt(m.nominal + m.revaluation - m.released_fg - m.released_raw, 3)
+		m.revaluation = flt(m.revaluation, 3)
+		m.released_fg = flt(m.released_fg, 3)
+		m.released_raw = flt(m.released_raw, 3)
 	return result
 
 
@@ -699,7 +700,8 @@ def _settlement_summary(rows, show_money):
 		summary.append(
 			{
 				"label": _("Pending liability"),
-				"value": flt(sum(flt(r.get("pending_amount")) for r in rows), 2),
+				# At the rows' own 3 decimals, so the summary is their sum to the last digit.
+				"value": flt(sum(flt(r.get("pending_amount")) for r in rows), 3),
 				"datatype": "Currency",
 			}
 		)
@@ -971,12 +973,12 @@ def _fg_valuation(filters, show_money):
 		if show_money:
 			row.update(
 				{
-					"basic_rate": flt(item.basic_rate, 4),
-					"basic_amount": flt(item.basic_amount, 2),
-					"additional_cost": flt(item.additional_cost, 2),
-					"valuation_amount": flt(item.amount, 2),
-					"ledger_value": flt(ledger.stock_value_difference, 2),
-					"running_rate": flt(ledger.valuation_rate, 4),
+					"basic_rate": flt(item.basic_rate, 3),
+					"basic_amount": flt(item.basic_amount, 3),
+					"additional_cost": flt(item.additional_cost, 3),
+					"valuation_amount": flt(item.amount, 3),
+					"ledger_value": flt(ledger.stock_value_difference, 3),
+					"running_rate": flt(ledger.valuation_rate, 3),
 				}
 			)
 			if (
@@ -986,7 +988,7 @@ def _fg_valuation(filters, show_money):
 				row["note"] = _(
 					"Running rate is the warehouse average after this entry ({0} units held), "
 					"not this row's rate."
-				).format(_q(ledger.qty_after_transaction))
+				).format(fmt3(ledger.qty_after_transaction))
 		rows.append(row)
 
 	additional = sum(flt(c.amount) for c in entry.get("additional_costs") or [])
@@ -1010,7 +1012,7 @@ def _bridge_row(label, amount):
 		"side": _("Bridge"),
 		"item_code": None,
 		"note": label,
-		"valuation_amount": flt(amount, 2),
+		"valuation_amount": flt(amount, 3),
 	}
 
 

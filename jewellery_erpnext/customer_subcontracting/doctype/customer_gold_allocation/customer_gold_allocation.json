@@ -183,6 +183,7 @@
   },
   {
    "fieldname": "gross_qty",
+   "precision": "3",
    "fieldtype": "Float",
    "label": "Receipt Item Qty",
    "read_only": 1,
@@ -190,6 +191,7 @@
   },
   {
    "fieldname": "fine_qty",
+   "precision": "3",
    "fieldtype": "Float",
    "label": "Fine Gold (g)",
    "read_only": 1,
@@ -201,6 +203,7 @@
   },
   {
    "fieldname": "amount",
+   "precision": "3",
    "fieldtype": "Currency",
    "label": "Released Amount",
    "options": "currency",
@@ -225,7 +228,7 @@
  "index_web_pages_for_search": 0,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-11-17 12:00:00",
+ "modified": "2026-11-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Customer Gold Allocation",

@@ -30,8 +30,9 @@ Text only. Nothing here changes an amount, an account or a document's status.
 from collections import OrderedDict
 
 import frappe
-from frappe.utils import flt, fmt_money, formatdate
+from frappe.utils import flt, formatdate
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
 	ALLOCATION_DOCTYPE,
 	DISPOSITION_DELIVERY_RETURN,
@@ -72,16 +73,17 @@ def customer_label(customer):
 
 
 def _qty(value, uom=None):
-	return f"{flt(value, 3):.3f} {uom or 'g'}"
+	return f"{fmt3(value)} {uom or 'g'}"
 
 
 def _money(value, direction=None):
-	"""Amount as erpnext formats it. With ``direction`` (the JE's settled total), the sign is
+	"""Amount grouped as erpnext groups it, always at 3 decimals ("72,651.000": ``fmt_money``
+	alone would print "72,651.00"). With ``direction`` (the JE's settled total), the sign is
 	shown only when ``value`` runs against it -- a difference the receipts over-cover."""
-	value = flt(value, 2)
+	value = flt(value, 3)
 	if direction is not None and value * flt(direction) < 0:
-		return "-" + fmt_money(abs(value), precision=2)
-	return fmt_money(abs(value), precision=2)
+		return "-" + fmt3(abs(value))
+	return fmt3(abs(value))
 
 
 def _receipt_rows(names):
@@ -508,7 +510,7 @@ def settlement_remark_for(je_name, precision=None):
 		# The precision the live settlement used (``settle_customer_gold_liability``).
 		precision = (
 			frappe.get_precision("Journal Entry Account", "debit_in_account_currency")
-			or 2
+			or 3
 		)
 	per_customer = OrderedDict()
 	for event in events:

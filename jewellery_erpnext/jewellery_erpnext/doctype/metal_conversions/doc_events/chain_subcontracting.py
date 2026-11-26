@@ -71,6 +71,7 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, nowdate
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.lanes import (
 	build_lanes,
 	split_allocations,
@@ -548,7 +549,7 @@ def validate_issue(doc):
 			errors.append(
 				_(
 					"The allocated batches hold {0}, not the Source Qty {1}. Save again."
-				).format(allocated, flt(doc.source_qty, precision))
+				).format(fmt3(allocated), fmt3(doc.source_qty))
 			)
 		batch_items = dict(
 			frappe.get_all(
@@ -573,9 +574,9 @@ def validate_issue(doc):
 				errors.append(
 					_("Batch {0} has only {1} in {2}; {3} is needed.").format(
 						frappe.bold(row.batch),
-						flt(available, precision),
+						fmt3(available),
 						doc.source_warehouse,
-						flt(row.qty, precision),
+						fmt3(row.qty),
 					)
 				)
 
@@ -607,7 +608,7 @@ def _supplier_issue_errors(doc, precision):
 			).format(
 				frappe.bold(CHAIN_SC_PO_ITEM),
 				frappe.bold(po_uom),
-				flt(doc.source_qty, precision),
+				fmt3(doc.source_qty),
 			)
 		)
 	return errors
@@ -779,10 +780,10 @@ def validate_receive(doc):
 				errors.append(
 					_("Batch {0} has only {1} of {2} in {3}; {4} was issued.").format(
 						frappe.bold(row.batch),
-						flt(available, precision),
+						fmt3(available),
 						doc.source_item,
 						work_wh,
-						flt(row.qty, precision),
+						fmt3(row.qty),
 					)
 				)
 
@@ -812,12 +813,12 @@ def _fine_metal_errors(doc, source_qty, target_qty, precision):
 			"The target holds {0} of fine metal ({1} at {2}%) but only {3} was issued "
 			"({4} at {5}%). Check the Target Item and Target Qty."
 		).format(
-			received_fine,
-			target_qty,
-			target_purity,
-			issued_fine,
-			source_qty,
-			source_purity,
+			fmt3(received_fine),
+			fmt3(target_qty),
+			fmt3(target_purity),
+			fmt3(issued_fine),
+			fmt3(source_qty),
+			fmt3(source_purity),
 		)
 	]
 
@@ -916,7 +917,7 @@ def _target_cap_error(doc, source_qty, target_qty, precision):
 		if target_qty - flt(source_qty) <= _qty_unit(precision):
 			return None
 		return _("Target Qty {0} cannot be greater than Source Qty {1}.").format(
-			target_qty, source_qty
+			fmt3(target_qty), fmt3(source_qty)
 		)
 
 	purities = subcontracted_purities(doc)
@@ -938,13 +939,13 @@ def _target_cap_error(doc, source_qty, target_qty, precision):
 		"Target Qty {0} cannot be greater than {1}, what {2} of {3} ({4}%) converts to "
 		"as {5} ({6}%)."
 	).format(
-		target_qty,
-		flt(cap, precision),
-		source_qty,
+		fmt3(target_qty),
+		fmt3(cap),
+		fmt3(source_qty),
 		doc.source_item,
-		purities[0],
+		fmt3(purities[0]),
 		doc.target_item,
-		purities[1],
+		fmt3(purities[1]),
 	)
 
 
@@ -1087,7 +1088,7 @@ def make_repack_stock_entry(doc, rows, target_qty):
 	if abs(booked - target_qty) > _qty_unit(precision):
 		frappe.throw(
 			_("Target Qty {0} does not match the {1} booked in the Repack.").format(
-				target_qty, booked
+				fmt3(target_qty), fmt3(booked)
 			)
 		)
 
@@ -1108,7 +1109,7 @@ def make_final_transfer(doc, repack, target_qty):
 	if abs(booked - target_qty) > _qty_unit(precision):
 		frappe.throw(
 			_("The Repack produced {0} of {1}, not the Target Qty {2}.").format(
-				booked, doc.target_item, target_qty
+				fmt3(booked), doc.target_item, fmt3(target_qty)
 			)
 		)
 	return _make_transfer(
@@ -1209,7 +1210,7 @@ def _check_covered(rows, need, precision):
 			_(
 				"The issued batches cover {0}, but {1} is needed. The Source Batch Details no "
 				"longer match the Source Qty."
-			).format(handed, flt(need, precision))
+			).format(fmt3(handed), fmt3(need))
 		)
 
 

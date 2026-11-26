@@ -55,6 +55,7 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import (
 	CUSTOMER_GOODS_FLAG_LABEL,
 	can_be_customer_goods,
@@ -431,7 +432,7 @@ def _plan_row(
 			"Row {0}: need {1} of {2} for customer {3}, but it is not available in the "
 			"source warehouse, in any other warehouse at this purity, or in a convertible "
 			"purity."
-		).format(row.idx, shortfall, item, customer)
+		).format(row.idx, fmt3(shortfall), item, customer)
 	)
 
 
@@ -464,7 +465,7 @@ def _reserve_regular(item, qty, company, target, allocated, row_idx):
 			_(
 				"Row {0}: {1} of Regular Stock {2} is needed in {3} to balance the "
 				"borrowed gold, but is not available. Stock regular gold there and retry."
-			).format(row_idx, qty, item, target)
+			).format(row_idx, fmt3(qty), item, target)
 		)
 	return reg
 
@@ -866,7 +867,7 @@ def _throw_batch_unavailable(
 		).format(
 			row.idx,
 			frappe.bold(batch_no),
-			shortfall,
+			fmt3(shortfall),
 			frappe.bold(item),
 			frappe.bold(target),
 		)
@@ -930,14 +931,14 @@ def _throw_batch_unavailable(
 			_(
 				"This row can be settled for at most {0} of {1} now: reduce its quantity to "
 				"that, or bring the metal outside Raw Material warehouses back to one first."
-			).format(reach, frappe.bold(item))
+			).format(fmt3(reach), frappe.bold(item))
 		)
 	elif reach > NEGLIGIBLE:
 		lines.append(
 			_(
 				"This row can be settled for at most {0} of {1} now: reduce its quantity to "
 				"that."
-			).format(reach, frappe.bold(item))
+			).format(fmt3(reach), frappe.bold(item))
 		)
 	frappe.throw("<br>".join(lines), title=_("Batch Not Available"))
 
@@ -1151,7 +1152,7 @@ def _holding_list(holdings, item, with_type=False, notes=None):
 	lines = []
 	for h in holdings:
 		line = _("{0} of {1} (batch {2}) in {3}").format(
-			flt(h.qty, 3),
+			fmt3(h.qty),
 			frappe.bold(h.item_code),
 			h.batch_no,
 			frappe.bold(h.warehouse),
@@ -1159,7 +1160,7 @@ def _holding_list(holdings, item, with_type=False, notes=None):
 		if with_type and h.warehouse_type:
 			line += f" ({_(h.warehouse_type)})"
 		if h.item_code != item and h.equivalent:
-			line += " = " + _("{0} of {1}").format(flt(h.equivalent, 3), item)
+			line += " = " + _("{0} of {1}").format(fmt3(h.equivalent), item)
 		for note in [h.get("note"), *(notes or {}).get((h.batch_no, h.warehouse), [])]:
 			if note:
 				line += f" -- {note}"
@@ -1555,10 +1556,10 @@ def _why_not_taken(holding):
 		return _(
 			"its operation's MOP Log shows {0} and {1} holds {2}, not the {3} reserved"
 		).format(
-			flt(holding.operation_balance, 3),
+			fmt3(holding.operation_balance),
 			holding.warehouse,
-			flt(holding.in_warehouse, 3),
-			holding.qty,
+			fmt3(holding.in_warehouse),
+			fmt3(holding.qty),
 		)
 	if not holding.landing:
 		return _("no Raw Material warehouse to take it back to")
@@ -2092,7 +2093,7 @@ def _pull_summary(pulled):
 			"Took {0} of {1} (batch {2}) back from work order {3} into {4}, and gave the "
 			"work order {0} of Regular Stock (batch {5}) in its place: {6}, {7}."
 		).format(
-			p.qty,
+			fmt3(p.qty),
 			frappe.bold(p.item_code),
 			p.batch_no,
 			frappe.bold(p.work_order),

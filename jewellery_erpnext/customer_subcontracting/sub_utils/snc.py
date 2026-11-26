@@ -5,6 +5,7 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
 	get_batch_ref_customer_map,
 	hybrid_settlement_context,
@@ -390,7 +391,7 @@ def _owner_label(owner_customer):
 
 def _no_owner_stock_message(owner_customer, row):
 	message = _("No available stock for {0} to settle {1} g of {2}.").format(
-		_owner_label(owner_customer), flt(row["qty"], 3), frappe.bold(row["item_code"])
+		_owner_label(owner_customer), fmt3(row["qty"]), frappe.bold(row["item_code"])
 	)
 	if _item_template(row["item_code"]) == FINDING_TEMPLATE:
 		message += " " + _(
@@ -1101,14 +1102,16 @@ def _submit_consuming_stock_entry(se):
 		if not item.get("s_warehouse") or not item.get("batch_no"):
 			continue
 		key = (item.item_code, item.batch_no, item.s_warehouse)
-		needed[key] = flt(needed.get(key, 0)) + flt(item.qty, 3)
+		# Rounded as it adds up: 0.1 + 0.2 is 0.30000000000000004, which a balance of 0.3
+		# would fail ("need 0.300, have 0.300").
+		needed[key] = flt(flt(needed.get(key, 0)) + flt(item.qty, 3), 3)
 	for (item_code, batch_no, warehouse), qty in needed.items():
 		available = _consumable_batch_qty(batch_no, item_code, warehouse)
 		if available < qty:
 			frappe.throw(
 				_(
 					"Not enough stock of batch {0} ({1}) in {2}: need {3}, have {4}."
-				).format(batch_no, item_code, warehouse, qty, available)
+				).format(batch_no, item_code, warehouse, fmt3(qty), fmt3(available))
 			)
 	se.submit()
 

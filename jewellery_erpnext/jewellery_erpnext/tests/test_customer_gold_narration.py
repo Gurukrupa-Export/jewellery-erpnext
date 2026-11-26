@@ -107,7 +107,7 @@ class TestSettlementLines(_NarrationCase):
 			"Batch: B-50",
 			"Qty: 5.000 Gram",
 			"Fine: 5.000 g",
-			"Amount: 72,651.00",
+			"Amount: 72,651.000",
 		):
 			self.assertIn(text, line.remark)
 
@@ -137,13 +137,13 @@ class TestSettlementLines(_NarrationCase):
 		self.assertEqual([line.amount for line in lines], [300.0, 50.0])
 		self.assertIsNone(lines[1].receipt_voucher)
 		self.assertIn(narr.UNTRACED, lines[1].remark)
-		self.assertIn("Amount: 50.00", lines[1].remark)
+		self.assertIn("Amount: 50.000", lines[1].remark)
 
 	def test_an_over_covered_total_shows_the_difference_with_its_sign(self):
 		self.allocations = [_alloc("CUST", "CGR-57", "R1", "B-50", 3.0, 3.0, 300.0)]
 		lines = narr.settlement_lines(_dn(), ["EV"], {"CUST": 299.0}, 2)
 		self.assertEqual([line.amount for line in lines], [300.0, -1.0])
-		self.assertIn("Amount: -1.00", lines[1].remark)
+		self.assertIn("Amount: -1.000", lines[1].remark)
 
 	def test_a_delivery_with_no_recorded_provenance_is_one_untraced_line(self):
 		self.allocations = []
@@ -172,7 +172,7 @@ class TestSettlementLines(_NarrationCase):
 		self.assertEqual(line.amount, -100.0)
 		self.assertTrue(line.remark.startswith("Customer Gold restored"))
 		self.assertIn("Qty: 1.000 Gram", line.remark)
-		self.assertIn("Amount: 100.00", line.remark)
+		self.assertIn("Amount: 100.000", line.remark)
 
 	def test_a_sales_invoice_that_delivers_names_its_notes_and_orders(self):
 		doc = frappe._dict(
@@ -195,7 +195,7 @@ class TestSettlementLines(_NarrationCase):
 		self.assertTrue(
 			summary.startswith("Customer Gold settlement | Delivery Note: DN-48")
 		)
-		self.assertIn("CUST - Gurukrupa Export: 550.00 from CGR-57, CGR-58", summary)
+		self.assertIn("CUST - Gurukrupa Export: 550.000 from CGR-57, CGR-58", summary)
 
 
 class TestSettlementEntryCarriesTheNarration(_NarrationCase):
@@ -453,11 +453,11 @@ class TestStockEntryNarration(_NarrationCase):
 		header, row = text.splitlines()
 		self.assertEqual(
 			header,
-			"Customer Gold received | Customer: CUST - Gurukrupa Export | Gold rate: 14,530.20 per g",
+			"Customer Gold received | Customer: CUST - Gurukrupa Export | Gold rate: 14,530.200 per g",
 		)
 		self.assertEqual(
 			row,
-			"Row 1: M-G-24KT | Qty: 5.000 Gram | Batch: B-50 | Rate: 14,530.20 | Amount: 72,651.00",
+			"Row 1: M-G-24KT | Qty: 5.000 Gram | Batch: B-50 | Rate: 14,530.200 | Amount: 72,651.000",
 		)
 
 	def test_a_zero_value_receipt_shows_no_rate_or_amount(self):
@@ -497,7 +497,7 @@ class TestStockEntryNarration(_NarrationCase):
 			"Customer Gold returned | Customer: CUST - Gurukrupa Export | Receipt: CGR-53",
 		)
 		self.assertIn("Against receipt: CGR-53 row 1 (M-G-24KT)", linked)
-		self.assertIn("Amount: 29,353.40", linked)
+		self.assertIn("Amount: 29,353.400", linked)
 		self.assertIn(narr.UNTRACED, unlinked)
 
 	def test_the_users_own_remark_is_kept_and_the_block_replaced_not_repeated(self):
@@ -597,7 +597,7 @@ class TestBackfill(_NarrationCase):
 		), patch.object(narr.frappe, "get_doc", return_value=_dn()):
 			remark = narr.settlement_remark_for("JE-28")
 		summary, line = remark.splitlines()
-		self.assertIn("CUST - Gurukrupa Export: 72,651.00 from CGR-57", summary)
+		self.assertIn("CUST - Gurukrupa Export: 72,651.000 from CGR-57", summary)
 		self.assertIn("Receipt: CGR-57 row 1", line)
 
 
