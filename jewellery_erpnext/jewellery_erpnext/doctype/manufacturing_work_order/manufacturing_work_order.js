@@ -67,21 +67,21 @@ frappe.ui.form.on("Manufacturing Work Order", {
 					}
 				});
 		}
-		if (frm.doc.docstatus == 1 && frm.doc.department == "Computer Aided Designing - GEPL") {
-			frm.add_custom_button(__("Finish"), function () {
-				frappe.confirm(__("Mark open Manufacturing Operation(s) as Finished?"), () => {
-					frm.call({
-						doc: frm.doc,
-						method: "finish_operations",
-						freeze: true,
-						freeze_message: __("Finishing...."),
-						callback: (r) => {
-							if (!r.exc) frm.reload_doc();
-						},
-					});
-				});
-			});
-		}
+		// if (frm.doc.docstatus == 1 && frm.doc.department == "Computer Aided Designing - GEPL") {
+		// 	frm.add_custom_button(__("Finish"), function () {
+		// 		frappe.confirm(__("Mark open Manufacturing Operation(s) as Finished?"), () => {
+		// 			frm.call({
+		// 				doc: frm.doc,
+		// 				method: "finish_operations",
+		// 				freeze: true,
+		// 				freeze_message: __("Finishing...."),
+		// 				callback: (r) => {
+		// 					if (!r.exc) frm.reload_doc();
+		// 				},
+		// 			});
+		// 		});
+		// 	});
+		// }
 
 		if (frm.doc.docstatus == 1 && frm.doc.is_without_so == 1) {
 			// Finding Manufacturing - Without SO: one button sends what is left on the current

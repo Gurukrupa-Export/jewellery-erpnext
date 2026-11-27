@@ -175,26 +175,26 @@ def validate_gross_wt(row, precision, main_slip=None, is_raw_material=False):
 
 def update_mop_balance(mop_name, ignore_links=False):
 	doc = frappe.get_doc("Manufacturing Operation", mop_name)
-	if ignore_links:
-		doc.flags.ignore_links = True
-	# doc.validate()
-	# doc.on_update()
-	# doc.update_children()
-	# doc.db_update_all()
-	if doc.operation == "CAD Updation" or doc.department == "Computer Aided Designing - GEPL":
-		if doc.manufacturing_work_order:
-			doc.manufacturing_plan_kggk = frappe.db.get_value(
-				"Manufacturing Work Order", doc.manufacturing_work_order, "manufacturing_plan"
-			)
-		doc.flags.ignore_links = True
-		doc.save()
-		if doc.manufacturing_plan:
-			doc.db_set("manufacturing_plan", None)
-	elif doc.department == "Computer Aided Manufacturing - GEPL":
-		doc.flags.ignore_links = True
-		doc.save()
-	# else:
+	# if ignore_links:
+	# 	doc.flags.ignore_links = True
+	# # doc.validate()
+	# # doc.on_update()
+	# # doc.update_children()
+	# # doc.db_update_all()
+	# if doc.operation == "CAD Updation" or doc.department == "Computer Aided Designing - GEPL":
+	# 	if doc.manufacturing_work_order:
+	# 		doc.manufacturing_plan_kggk = frappe.db.get_value(
+	# 			"Manufacturing Work Order", doc.manufacturing_work_order, "manufacturing_plan"
+	# 		)
+	# 	doc.flags.ignore_links = True
 	# 	doc.save()
+	# 	if doc.manufacturing_plan:
+	# 		doc.db_set("manufacturing_plan", None)
+	# elif doc.department == "Computer Aided Manufacturing - GEPL":
+	# 	doc.flags.ignore_links = True
+	# 	doc.save()
+	# # else:
+	# # 	doc.save()
 
 	return doc
 
