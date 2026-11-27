@@ -2520,8 +2520,14 @@ class RefiningEntry(Document):
 				)
 
 		elif self.refining_type == "Serial Number Refining":
+			serial_nos = [
+				sn.serial_number for sn in self.serial_no_details if sn.serial_number
+			]
+			if serial_nos:
+				frappe.db.set_value(
+					"Serial No", {"name": ["in", serial_nos]}, "status", "Inactive"
+				)
 			for sn in self.serial_no_details:
-				frappe.db.set_value("Serial No", sn.serial_number, "status", "Inactive")
 				# Deactivate the serial's OWN as-built BOM (custom_bom_no) — the physical piece has
 				# been melted down. An item can have several active per-serial BOMs, so the design
 				# item's generic active BOM would both leave this piece's BOM active and disable one
