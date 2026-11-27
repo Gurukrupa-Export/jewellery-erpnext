@@ -33,8 +33,26 @@ def set_do_not_explode(self):
 			row.do_not_explode = 1
 
 
+def set_self_item_do_not_explode(self):
+	"""Keep the finished item's own row in a BOM from being linked to a BOM.
+
+	Finish Goods BOMs list their own item as a row. Left to ERPNext, that row's BOM No is filled
+	with the item's default BOM and BOM.check_recursion then rejects every re-save with
+	"BOM recursion ... cannot be parent or child of ...", which leaves the Sales Order row
+	without weights and rate. Only the row whose item is the BOM's own item is touched.
+	"""
+	if not self.item:
+		return
+
+	for row in self.get("items"):
+		if row.item_code == self.item and not row.get("is_phantom_item"):
+			row.do_not_explode = 1
+			row.bom_no = ""
+
+
 def before_validate(self, method):
 	set_do_not_explode(self)
+	set_self_item_do_not_explode(self)
 	validate_rating(self)
 	validate_weight(self)
 	if self.bom_type == "Quotation" or self.docstatus == 1:
