@@ -224,7 +224,7 @@ frappe.ui.form.on("Employee IR", {
 			// }
 			var query_filters = {
 				department: frm.doc.department,
-				manufacturing_work_order: frm.doc.scan_mwo,
+				manufacturing_work_order: scanned,
 			};
 			if (frm.doc.type == "Issue") {
 				query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
