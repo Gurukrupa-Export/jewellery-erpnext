@@ -1,47 +1,153 @@
-// Stock Reconciliation:
-// - "Get Child Stock Reconcilliation" button;
-// - "Fetch Items from Warehouse" with several items (or all of them) at once. With Main Slip
-//   ticked it also fetches the employee warehouses of the selected warehouse.
+// Stock Reconciliation enhancements:
+// - live Item Group summary, pure weight and positive / negative difference totals. The server
+//   recomputes the same values on save (stock_reonciliation.set_reconciliation_summaries), so these
+//   are display-only and never the source of truth;
+// - "Fetch Items from Warehouse" with several items (or all of them) at once.
 
 const SR_METHODS =
 	"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation";
+const SR_PRECISION = 3;
+// Stock UOM -> grams. carat / 5 = gram (carat x 0.2). Other UOMs have no gram value.
+const SR_GRAM_FACTORS = { Gram: 1, Carat: 0.2 };
 
 frappe.ui.form.on("Stock Reconciliation", {
-	setup(frm) {
-		// ERPNext's "Fetch Items from Warehouse" button calls frm.events.get_items.
+	onload(frm) {
+		// ERPNext's "Fetch Items from Warehouse" button calls frm.events.get_items. Set in onload,
+		// not setup: onload runs after every script's setup, so an older DB Client Script that
+		// still overrides get_items in its setup cannot replace this dialog.
 		frm.events.get_items = (frm) => sr_get_items_dialog(frm);
 	},
 
-	custom_get_child_stock_reconcilliation(frm) {
-		frappe.call({
-			method: "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.get_child_reconciliation",
-			args: {
-				doc: frm.doc.name,
-			},
-			callback: function (r) {
-				$.each(r.message, function (i, item) {
-					// Check if item already exists in the table
-					var existing_item = false;
-					frm.doc.items.forEach(function (existing_row) {
-						if (existing_row.item_code === item.item_code) {
-							existing_item = true;
-							return false; // exit loop early
-						}
-					});
-					// Add item if it doesn't exist already
-					if (!existing_item) {
-						var row = frappe.model.add_child(frm.doc, "Stock Reconciliation Item", "items");
-						row.item_code = item.item_code;
-						row.warehouse = item.warehouse;
-						row.qty = item.qty;
-						row.valuation_rate = item.valuation_rate;
-					}
-				});
-				refresh_field("items");
-			},
-		});
+	// Also triggered by the "Stock Reconciliation Get work Order" Client Script once it has
+	// filled Stock Comparison.
+	jewellery_recalculate_summaries(frm) {
+		sr_recalculate(frm);
 	},
 });
+
+frappe.ui.form.on("Stock Reconciliation Item", {
+	item_code: sr_schedule_recalculate,
+	qty: sr_schedule_recalculate,
+	item_group: sr_schedule_recalculate,
+	stock_uom: sr_schedule_recalculate,
+	items_remove: sr_schedule_recalculate,
+});
+
+frappe.ui.form.on("Stock Comparison", {
+	qty: sr_schedule_recalculate,
+	currenty_qty: sr_schedule_recalculate,
+	custom_stock_comparison_remove: sr_schedule_recalculate,
+});
+
+function sr_schedule_recalculate(frm) {
+	// Several fields change together (item_code fetches item_group and stock_uom): recalculate once.
+	clearTimeout(frm._sr_recalculate_timer);
+	frm._sr_recalculate_timer = setTimeout(() => sr_recalculate(frm), 300);
+}
+
+async function sr_purities(frm, item_codes) {
+	frm._sr_purity_cache = frm._sr_purity_cache || {};
+	const cache = frm._sr_purity_cache;
+	const missing = [...new Set(item_codes.filter((code) => code && !(code in cache)))];
+	if (missing.length) {
+		const found = await frappe.xcall(`${SR_METHODS}.get_purity_percentages`, {
+			item_codes: missing,
+		});
+		missing.forEach((code) => (cache[code] = flt((found || {})[code])));
+	}
+	return cache;
+}
+
+function sr_pure_weight(qty, purity) {
+	return purity ? flt((flt(qty) * flt(purity)) / 100, SR_PRECISION) : 0;
+}
+
+async function sr_recalculate(frm) {
+	if (frm.doc.docstatus !== 0) return;
+	const items = frm.doc.items || [];
+	const comparison = frm.doc.custom_stock_comparison || [];
+	const purity = await sr_purities(frm, [
+		...items.map((row) => row.item_code),
+		...comparison.map((row) => row.item_code),
+	]);
+
+	// Pure weight of each item row and the total
+	if (frappe.meta.has_field("Stock Reconciliation Item", "custom_pure_weight")) {
+		let total = 0;
+		items.forEach((row) => {
+			row.custom_pure_weight = sr_pure_weight(row.qty, purity[row.item_code]);
+			total += row.custom_pure_weight;
+		});
+		if (frappe.meta.has_field(frm.doctype, "custom_total_pure_weight")) {
+			frm.doc.custom_total_pure_weight = flt(total, SR_PRECISION);
+		}
+	}
+
+	// Item Group summary
+	if (frappe.meta.has_field(frm.doctype, "custom_item_group_summary")) {
+		const totals = {};
+		items.forEach((row) => {
+			if (!row.item_code) return;
+			const key = JSON.stringify([row.item_group || "", row.stock_uom || ""]);
+			totals[key] = (totals[key] || 0) + flt(row.qty);
+		});
+		frm.clear_table("custom_item_group_summary");
+		let grand_total = 0;
+		Object.keys(totals)
+			.sort()
+			.forEach((key) => {
+				const [item_group, uom] = JSON.parse(key);
+				const factor = SR_GRAM_FACTORS[uom];
+				const in_gram = factor ? flt(totals[key] * factor, SR_PRECISION) : 0;
+				grand_total += in_gram;
+				const row = frm.add_child("custom_item_group_summary");
+				row.item_group = item_group || null;
+				row.uom = uom || null;
+				row.total_qty = flt(totals[key], SR_PRECISION);
+				row.total_qty_in_gram = in_gram;
+			});
+		frm.doc.custom_grand_total_gram = flt(grand_total, SR_PRECISION);
+	}
+
+	// Signed difference (Stock Reconciliation qty - Child Stock Reconciliation qty) and its totals
+	let positive = 0;
+	let negative = 0;
+	const comparison_pure_weight = frappe.meta.has_field("Stock Comparison", "pure_weight");
+	comparison.forEach((row) => {
+		row.diff_qty = flt(flt(row.currenty_qty) - flt(row.qty), SR_PRECISION);
+		if (row.diff_qty > 0) positive += row.diff_qty;
+		if (row.diff_qty < 0) negative -= row.diff_qty;
+		if (comparison_pure_weight) {
+			row.pure_weight = sr_pure_weight(row.diff_qty, purity[row.item_code]);
+		}
+	});
+	if (frappe.meta.has_field(frm.doctype, "custom_positive_difference_qty")) {
+		frm.doc.custom_positive_difference_qty = flt(positive, SR_PRECISION);
+		frm.doc.custom_negative_difference_qty = flt(negative, SR_PRECISION);
+	}
+
+	frm.refresh_fields([
+		"items",
+		"custom_item_group_summary",
+		"custom_grand_total_gram",
+		"custom_total_pure_weight",
+		"custom_stock_comparison",
+		"custom_positive_difference_qty",
+		"custom_negative_difference_qty",
+	]);
+}
+
+function sr_warehouse_filters(frm) {
+	// Same warehouse scope as the earlier single-item dialog.
+	const filters = { company: frm.doc.company };
+	if (frm.doc.custom_main_slip == 1) {
+		filters.custom_parent_department_warehouse = frm.doc.custom_department;
+	} else {
+		filters.department = frm.doc.custom_department;
+		filters.warehouse_type = ["in", ["Raw Material", "Reserve", "Scrap"]];
+	}
+	return filters;
+}
 
 function sr_main_slip(frm) {
 	// The form's "Main Slip" box (fieldname custom_main_screen, from gke_customization): when
@@ -59,8 +165,7 @@ function sr_get_items_dialog(frm) {
 				fieldtype: "Link",
 				options: "Warehouse",
 				reqd: 1,
-				// Same scope as ERPNext's dialog.
-				get_query: () => ({ filters: { company: frm.doc.company } }),
+				get_query: () => ({ filters: sr_warehouse_filters(frm) }),
 				onchange() {
 					dialog.set_value("item_codes", []);
 				},
@@ -92,6 +197,8 @@ function sr_get_items_dialog(frm) {
 				label: __("Ignore Empty Stock"),
 				fieldname: "ignore_empty_stock",
 				fieldtype: "Check",
+				// Ticked by default (items with no stock are skipped); the user can untick it.
+				default: 1,
 			},
 		],
 		primary_action_label: __("Update"),
@@ -145,6 +252,7 @@ function sr_add_fetched_items(frm, rows) {
 	});
 
 	frm.refresh_field("items");
+	sr_recalculate(frm);
 	frappe.show_alert({
 		message: __("{0} item(s) added, {1} already in the table", [added, skipped]),
 		indicator: added ? "green" : "orange",
