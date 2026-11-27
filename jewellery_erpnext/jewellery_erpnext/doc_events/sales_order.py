@@ -293,42 +293,46 @@ def tax(self):
 				if self.tax_category == "In-State":
 					if not self.is_reverse_charge:
 						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
+							"""select tax_type,tax_rate
 								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and tax_type not like '%IGST%'
-									and tax_type like 'Output%'
-									and tax_type not like '%RCM%'""",
+								where parent = %(item_tax_template)s
+									and tax_type not like '%%IGST%%'
+									and tax_type like 'Output%%'
+									and tax_type not like '%%RCM%%'""",
+							{"item_tax_template": item_tax_template},
 							as_dict=1,
 						)
 					else:
 						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
+							"""select tax_type,tax_rate
 								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and (tax_type like '%RCM%' or (tax_type like 'Output%' and tax_type not like 'Input%'))
-									and tax_type not like '%IGST%'""",
+								where parent = %(item_tax_template)s
+									and (tax_type like '%%RCM%%' or (tax_type like 'Output%%' and tax_type not like 'Input%%'))
+									and tax_type not like '%%IGST%%'""",
+							{"item_tax_template": item_tax_template},
 							as_dict=1,
 						)
 
 				else:
 					if not self.is_reverse_charge:
 						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
+							"""select tax_type,tax_rate
 								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and tax_type like '%IGST%'
-									and tax_type like 'Output%'
-									and tax_type not like '%RCM%'""",
+								where parent = %(item_tax_template)s
+									and tax_type like '%%IGST%%'
+									and tax_type like 'Output%%'
+									and tax_type not like '%%RCM%%'""",
+							{"item_tax_template": item_tax_template},
 							as_dict=1,
 						)
 					else:
 						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
+							"""select tax_type,tax_rate
 								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and (tax_type like '%RCM%' or tax_type like 'Output%')
-									and tax_type like '%IGST%'""",
+								where parent = %(item_tax_template)s
+									and (tax_type like '%%RCM%%' or tax_type like 'Output%%')
+									and tax_type like '%%IGST%%'""",
+							{"item_tax_template": item_tax_template},
 							as_dict=1,
 						)
 					# frappe.throw(f"{tax}")
@@ -5312,14 +5316,15 @@ def make_sales_order_batch(sales_orders, target_doc=None):
 			available_serials = []
 			for stock_entry in stock_entries:
 				serial_no = frappe.db.sql(
-					f"""
+					"""
 					SELECT sed.serial_no, sed.item_code
 					FROM `tabStock Entry Detail` sed
-					WHERE sed.parent = '{stock_entry}'
-					AND sed.item_code = '{it.item_code}'
+					WHERE sed.parent = %(stock_entry)s
+					AND sed.item_code = %(item_code)s
 					ORDER BY sed.idx DESC
 					LIMIT 1
 				""",
+					{"stock_entry": stock_entry, "item_code": it.item_code},
 					as_dict=1,
 				)
 

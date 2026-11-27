@@ -9,6 +9,32 @@ from frappe.utils import flt, get_last_day, getdate
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
 
 
+def _get_customer_metal_purity(customer, metal_type, metal_touch):
+	"""Customer's Metal Criteria purity for a metal type and touch.
+
+	Parameterised lookup (the values come from the document) that fails with a readable
+	message instead of an IndexError when the customer has no matching criteria row.
+	"""
+	purity = frappe.db.get_value(
+		"Metal Criteria",
+		{
+			"parenttype": "Customer",
+			"parent": customer,
+			"metal_type": metal_type,
+			"metal_touch": metal_touch,
+		},
+		"metal_purity",
+	)
+	if purity is None:
+		frappe.throw(
+			_("Metal Criteria not set for Customer {0} ({1} {2}).").format(
+				frappe.bold(customer), metal_type, metal_touch
+			),
+			title=_("Metal Criteria Missing"),
+		)
+	return purity
+
+
 def _so_gold_rate_changed(si_gold_rate, sales_order):
 	if not sales_order:
 		return True
@@ -129,10 +155,9 @@ def before_validate(self, method):
 						update_making_charges(
 							row_s, bom_doc, row, self.gold_rate_with_gst
 						)
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
+						customer_metal_purity = _get_customer_metal_purity(
+							self.customer, row.metal_type, row.metal_touch
+						)
 						row.customer_metal_purity = customer_metal_purity
 						rate = (
 							float(row.customer_metal_purity) * self.gold_rate_with_gst
@@ -147,10 +172,9 @@ def before_validate(self, method):
 						update_making_charges(
 							row_s, bom_doc, row, self.gold_rate_with_gst
 						)
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
+						customer_metal_purity = _get_customer_metal_purity(
+							self.customer, row.metal_type, row.metal_touch
+						)
 						row.customer_metal_purity = customer_metal_purity
 						rate = (
 							float(row.customer_metal_purity) * self.gold_rate_with_gst
