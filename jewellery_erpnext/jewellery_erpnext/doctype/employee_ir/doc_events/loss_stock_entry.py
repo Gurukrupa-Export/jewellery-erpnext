@@ -38,6 +38,20 @@ CHILD_TABLE_MANUAL = "manually_book_loss_details"
 TOLERANCE = 0.0001
 
 
+def _owner_label(owner):
+	"""``"<doctype> <name>"`` of the document a loss is booked for, for messages.
+
+	The reservation helpers below serve Employee IR and the Manufacturing Operation's
+	diamond / gemstone loss booking (dg_loss_booking) alike; each passes its own document. A
+	stand-in without a string ``doctype`` (a test double) reads as Employee IR, so the
+	Employee IR wording is unchanged.
+	"""
+	doctype = getattr(owner, "doctype", None)
+	if not isinstance(doctype, str) or not doctype:
+		doctype = "Employee IR"
+	return f"{_(doctype)} {owner.name}"
+
+
 def _sre_remaining(sre):
 	"""Reservation an SRE still holds, in stock UOM.
 
@@ -566,10 +580,10 @@ def _find_sre(eir, row, mwo, table_name, qty):
 	if not rows:
 		frappe.throw(
 			_(
-				"Employee IR {0}: No active Stock Reservation Entry found for "
+				"{0}: No active Stock Reservation Entry found for "
 				"MWO {1}, Item {2}, Batch {3} ({4} row {5})."
 			).format(
-				eir.name,
+				_owner_label(eir),
 				mwo,
 				row.item_code,
 				row.batch_no,
@@ -668,12 +682,12 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 	holders_txt = ", ".join(f"{wh}={q}" for wh, q in holders) if holders else _("none")
 	frappe.throw(
 		_(
-			"Employee IR {0}, {1} row {2}: the reservation for batch {3} (item {4}) was "
+			"{0}, {1} row {2}: the reservation for batch {3} (item {4}) was "
 			"already fully consumed upstream, and none of its warehouses [{5}] still "
 			"physically holds the {6} required for the loss. Warehouses currently "
 			"holding this batch: {7}."
 		).format(
-			eir.name,
+			_owner_label(eir),
 			table_name,
 			row.idx,
 			row.batch_no,
@@ -865,12 +879,12 @@ def _validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name):
 		if physical + TOLERANCE < qty:
 			frappe.throw(
 				_(
-					"Employee IR {0}, {1} row {2}: loss qty {3} exceeds the physical "
+					"{0}, {1} row {2}: loss qty {3} exceeds the physical "
 					"stock of batch {4} in warehouse {5} ({6}). The reservation for this "
 					"batch was already fully consumed upstream, so the loss must be "
 					"covered by physical stock."
 				).format(
-					eir.name,
+					_owner_label(eir),
 					table_name,
 					row.idx,
 					qty,
@@ -886,11 +900,11 @@ def _validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name):
 		breakdown = ", ".join(f"{c['name']}={_sre_remaining(c)}" for c in candidates)
 		frappe.throw(
 			_(
-				"Employee IR {0}, {1} row {2}: loss qty {3} cannot be covered by "
+				"{0}, {1} row {2}: loss qty {3} cannot be covered by "
 				"any single Stock Reservation Entry for batch {4} in warehouse {5} "
 				"(largest remaining is {6}={7}; batch totals {8} remaining across [{9}])."
 			).format(
-				eir.name,
+				_owner_label(eir),
 				table_name,
 				row.idx,
 				qty,
@@ -1108,10 +1122,10 @@ def _reduce_sre(eir, row, sre_doc, loss_qty, table_name):
 			# silently discarding the reduction. Fail loudly instead.
 			frappe.throw(
 				_(
-					"Employee IR {0}, {1} row {2}: Stock Reservation Entry {3} reserves "
+					"{0}, {1} row {2}: Stock Reservation Entry {3} reserves "
 					"batches [{4}] but not {5}, so the loss cannot be deducted from it."
 				).format(
-					eir.name,
+					_owner_label(eir),
 					table_name,
 					row.idx,
 					sre_doc.name,
@@ -1154,15 +1168,29 @@ def _reduce_sre(eir, row, sre_doc, loss_qty, table_name):
 	# does not have to LIKE-scan every reservation in the table, while the snapshot
 	# carries the payload needed to rebuild the reservation.
 	new_sre.employee_ir = eir.name
-	new_sre.custom_replaced_sre_snapshot = json.dumps(
-		{
-			"employee_ir": eir.name,
-			"original_reserved_qty": original_reserved_qty,
-			"original_delivered_qty": original_delivered_qty,
-			"batch_no": row.batch_no if is_batched else None,
-			"original_sb_qty": original_sb_qty,
-		}
-	)
+	snapshot = {
+		"employee_ir": eir.name,
+		"original_reserved_qty": original_reserved_qty,
+		"original_delivered_qty": original_delivered_qty,
+		"batch_no": row.batch_no if is_batched else None,
+		"original_sb_qty": original_sb_qty,
+	}
+	# Reducing a reservation another document already reduced: keep that document's markers,
+	# so restoring this reduction hands the reservation back to it still restorable.
+	previous = {
+		key: value
+		for key, value in (
+			("previous_employee_ir", getattr(sre_doc, "employee_ir", None)),
+			(
+				"previous_snapshot",
+				getattr(sre_doc, "custom_replaced_sre_snapshot", None),
+			),
+		)
+		if isinstance(value, str) and value
+	}
+	if previous:
+		snapshot.update(previous)
+	new_sre.custom_replaced_sre_snapshot = json.dumps(snapshot)
 
 	if is_batched:
 		# DECREMENT the affected batch row only. Assigning the whole new header qty
@@ -1188,6 +1216,7 @@ def _reduce_sre(eir, row, sre_doc, loss_qty, table_name):
 	new_sre.flags.ignore_permissions = True
 	new_sre.insert(ignore_links=True)
 	new_sre.submit()
+	return new_sre.name
 
 
 def _restore_reduced_sres(eir):
@@ -1252,9 +1281,12 @@ def _restore_reduced_sres(eir):
 		restored.available_qty = max(flt(sre_doc.available_qty), orig_qty)
 		# copy_doc carries no_copy fields, so both markers ride along from the reduced
 		# entry. Clear them: this reservation is whole again and must not be picked up
-		# by a second cancel of the same EIR.
-		restored.employee_ir = None
-		restored.custom_replaced_sre_snapshot = None
+		# by a second cancel of the same EIR. When the reduction was taken off a reservation
+		# an earlier document had reduced, that document's markers go back instead.
+		restored.employee_ir = snapshot.get("previous_employee_ir") or None
+		restored.custom_replaced_sre_snapshot = (
+			snapshot.get("previous_snapshot") or None
+		)
 
 		if restored.sb_entries:
 			if snap_batch and snap_sb_qty is not None:
