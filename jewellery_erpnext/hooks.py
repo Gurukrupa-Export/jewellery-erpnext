@@ -447,11 +447,16 @@ doc_events = {
 		"before_validate": [
 			# A Material Request of a PMO on Hold or Closed cannot be saved or moved on.
 			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.refuse_material_request_while_blocked",
-			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
+			# Ahead of before_validate, which back-fills row warehouses and pure qty: the guard
+			# must compare only what the caller sent.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.guard_non_system_manager_field_edits",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
 		],
 		"before_update_after_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open.refuse_material_request_while_blocked",
+			# Covers the allow_on_submit item fields (Required By, BOM No ...); Frappe itself
+			# refuses every other field once submitted.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.guard_non_system_manager_field_edits",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_update_after_submit",
 		],
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.create_stock_entry",
