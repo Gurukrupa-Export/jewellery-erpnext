@@ -12,6 +12,9 @@ from frappe.utils import cint, flt
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import (
+	stamp_fetched_customer,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 	get_item_loss_item,
 )
@@ -2721,6 +2724,9 @@ def add_to_serial_no(serial_no, doc, row):
 		return
 
 	serial_doc.append("huid", {"huid": row.huid, "date": doc.date})
+	# The save would re-fetch the customer from the serial's BOM, which ERPNext 16.52 refuses
+	# as a customer change; see stamp_fetched_customer.
+	stamp_fetched_customer(serial_doc)
 	serial_doc.save()
 
 
