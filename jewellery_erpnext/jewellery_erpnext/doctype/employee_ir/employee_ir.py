@@ -95,6 +95,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validati
 	validate_loss_qty,
 	validate_loss_tables_required,
 	validate_manually_book_loss_details,
+	validate_receive_not_already_done,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	update_new_mop_wtg,
@@ -592,6 +593,9 @@ class EmployeeIR(Document):
 				)
 			)
 			lock_bins(_eir_pairs)
+			# Manufacturing Operation comes after the Bins in the canonical lock order, and
+			# nothing has been written yet: refuse a Receive of operations already received.
+			validate_receive_not_already_done(self)
 
 		for row in self.employee_ir_operations:
 			if is_mould_operation and not cancel:
