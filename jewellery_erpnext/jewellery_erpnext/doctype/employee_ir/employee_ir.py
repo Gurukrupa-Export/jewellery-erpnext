@@ -24,7 +24,6 @@ from frappe.utils import (
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
 	batch_priority_map,
-	describe_customer_spill,
 	is_customer_rank,
 	loss_rank,
 	tiered_allocate,
@@ -998,9 +997,6 @@ class EmployeeIR(Document):
 				},
 			)
 
-		# ONE warning for the whole document, after every operation row is booked.
-		self._warn_customer_loss_spill()
-
 		# Pre-deduction MOP baseline: total loss available from the operations
 		# before any manual deduction. Drives downstream caps and serves as the
 		# reference for `remaining_loss = baseline - sum(manually_book_loss)`.
@@ -1259,48 +1255,6 @@ class EmployeeIR(Document):
 		self.flags.setdefault("loss_overflow", []).append(
 			{"mwo": mwo, "operation": opt, "qty": flt(qty, 3)}
 		)
-
-	def _warn_customer_loss_spill(self):
-		"""Emit ONE orange warning naming the customer metal that absorbed loss.
-
-		Warns whenever a customer tier was funded at all -- not only when the
-		waterfall overflowed. The ordinary business case is "regular stock ran out
-		and the remainder landed on the customer's gold", which produces no overflow
-		and is exactly what the operator needs to see.
-
-		Never throws: spilling is allowed. The one hard stop remains
-		``batch_owner_no_wastage`` below, and that batch is ranked last precisely so
-		the waterfall reaches it only when nothing else can absorb the loss.
-		"""
-		spill = self.flags.get("customer_loss_spill") or []
-		if not spill:
-			return
-
-		merged = {}
-		for row in spill:
-			key = (row["customer"], row["item_code"], row["batch_no"])
-			merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), 3)
-
-		lines = describe_customer_spill(
-			[
-				{"customer": c, "item_code": i, "batch_no": b, "qty": q}
-				for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
-			]
-		)
-		total = flt(sum(merged.values()), 3)
-		frappe.msgprint(
-			_(
-				"Company stock could not absorb the whole process loss, so {0} g was "
-				"booked against customer-owned material:"
-			).format(frappe.bold(total))
-			+ "<br><br>"
-			+ "<br>".join(lines),
-			title=_("Customer Material Absorbed Loss"),
-			indicator="orange",
-		)
-		# Durable trace: Employee IR submit runs on queue="long" (CustomSubmissionQueue),
-		# where a msgprint lands in the job log rather than the operator's browser.
-		self.flags.customer_loss_spill_total = total
 
 	@frappe.whitelist()
 	def get_summary_data(self):
