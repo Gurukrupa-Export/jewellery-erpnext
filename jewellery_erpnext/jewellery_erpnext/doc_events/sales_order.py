@@ -8,6 +8,9 @@ from frappe import _
 from frappe.utils import flt
 from frappe.utils.background_jobs import is_job_enqueued
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom import (
+	set_self_item_do_not_explode,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	clear_kggk_source,
 	set_bom_item_details,
@@ -2016,6 +2019,7 @@ def create_serial_no_bom(self, row, ctx=None):
 		)
 	doc = frappe.copy_doc(bom_doc)
 	clear_kggk_source(doc)
+	set_self_item_do_not_explode(doc)
 	doc.customer = self.customer
 	if product_certification:
 		doc.hallmarking_amount = 0
