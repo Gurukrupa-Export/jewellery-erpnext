@@ -204,6 +204,15 @@
    "insert_after": "custom_process_control_section",
    "label": "Enable Process Control",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Shows the Book Loss of Diamond/Gemstone button on this department's Manufacturing Operations.",
+   "dt": "Department",
+   "fieldname": "custom_enable_loss_booking_for_diamond_gemstone",
+   "fieldtype": "Check",
+   "insert_after": "custom_enable_process_control",
+   "label": "Enable Loss Booking for Diamond/Gemstone",
+   "module": "Jewellery Erpnext"
   }
  ]
 }

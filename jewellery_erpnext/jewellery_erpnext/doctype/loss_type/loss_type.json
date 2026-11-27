@@ -7,7 +7,8 @@
  "engine": "InnoDB",
  "field_order": [
   "loss_type",
-  "loss_account"
+  "loss_account",
+  "destination_warehouse_type"
  ],
  "fields": [
   {
@@ -21,12 +22,19 @@
    "fieldtype": "Link",
    "label": "Loss Account",
    "options": "Account"
+  },
+  {
+   "description": "Warehouse Type of the department warehouse that diamond / gemstone loss of this type is moved to when booked from a Manufacturing Operation, e.g. Scrap or Raw Material.",
+   "fieldname": "destination_warehouse_type",
+   "fieldtype": "Link",
+   "label": "Destination Warehouse Type",
+   "options": "Warehouse Type"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-18 14:03:30.968011",
+ "modified": "2026-11-19 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Loss Type",
