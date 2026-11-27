@@ -235,12 +235,12 @@ frappe.ui.form.on("Employee IR", {
 					)
 				)
 					query_filters["operation"] = ["is", "not set"];
-				if (
-					!["Computer Aided Designing - GEPL", "Computer Aided Manufacturing - GEPL"].includes(
-						frm.doc.department
-					)
-				)
-					query_filters["department_ir_status"] = ["=", "Received"];
+				// if (
+				// 	["Computer Aided Designing - GEPL", "Computer Aided Manufacturing - GEPL"].includes(
+				// 		frm.doc.department
+				// 	)
+				// )
+				// 	query_filters["department_ir_status"] = ["=", "Received"];
 
 				if (frm.doc.subcontracting == "Yes") {
 					query_filters["employee"] = ["is", "not set"];
