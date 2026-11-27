@@ -226,6 +226,23 @@ class TreeNumber(Document):
 
 
 @frappe.whitelist()
+def get_batch_balance(tree_number):
+	"""HTML for the form's Batch-wise Balance section. Read-only; see ``tree_batch_balance``.
+
+	Takes the name and reads the saved tree rather than running as a doc method: a doc method is
+	sent the form's copy and refuses it once someone else has saved the tree, which would turn a
+	view into an error.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_batch_balance import (
+		render_tree,
+	)
+
+	tree = frappe.get_doc("Tree Number", tree_number)
+	tree.check_permission("read")
+	return render_tree(tree)
+
+
+@frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def tree_metal_item_query(doctype, txt, searchfield, start, page_len, filters):
 	"""Items issuable to a tree: same Metal Type, Metal Touch and Metal Purity.
