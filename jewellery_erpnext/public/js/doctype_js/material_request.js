@@ -1,6 +1,7 @@
 frappe.ui.form.on("Material Request", {
 	refresh(frm) {
 		patch_barcode_scanner_for_serial_no_rows(frm);
+		lock_items_after_draft(frm);
 		frm.trigger("get_items_from_customer_goods");
 		frm.trigger("manufacturing_operation_query");
 		if (frm.doc.material_request_type === "Material Transfer") {
@@ -541,6 +542,22 @@ frappe.ui.form.on("Material Request Item", {
 
 // {variant: target_warehouse} from Manufacturer.custom_reservation_table, cached per
 // manufacturer on the form so re-deriving on every row edit costs at most one round-trip.
+// Once a request has left Draft only System Manager may change its items: the whole table
+// goes read-only (no edits, no Add Row / Delete), and so does the header scanner, which adds
+// rows. The server enforces the same rule in guard_non_system_manager_field_edits; this only
+// keeps the form from offering edits that save would refuse.
+function lock_items_after_draft(frm) {
+	const locked =
+		!!frm.doc.workflow_state &&
+		frm.doc.workflow_state !== "Draft" &&
+		!frappe.user.has_role("System Manager");
+
+	frm.set_df_property("items", "read_only", locked ? 1 : 0);
+	if (frm.fields_dict.scan_barcode) {
+		frm.set_df_property("scan_barcode", "read_only", locked ? 1 : 0);
+	}
+}
+
 function get_reservation_warehouses(frm, manufacturer) {
 	frm.__reservation_warehouses = frm.__reservation_warehouses || {};
 	if (frm.__reservation_warehouses[manufacturer]) {

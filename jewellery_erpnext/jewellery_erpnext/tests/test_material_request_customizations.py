@@ -1030,3 +1030,348 @@ class TestSetReservationWarehouse(IntegrationTestCase):
 
 		self.assertEqual(mr.set_warehouse, "Waxing RSV - GEPL")
 		mock_map.assert_called_once_with("Shubh")
+
+
+def _guard_row(name, item_code="ITEM-A", qty=1, pcs=1, idx=1, **extra):
+	return SimpleNamespace(
+		name=name, idx=idx, item_code=item_code, qty=qty, pcs=pcs, **extra
+	)
+
+
+def _guard_before(
+	workflow_state="Material Reserved",
+	company="C1",
+	material_request_type="Manufacture",
+	items=None,
+):
+	return SimpleNamespace(
+		workflow_state=workflow_state,
+		company=company,
+		material_request_type=material_request_type,
+		items=items or [],
+	)
+
+
+def _guard_mr(
+	is_new=False,
+	before=None,
+	company="C1",
+	material_request_type="Manufacture",
+	items=None,
+	workflow_state="Material Reserved",
+):
+	"""SimpleNamespace, not MagicMock, for the same reason as ``_reservation_mr``: this
+	function branches on ``is_new()``/``get_doc_before_save()`` return values, which a
+	MagicMock call would make truthy regardless of what's configured."""
+	return SimpleNamespace(
+		company=company,
+		material_request_type=material_request_type,
+		workflow_state=workflow_state,
+		items=items or [],
+		is_new=lambda: is_new,
+		get_doc_before_save=lambda: before,
+	)
+
+
+# What _guarded_item_fields returns for the rows the guard tests build; the real one reads
+# the Material Request Item meta (covered by TestGuardedItemFields).
+_GUARD_ITEM_FIELDS = {
+	"item_code": ("Item Code", "Link"),
+	"qty": ("Quantity", "Float"),
+	"pcs": ("Pcs", "Data"),
+	"warehouse": ("Target Warehouse", "Link"),
+	"custom_alternative_item": ("Alternative Item", "Link"),
+	"schedule_date": ("Required By", "Date"),
+}
+
+
+class TestGuardNonSystemManagerFieldEdits(IntegrationTestCase):
+	"""Server-side backstop for the System-Manager-only edit restriction (F-01 in the
+	PR #1236 review): Workflow.allow_edit only disables the desk form client-side, so this
+	closes the gap for a direct API/RPC save."""
+
+	def setUp(self):
+		super().setUp()
+		patcher = patch.object(
+			mr_mod, "_guarded_item_fields", return_value=_GUARD_ITEM_FIELDS
+		)
+		patcher.start()
+		self.addCleanup(patcher.stop)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_new_document_is_never_guarded(self, mock_roles):
+		mr = _guard_mr(is_new=True)
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_no_before_save_snapshot_is_let_through(self, mock_roles):
+		mr = _guard_mr(is_new=False, before=None)
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_leaving_draft_is_not_guarded(self, mock_roles):
+		"""The save that moves a request OUT of Draft is the legitimate transition itself,
+		not an edit to guard against."""
+		before = _guard_before(
+			workflow_state="Draft", items=[_guard_row("row-1", qty=1)]
+		)
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", qty=99)])
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["System Manager"])
+	def test_system_manager_is_exempt(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", qty=1)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", qty=99)])
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_unchanged_fields_pass(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", qty=1)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", qty=1)])
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_workflow_state_only_change_does_not_throw(self, mock_roles):
+		"""A legitimate transition (e.g. Reservation Pending -> Material Reserved) with
+		nothing else changed must not be blocked."""
+		before = _guard_before(
+			workflow_state="Reservation Pending", items=[_guard_row("row-1")]
+		)
+		mr = _guard_mr(
+			before=before,
+			items=[_guard_row("row-1")],
+			workflow_state="Material Reserved",
+		)
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_warehouse_change_throws(self, mock_roles):
+		"""Every item field is locked now, warehouse included. set_reservation_warehouse's
+		back-fill no longer reaches the guard: the guard runs ahead of before_validate
+		(TestGuardHookOrder), so it only ever sees what the caller sent."""
+		before_row = _guard_row("row-1", warehouse=None)
+		after_row = _guard_row("row-1", warehouse="WH-1")
+		before = _guard_before(items=[before_row])
+		mr = _guard_mr(before=before, items=[after_row])
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("Target Warehouse", str(ctx.exception))
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_qty_change_throws_for_other_role(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", qty=1)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", qty=99)])
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("Quantity", str(ctx.exception))
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_alternative_item_change_throws(self, mock_roles):
+		"""KGJPL-MR-MF-26-52676: the Alternative Item was swapped after the reserve entry
+		was made, and the transfer job then failed on the reserved batch."""
+		before = _guard_before(
+			items=[_guard_row("row-1", custom_alternative_item="G-5.00*4.00")]
+		)
+		mr = _guard_mr(
+			before=before,
+			items=[_guard_row("row-1", custom_alternative_item="G-5.00*3.00")],
+		)
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("Row #1: Alternative Item", str(ctx.exception))
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_several_changes_on_one_row_are_listed_together(self, mock_roles):
+		before = _guard_before(
+			items=[_guard_row("row-1", qty=1, custom_alternative_item="A")]
+		)
+		mr = _guard_mr(
+			before=before,
+			items=[_guard_row("row-1", qty=2, custom_alternative_item="B")],
+		)
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("Row #1: Quantity, Alternative Item", str(ctx.exception))
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_same_value_in_another_representation_passes(self, mock_roles):
+		"""The request carries what the client sent, the snapshot what the database
+		returned: 0.32 vs "0.320000000", a date vs its ISO string, None vs ""."""
+		from datetime import date
+
+		before = _guard_before(
+			items=[
+				_guard_row(
+					"row-1",
+					qty=0.32,
+					schedule_date=date(2026, 11, 23),
+					custom_alternative_item=None,
+					warehouse="WH-1",
+				)
+			]
+		)
+		mr = _guard_mr(
+			before=before,
+			items=[
+				_guard_row(
+					"row-1",
+					qty="0.320000000",
+					schedule_date="2026-11-23",
+					custom_alternative_item="",
+					warehouse="WH-1",
+				)
+			],
+		)
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_field_outside_the_guarded_set_is_ignored(self, mock_roles):
+		"""Read-only and exempt fields (custom_pure_qty, custom_scan_alternate_item ...) are
+		not in _guarded_item_fields, so a change to them is not an edit."""
+		before = _guard_before(items=[_guard_row("row-1", custom_pure_qty=1.0)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", custom_pure_qty=0.75)])
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["System Manager"])
+	def test_system_manager_may_change_the_alternative_item(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", custom_alternative_item="A")])
+		mr = _guard_mr(
+			before=before, items=[_guard_row("row-1", custom_alternative_item="B")]
+		)
+		mr_mod.guard_non_system_manager_field_edits(mr)  # Should not throw
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_submitted_request_is_guarded_too(self, mock_roles):
+		"""Wired on before_update_after_submit as well: Required By is allow_on_submit, so
+		Frappe alone would let it through on a submitted request."""
+		from datetime import date
+
+		before = _guard_before(
+			workflow_state="Material Transferred",
+			items=[_guard_row("row-1", schedule_date=date(2026, 11, 23))],
+		)
+		mr = _guard_mr(
+			before=before,
+			workflow_state="Material Transferred",
+			items=[_guard_row("row-1", schedule_date="2026-11-30")],
+		)
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("Required By", str(ctx.exception))
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_item_code_change_throws(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", item_code="A")])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", item_code="B")])
+		with self.assertRaises(frappe.PermissionError):
+			mr_mod.guard_non_system_manager_field_edits(mr)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_pcs_change_throws(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1", pcs=1)])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1", pcs=5)])
+		with self.assertRaises(frappe.PermissionError):
+			mr_mod.guard_non_system_manager_field_edits(mr)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_company_change_throws(self, mock_roles):
+		before = _guard_before(company="C1")
+		mr = _guard_mr(before=before, company="C2")
+		with self.assertRaises(frappe.PermissionError):
+			mr_mod.guard_non_system_manager_field_edits(mr)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_material_request_type_change_throws(self, mock_roles):
+		before = _guard_before(material_request_type="Manufacture")
+		mr = _guard_mr(before=before, material_request_type="Purchase")
+		with self.assertRaises(frappe.PermissionError):
+			mr_mod.guard_non_system_manager_field_edits(mr)
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_new_row_throws(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1")])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1"), _guard_row("row-2")])
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("new item", str(ctx.exception))
+
+	@patch.object(mr_mod.frappe, "get_roles", return_value=["Stock User"])
+	def test_deleted_row_throws(self, mock_roles):
+		before = _guard_before(items=[_guard_row("row-1"), _guard_row("row-2")])
+		mr = _guard_mr(before=before, items=[_guard_row("row-1")])
+		with self.assertRaises(frappe.PermissionError) as ctx:
+			mr_mod.guard_non_system_manager_field_edits(mr)
+		self.assertIn("deleted", str(ctx.exception))
+
+
+class TestGuardedItemFields(IntegrationTestCase):
+	"""_guarded_item_fields: every Material Request Item field a user can type into, from the
+	meta, so a custom field added later is locked without a code change."""
+
+	@staticmethod
+	def _df(fieldname, fieldtype="Data", read_only=0, label=None):
+		return SimpleNamespace(
+			fieldname=fieldname, fieldtype=fieldtype, read_only=read_only, label=label
+		)
+
+	def test_takes_editable_value_fields_only(self):
+		meta = SimpleNamespace(
+			fields=[
+				self._df("item_code", "Link", label="Item Code"),
+				self._df("qty", "Float", label="Quantity"),
+				self._df("custom_alternative_item", "Link", label="Alternative Item"),
+				# No label: falls back to the fieldname.
+				self._df("custom_new_field", "Data"),
+				self._df("item_name", "Data", read_only=1),
+				self._df("custom_pure_qty", "Float", read_only=1),
+				self._df("section_break_1", "Section Break"),
+				self._df("column_break_1", "Column Break"),
+				self._df("some_table", "Table"),
+				self._df("custom_scan_alternate_item", "Data"),
+			]
+		)
+		with patch.object(mr_mod.frappe, "get_meta", return_value=meta) as get_meta:
+			fields = mr_mod._guarded_item_fields()
+
+		get_meta.assert_called_once_with("Material Request Item")
+		self.assertEqual(
+			fields,
+			{
+				"item_code": ("Item Code", "Link"),
+				"qty": ("Quantity", "Float"),
+				"custom_alternative_item": ("Alternative Item", "Link"),
+				"custom_new_field": ("custom_new_field", "Data"),
+			},
+		)
+
+
+class TestGuardHookOrder(IntegrationTestCase):
+	"""The guard must see only what the caller sent, so it runs before before_validate (which
+	back-fills row warehouses and pure qty), and it is wired on update-after-submit too."""
+
+	GUARD = "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.guard_non_system_manager_field_edits"
+
+	def _hooks(self, event):
+		from jewellery_erpnext import hooks
+
+		return hooks.doc_events["Material Request"][event]
+
+	def test_guard_runs_before_before_validate(self):
+		hooks = self._hooks("before_validate")
+		self.assertIn(self.GUARD, hooks)
+		self.assertLess(
+			hooks.index(self.GUARD),
+			hooks.index(
+				"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate"
+			),
+		)
+
+	def test_guard_runs_before_the_after_submit_dispatch(self):
+		hooks = self._hooks("before_update_after_submit")
+		self.assertIn(self.GUARD, hooks)
+		self.assertLess(
+			hooks.index(self.GUARD),
+			hooks.index(
+				"jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_update_after_submit"
+			),
+		)
