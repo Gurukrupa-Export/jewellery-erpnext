@@ -200,7 +200,7 @@ def stamp_snc_requirement(doc, method=None):
 def create_snc(mwo):
 	mwo = _get_mwo(mwo)
 	# The button lives on this work order; tie the call to a work order the user can open.
-	mwo.check_permission("read")
+	frappe.has_permission("Manufacturing Work Order", "read", mwo.name, throw=True)
 	if not validate_button_visibility(mwo.name):
 		frappe.throw(
 			_("Create SNC is not available for this Manufacturing Work Order.")

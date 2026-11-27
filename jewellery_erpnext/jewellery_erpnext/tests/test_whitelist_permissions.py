@@ -389,9 +389,19 @@ class TestDocumentChecks(_DBFree):
 		doc.check_permission.assert_called_once_with("write")
 
 	def test_create_snc_needs_read_on_the_work_order(self):
-		with patch.object(snc, "_get_mwo", return_value=_denying_doc(name="MWO-1")):
+		mwo = MagicMock()
+		mwo.name = "MWO-1"
+		with (
+			patch.object(snc, "_get_mwo", return_value=mwo),
+			patch.object(frappe, "has_permission", side_effect=_denied) as has_perm,
+			patch.object(snc, "validate_button_visibility") as visibility,
+		):
 			with self.assertRaises(frappe.PermissionError):
 				snc.create_snc("MWO-1")
+		self.assertEqual(
+			has_perm.call_args.args, ("Manufacturing Work Order", "read", "MWO-1")
+		)
+		visibility.assert_not_called()
 
 	def test_generate_bom_needs_read_and_does_not_enqueue(self):
 		with (
