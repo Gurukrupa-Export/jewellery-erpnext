@@ -13,6 +13,7 @@ from frappe.utils import (
 	get_datetime,
 	get_first_day,
 	get_last_day,
+	get_link_to_form,
 	getdate,
 	now_datetime,
 	nowdate,
@@ -127,6 +128,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_get_t_warehouse_from_logs,
 	_resolve_department_warehouse,
 )
+from jewellery_erpnext.jewellery_erpnext.job_work import (
+	apply_job_work_gst,
+	validate_job_work_purchase_invoice,
+)
 from jewellery_erpnext.utils import (
 	get_item_from_attribute_full,  # noqa: F401 – patched by tests
 )
@@ -217,6 +222,7 @@ class EmployeeIR(Document):
 		# table, so this is the only throw operator-entered rows ever see.
 		validate_customer_goods_finding_loss_rows(self)
 		validate_qc(self)
+		validate_job_work_purchase_invoice(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
 			self.on_submit_issue_new()
@@ -930,10 +936,9 @@ class EmployeeIR(Document):
 			frappe.throw(_("Please set service item for {0}").format(self.operation))
 		po = frappe.new_doc("Purchase Order")
 		po.supplier = self.subcontractor
-		company = frappe.db.get_value(
-			"Company", {"supplier_code": self.subcontractor}, "name"
-		)
-		po.company = company or self.company
+		# The PO is Gurukrupa's purchase of the job-work service, so it belongs to the
+		# issuing company -- never to the subcontractor's own company (KGGK).
+		po.company = self.company
 		po.employee_ir = self.name
 		po.purchase_type = "FG Purchase"
 
@@ -966,9 +971,24 @@ class EmployeeIR(Document):
 		po.taxes_and_charges = None
 		po.taxes = []
 		po.save()
-		po.db_set("schedule_date", None)
-		for row in po.items:
-			row.db_set("schedule_date", None)
+		if frappe.db.exists("Company", {"supplier_code": self.subcontractor}):
+			# Job work (KGGK): the PO stays a draft for the purchase team to review and submit
+			# by hand, so it keeps its Required By date -- blanked, the manual submit would fail.
+			# Until it is submitted KGGK cannot quote it and no Purchase Invoice can be made.
+			# GST goes on here so the Purchase Invoice made from it is taxed (spec step 13).
+			apply_job_work_gst(po)
+			frappe.msgprint(
+				_(
+					"Purchase Order {0} is created as a draft. Submit it so KGGK can create the "
+					"Quotation and the job work can continue."
+				).format(get_link_to_form("Purchase Order", po.name)),
+				title=_("Submit the job-work Purchase Order"),
+				indicator="orange",
+			)
+		else:
+			po.db_set("schedule_date", None)
+			for row in po.items:
+				row.db_set("schedule_date", None)
 
 		supplier_group = frappe.db.get_value(
 			"Supplier", self.subcontractor, "supplier_group"

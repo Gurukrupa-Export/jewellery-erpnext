@@ -8,10 +8,12 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
 	fetch_remote_ref_customer,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
+	refetch_fg_purchase_rate,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice import (
 	_get_rcm_base_account_head,
 )
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import refetch_fg_purchase_rate
 
 # from jewellery_erpnext.utils import update_existing
 
@@ -698,17 +700,126 @@ def make_quotation(source_name, target_doc=None):
 
 	target_doc.po_no = po_doc.custom_customer_po
 
-	validate_copy_bom(po_doc)
+	if po_doc.get("employee_ir"):
+		# Job work (KGGK): the PO was raised by an Employee IR Issue for a subcontracting
+		# service, so its rows carry no Copy BOM -- the design comes from the row's PMO.
+		append_job_work_quotation_items(po_doc, target_doc)
+	else:
+		validate_copy_bom(po_doc)
+		for row in po_doc.items:
+			target_doc.append(
+				"items",
+				{
+					"branch": row.get("branch"),
+					"project": row.get("project"),
+					"item_code": row.get("item_code"),
+					"qty": row.get("qty"),
+					"diamond_quality": row.get("diamond_quality"),
+					"custom_customer_gold": "No",
+					"rate": row.get("rate"),
+					"custom_customer_diamond": "No",
+					"custom_customer_stone": "No",
+					"custom_customer_good": "No",
+					"po_no": po_doc.get("name"),
+					"custom_po_details": row.name,
+					# The BOM the customer ordered against. It is the single origin of copy_bom for
+					# the whole manufacturing chain (Quotation -> Sales Order -> Manufacturing Plan
+					# -> PMO -> MWO -> MOP), replacing the item's master BOM that the Quotation used
+					# to look up for itself.
+					"copy_bom": row.get("custom_copy_bom"),
+				},
+			)
+	set_missing_values(po_doc, target_doc)
 
+	return target_doc
+
+
+def append_job_work_quotation_items(po_doc, target_doc):
+	"""Map a job-work Purchase Order (raised by Employee IR) onto a KGGK Quotation.
+
+	The Quotation belongs to the company whose Supplier Code is the PO's supplier, and each
+	row is the finished design of the row's Parent Manufacturing Order, with the PMO's master
+	BOM as Copy BOM. ``custom_po_details`` keeps the one-to-one link back to the PO row that
+	the Purchase Invoice later uses to pick up KGGK's Sales Invoice amount.
+
+	The quantity is the row's Manufacturing Work Order quantity, not the PMO's, so a PMO
+	split over several work orders can never quote its full quantity more than once. A work
+	order sent out again later (rework) comes on its own Purchase Order and is quoted there;
+	the same work order twice on one Purchase Order is refused.
+
+	Branch and project are deliberately NOT carried over: both belong to Gurukrupa (the PMO
+	and the PO row are Gurukrupa documents), and a Gurukrupa branch on a KGGK Quotation makes
+	the Sales Order take that branch's Gurukrupa address as KGGK's company address.
+	"""
+	mapped_company = frappe.db.get_value(
+		"Company", {"supplier_code": po_doc.supplier}, "name"
+	)
+	if not mapped_company:
+		frappe.throw(
+			_(
+				"Supplier {0} is not mapped to any internal Company. Set the Supplier Code on the "
+				"Company that does this job work."
+			).format(po_doc.supplier)
+		)
+	target_doc.company = mapped_company
+
+	seen_mwos = {}
 	for row in po_doc.items:
+		mwo = (
+			frappe.db.get_value(
+				"Manufacturing Operation",
+				row.get("manufacturing_operation"),
+				"manufacturing_work_order",
+			)
+			if row.get("manufacturing_operation")
+			else None
+		)
+		if mwo and mwo in seen_mwos:
+			frappe.throw(
+				_(
+					"Rows #{0} and #{1} of Purchase Order {2} are both for Manufacturing Work "
+					"Order {3}. A work order can be quoted only once per Purchase Order."
+				).format(seen_mwos[mwo], row.idx, po_doc.name, mwo)
+			)
+		if mwo:
+			seen_mwos[mwo] = row.idx
+		mwo_qty = (
+			frappe.db.get_value("Manufacturing Work Order", mwo, "qty") if mwo else None
+		)
+
+		if not row.get("custom_pmo"):
+			frappe.throw(
+				_(
+					"Row #{0}: Parent Manufacturing Order is required to create a Quotation."
+				).format(row.idx)
+			)
+		pmo_data = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			row.custom_pmo,
+			["item_code", "qty", "diamond_quality", "master_bom"],
+			as_dict=True,
+		)
+		if not pmo_data:
+			frappe.throw(
+				_("Row #{0}: Parent Manufacturing Order {1} does not exist.").format(
+					row.idx, row.custom_pmo
+				)
+			)
+		if not pmo_data.master_bom:
+			frappe.throw(
+				_("Row #{0}: Parent Manufacturing Order {1} has no Master BOM.").format(
+					row.idx, row.custom_pmo
+				)
+			)
+
 		target_doc.append(
 			"items",
 			{
-				"branch": row.get("branch"),
-				"project": row.get("project"),
-				"item_code": row.get("item_code"),
-				"qty": row.get("qty"),
-				"diamond_quality": row.get("diamond_quality"),
+				"item_code": pmo_data.item_code,
+				"qty": mwo_qty or pmo_data.qty or row.get("qty"),
+				"diamond_quality": pmo_data.diamond_quality
+				or row.get("diamond_quality"),
+				"copy_bom": pmo_data.master_bom,
 				"custom_customer_gold": "No",
 				"rate": row.get("rate"),
 				"custom_customer_diamond": "No",
@@ -716,13 +827,5 @@ def make_quotation(source_name, target_doc=None):
 				"custom_customer_good": "No",
 				"po_no": po_doc.get("name"),
 				"custom_po_details": row.name,
-				# The BOM the customer ordered against. It is the single origin of copy_bom for
-				# the whole manufacturing chain (Quotation -> Sales Order -> Manufacturing Plan
-				# -> PMO -> MWO -> MOP), replacing the item's master BOM that the Quotation used
-				# to look up for itself.
-				"copy_bom": row.get("custom_copy_bom"),
 			},
 		)
-	set_missing_values(po_doc, target_doc)
-
-	return target_doc

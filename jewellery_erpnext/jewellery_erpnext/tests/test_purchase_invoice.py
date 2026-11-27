@@ -13,8 +13,13 @@ class DummyPurchaseInvoice:
 		self.purchase_type = kwargs.get("purchase_type", "Finished Goods")
 		self.is_opening = kwargs.get("is_opening", "No")
 		self.items = kwargs.get("items", [])
+		self.docstatus = kwargs.get("docstatus", 0)
+		self.is_return = kwargs.get("is_return", 0)
 		for k, v in kwargs.items():
 			setattr(self, k, v)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
 
 
 class TestPurchaseInvoiceEvents(IntegrationTestCase):
@@ -23,12 +28,38 @@ class TestPurchaseInvoiceEvents(IntegrationTestCase):
 		pass
 
 	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_rate_from_sales_invoice"
+	)
+	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_expense_account"
 	)
-	def test_before_validate(self, mock_update_expense_account):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice._get_job_work_purchase_orders",
+		return_value={"PO-1"},
+	)
+	def test_before_validate_job_work(
+		self, _mock_pos, mock_update_expense_account, mock_rate
+	):
+		"""A job-work (Employee IR) invoice gets the expense account and KGGK's amount."""
 		pi = DummyPurchaseInvoice()
 		pi_events.before_validate(pi)
 		mock_update_expense_account.assert_called_once_with(pi)
+		mock_rate.assert_called_once_with(pi, {"PO-1"})
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_expense_account"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice._get_job_work_purchase_orders",
+		return_value=set(),
+	)
+	def test_before_validate_other_invoice_untouched(
+		self, _mock_pos, mock_update_expense_account
+	):
+		"""Any other Purchase Invoice is left exactly as before (the hook is new)."""
+		pi = DummyPurchaseInvoice()
+		pi_events.before_validate(pi)
+		mock_update_expense_account.assert_not_called()
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.frappe.db.get_value"

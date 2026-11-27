@@ -28,9 +28,11 @@ app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dial
 #
 # Idempotent. Non-fatal by design, but it prints as well as logging, so a failure is visible
 # in the migrate output rather than only in the Error Log.
-after_migrate = (
-	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate"
-)
+after_migrate = [
+	"jewellery_erpnext.patches.add_material_request_total_pcs_field.after_migrate",
+	# Job-work (KGGK) link fields; same install-app reason as above.
+	"jewellery_erpnext.patches.add_job_work_fields.after_migrate",
+]
 
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
@@ -41,7 +43,10 @@ doctype_js = {
 	"Stock Entry": "public/js/doctype_js/stock_entry.js",
 	"Operation": "public/js/doctype_js/operation.js",
 	"Job Card": "public/js/doctype_js/job_card.js",
-	"Sales Order": "public/js/doctype_js/sales_order.js",
+	"Sales Order": [
+		"public/js/doctype_js/sales_order.js",
+		"public/js/doctype_js/sales_order_job_work.js",
+	],
 	"Manufacturer": "public/js/doctype_js/manufacturer.js",
 	"Quality Inspection Template": "public/js/doctype_js/quality_inspection_template.js",
 	"Supplier": "public/js/doctype_js/supplier.js",
@@ -399,6 +404,8 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.on_cancel",
 	},
 	"Purchase Invoice": {
+		# Job-work (Employee IR) Purchase Orders only: KGGK Sales Invoice amount + expense account.
+		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.before_validate",
 		"validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.validate",
 			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
@@ -413,6 +420,8 @@ doc_events = {
 			# "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.before_validate",
+			# KGGK job work: PMO / Gurukrupa MWO on each row, one PMO per invoice.
+			"jewellery_erpnext.jewellery_erpnext.job_work.set_job_work_sales_invoice_links",
 		],
 		"validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",

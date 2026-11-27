@@ -44,6 +44,18 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				},
 			});
 		}
+		if (frm.doc.docstatus == 1) {
+			// Job work (KGGK) only: settle every borrowed material, then hand it all back.
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.job_work.is_job_work_order",
+				args: { mwo: frm.doc.name },
+				callback: function (r) {
+					if (!r.message) return;
+					add_customer_goods_issue_button(frm);
+					add_snc_all_materials_button(frm);
+				},
+			});
+		}
 		if (
 			frm.doc.docstatus == 1 &&
 			frm.doc.qty < 2 &&
@@ -524,4 +536,60 @@ function set_html(frm) {
 			},
 		});
 	}
+}
+
+function add_customer_goods_issue_button(frm) {
+	frm.add_custom_button(__("Customer Goods Issue"), function () {
+		frappe.call({
+			method: "make_customer_goods_issue",
+			doc: frm.doc,
+			freeze: true,
+			freeze_message: __("Creating Stock Entry"),
+			callback: function (r) {
+				if (r.message) {
+					frappe.model.sync(r.message);
+					frappe.set_route("Form", r.message.doctype, r.message.name);
+				}
+			},
+		});
+	});
+}
+
+function add_snc_all_materials_button(frm) {
+	const snc = "jewellery_erpnext.customer_subcontracting.sub_utils.snc";
+	frappe.call({
+		method: `${snc}.validate_button_visibility`,
+		args: { mwo: frm.doc.name, include_all_items: 1 },
+		callback: function (r) {
+			if (!r.message) return;
+			frm.add_custom_button(__("Create SNC (All Materials)"), function () {
+				frappe.call({
+					method: `${snc}.create_snc`,
+					args: { mwo: frm.doc.name, include_all_items: 1 },
+					freeze: true,
+					freeze_message: __("Creating SNC (All Materials)"),
+					callback: function (response) {
+						if (!response.message) return;
+						const make_receive =
+							response.message.make_receive && response.message.make_receive.docname
+								? response.message.make_receive.docname
+								: __("Not created");
+						frappe.msgprint({
+							title: __("SNC Created"),
+							indicator: "green",
+							message: __(
+								"Material Receive: {0}<br>Metal Conversion: {1}<br>Material Transfer: {2}",
+								[
+									make_receive,
+									(response.message.conversions || []).join(", ") || __("None"),
+									(response.message.transfers || []).join(", ") || __("None"),
+								]
+							),
+						});
+						frm.reload_doc();
+					},
+				});
+			});
+		},
+	});
 }

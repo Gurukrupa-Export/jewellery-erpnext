@@ -657,6 +657,98 @@ class ManufacturingWorkOrder(Document):
 				)
 
 	@frappe.whitelist()
+	def make_customer_goods_issue(self):
+		"""Job work (KGGK): draft the Customer Goods Issue that hands everything the work
+		order's operation still holds back to the order customer (Gurukrupa).
+
+		Quantities are the operation's live per-batch balance -- the latest non-cancelled
+		MOP Log row per (item, batch) -- so cancelled moves and other operations of the same
+		work order never leak in. Submitting the entry completes the work order
+		(``stock_entry.complete_job_work_mwo``).
+		"""
+		if self.docstatus != 1:
+			frappe.throw(_("Submit the Manufacturing Work Order first."))
+		from jewellery_erpnext.jewellery_erpnext.job_work import is_job_work_order
+
+		if not is_job_work_order(self.name):
+			frappe.throw(
+				_(
+					"Customer Goods Issue is only for job-work Manufacturing Work Orders."
+				)
+			)
+		if not self.manufacturing_operation:
+			frappe.throw(
+				_("Manufacturing Work Order {0} has no current operation.").format(
+					self.name
+				)
+			)
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+			get_current_mop_balance_rows,
+		)
+
+		balance_rows = get_current_mop_balance_rows(
+			self.manufacturing_operation,
+			include_fields=[
+				"item_code",
+				"batch_no",
+				"to_warehouse",
+				"qty_after_transaction_batch_based",
+				"pcs_after_transaction_batch_based",
+			],
+		)
+		mop_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{
+				"disabled": 0,
+				"department": frappe.db.get_value(
+					"Manufacturing Operation",
+					self.manufacturing_operation,
+					"department",
+				),
+				"warehouse_type": "Manufacturing",
+			},
+		)
+
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = "Customer Goods Issue"
+		se.company = self.company
+		if self.manufacturing_order:
+			se._customer = frappe.db.get_value(
+				"Parent Manufacturing Order", self.manufacturing_order, "customer"
+			)
+
+		for row in balance_rows:
+			qty = flt(row.get("qty_after_transaction_batch_based"), 3)
+			if qty <= 0 or row.get("item_code") == self.item_code:
+				continue
+			stock_uom = frappe.get_cached_value("Item", row.item_code, "stock_uom")
+			se.append(
+				"items",
+				{
+					"item_code": row.item_code,
+					"batch_no": row.get("batch_no"),
+					"use_serial_batch_fields": 1 if row.get("batch_no") else 0,
+					"qty": qty,
+					"transfer_qty": qty,
+					"pcs": cint(row.get("pcs_after_transaction_batch_based")),
+					"uom": stock_uom,
+					"stock_uom": stock_uom,
+					"conversion_factor": 1.0,
+					"s_warehouse": row.get("to_warehouse") or mop_warehouse,
+					"custom_manufacturing_work_order": self.name,
+				},
+			)
+
+		if not se.items:
+			frappe.throw(
+				_("Operation {0} holds no material to issue.").format(
+					self.manufacturing_operation
+				)
+			)
+		return se
+
+	@frappe.whitelist()
 	def create_unpack_serial_no_stock_entry(self):
 		"""Unpack a repaired FG serial into the raw materials of ITS OWN BOM, booked as
 		Regular Stock.

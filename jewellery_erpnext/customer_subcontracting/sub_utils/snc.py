@@ -25,19 +25,24 @@ FINDING_TEMPLATE = "F"
 # ...of gold only (M-G-..., F-G-...). The owner-stock finders source gold purities
 # only, so silver, Export Gold, alloy or Lux rows could never be settled.
 SETTLEABLE_METAL_TYPE = "G"
+# Diamond and Gemstone templates. Settled only by the job-work "Create SNC (All Materials)"
+# button (``include_all_items``), and only from the owner's batch of the same item: unlike
+# metal there is no purity to convert across.
+STONE_TEMPLATES = ("D", "G")
 
 
 @frappe.whitelist()
-def validate_button_visibility(mwo):
+def validate_button_visibility(mwo, include_all_items=False):
+	include_all_items = cint(include_all_items)
 	mwo = _get_mwo(mwo)
 	# Already settled: nothing to do. This also short-circuits the heavier live
 	# Make Receive computation below for the common already-done case.
 	if cint(getattr(mwo, "snc_done", 0)):
 		return False
-	return _mwo_needs_settlement(mwo)
+	return _mwo_needs_settlement(mwo, include_all_items=include_all_items)
 
 
-def _mwo_needs_settlement(mwo):
+def _mwo_needs_settlement(mwo, include_all_items=False):
 	"""Live check: does this MWO's operation currently hold borrowed gold that must
 	be settled?
 
@@ -60,7 +65,7 @@ def _mwo_needs_settlement(mwo):
 	):
 		return False
 	pmo_is_customer_gold = _is_customer_gold(mwo)
-	rows = _get_receivable_gold_rows(mwo)
+	rows = _get_receivable_gold_rows(mwo, include_all_items=include_all_items)
 	hybrid = _hybrid_finding_context(mwo, rows, pmo_is_customer_gold)
 	return any(
 		_row_needs_settlement(mwo, row, pmo_is_customer_gold, hybrid) for row in rows
@@ -197,9 +202,16 @@ def stamp_snc_requirement(doc, method=None):
 
 
 @frappe.whitelist()
-def create_snc(mwo):
+def create_snc(mwo, include_all_items=False):
+	"""Settle borrowed stock on the MWO's operation.
+
+	By default gold Metal and Finding rows only. ``include_all_items`` (the job-work
+	"Create SNC (All Materials)" button) also settles Diamond and Gemstone rows, so every
+	row the operation holds belongs to the order owner before it is issued back.
+	"""
+	include_all_items = cint(include_all_items)
 	mwo = _get_mwo(mwo)
-	if not validate_button_visibility(mwo.name):
+	if not validate_button_visibility(mwo.name, include_all_items=include_all_items):
 		frappe.throw(
 			_("Create SNC is not available for this Manufacturing Work Order.")
 		)
@@ -214,7 +226,9 @@ def create_snc(mwo):
 	# Make Receive uses -- loss-adjusted, per current batch), so the replacement
 	# transfer mirrors the received rows row-for-row instead of copying the stale
 	# earliest Material Transfer.
-	receivable_rows = _get_receivable_gold_rows(mwo)
+	receivable_rows = _get_receivable_gold_rows(
+		mwo, include_all_items=include_all_items
+	)
 	hybrid = _hybrid_finding_context(mwo, receivable_rows, pmo_is_customer_gold)
 	settle_rows = [
 		row
@@ -251,6 +265,10 @@ def create_snc(mwo):
 		if owner_batch:
 			plan.append((row, owner_batch, False))
 			continue
+
+		if _item_template(row["item_code"]) in STONE_TEMPLATES:
+			# No purity to convert across: a stone is settled from the same item or not at all.
+			frappe.throw(_no_owner_stock_message(owner_customer, row))
 
 		if _item_template(row["item_code"]) == FINDING_TEMPLATE:
 			# A finding is made from the owner's metal (any purity), not from the same
@@ -362,6 +380,16 @@ def _no_owner_stock_message(owner_customer, row):
 	message = _("No available stock for {0} to settle {1} g of {2}.").format(
 		_owner_label(owner_customer), flt(row["qty"], 3), frappe.bold(row["item_code"])
 	)
+	if _item_template(row["item_code"]) in STONE_TEMPLATES:
+		message = (
+			_("No available stock of {0} for {1} to settle {2}.").format(
+				frappe.bold(row["item_code"]),
+				_owner_label(owner_customer),
+				flt(row["qty"], 3),
+			)
+			+ " "
+			+ _("A diamond or gemstone is settled only from the same item.")
+		)
 	if _item_template(row["item_code"]) == FINDING_TEMPLATE:
 		message += " " + _(
 			"A finding is settled from the same finding, or from the owner's metal of the "
@@ -663,7 +691,7 @@ def create_material_transfer_work_order(
 	return se.name
 
 
-def _get_receivable_gold_rows(mwo, target_warehouse=None):
+def _get_receivable_gold_rows(mwo, target_warehouse=None, include_all_items=False):
 	"""Metal and Finding (``SETTLEABLE_TEMPLATES``) rows the operation ACTUALLY holds now,
 	from the same live Make Receive source (loss-adjusted SRE remaining), shaped like
 	``create_mr_wo_stock_entry`` receive_items plus the ``batch_customer`` /
@@ -690,8 +718,9 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 	receive_items = []
 	for row in rows:
 		item_code = row.get("item_code") or ""
-		# SNC settles gold Metal and Finding rows only, never diamond/gemstone.
-		if not _is_settleable_item(item_code):
+		# SNC settles gold Metal and Finding rows only; Diamond and Gemstone rows too when
+		# include_all_items (job-work "Create SNC (All Materials)").
+		if not _is_settleable_item(item_code, include_all_items):
 			continue
 		qty = flt(row.get("available_to_receive_qty"), 3)
 		if qty <= 0:
@@ -722,7 +751,11 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 				"customer": batch_customer,
 				"batch_customer": batch_customer,
 				"batch_voucher_type": batch_voucher_type,
-				"custom_pure_qty": flt(qty * _get_item_purity(item_code) / 100, 3),
+				"custom_pure_qty": (
+					qty
+					if _item_template(item_code) in STONE_TEMPLATES
+					else flt(qty * _get_item_purity(item_code) / 100, 3)
+				),
 				"s_warehouse": row.get("s_warehouse"),
 			}
 		)
@@ -1161,7 +1194,9 @@ def _get_metal_items_for_finding(finding_item_code):
 	return candidates
 
 
-def _is_settleable_item(item_code):
+def _is_settleable_item(item_code, include_all_items=False):
+	if include_all_items and _item_template(item_code) in STONE_TEMPLATES:
+		return True
 	parts = (item_code or "").split("-")
 	return (
 		len(parts) > 1
