@@ -3,8 +3,18 @@ from contextlib import contextmanager
 
 import frappe
 from frappe import _
+from frappe.model import no_value_fields, table_fields
 from frappe.model.mapper import get_mapped_doc
-from frappe.utils import flt, nowdate, strip_html_tags
+from frappe.utils import (
+	cint,
+	cstr,
+	flt,
+	get_datetime,
+	get_timedelta,
+	getdate,
+	nowdate,
+	strip_html_tags,
+)
 from frappe.utils.background_jobs import is_job_enqueued
 
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
@@ -143,16 +153,58 @@ def before_validate(self, method):
 			)
 
 
-# Fields worth guarding once a request has left Draft: what a user could change to alter
-# what's actually being requested. Deliberately NOT a blanket diff against every field --
-# set_reservation_warehouse legitimately back-fills a still-blank row.warehouse on any save
-# (see its docstring), and update_pure_qty recomputes custom_total_quantity / per-row pure
-# qty on every save regardless of workflow state; workflow transitions themselves legitimately
-# set custom_manufacturing_operation / custom_reserve_se / custom_mop_se /
-# custom_department_transfer_se as each one runs. None of that should trip this guard --
-# warehouse is deliberately excluded from the item fields for the same reason.
+# Header fields guarded once a request has left Draft. The header is deliberately NOT a
+# blanket diff: workflow transitions legitimately set custom_manufacturing_operation /
+# custom_reserve_se / custom_mop_se / custom_department_transfer_se and the destination
+# fields as each one runs, and update_pure_qty recomputes custom_total_quantity.
 GUARDED_MR_HEADER_FIELDS = ("company", "material_request_type")
-GUARDED_MR_ITEM_FIELDS = ("item_code", "qty", "pcs")
+
+# Every Material Request Item field IS guarded (see _guarded_item_fields), except these.
+# custom_scan_alternate_item is a barcode input: the form resolves the scan into
+# custom_alternative_item -- which is guarded -- and clears the input straight away.
+ITEM_FIELDS_NOT_GUARDED = frozenset({"custom_scan_alternate_item"})
+
+_FLOAT_FIELDTYPES = frozenset({"Float", "Currency", "Percent"})
+_INT_FIELDTYPES = frozenset({"Int", "Check"})
+
+
+def _guarded_item_fields():
+	"""``{fieldname: (label, fieldtype)}`` for every Material Request Item field a user can
+	type into: value fields that are not read-only, from the live meta, so a custom field added
+	later is locked too without touching this list.
+
+	Read-only fields are left out: the form cannot edit them, and they are the ones the
+	client and the server derive (item_name, stock_qty, projected_qty, custom_pure_qty ...).
+	"""
+	meta = frappe.get_meta("Material Request Item")
+	return {
+		df.fieldname: (df.label or df.fieldname, df.fieldtype)
+		for df in meta.fields
+		if df.fieldtype not in no_value_fields
+		and df.fieldtype not in table_fields
+		and not df.read_only
+		and df.fieldname not in ITEM_FIELDS_NOT_GUARDED
+	}
+
+
+def _comparable(value, fieldtype):
+	"""Normalise a field value so an unchanged one never reads as a change: the request
+	carries what the client sent (strings for dates, floats as typed), the snapshot carries
+	what the database returned (date objects, 9-decimal floats, None for blanks)."""
+	if fieldtype in _FLOAT_FIELDTYPES:
+		# round() rather than flt(value, 9): flt's precision path reads System Settings.
+		return round(flt(value), 9)
+	if fieldtype in _INT_FIELDTYPES:
+		return cint(value)
+	if not value:
+		return None
+	if fieldtype == "Date":
+		return getdate(value)
+	if fieldtype == "Datetime":
+		return get_datetime(value)
+	if fieldtype == "Time":
+		return get_timedelta(value)
+	return cstr(value)
 
 
 def guard_non_system_manager_field_edits(self, method=None):
@@ -166,6 +218,13 @@ def guard_non_system_manager_field_edits(self, method=None):
 	Keyed on the state *before* this save (``get_doc_before_save``), not the current one: the
 	save that moves a request out of Draft is itself the legitimate transition and must not be
 	blocked by the restriction it is about to put in place.
+
+	Every editable Material Request Item field is locked, plus adding or deleting a row: an
+	Alternative Item changed after the reserve entry was made sent the transfer job off with
+	the reserved batch of a different item (KGJPL-MR-MF-26-52676, -28264, -30226). Hooked
+	ahead of ``before_validate`` (and first on ``before_update_after_submit``, for the
+	allow_on_submit item fields), so it compares only what the caller sent -- not what
+	set_reservation_warehouse / update_pure_qty back-fill later in the same save.
 
 	``getattr`` throughout, not ``self.get``/``row.get``: mirrors ``_current_material_warehouse``
 	below -- the tests drive this path with lightweight mocks (``SimpleNamespace`` and similar)
@@ -196,6 +255,7 @@ def guard_non_system_manager_field_edits(self, method=None):
 	before_items = {
 		getattr(row, "name", None): row for row in getattr(before, "items", None) or []
 	}
+	item_fields = _guarded_item_fields()
 	current_names = set()
 	for row in self.items:
 		row_name = getattr(row, "name", None)
@@ -204,9 +264,14 @@ def guard_non_system_manager_field_edits(self, method=None):
 		if prior_row is None:
 			changed.append(f"Row #{getattr(row, 'idx', '?')}: new item")
 			continue
-		for fieldname in GUARDED_MR_ITEM_FIELDS:
-			if getattr(row, fieldname, None) != getattr(prior_row, fieldname, None):
-				changed.append(f"Row #{getattr(row, 'idx', '?')}: {fieldname}")
+		row_changes = [
+			_(label)
+			for fieldname, (label, fieldtype) in item_fields.items()
+			if _comparable(getattr(row, fieldname, None), fieldtype)
+			!= _comparable(getattr(prior_row, fieldname, None), fieldtype)
+		]
+		if row_changes:
+			changed.append(f"Row #{getattr(row, 'idx', '?')}: {', '.join(row_changes)}")
 
 	for name in before_items:
 		if name not in current_names:
