@@ -732,7 +732,6 @@ def set_gst_details(self):
 			item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
 
 
-@frappe.whitelist()
 def xl_preview_sales_invoice(docname):
 	# openpyxl is only needed by this one export, so it is imported lazily rather than at
 	# module level — the module is loaded on every Sales Invoice save.

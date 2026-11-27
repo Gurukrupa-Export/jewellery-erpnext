@@ -15,6 +15,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.gemstone_weight import (
 class JewellerySettings(Document):
 	@frappe.whitelist()
 	def update_uom_conversion_in_variant(self):
+		self.check_permission("write")
 		update_item_uom_conversion_from_diamond()
 		update_item_uom_conversion_from_gemstone()
 		return "Queued for updating Item variants.It may take a few minutes."

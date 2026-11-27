@@ -12,7 +12,11 @@ class ChildStockReconcilation(Document):
 			for item in self.previous_child_stock:
 				stock = frappe.get_doc(
 					"Child Stock Reconcilation",
-					{"box_number": item.box_number, "set_warehouse": self.set_warehouse, "docstatus": 1},
+					{
+						"box_number": item.box_number,
+						"set_warehouse": self.set_warehouse,
+						"docstatus": 1,
+					},
 				)
 				if stock:
 					return stock.name
@@ -20,7 +24,10 @@ class ChildStockReconcilation(Document):
 	@frappe.whitelist()
 	def fetch_stock_reconciliation_item(self):
 		if self.previous_child_stock_reconciliation == 1:
-			stock_reconciliation = frappe.get_doc("Stock Reconciliation", self.stock_reconcillation)
+			stock_reconciliation = frappe.get_doc(
+				"Stock Reconciliation", self.stock_reconcillation
+			)
+			stock_reconciliation.check_permission("read")
 			self.items = []
 			for item in stock_reconciliation.items:
 				self.append(

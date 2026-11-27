@@ -1269,7 +1269,6 @@ def make_in_transit_stock_entry(
 	return ste_doc
 
 
-@frappe.whitelist()
 def create_stock_entry(self, method):
 	validate_gemstone_alternative_items(self)
 

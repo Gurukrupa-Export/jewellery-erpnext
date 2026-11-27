@@ -249,7 +249,6 @@ class MetalConversions(Document):
 			):
 				self.set(field.fieldname, None)
 
-	@frappe.whitelist()
 	def set_attribute_value(self):
 		return frappe.db.get_value(
 			"Item Variant Attribute", {"parent": self.source_item}, "attribute_value"
@@ -423,7 +422,6 @@ class MetalConversions(Document):
 		alloy_qty = round(float((target_qty - sum_source_qty)), 3)
 		return target_qty, alloy_qty
 
-	@frappe.whitelist()
 	def get_alloy_bailance(self):
 		if self.multiple_metal_converter == 0:
 			_alloy_qty = self.source_alloy_qty or self.target_alloy_qty

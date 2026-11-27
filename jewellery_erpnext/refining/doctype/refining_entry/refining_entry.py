@@ -647,7 +647,6 @@ class RefiningEntry(Document):
 			lines.append(self._external_service_po_line(group, qty, rate, uom, slab))
 		return lines, unpriced
 
-	@frappe.whitelist()
 	def preview_external_refining_po(self):
 		"""What create_external_refining_po WOULD bill, without creating anything. Read-only,
 		so it is safe to run against a submitted entry on a production site."""
@@ -720,6 +719,7 @@ class RefiningEntry(Document):
 		material weight, whatever the slab's weight_basis says. A Received-Fine /
 		After-Burning true-up against the weight reported here is not implemented.
 		"""
+		self.check_permission("write")
 		if not cint(self.is_external):
 			frappe.throw(
 				_("This action is only available for external refining entries.")
@@ -1810,6 +1810,7 @@ class RefiningEntry(Document):
 		"""Populate the Material Items table with all available scrap materials
 		(grouped by item group) from the department Scrap warehouse for Scrap Refining.
 		Consumable rows already added manually are preserved."""
+		self.check_permission("write")
 		if self.refining_type != "Scrap Refining":
 			frappe.throw(_("This action is only available for Scrap Refining."))
 
@@ -2347,6 +2348,7 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def receive_materials(self):
+		self.check_permission("write")
 		if self.status != "Submitted":
 			frappe.throw(_("Can only receive materials if status is Submitted."))
 
@@ -2373,6 +2375,7 @@ class RefiningEntry(Document):
 	@frappe.whitelist()
 	def generate_recovery_table(self, total_recovered_weight=None):
 		"""Distribute gold recovery in proportion to each karat's PURE gold content."""
+		self.check_permission("write")
 		self.set("gold_recovery_details", [])
 		self.auto_classify_recoverable_non_metal()
 
@@ -2495,6 +2498,7 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def start_refining(self):
+		self.check_permission("write")
 		if self.status != "Classified":
 			frappe.throw(_("Materials must be classified before starting refining."))
 		self.db_set("status", "Refining In Progress")
@@ -2502,6 +2506,7 @@ class RefiningEntry(Document):
 	@frappe.whitelist()
 	def distribute_recovered_gold(self, total_recovered_weight=None):
 		"""Apply SOP proportional split after actual recovered gold is known."""
+		self.check_permission("write")
 		if not self.gold_recovery_details:
 			self.generate_recovery_table(total_recovered_weight=total_recovered_weight)
 
@@ -2685,12 +2690,14 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def verify_recovery(self):
+		self.check_permission("write")
 		self.validate_recovery_distribution()
 		self.validate_recovered_non_metal()
 		self.db_set("status", "Recovery Verified")
 
 	@frappe.whitelist()
 	def complete_refining(self):
+		self.check_permission("write")
 		if self.status != "Recovery Verified":
 			frappe.throw(_("Recovery must be verified before completing."))
 
@@ -2867,6 +2874,7 @@ class RefiningEntry(Document):
 	def transfer_recovered_materials(self):
 		"""Internal refining: send the recovered gold, diamonds and gemstones to Central RM.
 		External refining hands them back from receive_from_supplier instead."""
+		self.check_permission("write")
 		if self.status != "Completed":
 			frappe.throw(_("Can only transfer if Completed."))
 
@@ -3048,6 +3056,7 @@ class RefiningEntry(Document):
 	def create_central_transfer(self):
 		"""(Re)create the draft hand-back to Central Transit for a Completed external Scrap or
 		Unused/Loose Material entry, e.g. after Central deleted the previous draft."""
+		self.check_permission("write")
 		if not cint(self.is_external):
 			frappe.throw(_("Only external refining hands back to Central Transit."))
 		if self.refining_type not in CONSOLIDATED_REFINING_TYPES:

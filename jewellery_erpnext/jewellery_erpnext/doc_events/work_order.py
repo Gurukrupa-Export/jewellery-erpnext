@@ -8,8 +8,12 @@ def validate(self, method):
 	self.defualt_specifications = frappe.db.get_value(
 		"BOM", {"name": self.bom_no}, "defualt_specifications"
 	)
-	self.speifications = frappe.db.get_value("BOM", {"name": self.bom_no}, "modified_specifications")
-	self.remark = frappe.db.get_value("Sales Order Item", {"parent": self.sales_order}, "remarks")
+	self.speifications = frappe.db.get_value(
+		"BOM", {"name": self.bom_no}, "modified_specifications"
+	)
+	self.remark = frappe.db.get_value(
+		"Sales Order Item", {"parent": self.sales_order}, "remarks"
+	)
 	self.metal_purity = frappe.db.get_value(
 		"BOM Metal Detail", {"parent": self.bom_no}, "purity_percentage"
 	)
@@ -22,7 +26,6 @@ def validate(self, method):
 		self.set_work_order_operations()
 
 
-@frappe.whitelist()
 def get_work_orders(self):
 	if not self.get("is_combine"):
 		return
@@ -56,11 +59,17 @@ def get_work_orders(self):
 		frappe.msgprint(_("No pending Work Orders"))
 		return
 	for wo in work_orders:
-		self.append("work_order_details", {"item_code": wo.item_code, "work_order": wo.work_order})
+		self.append(
+			"work_order_details",
+			{"item_code": wo.item_code, "work_order": wo.work_order},
+		)
 	if operations:
 		self.operations = []
 		for operation in operations:
-			self.append("operations", {"operation": operation, "status": "Pending", "time_in_mins": 1})
+			self.append(
+				"operations",
+				{"operation": operation, "status": "Pending", "time_in_mins": 1},
+			)
 
 
 def set_required_item_from_wo(self):
@@ -143,11 +152,14 @@ def set_operation_in_required_item(self):
 			if not operation.operation:
 				operation.operation = self.metal_operation
 			if frappe.db.exists(
-				"BOM Metal Detail", {"parent": self.bom_no, "item_variant": operation.item_code}
+				"BOM Metal Detail",
+				{"parent": self.bom_no, "item_variant": operation.item_code},
 			):
 				operation.reference_doctype = "BOM Metal Detail"
 				operation.reference_docname = frappe.db.get_value(
-					"BOM Metal Detail", {"parent": self.bom_no, "item_variant": operation.item_code}, "name"
+					"BOM Metal Detail",
+					{"parent": self.bom_no, "item_variant": operation.item_code},
+					"name",
 				)
 			operation.source_warehouse = self.metal_warehouse
 		elif operation.item_code.startswith("D"):
@@ -156,14 +168,19 @@ def set_operation_in_required_item(self):
 
 			# Set Reference Child Table and its Corresponding Value in Work Order Item
 			if frappe.db.exists(
-				"BOM Diamond Detail", {"parent": self.bom_no, "item_variant": operation.item_code}
+				"BOM Diamond Detail",
+				{"parent": self.bom_no, "item_variant": operation.item_code},
 			):
 				operation.reference_doctype = "BOM Diamond Detail"
 				operation.reference_docname = frappe.db.get_value(
-					"BOM Diamond Detail", {"parent": self.bom_no, "item_variant": operation.item_code}, "name"
+					"BOM Diamond Detail",
+					{"parent": self.bom_no, "item_variant": operation.item_code},
+					"name",
 				)
 				operation.pcs = frappe.db.get_value(
-					"BOM Diamond Detail", {"parent": self.bom_no, "item_variant": operation.item_code}, "pcs"
+					"BOM Diamond Detail",
+					{"parent": self.bom_no, "item_variant": operation.item_code},
+					"pcs",
 				)
 			operation.source_warehouse = self.diamond_warehouse
 		elif operation.item_code.startswith("G"):
@@ -171,14 +188,19 @@ def set_operation_in_required_item(self):
 				operation.operation = self.gemstone_operation
 			# Set Reference Child Table and its Corresponding Value in Work Order Item
 			if frappe.db.exists(
-				"BOM Gemstone Detail", {"parent": self.bom_no, "item_variant": operation.item_code}
+				"BOM Gemstone Detail",
+				{"parent": self.bom_no, "item_variant": operation.item_code},
 			):
 				operation.reference_doctype = "BOM Gemstone Detail"
 				operation.reference_docname = frappe.db.get_value(
-					"BOM Gemstone Detail", {"parent": self.bom_no, "item_variant": operation.item_code}, "name"
+					"BOM Gemstone Detail",
+					{"parent": self.bom_no, "item_variant": operation.item_code},
+					"name",
 				)
 				operation.pcs = frappe.db.get_value(
-					"BOM Gemstone Detail", {"parent": self.bom_no, "item_variant": operation.item_code}, "pcs"
+					"BOM Gemstone Detail",
+					{"parent": self.bom_no, "item_variant": operation.item_code},
+					"pcs",
 				)
 			operation.source_warehouse = self.gemstone_warehouse
 		elif operation.item_code.startswith("F"):
@@ -186,22 +208,28 @@ def set_operation_in_required_item(self):
 				operation.operation = self.finding_operation
 			# Set Reference Child Table and its Corresponding Value in Work Order Item
 			if frappe.db.exists(
-				"BOM Finding Detail", {"parent": self.bom_no, "item_variant": operation.item_code}
+				"BOM Finding Detail",
+				{"parent": self.bom_no, "item_variant": operation.item_code},
 			):
 				operation.reference_doctype = "BOM Finding Detail"
 				operation.reference_docname = frappe.db.get_value(
-					"BOM Finding Detail", {"parent": self.bom_no, "item_variant": operation.item_code}, "name"
+					"BOM Finding Detail",
+					{"parent": self.bom_no, "item_variant": operation.item_code},
+					"name",
 				)
 			operation.source_warehouse = self.finding_warehouse
 		else:
 			if not operation.operation:
 				operation.operation = self.other_wt_operation
 			if frappe.db.exists(
-				"BOM Other Detail", {"parent": self.bom_no, "item_variant": operation.item_code}
+				"BOM Other Detail",
+				{"parent": self.bom_no, "item_variant": operation.item_code},
 			):
 				operation.reference_doctype = "BOM Other Detail"
 				operation.reference_docname = frappe.db.get_value(
-					"BOM Other Detail", {"parent": self.bom_no, "item_variant": operation.item_code}, "name"
+					"BOM Other Detail",
+					{"parent": self.bom_no, "item_variant": operation.item_code},
+					"name",
 				)
 			operation.source_warehouse = self.other_wt_warehouse
 
@@ -222,7 +250,12 @@ def set_operations(self):
 				operation_time = frappe.db.get_value("Operation", r, "operation_time")
 				workstation = frappe.db.get_value("Operation", r, "workstation")
 				self.append(
-					"operations", {"operation": r, "time_in_mins": operation_time, "workstation": workstation}
+					"operations",
+					{
+						"operation": r,
+						"time_in_mins": operation_time,
+						"workstation": workstation,
+					},
 				)
 			# for row in list(operation):
 			# 	operation_time = frappe.db.get_value("Operation", row, 'operation_time')
@@ -242,7 +275,11 @@ def set_operations(self):
 				workstation = frappe.db.get_value("Operation", row, "workstation")
 				self.append(
 					"operations",
-					{"operation": row.name, "time_in_mins": operation_time, "workstation": workstation},
+					{
+						"operation": row.name,
+						"time_in_mins": operation_time,
+						"workstation": workstation,
+					},
 				)
 
 
@@ -268,7 +305,6 @@ def create_material_request(docname):
 		else:
 			item_dict[row.operation + row.source_warehouse].append(row)
 	if item_dict:
-
 		for k, values in item_dict.items():
 			mr_doc = frappe.new_doc("Material Request")
 			mr_doc.company = doc.company
@@ -279,10 +315,14 @@ def create_material_request(docname):
 			# mr_doc.to_job_card = frappe.db.get_value('Job Card', {'work_order': docname, 'operation': row.operation}, 'name')
 			for row in values:
 				mr_doc.to_job_card = frappe.db.get_value(
-					"Job Card", {"work_order": docname, "operation": row.operation}, "name"
+					"Job Card",
+					{"work_order": docname, "operation": row.operation},
+					"name",
 				)
 				mr_doc.job_card = frappe.db.get_value(
-					"Job Card", {"work_order": docname, "operation": row.operation}, "name"
+					"Job Card",
+					{"work_order": docname, "operation": row.operation},
+					"name",
 				)
 				mr_doc.append(
 					"items",
@@ -291,16 +331,22 @@ def create_material_request(docname):
 						"qty": row.required_qty,
 						"from_warehouse": row.source_warehouse,
 						"warehouse": frappe.db.get_value(
-							"Operation Warehouse", {"parent": row.operation, "company": doc.company}, "warehouse"
+							"Operation Warehouse",
+							{"parent": row.operation, "company": doc.company},
+							"warehouse",
 						),
 						"uom": frappe.db.get_value("Item", row.item_code, "stock_uom"),
 						"conversion_factor": 1,
-						"stock_uom": frappe.db.get_value("Item", row.item_code, "stock_uom"),
+						"stock_uom": frappe.db.get_value(
+							"Item", row.item_code, "stock_uom"
+						),
 					},
 				)
 			mr_doc.save()
 			frappe.msgprint(
-				_("Material Request {0} created").format(get_link_to_form("Material Request", mr_doc.name))
+				_("Material Request {0} created").format(
+					get_link_to_form("Material Request", mr_doc.name)
+				)
 			)
 
 

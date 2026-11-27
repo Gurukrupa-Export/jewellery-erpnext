@@ -4118,6 +4118,7 @@ def verify_eod_batch_qty_cache(limit=200, keys=None):
 	Returns ``{"checked": n, "mismatches": [...]}``. Mismatches are the interesting part;
 	an empty list is the pass condition.
 	"""
+	frappe.only_for("System Manager")
 	limit = cint(limit) or 200
 	if isinstance(keys, str):
 		keys = frappe.parse_json(keys)

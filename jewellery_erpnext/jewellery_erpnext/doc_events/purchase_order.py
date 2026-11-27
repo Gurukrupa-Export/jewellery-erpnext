@@ -8,10 +8,12 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
 	fetch_remote_ref_customer,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
+	refetch_fg_purchase_rate,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice import (
 	_get_rcm_base_account_head,
 )
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import refetch_fg_purchase_rate
 
 # from jewellery_erpnext.utils import update_existing
 
@@ -639,6 +641,8 @@ def validate_copy_bom(po_doc):
 
 @frappe.whitelist()
 def make_quotation(source_name, target_doc=None):
+	frappe.has_permission("Purchase Order", "read", source_name, throw=True)
+
 	def set_missing_values(source, target):
 		from erpnext.controllers.accounts_controller import (
 			get_default_taxes_and_charges,

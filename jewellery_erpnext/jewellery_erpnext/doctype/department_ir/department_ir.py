@@ -74,7 +74,6 @@ class DepartmentIR(Document):
 
 		validate_mwo(self)
 
-	@frappe.whitelist()
 	def get_operations(self):
 		dir_status = (
 			"In-Transit"
@@ -540,7 +539,6 @@ class DepartmentIR(Document):
 
 		process_pc_tagging_stock_sync(self, cancel=cancel)
 
-	@frappe.whitelist()
 	def get_summary_data(self):
 		return get_summary_data(self)
 

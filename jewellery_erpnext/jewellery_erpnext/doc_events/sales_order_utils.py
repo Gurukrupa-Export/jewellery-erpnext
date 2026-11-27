@@ -126,6 +126,7 @@ def customer_making_details(customer, metal_rate_gst, metal_rate, bom_doc):
 @frappe.whitelist()
 def download_cost_sheet(sales_order):
 	"""Generate and download a COST Sheet Excel file with headers only."""
+	frappe.has_permission("Sales Order", "read", sales_order, throw=True)
 	customer_name = frappe.db.get_value("Sales Order", sales_order, "customer_name")
 	so_doc = frappe.get_doc("Sales Order", sales_order)
 	if customer_name == "Caratlane Trading Private Limited":

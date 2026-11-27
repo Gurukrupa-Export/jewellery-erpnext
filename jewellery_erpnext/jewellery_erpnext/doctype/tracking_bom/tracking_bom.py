@@ -165,7 +165,6 @@ class TrackingBom(Document):
 			)
 
 
-@frappe.whitelist()
 def update_tracking_bom_detail(
 	tracking_bom_name,
 	metal_detail=None,

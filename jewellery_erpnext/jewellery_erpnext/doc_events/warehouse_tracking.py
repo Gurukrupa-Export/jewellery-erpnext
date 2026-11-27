@@ -382,6 +382,14 @@ def _msl_tracking_views(warehouse, month_start):
 
 
 @frappe.whitelist()
+def refresh_msl_tracking(warehouse):
+	"""Warehouse form "Refresh Tracking" button. The recompute itself stays unchecked for its
+	Python callers (Employee IR, Employee Loss Entry, warehouse transfers), whose users need
+	not be able to open the warehouse."""
+	frappe.has_permission("Warehouse", "read", warehouse, throw=True)
+	return recalculate_msl_tracking(warehouse)
+
+
 def recalculate_msl_tracking(warehouse):
 	"""Recompute and materialize the ``custom_msl_tracking`` child table on an
 	employee (MSL) warehouse from the ledger. Returns the row count.

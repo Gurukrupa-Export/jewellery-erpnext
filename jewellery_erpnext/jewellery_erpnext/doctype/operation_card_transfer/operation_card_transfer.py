@@ -17,7 +17,11 @@ class OperationCardTransfer(Document):
 		# Create Material Transfer
 		mt_doc = make_stock_return(oc_doc.name, oc_doc, new_oc_doc)
 		mt_doc.save()
-		frappe.msgprint(("Stock Entry {0} created").format(get_link_to_form("Stock Entry", mt_doc.name)))
+		frappe.msgprint(
+			("Stock Entry {0} created").format(
+				get_link_to_form("Stock Entry", mt_doc.name)
+			)
+		)
 		oc_doc.submit()
 
 
@@ -30,7 +34,9 @@ def create_new_operation_card(self, oc_doc):
 	new_oc_doc.previous_operation_card = self.operation_card
 	new_oc_doc.save()
 	frappe.msgprint(
-		("Operation Card {0} created").format(get_link_to_form("Operation Card", new_oc_doc.name))
+		("Operation Card {0} created").format(
+			get_link_to_form("Operation Card", new_oc_doc.name)
+		)
 	)
 	return new_oc_doc
 
@@ -84,7 +90,9 @@ def make_stock_return(source_name, oc_doc, self, target_doc=None):
 					"qty": i.get("gross_wt"),
 					"operation_card": self.name,
 					"s_warehouse": warehouse,
-					"t_warehouse": get_warehouse_from_operation_card(self.name)[0].get("warehouse"),
+					"t_warehouse": get_warehouse_from_operation_card(self.name)[0].get(
+						"warehouse"
+					),
 				},
 			)
 
@@ -101,7 +109,6 @@ def make_stock_return(source_name, oc_doc, self, target_doc=None):
 	return doclist
 
 
-@frappe.whitelist()
 def get_warehouse_from_operation_card(source_name):
 	OperationWarehouse = frappe.qb.DocType("Operation Warehouse")
 	OperationCard = frappe.qb.DocType("Operation Card")

@@ -2160,6 +2160,7 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 
 @frappe.whitelist()
 def validation_of_serial_item(issue_doc):
+	frappe.has_permission("Stock Entry", "read", issue_doc, throw=True)
 	doc = frappe.get_doc("Stock Entry", issue_doc)
 	serial_item = {}
 	for item in doc.items:
@@ -2171,7 +2172,6 @@ def validation_of_serial_item(issue_doc):
 	return serial_item
 
 
-@frappe.whitelist()
 def set_filter_for_main_slip(doctype, txt, searchfield, start, page_len, filters):
 	mnf = filters.get("mnf")
 	metal_purity = frappe.db.get_value(

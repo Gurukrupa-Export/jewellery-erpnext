@@ -1356,6 +1356,8 @@ def get_operation_details(
 	for_fg=None,
 	design_id_bom=None,
 ):
+	if docname:
+		frappe.has_permission("Manufacturing Operation", "read", docname, throw=True)
 	exist_snc_doc = frappe.get_all(
 		"Serial Number Creator",
 		filters={"manufacturing_operation": docname, "docstatus": ["!=", 2]},

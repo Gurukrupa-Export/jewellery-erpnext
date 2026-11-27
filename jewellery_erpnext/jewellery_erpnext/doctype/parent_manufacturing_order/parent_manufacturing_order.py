@@ -1067,7 +1067,6 @@ def get_item_code(sales_order_item):
 	return frappe.db.get_value("Sales Order Item", sales_order_item, "item_code")
 
 
-@frappe.whitelist()
 def make_manufacturing_order(
 	source_doc,
 	row,
@@ -1774,6 +1773,7 @@ def validate_mfg_date(self):
 
 @frappe.whitelist()
 def get_linked_stock_entries(pmo_name):
+	frappe.has_permission("Parent Manufacturing Order", "read", pmo_name, throw=True)
 	StockEntry = frappe.qb.DocType("Stock Entry")
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 
@@ -1810,6 +1810,7 @@ def get_linked_stock_entries(pmo_name):
 
 @frappe.whitelist()
 def get_stock_summary(pmo_name):
+	frappe.has_permission("Parent Manufacturing Order", "read", pmo_name, throw=True)
 	mwo = frappe.get_all(
 		"Manufacturing Work Order", {"manufacturing_order": pmo_name}, pluck="name"
 	)
@@ -1864,11 +1865,13 @@ def get_stock_summary(pmo_name):
 	)
 
 	if mwo_last_operation:
-		query = query.where(
+		data = query.where(
 			StockEntryDetail.manufacturing_operation.isin(mwo_last_operation)
-		)
-
-	data = query.run(as_dict=True)
+		).run(as_dict=True)
+	else:
+		# Nothing to summarise yet. Running the query without the operation filter returned
+		# the latest Stock Entry rows of every operation on the site.
+		data = []
 
 	total_qty = 0
 	for row in data:
@@ -1892,6 +1895,8 @@ def add_hold_comment(doctype, docname, reason):
 	if not reason:
 		return
 	doc = frappe.get_doc(doctype, docname)
+	# Comments are added with ignore_permissions; only on a document the user can open.
+	doc.check_permission("read")
 	doc.add_comment("Comment", f"Put on hold due to: {reason}")
 
 
