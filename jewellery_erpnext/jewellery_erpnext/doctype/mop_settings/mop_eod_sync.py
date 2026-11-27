@@ -3453,6 +3453,7 @@ def _build_and_submit_mwo_sre(
 	has_batch_no,
 	has_serial_no,
 	stock_uom,
+	from_voucher=None,
 ):
 	"""Construct + submit ONE Sales-Order-anchored MWO Stock Reservation Entry at
 	``warehouse`` and return its name.
@@ -3500,6 +3501,19 @@ def _build_and_submit_mwo_sre(
 	new_sre.available_qty = max(flt(available), reserved_qty)
 	new_sre.manufacturing_work_order = mwo
 	new_sre.manufacturing_operation = manufacturing_operation
+	# ``(stock_entry_name, stock_entry_detail_name)`` when this reservation is being built
+	# from a Stock Entry row, so it keeps the link back to the Stock Entry Detail that
+	# carries custom_sub_setting_type. The heal callers have no such row and pass None;
+	# Serial Number Creator falls back to matching on (operation, item, batch) there.
+	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+		set_sre_provenance,
+	)
+
+	set_sre_provenance(
+		new_sre,
+		from_voucher[0] if from_voucher else None,
+		from_voucher[1] if from_voucher else None,
+	)
 	if has_batch_no and batch_no:
 		new_sre.reservation_based_on = "Serial and Batch"
 		new_sre.append(
@@ -3799,6 +3813,12 @@ def _eod_rows_from_submitted_se(se_doc):
 				),
 				"inventory_type": item.get("inventory_type"),
 				"customer": item.get("customer"),
+				# Carried so the re-reservation can stamp from_voucher_* back at the
+				# Stock Entry Detail it was built from — the only route to that row's
+				# custom_sub_setting_type. Absent on the lightweight test stand-ins,
+				# which is why the reservation builder treats it as optional.
+				"name": item.get("name"),
+				"parent": item.get("parent") or getattr(se_doc, "name", None),
 			}
 		)
 	return rows
@@ -3880,6 +3900,11 @@ def _reserve_sres_from_eod_se_rows(company, items, sync_log_name=None):
 				has_batch_no,
 				has_serial_no,
 				stock_uom,
+				from_voucher=(
+					(row.get("parent"), row.get("name"))
+					if row.get("name") and row.get("parent")
+					else None
+				),
 			)
 		)
 
