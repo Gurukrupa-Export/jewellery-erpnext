@@ -20,6 +20,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 	validate_not_eod_sync_locked,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+	EOD_UNRESOLVED_SOURCE,
 	_LOG_ROW_FLUSH_SIZE,
 	_allocate_bucket_by_physical_stock,
 	_apply_mwo_filter_rows,
@@ -60,6 +61,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_mwo_realized_by_artifact,
 	_pick_shortfall_warehouse,
 	_plan_mwo_group,
+	_plan_owned_batch_legs,
+	_preload_active_sre_warehouse_map,
 	_preload_sre_warehouse_map,
 	_process_mwo_group,
 	_reconcile_reservations_bulk,
@@ -81,6 +84,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_validate_eod_source_batch_stock,
 	_warehouses_of_company,
 	recalculate_sync_log_totals,
+	refuse_unresolved_eod_draft_submit,
 	sync_mop_logs,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
@@ -6985,4 +6989,565 @@ class TestXBackfillMissingWipReservations(IntegrationTestCase):
 
 		mock_reserve.assert_called_once_with(
 			"MWO-1", "ITEM-1", "B1", 10.0, "Op1", "Test Co"
+		)
+
+
+# ---------------------------------------------------------------------------
+# Owned, split-source EOD allocation (MOP-EOD-SYNC-2026-00130 / MAT-STE-86370)
+# ---------------------------------------------------------------------------
+
+_GOLD = "M-G-22KT-91.75-Y"
+_B_GOLD = "KG2F092-MGL229175Y0-701DJ"
+_D65 = "D-NT-RO-6B-+6.5-7"
+_B_M393A = "KG2F084-DNTROX6F05G00-M393A"
+_D7 = "D-NT-RO-6B-+7-7.5"
+_B_9P1Q0 = "KG2F092-DNTROX6G00G05-9P1Q0"
+_B_216XA = "KG2F093-DNTROX6G00G05-216XA"
+_DS_WO = "Diamond Setting WO - KGJPL"
+_HAMMER = "Hammer WIP WH 28 - KGJPL"
+_CENTRAL = "Central WO - KGJPL"
+
+# Physical batch stock on 23 Nov. Central holds the SIBLING MWOs' (-04/-05/-06) share of
+# the same batches; none of it is reserved for -03.
+_INCIDENT_PHYS = {
+	(_B_GOLD, _DS_WO): 4.323,
+	(_B_GOLD, _HAMMER): 0.02,
+	(_B_GOLD, _CENTRAL): 13.529,
+	(_B_M393A, _HAMMER): 0.686,
+	(_B_M393A, _CENTRAL): 1.024,
+	(_B_9P1Q0, _HAMMER): 0.279,
+	(_B_216XA, _HAMMER): 1.071,
+	(_B_216XA, _CENTRAL): 3.943,
+}
+
+# -03's live reservations (SREs 5s2ebper90, d9kmsckcs0, 9hq03ku1a6, 9hq4g0sm50, 9hq8u7ortt).
+_INCIDENT_LIVE = {
+	(_GOLD, _B_GOLD): {_DS_WO: 4.323, _HAMMER: 0.02},
+	(_D65, _B_M393A): {_HAMMER: 0.686},
+	(_D7, _B_9P1Q0): {_HAMMER: 0.279},
+	(_D7, _B_216XA): {_HAMMER: 1.071},
+}
+
+
+def _incident_logs():
+	return [
+		_log(
+			item_code=_GOLD,
+			batch_no=_B_GOLD,
+			qty_after_transaction_batch_based=4.343,
+			pcs_after_transaction_batch_based=2,
+			to_warehouse=_CENTRAL,
+		),
+		_log(
+			item_code=_D65,
+			batch_no=_B_M393A,
+			qty_after_transaction_batch_based=0.686,
+			pcs_after_transaction_batch_based=28,
+			to_warehouse=_CENTRAL,
+		),
+		_log(
+			item_code=_D7,
+			batch_no=_B_9P1Q0,
+			qty_after_transaction_batch_based=0.279,
+			pcs_after_transaction_batch_based=22,
+			to_warehouse=_CENTRAL,
+		),
+		_log(
+			item_code=_D7,
+			batch_no=_B_216XA,
+			qty_after_transaction_batch_based=1.071,
+			pcs_after_transaction_batch_based=22,
+			to_warehouse=_CENTRAL,
+		),
+	]
+
+
+def _phys(table):
+	return lambda item_code, batch_no, warehouse: table.get((batch_no, warehouse), 0.0)
+
+
+class TestEodOwnedSplitAllocation(IntegrationTestCase):
+	"""One logical MOP Log balance -> the physical legs THIS MWO owns."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _build(self, logs, live, phys, t_warehouse=_CENTRAL, sre_map=None):
+		noop_rows, short_rows = [], []
+		with patch(f"{_MOD}._eod_physical_batch_qty", side_effect=_phys(phys)):
+			rows, skipped = _build_eod_se_rows(
+				"MWO-KGJPL-MU02087-002-4-91.75-Y-03",
+				"MOP-2611-UUUY7U",
+				logs,
+				t_warehouse,
+				sre_map or {},
+				live,
+				noop_rows,
+				short_rows,
+			)
+		return rows, skipped, noop_rows, short_rows
+
+	def test_incident_gold_split_over_two_owned_warehouses(self):
+		rows, skipped, noop_rows, short_rows = self._build(
+			_incident_logs(), _INCIDENT_LIVE, _INCIDENT_PHYS
+		)
+		self.assertEqual((skipped, noop_rows, short_rows), ([], [], []))
+		got = sorted(
+			(r["item_code"], r["batch_no"], r["s_warehouse"], r["qty"], r.get("pcs"))
+			for r in rows
+		)
+		self.assertEqual(
+			got,
+			sorted(
+				[
+					(_GOLD, _B_GOLD, _DS_WO, 4.323, 1),
+					(_GOLD, _B_GOLD, _HAMMER, 0.02, 0),
+					(_D65, _B_M393A, _HAMMER, 0.686, 28),
+					(_D7, _B_9P1Q0, _HAMMER, 0.279, 22),
+					(_D7, _B_216XA, _HAMMER, 1.071, 22),
+				]
+			),
+		)
+		self.assertTrue(all(r["t_warehouse"] == _CENTRAL for r in rows))
+		self.assertTrue(
+			all(r["custom_manufacturing_work_order"].endswith("-Y-03") for r in rows)
+		)
+		gold = round(sum(r["qty"] for r in rows if r["item_code"] == _GOLD), 3)
+		carat = round(sum(r["qty"] for r in rows if r["item_code"][:1] == "D"), 3)
+		stones = sum(r["pcs"] for r in rows if r["item_code"][:1] == "D")
+		self.assertEqual((gold, carat, stones), (4.343, 2.036, 72))
+		# The split gold still reads as ONE piece in the item-wise summary.
+		self.assertEqual(sum(int(r["pcs"]) for r in rows if r["item_code"] == _GOLD), 1)
+		# Every leg fits its source's physical batch qty, so the plan-phase check passes.
+		with patch(
+			f"{_MOD}._eod_physical_batch_qty", side_effect=_phys(_INCIDENT_PHYS)
+		):
+			self.assertEqual(_check_eod_source_batch_stock(rows), {})
+
+	def test_sibling_stock_at_target_is_never_credited(self):
+		# Central holds 13.529 g of the batch for OTHER work orders. The old picker read
+		# that as "already moved" and dropped the row; ownership says it has not moved.
+		rows, _skipped, noop_rows, _short = self._build(
+			[_incident_logs()[0]],
+			{(_GOLD, _B_GOLD): {_DS_WO: 4.343}},
+			{(_B_GOLD, _DS_WO): 4.343, (_B_GOLD, _CENTRAL): 13.529},
+		)
+		self.assertEqual(noop_rows, [])
+		self.assertEqual(
+			[(r["s_warehouse"], r["qty"]) for r in rows], [(_DS_WO, 4.343)]
+		)
+		self.assertNotIn("pcs", rows[0])  # unsplit metal keeps the "1" default
+
+	def test_own_share_at_target_is_credited_and_only_the_rest_moves(self):
+		rows, _skipped, noop_rows, short_rows = self._build(
+			[_incident_logs()[0]],
+			{(_GOLD, _B_GOLD): {_CENTRAL: 0.02, _DS_WO: 4.323}},
+			{(_B_GOLD, _DS_WO): 4.323, (_B_GOLD, _CENTRAL): 13.549},
+		)
+		self.assertEqual((noop_rows, short_rows), ([], []))
+		self.assertEqual(
+			[(r["s_warehouse"], r["qty"]) for r in rows], [(_DS_WO, 4.323)]
+		)
+
+	def test_balance_fully_reserved_and_present_at_target_is_named_noop(self):
+		rows, _skipped, noop_rows, short_rows = self._build(
+			[_incident_logs()[0]],
+			{(_GOLD, _B_GOLD): {_CENTRAL: 4.343}},
+			{(_B_GOLD, _CENTRAL): 17.872},
+		)
+		self.assertEqual((rows, short_rows), ([], []))
+		self.assertEqual(
+			noop_rows, [{"item_code": _GOLD, "batch_no": _B_GOLD, "qty": 4.343}]
+		)
+
+	def test_reserved_at_target_but_absent_is_not_a_noop(self):
+		rows, _skipped, noop_rows, short_rows = self._build(
+			[_incident_logs()[0]], {(_GOLD, _B_GOLD): {_CENTRAL: 4.343}}, {}
+		)
+		self.assertEqual((rows, noop_rows), ([], []))
+		self.assertEqual(len(short_rows), 1)
+		self.assertEqual(short_rows[0]["need"], 4.343)
+
+	def test_exhausted_leg_holds_instead_of_partial_transfer(self):
+		# Hammer's 0.020 g is gone: 4.323 g alone must NOT move (that would sync the logs
+		# with 0.020 g unaccounted for) -- the balance is reported short instead.
+		phys = dict(_INCIDENT_PHYS)
+		phys[(_B_GOLD, _HAMMER)] = 0.0
+		rows, _skipped, _noop, short_rows = self._build(
+			[_incident_logs()[0]],
+			{(_GOLD, _B_GOLD): {_DS_WO: 4.323, _HAMMER: 0.02}},
+			phys,
+		)
+		self.assertEqual(rows, [])
+		self.assertEqual(len(short_rows), 1)
+		short = short_rows[0]
+		self.assertEqual((short["qty"], short["need"]), (4.343, 4.343))
+		self.assertEqual(short["caps"], [(_DS_WO, 4.323)])
+
+	def test_short_without_a_collector_is_a_hard_error(self):
+		with patch(f"{_MOD}._eod_physical_batch_qty", return_value=0.0):
+			with self.assertRaises(frappe.ValidationError):
+				_build_eod_se_rows(
+					"MWO-1",
+					"MOP-A",
+					[_incident_logs()[0]],
+					_CENTRAL,
+					{},
+					{(_GOLD, _B_GOLD): {_DS_WO: 4.343}},
+				)
+
+	def test_one_owned_warehouse_covering_all_is_one_row(self):
+		rows, *_rest = self._build(
+			[_incident_logs()[3]],
+			{(_D7, _B_216XA): {_HAMMER: 1.071}},
+			{(_B_216XA, _HAMMER): 5.0},
+		)
+		self.assertEqual(
+			[(r["s_warehouse"], r["qty"], r["pcs"]) for r in rows],
+			[(_HAMMER, 1.071, 22)],
+		)
+
+	def test_stone_split_preserves_pieces(self):
+		rows, *_rest = self._build(
+			[_incident_logs()[3]],
+			{(_D7, _B_216XA): {_HAMMER: 0.6, _DS_WO: 0.471}},
+			{(_B_216XA, _HAMMER): 0.6, (_B_216XA, _DS_WO): 0.471},
+		)
+		self.assertEqual(sum(r["pcs"] for r in rows), 22)
+		self.assertTrue(all(r["pcs"] >= 1 for r in rows))
+		self.assertEqual(round(sum(r["qty"] for r in rows), 3), 1.071)
+
+	def test_rows_without_live_batch_reservation_keep_legacy_picker(self):
+		rows, skipped, _noop, short_rows = self._build(
+			[
+				_log(
+					item_code="M-1",
+					batch_no="B1",
+					qty_after_transaction_batch_based=3.0,
+				)
+			],
+			{},
+			{("B1", "WH-B"): 5.0},
+			t_warehouse="WH-DEPT",
+			sre_map={("M-1", "B1"): ["WH-A", "WH-B"]},
+		)
+		self.assertEqual(
+			([r["s_warehouse"] for r in rows], skipped, short_rows), (["WH-B"], [], [])
+		)
+
+	def test_default_loads_live_map_for_the_mwo(self):
+		with patch(
+			f"{_MOD}._preload_active_sre_warehouse_map", return_value={}
+		) as mock_load, patch(f"{_MOD}._eod_physical_batch_qty", return_value=0.0):
+			_build_eod_se_rows("MWO-9", "MOP-A", [], "WH-DEPT", {})
+		mock_load.assert_called_once_with("MWO-9")
+
+	def test_retry_patch_ownership_contract_still_holds(self):
+		# patches/retry_stuck_eod_submit_mwos.py refuses to run unless the row builder
+		# itself stamps ownership.
+		self.assertIn("_stamp_eod_row_ownership", _build_eod_se_rows.__code__.co_names)
+
+	def test_plan_owned_batch_legs_orders_largest_first(self):
+		with patch(
+			f"{_MOD}._eod_physical_batch_qty",
+			side_effect=_phys({("B1", "WH-A"): 1.0, ("B1", "WH-B"): 3.0}),
+		):
+			plan = _plan_owned_batch_legs(
+				"M-1", "B1", 3.5, {"WH-A": 1.0, "WH-B": 3.0}, "WH-DEPT"
+			)
+		self.assertEqual(plan["legs"], [("WH-B", 3.0), ("WH-A", 0.5)])
+		self.assertFalse(plan["short"])
+
+
+class TestPreloadActiveSreWarehouseMap(IntegrationTestCase):
+	"""This MWO's live, batch-scoped reservation qty per warehouse."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_child_and_header_remainders_cap_and_stale_rows_drop(self):
+		sres = [
+			FrappeDict(
+				name="S1",
+				item_code=_GOLD,
+				warehouse=_DS_WO,
+				reserved_qty=4.323,
+				delivered_qty=0,
+			),
+			FrappeDict(
+				name="S2",
+				item_code=_GOLD,
+				warehouse=_HAMMER,
+				reserved_qty=0.02,
+				delivered_qty=0,
+			),
+			# Header remainder 0.5 caps a 1.0 child.
+			FrappeDict(
+				name="S3",
+				item_code=_D7,
+				warehouse=_HAMMER,
+				reserved_qty=1.0,
+				delivered_qty=0.5,
+			),
+			# Fully delivered child -> nothing live.
+			FrappeDict(
+				name="S4",
+				item_code=_D65,
+				warehouse=_HAMMER,
+				reserved_qty=0.686,
+				delivered_qty=0,
+			),
+			# Qty-based (no children) -> no batch entitlement.
+			FrappeDict(
+				name="S5",
+				item_code=_D65,
+				warehouse=_CENTRAL,
+				reserved_qty=2.0,
+				delivered_qty=0,
+			),
+		]
+		children = [
+			FrappeDict(parent="S1", batch_no=_B_GOLD, qty=4.323, delivered_qty=0),
+			FrappeDict(parent="S2", batch_no=_B_GOLD, qty=0.02, delivered_qty=0),
+			FrappeDict(parent="S3", batch_no=_B_216XA, qty=1.0, delivered_qty=0),
+			FrappeDict(parent="S4", batch_no=_B_M393A, qty=0.686, delivered_qty=0.686),
+		]
+
+		def fake_get_all(doctype, **kwargs):
+			if doctype == "Stock Reservation Entry":
+				self.assertEqual(kwargs["filters"]["manufacturing_work_order"], "MWO-1")
+				self.assertEqual(kwargs["filters"]["docstatus"], 1)
+				return sres
+			self.assertEqual(kwargs["filters"]["parenttype"], "Stock Reservation Entry")
+			return children
+
+		with patch(f"{_MOD}.frappe.get_all", side_effect=fake_get_all):
+			live = _preload_active_sre_warehouse_map("MWO-1")
+		self.assertEqual(
+			live,
+			{
+				(_GOLD, _B_GOLD): {_DS_WO: 4.323, _HAMMER: 0.02},
+				(_D7, _B_216XA): {_HAMMER: 0.5},
+			},
+		)
+
+	def test_blank_mwo_reads_nothing(self):
+		with patch(f"{_MOD}.frappe.get_all") as mock_get_all:
+			self.assertEqual(_preload_active_sre_warehouse_map(None), {})
+		mock_get_all.assert_not_called()
+
+
+class TestPlanMwoGroupOwnedAllocation(IntegrationTestCase):
+	"""_plan_mwo_group must hold an MWO whose own reservations cannot cover a balance."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _plan(self, live, phys):
+		logs = _incident_logs()
+		mop_data_list = [
+			{"mop_name": "MOP-2611-UUUY7U", "mop_doc": _mop_doc(), "logs": logs}
+		]
+		failures, stats = [], {"processed_mwos": 0, "failed_mwos": 0}
+		with patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None), patch(
+			f"{_MOD}._preload_sre_warehouse_map", return_value={}
+		), patch(f"{_MOD}._preload_active_sre_warehouse_map", return_value=live), patch(
+			f"{_MOD}._eod_physical_batch_qty", side_effect=_phys(phys)
+		), patch(f"{_MOD}._validate_eod_items_for_mwo_reservation"), patch(
+			f"{_MOD}._mark_all_mwo_mop_logs_synced"
+		) as mock_mark:
+			result = _plan_mwo_group(
+				(
+					"KG GK Jewellers Private Limited",
+					"MWO-KGJPL-MU02087-002-4-91.75-Y-03",
+				),
+				mop_data_list,
+				failures,
+				stats,
+				sync_log_name=None,
+			)
+		return result, failures, stats, mock_mark
+
+	def test_incident_plans_five_legs(self):
+		result, failures, stats, mock_mark = self._plan(_INCIDENT_LIVE, _INCIDENT_PHYS)
+		self.assertEqual(failures, [])
+		self.assertEqual(result["kind"], "resolvable")
+		self.assertEqual(len(result["items"]), 5)
+		self.assertEqual(round(sum(i["qty"] for i in result["items"]), 3), 6.379)
+		mock_mark.assert_not_called()  # synced only after the transfer commits
+
+	def test_short_owned_balance_holds_the_whole_mwo(self):
+		phys = dict(_INCIDENT_PHYS)
+		phys[(_B_GOLD, _HAMMER)] = 0.0
+		result, failures, stats, mock_mark = self._plan(_INCIDENT_LIVE, phys)
+		self.assertEqual(result["kind"], "failed")
+		self.assertEqual(stats["failed_mwos"], 1)
+		mock_mark.assert_not_called()
+		shorts = [f for f in failures if f["step"] == "batch_short"]
+		self.assertEqual(len(shorts), 1)
+		self.assertEqual(shorts[0]["batch_no"], _B_GOLD)
+		self.assertIn("own reservations", shorts[0]["error_message"])
+		self.assertIn("short 0.02", shorts[0]["error_message"])
+		# The other (buildable) rows go to the diagnostic draft, not to a transfer.
+		self.assertEqual(len(result["issues_rows"]), 3)
+
+	def test_only_short_rows_still_hold_instead_of_noop(self):
+		# Every balance short and nothing buildable: an empty ``items`` must not reach the
+		# "nothing to move -> mark synced" branch.
+		result, failures, stats, mock_mark = self._plan(_INCIDENT_LIVE, {})
+		self.assertEqual(result["kind"], "failed")
+		self.assertEqual(result["issues_rows"], [])
+		self.assertEqual(len([f for f in failures if f["step"] == "batch_short"]), 4)
+		mock_mark.assert_not_called()
+		self.assertEqual(stats["processed_mwos"], 0)
+
+
+class TestEodPostConditionSumsPerBatch(IntegrationTestCase):
+	"""Phase 2 must put back the SUM released for a batch, not each snapshot alone."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _snapshots(self):
+		def snap(name, wh_qty):
+			return {
+				"sre": SimpleNamespace(
+					name=name,
+					item_code=_GOLD,
+					manufacturing_operation="MOP-2609-PUI52X",
+				),
+				"remaining": wh_qty,
+				"has_batch_no": 1,
+				"has_serial_no": 0,
+				"sb_entries": [{"batch_no": _B_GOLD, "qty": wh_qty}],
+			}
+
+		return [snap("5s2ebper90", 4.323), snap("d9kmsckcs0", 0.02)]
+
+	def _main_mwos(self):
+		return [
+			{
+				"mwo": "MWO-03",
+				"items": [
+					{
+						"item_code": _GOLD,
+						"batch_no": _B_GOLD,
+						"qty": 4.323,
+						"s_warehouse": _DS_WO,
+						"t_warehouse": _CENTRAL,
+						"custom_manufacturing_work_order": "MWO-03",
+						"manufacturing_operation": "MOP-2611-UUUY7U",
+					},
+					{
+						"item_code": _GOLD,
+						"batch_no": _B_GOLD,
+						"qty": 0.02,
+						"s_warehouse": _HAMMER,
+						"t_warehouse": _CENTRAL,
+						"custom_manufacturing_work_order": "MWO-03",
+						"manufacturing_operation": "MOP-2611-UUUY7U",
+					},
+				],
+				"t_warehouse": _CENTRAL,
+				"child_row_names": ["CR-1", "CR-2"],
+				"mop_data_list": [
+					{"mop_name": "MOP-2611-UUUY7U", "mop_doc": _mop_doc()}
+				],
+			}
+		]
+
+	def _commit(self, remaining_after, heal_return=None):
+		"""``remaining_after`` = what the MWO holds for the batch once re-reserved."""
+		failures = []
+		stats = {
+			"processed_mwos": 0,
+			"failed_mwos": 0,
+			"submitted_ses": [],
+			"draft_ses": [],
+		}
+		marks, rollbacks, heals = [], [], []
+		# First read: after the cancel (nothing untouched); second: after re-reserving.
+		remaining = iter([0.0, remaining_after])
+
+		def heal(mwo, item_code, batch_no, gap, *args, **kwargs):
+			heals.append(gap)
+			return heal_return
+
+		with patch(f"{_MOD}.frappe.db.savepoint"), patch(
+			f"{_MOD}.frappe.db.release_savepoint"
+		), patch(
+			f"{_MOD}._rollback_to_savepoint",
+			side_effect=lambda sp: rollbacks.append(sp),
+		), patch(f"{_MOD}._save_draft_eod_se", return_value="SE-DRAFT"), patch(
+			f"{_MOD}._snapshot_mwo_sres_for_relocation", return_value=self._snapshots()
+		), patch(f"{_MOD}._cancel_sre_snapshots"), patch(
+			f"{_MOD}.frappe.get_doc", return_value=FakeStockEntry("SE-DRAFT")
+		), patch(f"{_MOD}._reserve_sres_from_eod_se_rows"), patch(
+			f"{_MOD}._sre_remaining_for_batch",
+			side_effect=lambda *a, **k: next(remaining),
+		), patch(
+			f"{_MOD}._reserve_batch_at_physical_warehouse", side_effect=heal
+		), patch(
+			f"{_MOD}._reserve_batch_shortfall", return_value={"created": None}
+		), patch(f"{_MOD}._hard_delete_cancelled_snapshots"), patch(
+			f"{_MOD}._mark_all_mwo_mop_logs_synced",
+			side_effect=lambda mwos, selective=False, log_names=None: marks.append(
+				mwos
+			),
+		), patch(f"{_MOD}._stamp_last_eod_sync"), patch(f"{_MOD}._bulk_set_child_rows"):
+			_commit_company_main_se("Co", "MF-1", self._main_mwos(), failures, stats)
+		return failures, stats, marks, rollbacks, heals
+
+	def test_relocation_back_as_4_323_of_4_343_is_caught(self):
+		# The old per-snapshot check compared 4.323 and 0.020 each against 4.323 and passed.
+		failures, stats, marks, rollbacks, heals = self._commit(4.323)
+		self.assertEqual(heals, [0.02])
+		self.assertIn("eod_submit_phase", rollbacks)
+		self.assertEqual(marks, [])
+		self.assertEqual(stats["submitted_ses"], [])
+		self.assertEqual(len(failures), 1)
+
+	def test_full_relocation_commits_without_heal(self):
+		failures, stats, marks, rollbacks, heals = self._commit(4.343)
+		self.assertEqual((failures, heals, rollbacks), ([], [], []))
+		self.assertEqual(marks, [["MWO-03"]])
+		self.assertIn("SE-DRAFT", stats["submitted_ses"])
+
+
+class TestRefuseUnresolvedEodDraftSubmit(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _doc(self, source):
+		return FrappeDict(
+			name="MAT-STE-86370",
+			custom_eod_sync_source=source,
+			custom_eod_sync_log="MOP-EOD-SYNC-2026-00130",
+			items=[
+				FrappeDict(
+					custom_manufacturing_work_order="MWO-KGJPL-MU02087-002-4-91.75-Y-03"
+				)
+			],
+		)
+
+	def test_unresolved_draft_cannot_be_submitted(self):
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			refuse_unresolved_eod_draft_submit(self._doc(EOD_UNRESOLVED_SOURCE))
+		self.assertIn("MWO-KGJPL-MU02087-002-4-91.75-Y-03", str(ctx.exception))
+		self.assertIn("MOP-EOD-SYNC-2026-00130", str(ctx.exception))
+
+	def test_eod_transfer_and_ordinary_entries_pass(self):
+		refuse_unresolved_eod_draft_submit(self._doc("MOP EOD Sync"))
+		refuse_unresolved_eod_draft_submit(self._doc(None))
+
+	def test_hook_runs_first_on_stock_entry_submit(self):
+		hooks = frappe.get_hooks("doc_events", app_name="jewellery_erpnext")
+		self.assertEqual(
+			hooks["Stock Entry"]["before_submit"][0],
+			f"{_MOD}.refuse_unresolved_eod_draft_submit",
 		)

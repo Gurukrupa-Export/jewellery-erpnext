@@ -3982,3 +3982,222 @@ class TestSupplierReceiptDifferenceAccount(IntegrationTestCase):
 
 		self.assertNotEqual(guard, -1, "receive_from_supplier no longer sets the Difference Account")
 		self.assertLess(guard, insert, "the Difference Account must be set before se.insert()")
+
+
+class TestWorkOrderMaterialOwnedGuard(IntegrationTestCase):
+	"""RFN-MWO-26-00008: a Work Order batch row must be the scanned MWOs' own stock.
+
+	The material table groups rows across MWOs and resolved its source warehouse from
+	GROSS batch stock, so the 5.014 ct row at Central WO was really four MWOs' demand while
+	-03's 1.071 ct still sat in Hammer WIP WH 28 (its EOD transfer was held).
+	"""
+
+	ITEM = "D-NT-RO-6B-+7-7.5"
+	BATCH = "KG2F093-DNTROX6G00G05-216XA"
+	CENTRAL = "Central WO - KGJPL"
+	HAMMER = "Hammer WIP WH 28 - KGJPL"
+	MWO = "MWO-KGJPL-MU02087-002-4-91.75-Y-0{0}"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _entry(self, rows, refining_type="Work Order Refining"):
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = refining_type
+		re.warehouse = self.CENTRAL
+		for n in (3, 4, 5, 6):
+			re.append("mwo_details", {"manufacturing_work_order": self.MWO.format(n)})
+		for row in rows:
+			re.append(
+				"material_items",
+				{
+					"item_code": self.ITEM,
+					"batch_no": self.BATCH,
+					"source_type": "MWO",
+					**row,
+				},
+			)
+		return re
+
+	def _check(self, re, owned, physical, unsynced=None):
+		module = type(re).__module__
+		with patch.object(
+			type(re), "_owned_batch_reservations", return_value=owned
+		), patch(
+			f"{module}._unsynced_mop_log_counts", return_value=unsynced or {}
+		), patch(
+			"erpnext.stock.doctype.batch.batch.get_batch_qty",
+			side_effect=lambda batch_no, warehouse, item_code, **kw: physical.get(
+				warehouse, 0.0
+			),
+		):
+			re._validate_work_order_material_owned()
+
+	def _incident_owned(self, minus_03_at=None):
+		owned = {
+			self.CENTRAL: {
+				self.MWO.format(4): 1.298,
+				self.MWO.format(5): 1.311,
+				self.MWO.format(6): 1.334,
+			}
+		}
+		owned.setdefault(minus_03_at or self.CENTRAL, {})[self.MWO.format(3)] = 1.071
+		return {(self.ITEM, self.BATCH): owned}
+
+	def test_incident_row_is_refused_naming_the_pending_mwo(self):
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._check(
+				re, self._incident_owned(minus_03_at=self.HAMMER), {self.CENTRAL: 3.943}
+			)
+		msg = str(ctx.exception)
+		for part in ("5.014", "3.943", self.MWO.format(3), self.HAMMER, "EOD"):
+			self.assertIn(part, msg)
+
+	def test_pending_share_points_at_eod(self):
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._check(
+				re,
+				self._incident_owned(minus_03_at=self.HAMMER),
+				{self.CENTRAL: 3.943},
+				unsynced={self.MWO.format(3): 4},
+			)
+		self.assertIn("EOD pending: 4 unsynced MOP Logs", str(ctx.exception))
+
+	def test_share_skipped_by_an_earlier_eod_is_not_sent_to_eod(self):
+		# Logs all synced: a selective EOD finds nothing to move, so the message must say
+		# the transfer needs a repair instead of "run EOD".
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._check(
+				re, self._incident_owned(minus_03_at=self.HAMMER), {self.CENTRAL: 3.943}
+			)
+		msg = str(ctx.exception)
+		self.assertIn("MOP Logs all synced: an earlier EOD skipped this transfer", msg)
+		self.assertNotIn("EOD pending:", msg)
+
+	def test_sub_precision_residue_is_not_a_shortfall(self):
+		re = self._entry([{"qty": 5.0144, "warehouse": self.CENTRAL}])
+		self._check(re, self._incident_owned(), {self.CENTRAL: 5.014})
+
+	def test_after_eod_the_same_row_passes(self):
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		self._check(re, self._incident_owned(), {self.CENTRAL: 5.014})
+
+	def test_stale_warehouse_after_eod_asks_for_a_refetch(self):
+		re = self._entry([{"qty": 1.071, "warehouse": self.HAMMER}])
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._check(re, self._incident_owned(), {self.CENTRAL: 5.014})
+		self.assertIn("re-fetch", str(ctx.exception))
+
+	def test_rows_sharing_a_batch_are_checked_as_one_total(self):
+		re = self._entry(
+			[
+				{"qty": 3.0, "warehouse": self.CENTRAL},
+				{"qty": 2.014, "warehouse": self.CENTRAL},
+			]
+		)
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._check(
+				re, self._incident_owned(minus_03_at=self.HAMMER), {self.CENTRAL: 9.0}
+			)
+		self.assertIn("Row 1, 2", str(ctx.exception))
+
+	def test_physical_stock_caps_the_reservation(self):
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		with self.assertRaises(frappe.ValidationError):
+			self._check(re, self._incident_owned(), {self.CENTRAL: 4.382 - 0.439})
+
+	def test_batch_no_scanned_mwo_reserves_is_left_to_existing_checks(self):
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		self._check(re, {}, {})
+
+	def test_other_refining_types_are_untouched(self):
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}], "Scrap Refining")
+		with patch.object(type(re), "_owned_batch_reservations") as owned:
+			re._validate_work_order_material_owned()
+		owned.assert_not_called()
+
+	def test_refused_before_any_reservation_is_released(self):
+		re = self._entry([{"qty": 5.014, "warehouse": self.CENTRAL}])
+		with patch.object(
+			type(re),
+			"_owned_batch_reservations",
+			return_value=self._incident_owned(self.HAMMER),
+		), patch(
+			"erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=3.943
+		), patch(
+			f"{type(re).__module__}._unsynced_mop_log_counts", return_value={}
+		), patch.object(
+			type(re), "_cancel_source_mwo_sres", autospec=True
+		) as cancel, patch("frappe.new_doc", wraps=frappe.new_doc) as new_doc:
+			self.assertRaises(frappe.ValidationError, re.create_material_transfer_se)
+		cancel.assert_not_called()
+		self.assertNotIn("Stock Entry", [c.args[0] for c in new_doc.call_args_list])
+
+	def test_owned_reservations_cap_by_child_and_header(self):
+		re = self._entry([])
+		sres = [
+			(
+				self.MWO.format(3),
+				frappe._dict(
+					name="S1",
+					item_code=self.ITEM,
+					warehouse=self.HAMMER,
+					has_batch_no=1,
+					reservation_based_on="Serial and Batch",
+				),
+			),
+			(
+				self.MWO.format(4),
+				frappe._dict(
+					name="S2",
+					item_code=self.ITEM,
+					warehouse=self.CENTRAL,
+					has_batch_no=1,
+					reservation_based_on="Serial and Batch",
+				),
+			),
+			(
+				self.MWO.format(5),
+				frappe._dict(
+					name="S3",
+					item_code=self.ITEM,
+					warehouse=self.CENTRAL,
+					has_batch_no=1,
+					reservation_based_on="Qty",
+				),
+			),
+		]
+
+		def fake_get_all(doctype, **kwargs):
+			if doctype == "Stock Reservation Entry":
+				return [
+					frappe._dict(name="S1", reserved_qty=1.071, delivered_qty=0),
+					frappe._dict(name="S2", reserved_qty=1.298, delivered_qty=0.298),
+				]
+			return [
+				frappe._dict(
+					parent="S1", batch_no=self.BATCH, qty=1.071, delivered_qty=0
+				),
+				frappe._dict(
+					parent="S2", batch_no=self.BATCH, qty=1.298, delivered_qty=0
+				),
+			]
+
+		module = type(re).__module__
+		with patch.object(type(re), "_source_mwo_sre_rows", return_value=sres), patch(
+			f"{module}.frappe.get_all", side_effect=fake_get_all
+		):
+			owned = re._owned_batch_reservations({(self.ITEM, self.BATCH)})
+		self.assertEqual(
+			owned,
+			{
+				(self.ITEM, self.BATCH): {
+					self.HAMMER: {self.MWO.format(3): 1.071},
+					self.CENTRAL: {self.MWO.format(4): 1.0},
+				}
+			},
+		)

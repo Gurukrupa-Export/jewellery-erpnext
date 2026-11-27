@@ -100,6 +100,26 @@ def _default_receiving_warehouse(company):
 	)
 
 
+def _unsynced_mop_log_counts(mwos):
+	"""``{mwo: unsynced, non-cancelled MOP Log count}`` -- one query for all ``mwos``."""
+	mwos = sorted(m for m in mwos if m)
+	if not mwos:
+		return {}
+	return dict(
+		frappe.db.sql(
+			"""
+			SELECT manufacturing_work_order, COUNT(*)
+			FROM `tabMOP Log`
+			WHERE manufacturing_work_order IN %(mwos)s
+			  AND is_synced = 0
+			  AND is_cancelled = 0
+			GROUP BY manufacturing_work_order
+			""",
+			{"mwos": mwos},
+		)
+	)
+
+
 class RefiningEntry(Document):
 	def before_insert(self):
 		# Set the series before autoname runs (autoname happens before validate), so
@@ -2701,6 +2721,12 @@ class RefiningEntry(Document):
 		(internal flow) or, when ``target_warehouse`` is given (external refining
 		sending), into the supplier's warehouse instead."""
 		target = target_warehouse or self.refining_warehouse
+		# Before anything moves or is released: every Work Order batch row must be the
+		# scanned MWOs' own stock at the warehouse it names.
+		if self.refining_type == "Work Order Refining":
+			# Class-qualified: callers that drive this method with a stand-in document
+			# (the lock-order tests) get the same check instead of an AttributeError.
+			RefiningEntry._validate_work_order_material_owned(self)
 
 		se = frappe.new_doc("Stock Entry")
 		se.stock_entry_type = "Material Transfer"
@@ -3071,6 +3097,207 @@ class RefiningEntry(Document):
 				seen.add(sre.name)
 				rows.append((mwo, sre))
 		return rows
+
+	def _owned_batch_reservations(self, keys):
+		"""``{(item_code, batch_no): {warehouse: {mwo: live_qty}}}`` for the scanned MWOs.
+
+		Built from the same reservations ``_source_mwo_sre_rows`` hands to
+		``_cancel_source_mwo_sres`` -- the ones this entry may consume. Each batch is capped
+		by its own undelivered child qty and by the header remainder, rounded to 3 dp
+		(EOD's and the Serial Number Creator's reading). Qty-based reservations name no
+		batch, so they are left out. Three queries, however many rows.
+		"""
+		sre_rows = [
+			(mwo, sre)
+			for mwo, sre in self._source_mwo_sre_rows(keys=keys)
+			if cint(sre.has_batch_no) and sre.reservation_based_on != "Qty"
+		]
+		if not sre_rows:
+			return {}
+		names = [sre.name for _mwo, sre in sre_rows]
+		headers = {
+			r.name: flt(r.reserved_qty) - flt(r.delivered_qty)
+			for r in frappe.get_all(
+				"Stock Reservation Entry",
+				filters={"name": ["in", names]},
+				fields=["name", "reserved_qty", "delivered_qty"],
+				limit_page_length=0,
+			)
+		}
+		scoped = {}
+		for child in frappe.get_all(
+			"Serial and Batch Entry",
+			filters={"parent": ["in", names], "parenttype": "Stock Reservation Entry"},
+			fields=["parent", "batch_no", "qty", "delivered_qty"],
+			limit_page_length=0,
+		):
+			if not child.batch_no:
+				continue
+			by_batch = scoped.setdefault(child.parent, {})
+			by_batch[child.batch_no] = (
+				by_batch.get(child.batch_no, 0.0)
+				+ flt(child.qty)
+				- flt(child.delivered_qty)
+			)
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+			TOLERANCE,
+		)
+
+		owned = {}
+		for mwo, sre in sre_rows:
+			for batch_no, qty in (scoped.get(sre.name) or {}).items():
+				remaining = flt(min(headers.get(sre.name, 0.0), qty), 3)
+				if remaining <= TOLERANCE:
+					continue
+				by_wh = owned.setdefault((sre.item_code, batch_no), {})
+				by_mwo = by_wh.setdefault(sre.warehouse, {})
+				by_mwo[mwo] = flt(by_mwo.get(mwo, 0.0) + remaining, 3)
+		return owned
+
+	def _validate_work_order_material_owned(self):
+		"""Work Order Refining preflight: each batch row must be the scanned MWOs' OWN stock.
+
+		Runs before the transfer touches anything (reservations, stock, weights, the
+		external PO). The table is grouped by (item, batch, warehouse) across MWOs and its
+		source warehouse was resolved from GROSS batch stock, so a row can name a warehouse
+		that holds the batch only for OTHER work orders -- e.g. an MWO whose EOD transfer is
+		still pending, its share sitting in the previous department. Work Order Refining
+		reads physical stock (it is about to release these reservations), so without this
+		check such a row either fails deep inside the transfer with a pooled, misleading
+		figure, or, worse, succeeds by taking a sibling MWO's reserved metal.
+
+		Per (item, batch, warehouse) the rows' TOTAL is compared with what the scanned MWOs
+		hold live there, capped by the batch's physical qty -- one running figure, so two
+		rows can never claim the same grams twice. A batch none of the scanned MWOs holds a
+		live batch reservation for is left to the existing checks (stock-based work orders).
+		"""
+		if self.refining_type != "Work Order Refining":
+			return
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+		required = {}
+		for row in self.material_items:
+			if row.get("source_type") == "BOM Component":
+				continue
+			if not row.batch_no or row.serial_no or flt(row.qty) <= 0:
+				continue
+			key = (row.item_code, row.batch_no, row.warehouse or self.warehouse)
+			entry = required.setdefault(key, [0.0, []])
+			entry[0] += flt(row.qty)
+			entry[1].append(row.idx)
+		if not required:
+			return
+
+		owned = RefiningEntry._owned_batch_reservations(
+			self, {(item_code, batch_no) for item_code, batch_no, _wh in required}
+		)
+		problems = []
+		for (item_code, batch_no, warehouse), (qty, idxs) in required.items():
+			holders = owned.get((item_code, batch_no))
+			if not holders:
+				continue
+			qty = flt(qty, 3)
+			here = holders.get(warehouse) or {}
+			reserved_here = flt(sum(here.values()), 3)
+			physical = flt(
+				get_batch_qty(
+					batch_no=batch_no,
+					warehouse=warehouse,
+					item_code=item_code,
+					ignore_reserved_stock=True,
+				)
+				or 0,
+				3,
+			)
+			usable = flt(min(reserved_here, physical), 3)
+			# Compared at the 3 dp stock precision: any shortfall that survives rounding.
+			if flt(qty - usable, 3) <= 0:
+				continue
+			away = [
+				(wh, mwo, held)
+				for wh, by_mwo in sorted(holders.items())
+				if wh != warehouse
+				for mwo, held in sorted(by_mwo.items())
+			]
+			problems.append(
+				(
+					idxs,
+					item_code,
+					batch_no,
+					warehouse,
+					qty,
+					reserved_here,
+					here,
+					physical,
+					away,
+				)
+			)
+		if not problems:
+			return
+
+		# A share held elsewhere is either waiting for EOD (the work order still has unsynced
+		# MOP Logs, so a selective EOD run moves it) or was skipped by an earlier EOD that
+		# marked the logs synced without moving anything -- EOD will never pick that one up
+		# again, so the message must not send the operator to EOD for it.
+		pending = _unsynced_mop_log_counts(
+			{mwo for p in problems for _wh, mwo, _q in p[8]}
+		)
+		lines = []
+		for (
+			idxs,
+			item_code,
+			batch_no,
+			warehouse,
+			qty,
+			reserved_here,
+			here,
+			physical,
+			away,
+		) in problems:
+			held_here = ", ".join(f"{m} {q}" for m, q in sorted(here.items())) or _(
+				"none"
+			)
+			away_text = "; ".join(
+				_("{0} {1} at {2} (EOD pending: {3} unsynced MOP Logs)").format(
+					mwo, held, wh, pending[mwo]
+				)
+				if pending.get(mwo)
+				else _(
+					"{0} {1} at {2} (MOP Logs all synced: an earlier EOD skipped this transfer)"
+				).format(mwo, held, wh)
+				for wh, mwo, held in away
+			)
+			lines.append(
+				_(
+					"Row {0}: {1} / {2} at {3} — required {4}, held here by the scanned "
+					"Manufacturing Work Orders {5} ({6}; physical {7}).{8}"
+				).format(
+					", ".join(str(i) for i in idxs),
+					frappe.bold(item_code),
+					frappe.bold(batch_no),
+					frappe.bold(warehouse),
+					qty,
+					reserved_here,
+					held_here,
+					physical,
+					(" " + _("Still held elsewhere: {0}.").format(away_text))
+					if away
+					else "",
+				)
+			)
+		frappe.throw(
+			_(
+				"Work Order material is not at its source warehouse for the scanned "
+				"Manufacturing Work Orders:<br>{0}<br><br>A share marked EOD pending moves once "
+				"EOD runs for its work order (MOP Settings → EOD Work Order Filter); then clear "
+				"Material Items and save to re-fetch. A share whose MOP Logs are all synced was "
+				"skipped by an earlier EOD and will not move on its own: that transfer has to be "
+				"repaired before the work order can be refined. If the material has moved since "
+				"the table was built, clear Material Items and save to re-fetch."
+			).format("<br>".join(lines)),
+			title=_("Work Order Material Not Available"),
+		)
 
 	def _append_serial_metal_row(self, sn_row, bom_no):
 		"""External only: stand in for the gold of a serial whose BOM lists no metal line.
