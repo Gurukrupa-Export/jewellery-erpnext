@@ -85,6 +85,36 @@ def _tracking_eps(precision=None):
 	return (10 ** -int(precision or _tracking_precision())) / 2
 
 
+def _movement_sums(prefix="", condition=None):
+	"""The Issue / Loss / Receive ``SUM(CASE ...)`` select items over ``sle`` LEFT JOIN ``se``.
+
+	The one place an SLE is classified: inward is an Issue, outward on a Process Loss Stock
+	Entry is a Loss, every other outward is a Receive. ``condition`` (SQL over ``sle``) narrows
+	all three sums, and ``prefix`` names the columns ``{prefix}issue_qty`` etc.
+	"""
+	loss_types = ", ".join(frappe.db.escape(t) for t in LOSS_STOCK_ENTRY_TYPES)
+	when = f"{condition} AND " if condition else ""
+	return f"""
+			SUM(CASE WHEN {when}sle.actual_qty > 0 THEN sle.actual_qty ELSE 0 END) AS {prefix}issue_qty,
+			SUM(CASE WHEN {when}sle.actual_qty < 0
+					 AND se.stock_entry_type IN ({loss_types})
+					 THEN -sle.actual_qty ELSE 0 END) AS {prefix}loss_qty,
+			SUM(CASE WHEN {when}sle.actual_qty < 0
+					 AND (se.stock_entry_type IS NULL OR se.stock_entry_type NOT IN ({loss_types}))
+					 THEN -sle.actual_qty ELSE 0 END) AS {prefix}receive_qty"""
+
+
+def _tracking_figures(issue, receive, loss, prec):
+	"""Issue / Receive / Loss rounded to ``prec``, and Pending = Issue - Receive - Loss on them."""
+	issue, receive, loss = flt(issue, prec), flt(receive, prec), flt(loss, prec)
+	return {
+		"issue_qty": issue,
+		"receive_qty": receive,
+		"loss_qty": loss,
+		"pending_qty": flt(issue - receive - loss, prec),
+	}
+
+
 def get_warehouse_item_tracking(filters=None, group_by_month=False):
 	"""Return per (employee warehouse x item) Issue/Receive/Loss/Pending rows.
 
@@ -120,7 +150,6 @@ def get_warehouse_item_tracking(filters=None, group_by_month=False):
 		conditions.append("sle.posting_date <= %(to_date)s")
 
 	where = " AND ".join(conditions)
-	loss_types = ", ".join(frappe.db.escape(t) for t in LOSS_STOCK_ENTRY_TYPES)
 	month_select = f"{MONTH_START_EXPR} AS month_start," if group_by_month else ""
 	month_group = f", {MONTH_START_EXPR}" if group_by_month else ""
 
@@ -132,14 +161,7 @@ def get_warehouse_item_tracking(filters=None, group_by_month=False):
 			emp.employee_name AS employee_name,
 			emp.department AS department,
 			{month_select}
-			sle.item_code AS item_code,
-			SUM(CASE WHEN sle.actual_qty > 0 THEN sle.actual_qty ELSE 0 END) AS issue_qty,
-			SUM(CASE WHEN sle.actual_qty < 0
-					 AND se.stock_entry_type IN ({loss_types})
-					 THEN -sle.actual_qty ELSE 0 END) AS loss_qty,
-			SUM(CASE WHEN sle.actual_qty < 0
-					 AND (se.stock_entry_type IS NULL OR se.stock_entry_type NOT IN ({loss_types}))
-					 THEN -sle.actual_qty ELSE 0 END) AS receive_qty
+			sle.item_code AS item_code,{_movement_sums()}
 		FROM `tabStock Ledger Entry` sle
 		INNER JOIN `tabWarehouse` wh ON wh.name = sle.warehouse
 		LEFT JOIN `tabEmployee` emp ON emp.name = wh.employee
@@ -156,10 +178,11 @@ def get_warehouse_item_tracking(filters=None, group_by_month=False):
 
 	prec = _tracking_precision()
 	for r in rows:
-		r["issue_qty"] = flt(r.get("issue_qty"), prec)
-		r["receive_qty"] = flt(r.get("receive_qty"), prec)
-		r["loss_qty"] = flt(r.get("loss_qty"), prec)
-		r["pending_qty"] = flt(r["issue_qty"] - r["receive_qty"] - r["loss_qty"], prec)
+		r.update(
+			_tracking_figures(
+				r.get("issue_qty"), r.get("receive_qty"), r.get("loss_qty"), prec
+			)
+		)
 
 	return rows
 
@@ -306,6 +329,58 @@ def validate_no_prior_period_pending(warehouse, posting_date=None):
 	frappe.throw(msg, title=_("Prior-Month Pending"))
 
 
+def _msl_tracking_views(warehouse, month_start):
+	"""``(month_rows, cumulative_rows)`` for ``recalculate_msl_tracking`` from ONE ledger scan.
+
+	The same two views as ``get_warehouse_item_tracking({"warehouse": warehouse, "from_date":
+	month_start})`` and ``get_warehouse_item_tracking({"warehouse": warehouse})``, which each scan
+	the warehouse's whole Stock Ledger (no index leads with ``warehouse``). The month figures are
+	the same three sums restricted to ``posting_date >= month_start``, and each view keeps an item
+	only when one of ITS three raw sums is non-zero -- the HAVING of the two queries, applied
+	before rounding exactly as SQL applied it. The report and the month-start gate keep using
+	``get_warehouse_item_tracking``; both build their sums with ``_movement_sums`` and their
+	figures with ``_tracking_figures``, so the two cannot classify or round differently.
+	"""
+	month_sums = _movement_sums(
+		prefix="month_", condition="sle.posting_date >= %(from_date)s"
+	)
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			sle.item_code AS item_code,{_movement_sums()},{month_sums}
+		FROM `tabStock Ledger Entry` sle
+		INNER JOIN `tabWarehouse` wh ON wh.name = sle.warehouse
+		LEFT JOIN `tabStock Entry` se
+			ON sle.voucher_type = 'Stock Entry' AND se.name = sle.voucher_no
+		WHERE sle.is_cancelled = 0 AND wh.employee IS NOT NULL AND sle.warehouse = %(warehouse)s
+		GROUP BY sle.warehouse, sle.item_code
+		""",
+		{"warehouse": warehouse, "from_date": month_start},
+		as_dict=True,
+	)
+
+	prec = _tracking_precision()
+
+	def view(row, prefix):
+		issue = row.get(f"{prefix}issue_qty")
+		receive = row.get(f"{prefix}receive_qty")
+		loss = row.get(f"{prefix}loss_qty")
+		if not (issue or receive or loss):
+			return None
+		return {
+			"item_code": row["item_code"],
+			**_tracking_figures(issue, receive, loss, prec),
+		}
+
+	month_rows, cumulative_rows = [], []
+	for row in rows:
+		if (month := view(row, "month_")) is not None:
+			month_rows.append(month)
+		if (cumulative := view(row, "")) is not None:
+			cumulative_rows.append(cumulative)
+	return month_rows, cumulative_rows
+
+
 @frappe.whitelist()
 def recalculate_msl_tracking(warehouse):
 	"""Recompute and materialize the ``custom_msl_tracking`` child table on an
@@ -337,15 +412,9 @@ def recalculate_msl_tracking(warehouse):
 	# negative for metal issued in June and returned in July.
 	prec = _tracking_precision()
 	month_start = get_first_day(getdate(today()))
-	month_rows = {
-		r["item_code"]: r
-		for r in get_warehouse_item_tracking(
-			{"warehouse": warehouse, "from_date": month_start}
-		)
-	}
-	cumulative = {
-		r["item_code"]: r for r in get_warehouse_item_tracking({"warehouse": warehouse})
-	}
+	month_view, cumulative_view = _msl_tracking_views(warehouse, month_start)
+	month_rows = {r["item_code"]: r for r in month_view}
+	cumulative = {r["item_code"]: r for r in cumulative_view}
 
 	doc = frappe.get_doc("Warehouse", warehouse)
 	doc.set("custom_msl_tracking", [])

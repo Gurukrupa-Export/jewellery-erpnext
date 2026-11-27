@@ -1094,9 +1094,34 @@ def _get_snc_source_warehouses(company=None):
 
 def _get_gold_items_for_purity(purity, required_item_code):
 	colour = (required_item_code or "").split("-")[-1]
-	filters = {"disabled": 0}
+	# A fresh list, so a caller can never alter the cached tuple.
+	return list(_gold_items_for(purity, colour))
+
+
+@frappe.request_cache
+def _gold_items_for(purity, colour):
+	"""Item master only, cached per request / background job (``frappe.request_cache``).
+
+	Settle asks for the same purity/colour candidates once per purity, per finder, per short
+	row, and again when it re-plans after a work-order take-back. Items are never created or
+	disabled on those paths, so the answer cannot change mid-request; the next request reads
+	afresh. Batch quantities, reservations and run claims are never cached.
+	"""
+	return tuple(_query_gold_items_for_purity(purity, colour))
+
+
+def _query_gold_items_for_purity(purity, colour):
+	# The "M-G-<purity>" prefix lets the database read only that range of the Item primary
+	# key; the colour match alone ("%-Y") starts with a wildcard, so it scanned every Item.
+	# The prefix is only a pre-filter (LIKE ignores case and treats "_" as a wildcard): the
+	# Python check below still decides, exactly as before, so the result and its order
+	# (Item's default sort) are unchanged.
+	filters = [
+		["disabled", "=", 0],
+		["name", "like", "M-G-{0}%".format(purity or "")],
+	]
 	if colour:
-		filters["name"] = ["like", "%-{0}".format(colour)]
+		filters.append(["name", "like", "%-{0}".format(colour)])
 
 	items = frappe.get_all("Item", filters=filters, pluck="name")
 	return [
@@ -1153,7 +1178,11 @@ def _item_template(item_code):
 	return frappe.db.get_value("Item", item_code, "variant_of", cache=True)
 
 
+@frappe.request_cache
 def _get_item_purity(item_code):
+	# Cached per request / background job: an Item's Metal Purity attribute cannot change
+	# mid-request, and Settle asks for the same candidates' purity once per purity, per finder,
+	# per short row (the same reasoning as metal_utils.get_purity_percentage).
 	# Read the Metal Purity attribute directly instead of frappe.get_doc("Item", …),
 	# which loads the whole Item document — every child table, including a ~59ms
 	# Design-Attribute-Multiselect load — just to scan for one attribute row. This

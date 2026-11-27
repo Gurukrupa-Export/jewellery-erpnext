@@ -1,0 +1,178 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "autoincrement",
+ "creation": "2026-11-11 12:00:01.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "manufacturing_work_order",
+  "manufacturing_operation",
+  "department",
+  "event",
+  "column_break_process",
+  "from_process",
+  "to_process",
+  "section_break_voucher",
+  "voucher_type",
+  "voucher_no",
+  "previous_transition",
+  "reverses",
+  "column_break_actor",
+  "user",
+  "transition_time"
+ ],
+ "fields": [
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Manufacturing Operation",
+   "options": "Manufacturing Operation",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Department",
+   "options": "Department",
+   "read_only": 1
+  },
+  {
+   "fieldname": "event",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Event",
+   "options": "Initial Assignment\nProcess Transfer\nDepartment IR Issue\nCancellation",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_process",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "from_process",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "From Process",
+   "options": "Department Process",
+   "read_only": 1
+  },
+  {
+   "fieldname": "to_process",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "To Process",
+   "options": "Department Process",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_voucher",
+   "fieldtype": "Section Break",
+   "label": "Source"
+  },
+  {
+   "fieldname": "voucher_type",
+   "fieldtype": "Link",
+   "label": "Voucher Type",
+   "options": "DocType",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "voucher_no",
+   "fieldtype": "Dynamic Link",
+   "in_list_view": 1,
+   "label": "Voucher No",
+   "options": "voucher_type",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "previous_transition",
+   "fieldtype": "Link",
+   "label": "Previous Transition",
+   "options": "Process Transition Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reverses",
+   "fieldtype": "Link",
+   "label": "Reverses",
+   "options": "Process Transition Log",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_actor",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "transition_time",
+   "fieldtype": "Datetime",
+   "label": "Transition Time",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-11 15:00:01.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Process Transition Log",
+ "naming_rule": "Autoincrement",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Process Transfer User"
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Process Access Manager"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

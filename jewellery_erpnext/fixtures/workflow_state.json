@@ -768,6 +768,15 @@
   "docstatus": 0,
   "doctype": "Workflow State",
   "icon": "",
+  "modified": "2026-11-25 00:00:00.000000",
+  "name": "Material Transfer In Progress",
+  "style": "Warning",
+  "workflow_state_name": "Material Transfer In Progress"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
   "modified": "2024-08-01 08:35:26.992826",
   "name": "BOM QC",
   "style": "",

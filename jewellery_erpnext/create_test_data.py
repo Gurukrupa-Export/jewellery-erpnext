@@ -3007,6 +3007,12 @@ def create_test_data():
 
 			_ensure_supplier_allowed_item_group_field()
 
+			from jewellery_erpnext.patches.add_supplier_metal_weight_limit import (
+				execute as _ensure_supplier_metal_weight_limit_field,
+			)
+
+			_ensure_supplier_metal_weight_limit_field()
+
 			from jewellery_erpnext.patches.add_mr_is_free_item_field import (
 				execute as _ensure_mr_is_free_item_field,
 			)
@@ -3043,6 +3049,14 @@ def create_test_data():
 
 			_add_mr_department_to_mop_transition()
 
+			# Same as the workflow patches above: only the Workflow State master on a site
+			# with no Material Request workflow.
+			from jewellery_erpnext.patches.add_mr_transfer_in_progress_state import (
+				execute as _add_mr_transfer_in_progress_state,
+			)
+
+			_add_mr_transfer_in_progress_state()
+
 			from jewellery_erpnext.patches.seed_stock_entry_types import (
 				execute as _seed_stock_entry_types,
 			)
@@ -3054,6 +3068,12 @@ def create_test_data():
 			)
 
 			_add_metal_conversion_chain_sc()
+
+			from jewellery_erpnext.patches.add_process_control_fields import (
+				execute as _add_process_control_fields,
+			)
+
+			_add_process_control_fields()
 
 			from jewellery_erpnext.patches.add_metal_conversion_workflow import (
 				execute as _add_metal_conversion_workflow,
@@ -3101,6 +3121,12 @@ def create_test_data():
 
 			po_refining_entry_field()
 
+			from jewellery_erpnext.patches.add_refinery_flow_fields import (
+				execute as refinery_flow_fields,
+			)
+
+			refinery_flow_fields()
+
 			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures, so — like
 			# the other custom-field patches above — it must be provisioned here for
 			# test_site, else create_manufacturing_entry's set_value raises
@@ -3138,6 +3164,14 @@ def create_test_data():
 			)
 
 			_ensure_purchase_order_order_dimension_fields()
+
+			# Purchase Order Item.custom_serial_id_bom is patch-only for the same reason;
+			# make_subcontracting_order and make_quotation carry a repair's serial BOM on it.
+			from jewellery_erpnext.patches.add_purchase_order_item_serial_id_bom_field import (
+				execute as _ensure_purchase_order_item_serial_id_bom_field,
+			)
+
+			_ensure_purchase_order_item_serial_id_bom_field()
 
 			# Removes v15 Custom Field rows that shadow the standard sales_type / flow_type /
 			# design_type fields of the planning doctypes. A no-op on fresh and CI sites; it is
@@ -3234,6 +3268,24 @@ def create_test_data():
 			)
 
 			_ensure_ref_customer_fields()
+
+			# Batch.custom_worker_cost / custom_total_cost (Finding Manufacturing - Without
+			# SO). Patch-only like the fields above, so provision them here for test_site too,
+			# else apply_worker_cost_to_batch writes a missing column.
+			from jewellery_erpnext.patches.add_batch_worker_cost_fields import (
+				execute as _ensure_batch_worker_cost_fields,
+			)
+
+			_ensure_batch_worker_cost_fields()
+
+			# The "GK Manufacturing Plan (Get Item Table)" Server Script comes from the
+			# git_action_v16 fixtures enabled, and would refuse every Finding Manufacturing -
+			# Without SO plan; its check now lives in ManufacturingPlan.before_insert.
+			from jewellery_erpnext.patches.disable_mp_get_item_table_server_script import (
+				execute as _disable_mp_get_item_table_script,
+			)
+
+			_disable_mp_get_item_table_script()
 
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (

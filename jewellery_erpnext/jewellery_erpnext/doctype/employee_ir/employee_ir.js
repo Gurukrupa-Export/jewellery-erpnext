@@ -22,11 +22,13 @@ frappe.ui.form.on("Employee IR", {
 			load_fg_bom_fields(frm, false);
 		}
 		load_repeat_flag(frm);
+		toggle_process_field(frm);
 	},
 	refresh_fg_bom_fields(frm) {
 		load_fg_bom_fields(frm, true);
 	},
 	onload(frm) {
+		load_process_control(frm);
 		frm.fields_dict["employee_ir_operations"].grid.add_new_row = false;
 		$(frm.fields_dict["employee_ir_operations"].grid.wrapper).find(".grid-add-row").hide();
 	},
@@ -36,12 +38,34 @@ frappe.ui.form.on("Employee IR", {
 	setup(frm) {
 		frm.ignore_doctypes_on_cancel_all = ["Stock Entry", "Serial and Batch Bundle"];
 		frm.set_query("operation", function () {
-			return {
-				filters: [
-					["Department Operation", "department", "=", frm.doc.department],
-					["Department Operation", "is_subcontracted", "=", frm.doc.subcontracting == "Yes"],
-				],
-			};
+			const filters = [
+				["Department Operation", "department", "=", frm.doc.department],
+				["Department Operation", "is_subcontracted", "=", frm.doc.subcontracting == "Yes"],
+			];
+			// Process control: offer only operations of processes this user may work in. The
+			// server checks it again (process_enforcement.check_employee_ir); this is a convenience.
+			const pc = frm.__process_control;
+			if (pc && pc.controlled) {
+				filters.push(["Department Operation", "department_process", "in", pc.allowed]);
+			}
+			// ...and once a Process is chosen, only that process's operations.
+			if (frm.doc.department_process) {
+				filters.push(["Department Operation", "department_process", "=", frm.doc.department_process]);
+			}
+			return { filters: filters };
+		});
+		// Process picker: this department's enabled processes, and in a controlled department only
+		// the ones this user may work in.
+		frm.set_query("department_process", function () {
+			const pc = frm.__process_control;
+			const filters = [
+				["Department Process", "department", "=", frm.doc.department],
+				["Department Process", "disabled", "=", 0],
+			];
+			if (pc && pc.controlled) {
+				filters.push(["Department Process", "name", "in", pc.allowed]);
+			}
+			return { filters: filters };
 		});
 		frm.set_query("department", function () {
 			return {
@@ -90,6 +114,7 @@ frappe.ui.form.on("Employee IR", {
 			} else {
 				filters["subcontractor"] = ["is", "not set"];
 			}
+			add_process_filter(frm, filters);
 
 			return {
 				filters: filters,
@@ -110,8 +135,19 @@ frappe.ui.form.on("Employee IR", {
 	},
 	department(frm) {
 		clear_operations_table(frm);
+		// A process belongs to one department. When an operation set the department, its process
+		// came with it and stays; while a process switch restores the department, so does the process.
+		if (!frm.__applying_process && !frm.doc.operation && frm.doc.department_process) {
+			frm.set_value("department_process", null);
+		}
+		load_process_control(frm);
+	},
+	department_process(frm) {
+		apply_process_to_operation(frm);
 	},
 	operation(frm) {
+		// Operation chosen first: show its process (the server stores it on save).
+		sync_process_from_operation(frm);
 		// Repeat-ness is per (work order, operation), so re-pointing the operation
 		// can flip the answer even with the same rows loaded.
 		clear_operations_table(frm);
@@ -177,25 +213,47 @@ frappe.ui.form.on("Employee IR", {
 					});
 				}
 			}
+			frm.doc.employee_ir_operations.forEach(function (item) {
+				if (item.manufacturing_work_order == frm.doc.scan_mwo)
+					frappe.throw(
+						__("{0} Manufacturing Work Order already exists", [frm.doc.scan_mwo])
+					);
+			});
+			// if (frm.doc.employee_ir_operations.length > 30) {
+			// 	frappe.throw(__("Only 30 MOP allowed in one document"));
+			// }
 			var query_filters = {
 				department: frm.doc.department,
-				manufacturing_work_order: scanned,
+				manufacturing_work_order: frm.doc.scan_mwo,
 			};
 			if (frm.doc.type == "Issue") {
 				query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
 				query_filters["status"] = ["in", ["Not Started"]];
-				query_filters["operation"] = ["is", "not set"];
-				// query_filters["department_ir_status"] = ["=", "Received"]
+				if (
+					!["Computer Aided Designing - GEPL", "Computer Aided Manufacturing - GEPL"].includes(
+						frm.doc.department
+					)
+				)
+					query_filters["operation"] = ["is", "not set"];
+				if (
+					!["Computer Aided Designing - GEPL", "Computer Aided Manufacturing - GEPL"].includes(
+						frm.doc.department
+					)
+				)
+					query_filters["department_ir_status"] = ["=", "Received"];
 
 				if (frm.doc.subcontracting == "Yes") {
 					query_filters["employee"] = ["is", "not set"];
 				} else {
 					query_filters["subcontractor"] = ["is", "not set"];
 				}
+				add_process_filter(frm, query_filters);
 			} else {
+				// if (frm.doc.operation != "CAD Updation")
 				query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
 				query_filters["operation"] = frm.doc.operation;
-				if (frm.doc.employee) query_filters["employee"] = frm.doc.employee;
+				if (frm.doc.employee && frm.doc.operation != "CAD Updation")
+					query_filters["employee"] = frm.doc.employee;
 				if (frm.doc.subcontractor && frm.doc.subcontracting == "Yes")
 					query_filters["subcontractor"] = frm.doc.subcontractor;
 			}
@@ -213,8 +271,25 @@ frappe.ui.form.on("Employee IR", {
 				])
 				.then((r) => {
 					let values = r.message;
+					// console.log("scan_mwo debug", { query_filters, result: values });
 
 					if (values.manufacturing_work_order) {
+						
+						add_qc_row(values);
+					} else {
+						frappe.throw({
+							title: __("Message"),
+							message:
+								__("No Manufacturing Operation Found") +
+								"<br><br><b>Debug filters:</b><pre>" +
+								JSON.stringify(query_filters, null, 2) +
+								"</pre>",
+						});
+					}
+					frm.set_value("scan_mwo", "");
+				});
+
+			function add_qc_row(values) {
 						frappe.db.get_value(
 							"QC",
 							{
@@ -241,18 +316,10 @@ frappe.ui.form.on("Employee IR", {
 								fill_estimated_rpt_wt(frm, row);
 								apply_tree_header(frm);
 								load_repeat_flag(frm);
+								scroll_grid_to_last_row(frm, "employee_ir_operations");
 							}
 						);
-					} else {
-						// frappe.throw("No Manufacturing Operation Found");
-						frappe.throw({
-							title: __("Message"),
-							message: __("No Manufacturing Operation Found"),
-						});
-					}
-					// already cleared at entry; kept for the case where a prior handler re-set it
-					frm.set_value("scan_mwo", "");
-				});
+			}
 		}
 	},
 	get_operations(frm) {
@@ -270,6 +337,7 @@ frappe.ui.form.on("Employee IR", {
 				} else {
 					query_filters["subcontractor"] = ["is", "not set"];
 				}
+				add_process_filter(frm, query_filters);
 			} else {
 				query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
 				query_filters["operation"] = frm.doc.operation;
@@ -309,6 +377,7 @@ frappe.ui.form.on("Employee IR", {
 						} else {
 							query_filters["subcontractor"] = ["is", "not set"];
 						}
+						add_process_filter(frm, query_filters);
 					} else {
 						query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
 						query_filters["operation"] = frm.doc.operation;
@@ -592,7 +661,13 @@ function set_child_table_batch_filter(frm) {
 		};
 	};
 }
-
+function scroll_grid_to_last_row(frm, fieldname) {
+	var grid_wrapper = frm.fields_dict[fieldname].grid.wrapper;
+	var last_row = grid_wrapper.find(".grid-body .rows > .grid-row").last();
+	if (last_row.length) {
+		last_row[0].scrollIntoView({ behavior: "smooth", block: "center" });
+	}
+}
 // This button pulls in the still-at-casting siblings of whatever casting tree(s) are already on
 // the form so the operator can complete the tree in one click. The submit-time validator
 // (doc_events/tree_casting.py) blocks a partial re-issue only when
@@ -906,9 +981,12 @@ async function validate_employee_ir_wo_limit(frm) {
 }
 
 // CAD receive: pre-fill Estimated RPT WT from the Item. The user can still change it.
-// Off a CAD Receive the column is hidden, so there is nothing to fill.
+// Off a CAD Receive, or on an operation that does not ask for it, the column is hidden, so
+// there is nothing to fill. An empty list means every field of the type.
 function fill_estimated_rpt_wt(frm, row) {
 	if (frm.doc.type != "Receive" || frm.doc.receive_details_type != "CAD") return;
+	const fields = frm.doc.receive_detail_fields;
+	if (fields && !fields.split(",").includes("estimated_rpt_wt")) return;
 	frappe.call({
 		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.cad_cam_receive.get_estimated_rpt_wt",
 		args: { manufacturing_operation: row.manufacturing_operation },
@@ -918,4 +996,111 @@ function fill_estimated_rpt_wt(frm, row) {
 			}
 		},
 	});
+}
+
+// Process control (manufacturing cells): which processes this user may work in for the
+// document's department. Only narrows pickers; the server decides.
+function load_process_control(frm) {
+	frm.__process_control = null;
+	toggle_process_field(frm);
+	if (!frm.doc.department) return;
+	const department = frm.doc.department;
+	frappe
+		.xcall("jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.my_processes", {
+			department: department,
+		})
+		.then((r) => {
+			// A later department change wins over this answer.
+			if (frm.doc.department != department) return;
+			frm.__process_control = r;
+			toggle_process_field(frm);
+			set_default_process(frm);
+		});
+}
+
+// The Process field shows in a department that uses process control, or whenever it has a value.
+function toggle_process_field(frm) {
+	const pc = frm.__process_control;
+	frm.toggle_display("department_process", !!(frm.doc.department_process || (pc && pc.controlled)));
+}
+
+// A new draft in a controlled department starts in the user's default process there, or in their
+// only one.
+function set_default_process(frm) {
+	const pc = frm.__process_control;
+	if (!pc || !pc.controlled || frm.doc.docstatus != 0 || frm.__applying_process) return;
+	if (frm.doc.department_process || frm.doc.operation) return;
+	const process = pc.default || (pc.allowed.length == 1 ? pc.allowed[0] : null);
+	if (process) frm.set_value("department_process", process);
+}
+
+// Process chosen: the process's only operation (if it has exactly one) replaces the operation;
+// otherwise an operation of another process is dropped, keeping the department and the chosen
+// process (clearing an operation also clears the fields fetched from it). A convenience only: on
+// save the server stores the operation's process and checks it (set_employee_ir_process,
+// process_enforcement.check_employee_ir).
+async function apply_process_to_operation(frm) {
+	toggle_process_field(frm);
+	if (frm.__applying_process) return;
+	const process = frm.doc.department_process;
+	if (!process || frm.doc.docstatus != 0) return;
+	frm.__applying_process = true;
+	try {
+		if (frm.doc.operation) {
+			const r = await frappe.db.get_value(
+				"Department Operation",
+				frm.doc.operation,
+				"department_process"
+			);
+			if (((r && r.message) || {}).department_process == process) return;
+		}
+		const department = frm.doc.department;
+		const operations = await frappe.db.get_list("Department Operation", {
+			filters: {
+				department: department,
+				department_process: process,
+				is_subcontracted: frm.doc.subcontracting == "Yes" ? 1 : 0,
+			},
+			fields: ["name"],
+			limit: 2,
+		});
+		if (frm.doc.department_process != process) return; // changed again meanwhile
+		if (operations.length == 1) {
+			if (frm.doc.operation != operations[0].name) {
+				await frm.set_value("operation", operations[0].name);
+			}
+		} else if (frm.doc.operation) {
+			await frm.set_value("operation", null);
+		}
+		if (frm.doc.department != department) await frm.set_value("department", department);
+		if (frm.doc.department_process != process) {
+			await frm.set_value("department_process", process);
+		}
+	} finally {
+		frm.__applying_process = false;
+	}
+}
+
+// Operation chosen: show its process, the value the server will store.
+async function sync_process_from_operation(frm) {
+	if (!frm.doc.operation || frm.doc.docstatus != 0 || frm.__applying_process) return;
+	const operation = frm.doc.operation;
+	const r = await frappe.db.get_value("Department Operation", operation, "department_process");
+	const process = ((r && r.message) || {}).department_process || null;
+	if (frm.doc.operation != operation || (frm.doc.department_process || null) == process) return;
+	frm.__applying_process = true;
+	try {
+		await frm.set_value("department_process", process);
+	} finally {
+		frm.__applying_process = false;
+	}
+	toggle_process_field(frm);
+}
+
+function add_process_filter(frm, filters) {
+	// An Issue offers only jobs already in the selected operation's process.
+	const pc = frm.__process_control;
+	if (pc && pc.controlled && frm.doc.type == "Issue" && frm.doc.department_process) {
+		filters["department_process"] = frm.doc.department_process;
+	}
 }

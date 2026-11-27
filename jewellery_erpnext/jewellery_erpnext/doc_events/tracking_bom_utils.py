@@ -1,5 +1,64 @@
+import json
+from contextlib import contextmanager
+
 import frappe
 from frappe.utils import flt
+
+
+@contextmanager
+def tracking_bom_run_cache():
+	"""Share master-data lookups across every Tracking BOM built in one run.
+
+	A Quotation builds one Tracking BOM per row, and each one used to re-read the same price
+	lists, making charges, metal criteria and customer settings for every metal, finding,
+	diamond and gemstone row. Nothing a run reads is written during it (only Tracking BOMs are
+	inserted), so one fetch per key is enough. Outside this block ``run_cached`` fetches every
+	time, exactly as before.
+	"""
+	previous = getattr(frappe.local, "tracking_bom_cache", None)
+	frappe.local.tracking_bom_cache = previous if previous is not None else {}
+	try:
+		yield
+	finally:
+		frappe.local.tracking_bom_cache = previous
+
+
+def run_cached(key, fetch):
+	"""``fetch()`` once per ``key`` inside ``tracking_bom_run_cache``; every call outside it.
+
+	Callers treat the result as read-only: it is shared by every Tracking BOM in the run.
+	"""
+	cache = getattr(frappe.local, "tracking_bom_cache", None)
+	if cache is None:
+		return fetch()
+	if key not in cache:
+		cache[key] = fetch()
+	return cache[key]
+
+
+def filters_key(filters):
+	"""A hashable cache key for a filters dict (its values may hold lists)."""
+	return json.dumps(filters, sort_keys=True, default=str)
+
+
+def keep_po_rate(doc, row):
+	"""True when the row's Purchase Order rate must survive the Tracking BOM rate.
+
+	An Outwork quotation row pulled from a Purchase Order (``custom_po_details``) carries the
+	rate agreed on that order. The customer supplies the materials, so the Tracking BOM total
+	holds only making/handling charges and is 0 when those are not set up -- it would wipe the
+	Purchase Order rate. Other sales types and rows without a Purchase Order are unaffected.
+
+	Used on the Quotation and on the Sales Order mapped from it (``custom_po_details`` is copied
+	across); the Quotation keeps the sales type in ``custom_sales_type``, the Sales Order in
+	``sales_type``.
+	"""
+	sales_type = (
+		doc.get("sales_type")
+		if doc.doctype == "Sales Order"
+		else doc.get("custom_sales_type")
+	)
+	return sales_type == "Outwork" and bool(row.get("custom_po_details"))
 
 
 def set_tracking_bom_rate_in_quotation(self):
@@ -63,6 +122,9 @@ def set_tracking_bom_rate_in_quotation(self):
 			row.diamond_amount = tb_data.diamond_bom_amount
 			row.gemstone_amount = tb_data.gemstone_bom_amount
 			row.custom_hallmarking_amount = tb_data.hallmarking_amount
+
+			if keep_po_rate(self, row):
+				continue
 
 			row.rate = flt(
 				row.metal_amount

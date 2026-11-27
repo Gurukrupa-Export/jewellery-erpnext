@@ -134,7 +134,8 @@
    "fieldname": "stock_reservation_entry",
    "fieldtype": "Link",
    "label": "Stock Reservation Entry",
-   "options": "Stock Reservation Entry"
+   "options": "Stock Reservation Entry",
+   "search_index": 1
   },
   {
    "fieldname": "stock_entry",
@@ -202,7 +203,7 @@
  "index_web_pages_for_search": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-05-31 00:00:00.000000",
+ "modified": "2026-10-19 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "MOP EOD Sync Log Item",

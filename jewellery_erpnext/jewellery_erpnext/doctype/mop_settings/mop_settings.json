@@ -28,6 +28,8 @@
   "casting_tree_section",
   "casting_tree_reissue_help",
   "enforce_full_casting_tree_reissue",
+  "process_control_section",
+  "enable_process_control",
   "eod_chunk_section",
   "eod_chunk_help",
   "eod_chunk_max_mwos",
@@ -195,6 +197,18 @@
    "label": "Enforce Full Casting Tree Re-Issue"
   },
   {
+   "fieldname": "process_control_section",
+   "fieldtype": "Section Break",
+   "label": "Process Control"
+  },
+  {
+   "default": "0",
+   "description": "Pilot switch. While off, Process Transfer cannot be submitted and Department IR does not assign a destination process. Leave off until the process checks on Employee IR, Department IR, Stock Entry and Material Request are in place.",
+   "fieldname": "enable_process_control",
+   "fieldtype": "Check",
+   "label": "Enable Process Control"
+  },
+  {
    "fieldname": "eod_chunk_section",
    "fieldtype": "Section Break",
    "label": "EOD Stock Entry Chunking"
@@ -341,7 +355,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-30 17:00:00.000000",
+ "modified": "2026-11-11 12:00:04.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "MOP Settings",

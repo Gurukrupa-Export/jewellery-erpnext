@@ -78,36 +78,48 @@ class TestGetReceiveDetailsType(IntegrationTestCase):
 
 @patch(f"{MODULE}.get_receive_details_type")
 class TestValidateCadCamReceiveDetails(IntegrationTestCase):
+	"""Save-time rules: empty fields are allowed on a draft, wrong-type fields are not."""
+
 	@classmethod
 	def setUpClass(cls):
 		pass
 
-	def test_cad_receive_with_all_fields_passes(self, flag):
+	def setUp(self):
+		# No "Receive Detail Fields" rows: the operation asks for every field of its type,
+		# whatever the site's own Department Operation table holds.
+		get_all = patch(f"{MODULE}.frappe.get_all", return_value=[])
+		get_all.start()
+		self.addCleanup(get_all.stop)
+
+	def test_cad_receive_with_all_fields_passes_and_sets_the_header_flag(self, flag):
 		flag.return_value = "CAD"
 		doc = _doc("Receive", "RPT Digital File Generation", CAD_ROW)
 		mod.validate_cad_cam_receive_details(doc)
 		self.assertEqual(doc.receive_details_type, "CAD")
 
-	def test_cad_receive_with_nothing_filled_lists_all_five(self, flag):
-		flag.return_value = "CAD"
-		with self.assertRaises(frappe.ValidationError) as ctx:
-			mod.validate_cad_cam_receive_details(
-				_doc("Receive", "RPT Digital File Generation", {})
-			)
-		message = str(ctx.exception)
-		for label in mod.CAD_FIELDS.values():
-			self.assertIn(label, message)
+	def test_cam_receive_sets_its_header_flag(self, flag):
+		flag.return_value = "CAM"
+		doc = _doc("Receive", "RPT Support Generation", CAM_ROW)
+		mod.validate_cad_cam_receive_details(doc)
+		self.assertEqual(doc.receive_details_type, "CAM")
 
-	def test_cad_receive_with_zero_estimated_rpt_wt_is_refused(self, flag):
-		flag.return_value = "CAD"
-		row = {**CAD_ROW, "estimated_rpt_wt": 0}
-		with self.assertRaises(frappe.ValidationError) as ctx:
-			mod.validate_cad_cam_receive_details(
-				_doc("Receive", "RPT Digital File Generation", row)
-			)
-		self.assertIn("Estimated RPT WT", str(ctx.exception))
+	def test_a_draft_can_be_saved_with_the_required_fields_empty(self, flag):
+		"""The required fields are enforced on submit, not on save."""
+		for value, operation in (
+			("CAD", "RPT Digital File Generation"),
+			("CAM", "RPT Support Generation"),
+		):
+			flag.return_value = value
+			mod.validate_cad_cam_receive_details(_doc("Receive", operation, {}))
 
-	def test_cad_receive_carrying_a_cam_field_is_refused(self, flag):
+	def test_a_half_filled_draft_can_be_saved(self, flag):
+		flag.return_value = "CAD"
+		row = {"cad_file": "/files/a.dxf", "estimated_rpt_wt": 0}
+		mod.validate_cad_cam_receive_details(
+			_doc("Receive", "RPT Digital File Generation", row)
+		)
+
+	def test_cad_receive_carrying_a_platform_field_is_refused(self, flag):
 		flag.return_value = "CAD"
 		row = {**CAD_ROW, "platform_wt": 1}
 		with self.assertRaises(frappe.ValidationError) as ctx:
@@ -115,24 +127,6 @@ class TestValidateCadCamReceiveDetails(IntegrationTestCase):
 				_doc("Receive", "RPT Digital File Generation", row)
 			)
 		self.assertIn("not applicable", str(ctx.exception))
-		self.assertIn("Platform WT", str(ctx.exception))
-
-	def test_cam_receive_with_both_fields_passes(self, flag):
-		flag.return_value = "CAM"
-		doc = _doc("Receive", "RPT Support Generation", CAM_ROW)
-		mod.validate_cad_cam_receive_details(doc)
-		self.assertEqual(doc.receive_details_type, "CAM")
-
-	def test_cam_receive_with_platform_wt_missing_is_refused(self, flag):
-		flag.return_value = "CAM"
-		with self.assertRaises(frappe.ValidationError) as ctx:
-			mod.validate_cad_cam_receive_details(
-				_doc(
-					"Receive",
-					"RPT Support Generation",
-					{"support_cam_file": "/files/s.stl"},
-				)
-			)
 		self.assertIn("Platform WT", str(ctx.exception))
 
 	def test_cam_receive_carrying_a_cad_field_is_refused(self, flag):
@@ -175,7 +169,7 @@ class TestValidateCadCamReceiveDetails(IntegrationTestCase):
 
 	def test_error_names_the_offending_row(self, flag):
 		flag.return_value = "CAD"
-		bad = {**CAD_ROW, "ref_name": ""}
+		bad = {**CAD_ROW, "platform_wt": 1}
 		with self.assertRaises(frappe.ValidationError) as ctx:
 			mod.validate_cad_cam_receive_details(
 				_doc("Receive", "RPT Digital File Generation", CAD_ROW, bad)
@@ -185,17 +179,120 @@ class TestValidateCadCamReceiveDetails(IntegrationTestCase):
 
 
 @patch(f"{MODULE}.get_receive_details_type")
+class TestRequiredOnSubmit(IntegrationTestCase):
+	"""Submit-only rule: every field of the operation's type is required on every row."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		# No "Receive Detail Fields" rows: the operation asks for every field of its type,
+		# whatever the site's own Department Operation table holds.
+		get_all = patch(f"{MODULE}.frappe.get_all", return_value=[])
+		get_all.start()
+		self.addCleanup(get_all.stop)
+
+	def test_cad_receive_with_all_fields_passes(self, flag):
+		flag.return_value = "CAD"
+		mod.validate_cad_cam_required_on_submit(
+			_doc("Receive", "RPT Digital File Generation", CAD_ROW)
+		)
+
+	def test_cad_receive_with_nothing_filled_lists_all_five(self, flag):
+		flag.return_value = "CAD"
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_required_on_submit(
+				_doc("Receive", "RPT Digital File Generation", {})
+			)
+		message = str(ctx.exception)
+		for label in mod.CAD_FIELDS.values():
+			self.assertIn(label, message)
+
+	def test_cad_receive_with_zero_estimated_rpt_wt_is_refused(self, flag):
+		flag.return_value = "CAD"
+		row = {**CAD_ROW, "estimated_rpt_wt": 0}
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_required_on_submit(
+				_doc("Receive", "RPT Digital File Generation", row)
+			)
+		self.assertIn("Estimated RPT WT", str(ctx.exception))
+
+	def test_cam_receive_with_both_fields_passes(self, flag):
+		flag.return_value = "CAM"
+		mod.validate_cad_cam_required_on_submit(
+			_doc("Receive", "RPT Support Generation", CAM_ROW)
+		)
+
+	def test_cam_receive_with_platform_wt_missing_is_refused(self, flag):
+		flag.return_value = "CAM"
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_required_on_submit(
+				_doc(
+					"Receive",
+					"RPT Support Generation",
+					{"support_cam_file": "/files/s.stl"},
+				)
+			)
+		self.assertIn("Platform WT", str(ctx.exception))
+
+	def test_cam_receive_with_nothing_filled_lists_both(self, flag):
+		flag.return_value = "CAM"
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_required_on_submit(
+				_doc("Receive", "RPT Support Generation", {})
+			)
+		self.assertIn("Support CAM File", str(ctx.exception))
+		self.assertIn("Platform WT", str(ctx.exception))
+
+	def test_error_names_the_row_that_is_incomplete(self, flag):
+		flag.return_value = "CAD"
+		bad = {**CAD_ROW, "ref_name": ""}
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_required_on_submit(
+				_doc("Receive", "RPT Digital File Generation", CAD_ROW, bad)
+			)
+		self.assertIn("Row 2", str(ctx.exception))
+		self.assertNotIn("Row 1", str(ctx.exception))
+
+	def test_unflagged_receive_requires_nothing(self, flag):
+		flag.return_value = None
+		mod.validate_cad_cam_required_on_submit(_doc("Receive", "Casting", {}))
+
+	def test_issue_requires_nothing_and_is_not_looked_up(self, flag):
+		flag.return_value = "CAD"
+		mod.validate_cad_cam_required_on_submit(
+			_doc("Issue", "RPT Digital File Generation", {})
+		)
+		flag.assert_not_called()
+
+
+@patch(f"{MODULE}.get_receive_details_type")
 class TestCadCamValuesForOperation(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+	def setUp(self):
+		# No "Receive Detail Fields" rows: the operation asks for every field of its type,
+		# whatever the site's own Department Operation table holds.
+		get_all = patch(f"{MODULE}.frappe.get_all", return_value=[])
+		get_all.start()
+		self.addCleanup(get_all.stop)
 
 	def test_cad_submit_returns_the_row_values_and_the_flag(self, flag):
 		flag.return_value = "CAD"
 		values = mod.cad_cam_values_for_operation(
 			FrappeDict({"type": "Receive", "operation": "x"}), FrappeDict(CAD_ROW)
 		)
-		self.assertEqual(values, {"receive_details_type": "CAD", **CAD_ROW})
+		self.assertEqual(
+			values,
+			{
+				"receive_details_type": "CAD",
+				"receive_detail_fields": ",".join(CAD_ROW),
+				**CAD_ROW,
+			},
+		)
 
 	def test_cam_submit_returns_only_the_cam_values(self, flag):
 		flag.return_value = "CAM"
@@ -203,7 +300,14 @@ class TestCadCamValuesForOperation(IntegrationTestCase):
 			FrappeDict({"type": "Receive", "operation": "x"}),
 			FrappeDict({**CAM_ROW, "ref_name": "ignored"}),
 		)
-		self.assertEqual(values, {"receive_details_type": "CAM", **CAM_ROW})
+		self.assertEqual(
+			values,
+			{
+				"receive_details_type": "CAM",
+				"receive_detail_fields": ",".join(CAM_ROW),
+				**CAM_ROW,
+			},
+		)
 
 	def test_cancel_blanks_files_and_text_but_zeroes_weights(self, flag):
 		"""Float columns are NOT NULL: writing None to one crashed the cancel."""
@@ -236,6 +340,99 @@ class TestCadCamValuesForOperation(IntegrationTestCase):
 			),
 			{},
 		)
+
+
+@patch(f"{MODULE}.frappe.get_all")
+@patch(f"{MODULE}.get_receive_details_type")
+class TestPerOperationFieldList(IntegrationTestCase):
+	"""An operation's "Receive Detail Fields" table narrows the fields of its type."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_empty_table_asks_for_every_field_of_the_type(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = []
+		self.assertEqual(mod.get_receive_detail_fields("op"), list(mod.CAD_FIELDS))
+
+	def test_table_narrows_the_fields_in_table_order(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = ["Ref Name", "Estimated RPT WT"]
+		self.assertEqual(
+			mod.get_receive_detail_fields("op"), ["ref_name", "estimated_rpt_wt"]
+		)
+
+	def test_fields_of_the_other_type_and_repeats_are_ignored(self, flag, get_all):
+		flag.return_value = "CAM"
+		get_all.return_value = ["Platform WT", "Ref Name", "Platform WT"]
+		self.assertEqual(mod.get_receive_detail_fields("op"), ["platform_wt"])
+
+	def test_unflagged_operation_has_no_fields(self, flag, get_all):
+		flag.return_value = None
+		self.assertEqual(mod.get_receive_detail_fields("op"), [])
+		get_all.assert_not_called()
+
+	def test_save_refuses_a_field_outside_the_operations_list(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = ["Ref Name"]
+		doc = _doc(
+			"Receive", "CAD Review", {"ref_name": "R1", "cad_file": "/files/a.dxf"}
+		)
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_receive_details(doc)
+		self.assertIn("CAD File", str(ctx.exception))
+		self.assertEqual(doc.receive_detail_fields, "ref_name")
+
+	def test_submit_requires_only_the_operations_fields(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = ["Ref Name", "Estimated RPT WT"]
+		ok = _doc("Receive", "CAD Review", {"ref_name": "R1", "estimated_rpt_wt": 1.5})
+		mod.validate_cad_cam_required_on_submit(ok)
+		bad = _doc("Receive", "CAD Review", {"ref_name": "R1", "estimated_rpt_wt": 0})
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			mod.validate_cad_cam_required_on_submit(bad)
+		self.assertIn("Estimated RPT WT", str(ctx.exception))
+		self.assertNotIn("CAD File", str(ctx.exception))
+
+	def test_submit_writes_only_the_operations_fields(self, flag, get_all):
+		flag.return_value = "CAD"
+		get_all.return_value = ["Ref Name"]
+		values = mod.cad_cam_values_for_operation(
+			FrappeDict({"type": "Receive", "operation": "x"}), FrappeDict(CAD_ROW)
+		)
+		self.assertEqual(
+			values,
+			{
+				"receive_details_type": "CAD",
+				"receive_detail_fields": "ref_name",
+				"ref_name": "REF-1",
+			},
+		)
+
+	def test_cancel_clears_every_field_of_the_type_after_the_list_was_narrowed(
+		self, flag, get_all
+	):
+		"""Submitted with both CAM fields, list narrowed to Platform WT, then cancelled."""
+		flag.return_value = "CAM"
+		get_all.return_value = ["Platform WT"]
+		values = mod.cad_cam_values_for_operation(
+			FrappeDict({"type": "Receive", "operation": "x"}),
+			FrappeDict(CAM_ROW),
+			cancel=True,
+		)
+		self.assertIsNone(values["support_cam_file"])
+		self.assertEqual(values["platform_wt"], 0)
+		self.assertNotIn("cad_file", values)
+
+	def test_the_operation_is_read_once_per_document_not_per_row(self, flag, get_all):
+		flag.return_value = "CAM"
+		get_all.return_value = ["Platform WT"]
+		doc = FrappeDict({"type": "Receive", "operation": "x", "flags": FrappeDict()})
+		for _row in range(50):
+			mod.cad_cam_values_for_operation(doc, FrappeDict(CAM_ROW))
+		self.assertEqual(flag.call_count, 1)
+		self.assertEqual(get_all.call_count, 1)
 
 
 class TestGetEstimatedRptWt(IntegrationTestCase):
@@ -352,6 +549,11 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 		for fieldname, value in CAD_ROW.items():
 			self.assertEqual(fields[fieldname], value)
 
+	def test_flagged_operation_without_details_adds_no_blank_row(self):
+		mop = self._mop(receive_details_type="CAD")
+		self._sync(mop)
+		mop.add_child_record.assert_not_called()
+
 	def test_unflagged_operation_not_in_the_mapping_adds_nothing(self):
 		mop = self._mop(**CAD_ROW)
 		self._sync(mop)
@@ -363,7 +565,7 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 		self._sync(mop, mapping_operations=["Mould Filling"])
 		mop.add_child_record.assert_called_once()
 
-	def test_existing_row_is_updated_not_duplicated(self):
+	def test_existing_row_is_updated_not_duplicated_and_saved_without_item_write(self):
 		child = MagicMock()
 		mop = self._mop(existing_child=child, receive_details_type="CAD", **CAD_ROW)
 		self._sync(mop)
@@ -372,7 +574,7 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 		self.assertEqual(updated["cad_file"], "/files/a.dxf")
 		self.assertEqual(updated["ref_name"], "REF-1")
 		self.assertEqual(updated["estimated_casting_wt"], 3.5)
-		child.save.assert_called_once()
+		child.save.assert_called_once_with(ignore_permissions=True)
 
 	def test_row_is_looked_up_by_the_operation_only(self):
 		"""Not by ref_name: it is typed by the CAD user and used to hide the row."""
@@ -398,7 +600,7 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 		self.assertEqual(filters["mop_reference"], "MOP-1")
 		self.assertNotIn("mop_series", filters)
 
-	def test_new_row_is_inserted(self):
+	def test_new_row_is_inserted_without_item_write(self):
 		child = MagicMock()
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc",
@@ -411,4 +613,4 @@ class TestAttachCadCamFileIntoItemMaster(IntegrationTestCase):
 				"Cam Weight Detail",
 				{"cad_file": "/files/a.dxf"},
 			)
-		child.insert.assert_called_once()
+		child.insert.assert_called_once_with(ignore_permissions=True)

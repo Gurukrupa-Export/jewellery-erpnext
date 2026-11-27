@@ -54,6 +54,27 @@ def _row_key(row):
 	return row.get("exploded_row_key") or row.get("docname") or ""
 
 
+def _matches_exploded_row(row, exploded):
+	"""Whether a Hall Marking / Diamond Certificate Product Details row owns ``exploded``.
+
+	Matched on item, serial and work order; a blank field on the Product Details row is a
+	wildcard, so a partially-filled row still finds its exploded row.
+	"""
+	order = row.get("parent_manufacturing_order") or row.get("manufacturing_work_order")
+	return (
+		(not row.get("item_code") or row.item_code == exploded.get("item_code"))
+		and (not row.get("serial_no") or row.serial_no == exploded.get("serial_no"))
+		and (
+			not order
+			or order
+			== (
+				exploded.get("parent_manufacturing_order")
+				or exploded.get("manufacturing_work_order")
+			)
+		)
+	)
+
+
 def _legacy_slip_key(row):
 	"""The pre-row-key grouping: ``(main_slip, tree_no, sample_name)``, blanks normalised."""
 	return (
@@ -171,6 +192,7 @@ class ProductCertification(Document):
 			frappe.throw(_("Please set warehouse for selected supplier"))
 
 		self._normalise_sample_names()
+		self.validate_tree_item()
 		self.validate_duplicate_product_rows()
 		self.validate_unique_sample_name()
 		self.validate_serial_warehouse_department()
@@ -195,6 +217,42 @@ class ProductCertification(Document):
 		# where the operator can fix the master data, rather than in the deferred job —
 		# which runs after commit and would leave a submitted certification with no PO.
 		validate_po_configuration(self)
+
+	def validate_tree_item(self):
+		"""A row's item must be the metal item its Tree No resolves to.
+
+		Scanning (or typing) a Tree No fills the item from the tree, but the Item cell stays
+		editable, so a hand-changed item used to save and go out on the Issue against a tree
+		that never carried that metal. Resolved through ``get_item_from_tree_no`` -- the same
+		path the scan and the tree_no trigger use -- once per distinct tree.
+
+		Issue only: a Receive row must already match an issued row on both item and tree
+		(``validate_items``), so it cannot drift on its own.
+		"""
+		if self.type != "Issue":
+			return
+
+		expected = {}
+		for row in self.product_details:
+			if not row.get("tree_no"):
+				continue
+			if row.tree_no not in expected:
+				expected[row.tree_no] = self.get_item_from_tree_no(row.tree_no)[
+					"item_code"
+				]
+			if row.get("item_code") != expected[row.tree_no]:
+				frappe.throw(
+					_(
+						"Row #{0}: Item {1} does not match Tree No {2}, whose item is {3}. "
+						"Scan the tree again or set the item back to {3}."
+					).format(
+						row.idx,
+						frappe.bold(row.get("item_code") or _("(blank)")),
+						frappe.bold(row.tree_no),
+						frappe.bold(expected[row.tree_no]),
+					),
+					title=_("Item and Tree No Mismatch"),
+				)
 
 	def validate_fire_assy_weight(self):
 		"""A Fire Assy / XRF Issue row must carry the weight actually being sent.
@@ -1322,6 +1380,25 @@ class ProductCertification(Document):
 			].append(row)
 		return index
 
+	def _remove_orphaned_serial_exploded_rows(self):
+		"""Drop Hall Marking / Diamond Certificate exploded rows whose Product Details row is gone.
+
+		Each scanned serial / work order gets one exploded row on save, but get_exploded_table
+		only ever appended: deleting the Product Details row left its exploded row behind, and
+		that row still went into the Stock Entry, the PO amount and the receipt. An exploded row
+		is live while some Product Details row matches it on the rule the builder uses to find a
+		row's existing exploded row.
+		"""
+		orphans = [
+			exploded
+			for exploded in self.exploded_product_details
+			if not any(
+				_matches_exploded_row(row, exploded) for row in self.product_details
+			)
+		]
+		for orphan in orphans:
+			self.remove(orphan)
+
 	def get_exploded_table(self):
 		exploded_product_details = []
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
@@ -1329,6 +1406,7 @@ class ProductCertification(Document):
 			# Certification Settings (category -> "Count per Unit") is deliberately not
 			# consulted: the per-category fan-out it configured is what this table no
 			# longer does.
+			self._remove_orphaned_serial_exploded_rows()
 			sources = self._exploded_source_data()
 			exploded_index = self._exploded_row_index()
 			for row in self.product_details:
@@ -1388,16 +1466,7 @@ class ProductCertification(Document):
 					existing = [
 						i
 						for i in self.exploded_product_details
-						if (not row.item_code or row.item_code == i.item_code)
-						and (not row.serial_no or row.serial_no == i.serial_no)
-						and (
-							not common_order
-							or common_order
-							== (
-								i.parent_manufacturing_order
-								or i.manufacturing_work_order
-							)
-						)
+						if _matches_exploded_row(row, i)
 					]
 				# One exploded row per Product Details row, so any existing row means this
 				# row is already done. That is what the old `len(existing) == count` test
