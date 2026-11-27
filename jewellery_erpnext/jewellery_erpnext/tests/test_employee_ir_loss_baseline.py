@@ -95,10 +95,6 @@ class _StubEIR:
 		# isolation from the proportional-distribution algorithm.
 		return self._bml_returns
 
-	def _warn_customer_loss_spill(self):
-		# Real method lives on EmployeeIR; the stub only needs it to be callable.
-		EmployeeIR._warn_customer_loss_spill(self)
-
 
 class TestMopLossDetailsTotalBaseline(IntegrationTestCase):
 	"""mop_loss_details_total reflects the MOP baseline available for loss,
@@ -199,6 +195,41 @@ class TestMopLossDetailsTotalBaseline(IntegrationTestCase):
 
 		EmployeeIR.validate_process_loss(stub)
 		self.assertAlmostEqual(stub.mop_loss_details_total, 3.0, places=3)
+
+	def test_customer_loss_spill_shows_no_popup(self):
+		"""Loss landing on customer-owned metal is booked without any dialog."""
+		ops = [
+			frappe._dict(
+				{
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-1",
+					"gross_wt": 2.55,
+					"received_gross_wt": 2.51,
+				}
+			),
+		]
+		stub = _StubEIR(ops)
+
+		def _book_with_customer_spill(*args, **kwargs):
+			stub.flags.setdefault("customer_loss_spill", []).append(
+				{
+					"customer": "TNCU0085",
+					"item_code": "M-G-18KT-75.4-P",
+					"batch_no": "B-1",
+					"qty": 0.04,
+				}
+			)
+			return []
+
+		stub.book_metal_loss = _book_with_customer_spill
+		module = "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir"
+		with patch(f"{module}.frappe.get_cached_value", return_value=None), patch(
+			f"{module}.frappe.db.get_value", return_value=None
+		), patch(f"{module}.frappe.msgprint") as msgprint:
+			EmployeeIR.validate_process_loss(stub)
+
+		self.assertTrue(stub.flags.customer_loss_spill)
+		msgprint.assert_not_called()
 
 
 class TestBookMetalLossPrecisionResidual(IntegrationTestCase):
