@@ -19,6 +19,7 @@ frappe.ui.form.on("Tree Number", {
 		if (["Issued", "Partially Received"].includes(status) && tree_pending(frm) > 0) {
 			frm.add_custom_button(__("Receive Material"), () => receive_material_dialog(frm), __("Material"));
 		}
+		render_work_order_summary(frm);
 		render_balance_summary(frm);
 		render_batch_balance(frm);
 		// Submit Tree: manual finalize once the tree has had some receive activity (Received or
@@ -228,6 +229,110 @@ function render_balance_summary(frm) {
 		</table></div>`,
 		__("Material Balance")
 	);
+}
+
+function render_work_order_summary(frm) {
+	// Issued / Received / Pending work orders, from the tree's Issue Employee IR and the casting
+	// Receives pinned to it. Worked out server-side on every load (tree_number.get_work_order_summary).
+	// Every refresh resets the dashboard, so a reply that lands after a newer refresh (or after the
+	// form moved to another tree) is dropped -- otherwise two quick reloads would show it twice.
+	let token = (frm.__wo_summary_token = (frm.__wo_summary_token || 0) + 1);
+	let name = frm.doc.name;
+	frappe
+		.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_number.get_work_order_summary",
+			args: { tree_number: name },
+		})
+		.then((r) => {
+			if (token !== frm.__wo_summary_token || frm.doc.name !== name) return;
+			let summary = r.message;
+			if (!summary) return;
+			if (!summary.issued) {
+				frm.dashboard.add_section(
+					`<p class="text-muted">${__("No work orders issued to this tree.")}</p>`,
+					__("Tree Number Summary")
+				);
+				return;
+			}
+			let pending_style = summary.pending > 0 ? ' style="color: var(--orange-600)"' : "";
+			let $section = $(`<div style="overflow-x:auto"><table class="table table-bordered table-sm">
+				<thead><tr>
+					<th class="text-right">${__("Issued")}</th>
+					<th class="text-right">${__("Received")}</th>
+					<th class="text-right">${__("Pending")}</th>
+					<th>${__("Work Orders")}</th>
+				</tr></thead>
+				<tbody><tr>
+					<td class="text-right">${cint(summary.issued)}</td>
+					<td class="text-right">${cint(summary.received)}</td>
+					<td class="text-right"${pending_style}><b>${cint(summary.pending)}</b></td>
+					<td><button class="btn btn-xs btn-default view-work-orders">${__("View")}</button></td>
+				</tr></tbody>
+			</table></div>`);
+			$section.find(".view-work-orders").on("click", () => work_order_dialog(summary));
+			frm.dashboard.add_section($section, __("Tree Number Summary"));
+		});
+}
+
+function work_order_dialog(summary) {
+	let rows = summary.work_orders || [];
+	let esc = (v) => frappe.utils.escape_html(v == null ? "" : String(v));
+	let link = (doctype, name) =>
+		name
+			? `<a href="/app/${frappe.router.slug(doctype)}/${encodeURIComponent(name)}">${esc(name)}</a>`
+			: "";
+
+	let render = (filter) => {
+		let shown = filter === "All" ? rows : rows.filter((d) => d.status === filter);
+		if (!shown.length) return `<p class="text-muted">${__("No work orders.")}</p>`;
+		let body = shown
+			.map((d) => {
+				let color = d.status === "Pending" ? "orange" : "green";
+				return `<tr>
+					<td>${link("Manufacturing Work Order", d.manufacturing_work_order)}</td>
+					<td>${esc(d.item_code)}</td>
+					<td><span class="indicator-pill ${color}">${__(d.status)}</span></td>
+					<td>${link("Employee IR", d.receive_eir)}</td>
+					<td>${d.received_on ? esc(frappe.datetime.str_to_user(d.received_on)) : ""}</td>
+					<td class="text-right">${d.receive_eir ? format_number(d.received_gross_wt) : ""}</td>
+				</tr>`;
+			})
+			.join("");
+		return `<div style="overflow-x:auto"><table class="table table-bordered table-sm">
+			<thead><tr>
+				<th>${__("Work Order")}</th>
+				<th>${__("Item")}</th>
+				<th>${__("Status")}</th>
+				<th>${__("Receive Employee IR")}</th>
+				<th>${__("Received On")}</th>
+				<th class="text-right">${__("Received Gross Wt")}</th>
+			</tr></thead>
+			<tbody>${body}</tbody>
+		</table></div>`;
+	};
+
+	let default_filter = summary.pending > 0 ? "Pending" : "All";
+	let d = new frappe.ui.Dialog({
+		title: __("Work Orders — Issued {0}, Received {1}, Pending {2}", [
+			cint(summary.issued),
+			cint(summary.received),
+			cint(summary.pending),
+		]),
+		size: "extra-large",
+		fields: [
+			{
+				fieldtype: "Select",
+				fieldname: "filter",
+				label: __("Show"),
+				options: ["All", "Pending", "Received"].join("\n"),
+				default: default_filter,
+				onchange: () => d.fields_dict.list.$wrapper.html(render(d.get_value("filter"))),
+			},
+			{ fieldtype: "HTML", fieldname: "list" },
+		],
+	});
+	d.fields_dict.list.$wrapper.html(render(default_filter));
+	d.show();
 }
 
 function render_batch_balance(frm) {
