@@ -10,7 +10,7 @@ frappe.ui.form.on("Warehouse", {
 		if (is_msl) {
 			frm.add_custom_button(__("Refresh Tracking"), () => {
 				frappe.call({
-					method: "jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking.recalculate_msl_tracking",
+					method: "jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking.refresh_msl_tracking",
 					args: { warehouse: frm.doc.name },
 					freeze: true,
 					freeze_message: __("Recalculating tracking…"),

@@ -113,6 +113,8 @@ def _find_item_bom(item_code, serial_no, bom_cache):
 
 @frappe.whitelist()
 def update_status(quotation_id):
+	# The Close / Re-open buttons are only shown to users with submit on the Quotation.
+	frappe.has_permission("Quotation", "submit", quotation_id, throw=True)
 	status = frappe.db.get_value("Quotation", quotation_id, "status")
 	if status != "Closed":
 		frappe.db.set_value("Quotation", quotation_id, "status", "Closed")
@@ -215,6 +217,7 @@ def create_bom_scientifically(self):
 @frappe.whitelist()
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
+	self.check_permission("read")
 	self.flags.can_be_saved = True
 	frappe.enqueue(
 		create_bom_scientifically,
@@ -350,8 +353,18 @@ def update_table(parent, table, table_field, doc):
 		child_doc = parent.append(table_field, {})
 	else:
 		child_doc = frappe.get_doc(table, doc.get("docname"))
-	doc.pop("docname", "")
-	doc.pop("name", "")
+		# The row name comes from the client: it must be a row of the document being saved,
+		# or a user who can edit one BOM could rewrite another BOM's rows.
+		if child_doc.parent != parent.name or child_doc.parenttype != parent.doctype:
+			frappe.throw(
+				_("Row {0} does not belong to {1} {2}").format(
+					doc.get("docname"), _(parent.doctype), parent.name
+				),
+				frappe.PermissionError,
+			)
+	# Never let the payload re-parent a row.
+	for key in ("docname", "name", "parent", "parenttype", "parentfield", "doctype"):
+		doc.pop(key, None)
 	child_doc.update(doc)
 	child_doc.flags.ignore_validate_update_after_submit = True
 	child_doc.save()
@@ -1378,7 +1391,6 @@ def _get_customer_pricing_context(self, customer):
 create_new_bom = create_tracking_bom_directly
 
 
-@frappe.whitelist()
 def xl_preview(docname):
 	doc = frappe.get_doc("Quotation", docname)
 	precision = frappe.get_value(

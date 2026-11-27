@@ -653,7 +653,11 @@ class ProductCertification(Document):
 
 			first = first_row.get(key)
 			label = (
-				(first.get("sample_name") or first.get("tree_no") or first.get("main_slip"))
+				(
+					first.get("sample_name")
+					or first.get("tree_no")
+					or first.get("main_slip")
+				)
 				if first
 				else None
 			)
@@ -1674,7 +1678,9 @@ class ProductCertification(Document):
 
 			# A row's set follows the row's label: a sample named (or renamed) after the first
 			# save keeps its set and simply shows the new name.
-			by_key = {_row_key(row): row for row in self.product_details if _row_key(row)}
+			by_key = {
+				_row_key(row): row for row in self.product_details if _row_key(row)
+			}
 			for exploded in self.exploded_product_details:
 				source = by_key.get(_row_key(exploded))
 				if source is not None:
@@ -1842,7 +1848,9 @@ class ProductCertification(Document):
 		}
 
 
-def _issue_rows_by_batch(base_row, warehouse, qty, taken, posting_date=None, posting_time=None):
+def _issue_rows_by_batch(
+	base_row, warehouse, qty, taken, posting_date=None, posting_time=None
+):
 	"""Fan one batchless Issue row out into one row per batch it will actually draw.
 
 	This row used to be appended with NO ``batch_no`` at all. The app's own FIFO splitter,
@@ -1897,9 +1905,7 @@ def _issue_rows_by_batch(base_row, warehouse, qty, taken, posting_date=None, pos
 		or []
 	)
 	# Keyed on (warehouse, batch): one batch can carry stock in more than one warehouse.
-	pool = [
-		((warehouse, b.batch_no), flt(b.qty)) for b in batches if flt(b.qty) > 0
-	]
+	pool = [((warehouse, b.batch_no), flt(b.qty)) for b in batches if flt(b.qty) > 0]
 	if not pool:
 		return [base_row]
 
@@ -2724,6 +2730,7 @@ def get_stock_item_against_mwo(
 
 @frappe.whitelist()
 def create_product_certification_receive(source_name, target_doc=None):
+	frappe.has_permission("Product Certification", "read", source_name, throw=True)
 	if (
 		frappe.db.get_value("Product Certification", source_name, "receive_status")
 		== FULLY_RECEIVED

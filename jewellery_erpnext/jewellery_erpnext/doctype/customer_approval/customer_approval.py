@@ -14,14 +14,22 @@ class CustomerApproval(Document):
 			for qty in quantity:
 				if qty[0] == item.item_code:
 					if qty[1] < item.quantity:
-						frappe.throw(_("Error: Quantity cannot be greater than the remaining quantity."))
+						frappe.throw(
+							_(
+								"Error: Quantity cannot be greater than the remaining quantity."
+							)
+						)
 
 			serial_item = []
 			if item.serial_no:
 				serial_item.extend(item.serial_no.split("\n"))
 
 			if len(serial_item) > item.quantity:
-				frappe.throw(_("Error: There is mismatch in Quantity and Serial Nos, Please recheck it"))
+				frappe.throw(
+					_(
+						"Error: There is mismatch in Quantity and Serial Nos, Please recheck it"
+					)
+				)
 
 			elif len(serial_item) < item.quantity:
 				frappe.throw(_("Error: There are less serial no. Please add"))
@@ -29,6 +37,7 @@ class CustomerApproval(Document):
 
 @frappe.whitelist()
 def get_stock_entry_data(stock_entry_reference):
+	frappe.has_permission("Stock Entry", "read", stock_entry_reference, throw=True)
 	doc = frappe.get_doc("Stock Entry", stock_entry_reference)
 
 	quantities = dict(quantity_calculation(stock_entry_reference))
@@ -56,6 +65,7 @@ def get_items_filter(doctype, txt, searchfield, start, page_len, filters):
 
 @frappe.whitelist()
 def quantity_calculation(stock_entry_reference):
+	frappe.has_permission("Stock Entry", "read", stock_entry_reference, throw=True)
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 	StockEntry = frappe.qb.DocType("Stock Entry")
 
@@ -69,7 +79,10 @@ def quantity_calculation(stock_entry_reference):
 	issue_item = query.run(as_dict=True)
 
 	issue_item = [
-		{"item_code": entry["item_code"], "quantity": entry.get("quantity", entry.get("qty"))}
+		{
+			"item_code": entry["item_code"],
+			"quantity": entry.get("quantity", entry.get("qty")),
+		}
 		for entry in issue_item
 	]
 
@@ -79,14 +92,21 @@ def quantity_calculation(stock_entry_reference):
 		.on(StockEntryDetail.parent == StockEntry.name)
 		.select(StockEntryDetail.item_code, StockEntryDetail.qty)
 		.where(
-			(StockEntry.custom_material_return_receipt_number.like(stock_entry_reference))
+			(
+				StockEntry.custom_material_return_receipt_number.like(
+					stock_entry_reference
+				)
+			)
 			& (StockEntry.custom_customer_approval_reference.isnull())
 		)
 	)
 	returned_item = query.run(as_dict=True)
 
 	returned_item = [
-		{"item_code": entry["item_code"], "quantity": entry.get("quantity", entry.get("qty"))}
+		{
+			"item_code": entry["item_code"],
+			"quantity": entry.get("quantity", entry.get("qty")),
+		}
 		for entry in returned_item
 	]
 
@@ -119,13 +139,14 @@ def quantity_calculation(stock_entry_reference):
 			total_quantity_dict[item_code] -= item["quantity"]
 
 	result = [
-		[item_code, quantity] for item_code, quantity in total_quantity_dict.items() if quantity > 0
+		[item_code, quantity]
+		for item_code, quantity in total_quantity_dict.items()
+		if quantity > 0
 	]
 
 	return result
 
 
-@frappe.whitelist()
 def serial_no_filter(stock_entry_reference):
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 	StockEntry = frappe.qb.DocType("Stock Entry")
@@ -135,7 +156,10 @@ def serial_no_filter(stock_entry_reference):
 		.left_join(StockEntry)
 		.on(StockEntryDetail.parent == StockEntry.name)
 		.select(StockEntryDetail.item_code, StockEntryDetail.serial_no)
-		.where((StockEntry.name.like(stock_entry_reference)) & (StockEntryDetail.serial_no.isnotnull()))
+		.where(
+			(StockEntry.name.like(stock_entry_reference))
+			& (StockEntryDetail.serial_no.isnotnull())
+		)
 	).run(as_dict=True)
 
 	SalesOrderItemChild = frappe.qb.DocType("Sales Order Item Child")
@@ -160,7 +184,10 @@ def serial_no_filter(stock_entry_reference):
 		if item_code in combined_data_ca_serial_no:
 			combined_data_ca_serial_no[item_code]["serial_no"] += "\n" + serial_no
 		else:
-			combined_data_ca_serial_no[item_code] = {"item_code": item_code, "serial_no": serial_no}
+			combined_data_ca_serial_no[item_code] = {
+				"item_code": item_code,
+				"serial_no": serial_no,
+			}
 	customer_approval_item_serial_no = list(combined_data_ca_serial_no.values())
 
 	return_reciept_serial_no = (
@@ -169,7 +196,11 @@ def serial_no_filter(stock_entry_reference):
 		.on(StockEntryDetail.parent == StockEntry.name)
 		.select(StockEntryDetail.item_code, StockEntryDetail.serial_no)
 		.where(
-			(StockEntry.custom_material_return_receipt_number.like(stock_entry_reference))
+			(
+				StockEntry.custom_material_return_receipt_number.like(
+					stock_entry_reference
+				)
+			)
 			& (StockEntryDetail.serial_no.isnotnull())
 		)
 	).run(as_dict=True)
@@ -182,7 +213,10 @@ def serial_no_filter(stock_entry_reference):
 		if item_code in combined_data_rr_serial_no:
 			combined_data_rr_serial_no[item_code]["serial_no"] += "\n" + serial_no
 		else:
-			combined_data_rr_serial_no[item_code] = {"item_code": item_code, "serial_no": serial_no}
+			combined_data_rr_serial_no[item_code] = {
+				"item_code": item_code,
+				"serial_no": serial_no,
+			}
 
 	return_reciept_serial_no = list(combined_data_rr_serial_no.values())
 
@@ -190,17 +224,39 @@ def serial_no_filter(stock_entry_reference):
 
 	for dict_a in issue_item_serial_no:
 		item_code = dict_a["item_code"]
-		serial_a = set(dict_a["serial_no"].split("\n")) if dict_a["serial_no"] else set()
+		serial_a = (
+			set(dict_a["serial_no"].split("\n")) if dict_a["serial_no"] else set()
+		)
 
-		dict_b = next((d for d in customer_approval_item_serial_no if d["item_code"] == item_code), None)
-		serial_b = set(dict_b["serial_no"].split("\n")) if dict_b and dict_b["serial_no"] else set()
+		dict_b = next(
+			(
+				d
+				for d in customer_approval_item_serial_no
+				if d["item_code"] == item_code
+			),
+			None,
+		)
+		serial_b = (
+			set(dict_b["serial_no"].split("\n"))
+			if dict_b and dict_b["serial_no"]
+			else set()
+		)
 
-		dict_c = next((d for d in return_reciept_serial_no if d["item_code"] == item_code), None)
-		serial_c = set(dict_c["serial_no"].split("\n")) if dict_c and dict_c["serial_no"] else set()
+		dict_c = next(
+			(d for d in return_reciept_serial_no if d["item_code"] == item_code), None
+		)
+		serial_c = (
+			set(dict_c["serial_no"].split("\n"))
+			if dict_c and dict_c["serial_no"]
+			else set()
+		)
 
 		remaining_serials = serial_a - serial_b - serial_c
 
-		result_dict = {"item_code": item_code, "serial_no": "\n".join(sorted(remaining_serials))}
+		result_dict = {
+			"item_code": item_code,
+			"serial_no": "\n".join(sorted(remaining_serials)),
+		}
 		result.append(result_dict)
 	return result
 

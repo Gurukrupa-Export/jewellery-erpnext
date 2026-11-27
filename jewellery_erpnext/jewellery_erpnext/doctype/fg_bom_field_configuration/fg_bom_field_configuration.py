@@ -58,7 +58,6 @@ class FGBOMFieldConfiguration(Document):
 			seen.add(key)
 
 
-@frappe.whitelist()
 def get_active_fields_for_subcategory(subcategory):
 	"""Active configured field rows for a subcategory (server source of truth)."""
 	if not subcategory:

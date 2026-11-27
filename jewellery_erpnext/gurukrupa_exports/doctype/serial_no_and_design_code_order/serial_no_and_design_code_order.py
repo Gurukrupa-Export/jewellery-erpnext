@@ -12,18 +12,24 @@ class SerialNoandDesignCodeOrder(Document):
 	pass
 
 
-@frappe.whitelist()
 def make_quotation(source_name, target_doc=None):
 	def set_missing_values(source, target):
-		from erpnext.controllers.accounts_controller import get_default_taxes_and_charges
+		from erpnext.controllers.accounts_controller import (
+			get_default_taxes_and_charges,
+		)
 
 		quotation = frappe.get_doc(target)
-		company_currency = frappe.get_cached_value("Company", quotation.company, "default_currency")
+		company_currency = frappe.get_cached_value(
+			"Company", quotation.company, "default_currency"
+		)
 		if company_currency == quotation.currency:
 			exchange_rate = 1
 		else:
 			exchange_rate = get_exchange_rate(
-				quotation.currency, company_currency, quotation.transaction_date, args="for_selling"
+				quotation.currency,
+				company_currency,
+				quotation.transaction_date,
+				args="for_selling",
 			)
 		quotation.conversion_rate = exchange_rate
 		# get default taxes
@@ -45,7 +51,9 @@ def make_quotation(source_name, target_doc=None):
 		}
 		for target_field, source_field in field_map.items():
 			quotation.set(target_field, source.get(source_field))
-		service_types = frappe.db.get_values("Service Type 2", {"parent": source.name}, "service_type1")
+		service_types = frappe.db.get_values(
+			"Service Type 2", {"parent": source.name}, "service_type1"
+		)
 		for service_type in service_types:
 			quotation.append("service_type", {"service_type1": service_type})
 

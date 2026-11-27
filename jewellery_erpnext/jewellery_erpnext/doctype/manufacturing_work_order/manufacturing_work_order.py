@@ -345,7 +345,6 @@ class ManufacturingWorkOrder(Document):
 	def transfer_to_mwo(self):
 		create_stock_transfer_entry(self)
 
-	@frappe.whitelist()
 	def create_repair_un_pack_stock_entry(self):
 		# bom_weight = frappe.db.get_value("BOM", self.master_bom, "gross_weight")
 

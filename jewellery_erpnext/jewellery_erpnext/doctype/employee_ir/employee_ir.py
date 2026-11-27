@@ -921,7 +921,6 @@ class EmployeeIR(Document):
 			elif action == "Stop":
 				frappe.msgprint(msg)
 
-	@frappe.whitelist()
 	def create_subcontracting_order(self):
 		service_item = frappe.db.get_value(
 			"Department Operation", self.operation, "service_item"
@@ -978,7 +977,6 @@ class EmployeeIR(Document):
 		):
 			create_so_for_subcontracting(po)
 
-	@frappe.whitelist()
 	def validate_process_loss(self):
 		if (self.docstatus != 0) or self.type == "Issue":
 			return
@@ -1688,7 +1686,6 @@ def get_holidays_for_employee(employee, start_date, end_date):
 	return holiday_dates
 
 
-@frappe.whitelist()
 def calculation_time_log(doc, row, self):
 	# calculation of from and to time
 	if row.from_time and row.to_time:

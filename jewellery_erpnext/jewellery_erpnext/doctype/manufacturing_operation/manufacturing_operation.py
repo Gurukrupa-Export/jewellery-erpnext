@@ -557,7 +557,6 @@ class ManufacturingOperation(Document):
 		# Save the child document
 		child_doc.insert(ignore_permissions=True)
 
-	@frappe.whitelist()
 	def create_fg(self):
 		se_name, _fg_serial = create_manufacturing_entry(self)
 		pmo = frappe.db.get_value(
@@ -571,7 +570,6 @@ class ManufacturingOperation(Document):
 		set_values_in_bulk("Manufacturing Work Order", wo, {"status": "Completed"})
 		create_finished_goods_bom(self, se_name)
 
-	@frappe.whitelist()
 	def get_stock_entry(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		# StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
@@ -607,7 +605,6 @@ class ManufacturingOperation(Document):
 			{"data": data, "total_qty": total_qty},
 		)
 
-	@frappe.whitelist()
 	def get_stock_summary(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		# StockEntryDetail = frappeqb.DocType("Stock Entry Detail")
@@ -5121,6 +5118,13 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 	"""
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
+	# The button lives on this operation; tie the call to an operation the user can open.
+	frappe.has_permission(
+		"Manufacturing Operation",
+		"read",
+		se_data.get("manufacturing_operation"),
+		throw=True,
+	)
 
 	# The pre-flight reads the CLIENT's rows, so it must only gate a genuinely new
 	# receive. On a replay (same request_id) create_mr_wo_stock_entry short-circuits to
@@ -6235,7 +6239,6 @@ def get_warehouse_from_previous_stock_entry(
 	return None
 
 
-@frappe.whitelist()
 def get_mop_log_balance(manufacturing_operation):
 	"""Return the current balance snapshot from MOP Log for a given Manufacturing Operation.
 

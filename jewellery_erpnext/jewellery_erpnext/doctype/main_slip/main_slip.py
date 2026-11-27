@@ -405,7 +405,6 @@ def create_tree_number(self):
 	return doc.name
 
 
-@frappe.whitelist()
 def create_stock_entries(
 	main_slip,
 	actual_qty,
@@ -987,7 +986,6 @@ def create_loss_item(item, item_attr_dict):
 	return variant.name
 
 
-@frappe.whitelist()
 def get_any_item_from_attribute(variant_of, attributes):
 	Item = frappe.qb.DocType("Item")
 	ItemVariantAttribute = frappe.qb.DocType("Item Variant Attribute")

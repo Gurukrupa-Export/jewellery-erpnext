@@ -3620,7 +3620,6 @@ def fill_items_from_serial_no(serial_nos):
 	return {"details": details, "missing": [s for s in serial_nos if s not in details]}
 
 
-@frappe.whitelist()
 def xl_preview_sales_order(docname):
 	# openpyxl is only needed by this one export, so it is imported lazily rather than at
 	# module level — the module is loaded on every Sales Order save.
@@ -5280,6 +5279,7 @@ def make_sales_order_batch(sales_orders, target_doc=None):
 	target_doc.items = []
 
 	for so_name in sales_orders:
+		frappe.has_permission("Sales Order", "read", so_name, throw=True)
 		so = frappe.db.get_value("Sales Order", so_name, "*", as_dict=True)
 		if not so:
 			continue

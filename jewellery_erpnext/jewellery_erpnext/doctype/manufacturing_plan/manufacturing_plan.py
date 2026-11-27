@@ -546,7 +546,6 @@ class ManufacturingPlan(Document):
 			"mp_context": get_mp_context(),
 		}
 
-	@frappe.whitelist()
 	def get_items_for_production(self):
 		is_subcontracting = is_subcontracting_selected(self.is_subcontracting)
 
@@ -775,6 +774,7 @@ def get_repair_pending_ppo_sales_order(
 
 @frappe.whitelist()
 def get_details_to_append(source_names, target_doc=None):
+	frappe.has_permission("Manufacturing Plan", "read", throw=True)
 	if not target_doc:
 		target_doc = frappe.new_doc("Manufacturing Plan")
 	elif isinstance(target_doc, str):
@@ -1161,7 +1161,6 @@ def get_cad_eligible_items(manufacturing_plan):
 	return eligible
 
 
-@frappe.whitelist()
 def create_cad_mwo(manufacturing_plan, item_code, reason=None):
 	"""Create a CAD/CAM Manufacturing Work Order for an item in this plan.
 

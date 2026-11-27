@@ -798,7 +798,6 @@ def validate_category_waiting_days(doc, method=None):
 		)
 
 
-@frappe.whitelist()
 def create_pending_repack(mwo_name):
 	process_pending_repack_for_mwo(mwo_name)
 	return "Success"

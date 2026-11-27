@@ -231,7 +231,6 @@ def get_item_from_attribute(metal_type, metal_touch, metal_purity, metal_colour=
 	return None
 
 
-@frappe.whitelist()
 def get_item_from_attribute_full(
 	metal_type, metal_touch, metal_purity, metal_colour=None
 ):
@@ -521,12 +520,20 @@ def get_value(doctype, filters, fields, default=None, debug=0):
 	return default
 
 
+# What db_get_value may read without a permission check: the Department IR form reads the
+# departments of the issue it receives against, which the receiving user may not be able to open.
+DB_GET_VALUE_ALLOWED = {"Department IR": {"current_department", "next_department"}}
+
+
 @frappe.whitelist()
 def db_get_value(doctype, docname, fields):
 	# this is created to bypass permission issue during db call from client script
 	import json
 
-	fields = json.loads(fields)
+	fields = json.loads(fields) if isinstance(fields, str) else fields
+	requested = {fields} if isinstance(fields, str) else set(fields or [])
+	if not requested or not requested <= DB_GET_VALUE_ALLOWED.get(doctype, set()):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
 	return frappe.db.get_value(doctype, docname, fields, as_dict=1)
 
 
@@ -632,6 +639,7 @@ def get_sales_invoice_items(sales_invoices):
 @frappe.whitelist()
 def get_sales_order_items(customer_approval_name):
 	doc = frappe.get_doc("Customer Approval", customer_approval_name)
+	doc.check_permission("read")
 
 	if doc.docstatus != 1:
 		frappe.throw(_("This Customer Approval is not submitted."))
@@ -720,8 +728,17 @@ def supplier_query(doctype, txt, searchfield, start, page_len, filters):
 	return suppliers
 
 
+# The (child doctype, field) pairs the sales and purchase forms read through get_type_of_party.
+TYPE_OF_PARTY_ALLOWED = {
+	("Sales Type Multiselect", "sales_type"),
+	("Purchase Type Multiselect", "purchase_type"),
+}
+
+
 @frappe.whitelist()
 def get_type_of_party(doc, parent, field):
+	if (doc, field) not in TYPE_OF_PARTY_ALLOWED:
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
 	return frappe.db.get_value(doc, {"parent": parent}, field)
 
 
@@ -881,7 +898,8 @@ def get_serial_bom(serial_no):
 	"""
 	if not serial_no:
 		return None
-	return frappe.db.get_value("Serial No", serial_no, "custom_bom_no") or frappe.db.exists(
+	return frappe.db.get_value(
+		"Serial No", serial_no, "custom_bom_no"
+	) or frappe.db.exists(
 		"BOM", {"tag_no": serial_no, "bom_type": "Finish Goods", "docstatus": 1}
 	)
-

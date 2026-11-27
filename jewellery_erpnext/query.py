@@ -22,7 +22,10 @@ def item_attribute_query(doctype, txt, searchfield, start, page_len, filters):
 			.where(
 				(ItemAttributeValue.parent == args["item_attribute"])
 				& (ItemAttributeValue.attribute_value.like(args["txt"]))
-				& (ItemAttributeValue.parent_attribute_value == args["parent_attribute_value"])
+				& (
+					ItemAttributeValue.parent_attribute_value
+					== args["parent_attribute_value"]
+				)
 			)
 		)
 		item_attribute = query.run()
@@ -58,11 +61,14 @@ def item_attribute_query(doctype, txt, searchfield, start, page_len, filters):
 	return item_attribute if item_attribute else []
 
 
-@frappe.whitelist()
 def set_wo_items_grade(doctype, txt, searchfield, start, page_len, filters):
-	bom_no = frappe.db.get_value("Sales Order Item", {"parent": filters.get("sales_order")}, "bom")
+	bom_no = frappe.db.get_value(
+		"Sales Order Item", {"parent": filters.get("sales_order")}, "bom"
+	)
 	frappe.logger("utils").debug(filters.get("sales_order"))
-	diamond_quality = frappe.db.get_value("BOM Diamond Detail", {"parent": bom_no}, "quality")
+	diamond_quality = frappe.db.get_value(
+		"BOM Diamond Detail", {"parent": bom_no}, "quality"
+	)
 	frappe.logger("utils").debug(diamond_quality)
 
 	SalesOrder = frappe.qb.DocType("Sales Order")
@@ -91,13 +97,14 @@ def set_wo_items_grade(doctype, txt, searchfield, start, page_len, filters):
 	return tuple(zip(*data))
 
 
-@frappe.whitelist()
 def get_item_code(item_code, grade):
 	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 	if variant_of != "D":
 		return item_code
 	attr_val = frappe.db.get_list(
-		"Item Variant Attribute", {"parent": item_code}, ["attribute", "attribute_value"]
+		"Item Variant Attribute",
+		{"parent": item_code},
+		["attribute", "attribute_value"],
 	)
 	args = {}
 	for attr in attr_val:
@@ -113,17 +120,19 @@ def get_item_code(item_code, grade):
 	return variant
 
 
-@frappe.whitelist()
 def set_metal_purity(sales_order):
 	bom = frappe.db.get_value("Sales Order Item", {"parent": sales_order}, "bom")
 	remark = frappe.db.get_value("Sales Order Item", {"parent": sales_order}, "remarks")
-	metal_purity = frappe.db.get_value("BOM Metal Detail", {"parent": bom}, "purity_percentage")
+	metal_purity = frappe.db.get_value(
+		"BOM Metal Detail", {"parent": bom}, "purity_percentage"
+	)
 	return {"metal_purity": metal_purity, "remark": remark}
 
 
 @frappe.whitelist()
 def get_scrap_items(doctype, txt, searchfield, start, page_len, filters):
 	from pypika import functions as fn
+
 	manufacturing_operation = filters.get("manufacturing_operation")
 
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
@@ -135,7 +144,11 @@ def get_scrap_items(doctype, txt, searchfield, start, page_len, filters):
 		.on(Item.name == StockEntryDetail.item_code)
 		.select(StockEntryDetail.item_code)
 		.distinct()
-		.where(StockEntryDetail.manufacturing_operation.like(f"%{manufacturing_operation}%"))
+		.where(
+			StockEntryDetail.manufacturing_operation.like(
+				f"%{manufacturing_operation}%"
+			)
+		)
 	)
 
 	data = query.run()
@@ -164,11 +177,12 @@ def diamond_grades_query(doctype, txt, searchfield, start, page_len, filters):
 		return diamond_quality
 	else:
 		frappe.throw(
-			_("Diamond Qulity not Found. Please define the Diamond quality in <strong>Customer</strong>")
+			_(
+				"Diamond Qulity not Found. Please define the Diamond quality in <strong>Customer</strong>"
+			)
 		)
 
 
-@frappe.whitelist()
 def get_production_item(doctype, txt, searchfield, start, page_len, filters):
 	Item = frappe.qb.DocType("Item")
 
@@ -178,15 +192,12 @@ def get_production_item(doctype, txt, searchfield, start, page_len, filters):
 	return production_items
 
 
-@frappe.whitelist()
 def set_warehouses(filters=None):
 	js_values = frappe.db.get_single_value("Jewellery Settings", "*", as_dict=True)
 	return js_values
 
 
-@frappe.whitelist()
 def get_wo_operations(doctype, txt, searchfield, start, page_len, filters):
-
 	WorkOrderOperation = frappe.qb.DocType("Work Order Operation")
 
 	query = (
@@ -199,7 +210,6 @@ def get_wo_operations(doctype, txt, searchfield, start, page_len, filters):
 	return work_order_operations
 
 
-@frappe.whitelist()
 def get_parcel_place(doctype, txt, searchfield, start, page_len, filters):
 	ParcelPlaceList = frappe.qb.DocType("Parcel Place List")
 	ParcelPlaceMultiSelect = frappe.qb.DocType("Parcel Place MultiSelect")
@@ -216,6 +226,7 @@ def get_parcel_place(doctype, txt, searchfield, start, page_len, filters):
 
 	parcel_places = query.run()
 	return parcel_places
+
 
 @frappe.whitelist()
 def get_customer_mtel_purity(customer, metal_type, metal_touch):
@@ -234,5 +245,3 @@ def get_customer_mtel_purity(customer, metal_type, metal_touch):
 			f"Customer {customer} has no metal purity according to metal type {metal_type} and metal touch {metal_touch}"
 		)
 	return rows[0]["metal_purity"]
-
-
