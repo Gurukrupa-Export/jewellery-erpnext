@@ -26,10 +26,12 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 from jewellery_erpnext.jewellery_erpnext.customization.utils.serial_ownership import (
 	stamp_serial_row_ownership,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events import supplier_metal_limit
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
+	lock_bins,
 	lock_bins_for_rows,
 	lock_items,
 	preallocate_series_for_docs,
@@ -1045,7 +1047,23 @@ def prelock_bins(self, method=None):
 	# Pinning the shared row here for every submit is what made it the dominant 1213 source
 	# in the Sep-2026 production Error Log; sharding is what actually removes the contention.
 	preallocate_series_for_docs(self)
-	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
+	# Supplier metal limit (supplier_metal_limit.lock_supplier_limits, the hook before this one):
+	# the limited suppliers' existing metal Bins join THIS sorted batch, so the limit check reads
+	# them under lock without a second, out-of-order Bin acquisition (RULE B).
+	supplier_pairs = (getattr(self, "flags", None) or {}).get(
+		supplier_metal_limit.BIN_PAIRS_FLAG
+	)
+	if supplier_pairs:
+		pairs = [
+			(row.item_code, row.get(attr))
+			for row in self.items
+			for attr in ("s_warehouse", "t_warehouse")
+		]
+		self.flags[supplier_metal_limit.LOCKED_BINS_FLAG] = lock_bins(
+			pairs + list(supplier_pairs)
+		)
+	else:
+		lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 
 
 def prelock_bins_on_cancel(self, method=None):
@@ -1167,6 +1185,45 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 		create_mop_log(self, row, is_synced=True)
 
 
+def reservation_voucher(mwo, sales_order, sales_order_item):
+	"""``(voucher_type, voucher_no, voucher_detail_no)`` a Stock Reservation Entry for this
+	Manufacturing Work Order is anchored to, given its Parent Manufacturing Order's Sales
+	Order line.
+
+	The Sales Order line, as always. A Finding Manufacturing - Without SO work order has no
+	Sales Order, so it is anchored to the work order itself: ``Manufacturing Work Order`` is
+	an allowed SRE voucher type (the ``voucher_type`` options Property Setter in
+	``custom/stock_reservation_entry.json``), and ERPNext enforces a reservation by item /
+	warehouse / batch whatever its voucher type, so the stock is protected the same way.
+	Every app reader of these reservations filters by ``manufacturing_work_order`` /
+	``manufacturing_operation``, not by voucher.
+
+	Any other work order without a Sales Order keeps the old ``("Sales Order", None, None)``,
+	so its callers throw or skip exactly as before. The flag is only read when there is no
+	Sales Order, so a Sales Order work order costs no extra query.
+	"""
+	if not sales_order and frappe.db.get_value(
+		"Manufacturing Work Order", mwo, "is_without_so"
+	):
+		return "Manufacturing Work Order", mwo, mwo
+	return "Sales Order", sales_order, sales_order_item
+
+
+def get_mwo_reservation_voucher(mwo):
+	"""``reservation_voucher`` for a work order, reading its Sales Order line itself.
+	``(None, None, None)`` when it has neither a Sales Order nor the Without-SO flag."""
+	pmo = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_order")
+	sales_order, sales_order_item = (
+		frappe.db.get_value(
+			"Parent Manufacturing Order", pmo, ["sales_order", "sales_order_item"]
+		)
+		if pmo
+		else None
+	) or (None, None)
+	voucher = reservation_voucher(mwo, sales_order, sales_order_item)
+	return voucher if voucher[1] else (None, None, None)
+
+
 def stock_reservation_entry_for_mwo(self):
 	# EIR injection: main_slip_inject.py stamps employee_ir on every auto-created
 	# SE header.  These SEs MUST always reserve — they are legitimate MWO-linked
@@ -1185,6 +1242,10 @@ def stock_reservation_entry_for_mwo(self):
 		"Parent Manufacturing Order",
 		self.manufacturing_order,
 		["sales_order", "sales_order_item", "manufacturer"],
+	)
+	# The Sales Order line, or for a Without-SO work order the work order itself.
+	voucher_type, voucher_no, voucher_detail_no = reservation_voucher(
+		self.manufacturing_work_order, sales_order, sales_order_item
 	)
 	voucher_qty_row = frappe.db.sql(
 		"""
@@ -1265,7 +1326,7 @@ def stock_reservation_entry_for_mwo(self):
 			)
 
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			row.item_code, "Sales Order", sales_order, sales_order_item
+			row.item_code, voucher_type, voucher_no, voucher_detail_no
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
@@ -1279,8 +1340,8 @@ def stock_reservation_entry_for_mwo(self):
 			effective_voucher_qty = flt(total_so_reserved) + qty_to_be_reserved
 
 		new_stock_reservation_entries_mwo = frappe.new_doc("Stock Reservation Entry")
-		new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
-		new_stock_reservation_entries_mwo.voucher_no = sales_order
+		new_stock_reservation_entries_mwo.voucher_type = voucher_type
+		new_stock_reservation_entries_mwo.voucher_no = voucher_no
 		new_stock_reservation_entries_mwo.item_code = row.item_code
 		new_stock_reservation_entries_mwo.voucher_qty = effective_voucher_qty
 		new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
@@ -1294,7 +1355,7 @@ def stock_reservation_entry_for_mwo(self):
 		new_stock_reservation_entries_mwo.manufacturing_operation = (
 			row.manufacturing_operation
 		)
-		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
+		new_stock_reservation_entries_mwo.voucher_detail_no = voucher_detail_no
 		new_stock_reservation_entries_mwo.available_qty = max(
 			available_qty_to_reserve, qty_to_be_reserved
 		)

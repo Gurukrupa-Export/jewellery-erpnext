@@ -3007,6 +3007,12 @@ def create_test_data():
 
 			_ensure_supplier_allowed_item_group_field()
 
+			from jewellery_erpnext.patches.add_supplier_metal_weight_limit import (
+				execute as _ensure_supplier_metal_weight_limit_field,
+			)
+
+			_ensure_supplier_metal_weight_limit_field()
+
 			from jewellery_erpnext.patches.add_mr_is_free_item_field import (
 				execute as _ensure_mr_is_free_item_field,
 			)
@@ -3262,6 +3268,24 @@ def create_test_data():
 			)
 
 			_ensure_ref_customer_fields()
+
+			# Batch.custom_worker_cost / custom_total_cost (Finding Manufacturing - Without
+			# SO). Patch-only like the fields above, so provision them here for test_site too,
+			# else apply_worker_cost_to_batch writes a missing column.
+			from jewellery_erpnext.patches.add_batch_worker_cost_fields import (
+				execute as _ensure_batch_worker_cost_fields,
+			)
+
+			_ensure_batch_worker_cost_fields()
+
+			# The "GK Manufacturing Plan (Get Item Table)" Server Script comes from the
+			# git_action_v16 fixtures enabled, and would refuse every Finding Manufacturing -
+			# Without SO plan; its check now lives in ManufacturingPlan.before_insert.
+			from jewellery_erpnext.patches.disable_mp_get_item_table_server_script import (
+				execute as _disable_mp_get_item_table_script,
+			)
+
+			_disable_mp_get_item_table_script()
 
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (

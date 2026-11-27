@@ -298,7 +298,12 @@ doc_events = {
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
 			_RECON_WINDOW_MOVEMENT_VALIDATOR,
+			# Supplier pure metal limit, part 1: lock the limited suppliers' rows (the canonical
+			# "parent control row" slot, before Series / Bin) and hand prelock_bins their metal Bins.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.supplier_metal_limit.lock_supplier_limits",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins",
+			# Supplier pure metal limit, part 2: after prelock_bins, reads the supplier's Bins it holds.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.supplier_metal_limit.validate_supplier_metal_limit",
 			# Process control, under the MOP-then-MWO lock: after the Bin locks above, matching
 			# lock_order (Series -> Bin -> MOP -> MWO).
 			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_stock_entry",
