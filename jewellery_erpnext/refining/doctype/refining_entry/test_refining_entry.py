@@ -3982,3 +3982,67 @@ class TestSupplierReceiptDifferenceAccount(IntegrationTestCase):
 
 		self.assertNotEqual(guard, -1, "receive_from_supplier no longer sets the Difference Account")
 		self.assertLess(guard, insert, "the Difference Account must be set before se.insert()")
+
+
+class TestMwoMaterialStockValidation(IntegrationTestCase):
+	"""Submit stops with one clear message when Work Order material has moved away from
+	the warehouses in Material Items (RFN-MWO-26-00008: the EOD sync moved it to Central
+	WO after the draft was saved). DB-free: Bin and batch lookups are patched."""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _entry(self, **extra):
+		entry = frappe.new_doc("Refining Entry")
+		entry.refining_type = REFINING_TYPE_WORK_ORDER
+		entry.warehouse = "Central WO - T"
+		for warehouse, batch_no, qty in (
+			("Final Polish WIP - T", "BATCH-A", 8.888),
+			("Central WO - T", "BATCH-B", 5.772),
+		):
+			entry.append(
+				"material_items",
+				{
+					"item_code": "M-G-22KT-91.75-Y",
+					"batch_no": batch_no,
+					"warehouse": warehouse,
+					"qty": qty,
+					"source_type": "MWO",
+				},
+			)
+		entry.update(extra)
+		return entry
+
+	def _validate(self, entry, bins):
+		def bin_qty(doctype, filters, field, *args, **kwargs):
+			return bins.get((filters["item_code"], filters["warehouse"]), 0.0)
+
+		batch_rows = [frappe._dict(warehouse="Central WO - T", qty=8.888)]
+		with (
+			patch.object(frappe.db, "get_value", side_effect=bin_qty),
+			patch(
+				"erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=batch_rows
+			),
+		):
+			entry.validate_mwo_material_stock()
+
+	def test_moved_material_is_reported_with_its_new_warehouse(self):
+		bins = {("M-G-22KT-91.75-Y", "Central WO - T"): 20.0}
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._validate(self._entry(), bins)
+
+		message = str(ctx.exception)
+		self.assertIn("Final Polish WIP - T", message)
+		self.assertIn("BATCH-A: Central WO - T (8.888)", message)
+
+	def test_stock_in_place_passes(self):
+		bins = {
+			("M-G-22KT-91.75-Y", "Final Polish WIP - T"): 8.888,
+			("M-G-22KT-91.75-Y", "Central WO - T"): 5.772,
+		}
+		self._validate(self._entry(), bins)
+
+	def test_processing_duplicate_is_skipped(self):
+		self._validate(self._entry(parent_refining_entry="RFN-MWO-1"), {})
