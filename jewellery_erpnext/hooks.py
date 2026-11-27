@@ -334,11 +334,17 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
 			# Cancelling a movement recorded in a process needs access to that process.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.process_enforcement.check_stock_entry",
+			# A diamond / gemstone loss booked from a Manufacturing Operation cancels only while its
+			# operation is current and its reservations are restorable. Last: it reads, locks nothing.
+			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.dg_loss_booking.guard_loss_entry_cancel",
 		],
 		"on_cancel": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 			# Central cancelling a Refining Entry's hand-back takes the entry back to Completed.
 			"jewellery_erpnext.refining.doc_events.stock_entry.on_cancel",
+			# A diamond / gemstone loss booked from a Manufacturing Operation gives the loss back to
+			# the work order's reservations. After stock_entry.on_cancel, which flags its MOP Logs.
+			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.dg_loss_booking.restore_loss_entry_reservations",
 		],
 		"on_trash": "jewellery_erpnext.refining.doc_events.stock_entry.on_trash",
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",

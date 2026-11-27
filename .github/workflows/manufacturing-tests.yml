@@ -76,6 +76,9 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_metal_conversion_chain_sc
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_manufacturing_operation_balance_details_report
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_loss_valuation
+          # Added 2026-11-20: diamond / gemstone loss booked from a Manufacturing Operation
+          # (dg_loss_booking) -- row rules, Process Loss shape, reservation markers, cancel hooks.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_dg_loss_booking
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_photoshop_images
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_pmo_close_open
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_log
