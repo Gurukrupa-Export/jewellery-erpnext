@@ -25,6 +25,14 @@
   "column_break_general2",
   "status",
   "manufacturer",
+  "section_break_kggk_po",
+  "source_purchase_order",
+  "source_refining_entry",
+  "source_po_company",
+  "column_break_kggk_po",
+  "source_po_supplier",
+  "customer",
+  "po_receipt_se",
   "section_break_source",
   "scan_mwo",
   "scan_serial_no",
@@ -233,6 +241,61 @@
    "fieldtype": "Link",
    "label": "Manufacturer",
    "options": "Manufacturer"
+  },
+  {
+   "collapsible": 1,
+   "collapsible_depends_on": "eval:doc.source_purchase_order",
+   "depends_on": "eval:!doc.is_external",
+   "fieldname": "section_break_kggk_po",
+   "fieldtype": "Section Break",
+   "label": "KGGK Purchase Order"
+  },
+  {
+   "description": "KGGK's refining service Purchase Order this entry receives. Set it with Get Items from KGGK Purchase Order.",
+   "fieldname": "source_purchase_order",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "KGGK Purchase Order",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "source_refining_entry",
+   "fieldtype": "Data",
+   "label": "KGGK Refining Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_po_company",
+   "fieldtype": "Data",
+   "label": "PO Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_kggk_po",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "source_po_supplier",
+   "fieldtype": "Data",
+   "label": "PO Supplier",
+   "read_only": 1
+  },
+  {
+   "description": "The customer KGGK is on this site. The material is received as this customer's goods.",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "mandatory_depends_on": "eval:doc.source_purchase_order",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "po_receipt_se",
+   "fieldtype": "Link",
+   "label": "PO Receipt SE",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "read_only": 1
   },
   {
    "fieldname": "section_break_source",
@@ -646,7 +709,7 @@
    "link_fieldname": "refining_entry"
   }
  ],
- "modified": "2026-10-29 12:00:00.000000",
+ "modified": "2026-11-12 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Refining",
  "name": "Refining Entry",

@@ -181,6 +181,27 @@
      },
      {
       "dt": "Purchase Order",
+      "fieldname": "custom_gk_refining_entry",
+      "fieldtype": "Data",
+      "insert_after": "refining_entry",
+      "read_only": 1,
+      "no_copy": 1,
+      "label": "Refiner's Refining Entry",
+      "description": "The refiner's (GK) Refining Entry that received this Purchase Order.",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "custom_gk_received_on",
+      "fieldtype": "Datetime",
+      "insert_after": "custom_gk_refining_entry",
+      "read_only": 1,
+      "no_copy": 1,
+      "label": "Received by Refiner On",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "dt": "Purchase Order",
       "fieldname": "custom_product_certification",
       "fieldtype": "Link",
       "insert_after": "company",

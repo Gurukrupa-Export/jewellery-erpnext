@@ -1167,6 +1167,8 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(po.items[0].rate, 750)
 		self.assertEqual(po.items[0].amount, 750)
 		self.assertEqual(po.items[0].custom_gross_wt, 5.0)
+		# Every line is priced, so the PO is submitted for the refiner to receive against.
+		self.assertEqual(po.docstatus, 1)
 		self.assertIsNotNone(re.material_transfer_se)
 
 		# Category pricing: a Scrap-type external entry defaults its Pricing Category
@@ -1268,6 +1270,10 @@ class TestRefiningEntry(IntegrationTestCase):
 		repack.reload()
 		self.assertEqual(se1.docstatus, 2)
 		self.assertEqual(repack.docstatus, 2)
+		# ...and the submitted service PO is cancelled with it.
+		self.assertEqual(
+			frappe.db.get_value("Purchase Order", po.name, "docstatus"), 2
+		)
 
 	def test_external_refining_po_one_line_per_price_list(self):
 		"""External scrap consignment mixing a metal-loss item (covered by no price list of
@@ -1338,6 +1344,7 @@ class TestRefiningEntry(IntegrationTestCase):
 
 		po = frappe.get_doc("Purchase Order", re.refining_entry_po)
 		self.assertEqual(len(po.items), 3)
+		self.assertEqual(po.docstatus, 1)
 
 		# Match lines by their price-list back-link (the parent Refinery Price List doc),
 		# not by index, since dict-insertion order is an implementation detail.
@@ -1419,6 +1426,8 @@ class TestRefiningEntry(IntegrationTestCase):
 
 		po = frappe.get_doc("Purchase Order", re.refining_entry_po)
 		self.assertEqual(len(po.items), 2)
+		# A rate-0 line keeps the PO a draft for the buyer to price.
+		self.assertEqual(po.docstatus, 0)
 		lines = {row.custom_refining_price_list: row for row in po.items}
 
 		md = lines[
