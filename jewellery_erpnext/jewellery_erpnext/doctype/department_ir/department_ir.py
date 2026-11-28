@@ -11,6 +11,17 @@ from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
+from jewellery_erpnext.jewellery_erpnext.doc_events import current_operation_guard
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_closed_guard import (
+	block_closed_mwo_operations,
+	without_closed_mwo_operations,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import (
+	check_rows,
+	mop_owners,
+	refetch_from_work_order,
+	set_current_operation,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
 	WEIGHT_FIELDS,
 	get_summary_data,
@@ -31,8 +42,53 @@ from jewellery_erpnext.utils import (
 
 
 class DepartmentIR(Document):
+	def check_if_latest(self):
+		# Lock order for a save or submit of an EXISTING document: the guard's MOP -> MWO block,
+		# and only then Frappe's check_if_latest, which loads this document's own rows FOR UPDATE
+		# (lock_order RULE D). A new document takes the block in before_insert. Before any of
+		# them, begin_attempt refuses a save / submit during the EOD sync or a reconciliation
+		# window.
+		if not self.is_new():
+			current_operation_guard.begin_attempt(
+				self, frappe.db.get_value(self.doctype, self.name, "docstatus")
+			)
+			current_operation_guard.lock_before_own_rows(self)
+		return super().check_if_latest()
+
+	def before_insert(self):
+		# Work-order current-operation guard: a new document takes its MOP/MWO lock block here,
+		# BEFORE set_new_name locks the shared naming-series row (lock_order RULE D), after the
+		# EOD / reconciliation-window refusal (begin_attempt).
+		current_operation_guard.begin_attempt(self)
+		current_operation_guard.on_before_insert(self)
+
+	def on_update(self):
+		# Terminal NOWAIT re-check that no Employee Issue draft holds these work orders.
+		if self.docstatus == 0:
+			current_operation_guard.final_draft_check(self)
+
+	def on_discard(self):
+		current_operation_guard.on_discard(self)
+
 	def before_validate(self):
+		# First statement on save and submit: everything below sits inside
+		# `docstatus != 1`, so none of it runs at submit. The guard also runs before
+		# validate_and_update_gross_wt_from_mop writes the previous MOP.
+		current_operation_guard.on_before_validate(self)
+		# A row that arrived with only its operation gets that operation's own work order (an
+		# insert without link validation skips fetch_from), so validate_allowed_operation, the
+		# repairing check and validate_mwo below judge it. A row naming ANOTHER work order is the
+		# guard's to judge -- refused above, or logged in its warn mode -- so check_rows' messages
+		# are not reported a second time. See doc_events/mwo_mop_link.py.
+		check_rows(self.department_ir_operation)
 		if self.docstatus != 1:
+			# A draft row's order was fetched (fetch_if_empty) from the work order the client posted,
+			# before the operation's fetch replaced that work order with the owner: re-read it from the
+			# row's final work order.
+			refetch_from_work_order(
+				self.department_ir_operation,
+				{"parent_manufacturing_order": "manufacturing_order"},
+			)
 			if self.company != frappe.db.get_value(
 				"Department", self.current_department, "company"
 			):
@@ -95,6 +151,7 @@ class DepartmentIR(Document):
 			["name", "gross_wt"],
 			order_by="creation asc",
 		)
+		records = without_closed_mwo_operations(records)
 		self.department_ir_operation = []
 		if records:
 			for row in records:
@@ -103,9 +160,36 @@ class DepartmentIR(Document):
 				)
 
 	def validate(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			refuse_department_ir_while_requested,
+		)
+
+		# Receive-only field, hidden (not cleared) by the form when a draft is switched to Issue;
+		# left set, it blocks the real Receive of that Issue as a duplicate.
+		if self.type != "Receive":
+			self.receive_against = None
+
 		validate_no_reverted_operations(self, "department_ir_operation")
+		block_closed_mwo_operations(self, "department_ir_operation")
+		# A PMO with a Close / Hold request: its work orders go only to the request department.
+		refuse_department_ir_while_requested(self, "department_ir_operation")
+
+	def before_save(self):
+		self.set_parent_manufacturing_order_count()
+
+	def set_parent_manufacturing_order_count(self):
+		# Rebuilt from the whole table each time, so added, edited and deleted rows all count.
+		self.parent_manufacturing_order_count = len(
+			{
+				row.parent_manufacturing_order
+				for row in self.department_ir_operation
+				if row.parent_manufacturing_order
+			}
+		)
 
 	def before_submit(self):
+		# An insert-and-submit (REST, docstatus=1) runs before_submit instead of before_save.
+		self.set_parent_manufacturing_order_count()
 		if not self.department_ir_operation:
 			frappe.throw("Add row in <b>Department IR Operations Table</b>")
 
@@ -161,12 +245,24 @@ class DepartmentIR(Document):
 				)
 
 	def on_submit(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+			queue_ready_check_after_transfer,
+		)
+
 		if self.type == "Issue":
 			self.on_submit_issue_new()
 		else:
 			self.on_submit_receive()
+			# A Receive may bring back the last work order of a PMO with a Close / Hold
+			# request: its requester is told once the submit commits.
+			queue_ready_check_after_transfer(self, "department_ir_operation")
+		# Last statement: a hit here rolls the whole submit back.
+		current_operation_guard.final_draft_check(self)
 
 	def on_cancel(self):
+		# Refuse a cancel whose effect is no longer the current state (e.g. a Receive cancel
+		# after the work order has already been issued onward), before any reversal.
+		current_operation_guard.guard_cancel(self)
 		if self.type == "Issue":
 			self.on_submit_issue_new(cancel=True)
 		else:
@@ -204,34 +300,15 @@ class DepartmentIR(Document):
 			},
 		)
 		if cancel:
-			# Bulk db.set_value bypasses MOPLog.validate, so capture the affected
-			# MOPs first and replay the central recompute after the flip.
-			affected_mops_recv = [
-				r[0]
-				for r in frappe.db.sql(
-					"""
-					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
-					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
-					  AND manufacturing_operation IS NOT NULL
-					""",
-					(self.doctype, self.name),
-				)
-			]
-			frappe.db.set_value(
-				"MOP Log",
-				{
-					"voucher_type": self.doctype,
-					"voucher_no": self.name,
-					"is_cancelled": 0,
-				},
-				"is_cancelled",
-				1,
-			)
 			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				cancel_voucher_mop_logs,
 				recalculate_manufacturing_operation_weights,
 			)
 
-			for mop_name in affected_mops_recv:
+			# The bulk flip bypasses MOPLog.validate, so the central recompute is replayed on
+			# every operation it touched. Flipped by primary key: a voucher-filtered UPDATE would
+			# lock every MOP Log row of the site until this cancel commits (lock_order RULE E).
+			for mop_name in cancel_voucher_mop_logs(self.doctype, self.name):
 				recalculate_manufacturing_operation_weights(mop_name)
 			values.update(
 				{
@@ -240,7 +317,16 @@ class DepartmentIR(Document):
 					"status": "Not Started",
 				}
 			)
+		# The department moves on the work order that OWNS each received operation (one query for
+		# all rows), not on the row's own work order: the two are validated equal, but the kill
+		# switch's warn mode lets a mismatched row through, and the operation is what moved.
+		owners = mop_owners(
+			row.manufacturing_operation for row in self.department_ir_operation
+		)
 		for row in self.department_ir_operation:
+			mwo = (
+				owners.get(row.manufacturing_operation) or row.manufacturing_work_order
+			)
 			if not cancel:
 				create_mop_log_for_department_ir(
 					self, row, department_wh, in_transit_wh, row.manufacturing_operation
@@ -249,16 +335,21 @@ class DepartmentIR(Document):
 			frappe.db.set_value(
 				"Manufacturing Operation", row.manufacturing_operation, values
 			)
+			# A cancelled receive puts the work order back in transit FROM the sending
+			# department, so its department reverts to that department rather than staying at
+			# the receiver.
 			frappe.db.set_value(
 				"Manufacturing Work Order",
-				row.manufacturing_work_order,
+				mwo,
 				"department",
-				self.current_department,
+				(self.previous_department or self.current_department)
+				if cancel
+				else self.current_department,
 			)
 
 			pmo = frappe.db.get_value(
 				"Manufacturing Work Order",
-				row.manufacturing_work_order,
+				mwo,
 				"manufacturing_order",
 			)
 			if pmo:
@@ -381,37 +472,32 @@ class DepartmentIR(Document):
 					).format(self.next_department)
 				)
 		else:
-			# Bulk db.set_value bypasses MOPLog.validate; replay the recompute
-			# after the flip so prefix buckets shed the just-cancelled rows.
-			affected_mops_iss = [
-				r[0]
-				for r in frappe.db.sql(
-					"""
-					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
-					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
-					  AND manufacturing_operation IS NOT NULL
-					""",
-					(self.doctype, self.name),
-				)
-			]
-			frappe.db.set_value(
-				"MOP Log",
-				{
-					"voucher_type": self.doctype,
-					"voucher_no": self.name,
-					"is_cancelled": 0,
-				},
-				"is_cancelled",
-				1,
-			)
 			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				cancel_voucher_mop_logs,
 				recalculate_manufacturing_operation_weights,
 			)
 
-			for mop_name in affected_mops_iss:
+			# The bulk flip bypasses MOPLog.validate; replay the recompute after it so prefix
+			# buckets shed the just-cancelled rows. Flipped by primary key: a voucher-filtered
+			# UPDATE would lock every MOP Log row of the site until this cancel commits
+			# (lock_order RULE E).
+			for mop_name in cancel_voucher_mop_logs(self.doctype, self.name):
 				recalculate_manufacturing_operation_weights(mop_name)
+		# Cancel only: the operation this Issue minted is a copy of the row's operation, so it
+		# carries that operation's own work order -- find it by the owner, not by the row.
+		owners = (
+			mop_owners(
+				row.manufacturing_operation for row in self.department_ir_operation
+			)
+			if cancel
+			else {}
+		)
 		for row in self.department_ir_operation:
 			if cancel:
+				owner = (
+					owners.get(row.manufacturing_operation)
+					or row.manufacturing_work_order
+				)
 				se_list = frappe.db.get_list(
 					"Stock Entry", {"department_ir": self.name}
 				)
@@ -427,11 +513,11 @@ class DepartmentIR(Document):
 						None,
 					)
 
-				frappe.db.set_value(
-					"Manufacturing Work Order",
-					row.manufacturing_work_order,
-					"manufacturing_operation",
+				# Back to the row's operation, on the work order that owns it.
+				set_current_operation(
 					row.manufacturing_operation,
+					expected_mwo=row.manufacturing_work_order,
+					doc=self,
 				)
 				# The operation this IR created is left in place on cancel, not deleted: once later IRs
 				# have worked it, MOP Logs, Subcontracting Logs, Stock Entries and the next operation
@@ -443,7 +529,7 @@ class DepartmentIR(Document):
 					"Manufacturing Operation",
 					{
 						"department_issue_id": self.name,
-						"manufacturing_work_order": row.manufacturing_work_order,
+						"manufacturing_work_order": owner,
 					},
 				)
 				if created_operation:
@@ -457,11 +543,15 @@ class DepartmentIR(Document):
 						created_operation,
 						{"department_ir_status": "Revert", "status": "Not Started"},
 					)
+				# Restore the source operation to the state it was issued from: a Department
+				# Issue only ever takes a Not Started operation (client filter + current-operation
+				# guard). It used to be set to WIP, which no picker accepts and which reads as
+				# false employee custody.
 				frappe.db.set_value(
 					"Manufacturing Operation",
 					row.manufacturing_operation,
 					"status",
-					"WIP",
+					"Not Started",
 				)
 			else:
 				values["complete_time"] = dt_string
@@ -783,7 +873,10 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc.previous_mop = mop
 	new_mop_doc.operation = None
 	new_mop_doc.previous_se_data_updated = 0
-	if is_mwo_refined(mwo):
+	# The copy keeps `mop`'s own work order, and that is the one whose refining and pointer matter
+	# here; `mwo` is only what the Issue row says (validated equal, except in warn mode).
+	owner = new_mop_doc.manufacturing_work_order or mwo
+	if is_mwo_refined(owner):
 		# The MWO's metal has left for the refinery: every operation created after
 		# the Refining Entry must start at 0. copy_doc above keeps no_copy fields
 		# (default ignore_no_copy=True), so the source operation's pre-refining
@@ -808,8 +901,11 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 			if hasattr(new_mop_doc, field):
 				setattr(new_mop_doc, field, 0)
 	new_mop_doc.insert()
-	frappe.db.set_value(
-		"Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name
+	# Point the new operation's OWNER at it; a row whose `mwo` disagrees is reported, never obeyed.
+	set_current_operation(
+		new_mop_doc.name,
+		expected_mwo=mwo,
+		doc=frappe._dict(doctype="Department IR", name=ir_name),
 	)
 	return new_mop_doc
 

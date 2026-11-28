@@ -192,6 +192,10 @@ def make_stock_in_entry(source_name, target_doc=None):
 			)
 		target.stock_entry_type = "Material Transfer (WORK ORDER)"
 		target.purpose = "Material Transfer"
+		# This maps into the open form, which may already hold an add_to_transit = 1 from an
+		# earlier transit type; a 1 is never fetched away, and ERPNext rejects Add to Transit
+		# into these Manufacturing targets. 0 lets the WORK ORDER type's 0 come back.
+		target.add_to_transit = 0
 
 		target.set_missing_values()
 

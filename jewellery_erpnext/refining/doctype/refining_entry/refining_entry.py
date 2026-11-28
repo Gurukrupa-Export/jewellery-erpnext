@@ -1,4 +1,5 @@
 import frappe
+from erpnext.utilities.product import get_item_codes_by_attributes
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
@@ -8,6 +9,9 @@ from jewellery_erpnext.customer_subcontracting.customer_goods_eligibility import
 )
 from jewellery_erpnext.refining.constants import (
 	BATCH_TYPE_UNUSED,
+	CONSOLIDATED_REFINING_TYPES,
+	EXTERNAL_REFINING_COMPANIES,
+	REFINING_CONSUMABLE_ITEM_GROUPS,
 	REFINING_TYPE_SCRAP,
 	REFINING_TYPE_SERIAL,
 	REFINING_TYPE_UNUSED,
@@ -17,6 +21,8 @@ from jewellery_erpnext.refining.constants import (
 	SOURCE_TYPE_SCRAP,
 	SOURCE_TYPE_SERIAL,
 	SOURCE_TYPE_UNUSED,
+	SOURCE_WAREHOUSE_TYPE,
+	TRACKING_CONSOLIDATION,
 )
 from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
 	build_refinery_price_index,
@@ -24,7 +30,12 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 	refining_line_terms,
 	resolve_from_index,
 )
-from jewellery_erpnext.utils import get_variant_of_item, resolve_manufacturing_setting
+from jewellery_erpnext.refining.stock_entry_naming import apply_refining_naming_series
+from jewellery_erpnext.utils import (
+	get_item_from_attribute,
+	get_variant_of_item,
+	resolve_manufacturing_setting,
+)
 
 #: The pure (24KT-equivalent) Metal Loss variant every refining type books its loss
 #: against. get_dust_item() falls back to a resolution chain only when it is absent.
@@ -37,6 +48,31 @@ EXTERNAL_PRICING_CATEGORY = {
 	REFINING_TYPE_UNUSED: "REF-RMS-001",
 	REFINING_TYPE_SCRAP: "REF-MD-001",
 }
+
+#: The GST tax template India Compliance sets on the external refinery's service Purchase
+#: Order. ERPNext requires Select on it for the user who submits the Refining Entry.
+PO_TAX_TEMPLATE_DOCTYPE = "Purchase Taxes and Charges Template"
+
+
+def _denied_po_tax_template(exc):
+	"""Name of the Purchase Taxes and Charges Template whose Select check raised ``exc``.
+
+	The check is ERPNext's ``require_permission(doctype, name, ptype)`` (reached through
+	``get_taxes_and_charges``); its frame in the traceback names the template. None when
+	the PermissionError came from any other check, so that one is never reported as a
+	missing template permission.
+	"""
+	template = None
+	tb = exc.__traceback__
+	while tb is not None:
+		frame = tb.tb_frame
+		if frame.f_code.co_name == "require_permission":
+			f_locals = frame.f_locals
+			name = f_locals.get("name")
+			if name and f_locals.get("doctype") == PO_TAX_TEMPLATE_DOCTYPE:
+				template = name
+		tb = tb.tb_next
+	return template
 
 
 def secondary_item_row(value="Scrap"):
@@ -64,6 +100,43 @@ def secondary_item_row(value="Scrap"):
 	return {fieldname: value}
 
 
+def _refining_series_stubs(company, *stock_entry_types):
+	"""Naming stubs for the Stock Entries a refining transaction will mint, to pass to
+	``lock_order.preallocate_series_for_docs`` before the transaction's first Bin.
+
+	A stub must resolve to the counter row its real Stock Entry takes at insert, or the
+	pre-lock pins the wrong row. Refining Stock Entries take the refining naming series
+	when site_config ``refining_se_naming_series`` is set (and the default otherwise), so
+	each stub goes through the same ``apply_refining_naming_series`` as the real entries.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import series_stubs
+
+	stubs = series_stubs(company, *stock_entry_types)
+	for stub in stubs:
+		apply_refining_naming_series(stub)
+	return stubs
+
+
+def returned_stone_row(rate):
+	"""Valuation fields for a stone the refiner hands back, received at ``rate``.
+
+	Pinned as Manual so every costing pass (validate, then submit) keeps it: ERPNext deducts a
+	Manual secondary row from the consumed value and gives the refined metal the rest. Left to
+	``allow_zero_valuation_rate`` alone the rate flipped between its valuation and 0 on each
+	pass on ERPNext 16.36+, so the stones came in at 0. The flag stays only for a stone no
+	rate is known for, so it can still post.
+	"""
+	row = {
+		"set_basic_rate_manually": 1,
+		# ERPNext re-derives set_basic_rate_manually from this on a BOM-less secondary row.
+		"valuation_type": "Manual",
+		"basic_rate": flt(rate),
+	}
+	if not flt(rate):
+		row["allow_zero_valuation_rate"] = 1
+	return row
+
+
 def _default_receiving_warehouse(company):
 	"""Company's default warehouse for a purchase, for stock lines with nowhere else to go."""
 	if not company:
@@ -78,6 +151,177 @@ def _default_receiving_warehouse(company):
 	)
 
 
+def split_rounded(total, weights, precision=3):
+	"""Split ``total`` over ``weights`` (``{key: weight}``) into shares rounded to
+	``precision`` that add up exactly to ``total`` rounded the same way.
+
+	Each key first gets its floor in units of 10**-precision; the units left over go to the
+	largest remainders, earlier keys first on a tie. No share is negative, and a zero total or
+	zero weights give all zeros. Rounding every share on its own instead can store 3 x 0.001
+	for a 0.002 loss split three ways.
+	"""
+	keys = list(weights)
+	scale = 10**precision
+	units = int(round(flt(total, precision) * scale))
+	clean = {k: max(flt(weights[k]), 0.0) for k in keys}
+	weight_sum = sum(clean.values())
+	if units <= 0 or not weight_sum:
+		return {k: 0.0 for k in keys}
+	exact = {k: units * clean[k] / weight_sum for k in keys}
+	shares = {k: int(exact[k]) for k in keys}
+	position = {k: i for i, k in enumerate(keys)}
+	leftover = units - sum(shares.values())
+	for k in sorted(keys, key=lambda k: (shares[k] - exact[k], position[k]))[:leftover]:
+		shares[k] += 1
+	return {k: shares[k] / scale for k in keys}
+
+
+def is_external_refining_company(company):
+	return bool(company) and company in EXTERNAL_REFINING_COMPANIES
+
+
+def get_source_warehouse(department, refining_type):
+	"""The Source Department's warehouse a refining type draws from (SOURCE_WAREHOUSE_TYPE)."""
+	wh_type = SOURCE_WAREHOUSE_TYPE.get(refining_type)
+	if not department or not wh_type:
+		return None
+	return frappe.db.get_value(
+		"Warehouse",
+		{
+			"department": department,
+			"warehouse_type": wh_type,
+			"disabled": 0,
+			"is_group": 0,
+		},
+		"name",
+	)
+
+
+def get_refinery_department(company):
+	"""The company's Refinery department: its one enabled leaf Department named like "Refin%"
+	(e.g. "Refinery - KGJPL"), found the way _get_central_rm_warehouse finds Central. None when
+	the company has none or more than one, so the operator picks it."""
+	if not company:
+		return None
+	names = frappe.get_all(
+		"Department",
+		filters={
+			"company": company,
+			"is_group": 0,
+			"disabled": 0,
+			"name": ["like", "Refin%"],
+		},
+		pluck="name",
+		limit=2,
+	)
+	return names[0] if len(names) == 1 else None
+
+
+@frappe.whitelist()
+def resolve_refining_defaults(company=None, department=None, refining_type=None):
+	"""What a Refining Entry fetches from its company, Source Department and type.
+
+	One source of truth for the form (which calls it on every change) and for validate
+	(which stays authoritative):
+
+	* ``is_external`` — ticked for EXTERNAL_REFINING_COMPANIES, else None (leave it as set).
+	* ``refining_department`` — the company's Refinery department (get_refinery_department).
+	* ``refinery_flow`` — whether that department runs the Refinery Flow.
+	* ``warehouse`` / ``warehouse_type`` — the Source Department's warehouse for the type.
+	"""
+	out = {
+		"is_external": 1 if is_external_refining_company(company) else None,
+		"refining_department": get_refinery_department(company),
+		"refinery_flow": 0,
+		"warehouse": None,
+		"warehouse_type": SOURCE_WAREHOUSE_TYPE.get(refining_type),
+	}
+	if department:
+		out["refinery_flow"] = cint(
+			frappe.get_meta("Department").has_field("custom_enable_refinery_flow")
+			and frappe.db.get_value(
+				"Department", department, "custom_enable_refinery_flow"
+			)
+		)
+		out["warehouse"] = get_source_warehouse(department, refining_type)
+	return out
+
+
+@frappe.whitelist()
+def get_refining_consumable_items():
+	"""The refining consumables a department can send with its scrap (REF-* stock items of the
+	Refining Scrap / Refining Chemical groups; the non-stock service item is left out)."""
+	return frappe.get_all(
+		"Item",
+		filters={
+			"item_group": ["in", REFINING_CONSUMABLE_ITEM_GROUPS],
+			"is_stock_item": 1,
+			"disabled": 0,
+		},
+		fields=["name as item_code", "item_name", "stock_uom"],
+		order_by="name asc",
+	)
+
+
+def restricted_variants_for(company, refining_type, manufacturer=None):
+	"""Blocked template item codes for one (company, refining type, manufacturer).
+
+	The single implementation behind ``RefiningEntry._restricted_variants`` (the server-side
+	guards) and ``get_blocked_variants_for`` (the desk link filter). Plain reads of the
+	Manufacturing Setting rows only: no document load, no locking read.
+
+	FAILS OPEN: a site that has not migrated yet (no child table), no resolvable Manufacturing
+	Setting, or no rows all give the empty set. A blank ``refining_type`` on a row blocks its
+	variant for every type.
+	"""
+	key = refining_type or ""
+	# A site that has not migrated yet has no child table, and refining must keep
+	# working rather than throw "1146 Table doesn't exist" on every save. Same
+	# defensive shape the Batch.custom_batch_type reads use.
+	setting = (
+		resolve_manufacturing_setting(company, manufacturer)
+		if frappe.db.table_exists("Refining Variant Restriction")
+		else None
+	)
+	if not setting:
+		return frozenset()
+
+	rows = frappe.db.get_all(
+		"Refining Variant Restriction",
+		filters={
+			"parent": setting,
+			"parenttype": "Manufacturing Setting",
+			"parentfield": "refining_variant_restrictions",
+		},
+		fields=["variant", "refining_type"],
+	)
+	return frozenset(
+		row.variant
+		for row in rows
+		if row.variant and (not row.refining_type or row.refining_type == key)
+	)
+
+
+@frappe.whitelist()
+def get_blocked_variants_for(
+	company: str | None = None,
+	refining_type: str | None = None,
+	manufacturer: str | None = None,
+):
+	"""Restricted templates for the Material Items link filter, fetched BY ARGUMENTS.
+
+	Deliberately not a document method. ``frm.call()`` on a saved entry goes through
+	``run_doc_method`` -> ``check_if_latest()``, i.e. ``SELECT ... FOR UPDATE`` on the
+	Refining Entry row and all its child tables, so merely opening an entry whose
+	submission was running waited on that submission's row lock (1205 after 50 s). This
+	needs no saved document and takes no locks. The form passes its own (possibly unsaved)
+	company / refining type / manufacturer, the same values ``run_doc_method`` would have
+	seen.
+	"""
+	frappe.has_permission("Refining Entry", "read", throw=True)
+	return sorted(restricted_variants_for(company, refining_type, manufacturer))
+
+
 class RefiningEntry(Document):
 	def before_insert(self):
 		# Set the series before autoname runs (autoname happens before validate), so
@@ -86,8 +330,12 @@ class RefiningEntry(Document):
 
 	def validate(self):
 		self.set_naming_series()
+		self.set_external_from_company()
 		self.validate_configuration()
 		self.set_source_department_from_user()
+		# Before validate_warehouse: the flow clears multiple-department, after which the
+		# entry needs the department's own Scrap warehouse.
+		self.apply_refinery_flow()
 		self.validate_warehouse()
 		self.validate_source_department_match()
 		self.autofetch_source_materials()
@@ -121,6 +369,7 @@ class RefiningEntry(Document):
 				self.build_material_table()
 		if self.refining_type == "Scrap Refining":
 			self.validate_dust_opening_material()
+		self.validate_refinery_flow()
 		if not self.material_items:
 			frappe.throw(
 				_("No materials to refine. Add or fetch materials before submitting.")
@@ -160,6 +409,13 @@ class RefiningEntry(Document):
 					)
 
 	def on_submit(self):
+		# The transfer moves one Stock Entry line per batch, and each line writes its own
+		# bundles, ledger entries and bins (~16-28 writes): RFN-SCP-26-00022's 12,298 lines
+		# crossed frappe's 200k writes-per-transaction cap and were reverted
+		# (TooManyWritesError). Same approach as Main Slip's loss entries; x4 keeps the cap
+		# in step with the 4500 s long-queue budget the submission runs under.
+		frappe.db.MAX_WRITES_PER_TRANSACTION *= 4
+
 		if cint(self.is_external):
 			self.on_submit_external()
 			return
@@ -176,6 +432,7 @@ class RefiningEntry(Document):
 		# External shares this path: cancel_linked_stock_entries catches its repack_se
 		# (tagged custom_refining_entry like every type's SEs) and _cancel_refining_po
 		# finds every PO linked via refining_entry=self.name.
+		self._delete_draft_central_transfer()
 		self.cancel_linked_stock_entries()
 		self._cancel_refining_po()
 
@@ -193,6 +450,11 @@ class RefiningEntry(Document):
 	def before_submit_external(self):
 		if not self.supplier:
 			frappe.throw(_("Refinery Supplier is mandatory for external refining."))
+
+		# Refuse BEFORE on_submit_external moves any stock (its transfer Stock Entry takes
+		# the shared MAT-STE- counter and can post thousands of lines) when this user could
+		# not create the service Purchase Order that ends the submit.
+		self._preflight_external_po_permissions()
 
 		# Pricing category (the Refinery Price List this consignment bills under),
 		# resolved from the refining type unless the operator picked one (Dust has
@@ -224,6 +486,7 @@ class RefiningEntry(Document):
 		# excess is receipted into the supplier warehouse on submit.
 		if self.refining_type == "Scrap Refining":
 			self.validate_dust_opening_material()
+		self.validate_refinery_flow()
 		self.validate_customer_block()
 		# Same reason as before_submit: the build above rebuilds the table.
 		self.validate_variant_restriction()
@@ -244,7 +507,94 @@ class RefiningEntry(Document):
 			3,
 		)
 		if self.qty_to_refine <= 0:
+			if self.refining_type == "Serial Number Refining":
+				frappe.throw(
+					_(
+						"No gold weight to send for external refining. The BOMs of serial(s) {0} "
+						"list no gold lines, and no metal item matches their BOM's Metal Type, "
+						"Touch, Purity and Colour, or their metal weight is 0."
+					).format(
+						", ".join(
+							frappe.bold(sn.serial_number)
+							for sn in self.serial_no_details
+							if sn.serial_number
+						)
+					)
+				)
 			frappe.throw(_("No gold weight to send for external refining."))
+
+	def _preflight_external_po_permissions(self):
+		"""Dry run of the part of create_external_refining_po that depends on the user.
+
+		po.insert(ignore_permissions=True) skips the Purchase Order's own permission checks,
+		but BuyingController.set_missing_values still calls
+		erpnext.accounts.party._get_party_details. Its India Compliance hook
+		(update_party_details -> get_gst_details) picks the GST template and calls ERPNext's
+		get_taxes_and_charges -> require_permission(PO_TAX_TEMPLATE_DOCTYPE, <template>,
+		"select") as the SUBMITTING user. Calling the same function with the arguments
+		set_missing_values passes for that order picks the same template and runs the same
+		check, so this cannot refuse a submit that po.insert would accept.
+
+		Reads only and no raised permissions; po.insert stays the authoritative check. Any
+		other error propagates unchanged (po.insert would hit it too, only later).
+		"""
+		from erpnext.accounts.party import _get_party_details
+
+		saved_message_log = frappe.get_message_log()
+		saved_disable_traceback = frappe.flags.disable_traceback
+		try:
+			_get_party_details(
+				self.supplier,
+				party_type="Supplier",
+				doctype="Purchase Order",
+				company=self.company,
+				# What create_external_refining_po's order carries when set_missing_values
+				# runs: no supplier/shipping/dispatch/billing address, no
+				# ignore_default_payment_terms_template, and flags.ignore_permissions=True
+				# from po.insert(ignore_permissions=True).
+				fetch_payment_terms_template=True,
+				ignore_permissions=True,
+			)
+		except frappe.PermissionError as e:
+			template = _denied_po_tax_template(e)
+			if not template:
+				raise
+			# erpnext._refuse() queued a bare "Not permitted" and disabled the traceback.
+			frappe.local.message_log = saved_message_log
+			frappe.flags.disable_traceback = saved_disable_traceback
+			self._throw_missing_po_tax_template_permission(template)
+		else:
+			# po.insert repeats the call and shows whatever it prints; the dry run shows nothing.
+			frappe.local.message_log = saved_message_log
+
+	def _throw_missing_po_tax_template_permission(self, template):
+		reason = (
+			_("none of their roles grants it")
+			if not frappe.has_permission(PO_TAX_TEMPLATE_DOCTYPE, "select")
+			else _(
+				"their roles grant it, but not for this template (check User Permissions "
+				"on {0})"
+			).format(_(PO_TAX_TEMPLATE_DOCTYPE))
+		)
+		frappe.throw(
+			_(
+				"Cannot submit {0}. Submitting an external refining entry creates a draft "
+				"service Purchase Order for supplier {1}, and India Compliance sets its GST "
+				"tax template {2}. That needs {3} (or Read) permission on {4}, and user {5} "
+				"does not have it: {6}. No stock has been moved. Ask a System Manager to "
+				"grant {3} on {4} to one of this user's roles, then submit again."
+			).format(
+				frappe.bold(self.name),
+				frappe.bold(self.supplier),
+				frappe.bold(template),
+				frappe.bold(_("Select")),
+				frappe.bold(_(PO_TAX_TEMPLATE_DOCTYPE)),
+				frappe.bold(frappe.session.user),
+				reason,
+			),
+			frappe.PermissionError,
+			title=_("Missing permission: {0}").format(_(PO_TAX_TEMPLATE_DOCTYPE)),
+		)
 
 	def on_submit_external(self):
 		self.create_material_transfer_se(target_warehouse=self.supplier_warehouse)
@@ -254,6 +604,7 @@ class RefiningEntry(Document):
 			self.create_dust_opening_receipt_se(
 				target_warehouse=self.supplier_warehouse
 			)
+		self.consolidate_refinery_batches(self.supplier_warehouse)
 		self.create_external_refining_po()
 
 	def _external_billable_rows(self):
@@ -579,6 +930,7 @@ class RefiningEntry(Document):
 		# auto-cost multiple finished goods; a work-order-less Manufacture keeps our
 		# is_finished_item flags and auto-costs the single FG from the consumed inputs.
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Manufacture"
 		se.purpose = "Manufacture"
 		se.company = self.company
@@ -621,11 +973,8 @@ class RefiningEntry(Document):
 			qty = flt(g["qty"], precision)
 			has_batch = frappe.db.get_value("Item", item_code, "has_batch_no")
 			if has_batch:
-				allocations = self.allocate_fifo_batches(
-					item_code,
-					self.supplier_warehouse,
-					qty,
-					throw_if_missing=False,
+				allocations = self._allocate_consolidated_first(
+					item_code, self.supplier_warehouse, qty
 				)
 				for alloc in allocations:
 					if flt(alloc["qty"], precision) >= min_qty:
@@ -710,7 +1059,9 @@ class RefiningEntry(Document):
 			"t_warehouse": target_wh,
 			"is_finished_item": 1,
 			"use_serial_batch_fields": 1,
-			"allow_zero_valuation_rate": 1,
+			# No allow_zero_valuation_rate: on this row it zeroed the rate ERPNext costs from
+			# the consumed material, so the refined metal came in at 0 and its batch was
+			# diluted (MAT-STE-63010: a 464,888 piece out, 21 g of 24KT in at 0).
 			**output_owner_row,
 		}
 		# Reuse the 24KT item's EXISTING batch in the receiving warehouse when there is one
@@ -769,12 +1120,11 @@ class RefiningEntry(Document):
 				"uom": r["uom"] or frappe.db.get_value("Item", ret_item, "stock_uom"),
 				"t_warehouse": target_wh,
 				# Scrap-type by-product (NOT a finished good): the single finished good is
-				# the pure metal above, so the Manufacture auto-costs it from the consumed
-				# inputs and these land at zero valuation — mirrors create_repack_se.
+				# the pure metal above. The stone comes back at its own rate (set below, once
+				# its batch is known) and the metal is costed from what is left.
 				**secondary_item_row(),
 				"is_finished_item": 0,
 				"use_serial_batch_fields": 1,
-				"allow_zero_valuation_rate": 1,
 			}
 			# Same existing-batch-first rule as the metal row, and the customer is carried
 			# through — but ONLY when the Item permits it, exactly as _recovered_output_customer
@@ -797,9 +1147,27 @@ class RefiningEntry(Document):
 				row["customer"] = ret_customer
 			if ret_batch:
 				row["batch_no"] = ret_batch
+			row.update(
+				returned_stone_row(self._returned_stone_rate(ret_item, ret_batch))
+			)
 			se.append("items", row)
 
 		self._assert_no_loss_output(se)
+		# Refining items default their expense account to the Refining Scrap warehouse's own
+		# Stock account, which ERPNext rejects as a Difference Account.
+		self.set_dust_receipt_difference_account(se)
+
+		# Take every naming counter this receipt mints before the Manufacture's Bins: the
+		# Manufacture and, for Scrap / Unused/Loose Material, the draft hand-back Material
+		# Transfer that _create_central_transit_draft inserts after it below.
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			preallocate_series_for_docs,
+		)
+
+		minted = ["Manufacture"]
+		if self.refining_type in CONSOLIDATED_REFINING_TYPES:
+			minted.append("Material Transfer")
+		preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
 
 		se.insert(ignore_permissions=True)
 		se.submit()
@@ -815,20 +1183,28 @@ class RefiningEntry(Document):
 		# rather than a separate ad-hoc computation: it populates Gold Recovery Details per
 		# karat, one refined_gold row per karat, and the Recovery Summary totals.
 		self.generate_recovery_table(total_recovered_weight=recovery_weight)
+		self._record_loss_on_consolidated_batches()
 
+		# Scrap / Unused/Loose Material hand the received material on to Central as a draft
+		# transfer out of the department RM warehouse; the entry stays Completed until
+		# Central submits it (refining.doc_events.stock_entry marks it Transferred).
+		hand_back = self.refining_type in CONSOLIDATED_REFINING_TYPES
 		self.received_weight = recovery_weight
 		self.repack_se = se.name
 		self.db_set(
 			{
 				"received_weight": self.received_weight,
 				"repack_se": self.repack_se,
-				# Terminal status — overrides the "Classified" status
-				# generate_recovery_table set; external refining has no
-				# classify/repack/verify/complete lifecycle of its own.
-				"status": "Transferred",
+				# Overrides the "Classified" status generate_recovery_table set; external
+				# refining has no classify/repack/verify/complete lifecycle of its own.
+				"status": "Completed" if hand_back else "Transferred",
 			},
 			notify=False,
 		)
+		if hand_back:
+			self._create_central_transit_draft(
+				self._received_transfer_rows(), self._get_central_transit_warehouse()
+			)
 
 		# allocate_fifo_batches(throw_if_missing=False) caps at available stock and
 		# returns silently on shortfall — surface it instead of leaving the supplier
@@ -920,48 +1296,56 @@ class RefiningEntry(Document):
 				_("Choose either Multiple Operations OR Multiple Department, not both.")
 			)
 
+	def set_external_from_company(self):
+		"""Tick "Is External Refining" for the companies that only refine externally (KGGK).
+		Other companies keep the checkbox as the operator set it. Draft original entries only:
+		the processing duplicate and a submitted entry keep the lifecycle they started with."""
+		if (
+			self.docstatus == 0
+			and not self.parent_refining_entry
+			and is_external_refining_company(self.company)
+		):
+			self.is_external = 1
+
 	def set_source_department_from_user(self):
 		"""Default the Source Department from the logged-in user's Employee record, which
 		also drives the source warehouse via validate_warehouse. A manually chosen
 		department is preserved and a missing Employee record is not an error.
 
-		Serial Number Refining is the exception: the serials are refined by refinery staff
-		whose own department differs from where the serials sit, so the department is
-		derived from the scanned serials instead and always matches. Only on the original
-		entry, not the processing duplicate.
+		Serial Number Refining derives it from the scanned serials instead (refinery staff
+		refine serials that sit in another department). External refining takes the user's
+		department for every type, and falls back to the serials only for a user with no
+		Employee department. Only on the original entry, not the processing duplicate.
 
 		IMPORTANT: only derive from serials when the department is not already set. After
 		the Material Transfer SE moves a serial to the refining warehouse its warehouse
 		department becomes the refining department, so overwriting would make the Source
 		Department track the refinery instead of the original source.
 		"""
-		if (
-			self.refining_type == "Serial Number Refining"
-			and not self.parent_refining_entry
-		):
-			if not self.department:
-				for row in self.serial_no_details:
-					if not row.serial_number:
-						continue
-					wh = frappe.db.get_value(
-						"Serial No", row.serial_number, "warehouse"
-					)
-					dept = (
-						frappe.db.get_value("Warehouse", wh, "department")
-						if wh
-						else None
-					)
-					if dept:
-						self.department = dept
-						break
-			return
 		if self.department:
 			return
-		dept = frappe.db.get_value(
-			"Employee", {"user_id": frappe.session.user}, "department"
+		from_serials = (
+			self.refining_type == "Serial Number Refining"
+			and not self.parent_refining_entry
 		)
-		if dept:
-			self.department = dept
+		if cint(self.is_external) or not from_serials:
+			dept = frappe.db.get_value(
+				"Employee", {"user_id": frappe.session.user}, "department"
+			)
+			if dept:
+				self.department = dept
+				return
+		if from_serials:
+			for row in self.serial_no_details:
+				if not row.serial_number:
+					continue
+				wh = frappe.db.get_value("Serial No", row.serial_number, "warehouse")
+				dept = (
+					frappe.db.get_value("Warehouse", wh, "department") if wh else None
+				)
+				if dept:
+					self.department = dept
+					break
 
 	def validate_source_department_match(self):
 		"""Refining is only allowed for material belonging to the Source Department: every
@@ -1063,48 +1447,29 @@ class RefiningEntry(Document):
 		return wh
 
 	def validate_warehouse(self):
-		if self.refining_department and not self.refining_warehouse:
-			self.refining_warehouse = frappe.db.get_value(
-				"Warehouse",
-				{
-					"department": self.refining_department,
-					"warehouse_type": "Raw Material",
-				},
-				"name",
-			)
-
-		# External refining sends loss/dust/semi-finished material picked by the
-		# operator — never auto-derive or overwrite their manually chosen Source
-		# Warehouse (the field is editable, not read-only, when is_external is set).
-		if self.department and not cint(self.is_external):
-			is_final_polish = "Final Polish" in self.department
-			if not self.warehouse or is_final_polish:
-				# Scrap refining sources from the department Scrap warehouse; Unused/Loose Material
-				# is received into the department RM warehouse as a designated item (per the
-				# Refinery Change SOP) so it sources from RM; MWO and Serial source from
-				# Manufacturing.
-				if self.refining_type == "Scrap Refining":
-					wh_type = "Scrap"
-				elif self.refining_type == "Unused/Loose Material Refining":
-					wh_type = "Raw Material"
-				elif self.refining_type == "Work Order Refining":
-					wh_type = "Manufacturing"
-				elif self.refining_type == "Serial Number Refining":
-					wh_type = "Manufacturing"
-				else:
-					wh_type = "Manufacturing"
-
-				if is_final_polish and self.refining_type not in (
-					"Work Order Refining",
-					"Unused/Loose Material Refining",
-				):
-					wh_type = "Scrap"
-
-				self.warehouse = frappe.db.get_value(
+		if cint(self.is_external):
+			# External: draft original entries fetch the Refinery Department and Source
+			# Warehouse (set_refining_defaults). The processing duplicate and a submitted entry
+			# keep what the original was submitted with.
+			if not self.parent_refining_entry and self.docstatus == 0:
+				self.set_refining_defaults()
+			if self.refining_department and (
+				not self.refining_warehouse
+				or frappe.db.get_value(
+					"Warehouse", self.refining_warehouse, "department"
+				)
+				!= self.refining_department
+			):
+				self.refining_warehouse = frappe.db.get_value(
 					"Warehouse",
-					{"department": self.department, "warehouse_type": wh_type},
+					{
+						"department": self.refining_department,
+						"warehouse_type": "Raw Material",
+					},
 					"name",
 				)
+		else:
+			self._set_internal_warehouses()
 
 		# Auto-resolve the Refining Scrap Warehouse where leftover dust is moved
 		# after refining (Refining Scrap Warehouse per SOP). Prefer a Scrap-type
@@ -1130,6 +1495,199 @@ class RefiningEntry(Document):
 					{"company": self.company, "warehouse_type": "Scrap", "is_group": 0},
 					"name",
 				)
+
+	def _set_internal_warehouses(self):
+		"""Internal refining's warehouses, as before the external-only defaults."""
+		if self.refining_department and not self.refining_warehouse:
+			self.refining_warehouse = frappe.db.get_value(
+				"Warehouse",
+				{
+					"department": self.refining_department,
+					"warehouse_type": "Raw Material",
+				},
+				"name",
+			)
+
+		if self.department:
+			is_final_polish = "Final Polish" in self.department
+			if not self.warehouse or is_final_polish:
+				# Scrap refining sources from the department Scrap warehouse; Unused/Loose Material
+				# is received into the department RM warehouse as a designated item (per the
+				# Refinery Change SOP) so it sources from RM; MWO and Serial source from
+				# Manufacturing.
+				if self.refining_type == "Scrap Refining":
+					wh_type = "Scrap"
+				elif self.refining_type == "Unused/Loose Material Refining":
+					wh_type = "Raw Material"
+				else:
+					wh_type = "Manufacturing"
+
+				if is_final_polish and self.refining_type not in (
+					"Work Order Refining",
+					"Unused/Loose Material Refining",
+				):
+					wh_type = "Scrap"
+
+				self.warehouse = frappe.db.get_value(
+					"Warehouse",
+					{"department": self.department, "warehouse_type": wh_type},
+					"name",
+				)
+
+	def set_refining_defaults(self):
+		"""The company's Refinery Department, and the Source Warehouse from the Source Department.
+
+		The Source Warehouse follows the refining type (SOURCE_WAREHOUSE_TYPE): Scrap from
+		the department's Scrap warehouse, Serial Number and Unused/Loose Material from its
+		RM warehouse, Work Order from its Work Order (Manufacturing) warehouse. It is
+		re-fetched when blank or when the department or type changes, internal and external
+		alike, and a warehouse of another department is refused. Multiple-department scrap
+		reads each department's warehouse instead, so it has none of its own."""
+		defaults = resolve_refining_defaults(
+			company=self.company,
+			department=self.department,
+			refining_type=self.refining_type,
+		)
+		if defaults["refining_department"]:
+			self.refining_department = defaults["refining_department"]
+
+		if not self.department or not defaults["warehouse_type"]:
+			return
+		if self.refining_type == REFINING_TYPE_SCRAP and cint(self.multiple_department):
+			return
+
+		if not self.warehouse or (
+			not self.is_new()
+			and (
+				self.has_value_changed("department")
+				or self.has_value_changed("refining_type")
+			)
+		):
+			self.warehouse = defaults["warehouse"]
+		if not self.warehouse:
+			frappe.throw(
+				_(
+					"Department {0} has no {1} warehouse, which {2} draws its material from."
+				).format(
+					frappe.bold(self.department),
+					frappe.bold(defaults["warehouse_type"]),
+					self.refining_type,
+				)
+			)
+		wh_dept = frappe.db.get_value("Warehouse", self.warehouse, "department")
+		if wh_dept != self.department:
+			frappe.throw(
+				_(
+					"Source Warehouse {0} belongs to department {1}, not the Source Department {2}."
+				).format(
+					frappe.bold(self.warehouse),
+					wh_dept or "-",
+					frappe.bold(self.department),
+				)
+			)
+
+	def apply_refinery_flow(self):
+		"""A department running the Refinery Flow sends ALL its scrap: the employee, operation,
+		date and multiple-department narrowing of Scrap Refining is switched off, so the fetch
+		and the System Quantity cover the whole Scrap warehouse. validate_refinery_flow checks
+		the rows at submit."""
+		self.refinery_flow = cint(
+			self.department
+			and frappe.get_meta("Department").has_field("custom_enable_refinery_flow")
+			and frappe.db.get_value(
+				"Department", self.department, "custom_enable_refinery_flow"
+			)
+		)
+		if (
+			not self.refinery_flow
+			or not cint(self.is_external)
+			or self.refining_type != REFINING_TYPE_SCRAP
+			or self.docstatus != 0
+			or self.parent_refining_entry
+		):
+			return
+		self.employee = None
+		self.operation = None
+		self.date_from = None
+		self.date_to = None
+		self.multiple_operation = 0
+		self.multiple_department = 0
+
+	def validate_refinery_flow(self):
+		"""Refinery Flow departments must transfer all the scrap in their Scrap warehouse
+		before (on the same entry as) the refining consumables. Checked at submit item by item,
+		in each item's stock UOM: an excess of one item cannot stand in for another left in the
+		warehouse (the transfer would only receipt the excess as an opening, and the other item
+		would stay behind). Rows from another warehouse, consumables, and items the warehouse
+		does not hold (a physical opening) are not part of the requirement."""
+		if (
+			not self.refinery_flow
+			or not cint(self.is_external)
+			or self.refining_type != REFINING_TYPE_SCRAP
+		):
+			return
+		precision = 3
+		required = self._scrap_balance_by_item(self.warehouse)
+		sent = {}
+		for row in self.material_items:
+			if (
+				row.get("source_type") != SOURCE_TYPE_SCRAP
+				or row.get("is_consumable")
+				or row.item_code not in required
+				or (row.get("warehouse") or self.warehouse) != self.warehouse
+			):
+				continue
+			sent[row.item_code] = sent.get(row.item_code, 0.0) + self._stock_uom_qty(
+				row
+			)
+		short = [
+			_("{0}: {1} in the warehouse, {2} on this entry").format(
+				frappe.bold(item_code),
+				flt(qty, precision),
+				flt(sent.get(item_code), precision),
+			)
+			for item_code, qty in sorted(required.items())
+			if flt(qty - flt(sent.get(item_code)), precision) >= 0.001
+		]
+		if short:
+			frappe.throw(
+				_(
+					"Refinery Flow is enabled for department {0}: all the scrap in {1} must be "
+					"transferred before the consumables. Short:<br>{2}<br>Fetch the scrap "
+					"materials again."
+				).format(
+					frappe.bold(self.department),
+					frappe.bold(self.warehouse),
+					"<br>".join(short),
+				)
+			)
+
+	def _scrap_balance_by_item(self, warehouse):
+		"""``{item_code: qty}`` in stock UOM of everything ``warehouse`` holds, leaving out
+		variants restricted for this refining type (the scrap fetch leaves them out too)."""
+		if not warehouse:
+			return {}
+		bins = frappe.db.get_all(
+			"Bin",
+			filters={"warehouse": warehouse, "actual_qty": [">", 0]},
+			fields=["item_code", "actual_qty"],
+		)
+		restricted = self._blocked_item_codes(b.item_code for b in bins)
+		return {
+			b.item_code: flt(b.actual_qty)
+			for b in bins
+			if b.item_code not in restricted and flt(b.actual_qty, 3) > 0
+		}
+
+	def _stock_uom_qty(self, row):
+		"""A material row's qty in its item's stock UOM."""
+		stock_uom = frappe.get_cached_value("Item", row.item_code, "stock_uom")
+		if not row.get("uom") or row.uom == stock_uom:
+			return flt(row.qty)
+		from erpnext.stock.get_item_details import get_conversion_factor
+
+		factor = get_conversion_factor(row.item_code, row.uom).get("conversion_factor")
+		return flt(row.qty) * flt(factor)
 
 	def validate_quantities(self):
 		# Applies to external dust refining too: the physical count is what actually
@@ -1580,7 +2138,7 @@ class RefiningEntry(Document):
 			if bom_details
 			else 0.0
 		)
-		purity = self.get_item_purity(serial_no.item_code)
+		purity = self.get_serial_purity(serial_no.name, serial_no.item_code, bom_no)
 		# Pure gold is computed from the METAL weight (gold alloy only), NOT the
 		# metal-and-finding (net) weight: findings are not gold, and applying the gold
 		# purity to them over-counts the recoverable metal.
@@ -1804,12 +2362,26 @@ class RefiningEntry(Document):
 			# serial_no_details (see _serial_movement_rows).
 			drop_design_code = bool(cint(self.is_external))
 			for sn_row in self.serial_no_details:
-				purity = self.get_item_purity(sn_row.item_code)
+				bom_no = frappe.db.get_value(
+					"Serial No", sn_row.serial_number, "custom_bom_no"
+				)
+				if not bom_no:
+					bom_no = frappe.db.get_value(
+						"BOM", {"item": sn_row.item_code, "is_active": 1}, "name"
+					)
+				# The scan already stored the purity read from the serial's own BOM.
+				purity = sn_row.metal_purity or self.get_serial_purity(
+					sn_row.serial_number, sn_row.item_code, bom_no
+				)
 				if not purity:
 					frappe.throw(
 						_(
-							"Metal Purity is mandatory for Item {0}. Please check Item Variant Attribute details."
-						).format(frappe.bold(sn_row.item_code))
+							"Metal Purity not found for Serial No {0}. Please set Metal Purity on its BOM {1} or on Item {2}."
+						).format(
+							frappe.bold(sn_row.serial_number),
+							frappe.bold(bom_no or "-"),
+							frappe.bold(sn_row.item_code),
+						)
 					)
 				if not drop_design_code:
 					# Internal: the FG item row is what the Material Transfer SE moves
@@ -1828,27 +2400,26 @@ class RefiningEntry(Document):
 					)
 
 				# Also add the BOM components for visibility (they will be skipped during transfer/repack)
-				bom_no = frappe.db.get_value(
-					"Serial No", sn_row.serial_number, "custom_bom_no"
-				)
-				if not bom_no:
-					bom_no = frappe.db.get_value(
-						"BOM", {"item": sn_row.item_code, "is_active": 1}, "name"
-					)
-
+				gold_lines = 0
 				if bom_no:
 					bom_items = frappe.db.get_all(
 						"BOM Item",
 						filters={"parent": bom_no},
 						fields=["item_code", "qty", "stock_qty", "uom", "stock_uom"],
 					)
+					bom_items.extend(
+						self._get_missing_bom_component_items(
+							bom_no, bom_items, block_unmatched_stones=True
+						)
+					)
 					for b_item in bom_items:
 						# ERPNext allows a BOM to list its own parent item once, and this app never strips
 						# it. That row is the DESIGN CODE again — a piece count, not meltable grams — and
 						# the consolidation key below includes serial_no (set on the FG row, blank here) so
-						# the two never merge. Dropped on the external path only, leaving internal weights
-						# and the internal recovery distribution untouched.
-						if drop_design_code and b_item.item_code == sn_row.item_code:
+						# the two never merge. Dropped on both paths: internally it showed the design code
+						# twice, and as a BOM Component it fed the recovery inputs a 1-piece "1 g" row (or,
+						# being the only component, zeroed them instead of using the serial's pure weight).
+						if b_item.item_code == sn_row.item_code:
 							continue
 						self.append(
 							"material_items",
@@ -1861,6 +2432,13 @@ class RefiningEntry(Document):
 								"purity": self.get_item_purity(b_item.item_code),
 							},
 						)
+						if self.is_gold_item(
+							b_item.item_code
+						) and not self._is_returned_intact(b_item.item_code):
+							gold_lines += 1
+
+				if drop_design_code and not gold_lines:
+					self._append_serial_metal_row(sn_row, bom_no)
 
 		if self.refining_type == "Scrap Refining":
 			# Fetch ALL loss items from the department's Scrap warehouse
@@ -1998,7 +2576,9 @@ class RefiningEntry(Document):
 							input_item_map[pct_flt] = item.item_code
 			else:
 				for sn in self.serial_no_details:
-					purity = self.get_item_purity(sn.item_code)
+					purity = sn.metal_purity or self.get_serial_purity(
+						sn.serial_number, sn.item_code
+					)
 					if purity:
 						pct = frappe.db.get_value(
 							"Attribute Value", purity, "purity_percentage"
@@ -2455,6 +3035,8 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def transfer_recovered_materials(self):
+		"""Internal refining: send the recovered gold, diamonds and gemstones to Central RM.
+		External refining hands them back from receive_from_supplier instead."""
 		if self.status != "Completed":
 			frappe.throw(_("Can only transfer if Completed."))
 
@@ -2473,111 +3055,19 @@ class RefiningEntry(Document):
 				)
 			)
 
+		rows = self._recovered_transfer_rows()
+		if not rows:
+			frappe.throw(_("No recovered material to transfer."))
+
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Transfer"
 		se.purpose = "Material Transfer"
 		se.company = self.company
 		se.custom_refining_entry = self.name
 		se.auto_created = 1
-
-		frappe.publish_progress(
-			30,
-			title="Transferring Materials",
-			description="Processing pure gold...",
-		)
-		# Transfer all recovered gold as 24KT pure gold (matching repack output)
-		pure_gold_item = self._get_pure_gold_24kt_item()
-		total_gold_weight = sum(flt(g.refining_gold_weight) for g in self.refined_gold)
-		if total_gold_weight > 0 and pure_gold_item:
-			batch_no = None
-			for b in self.batch_tracking:
-				if b.output_item == pure_gold_item:
-					batch_no = b.output_batch
-					break
-
-			# Fallback: look up available batch from refining warehouse
-			if not batch_no and frappe.db.get_value(
-				"Item", pure_gold_item, "has_batch_no"
-			):
-				batch_no = self._get_available_batch(
-					pure_gold_item, self.refining_warehouse
-				)
-
-			se.append(
-				"items",
-				{
-					"item_code": pure_gold_item,
-					"qty": flt(total_gold_weight, 3),
-					"uom": "Gram",
-					"s_warehouse": self.refining_warehouse,
-					"t_warehouse": target_warehouse,
-					"batch_no": batch_no,
-					"use_serial_batch_fields": 1,
-				},
-			)
-
-		frappe.publish_progress(
-			50,
-			title="Transferring Materials",
-			description="Processing diamonds...",
-		)
-		for dia in self.recovered_diamond:
-			dia_qty = flt(dia.recovered_weight)
-			if dia_qty <= 0:
-				continue
-			conv_item = self.convert_diamond_item_code(dia.item)
-			batch_no = None
-			for b in self.batch_tracking:
-				if b.output_item == conv_item:
-					batch_no = b.output_batch
-					break
-
-			if not batch_no and frappe.db.get_value("Item", conv_item, "has_batch_no"):
-				batch_no = self._get_available_batch(conv_item, self.refining_warehouse)
-
-			se.append(
-				"items",
-				{
-					"item_code": conv_item,
-					"qty": dia_qty,
-					"uom": "Carat",
-					"s_warehouse": self.refining_warehouse,
-					"t_warehouse": target_warehouse,
-					"batch_no": batch_no,
-					"use_serial_batch_fields": 1,
-				},
-			)
-
-		frappe.publish_progress(
-			70,
-			title="Transferring Materials",
-			description="Processing gemstones...",
-		)
-		for gem in self.recovered_gemstone:
-			gem_qty = flt(gem.recovered_weight)
-			if gem_qty <= 0:
-				continue
-			batch_no = None
-			for b in self.batch_tracking:
-				if b.output_item == gem.item:
-					batch_no = b.output_batch
-					break
-
-			if not batch_no and frappe.db.get_value("Item", gem.item, "has_batch_no"):
-				batch_no = self._get_available_batch(gem.item, self.refining_warehouse)
-
-			se.append(
-				"items",
-				{
-					"item_code": gem.item,
-					"qty": gem_qty,
-					"uom": "Carat",
-					"s_warehouse": self.refining_warehouse,
-					"t_warehouse": target_warehouse,
-					"batch_no": batch_no,
-					"use_serial_batch_fields": 1,
-				},
-			)
+		for row in rows:
+			se.append("items", {**row, "t_warehouse": target_warehouse})
 
 		frappe.publish_progress(
 			85,
@@ -2596,6 +3086,205 @@ class RefiningEntry(Document):
 			title="Transferring Materials",
 			description="Materials Transferred Successfully",
 		)
+		return se.name
+
+	def _recovery_output_batch(self, item_code):
+		"""The batch create_repack_se recovered ``item_code`` into, else FIFO in the refining
+		warehouse. Consolidation rows are input batches, never a recovered output."""
+		for b in self.batch_tracking:
+			if b.get("tracking_type") == TRACKING_CONSOLIDATION:
+				continue
+			if b.output_item == item_code:
+				return b.output_batch
+		if frappe.db.get_value("Item", item_code, "has_batch_no"):
+			return self._get_available_batch(item_code, self.refining_warehouse)
+		return None
+
+	def _recovered_transfer_rows(self):
+		"""Source-side Stock Entry rows (out of the refining warehouse) for the recovered
+		gold, as 24KT pure gold matching the repack output, and the recovered stones."""
+		rows = []
+		pure_gold_item = self._get_pure_gold_24kt_item()
+		total_gold_weight = sum(flt(g.refining_gold_weight) for g in self.refined_gold)
+		if total_gold_weight > 0 and pure_gold_item:
+			rows.append(
+				{
+					"item_code": pure_gold_item,
+					"qty": flt(total_gold_weight, 3),
+					"uom": "Gram",
+					"s_warehouse": self.refining_warehouse,
+					"batch_no": self._recovery_output_batch(pure_gold_item),
+					"use_serial_batch_fields": 1,
+				}
+			)
+
+		for dia in self.recovered_diamond:
+			dia_qty = flt(dia.recovered_weight)
+			if dia_qty <= 0:
+				continue
+			conv_item = self.convert_diamond_item_code(dia.item)
+			rows.append(
+				{
+					"item_code": conv_item,
+					"qty": dia_qty,
+					"uom": "Carat",
+					"s_warehouse": self.refining_warehouse,
+					"batch_no": self._recovery_output_batch(conv_item),
+					"use_serial_batch_fields": 1,
+				}
+			)
+
+		for gem in self.recovered_gemstone:
+			gem_qty = flt(gem.recovered_weight)
+			if gem_qty <= 0:
+				continue
+			rows.append(
+				{
+					"item_code": gem.item,
+					"qty": gem_qty,
+					"uom": "Carat",
+					"s_warehouse": self.refining_warehouse,
+					"batch_no": self._recovery_output_batch(gem.item),
+					"use_serial_batch_fields": 1,
+				}
+			)
+		return rows
+
+	# --- Central hand-back (Scrap / Unused/Loose Material) ---
+
+	def _get_central_transit_warehouse(self):
+		"""Central department's Transit warehouse, where refined material is handed back."""
+		central_dept = frappe.db.get_value(
+			"Department",
+			{"name": ["like", "Central%"], "company": self.company, "is_group": 0},
+			"name",
+		)
+		wh = None
+		if central_dept:
+			wh = frappe.db.get_value(
+				"Warehouse",
+				{
+					"department": central_dept,
+					"warehouse_type": "Transit",
+					"disabled": 0,
+					"is_group": 0,
+				},
+				"name",
+			)
+		if not wh:
+			central_rm = self._get_central_rm_warehouse()
+			if central_rm:
+				wh = frappe.db.get_value(
+					"Warehouse", central_rm, "default_in_transit_warehouse"
+				)
+		if not wh:
+			frappe.throw(
+				_(
+					"Cannot determine the Central Transit warehouse. Please ensure the Central "
+					"department has a warehouse of type 'Transit'."
+				)
+			)
+		return wh
+
+	def _create_central_transit_draft(self, rows, transit_warehouse):
+		"""Hand the refined material back to Central as a DRAFT Add-to-Transit Material
+		Transfer into Central Transit. Central reviews and submits it as their receipt
+		(the Stock Entry hook then marks this entry Transferred) and ends the transit into
+		Central RM. Nothing moves until they do."""
+		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
+		se.stock_entry_type = "Material Transfer"
+		se.purpose = "Material Transfer"
+		se.company = self.company
+		se.custom_refining_entry = self.name
+		se.auto_created = 1
+		se.add_to_transit = 1
+		se.remarks = _(
+			"Refined material from Refining Entry {0}, to be received by Central."
+		).format(self.name)
+		for row in rows:
+			se.append("items", {**row, "t_warehouse": transit_warehouse})
+		self._stamp_batch_ownership(se)
+		se.insert(ignore_permissions=True)
+		self.db_set("transfer_se", se.name)
+		frappe.msgprint(
+			_("Draft Stock Entry {0} created for Central to review and submit.").format(
+				frappe.get_desk_link("Stock Entry", se.name)
+			),
+			alert=True,
+			indicator="green",
+		)
+		return se.name
+
+	@frappe.whitelist()
+	def create_central_transfer(self):
+		"""(Re)create the draft hand-back to Central Transit for a Completed external Scrap or
+		Unused/Loose Material entry, e.g. after Central deleted the previous draft."""
+		if not cint(self.is_external):
+			frappe.throw(_("Only external refining hands back to Central Transit."))
+		if self.refining_type not in CONSOLIDATED_REFINING_TYPES:
+			frappe.throw(
+				_("Only Scrap and Unused/Loose Material refining hand back to Central.")
+			)
+		if self.status != "Completed":
+			frappe.throw(_("Can only transfer if Completed."))
+		self._throw_if_central_transfer_open()
+		rows = self._received_transfer_rows()
+		if not rows:
+			frappe.throw(_("No received material to transfer."))
+		return self._create_central_transit_draft(
+			rows, self._get_central_transit_warehouse()
+		)
+
+	def _received_transfer_rows(self):
+		"""Source-side rows for what the external receipt (repack_se) produced into the
+		department RM warehouse: the refined metal and the returned stones."""
+		if not self.repack_se:
+			return []
+		target_wh = self._get_source_dept_rm_warehouse(self.department)
+		return [
+			{
+				"item_code": d.item_code,
+				"qty": d.qty,
+				"uom": d.uom,
+				"s_warehouse": target_wh,
+				"batch_no": d.batch_no,
+				"use_serial_batch_fields": 1,
+			}
+			for d in frappe.get_all(
+				"Stock Entry Detail",
+				filters={"parent": self.repack_se, "t_warehouse": target_wh},
+				fields=["item_code", "qty", "uom", "batch_no"],
+				order_by="idx asc",
+			)
+			if flt(d.qty) > 0
+		]
+
+	def _throw_if_central_transfer_open(self):
+		# Re-read under a row lock: two requests that loaded the same entry would otherwise both
+		# see no hand-back and each insert one. The second now waits for the first's commit and
+		# finds its draft.
+		self.transfer_se = frappe.db.get_value(
+			"Refining Entry", self.name, "transfer_se", for_update=True
+		)
+		if self.transfer_se and frappe.db.exists(
+			"Stock Entry", {"name": self.transfer_se, "docstatus": ["<", 2]}
+		):
+			frappe.throw(
+				_(
+					"Recovered material is already being transferred by Stock Entry {0}."
+				).format(frappe.bold(self.transfer_se))
+			)
+
+	def _delete_draft_central_transfer(self):
+		"""Drop a hand-back Central has not submitted yet, so cancelling this entry does not
+		leave a draft that would move material the cancel just reversed."""
+		if not self.transfer_se:
+			return
+		if frappe.db.get_value("Stock Entry", self.transfer_se, "docstatus") == 0:
+			name = self.transfer_se
+			self.db_set("transfer_se", None)
+			frappe.delete_doc("Stock Entry", name, ignore_permissions=True)
 
 	# --- Stock Entry Automation ---
 
@@ -2604,8 +3293,15 @@ class RefiningEntry(Document):
 		(internal flow) or, when ``target_warehouse`` is given (external refining
 		sending), into the supplier's warehouse instead."""
 		target = target_warehouse or self.refining_warehouse
+		# Before anything moves or is released: every Work Order batch row must be the
+		# scanned MWOs' own stock at the warehouse it names.
+		if self.refining_type == "Work Order Refining":
+			# Class-qualified: callers that drive this method with a stand-in document
+			# (the lock-order tests) get the same check instead of an AttributeError.
+			RefiningEntry._validate_work_order_material_owned(self)
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Transfer"
 		se.purpose = "Material Transfer"
 		se.company = self.company
@@ -2720,14 +3416,19 @@ class RefiningEntry(Document):
 						},
 					)
 
-					allocated_qty = sum(flt(a["qty"], precision) for a in allocations)
-					if self.refining_type == "Scrap Refining" and allocated_qty < flt(
-						item.qty, precision
-					):
+					# Round the sum before comparing: 3-decimal allocations still add up in
+					# binary floating point (0.022 + 0.006 = 0.027999999999999997), and the
+					# ~1e-18 left over became a zero-qty dust receipt row that ERPNext
+					# rejects ("Qty in Stock UOM can not be zero") — RFN-SCP-26-00023.
+					allocated_qty = flt(
+						sum(flt(a["qty"], precision) for a in allocations), precision
+					)
+					shortfall = flt(flt(item.qty, precision) - allocated_qty, precision)
+					if self.refining_type == "Scrap Refining" and shortfall >= min_qty:
 						self._dust_shortfalls.append(
 							{
 								"item_code": item.item_code,
-								"qty": flt(item.qty, precision) - allocated_qty,
+								"qty": shortfall,
 								"uom": item.uom,
 								"purity": item.purity,
 							}
@@ -2762,11 +3463,12 @@ class RefiningEntry(Document):
 						precision,
 					)
 					transfer_qty = min(transfer_qty, max(0.0, bin_qty))
-					if transfer_qty < flt(item.qty, precision):
+					shortfall = flt(flt(item.qty, precision) - transfer_qty, precision)
+					if shortfall >= min_qty:
 						self._dust_shortfalls.append(
 							{
 								"item_code": item.item_code,
-								"qty": flt(item.qty, precision) - transfer_qty,
+								"qty": shortfall,
 								"uom": item.uom,
 								"purity": item.purity,
 							}
@@ -2786,6 +3488,30 @@ class RefiningEntry(Document):
 							"use_serial_batch_fields": 1,
 						},
 					)
+
+		# Take every naming counter this submit will mint now, before the first Bin: the
+		# SRE cancels below write Bin.reserved_qty, then the transfer locks its own Bins.
+		# That covers the transfer and, for a Scrap shortfall, the dust Material Receipt that
+		# create_dust_opening_receipt_se mints right after it. Left to the inserts, Work
+		# Order Refining took MAT-STE- after the SRE cancels' Bins, and once Stock Entry
+		# naming is sharded per type the receipt's own counter would be taken while the
+		# transfer's Bins are held. The external Purchase Order counter stays terminal.
+		minted = ["Material Transfer"] if se.items else []
+		if self.refining_type == "Scrap Refining" and self._dust_shortfalls:
+			minted.append("Material Receipt")
+		if self._consolidates_batches(target_warehouse):
+			# kggk_uat: on_submit_external then repacks the batches this submit landed into one
+			# per item (consolidate_refinery_batches), after this transfer's Bins. Its Repack
+			# counter (on KG GK the Repack naming rule) is taken here too, before any Bin: left
+			# to the insert it came after MAT-STE- and the Bins, the reverse of Employee IR,
+			# Serial Number Creator and Product Certification.
+			minted.append("Repack")
+		if minted:
+			from jewellery_erpnext.jewellery_erpnext.lock_order import (
+				preallocate_series_for_docs,
+			)
+
+			preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
 
 		# Work Order Refining: release the source MWO Stock Reservation Entries so this
 		# Stock Entry can consume the now unreserved stock (otherwise the submit fails with
@@ -2969,6 +3695,204 @@ class RefiningEntry(Document):
 				rows.append((mwo, sre))
 		return rows
 
+	def _owned_batch_reservations(self, keys):
+		"""``{(item_code, batch_no): {warehouse: {mwo: live_qty}}}`` for the scanned MWOs.
+
+		Built from the same reservations ``_source_mwo_sre_rows`` hands to
+		``_cancel_source_mwo_sres`` -- the ones this entry may consume. Each batch is capped
+		by its own undelivered child qty and by the header remainder, rounded to 3 dp
+		(EOD's and the Serial Number Creator's reading). Qty-based reservations name no
+		batch, so they are left out. Three queries, however many rows.
+		"""
+		sre_rows = [
+			(mwo, sre)
+			for mwo, sre in self._source_mwo_sre_rows(keys=keys)
+			if cint(sre.has_batch_no) and sre.reservation_based_on != "Qty"
+		]
+		if not sre_rows:
+			return {}
+		names = [sre.name for _mwo, sre in sre_rows]
+		headers = {
+			r.name: flt(r.reserved_qty) - flt(r.delivered_qty)
+			for r in frappe.get_all(
+				"Stock Reservation Entry",
+				filters={"name": ["in", names]},
+				fields=["name", "reserved_qty", "delivered_qty"],
+				limit_page_length=0,
+			)
+		}
+		scoped = {}
+		for child in frappe.get_all(
+			"Serial and Batch Entry",
+			filters={"parent": ["in", names], "parenttype": "Stock Reservation Entry"},
+			fields=["parent", "batch_no", "qty", "delivered_qty"],
+			limit_page_length=0,
+		):
+			if not child.batch_no:
+				continue
+			by_batch = scoped.setdefault(child.parent, {})
+			by_batch[child.batch_no] = (
+				by_batch.get(child.batch_no, 0.0)
+				+ flt(child.qty)
+				- flt(child.delivered_qty)
+			)
+
+		owned = {}
+		for mwo, sre in sre_rows:
+			for batch_no, qty in (scoped.get(sre.name) or {}).items():
+				remaining = flt(min(headers.get(sre.name, 0.0), qty), 3)
+				if remaining <= 0.0001:
+					continue
+				by_wh = owned.setdefault((sre.item_code, batch_no), {})
+				by_mwo = by_wh.setdefault(sre.warehouse, {})
+				by_mwo[mwo] = flt(by_mwo.get(mwo, 0.0) + remaining, 3)
+		return owned
+
+	def _validate_work_order_material_owned(self):
+		"""Work Order Refining preflight: each batch row must be the scanned MWOs' OWN stock.
+
+		Runs before the transfer touches anything (reservations, stock, weights, the
+		external PO). The table is grouped by (item, batch, warehouse) across MWOs and its
+		source warehouse was resolved from GROSS batch stock, so a row can name a warehouse
+		that holds the batch only for OTHER work orders -- e.g. an MWO whose EOD transfer is
+		still pending, its share sitting in the previous department. Work Order Refining
+		reads physical stock (it is about to release these reservations), so without this
+		check such a row either fails deep inside the transfer with a pooled, misleading
+		figure, or, worse, succeeds by taking a sibling MWO's reserved metal.
+
+		Per (item, batch, warehouse) the rows' TOTAL is compared with what the scanned MWOs
+		hold live there, capped by the batch's physical qty -- one running figure, so two
+		rows can never claim the same grams twice. A batch none of the scanned MWOs holds a
+		live batch reservation for is left to the existing checks (stock-based work orders).
+		"""
+		if self.refining_type != "Work Order Refining":
+			return
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+		required = {}
+		for row in self.material_items:
+			if row.get("source_type") == "BOM Component":
+				continue
+			if not row.batch_no or row.serial_no or flt(row.qty) <= 0:
+				continue
+			key = (row.item_code, row.batch_no, row.warehouse or self.warehouse)
+			entry = required.setdefault(key, [0.0, []])
+			entry[0] += flt(row.qty)
+			entry[1].append(row.idx)
+		if not required:
+			return
+
+		owned = RefiningEntry._owned_batch_reservations(
+			self, {(item_code, batch_no) for item_code, batch_no, _wh in required}
+		)
+		problems = []
+		for (item_code, batch_no, warehouse), (qty, idxs) in required.items():
+			holders = owned.get((item_code, batch_no))
+			if not holders:
+				continue
+			qty = flt(qty, 3)
+			here = holders.get(warehouse) or {}
+			reserved_here = flt(sum(here.values()), 3)
+			physical = flt(
+				get_batch_qty(
+					batch_no=batch_no,
+					warehouse=warehouse,
+					item_code=item_code,
+					ignore_reserved_stock=True,
+				)
+				or 0,
+				3,
+			)
+			usable = flt(min(reserved_here, physical), 3)
+			if qty <= usable + 0.0005:
+				continue
+			held_here = ", ".join(f"{m} {q}" for m, q in sorted(here.items())) or _(
+				"none"
+			)
+			elsewhere = "; ".join(
+				f"{m} {q} at {wh}"
+				for wh, by_mwo in sorted(holders.items())
+				if wh != warehouse
+				for m, q in sorted(by_mwo.items())
+			)
+			problems.append(
+				_(
+					"Row {0}: {1} / {2} at {3} — required {4}, held here by the scanned "
+					"Manufacturing Work Orders {5} ({6}; physical {7}).{8}"
+				).format(
+					", ".join(str(i) for i in idxs),
+					frappe.bold(item_code),
+					frappe.bold(batch_no),
+					frappe.bold(warehouse),
+					qty,
+					reserved_here,
+					held_here,
+					physical,
+					(" " + _("Still held elsewhere: {0}.").format(elsewhere))
+					if elsewhere
+					else "",
+				)
+			)
+		if problems:
+			frappe.throw(
+				_(
+					"Work Order material is not at its source warehouse for the scanned "
+					"Manufacturing Work Orders:<br>{0}<br><br>A share held at another warehouse "
+					"means that work order's EOD transfer has not run yet: resolve its EOD sync "
+					"first. If the material has moved since the table was built, clear Material "
+					"Items and save to re-fetch."
+				).format("<br>".join(problems)),
+				title=_("Work Order Material Not Available"),
+			)
+
+	def _append_serial_metal_row(self, sn_row, bom_no):
+		"""External only: stand in for the gold of a serial whose BOM lists no gold line.
+
+		Some FG BOMs carry only the design code itself -- BOM-BA01328-001-101 is one line,
+		BA01328-001 x 1 Nos -- with the piece's metal recorded only in the BOM header. External
+		refining reads the gold it sends, bills and expects back from gold Material Items rows,
+		so such a serial added nothing and the submit stopped at "No gold weight to send for
+		external refining". Internal refining already falls back to the serial's own weights
+		for this case (``_compute_input_pure_weight``).
+
+		The row is the serial's metal item at the metal weight its scan read from the BOM
+		header. It is a BOM Component like the lines it stands in for, so the stock builders
+		skip it (the piece itself moves through ``_serial_movement_rows``) while qty_to_refine,
+		the Purchase Order and the pure input all count it. Added only when the BOM gave no gold
+		line, so no weight is counted twice; serials of the same metal merge into one line in
+		the consolidation of ``build_material_table``.
+		"""
+		metal_weight = flt(sn_row.metal_weight, 3)
+		if metal_weight <= 0 or not bom_no:
+			return
+		header = frappe.db.get_value(
+			"BOM",
+			bom_no,
+			["metal_type", "metal_touch", "metal_purity", "metal_colour"],
+			as_dict=True,
+		)
+		if not header or not header.metal_type:
+			return
+		metal_item = get_item_from_attribute(
+			header.metal_type,
+			header.metal_touch,
+			header.metal_purity or sn_row.metal_purity,
+			header.metal_colour,
+		)
+		if not metal_item:
+			return
+		self.append(
+			"material_items",
+			{
+				"item_code": metal_item,
+				"warehouse": self.warehouse,
+				"qty": metal_weight,
+				"uom": "Gram",
+				"source_type": "BOM Component",
+				"purity": self.get_item_purity(metal_item),
+			},
+		)
+
 	def _serial_movement_rows(self):
 		"""Material-Items-shaped rows for the serialised pieces of an EXTERNAL serial
 		refining entry, synthesised from ``serial_no_details``.
@@ -3150,6 +4074,7 @@ class RefiningEntry(Document):
 			return
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Material Receipt"
 		se.purpose = "Material Receipt"
 		se.company = self.company
@@ -3162,21 +4087,30 @@ class RefiningEntry(Document):
 
 		added = False
 		for sf in shortfalls:
-			if sf["qty"] <= 0:
+			# Below a milligram is float residue, not metal: a row that rounds to zero
+			# fails the whole submit.
+			if flt(sf["qty"], 3) < 0.001:
 				continue
 			dust_batch = self.get_dust_opening_batch(sf["item_code"])
-			se.append(
-				"items",
-				{
-					"item_code": sf["item_code"],
-					"qty": sf["qty"],
-					"uom": sf["uom"],
-					"t_warehouse": target,
-					"purity": sf["purity"],
-					"batch_no": dust_batch,
-					"use_serial_batch_fields": 1,
-				},
-			)
+			row = {
+				"item_code": sf["item_code"],
+				"qty": sf["qty"],
+				"uom": sf["uom"],
+				"t_warehouse": target,
+				"purity": sf["purity"],
+				"batch_no": dust_batch,
+				"use_serial_batch_fields": 1,
+			}
+			# Refining consumables (napkins, vacuum bag dust, ...) are counted, not stocked:
+			# they arrive here with no valuation history, and their gold is only known once
+			# refined, so they come in at zero rather than failing the submit.
+			if (
+				cint(self.is_external)
+				and frappe.db.get_value("Item", sf["item_code"], "item_group")
+				in REFINING_CONSUMABLE_ITEM_GROUPS
+			):
+				row["allow_zero_valuation_rate"] = 1
+			se.append("items", row)
 			added = True
 
 		if not added:
@@ -3233,6 +4167,7 @@ class RefiningEntry(Document):
 		frappe.db.savepoint(repack_savepoint)
 
 		se = frappe.new_doc("Stock Entry")
+		apply_refining_naming_series(se)
 		se.stock_entry_type = "Manufacture"
 		se.purpose = "Manufacture"
 		se.company = self.company
@@ -3555,6 +4490,20 @@ class RefiningEntry(Document):
 					},
 				)
 
+		# Take this completion's naming counters before the Manufacture's Bins and the MOP
+		# Log rows complete_refining writes after it: the Manufacture itself and, when there
+		# is a refining loss, the scrap Material Transfer complete_refining mints last. With
+		# per-type naming that transfer's counter would otherwise be taken while Bins are
+		# held. The retry below re-enters the same rows.
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			preallocate_series_for_docs,
+		)
+
+		minted = ["Manufacture"]
+		if flt(self.refining_loss) > 0:
+			minted.append("Material Transfer")
+		preallocate_series_for_docs(*_refining_series_stubs(self.company, *minted))
+
 		se.insert(ignore_permissions=True)
 		try:
 			se.submit()
@@ -3580,9 +4529,310 @@ class RefiningEntry(Document):
 			child = self.append("batch_tracking", bt)
 			child.db_insert()
 
+	def _consolidates_batches(self, target_warehouse):
+		"""Whether consolidate_refinery_batches will repack anything for this submit: its own
+		early-return test, so the Repack counter is planned exactly when it can be minted."""
+		return bool(
+			cint(self.is_external)
+			and self.refining_type in CONSOLIDATED_REFINING_TYPES
+			and not self.parent_refining_entry
+			and target_warehouse
+		)
+
+	def consolidate_refinery_batches(self, target_warehouse):
+		"""Repack every batch this entry brought into ``target_warehouse`` (the refining
+		warehouse, or the supplier's for external refining) into ONE new batch per item.
+
+		Scrap and Unused/Loose Material only. Sources are the batched rows the Material
+		Transfer and the physical-excess receipt landed there. A batch belongs to one item,
+		and customer-owned material must stay apart from own stock, so they are grouped by
+		``(item, customer owner)``; each group gets its own Repack with a single finished
+		good, which ERPNext costs at the qty-weighted valuation of what it consumed. The new
+		batch carries the qty-weighted Batch Rate / Alloy Rate of its sources, and the
+		Repack fills its ``custom_origin_entries`` (update_parent_batch_id). The source ->
+		consolidated pairs are kept as Consolidation rows in Batch Tracking, which the
+		repack and the supplier receipt read to consume the consolidated batch."""
+		if not self._consolidates_batches(target_warehouse):
+			return
+
+		precision = 3
+		min_qty = 0.001
+		groups = {}
+		for se_name in filter(None, (self.material_transfer_se, self.receiving_se)):
+			for d in frappe.get_all(
+				"Stock Entry Detail",
+				filters={
+					"parent": se_name,
+					"t_warehouse": target_warehouse,
+					"batch_no": ["is", "set"],
+				},
+				fields=[
+					"item_code",
+					"batch_no",
+					"transfer_qty",
+					"stock_uom",
+					"s_warehouse",
+				],
+				order_by="idx asc",
+			):
+				qty = flt(d.transfer_qty, precision)
+				if qty < min_qty:
+					continue
+				owner = (
+					self._batch_customer_owner(d.batch_no)[1]
+					if self._batch_is_customer_owned(d.batch_no)
+					else None
+				)
+				group = groups.setdefault(
+					(d.item_code, owner), {"uom": d.stock_uom, "sources": {}}
+				)
+				key = (d.batch_no, d.s_warehouse, se_name)
+				group["sources"][key] = flt(
+					group["sources"].get(key, 0.0) + qty, precision
+				)
+
+		tracking = []
+		for (item_code, customer), group in groups.items():
+			if customer and not self._item_allows_customer_goods(item_code):
+				# A Customer Goods batch cannot be minted for this item; leave the customer's
+				# batches as they are rather than turning them into own stock.
+				continue
+			sources = {}
+			for (batch_no, _s_wh, _se), qty in group["sources"].items():
+				sources[batch_no] = flt(sources.get(batch_no, 0.0) + qty, precision)
+			total = flt(sum(sources.values()), precision)
+			new_batch = self._auto_create_batch(
+				item_code,
+				customer=customer,
+				sources=list(sources.items()),
+				force=True,
+			)
+			if not new_batch:
+				continue
+
+			se = frappe.new_doc("Stock Entry")
+			# A Repack naming rule (KG GK's) still wins over this series.
+			apply_refining_naming_series(se)
+			se.stock_entry_type = "Repack"
+			se.purpose = "Repack"
+			se.company = self.company
+			se.custom_refining_entry = self.name
+			se.auto_created = 1
+			se.manufacturer = self.manufacturer
+			se.remarks = _("Refining batch consolidation for {0}").format(self.name)
+			for batch_no, qty in sources.items():
+				se.append(
+					"items",
+					{
+						"item_code": item_code,
+						"qty": qty,
+						"uom": group["uom"],
+						"s_warehouse": target_warehouse,
+						"batch_no": batch_no,
+						"use_serial_batch_fields": 1,
+						"is_finished_item": 0,
+						# Scrap routinely enters stock through zero-rate receipts.
+						"allow_zero_valuation_rate": 1,
+					},
+				)
+			se.append(
+				"items",
+				{
+					"item_code": item_code,
+					"qty": total,
+					"uom": group["uom"],
+					"t_warehouse": target_warehouse,
+					"batch_no": new_batch,
+					"use_serial_batch_fields": 1,
+					"is_finished_item": 1,
+				},
+			)
+			self._stamp_batch_ownership(se)
+			# Refining items default their expense account to the Refining Scrap warehouse's
+			# own Stock account, which ERPNext rejects as a Difference Account.
+			self.set_dust_receipt_difference_account(se)
+			se.insert(ignore_permissions=True)
+			finished = next(row for row in se.items if row.is_finished_item)
+			if not flt(finished.basic_rate):
+				# Every source was unvalued: let the consolidated batch post at 0 too. Not set
+				# up front, because on ERPNext 16.36+ the flag zeroes the rate costed from the
+				# consumed rows even when they have one.
+				finished.allow_zero_valuation_rate = 1
+				se.save(ignore_permissions=True)
+			se.submit()
+
+			for (batch_no, s_wh, se_in), qty in group["sources"].items():
+				tracking.append(
+					{
+						"tracking_type": TRACKING_CONSOLIDATION,
+						"source_batch": batch_no,
+						"source_item": item_code,
+						"source_warehouse": s_wh,
+						"source_qty": qty,
+						"output_batch": new_batch,
+						"output_item": item_code,
+						"output_warehouse": target_warehouse,
+						"output_qty": total,
+						"stock_entry_in": se_in,
+						"stock_entry_out": se.name,
+					}
+				)
+
+		for row in tracking:
+			child = self.append("batch_tracking", row)
+			child.docstatus = self.docstatus
+			child.db_insert()
+
+	def _consolidated_batches(self, item_code=None):
+		"""``{item_code: [(batch_no, qty), ...]}`` of this entry's consolidated batches."""
+		out = {}
+		seen = set()
+		for row in self.batch_tracking:
+			if (
+				row.get("tracking_type") != TRACKING_CONSOLIDATION
+				or not row.output_batch
+			):
+				continue
+			if item_code and row.output_item != item_code:
+				continue
+			if row.output_batch in seen:
+				continue
+			seen.add(row.output_batch)
+			out.setdefault(row.output_item, []).append(
+				(row.output_batch, flt(row.output_qty))
+			)
+		return out
+
+	def _allocate_consolidated_first(self, item_code, warehouse, qty):
+		"""Batches to draw ``qty`` of ``item_code`` from in ``warehouse``: this entry's
+		consolidated batches first, then FIFO (non-throwing) for any remainder. A shared
+		warehouse such as the supplier's also holds other entries' batches, which plain FIFO
+		would take first."""
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+		precision = 3
+		min_qty = 0.001
+		allocations = []
+		remaining = flt(qty, precision)
+		taken = {}
+		for batch_no, _qty in self._consolidated_batches(item_code).get(item_code, []):
+			if remaining < min_qty:
+				break
+			available = flt(
+				get_batch_qty(
+					batch_no=batch_no, warehouse=warehouse, item_code=item_code
+				)
+				or 0,
+				precision,
+			)
+			take = flt(min(available, remaining), precision)
+			if take >= min_qty:
+				allocations.append({"batch_no": batch_no, "qty": take})
+				taken[batch_no] = take
+				remaining = flt(remaining - take, precision)
+		if remaining >= min_qty:
+			# Ask for enough that skipping the batches already drawn still covers the rest.
+			for alloc in self.allocate_fifo_batches(
+				item_code,
+				warehouse,
+				flt(remaining + sum(taken.values()), precision),
+				throw_if_missing=False,
+			):
+				if remaining < min_qty:
+					break
+				if alloc["batch_no"] in taken:
+					continue
+				take = flt(min(flt(alloc["qty"]), remaining), precision)
+				if take >= min_qty:
+					allocations.append({"batch_no": alloc["batch_no"], "qty": take})
+					remaining = flt(remaining - take, precision)
+		return allocations
+
+	def _record_loss_on_consolidated_batches(self):
+		"""Book the refining loss against the consolidated batches it came out of.
+
+		Each purity bucket's loss in Gold Recovery Details is shared across the consolidated
+		batches of that purity by qty (falling back to the pure-weight share of the whole
+		loss when no bucket matches a batch). The share is stamped on the Batch
+		(custom_refining_loss) and split over its Consolidation rows by source qty, so the
+		loss also traces back to every source batch."""
+		consolidated = self._consolidated_batches()
+		if not consolidated or flt(self.refining_loss) <= 0:
+			return
+		precision = 3
+
+		def purity_pct(item_code):
+			purity = next(
+				(
+					r.purity
+					for r in self.material_items
+					if r.item_code == item_code and r.purity
+				),
+				None,
+			) or self.get_item_purity(item_code)
+			return (
+				flt(
+					frappe.db.get_value("Attribute Value", purity, "purity_percentage"),
+					3,
+				)
+				if purity
+				else 0.0
+			)
+
+		batches = [
+			(batch_no, flt(qty), purity_pct(item_code))
+			for item_code, rows in consolidated.items()
+			for batch_no, qty in rows
+		]
+		loss_by_pct = {}
+		for d in self.gold_recovery_details:
+			pct = flt(d.purity_percentage, 3)
+			loss_by_pct[pct] = loss_by_pct.get(pct, 0.0) + flt(d.loss_weight)
+
+		# Every split goes through split_rounded, so the stored shares add up exactly to their
+		# parent at both levels: purity loss -> consolidated batches -> source rows.
+		shares = {}
+		for pct, loss in loss_by_pct.items():
+			members = {b: q for b, q, p in batches if p == pct and q > 0}
+			if members:
+				for batch_no, share in split_rounded(loss, members, precision).items():
+					shares[batch_no] = flt(shares.get(batch_no, 0.0) + share, precision)
+		if not shares:
+			weights = (
+				{b: q * p / 100.0 for b, q, p in batches}
+				if any(p for _b, _q, p in batches)
+				else {b: q for b, q, _p in batches}
+			)
+			shares = split_rounded(self.refining_loss, weights, precision)
+
+		if frappe.get_meta("Batch").has_field("custom_refining_loss"):
+			for batch_no, loss in shares.items():
+				frappe.db.set_value(
+					"Batch", batch_no, "custom_refining_loss", flt(loss, precision)
+				)
+		sources = {}
+		for row in self.batch_tracking:
+			if (
+				row.get("tracking_type") == TRACKING_CONSOLIDATION
+				and row.output_batch in shares
+			):
+				sources.setdefault(row.output_batch, []).append(row)
+		for batch_no, rows in sources.items():
+			split = split_rounded(
+				shares[batch_no],
+				{row.name: flt(row.source_qty) for row in rows},
+				precision,
+			)
+			for row in rows:
+				row.db_set("refining_loss", split[row.name], update_modified=False)
+
 	def cancel_linked_stock_entries(self):
+		# Newest first: the consolidation Repacks consume what the transfer brought in, and the
+		# Central hand-back moves what the receipt produced, so each must go before its source.
 		ses = frappe.get_all(
-			"Stock Entry", filters={"custom_refining_entry": self.name, "docstatus": 1}
+			"Stock Entry",
+			filters={"custom_refining_entry": self.name, "docstatus": 1},
+			order_by="creation desc",
 		)
 		for se in ses:
 			doc = frappe.get_doc("Stock Entry", se.name)
@@ -3634,6 +4884,7 @@ class RefiningEntry(Document):
 		dust_item = self.get_dust_item()
 		if scrap_warehouse and dust_item:
 			se = frappe.new_doc("Stock Entry")
+			apply_refining_naming_series(se)
 			se.stock_entry_type = "Material Transfer"
 			se.purpose = "Material Transfer"
 			se.company = self.company
@@ -3763,8 +5014,14 @@ class RefiningEntry(Document):
 			return karat
 		return None
 
-	def _auto_create_batch(self, item_code, customer=None):
-		if not self.auto_create_batch:
+	def _auto_create_batch(self, item_code, customer=None, sources=None, force=False):
+		"""Mint a batch of ``item_code`` for this entry.
+
+		``sources`` (``[(batch_no, qty)]``) carries their qty-weighted Batch Rate / Alloy Rate
+		onto the new batch, which a hand-built batch would otherwise never get. ``force``
+		mints even with Auto Create Batch unticked: a consolidated refining batch must exist
+		for the material to move at all."""
+		if not self.auto_create_batch and not force:
 			return None
 
 		item = frappe.get_doc("Item", item_code)
@@ -3798,6 +5055,14 @@ class RefiningEntry(Document):
 			# Append a short random suffix to avoid collisions when two batches of the
 			# same item are created within the same second.
 			batch.batch_id = f"{item_code}-RFN-{ts}-{frappe.generate_hash(length=4)}"
+
+		if sources:
+			from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
+				carry_rates_from_source_batches,
+			)
+
+			carry_rates_from_source_batches(batch, sources)
+			batch.custom_refining_entry = self.name
 
 		batch.insert()
 		return batch.name
@@ -3836,6 +5101,33 @@ class RefiningEntry(Document):
 			# batch would leave the ledger and the Batch master permanently disagreeing.
 			return inv_type == "Customer Goods" and batch_customer == customer
 		return not batch_is_customer_owned
+
+	def _returned_stone_rate(self, item_code, batch_no=None):
+		"""Rate a diamond or gemstone handed back by the refiner is received at.
+
+		The Batch Rate of the batch it goes back into first, so the batch keeps the rate it
+		shows. Then the item's last purchase rate, then the newest Batch Rate any batch of the
+		item carries (a stone made in-house, never bought). The warehouse valuation is not
+		used: earlier receipts took stones in at 0 and diluted it (MAT-STE-63008 left
+		D-NT-RO-6B-+11.5-12 at 0 in Central RM). 0 only when none of these is known.
+		"""
+		has_batch_rate = frappe.get_meta("Batch").has_field("custom_metal_rate")
+		if batch_no and has_batch_rate:
+			if rate := flt(frappe.db.get_value("Batch", batch_no, "custom_metal_rate")):
+				return rate
+		if rate := flt(frappe.db.get_value("Item", item_code, "last_purchase_rate")):
+			return rate
+		if has_batch_rate:
+			latest = frappe.get_all(
+				"Batch",
+				filters={"item": item_code, "custom_metal_rate": [">", 0]},
+				fields=["custom_metal_rate"],
+				order_by="creation desc",
+				limit=1,
+			)
+			if latest:
+				return flt(latest[0].custom_metal_rate)
+		return 0.0
 
 	def _receive_target_batch(self, item_code, warehouse, customer=None, exclude=None):
 		"""Batch to receive refining output into: an EXISTING one when there is one,
@@ -4269,35 +5561,10 @@ class RefiningEntry(Document):
 		single save share them."""
 		cache = self.__dict__.setdefault("_refining_restriction_cache", {})
 		key = self.refining_type or ""
-		if key in cache:
-			return cache[key]
-
-		# A site that has not migrated yet has no child table, and refining must keep
-		# working rather than throw "1146 Table doesn't exist" on every save. Same
-		# defensive shape the Batch.custom_batch_type reads use.
-		setting = (
-			resolve_manufacturing_setting(self.company, self.get("manufacturer"))
-			if frappe.db.table_exists("Refining Variant Restriction")
-			else None
-		)
-		if not setting:
-			cache[key] = frozenset()
-			return cache[key]
-
-		rows = frappe.db.get_all(
-			"Refining Variant Restriction",
-			filters={
-				"parent": setting,
-				"parenttype": "Manufacturing Setting",
-				"parentfield": "refining_variant_restrictions",
-			},
-			fields=["variant", "refining_type"],
-		)
-		cache[key] = frozenset(
-			row.variant
-			for row in rows
-			if row.variant and (not row.refining_type or row.refining_type == key)
-		)
+		if key not in cache:
+			cache[key] = restricted_variants_for(
+				self.company, self.refining_type, self.get("manufacturer")
+			)
 		return cache[key]
 
 	def _blocked_item_codes(self, item_codes):
@@ -4438,7 +5705,9 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def get_blocked_variants(self):
-		"""Restricted templates for the client-side Material Items link filter."""
+		"""Back-compat thin wrapper for API callers, scripts and browsers still running the
+		old form script. The desk form now calls the module-level ``get_blocked_variants_for``,
+		which does not lock this document. Remove after one release."""
 		return sorted(self._restricted_variants())
 
 	def is_gold_item(self, item_code):
@@ -4532,6 +5801,164 @@ class RefiningEntry(Document):
 		"""
 		return self.is_diamond_item(item_code) or self.is_gemstone_item(item_code)
 
+	def _resolve_bom_component_variant(self, detail):
+		if detail.get("item_variant"):
+			return detail.item_variant
+
+		template = detail.get("item")
+		if not template:
+			return None
+
+		attributes = frappe.get_all(
+			"Item Variant Attribute",
+			filters={"parent": template},
+			fields=["attribute"],
+			order_by="idx asc",
+		)
+		attribute_values = {}
+		for attribute in attributes:
+			fieldname = (
+				"finding_type"
+				if attribute.attribute == "Finding Sub-Category"
+				else frappe.scrub(attribute.attribute)
+			)
+			if value := detail.get(fieldname):
+				attribute_values[attribute.attribute] = value
+		if not attribute_values:
+			return None
+
+		candidates = get_item_codes_by_attributes(attribute_values, template)
+		if not candidates:
+			return None
+
+		candidate_attributes = frappe.get_all(
+			"Item Variant Attribute",
+			filters={"parent": ["in", candidates]},
+			fields=["parent", "attribute", "attribute_value"],
+		)
+		attributes_by_item = {}
+		for attribute in candidate_attributes:
+			attributes_by_item.setdefault(attribute.parent, {})[
+				attribute.attribute
+			] = attribute.attribute_value
+
+		fits = [
+			item_code
+			for item_code, item_attributes in attributes_by_item.items()
+			if all(item_attributes.get(k) == v for k, v in attribute_values.items())
+		]
+		exact = [
+			item_code
+			for item_code in fits
+			if len(attributes_by_item[item_code]) == len(attribute_values)
+		]
+		if exact:
+			return exact[0] if len(exact) == 1 else None
+		# A repair-order BOM row can leave attributes blank that its item carries -- a
+		# gemstone with no Grade or PR (BOM-BA00122-001-002). The one item that agrees on
+		# every attribute the row does give is that stone; two or more is a guess.
+		return fits[0] if len(fits) == 1 else None
+
+	def _get_missing_bom_component_items(
+		self, bom_no, bom_items, block_unmatched_stones=False
+	):
+		existing_items = {item.item_code for item in bom_items}
+		missing_items = {}
+		unresolved = []
+		unresolved_stones = []
+		# Tracking Bom keeps its rows in these same child tables, so scope every read to BOM.
+		component_tables = {
+			"BOM Metal Detail": (
+				"metal_type",
+				"metal_touch",
+				"metal_purity",
+				"metal_colour",
+			),
+			"BOM Diamond Detail": ("diamond_type", "stone_shape", "diamond_sieve_size"),
+			"BOM Gemstone Detail": ("gemstone_type", "stone_shape", "gemstone_size"),
+			"BOM Finding Detail": ("finding_category", "finding_type"),
+		}
+		for detail_table, label_fields in component_tables.items():
+			for detail in frappe.get_all(
+				detail_table,
+				filters={"parent": bom_no, "parenttype": "BOM"},
+				fields=["*"],
+				order_by="idx asc",
+			):
+				item_code = self._resolve_bom_component_variant(detail)
+				if not item_code:
+					label = (
+						" / ".join(
+							str(detail.get(f)) for f in label_fields if detail.get(f)
+						)
+						or detail_table
+					)
+					if detail_table in ("BOM Diamond Detail", "BOM Gemstone Detail"):
+						unresolved_stones.append(label)
+					else:
+						unresolved.append(label)
+					continue
+				if item_code in existing_items:
+					continue
+				missing_items[item_code] = missing_items.get(item_code, 0) + flt(
+					detail.quantity
+				)
+
+		# A stone comes back from refining intact and is received into stock as its item, so
+		# a stone row with no item cannot be refined: stop the scan rather than drop it or
+		# guess one. Raised only where Material Items are built -- an entry already past its
+		# scan keeps the warning below and is not stopped part-way through its lifecycle.
+		if block_unmatched_stones and unresolved_stones:
+			frappe.throw(
+				_(
+					"These stones of BOM {0} match no item: {1}. Create the item, or set the "
+					"Item Variant on those BOM rows, then scan the serial again."
+				).format(frappe.bold(bom_no), ", ".join(unresolved_stones)),
+				title=_("Stone Item Missing"),
+			)
+		unresolved += unresolved_stones
+
+		# A row with no Item Variant that matches no single item (a metal purity no item
+		# carries) is left out -- guessing would put the wrong item into stock. Say so once
+		# per BOM instead of dropping it silently.
+		warned = self.__dict__.setdefault("_unresolved_bom_warned", set())
+		if unresolved and bom_no not in warned:
+			warned.add(bom_no)
+			frappe.msgprint(
+				_(
+					"These components of BOM {0} match no single item and are left out of "
+					"Material Items: {1}. Set the Item Variant on those BOM rows to include them."
+				).format(frappe.bold(bom_no), ", ".join(unresolved)),
+				indicator="orange",
+				alert=True,
+			)
+
+		for detail in frappe.get_all(
+			"BOM Other Detail",
+			filters={"parent": bom_no, "parenttype": "BOM"},
+			fields=["item_code", "quantity"],
+		):
+			item_code = detail.item_code
+			if not item_code or item_code in existing_items:
+				continue
+			missing_items[item_code] = missing_items.get(item_code, 0) + flt(
+				detail.quantity
+			)
+
+		rows = []
+		for item_code, quantity in missing_items.items():
+			uom = frappe.db.get_value("Item", item_code, "stock_uom")
+			rows.append(
+				frappe._dict(
+					item_code=item_code,
+					qty=quantity,
+					stock_qty=quantity,
+					uom=uom,
+					stock_uom=uom,
+				)
+			)
+		return rows
+
 	def auto_classify_recoverable_non_metal(self):
 		diamond_items = {row.item for row in self.recovered_diamond}
 		gemstone_items = {row.item for row in self.recovered_gemstone}
@@ -4552,6 +5979,9 @@ class RefiningEntry(Document):
 						"BOM Item",
 						filters={"parent": bom_name},
 						fields=["item_code", "qty"],
+					)
+					bom_items.extend(
+						self._get_missing_bom_component_items(bom_name, bom_items)
 					)
 
 					# Aggregate quantities by item_code to prevent dropping rows
@@ -4945,6 +6375,36 @@ class RefiningEntry(Document):
 		if item_code and item_code.startswith("DL-"):
 			return "D-" + item_code[3:]
 		return item_code
+
+	def get_serial_purity(self, serial_no, item_code, bom_no=None):
+		# A finished-goods design item carries no Metal Purity attribute, and the item-level
+		# fallback reads the design's NEWEST active BOM, which can be a different piece's BOM
+		# with a blank purity. Read it from the serial's OWN as-built BOM instead — the same
+		# BOM its weights come from — and use the item lookup only when that BOM has none.
+		# Within the BOM the metal detail row wins over the header: the header is filled from
+		# the first metal row only while blank (update_specifications), so it can keep an order
+		# spec (e.g. 91.9) while the metal actually used, and its manufacturing order, say
+		# 91.75. First row by idx, the same row update_specifications copies.
+		if not bom_no:
+			bom_no = frappe.db.get_value("Serial No", serial_no, "custom_bom_no")
+		if not bom_no:
+			bom_no = frappe.db.get_value(
+				"BOM", {"item": item_code, "is_active": 1}, "name"
+			)
+		if bom_no:
+			purity = frappe.db.get_value(
+				"BOM Metal Detail",
+				{
+					"parent": bom_no,
+					"parenttype": "BOM",
+					"metal_purity": ["is", "set"],
+				},
+				"metal_purity",
+				order_by="idx asc",
+			) or frappe.db.get_value("BOM", bom_no, "metal_purity")
+			if purity:
+				return purity
+		return self.get_item_purity(item_code)
 
 	def get_item_purity(self, item_code):
 		# Memoize within the request: this is called per material row and does up to

@@ -437,6 +437,37 @@ class TestCustomerGoldSettings(IntegrationTestCase):
 				where="Delivery Note DN-1",
 			)
 
+	def test_posting_time_messages_say_where_to_correct_the_row(self, _mock):
+		"""At posting the operator is on another document, so the message points at the row."""
+		from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+			settings_fix_hint,
+			validate_settlement_accounts,
+		)
+
+		with self._blocks("Company Accounts, on the row for Company") as raised:
+			validate_settlement_accounts(
+				COMPANY_A,
+				LIAB_A,
+				"Advances from Customers - A",
+				where="Delivery Note DN-1",
+				fix_hint=settings_fix_hint(COMPANY_A),
+			)
+		self.assertIn("would move the obligation", str(raised.exception))
+		# Bolded, because "Company A" is also the start of the fixed text "Company Accounts".
+		self.assertIn(frappe.bold(COMPANY_A), str(raised.exception))
+
+	def test_save_time_messages_do_not_point_elsewhere(self, _mock):
+		"""On the settings form the operator is already looking at the row."""
+		with self._blocks("would move the obligation") as raised:
+			validate_customer_gold_settings(
+				_settings(
+					company_accounts=[
+						_row(1, liability=LIAB_A, cogs="Advances from Customers - A")
+					]
+				)
+			)
+		self.assertNotIn("Correct it in", str(raised.exception))
+
 	# ------------------------------------------------------- the two legs must differ
 	def test_identical_liability_and_cogs_accounts_block(self, _mock):
 		"""A real production configuration, and every other check passes it.

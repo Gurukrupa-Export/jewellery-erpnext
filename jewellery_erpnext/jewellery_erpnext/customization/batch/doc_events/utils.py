@@ -61,9 +61,16 @@ def update_inventory_dimentions(self):
 	item_groups = frappe.db.get_all(
 		"Item Group", {"custom_is_alloy_group": 1}, pluck="name"
 	)
+	# Only ever tested for this batch's own item (_rate_field_for_item), so fetch just that
+	# item when it is an alloy instead of every alloy item on the site. The membership test
+	# below still compares against the stored name, so the answer is unchanged.
 	alloy_item_list = frappe.db.get_all(
 		"Item",
-		{"item_group": ["in", item_groups], "variant_of": ["in", ["M", "F"]]},
+		{
+			"name": self.item,
+			"item_group": ["in", item_groups],
+			"variant_of": ["in", ["M", "F"]],
+		},
 		pluck="name",
 	)
 	for row in frappe.db.get_all(
@@ -159,6 +166,33 @@ def update_inventory_dimentions(self):
 		self.custom_customer_voucher_type = (
 			_purchase_receipt_voucher_type(self) or self.custom_customer_voucher_type
 		)
+
+	_stamp_ref_customer(self, is_customer_inventory)
+
+
+def _stamp_ref_customer(batch, is_customer_inventory):
+	"""Copy the minting entry's ``ref_customer`` onto a customer batch, once.
+
+	The batch path ``batch_rename`` does not cover: on a site with the Customer Gold flow off, a
+	Customer Goods Received finding is minted here by ERPNext. Set only while empty, because this
+	runs on every save of the batch -- ``reference_name`` is cleared on cancel, and Manufacture /
+	Repack re-save batches whose own entry carries no Ref Customer. ``hybrid_findings`` reads it.
+	"""
+	if (
+		not is_customer_inventory
+		or batch.reference_doctype != "Stock Entry"
+		or not batch.reference_name
+		or getattr(batch, "custom_ref_customer", None)
+		or not frappe.db.has_column("Stock Entry", "ref_customer")
+		or not frappe.db.has_column("Batch", "custom_ref_customer")
+	):
+		return
+
+	ref_customer = frappe.db.get_value(
+		"Stock Entry", batch.reference_name, "ref_customer"
+	)
+	if ref_customer:
+		batch.custom_ref_customer = ref_customer
 
 
 def _row_value(child_doctype, row_name, fieldname):
@@ -284,6 +318,22 @@ def _source_row_rate(batch, child_doctype, se_fieldname):
 	"""
 	if batch.reference_doctype != "Stock Entry":
 		return _row_value(child_doctype, batch.custom_voucher_detail_no, "rate")
+
+	# F8, applied here too: a Manufacture's finished PIECE gets no Batch Rate. Its row rate is
+	# the whole piece -- metal, diamond, making -- and ``batch_rename._source_row_rate`` already
+	# withholds it at mint. This stamper runs again on the provenance re-save
+	# (``update_parent_batch_id``), sees the 0 as "empty" and used to stamp the piece value back:
+	# kg-gk's MAT-STE-19067 piece read a "Batch Rate" of Rs.73,478.13.
+	#
+	# A piece only: a Manufacture whose finished output is itself metal or a finding -- refined
+	# 24KT from a Refining Entry -- keeps its rate, which IS a metal rate.
+	if (
+		_row_value(child_doctype, batch.custom_voucher_detail_no, "is_finished_item")
+		and frappe.db.get_value("Item", batch.item, "variant_of") not in ("M", "F")
+		and frappe.db.get_value("Stock Entry", batch.reference_name, "purpose")
+		== "Manufacture"
+	):
+		return 0.0
 
 	for fieldname in (se_fieldname, "valuation_rate", "basic_rate"):
 		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, fieldname)

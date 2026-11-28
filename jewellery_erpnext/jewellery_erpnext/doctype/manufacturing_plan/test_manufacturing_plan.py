@@ -2,12 +2,14 @@
 # See license.txt
 
 import json
+from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, add_to_date, now, today
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan import (
+	MANUFACTURE_ORDER_ROLE_FIELDS,
 	get_details_to_append,
 	get_pending_ppo_sales_order,
 	get_repair_pending_ppo_sales_order,
@@ -19,9 +21,20 @@ from jewellery_erpnext.jewellery_erpnext.tests.test_sales_order import (
 )
 
 
+def open_manufacture_orders():
+	"""Patch opening every Select Manufacture Order option to the running user: an option is
+	closed until Manufacturing Setting lists a role for it, and the test site lists none."""
+	user_roles = set(frappe.get_roles())
+	return patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_manufacture_order_roles",
+		return_value=dict.fromkeys(MANUFACTURE_ORDER_ROLE_FIELDS, user_roles),
+	)
+
+
 class TestManufacturingPlan(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
+		cls.enterClassContext(open_manufacture_orders())
 		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)

@@ -318,6 +318,40 @@ class TestBatchRateStamping(IntegrationTestCase):
 		self.assertEqual(batch.custom_alloy_rate, 1000)
 		self.assertFalse(batch.custom_metal_rate)
 
+	def test_alloy_lookup_is_scoped_to_the_batch_item(self):
+		# Only the batch's own item is ever tested for alloy membership, so the Item lookup
+		# asks for that item alone instead of every alloy item on the site.
+		batch = _batch(item="M-AL")
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Stock Entry Detail", "custom_alloy_rate"): None,
+			("Stock Entry Detail", "basic_rate"): 1000,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		db = _db(values)
+		item_filters = []
+
+		def get_all(doctype, filters=None, fields=None, **kw):
+			if doctype == "Item":
+				item_filters.append(filters)
+				return ["M-AL"]
+			if doctype == "Item Group":
+				return ["Alloy"]
+			if doctype == "DocField":
+				return [SimpleNamespace(options="Stock Entry Detail")]
+			return []
+
+		db.get_all.side_effect = get_all
+		with patch.object(batch_utils.frappe, "db", db):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(len(item_filters), 1)
+		self.assertEqual(item_filters[0]["name"], "M-AL")
+		self.assertEqual(batch.custom_alloy_rate, 1000)
+
 	# --- A blended conversion rate must survive a later save ----------------------
 
 	def test_existing_rate_is_not_overwritten_on_resave(self):
@@ -951,3 +985,46 @@ class TestConversionKeepsTheMintingRate(IntegrationTestCase):
 		)
 
 		self.assertEqual(batch.writes, [])
+
+
+class TestManufacturedPieceGetsNoBatchRate(IntegrationTestCase):
+	"""F8 in the generic stamper (R-3). The provenance re-save used to refill a piece's 0 with the
+	whole piece value -- kg-gk's MAT-STE-19067 piece read a Batch Rate of 73,478.13."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _stamp(self, variant_of, purpose, finished=1):
+		batch = _batch(
+			item="RI00650-006" if variant_of not in ("M", "F") else "M-G-24KT-Y"
+		)
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Customer Goods",
+			("Stock Entry Detail", "customer"): "C1",
+			("Stock Entry Detail", "employee"): None,
+			("Stock Entry Detail", "is_finished_item"): finished,
+			("Stock Entry Detail", "custom_metal_rate"): None,
+			("Stock Entry Detail", "valuation_rate"): 73478.13,
+			("Stock Entry Detail", "basic_rate"): 73471.02,
+			("Stock Entry", "purpose"): purpose,
+			("Item", "variant_of"): variant_of,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+		return batch.custom_metal_rate
+
+	def test_a_finished_piece_of_a_manufacture_gets_no_batch_rate(self):
+		self.assertEqual(self._stamp("RI00650", "Manufacture"), 0.0)
+
+	def test_refined_metal_from_a_manufacture_keeps_its_rate(self):
+		"""Review P3: a Refining Entry's Manufacture yields metal; that rate IS a metal rate."""
+		self.assertEqual(self._stamp("M", "Manufacture"), 73478.13)
+
+	def test_a_repack_output_keeps_its_rate(self):
+		self.assertEqual(self._stamp("RI00650", "Repack"), 73478.13)
+
+	def test_a_consumed_or_by_product_row_keeps_its_rate(self):
+		self.assertEqual(self._stamp("RI00650", "Manufacture", finished=0), 73478.13)

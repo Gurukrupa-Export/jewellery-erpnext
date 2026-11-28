@@ -67,15 +67,14 @@ frappe.ui.form.on("Product Certification", {
 
 				// One tree is legitimately scanned more than once -- a tree can go for assay in
 				// several samples -- so a repeat scan adds another row rather than being
-				// refused. The Sample Name is what tells those rows apart: it is part of the
-				// server-side grouping key, so two named rows off one tree get their own
-				// receive / pure / loss trio and their own weight.
+				// refused. Every row gets its own receive / pure / loss set on the server (keyed
+				// on the row itself), so two rows off one tree each keep their own weight; the
+				// Sample Name tells them apart for the user.
 				//
 				// Either way the WEIGHT opens at 0 on a repeat. Named rows split the tree's
-				// metal between them, so the tree total is the wrong prefill for either; and
-				// unnamed rows are still summed onto one exploded main row by
-				// set_fire_assy_issue_weight, where prefilling again would issue twice the
-				// metal. validate_fire_assy_weight still blocks a submit that leaves one at 0.
+				// metal between them, so the tree total is the wrong prefill for either, and
+				// prefilling it again would issue twice the metal. validate_fire_assy_weight
+				// still blocks a submit that leaves one at 0.
 				//
 				// Keyed on tree_no ALONE, deliberately: at scan time the new row has no sample
 				// name yet, so a composite key would never match and every repeat scan would
@@ -129,8 +128,8 @@ frappe.ui.form.on("Product Certification", {
 });
 
 // A repeat scan used to append a second row, silently doubling the issued weight.
-// Tree rows are exempt: several scan lines for one tree are intentional and are summed
-// onto a single exploded main row.
+// Tree rows are exempt: several scan lines for one tree are intentional, and each gets its
+// own exploded set.
 function find_existing_row(frm, fieldname, value) {
 	return (frm.doc.product_details || []).find((row) => row[fieldname] === value);
 }

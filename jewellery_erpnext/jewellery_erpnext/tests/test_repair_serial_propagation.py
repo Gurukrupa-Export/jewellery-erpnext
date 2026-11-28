@@ -25,6 +25,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturin
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufacturing_plan import (
 	create_repair_sales_order,
+	open_manufacture_orders,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
 	ManufacturingWorkOrder,
@@ -213,9 +214,10 @@ class TestMakeManufacturingOrderCarriesRepairLineage(IntegrationTestCase):
 
 
 class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
-	"""after_insert derives serial_id_bom from BOM.tag_no -- as a FALLBACK only."""
+	"""after_insert gives the PMO the BOM of ITS serial (as kggk_prod always did); the plan
+	row's value only stands when the serial has no BOM of its own."""
 
-	def _run(self, serial_no, serial_id_bom, tagged_bom):
+	def _run(self, serial_no, serial_id_bom, tagged_bom, serial_custom_bom=None):
 		written = {}
 		fake = SimpleNamespace(
 			custom_tracking_bom=None,
@@ -225,6 +227,7 @@ class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
 		)
 		mock_db = MagicMock()
 		mock_db.exists.return_value = tagged_bom
+		mock_db.get_value.return_value = serial_custom_bom
 		with patch(f"{PMO_MOD}.frappe.db", mock_db):
 			ParentManufacturingOrder.after_insert(fake)
 		return written
@@ -233,10 +236,27 @@ class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
 		written = self._run("SN-1", None, "BOM-FROM-TAG")
 		self.assertEqual(written.get("serial_id_bom"), "BOM-FROM-TAG")
 
-	def test_does_not_overwrite_the_value_carried_from_the_plan_row(self):
-		"""The order was raised against a specific serial BOM. A BOM that merely happens
-		to be tagged to the same serial must not silently replace it."""
-		written = self._run("SN-1", "BOM-FROM-ROW", "BOM-FROM-TAG")
+	def test_the_serials_tagged_bom_replaces_the_design_bom_carried_from_the_row(self):
+		"""A repair row carries the item's design BOM as its serial BOM (quotation
+		custom_serial_id_bom); the serial's own BOM must win."""
+		written = self._run("SN-1", "BOM-DESIGN-FROM-ROW", "BOM-FROM-TAG")
+		self.assertEqual(written.get("serial_id_bom"), "BOM-FROM-TAG")
+
+	def test_the_serials_own_bom_no_wins_over_a_tagged_bom(self):
+		written = self._run(
+			"SN-1",
+			"BOM-DESIGN-FROM-ROW",
+			"BOM-FROM-TAG",
+			serial_custom_bom="BOM-AS-BUILT",
+		)
+		self.assertEqual(written.get("serial_id_bom"), "BOM-AS-BUILT")
+
+	def test_a_value_already_equal_is_not_rewritten(self):
+		written = self._run("SN-1", "BOM-FROM-TAG", "BOM-FROM-TAG")
+		self.assertNotIn("serial_id_bom", written)
+
+	def test_the_row_value_stands_when_the_serial_has_no_bom_of_its_own(self):
+		written = self._run("SN-1", "BOM-FROM-ROW", None)
 		self.assertNotIn("serial_id_bom", written)
 
 	def test_no_serial_means_no_derivation(self):
@@ -252,25 +272,71 @@ class TestPMOAfterInsertSerialIdBom(IntegrationTestCase):
 
 
 class TestUnpackSerialItemGuard(IntegrationTestCase):
-	def _assert_item(self, serial_item, mwo_item="MU00128-001"):
+	"""The serial must be the item its Serial No BOM makes; the MWO item is not compared."""
+
+	def _assert_item(self, serial_item, bom_item, mwo_item="MU00128-002"):
+		def gv(doctype, name, fieldname):
+			if doctype == "Serial No":
+				return serial_item
+			if doctype == "BOM":
+				return bom_item
+			return None
+
 		mock_db = MagicMock()
-		mock_db.get_value.return_value = serial_item
+		mock_db.get_value.side_effect = gv
 		fake = SimpleNamespace(serial_no="SN-1", item_code=mwo_item)
 		with patch(f"{MWO_MOD}.frappe.db", mock_db):
-			ManufacturingWorkOrder._assert_serial_matches_item(fake)
+			return ManufacturingWorkOrder._assert_serial_matches_bom(fake, "BOM-SN")
 
 	def test_matching_item_is_allowed(self):
-		self._assert_item("MU00128-001")
+		self.assertEqual(self._assert_item("MU00128-001", "MU00128-001"), "MU00128-001")
 
-	def test_unrelated_serial_is_refused(self):
-		"""Both fields are hand-settable, so a pasted serial can point at another
-		customer's piece -- unpacking it would consume their jewellery."""
+	def test_design_change_repair_is_allowed(self):
+		"""Attribute change: the MWO makes -002 but the serial and its BOM are -001."""
+		self.assertEqual(
+			self._assert_item("MU00128-001", "MU00128-001", mwo_item="MU00128-002"),
+			"MU00128-001",
+		)
+
+	def test_serial_bom_of_another_item_is_refused(self):
 		with self.assertRaises(frappe.ValidationError):
-			self._assert_item("XX99999-001")
+			self._assert_item("MU00128-001", "XX99999-001")
 
 	def test_missing_serial_is_refused(self):
 		with self.assertRaises(frappe.ValidationError):
-			self._assert_item(None)
+			self._assert_item(None, "MU00128-001")
+
+
+class TestUnpackSerialRepairOrderGuard(IntegrationTestCase):
+	"""With a Repair Order, its serial must be the work order's serial."""
+
+	def _check(self, pmo_link, order_serial, mwo_serial="SN-1"):
+		def gv(doctype, name, fieldname):
+			if doctype == "Parent Manufacturing Order":
+				return pmo_link
+			if doctype == "Repair Order":
+				return order_serial
+			return None
+
+		mock_db = MagicMock()
+		mock_db.get_value.side_effect = gv
+		fake = SimpleNamespace(manufacturing_order="PMO-1", serial_no=mwo_serial)
+		with patch(f"{MWO_MOD}.frappe.db", mock_db):
+			ManufacturingWorkOrder._assert_serial_matches_repair_order(fake)
+
+	def test_same_serial_is_allowed(self):
+		self._check(("Repair Order", "RO-1"), "SN-1")
+
+	def test_another_serial_is_refused(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._check(("Repair Order", "RO-1"), "SN-OTHER")
+
+	def test_repair_order_without_serial_is_not_checked(self):
+		self._check(("Repair Order", "RO-1"), None)
+
+	def test_no_repair_order_is_not_checked(self):
+		self._check(("", None), "SN-OTHER")
+		self._check(None, "SN-OTHER")
 
 
 class TestFindExistingUnpackEntry(IntegrationTestCase):
@@ -313,6 +379,7 @@ class TestUnpackIdempotency(IntegrationTestCase):
 			serial_no="SN-1",
 			item_code="MU00128-001",
 			docstatus=1,
+			is_finding_mwo=0,
 			find_existing_unpack_entry=lambda: "STE-0001",
 		)
 		mock_db = MagicMock()
@@ -324,6 +391,28 @@ class TestUnpackIdempotency(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				ManufacturingWorkOrder.create_unpack_serial_no_stock_entry(fake)
 		# Nothing may have been built: no Stock Entry, and no Customer Goods batches.
+		new_doc.assert_not_called()
+		mock_db.set_value.assert_not_called()
+
+	def test_finding_work_order_is_refused_before_anything_is_created(self):
+		fake = SimpleNamespace(
+			name="MWO-F-1",
+			manufacturing_order="PMO-1",
+			serial_no="SN-1",
+			item_code="F-CHAIN",
+			docstatus=1,
+			is_finding_mwo=1,
+			find_existing_unpack_entry=lambda: None,
+		)
+		mock_db = MagicMock()
+		mock_db.get_value.return_value = "Repair"
+		new_doc = MagicMock()
+		with patch(f"{MWO_MOD}.frappe.db", mock_db), patch(
+			f"{MWO_MOD}.frappe.new_doc", new_doc
+		):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				ManufacturingWorkOrder.create_unpack_serial_no_stock_entry(fake)
+		self.assertIn("finding work order", str(ctx.exception))
 		new_doc.assert_not_called()
 		mock_db.set_value.assert_not_called()
 
@@ -347,6 +436,7 @@ class TestUnpackIdempotency(IntegrationTestCase):
 			serial_no="SN-1",
 			item_code="MU00128-001",
 			docstatus=1,
+			is_finding_mwo=0,
 			find_existing_unpack_entry=lambda: None,
 		)
 		mock_db = MagicMock()
@@ -361,6 +451,7 @@ class TestUnpackIdempotency(IntegrationTestCase):
 			serial_no=None,
 			item_code="MU00128-001",
 			docstatus=1,
+			is_finding_mwo=0,
 			find_existing_unpack_entry=lambda: None,
 		)
 		mock_db = MagicMock()
@@ -376,7 +467,7 @@ class TestUnpackIdempotency(IntegrationTestCase):
 
 
 class TestUnpackEligibility(IntegrationTestCase):
-	def _eligibility(self, pmo_type, docstatus, serial_no, existing):
+	def _eligibility(self, pmo_type, docstatus, serial_no, existing, is_finding_mwo=0):
 		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order import (
 			manufacturing_work_order as mwo_module,
 		)
@@ -385,6 +476,7 @@ class TestUnpackEligibility(IntegrationTestCase):
 			manufacturing_order="PMO-1",
 			docstatus=docstatus,
 			serial_no=serial_no,
+			is_finding_mwo=is_finding_mwo,
 			check_permission=lambda perm: None,
 			find_existing_unpack_entry=lambda: existing,
 		)
@@ -409,6 +501,13 @@ class TestUnpackEligibility(IntegrationTestCase):
 		self.assertFalse(
 			self._eligibility("Finding Manufacturing", 1, "SN-1", None)["eligible"]
 		)
+
+	def test_finding_work_order_of_a_repair_hides_it_and_says_why(self):
+		# It carries the repair's serial, but unpacking there books the whole piece onto
+		# the finding's operation.
+		result = self._eligibility("Repair", 1, "SN-1", None, is_finding_mwo=1)
+		self.assertFalse(result["eligible"])
+		self.assertIn("Finding work order", result["reason"])
 
 	def test_draft_repair_hides_it(self):
 		self.assertFalse(self._eligibility("Repair", 0, "SN-1", None)["eligible"])
@@ -460,7 +559,8 @@ class TestRepairLineageReachesPMO(IntegrationTestCase):
 			man_plan.setting_type = "Nova Glow"
 		man_plan.is_subcontracting = "No"
 		self.assertTrue(man_plan.manufacturing_plan_table)
-		man_plan.save()
+		with open_manufacture_orders():
+			man_plan.save()
 		man_plan.submit()
 
 		pmos = frappe.get_all(
@@ -486,3 +586,38 @@ class TestRepairLineageReachesPMO(IntegrationTestCase):
 				self.assertEqual(mwo.master_bom, pmo.master_bom)
 				self.assertEqual(mwo.serial_id_bom, pmo.serial_id_bom)
 				self.assertEqual(mwo.serial_no, pmo.serial_no)
+
+
+class TestGetSerialBom(IntegrationTestCase):
+	"""utils.get_serial_bom: the serial's own BOM, never a Template that shares its tag."""
+
+	def _bom(self, custom_bom_no, tagged):
+		from jewellery_erpnext.utils import get_serial_bom
+
+		mock_db = MagicMock()
+		mock_db.get_value.return_value = custom_bom_no
+		mock_db.exists.return_value = tagged
+		with patch("jewellery_erpnext.utils.frappe.db", mock_db):
+			return get_serial_bom("SN-1"), mock_db
+
+	def test_the_serials_own_bom_no_is_used(self):
+		bom, _db = self._bom("BOM-AS-BUILT", "BOM-TAGGED")
+		self.assertEqual(bom, "BOM-AS-BUILT")
+
+	def test_a_tagged_bom_is_the_fallback(self):
+		bom, _db = self._bom(None, "BOM-TAGGED")
+		self.assertEqual(bom, "BOM-TAGGED")
+
+	def test_only_a_submitted_finish_goods_bom_counts_as_tagged(self):
+		# A repair adds a Template BOM carrying the same tag_no; it is not the serial's BOM.
+		_bom, db = self._bom(None, "BOM-TAGGED")
+		self.assertEqual(
+			db.exists.call_args[0],
+			("BOM", {"tag_no": "SN-1", "bom_type": "Finish Goods", "docstatus": 1}),
+		)
+
+	def test_no_serial_or_no_bom_gives_none(self):
+		from jewellery_erpnext.utils import get_serial_bom
+
+		self.assertIsNone(get_serial_bom(None))
+		self.assertIsNone(self._bom(None, None)[0])

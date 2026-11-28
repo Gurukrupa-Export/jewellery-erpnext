@@ -29,7 +29,6 @@ Run with:
 """
 
 import json
-import unittest
 from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -244,14 +243,16 @@ class TestAddItemAttributes(IntegrationTestCase):
 		self._get_all = patcher.start()
 		self.addCleanup(patcher.stop)
 
-		def item_attr_value(doctype, name, fieldname):
+		def item_attr_value(doctype, name, fieldname, as_dict=False):
 			values = {
 				"numeric_values": 1,
 				"from_range": 1.0,
 				"to_range": 10.0,
 				"increment": 0.5,
 			}
-			return values.get(fieldname) if doctype == "Item Attribute" else None
+			if doctype == "Item Attribute":
+				return frappe._dict({field: values.get(field) for field in fieldname})
+			return None
 
 		db = patch.object(
 			item_events.frappe.db, "get_value", side_effect=item_attr_value
@@ -314,24 +315,17 @@ class TestAddItemAttributes(IntegrationTestCase):
 		item_events.add_item_attributes(doc)
 		self.assertEqual(doc.attributes, [])
 
-	def test_fetches_each_attribute_metric_in_a_separate_query(self):
-		# Pinned as-is (suspected flaw #13, performance): one get_value call per
-		# metric per attribute -- 4 calls each (numeric_values, from_range,
-		# to_range, increment) -- instead of a single multi-field fetch. The
-		# setUp's get_all yields 2 template attributes, so 8 calls total.
-		calls = []
-
-		def counting(doctype, name, fieldname):
-			calls.append(fieldname)
-			return None
-
-		with patch.object(item_events.frappe.db, "get_value", side_effect=counting):
+	def test_fetches_metadata_once_per_attribute(self):
+		with patch.object(item_events.frappe.db, "get_value", return_value=None) as lookup:
 			item_events.add_item_attributes(
 				_item(has_variants=1, subcategory="Necklace", attributes=[])
 			)
-		self.assertEqual(
-			calls, ["numeric_values", "from_range", "to_range", "increment"] * 2
-		)
+		self.assertEqual(lookup.call_count, 2)
+		for call in lookup.call_args_list:
+			self.assertEqual(
+				call.args[2], ["numeric_values", "from_range", "to_range", "increment"]
+			)
+			self.assertEqual(call.kwargs, {"as_dict": True})
 
 
 class TestSystemItemRestriction(IntegrationTestCase):
@@ -938,6 +932,58 @@ class TestBeforeInsert(IntegrationTestCase):
 			)
 
 
+class TestChainVariantIsManufacturingItem(IntegrationTestCase):
+	"""before_insert(): a new F chain variant is ticked Is Manufacturing Item, so its
+	PMOs get a Finding Manufacturing Work Order."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _finding(self, variant_of="F", category="Chains"):
+		return _item(
+			item_group="Finding - V",
+			variant_of=variant_of,
+			custom_is_manufacturing_item=0,
+			attributes=[
+				_attr("Finding Category", category),
+				_attr("Finding Sub-Category", "Box Chain"),
+			],
+		)
+
+	def test_f_chain_variant_is_ticked(self):
+		doc = self._finding()
+		item_events.set_chain_as_manufacturing_item(doc)
+		self.assertEqual(doc.custom_is_manufacturing_item, 1)
+
+	def test_other_finding_category_is_left_alone(self):
+		doc = self._finding(category="Screws")
+		item_events.set_chain_as_manufacturing_item(doc)
+		self.assertEqual(doc.custom_is_manufacturing_item, 0)
+
+	def test_chain_of_another_template_is_left_alone(self):
+		doc = self._finding(variant_of="FL")
+		item_events.set_chain_as_manufacturing_item(doc)
+		self.assertEqual(doc.custom_is_manufacturing_item, 0)
+
+	def test_non_variant_is_left_alone(self):
+		doc = self._finding(variant_of=None)
+		item_events.set_chain_as_manufacturing_item(doc)
+		self.assertEqual(doc.custom_is_manufacturing_item, 0)
+
+	def test_before_insert_ticks_the_chain_variant(self):
+		doc = self._finding()
+		qb = _QB({"attribute_value": [(CONSUMABLES_GROUP,)]})
+		with (
+			patch.object(item_events.frappe, "qb", qb),
+			patch.object(item_events.frappe, "db", _db_mock(abbr={"Box Chain": "BC"})),
+			patch.object(item_events, "datetime", _fixed_clock()),
+		):
+			item_events.before_insert(doc, None)
+		self.assertEqual(doc.custom_is_manufacturing_item, 1)
+		self.assertEqual(doc.batch_number_series, f"{DATE_CODE}-FBC{BATCH_SUFFIX}")
+
+
 class TestDateCodeHelpers(IntegrationTestCase):
 	"""The GE series date codes embed the current date deterministically."""
 
@@ -1040,13 +1086,8 @@ class TestCalculateItemWeightDetails(IntegrationTestCase):
 			)
 		self.assertNotIn("estimated_finding_gold_wt_bom", doc)
 
-	@unittest.expectedFailure
 	def test_zero_cad_to_rpt_ratio_raises_validation_error(self):
-		"""Intended contract: should raise ValidationError when cad_to_rpt is 0.
-
-		Currently fails because implementation raises ZeroDivisionError instead.
-		Once doc_events/item.py is fixed to validate settings, this test will pass.
-		"""
+		"""Missing conversion settings produce an actionable validation error."""
 		settings = SimpleNamespace(cad_to_rpt=0, rpt_to_wax=2.0,
 			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
 			wax_to_gold_22=13.0, wax_to_silver=14.0)
@@ -1054,26 +1095,8 @@ class TestCalculateItemWeightDetails(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				item_events.calculate_item_wt_details({"cad_weight": 100.0})
 
-	def test_zero_cad_to_rpt_ratio_currently_raises_zero_division_error(self):
-		"""Document current buggy behavior: raises ZeroDivisionError when cad_to_rpt is 0.
-
-		This test documents the known defect. When the implementation is fixed to
-		raise ValidationError, this test should be removed.
-		"""
-		settings = SimpleNamespace(cad_to_rpt=0, rpt_to_wax=2.0,
-			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
-			wax_to_gold_22=13.0, wax_to_silver=14.0)
-		with patch.object(item_events.frappe, "get_doc", return_value=settings):
-			with self.assertRaises(ZeroDivisionError):
-				item_events.calculate_item_wt_details({"cad_weight": 100.0})
-
-	@unittest.expectedFailure
 	def test_zero_rpt_to_wax_ratio_raises_validation_error(self):
-		"""Intended contract: should raise ValidationError when rpt_to_wax is 0.
-
-		Currently fails because implementation raises ZeroDivisionError instead.
-		Once doc_events/item.py is fixed to validate settings, this test will pass.
-		"""
+		"""Missing conversion settings produce an actionable validation error."""
 		settings = SimpleNamespace(cad_to_rpt=5.0, rpt_to_wax=0,
 			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
 			wax_to_gold_22=13.0, wax_to_silver=14.0)
@@ -1081,34 +1104,7 @@ class TestCalculateItemWeightDetails(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				item_events.calculate_item_wt_details({"cad_weight": 100.0})
 
-	def test_zero_rpt_to_wax_ratio_currently_raises_zero_division_error(self):
-		"""Document current buggy behavior: raises ZeroDivisionError when rpt_to_wax is 0.
-
-		This test documents the known defect. When the implementation is fixed to
-		raise ValidationError, this test should be removed.
-		"""
-		settings = SimpleNamespace(cad_to_rpt=5.0, rpt_to_wax=0,
-			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
-			wax_to_gold_22=13.0, wax_to_silver=14.0)
-		with patch.object(item_events.frappe, "get_doc", return_value=settings):
-			with self.assertRaises(ZeroDivisionError):
-				item_events.calculate_item_wt_details({"cad_weight": 100.0})
-
-	@unittest.expectedFailure
 	def test_missing_cad_weight_key_raises_validation_error(self):
-		"""Intended contract: should raise ValidationError when cad_weight is missing.
-
-		Currently fails because implementation raises KeyError instead.
-		Once doc_events/item.py is fixed to validate input, this test will pass.
-		"""
+		"""Absent CAD Weight produces an actionable validation error."""
 		with self.assertRaises(frappe.ValidationError):
-			item_events.calculate_item_wt_details({})
-
-	def test_missing_cad_weight_key_currently_raises_key_error(self):
-		"""Document current buggy behavior: raises KeyError when cad_weight is missing.
-
-		This test documents the known defect. When the implementation is fixed to
-		raise ValidationError, this test should be removed.
-		"""
-		with self.assertRaises(KeyError):
 			item_events.calculate_item_wt_details({})

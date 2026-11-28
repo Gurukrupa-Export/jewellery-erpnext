@@ -13,6 +13,7 @@
 "department",
 "company",
 "manufacturer",
+"department_process",
 "is_last_operation",
 "is_subcontracted",
 "allow_zero_qty_wo",
@@ -34,6 +35,7 @@
 "column_break_stayp",
 "allowed_diamond_loss",
 "allowed_gemstone_loss",
+"allow_loss_on_tree_number",
 "loss_booking_restrictions_section",
 "dont_allow_loss_metal",
 "dont_allow_loss_diamond",
@@ -127,6 +129,14 @@
 "non_negative": 1
 },
 {
+"depends_on": "eval:doc.tree_no_reqd",
+"description": "Most metal (grams) that can be booked as loss on a Tree Number of this operation, across all its material rows. 0 means no limit.",
+"fieldname": "allow_loss_on_tree_number",
+"fieldtype": "Float",
+"label": "Allow loss on Tree number",
+"non_negative": 1
+},
+{
 "default": "0",
 "fieldname": "is_subcontracted",
 "fieldtype": "Check",
@@ -204,6 +214,14 @@
 "options": "Manufacturer"
 },
 {
+"description": "The process of its department this operation belongs to. Required once the department uses process control.",
+"fieldname": "department_process",
+"fieldtype": "Link",
+"in_standard_filter": 1,
+"label": "Process",
+"options": "Department Process"
+},
+{
 "fieldname": "finding_loss_booking_section",
 "fieldtype": "Section Break",
 "label": "Finding Category Loss Booking"
@@ -260,7 +278,7 @@
 ],
 "index_web_pages_for_search": 1,
 "links": [],
-"modified": "2026-09-17 10:00:00.000000",
+"modified": "2026-11-10 19:00:07.000000",
 "modified_by": "Administrator",
 "module": "Jewellery Erpnext",
 "name": "Department Operation",

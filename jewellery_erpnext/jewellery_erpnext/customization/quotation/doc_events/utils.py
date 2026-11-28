@@ -1,8 +1,12 @@
 import frappe
 from frappe import _
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
 	fetch_remote_ref_customer,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
+	_calculate_diamond_amount,
 )
 
 
@@ -62,6 +66,19 @@ def validate_po(self):
 
 
 def update_customer_details(self, row):
+	# Outright/Outwork/Hybrid fix material ownership for the whole order (the form locks these
+	# fields for them), so always refetch from the header: filling only blank rows let an
+	# item-table edit (or a value left from an earlier Sales Type) reach the Sales Order and fail
+	# at the Parent Manufacturing Order's Sales Type / Is Customer Diamond check. Other Sales
+	# Types may still differ per row.
+	if getattr(self, "custom_sales_type", None) in ("Outright", "Outwork", "Hybrid"):
+		row.custom_customer_gold = self.custom_customer_gold
+		row.custom_customer_diamond = self.custom_customer_diamond
+		row.custom_customer_stone = self.custom_customer_stone
+		row.custom_customer_good = self.custom_customer_good
+		row.custom_customer_finding = self.custom_customer_finding
+		return
+
 	if not row.custom_customer_gold:
 		row.custom_customer_gold = self.custom_customer_gold
 	if not row.custom_customer_diamond:
@@ -81,11 +98,7 @@ def update_hallmarking_amount(hallmarking_charge, row):
 # from jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice import (
 # 	update_making_charges,
 # )
-from frappe.utils import flt
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
-	_calculate_diamond_amount,
-)
 
 def update_si(self):
 	invoice_data = {}
@@ -99,34 +112,6 @@ def update_si(self):
 
 			update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data)
 			# update_einvoice_items(self, invoice_data)
-
-
-def update_einvoice_items(self, invoice_data):
-	# self.custom_invoice_item = []
-	for row in invoice_data:
-		if invoice_data[row]["amount"] > 0:
-			self.append(
-				"custom_invoice_item",
-				{
-					"item_code": row,
-					"item_name": row,
-					"uom": invoice_data[row]["uom"] or "Nos",
-					"gst_hsn_code": invoice_data[row]["hsn_code"],
-					"conversion_factor": 1,
-					"qty": invoice_data[row]["qty"],
-					"rate": flt(
-						invoice_data[row]["amount"] / invoice_data[row]["qty"], 3
-					),
-					"base_rate": flt(
-						invoice_data[row]["amount"] / invoice_data[row]["qty"], 3
-					),
-					"amount": flt(invoice_data[row]["amount"], 3),
-					"base_amount": invoice_data[row]["amount"],
-					"diamond_quality": self.diamond_quality,
-					# "income_account": invoice_data[row]["income_account"],
-					# "cost_center": invoice_data[row]["cost_center"],
-				},
-			)
 
 
 def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
@@ -405,18 +390,18 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 					)
 					or 0
 				)
-				fg_multiplier = (
-					frappe.db.get_value(
-						"Gemstone Multiplier",
-						{
-							"parent": gr.name,
-							"item_category": item_category,
-							"parentfield": "supplier_fg_multiplier",
-						},
-						frappe.scrub(i.gemstone_quality),
-					)
-					or 0
-				)
+				# fg_multiplier = (
+				# 	frappe.db.get_value(
+				# 		"Gemstone Multiplier",
+				# 		{
+				# 			"parent": gr.name,
+				# 			"item_category": item_category,
+				# 			"parentfield": "supplier_fg_multiplier",
+				# 		},
+				# 		frappe.scrub(i.gemstone_quality),
+				# 	)
+				# 	or 0
+				# )
 
 		if not gemstone_price_list:
 			frappe.msgprint(

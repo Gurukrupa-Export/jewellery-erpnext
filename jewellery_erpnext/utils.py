@@ -889,12 +889,40 @@ def get_repair_order_design_bom(order_form_type, order_form_id):
 
 	Returns None rather than throwing so creation-time callers (Manufacturing Plan ->
 	PMO) can fall back to the row's own BOM for repairs raised without a Repair Order
-	link. The unpack path re-resolves through ``_resolve_repair_order_bom`` and raises
-	its own business error there, where a missing design BOM is genuinely fatal.
+	link. The unpack path uses it only to refresh ``master_bom`` and never requires it:
+	what is unpacked is the serial's own BOM.
 	"""
 	if order_form_type != "Repair Order" or not order_form_id:
 		return None
 	return frappe.db.get_value("Repair Order", order_form_id, "bom")
+
+
+def get_serial_bom(serial_no):
+	"""The BOM of the serial itself (None if it has none).
+
+	``Serial No.custom_bom_no`` is the as-built Finish Goods BOM stamped on the piece. Failing
+	that, the Finish Goods BOM tagged to it: several BOMs can carry the same ``tag_no`` (a
+	repair adds a Template one), so only a submitted Finish Goods BOM counts. Never the
+	item's design BOM -- that is a different identity (see ``get_repair_order_design_bom``).
+	"""
+	if not serial_no:
+		return None
+	return frappe.db.get_value("Serial No", serial_no, "custom_bom_no") or frappe.db.exists(
+		"BOM", {"tag_no": serial_no, "bom_type": "Finish Goods", "docstatus": 1}
+	)
+
+
+def is_purchase_order_repair(sales_order_item):
+	"""True when the Sales Order Item was raised from a customer's Purchase Order.
+
+	Such a repair carries its own two BOMs down from that PO: the Copy BOM it is manufactured on
+	(PMO / MWO ``master_bom``) and the serial's own BOM (``serial_id_bom``) that Unpack Serial No
+	books. It has no Repair Order on this site.
+	"""
+	return bool(
+		sales_order_item
+		and frappe.db.get_value("Sales Order Item", sales_order_item, "custom_po_details")
+	)
 
 
 def ensure_operation_not_in_use(operation, cancelling_doctype, cancelling_name):

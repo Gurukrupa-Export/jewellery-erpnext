@@ -802,6 +802,10 @@ def _run_schema_patches():
 	from jewellery_erpnext.patches.add_customer_gold_rate_snapshot_fields import (
 		execute as add_rate_snapshot_fields,
 	)
+	from jewellery_erpnext.patches.restore_missing_perf_indexes import (
+		execute as add_receive_submit_indexes,
+	)
 
 	add_rate_snapshot_fields()
 	add_batch_component_field()
+	add_receive_submit_indexes()

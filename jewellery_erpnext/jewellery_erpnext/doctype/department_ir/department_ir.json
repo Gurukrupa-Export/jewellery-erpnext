@@ -23,6 +23,7 @@
   "section_break_swvwl",
   "previous_department",
   "next_department",
+  "destination_process",
   "is_finding",
   "column_break_csby3",
   "current_department",
@@ -34,6 +35,7 @@
   "scan_mwo",
   "section_break_5huxg",
   "department_ir_operation",
+  "parent_manufacturing_order_count",
   "summary",
   "mop_data",
   "se_data"
@@ -71,6 +73,15 @@
    "options": "Department"
   },
   {
+   "depends_on": "eval:doc.type==\"Issue\" && doc.next_department",
+   "description": "The process the work orders start in. Required when the next department uses process control.",
+   "fieldname": "destination_process",
+   "fieldtype": "Link",
+   "label": "Destination Process",
+   "no_copy": 1,
+   "options": "Department Process"
+  },
+  {
    "default": "1",
    "fieldname": "show_manufacturing_operation",
    "fieldtype": "Check",
@@ -88,6 +99,13 @@
    "fieldtype": "Table",
    "label": "Department IR Operations",
    "options": "Department IR Operation"
+  },
+  {
+   "fieldname": "parent_manufacturing_order_count",
+   "fieldtype": "Int",
+   "label": "Parent Manufacturing Order Count",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "default": "Now",
@@ -135,7 +153,8 @@
    "fieldname": "manufacturer",
    "fieldtype": "Link",
    "label": "Manufacturer",
-   "options": "Manufacturer"
+   "options": "Manufacturer",
+   "reqd": 1
   },
   {
    "fieldname": "column_break_csby3",
@@ -224,7 +243,7 @@
    "link_fieldname": "department_ir"
   }
  ],
- "modified": "2025-06-03 13:13:50.119567",
+ "modified": "2026-11-11 12:00:07.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department IR",

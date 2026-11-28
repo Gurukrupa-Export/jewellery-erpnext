@@ -49,12 +49,14 @@ def _component(
 
 
 class _ComponentsTestCase(unittest.TestCase):
-	"""Patches the two DB readers with an in-memory batch graph."""
+	"""Patches the DB readers with an in-memory batch graph."""
 
 	#: batch -> component rows. A batch absent from this map is atomic.
 	graph = {}
 	#: batch -> identity fields, for atomic batches.
 	identities = {}
+	#: batches a Customer Gold receipt created -- the roots of provenance. No other batch is one.
+	receipt_batches = frozenset()
 
 	def setUp(self):
 		self._patches = [
@@ -67,6 +69,11 @@ class _ComponentsTestCase(unittest.TestCase):
 				cgc,
 				"_batch_identity",
 				side_effect=lambda b: frappe._dict(self.identities.get(b, {})),
+			),
+			patch.object(
+				cgc,
+				"_is_customer_receipt_batch",
+				side_effect=lambda b: b in self.receipt_batches,
 			),
 		]
 		for p in self._patches:
@@ -244,6 +251,102 @@ class TestTransitivity(_ComponentsTestCase):
 		self.assertAlmostEqual(sum(c["qty"] for c in out), 10.8815, places=2)
 		company = sum(c["qty"] for c in out if not c["customer"])
 		self.assertAlmostEqual(company, 0.882, places=2)
+
+
+class TestReceiptBatchIsTheRoot(_ComponentsTestCase):
+	"""Where the customer's gold ENTERED is never taken apart by what a later conversion left in it.
+
+	Settle converts metal back INTO the receipt batch, and ``record_batch_components`` REPLACES the
+	table on every production, so the receipt batch ends up describing the LAST top-up. The
+	numbers are kggk-uat's KGJPL-SE-CGR-26-00053: 5.000 g received, 5.449 g of 22KT made from it
+	with 0.449 g of alloy, 2.0 g of that went into a piece, and 0.5 g of scrap then came back into
+	the receipt batch as 24KT. Delivery released 1.545 g of the 1.835 g in the piece.
+	"""
+
+	def setUp(self):
+		self.graph = {
+			# Recorded when the receipt batch was still atomic.
+			"B-22KT": [
+				_component(5.0, customer=CUSTOMER, source_batch="B-RCPT"),
+				_component(0.449, source_batch="B-ALLOY", item="M-AL"),
+			],
+			# Replaced by the scrap that came back: 0.421 g customer + 0.079 g alloy = 0.5 g drawn.
+			"B-RCPT": [
+				_component(0.421, customer=CUSTOMER, source_batch="B-RCPT"),
+				_component(0.079, source_batch="B-ALLOY", item="M-AL"),
+			],
+		}
+		self.identities = {
+			"B-RCPT": {
+				"custom_inventory_type": cgc.CUSTOMER_GOODS,
+				"custom_customer": CUSTOMER,
+				"custom_pure_metal_qty": 99.9,
+				"batch_qty": 100.0,
+				"item": "M-G-24KT",
+			}
+		}
+		self.receipt_batches = frozenset({"B-RCPT"})
+		super().setUp()
+
+	def test_a_draw_through_a_receipt_batch_keeps_the_gold_as_received(self):
+		out = cgc.resolve_components("B-22KT", 2.0)
+
+		customer = sum(c["qty"] for c in out if c["customer"] == CUSTOMER)
+		company = sum(c["qty"] for c in out if not c["customer"])
+		self.assertAlmostEqual(customer, 1.835, places=3)
+		self.assertAlmostEqual(company, 0.165, places=3)
+		self.assertEqual(len(out), 2, f"the receipt batch was taken apart: {out}")
+
+	def test_the_receipt_batch_row_is_kept_as_it_was_recorded(self):
+		"""The leaf is the row that named the receipt batch, not a fresh one read off its tags.
+
+		The owner was decided when the receipt batch entered the 22KT batch and is immutable
+		history, so a receipt batch re-tagged since must not change who the gold belonged to.
+		"""
+		self.identities["B-RCPT"].update(
+			custom_inventory_type=cgc.REGULAR_STOCK, custom_customer=None
+		)
+
+		out = cgc.resolve_components("B-22KT", 2.0)
+
+		customer_row = next(c for c in out if c["source_batch"] == "B-RCPT")
+		self.assertEqual(customer_row["customer"], CUSTOMER)
+		self.assertEqual(customer_row["inventory_type"], cgc.CUSTOMER_GOODS)
+
+	def test_a_direct_draw_on_a_receipt_batch_ignores_the_rewritten_table(self):
+		"""Fresh metal drawn from the receipt batch is all the customer's, whatever its table says."""
+		out = cgc.resolve_components("B-RCPT", 6.0)
+
+		self.assertEqual(len(out), 1, f"the receipt batch was taken apart: {out}")
+		self.assertEqual(out[0]["customer"], CUSTOMER)
+		self.assertEqual(out[0]["inventory_type"], cgc.CUSTOMER_GOODS)
+		self.assertEqual(out[0]["qty"], 6.0)
+		self.assertEqual(out[0]["source_batch"], "B-RCPT")
+
+
+class TestReceiptBatchTest(unittest.TestCase):
+	"""``_is_customer_receipt_batch`` asks the ledger, and fails closed when it cannot."""
+
+	EVENTS = "jewellery_erpnext.customer_subcontracting.customer_gold_allocations.effective_receipt_events"
+
+	def test_a_batch_with_an_effective_receipt_event_is_a_receipt_batch(self):
+		with patch(self.EVENTS, return_value=[frappe._dict(name="CGLE-1")]) as events:
+			self.assertTrue(cgc._is_customer_receipt_batch("B-1"))
+		events.assert_called_once_with({"batch_no": "B-1"})
+
+	def test_a_batch_whose_receipts_were_all_reversed_is_not(self):
+		"""``effective_receipt_events`` already drops a receipt a Reversal undid."""
+		with patch(self.EVENTS, return_value=[]):
+			self.assertFalse(cgc._is_customer_receipt_batch("B-1"))
+
+	def test_no_batch_is_not_looked_up(self):
+		with patch(self.EVENTS) as events:
+			self.assertFalse(cgc._is_customer_receipt_batch(None))
+		events.assert_not_called()
+
+	def test_a_site_without_the_ledger_schema_fails_closed(self):
+		with patch(self.EVENTS, side_effect=frappe.DoesNotExistError):
+			self.assertFalse(cgc._is_customer_receipt_batch("B-1"))
 
 
 class TestTerminationGuards(_ComponentsTestCase):

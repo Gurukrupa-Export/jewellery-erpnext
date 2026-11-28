@@ -794,6 +794,8 @@
    "fieldtype": "Check",
    "insert_after": "custom_mfg_complexity_code",
    "label": "Is Subcontracting Charge Row",
+   "read_only": 1,
+   "hidden": 1,
    "module": "Jewellery Erpnext"
   },
    {

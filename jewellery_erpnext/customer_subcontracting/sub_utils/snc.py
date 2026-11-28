@@ -5,6 +5,12 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import cint, flt, now_datetime
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
+from jewellery_erpnext.customer_subcontracting.hybrid_findings import (
+	get_batch_ref_customer_map,
+	hybrid_settlement_context,
+	is_own_hybrid_finding,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
 	snc_settlement_conversion,
 )
@@ -55,9 +61,24 @@ def _mwo_needs_settlement(mwo):
 	):
 		return False
 	pmo_is_customer_gold = _is_customer_gold(mwo)
+	rows = _get_receivable_gold_rows(mwo)
+	hybrid = _hybrid_finding_context(mwo, rows, pmo_is_customer_gold)
 	return any(
-		_row_needs_settlement(mwo, row, pmo_is_customer_gold)
-		for row in _get_receivable_gold_rows(mwo)
+		_row_needs_settlement(mwo, row, pmo_is_customer_gold, hybrid) for row in rows
+	)
+
+
+def _hybrid_finding_context(mwo, rows, pmo_is_customer_gold):
+	"""Context for the Hybrid exemption in ``_row_needs_settlement``, or ``None``.
+
+	Built only where it can change an answer: a regular (not customer-gold) order holding a
+	customer-owned row. A customer-gold order already treats its own customer's batch as owned.
+	"""
+	if pmo_is_customer_gold:
+		return None
+	return hybrid_settlement_context(
+		mwo.manufacturing_order,
+		[row.get("item_code") for row in rows if row.get("batch_customer")],
 	)
 
 
@@ -69,18 +90,25 @@ def _is_customer_gold(mwo):
 	)
 
 
-def _row_needs_settlement(mwo, row, pmo_is_customer_gold):
+def _row_needs_settlement(mwo, row, pmo_is_customer_gold, hybrid=None):
 	"""Decide whether an original transfer gold row must be settled by SNC.
 
 	A batch received under a "Customer Repair" voucher is never settled by SNC,
 	regardless of order type or batch ownership (business rule): repair gold is
 	returned as-is, so no owner gold is owed against it.
 
+	A Hybrid order's listed finding drawn from its own customer's batch (Customer Goods
+	received for the order's Ref Customer) is not borrowed either: ``hybrid_findings``
+	requires exactly that batch, so settling it would swap the customer's finding back out.
+	``hybrid`` is ``_hybrid_finding_context``.
+
 	Subcontracting order: settle whenever the borrowed gold is not the order
 	customer's own gold (covers other-customer gold and regular/company gold).
 	Regular order: settle only when a customer's gold was borrowed.
 	"""
 	if row.get("batch_voucher_type") == "Customer Repair":
+		return False
+	if is_own_hybrid_finding(hybrid, row):
 		return False
 	batch_customer = row.get("batch_customer")
 	if pmo_is_customer_gold:
@@ -187,10 +215,12 @@ def create_snc(mwo):
 	# Make Receive uses -- loss-adjusted, per current batch), so the replacement
 	# transfer mirrors the received rows row-for-row instead of copying the stale
 	# earliest Material Transfer.
+	receivable_rows = _get_receivable_gold_rows(mwo)
+	hybrid = _hybrid_finding_context(mwo, receivable_rows, pmo_is_customer_gold)
 	settle_rows = [
 		row
-		for row in _get_receivable_gold_rows(mwo)
-		if _row_needs_settlement(mwo, row, pmo_is_customer_gold)
+		for row in receivable_rows
+		if _row_needs_settlement(mwo, row, pmo_is_customer_gold, hybrid)
 	]
 	if not settle_rows:
 		frappe.throw(_("No borrowed metal or finding rows to settle found."))
@@ -205,6 +235,8 @@ def create_snc(mwo):
 	# take no DB hold, so every hit is reserved in one allocation map for the whole
 	# settlement; without it two rows can be handed the same batch and over-draw it.
 	# Nothing is minted yet, so no finder can re-discover a conversion's output either.
+	# ``allow_split``: when no single batch covers a row, the owner's metal may come from
+	# several batches of one warehouse (e.g. 12 g + 1.777 g for 13.777 g) instead of failing.
 	allocated = {}
 	plan = []
 	for row in settle_rows:
@@ -215,6 +247,7 @@ def create_snc(mwo):
 			company=mwo.company,
 			warehouses=source_warehouses,
 			allocated=allocated,
+			allow_split=True,
 		)
 		if owner_batch:
 			plan.append((row, owner_batch, False))
@@ -241,6 +274,7 @@ def create_snc(mwo):
 				company=mwo.company,
 				warehouses=source_warehouses,
 				allocated=allocated,
+				allow_split=True,
 			)
 		if not source_batch:
 			frappe.throw(_no_owner_stock_message(owner_customer, row))
@@ -254,6 +288,9 @@ def create_snc(mwo):
 	receive_items = [
 		dict(row, t_warehouse=source["warehouse"]) for row, source, _convert in plan
 	]
+	# C-09a: every naming counter this settlement mints, before the Make Receive cancels its
+	# reservations and locks its Bins (nothing is submitted before this point).
+	_prelock_settlement_counters(mwo)
 	created["make_receive"] = trigger_make_receive(
 		mwo, receive_items[0]["t_warehouse"], receive_items=receive_items
 	)
@@ -291,17 +328,25 @@ def create_snc(mwo):
 			)
 			created["conversions"].append(usage_conversion["stock_entry"])
 			batch_no = conversion["target_batch"]
-		# Bring the owner's own metal back to the warehouse this row was received from.
-		transfer_rows.append(
-			{
-				"item_code": row["item_code"],
-				"qty": row["qty"],
-				"custom_pure_qty": row["custom_pure_qty"],
-				"batch_no": batch_no,
-				"s_warehouse": source["warehouse"],
-				"t_warehouse": row["s_warehouse"],
-			}
+		# Bring the owner's own metal back to the warehouse this row was received from. A
+		# same-item source split over several batches moves one row per batch; a conversion
+		# always yields one target batch.
+		parts = (
+			_split_pure_qty(source["sources"], row["custom_pure_qty"])
+			if not convert and source.get("sources")
+			else [(batch_no, row["qty"], row["custom_pure_qty"])]
 		)
+		for part_batch, part_qty, part_pure_qty in parts:
+			transfer_rows.append(
+				{
+					"item_code": row["item_code"],
+					"qty": part_qty,
+					"custom_pure_qty": part_pure_qty,
+					"batch_no": part_batch,
+					"s_warehouse": source["warehouse"],
+					"t_warehouse": row["s_warehouse"],
+				}
+			)
 
 	created["transfers"].append(
 		create_material_transfer_work_order(
@@ -313,13 +358,40 @@ def create_snc(mwo):
 	return created
 
 
+def _prelock_settlement_counters(mwo):
+	"""Take the naming counter of every Stock Entry type ``create_snc`` mints, before the
+	Make Receive cancels its reservations and locks its Bins.
+
+	The settlement mints the Make Receive, two Repack-Metal Conversions per converted row
+	and one closing Material Transfer (WORK ORDER). Today all three share ``MAT-STE-``,
+	which the Make Receive takes first and the later ones re-enter. Once Stock Entry naming
+	is sharded per type, each type has its own counter, and the conversion and transfer
+	counters would be taken while the Make Receive's Bins are held. Pinning them all here,
+	sorted, keeps the canonical order (naming counters, then Bins). Over-covers the
+	conversions on a run that needs none, which only holds an idle counter a little longer.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		preallocate_series_for_docs,
+		series_stubs,
+	)
+
+	preallocate_series_for_docs(
+		*series_stubs(
+			mwo.company,
+			"Material Receive (WORK ORDER)",
+			"Repack-Metal Conversion",
+			"Material Transfer (WORK ORDER)",
+		)
+	)
+
+
 def _owner_label(owner_customer):
 	return "Customer {0}".format(owner_customer) if owner_customer else "Regular Stock"
 
 
 def _no_owner_stock_message(owner_customer, row):
 	message = _("No available stock for {0} to settle {1} g of {2}.").format(
-		_owner_label(owner_customer), flt(row["qty"], 3), frappe.bold(row["item_code"])
+		_owner_label(owner_customer), fmt3(row["qty"]), frappe.bold(row["item_code"])
 	)
 	if _item_template(row["item_code"]) == FINDING_TEMPLATE:
 		message += " " + _(
@@ -327,6 +399,25 @@ def _no_owner_stock_message(owner_customer, row):
 			"same metal type and colour held in one batch in a store Raw Material warehouse."
 		)
 	return message
+
+
+def _split_pure_qty(sources, total_pure_qty):
+	"""``[(batch_no, qty, pure_qty)]`` for a split source, pure qty shared pro rata by weight.
+
+	The last part takes the remainder so the parts add up to ``total_pure_qty`` exactly.
+	"""
+	total_qty = flt(sum(flt(part["qty"], 3) for part in sources), 3)
+	parts = []
+	pure_left = flt(total_pure_qty, 3)
+	for index, part in enumerate(sources):
+		qty = flt(part["qty"], 3)
+		if index == len(sources) - 1:
+			pure = pure_left
+		else:
+			pure = flt(flt(total_pure_qty) * qty / total_qty, 3) if total_qty else 0.0
+			pure_left = flt(pure_left - pure, 3)
+		parts.append((part["batch_no"], qty, pure))
+	return parts
 
 
 def find_owner_batch(
@@ -337,6 +428,7 @@ def find_owner_batch(
 	warehouses=None,
 	allocated=None,
 	reserve=True,
+	allow_split=False,
 ):
 	return find_owner_rm_warehouse(
 		owner_customer,
@@ -346,6 +438,7 @@ def find_owner_batch(
 		warehouses=warehouses,
 		allocated=allocated,
 		reserve=reserve,
+		allow_split=allow_split,
 	)
 
 
@@ -358,6 +451,8 @@ def find_owner_rm_warehouse(
 	warehouses=None,
 	allocated=None,
 	reserve=True,
+	batch_nos=None,
+	allow_split=False,
 ):
 	"""Locate a batch of ``owner_customer``'s metal big enough for the requirement.
 
@@ -365,28 +460,41 @@ def find_owner_rm_warehouse(
 	company); ``allocated`` is a caller-owned ``{(batch_no, warehouse): qty}`` map that
 	makes a multi-row run self-consistent -- see :func:`_find_available_owner_batch`.
 	``reserve`` decides whether a hit is *recorded* in that map or merely read against.
-	"""
-	if not search_different_purity:
-		return _find_available_owner_batch(
-			owner_customer,
-			item_code,
-			required_qty_or_pure_qty,
-			company,
-			warehouses=warehouses,
-			allocated=allocated,
-			reserve=reserve,
-		)
+	``batch_nos`` restricts the candidates to those batches (None = any of the owner's).
 
-	required_purity = _get_purity_label(item_code)
-	for purity in PURITY_PRIORITY:
-		if purity == required_purity:
-			continue
-		for candidate_item in _get_gold_items_for_purity(purity, item_code):
-			source_purity = _get_item_purity(candidate_item)
-			if not source_purity:
+	``allow_split`` -- when no single batch covers the requirement, fall back to several
+	batches of ONE warehouse (:func:`_find_owner_batches_in_one_warehouse`); the result then
+	carries ``sources``. Only a caller that consumes every ``sources`` row may pass it: the
+	default keeps the one-batch contract, where ``batch_no`` alone supplies the full ``qty``.
+	Every single-batch candidate is tried before any split, so a lookup that succeeds today
+	returns exactly what it did.
+	"""
+	finders = [_find_available_owner_batch]
+	if allow_split:
+		finders.append(_find_owner_batches_in_one_warehouse)
+
+	if not search_different_purity:
+		candidates = [(item_code, flt(required_qty_or_pure_qty, 3))]
+	else:
+		candidates = []
+		required_purity = _get_purity_label(item_code)
+		for purity in PURITY_PRIORITY:
+			if purity == required_purity:
 				continue
-			source_qty = flt(flt(required_qty_or_pure_qty) / (source_purity / 100), 3)
-			batch = _find_available_owner_batch(
+			for candidate_item in _get_gold_items_for_purity(purity, item_code):
+				source_purity = _get_item_purity(candidate_item)
+				if not source_purity:
+					continue
+				candidates.append(
+					(
+						candidate_item,
+						flt(flt(required_qty_or_pure_qty) / (source_purity / 100), 3),
+					)
+				)
+
+	for finder in finders:
+		for candidate_item, source_qty in candidates:
+			batch = finder(
 				owner_customer,
 				candidate_item,
 				source_qty,
@@ -394,6 +502,7 @@ def find_owner_rm_warehouse(
 				warehouses=warehouses,
 				allocated=allocated,
 				reserve=reserve,
+				batch_nos=batch_nos,
 			)
 			if batch:
 				batch["qty"] = source_qty
@@ -467,7 +576,22 @@ def create_repack_metal_conversion(
 	if target_qty <= 0:
 		target_qty = flt(flt(required_pure_qty) / (required_purity / 100), 3)
 
+	from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions import (
+		lane_tag,
+	)
+
 	inventory_type = _owner_inventory_type(owner_customer)
+	# A customer's metal converts in the customer's lane, stamped as Settle
+	# (``cg_settle._convert_multi``) stamps it. Without it the custody dispatcher could not
+	# tell this Repack was a conversion: both rows wrote no Conversion events and were logged
+	# as unclassified one-sided movements (MAT-STE-19254). One source row and one output share
+	# the lane, so the output's child batch keeps its name. Company metal writes no custody
+	# event with or without a lane, so the Regular Stock leg is left untagged.
+	lane = (
+		{"custom_conversion_lane": lane_tag(inventory_type, owner_customer)}
+		if owner_customer
+		else {}
+	)
 	se = frappe.new_doc("Stock Entry")
 	se.update(
 		{
@@ -485,17 +609,22 @@ def create_repack_metal_conversion(
 			"auto_created": 1,
 		}
 	)
-	_append_item(
-		se,
-		{
-			"item_code": source_batch["item_code"],
-			"qty": source_batch["qty"],
-			"batch_no": source_batch["batch_no"],
-			"s_warehouse": source_batch["warehouse"],
-			"inventory_type": inventory_type,
-			"customer": owner_customer,
-		},
-	)
+	# A source split over several batches of the warehouse (``sources``) consumes each batch
+	# on its own row, as Settle's ``_convert_multi`` does; the output is minted from the
+	# first source batch of the lane, so the target batch below is found the same way.
+	for part in source_batch.get("sources") or [source_batch]:
+		_append_item(
+			se,
+			{
+				"item_code": source_batch["item_code"],
+				"qty": flt(part["qty"], 3),
+				"batch_no": part["batch_no"],
+				"s_warehouse": source_batch["warehouse"],
+				"inventory_type": inventory_type,
+				"customer": owner_customer,
+				**lane,
+			},
+		)
 	_append_item(
 		se,
 		{
@@ -504,6 +633,7 @@ def create_repack_metal_conversion(
 			"t_warehouse": source_batch["warehouse"],
 			"inventory_type": inventory_type,
 			"customer": owner_customer,
+			**lane,
 		},
 	)
 	se.insert(ignore_permissions=True)
@@ -576,6 +706,10 @@ def create_material_transfer_work_order(
 				"manufacturing_operation": mwo.manufacturing_operation,
 			},
 		)
+	# Each row puts back what the Make Receive just drew from that warehouse, which can be a
+	# karigar's holding a stale reservation (MAT-STE-72278 -> 72279), so the operation need not be
+	# issued to them. See validate_work_order_transfer_destination.
+	se.flags.restores_withdrawn_stock = True
 	se.insert(ignore_permissions=True)
 	_submit_consuming_stock_entry(se)
 	return se.name
@@ -644,6 +778,13 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 				"s_warehouse": row.get("s_warehouse"),
 			}
 		)
+	# The end customer each batch was received for, for the Hybrid exemption in
+	# _row_needs_settlement. One read for all rows; nothing when no row has a batch.
+	ref_customers = get_batch_ref_customer_map(
+		[item["batch_no"] for item in receive_items]
+	)
+	for item in receive_items:
+		item["batch_ref_customer"] = ref_customers.get(item["batch_no"])
 	return receive_items
 
 
@@ -722,8 +863,13 @@ def _find_available_owner_batch(
 	warehouses=None,
 	allocated=None,
 	reserve=True,
+	batch_nos=None,
 ):
 	"""Find one (batch, warehouse) holding at least ``required_qty`` of the owner's metal.
+
+	``batch_nos`` -- when given, only those batches are candidates (an empty collection
+	finds nothing). Settle passes a Material Request batch's lineage here so another
+	receipt's metal can never settle it.
 
 	``allocated`` -- when the caller passes a ``{(batch_no, warehouse): qty}`` dict, the
 	running claim is subtracted from BOTH availability checks. The finder takes no
@@ -742,21 +888,7 @@ def _find_available_owner_batch(
 	Stock that a run *creates* (e.g. a conversion's output batch) is never returned by a
 	finder, so it can only be claimed by the caller writing to the map directly.
 	"""
-	if owner_customer:
-		batch_filters = {
-			"item": item_code,
-			"custom_customer": owner_customer,
-			"disabled": 0,
-		}
-	else:
-		batch_filters = {
-			"item": item_code,
-			"custom_inventory_type": "Regular Stock",
-			"disabled": 0,
-		}
-	batches = frappe.get_all(
-		"Batch", filters=batch_filters, pluck="name", order_by="creation asc"
-	)
+	batches = _owner_batch_names(owner_customer, item_code, batch_nos)
 	if warehouses is None:
 		warehouses = _get_raw_material_warehouses(company)
 	if not batches or not warehouses:
@@ -796,6 +928,131 @@ def _find_available_owner_batch(
 				"available_qty": flt(consumable[(batch_no, warehouse)] - taken, 3),
 				"qty": required,
 			}
+	return None
+
+
+def _owner_batch_names(owner_customer, item_code, batch_nos=None):
+	"""The owner's enabled batches of ``item_code``, oldest first.
+
+	A customer owns the batches stamped with it; ``None`` means Regular Stock. ``batch_nos``
+	restricts the result to those names (an empty collection finds nothing).
+	"""
+	if owner_customer:
+		batch_filters = {
+			"item": item_code,
+			"custom_customer": owner_customer,
+			"disabled": 0,
+		}
+	else:
+		batch_filters = {
+			"item": item_code,
+			"custom_inventory_type": "Regular Stock",
+			"disabled": 0,
+		}
+	if batch_nos is not None:
+		if not batch_nos:
+			return []
+		batch_filters["name"] = ["in", list(batch_nos)]
+	return frappe.get_all(
+		"Batch", filters=batch_filters, pluck="name", order_by="creation asc"
+	)
+
+
+def _find_owner_batches_in_one_warehouse(
+	owner_customer,
+	item_code,
+	required_qty,
+	company=None,
+	warehouses=None,
+	allocated=None,
+	reserve=True,
+	batch_nos=None,
+):
+	"""Cover ``required_qty`` from SEVERAL of the owner's batches held in ONE warehouse.
+
+	The fallback for :func:`_find_available_owner_batch` when no single batch is big
+	enough -- a customer's 13.777 g of 24KT held as 12 g + 10 g in Central RM. Batches are
+	drawn oldest first, each up to its free qty: the consumable balance and
+	``get_batch_qty`` (which nets Stock Reservation Entries), whichever is lower, less what
+	``allocated`` already claims. One warehouse only: SNC lands the Make Receive and runs
+	its conversion in the source warehouse, so the parts must sit together.
+
+	Returns the :func:`_find_available_owner_batch` shape plus ``sources`` --
+	``[{"batch_no", "qty"}]`` adding up to ``required_qty`` -- with ``batch_no`` the first
+	source, or ``None``. ``allocated`` / ``reserve`` / ``batch_nos`` behave as there; every
+	source is recorded in ``allocated`` when ``reserve`` is set.
+	"""
+	required = flt(required_qty, 3)
+	if required <= 0:
+		return None
+	batches = _owner_batch_names(owner_customer, item_code, batch_nos)
+	if warehouses is None:
+		warehouses = _get_raw_material_warehouses(company)
+	if not batches or not warehouses:
+		return None
+
+	consumable = _consumable_batch_qty_map(batches, item_code, warehouses)
+
+	def claimed(batch_no, warehouse):
+		return flt(allocated.get((batch_no, warehouse), 0), 3) if allocated else 0.0
+
+	for warehouse in warehouses:
+		# Cheap screen on the consumable balance before any per-batch get_batch_qty call.
+		if (
+			flt(
+				sum(
+					max(
+						flt(consumable.get((batch_no, warehouse), 0), 3)
+						- claimed(batch_no, warehouse),
+						0,
+					)
+					for batch_no in batches
+				),
+				3,
+			)
+			< required
+		):
+			continue
+
+		sources = []
+		remaining = required
+		for batch_no in batches:
+			taken = claimed(batch_no, warehouse)
+			free = flt(consumable.get((batch_no, warehouse), 0), 3) - taken
+			if free <= 0:
+				continue
+			reservable = (
+				flt(
+					get_batch_qty(
+						batch_no=batch_no, warehouse=warehouse, item_code=item_code
+					),
+					3,
+				)
+				- taken
+			)
+			free = flt(min(free, reservable), 3)
+			if free <= 0:
+				continue
+			take = flt(min(free, remaining), 3)
+			sources.append({"batch_no": batch_no, "qty": take})
+			remaining = flt(remaining - take, 3)
+			if remaining <= 0:
+				break
+		if remaining > 0:
+			continue
+
+		if allocated is not None and reserve:
+			for part in sources:
+				key = (part["batch_no"], warehouse)
+				allocated[key] = flt(claimed(*key) + part["qty"], 3)
+		return {
+			"batch_no": sources[0]["batch_no"],
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"available_qty": flt(sum(part["qty"] for part in sources), 3),
+			"qty": required,
+			"sources": sources,
+		}
 	return None
 
 
@@ -845,14 +1102,16 @@ def _submit_consuming_stock_entry(se):
 		if not item.get("s_warehouse") or not item.get("batch_no"):
 			continue
 		key = (item.item_code, item.batch_no, item.s_warehouse)
-		needed[key] = flt(needed.get(key, 0)) + flt(item.qty, 3)
+		# Rounded as it adds up: 0.1 + 0.2 is 0.30000000000000004, which a balance of 0.3
+		# would fail ("need 0.300, have 0.300").
+		needed[key] = flt(flt(needed.get(key, 0)) + flt(item.qty, 3), 3)
 	for (item_code, batch_no, warehouse), qty in needed.items():
 		available = _consumable_batch_qty(batch_no, item_code, warehouse)
 		if available < qty:
 			frappe.throw(
 				_(
 					"Not enough stock of batch {0} ({1}) in {2}: need {3}, have {4}."
-				).format(batch_no, item_code, warehouse, qty, available)
+				).format(batch_no, item_code, warehouse, fmt3(qty), fmt3(available))
 			)
 	se.submit()
 

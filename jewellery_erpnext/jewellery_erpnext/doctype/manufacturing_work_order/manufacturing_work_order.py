@@ -4,15 +4,32 @@
 
 import frappe
 from frappe import _
+from frappe.desk.doctype.notification_log.notification_log import (
+	enqueue_create_notification,
+)
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.model.naming import make_autoname
-from frappe.utils import cint, flt, get_datetime, get_link_to_form, now
+from frappe.utils import cint, flt, get_datetime, get_link_to_form, now, strip_html
+from frappe.utils.background_jobs import is_job_enqueued
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import owner_of, same
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.utils import (
 	add_time_log,
 	create_se_entry,
 	create_stock_transfer_entry,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
+	validate_not_eod_sync_locked,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.close_open import (
+	blocking_message,
+	pmo_blocking_state,
+	pmo_request_state,
+	request_message,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
+	validate_without_so_source_submitted,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
@@ -57,8 +74,69 @@ class ManufacturingWorkOrder(Document):
 				{"reference_doctype": self.doctype, "reference_docname": self.name},
 			)
 
+	def validate(self):
+		# The hooks.py validate (mwo_sync.sync_mould_id) runs after this; nothing else
+		# touches the current-operation pointer on save.
+		self._clear_foreign_operation_pointer()
+
+	def _clear_foreign_operation_pointer(self):
+		"""A draft keeps only a current operation it owns.
+
+		``manufacturing_operation`` names the work order's CURRENT operation, and a
+		work order gets its first operation only from its own submit
+		(create_manufacturing_operation). Before that the field can only hold an
+		inherited value: the parent's operation on a split child made before the field
+		was no_copy, or the cancelled original's operation on an Amend (Frappe's amend
+		copies no_copy fields). Whatever reads the pointer -- the Stock Entry form, the
+		current-operation guard, the EOD reservation heals, the audits -- would then take
+		another work order's operation for this one's. Submitted work orders are left
+		alone: the IR flows move their pointer.
+		"""
+		if cint(self.docstatus) != 0 or not self.manufacturing_operation:
+			return
+		owner = owner_of(self.manufacturing_operation)
+		if owner and same(owner, self.name):
+			return
+		self.manufacturing_operation = None
+
+	def on_discard(self):
+		"""Close a discarded draft the way on_cancel closes a cancelled work order.
+
+		Frappe v16's Discard sets docstatus 2 with db_set and never runs on_cancel, so a
+		discarded split child kept the "Not Started" it was mapped with, and the
+		parent's operation it pointed at. A discarded work order has no current
+		operation.
+		"""
+		self.db_set({"manufacturing_operation": None, "status": "Cancelled"})
+
 	def before_submit(self):
+		# Holding or closing a PMO holds / closes its draft work orders too; on_submit would set
+		# one back to Not Started under the still held or closed PMO.
+		if state := pmo_blocking_state(self.manufacturing_order):
+			frappe.throw(
+				blocking_message(self.manufacturing_order, state)
+				+ " "
+				+ _("Its work orders cannot be submitted."),
+				title=_("Work Order {0}").format(state),
+			)
+		# A Close / Hold request waits for the work to come back; a newly submitted work order
+		# would start new work under it.
+		if state := pmo_request_state(self.manufacturing_order):
+			frappe.throw(
+				request_message(self.manufacturing_order, state)
+				+ " "
+				+ _(
+					"Its work orders cannot be submitted until the request is done or withdrawn."
+				),
+				title=_("Parent Manufacturing Order Restricted"),
+			)
 		self.validate_photoshop_images()
+		if self.is_without_so:
+			validate_without_so_source_submitted(
+				"Parent Manufacturing Order",
+				self.manufacturing_order,
+				_("Parent Manufacturing Order"),
+			)
 
 	def on_submit(self):
 		if self.for_fg:
@@ -454,57 +532,95 @@ class ManufacturingWorkOrder(Document):
 			"name",
 		)
 
-	def _assert_serial_matches_item(self):
-		"""The serial being unpacked must BE the finished good this work order makes.
+	def _assert_serial_matches_bom(self, serial_bom):
+		"""The serial being unpacked must be the item its Serial No BOM manufactures.
 
-		Both fields are hand-settable on the PMO/MWO, so a mistyped or pasted serial can
-		otherwise point at an unrelated piece -- and unpacking it would consume that
-		customer's jewellery and book this order's components against it.
+		The work order's own item is deliberately NOT compared: a repair can change the
+		design (attribute change), so the MWO makes e.g. BA05820-002 while the piece in hand
+		is a BA05820-001 serial. What is unpacked is the serial against ITS BOM, so the two
+		of them must agree. Returns the serial's item code.
 		"""
 		serial_item = frappe.db.get_value("Serial No", self.serial_no, "item_code")
 		if not serial_item:
 			frappe.throw(_("Serial No {0} does not exist.").format(self.serial_no))
-		if serial_item != self.item_code:
+		bom_item = frappe.db.get_value("BOM", serial_bom, "item")
+		if serial_item != bom_item:
 			frappe.throw(
 				_(
-					"Serial No {0} belongs to Item {1}, but this work order makes {2}. "
-					"Refusing to unpack an unrelated serial."
-				).format(self.serial_no, serial_item, self.item_code)
+					"Serial No {0} is Item {1}, but its Serial No BOM {2} makes {3}. "
+					"Refusing to unpack against a BOM of another item."
+				).format(self.serial_no, serial_item, serial_bom, bom_item or "-")
 			)
+		return serial_item
 
-	def _resolve_repair_order_bom(self):
-		"""Return (design BOM, PMO name) for this repair unpack.
+	def _sync_repair_order_master_bom(self):
+		"""Write the Repair Order's design BOM to master_bom (PMO + this MWO), if there is one.
 
-		The BOM to unpack against is the Repair Order's ``bom`` -- the design BOM, reached
-		from the PMO's ``order_form_type`` / ``order_form_id`` dynamic link. Its detail
-		tables carry the item's FULL composition, which is what
-		``_resolve_full_repair_components`` books.
-
-		We deliberately do NOT require the Repair Order's ``new_bom``. That field is only
-		ever written by the Repair Order's own ``on_submit`` when ``required_design == 'No'``,
-		so a Manual/CAD-design repair never gets one and demanding it blocked the unpack
-		outright. Throws only if there is no Repair Order link, or it carries no ``bom``.
+		Not a gate: the unpack books the serial's own BOM, so a repair with no Repair Order (a
+		customer Purchase Order repair, or any other) unpacks all the same and keeps its
+		master_bom. The design BOM is written only because it drives repair pricing/quotation.
 		"""
-		pmo_name = self.manufacturing_order
+		if not self._has_repair_order_link():
+			return
+		order_form_id = frappe.db.get_value(
+			"Parent Manufacturing Order", self.manufacturing_order, "order_form_id"
+		)
+		design_bom = get_repair_order_design_bom("Repair Order", order_form_id)
+		if not design_bom:
+			return
+		frappe.db.set_value(
+			"Parent Manufacturing Order", self.manufacturing_order, "master_bom", design_bom
+		)
+		self.db_set("master_bom", design_bom)
+
+	def _assert_serial_matches_repair_order(self):
+		"""When the repair has a Repair Order, its serial must be this work order's serial.
+
+		The serial-vs-BOM check holds for almost any serial, so on its own it would not catch a
+		mistyped or pasted serial. The Repair Order's serial survives a design change, so it
+		keeps that protection. A repair without a Repair Order is not checked here.
+		"""
 		order_form_type, order_form_id = frappe.db.get_value(
 			"Parent Manufacturing Order",
-			pmo_name,
+			self.manufacturing_order,
 			["order_form_type", "order_form_id"],
 		) or (None, None)
 		if order_form_type != "Repair Order" or not order_form_id:
+			return
+		order_serial = frappe.db.get_value("Repair Order", order_form_id, "serial_no")
+		if order_serial and order_serial != self.serial_no:
 			frappe.throw(
 				_(
-					"No Repair Order is linked to {0}; cannot resolve the repair BOM to unpack."
-				).format(pmo_name)
+					"Serial No {0} is not the serial of Repair Order {1} ({2}). "
+					"Refusing to unpack an unrelated serial."
+				).format(self.serial_no, order_form_id, order_serial)
 			)
-		design_bom = get_repair_order_design_bom(order_form_type, order_form_id)
-		if not design_bom:
+
+	def _has_repair_order_link(self):
+		order_form_type, order_form_id = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			self.manufacturing_order,
+			["order_form_type", "order_form_id"],
+		) or (None, None)
+		return order_form_type == "Repair Order" and bool(order_form_id)
+
+	def _resolve_serial_bom(self):
+		"""The BOM of the serial being unpacked: the work order's Serial No BOM
+		(serial_id_bom), else the serial's own BOM (Serial No.custom_bom_no).
+
+		That, and not the Repair Order's design BOM, describes what is physically in the
+		piece. Never the design BOM: unpacking against it would book the wrong materials.
+		"""
+		serial_bom = getattr(self, "serial_id_bom", None) or frappe.db.get_value(
+			"Serial No", self.serial_no, "custom_bom_no"
+		)
+		if not serial_bom:
 			frappe.throw(
 				_(
-					"Repair Order {0} has no BOM to unpack; set its design BOM first."
-				).format(order_form_id)
+					"Serial No {0} has no BOM (BOM No); cannot work out what to unpack."
+				).format(self.serial_no)
 			)
-		return design_bom, pmo_name
+		return serial_bom
 
 	def _resolve_full_repair_components(self, pmo_name, design_bom):
 		"""Resolve the FULL bookable component list for this repair from the design
@@ -519,8 +635,7 @@ class ManufacturingWorkOrder(Document):
 		order's Diamond Grade (design diamond rows carry the sieve/type/shape but not
 		the grade -- that comes from the order). The in-memory copy is never saved.
 
-		``design_bom`` comes from ``_resolve_repair_order_bom``, which has already
-		validated the Repair Order link.
+		``design_bom`` is the serial's BOM (``_resolve_serial_bom``).
 
 		Returns (components, gross_wt, bom_qty) where
 		``components = [{"item_code", "qty"}]`` aggregated by item.
@@ -543,15 +658,17 @@ class ManufacturingWorkOrder(Document):
 		set_item_variant(design)
 
 		components = {}
+		pieces = {}
 		order = []
 
-		def _add(item_code, qty):
+		def _add(item_code, qty, pcs=0):
 			if not item_code or not qty:
 				return
 			if item_code not in components:
 				components[item_code] = 0
 				order.append(item_code)
 			components[item_code] += flt(qty)
+			pieces[item_code] = pieces.get(item_code, 0) + flt(pcs)
 
 		for table in (
 			"metal_detail",
@@ -559,28 +676,21 @@ class ManufacturingWorkOrder(Document):
 			"finding_detail",
 			"gemstone_detail",
 		):
+			counts_pieces = table in ("diamond_detail", "gemstone_detail")
 			for row in design.get(table) or []:
-				_add(row.get("item_variant"), row.get("quantity"))
+				_add(
+					row.get("item_variant"),
+					row.get("quantity"),
+					row.get("pcs") if counts_pieces else 0,
+				)
 		for row in design.get("other_detail") or []:
 			_add(row.get("item_code"), row.get("quantity"))
 
 		component_rows = [
-			{"item_code": code, "qty": components[code]} for code in order
+			{"item_code": code, "qty": components[code], "pcs": pieces.get(code, 0)}
+			for code in order
 		]
 		return component_rows, flt(design.gross_weight), flt(design.quantity) or 1.0
-
-	def _assert_serial_in_department(self, source_wh):
-		"""Block unpacking unless the serial's current warehouse belongs to THIS work
-		order's department. Department stored as "" and NULL are normalized together.
-		"""
-		sn_dept = frappe.db.get_value("Warehouse", source_wh, "department")
-		if (sn_dept or None) != (self.department or None):
-			frappe.throw(
-				_(
-					"Serial No {0} is in {1} (department {2}), not this work order's "
-					"department {3}. Move it into a {3} warehouse before unpacking."
-				).format(self.serial_no, source_wh, sn_dept or "-", self.department)
-			)
 
 	def _assert_components_bookable(self, item_codes, bom_name):
 		"""Fail fast (before building the SE) if any component is serial-tracked with no
@@ -604,14 +714,14 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_unpack_serial_no_stock_entry(self):
-		"""Unpack a repaired FG serial into the Repair Order's BOM raw materials as
-		Customer Goods.
+		"""Unpack a repaired FG serial into the raw materials of ITS OWN BOM, booked as
+		Regular Stock.
 
 		Consumes the finished-good serial from the RM warehouse that currently holds
-		it and books the Repair Order BOM's raw materials straight into the
-		department's Manufacturing warehouse, so the repair operations have their
-		inputs without a separate stock transfer. Only valid for Repair work orders
-		(see the Unpack Raw Material button). This is a Customer-Goods sibling of
+		it and books the raw materials of the serial's BOM (serial_id_bom, else Serial No.custom_bom_no)
+		into the work order's warehouse (see _resolve_unpack_target_warehouse), so the repair
+		operations have their inputs without a separate stock transfer. Only valid for Repair work orders (see the Unpack
+		Serial No button). This is a Customer-Goods sibling of
 		create_repair_un_pack_stock_entry (which stays for the legacy flow).
 		"""
 		pmo_type = frappe.db.get_value(
@@ -628,10 +738,19 @@ class ManufacturingWorkOrder(Document):
 			frappe.throw(
 				_("Unpack Serial No requires a submitted Manufacturing Work Order.")
 			)
+		# A finding work order carries the same serial as the main one, but only makes a
+		# finding: unpacking there would book the whole piece onto the wrong operation.
+		if self.is_finding_mwo:
+			frappe.throw(
+				_(
+					"{0} is a finding work order. Unpack Serial No from the main work order "
+					"of this repair."
+				).format(self.name)
+			)
 
 		# Idempotency: a double-click, a page reload mid-post or a retried request must not
 		# produce a second Stock Entry -- that would consume the serial twice, mint a second
-		# set of Customer Goods batches and double every MOP weight booked off these rows.
+		# set of component batches and double every MOP weight booked off these rows.
 		if existing := self.find_existing_unpack_entry():
 			frappe.throw(
 				_(
@@ -640,17 +759,15 @@ class ManufacturingWorkOrder(Document):
 				).format(self.serial_no, get_link_to_form("Stock Entry", existing))
 			)
 
-		self._assert_serial_matches_item()
-
-		# The BOM to unpack lives on the linked Repair Order, not the MWO's inherited
-		# master_bom. Persist it onto the PMO + this MWO (it drives repair
-		# pricing/quotation); the components actually booked come from its full design
-		# composition, resolved below.
-		design_bom, pmo_name = self._resolve_repair_order_bom()
-		frappe.db.set_value(
-			"Parent Manufacturing Order", pmo_name, "master_bom", design_bom
-		)
-		self.db_set("master_bom", design_bom)
+		# Only the serial and its BOM decide what is unpacked; no Repair Order is needed. The
+		# Repair Order's design BOM, when there is one, is still written to master_bom.
+		serial_bom = self._resolve_serial_bom()
+		# The serial must be the item its BOM makes. The work order's own item is not
+		# compared: a design-change repair makes another item from this serial.
+		serial_item = self._assert_serial_matches_bom(serial_bom)
+		self._assert_serial_matches_repair_order()
+		self._sync_repair_order_master_bom()
+		pmo_name = self.manufacturing_order
 
 		# Source: the RM warehouse that currently holds the serial (not the
 		# manufacturer's repair warehouse used by the legacy method).
@@ -662,82 +779,48 @@ class ManufacturingWorkOrder(Document):
 				).format(self.serial_no)
 			)
 
-		# The serial must physically sit in a warehouse of THIS work order's
-		# department before it can be unpacked here.
-		self._assert_serial_in_department(source_wh)
+		# The serial leaves from its own warehouse's department; the work order's department
+		# is not compared.
+		source_department = frappe.db.get_value("Warehouse", source_wh, "department")
 
-		# Target: the department's Manufacturing warehouse.
-		target_wh = frappe.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"warehouse_type": "Manufacturing",
-				"department": self.department,
-			},
-			"name",
-		)
-		if not target_wh:
-			frappe.throw(
-				_("Manufacturing warehouse not found for department {0}").format(
-					self.department
-				)
-			)
+		target_wh = self._resolve_unpack_target_warehouse()
 
-		source_inventory_type, source_customer, customer = _resolve_unpack_inventory(
-			self.serial_no, self.manufacturing_order
+		source_inventory_type, source_customer = _resolve_unpack_inventory(
+			self.serial_no
 		)
-		if not customer:
+		# The serial leaves under its own owner. A Customer Goods serial whose batch names no
+		# customer cannot be consumed that way (ownership normalisation would book it as
+		# Regular Stock and the outward ledger entry would not match), so say so up front.
+		if source_inventory_type in ("Customer Goods", "Customer Stock") and not (
+			source_customer
+		):
 			frappe.throw(
 				_(
-					"Cannot unpack as Customer Goods: no customer found on the serial's "
-					"batch or on Parent Manufacturing Order {0}."
-				).format(self.manufacturing_order)
-			)
-
-		# Average per-item rate from the serial's original purchase entry.
-		parent_entry = frappe.db.get_value(
-			"Serial No", self.serial_no, "purchase_document_no"
-		)
-		raw_item_data = (
-			frappe.db.get_all(
-				"Stock Entry Detail",
-				{"parent": parent_entry},
-				["basic_rate", "item_code"],
-			)
-			if parent_entry
-			else []
-		)
-
-		from collections import defaultdict
-
-		row_dict = defaultdict(
-			lambda: {"count": 0, "total_basic_rate": 0, "avg_basic_rate": 0}
-		)
-		for row in raw_item_data:
-			row_dict[row.item_code]["count"] += 1
-			row_dict[row.item_code]["total_basic_rate"] += row.basic_rate
-			row_dict[row.item_code]["avg_basic_rate"] = (
-				row_dict[row.item_code]["total_basic_rate"]
-				/ row_dict[row.item_code]["count"]
+					"Serial No {0} is {1} but its batch has no customer, so it cannot be "
+					"unpacked. Set the customer on the serial's batch first."
+				).format(self.serial_no, source_inventory_type)
 			)
 
 		# Unpack the FULL item, not the reduced repair new_bom: resolve every
-		# component (metal + each diamond group + findings) from the design BOM's
+		# component (metal + each diamond group + findings) from the serial's own BOM's
 		# detail tables. Downstream (MOP weights, repack) is MOP-Log-driven off the
 		# rows we book here, so booking the full set is what makes the operation
 		# reflect the whole item.
 		components, design_gross, design_qty = self._resolve_full_repair_components(
-			pmo_name, design_bom
+			pmo_name, serial_bom
 		)
 		if not components:
 			frappe.throw(
 				_(
-					"No components resolved from design BOM {0}; nothing to unpack."
-				).format(design_bom)
+					"No components resolved from BOM {0} of Serial No {1}; nothing to unpack."
+				).format(serial_bom, self.serial_no)
 			)
 
 		self._assert_components_bookable(
-			[comp["item_code"] for comp in components], design_bom
+			[comp["item_code"] for comp in components], serial_bom
+		)
+		component_rates = self._unpack_component_rates(
+			[comp["item_code"] for comp in components]
 		)
 
 		se = frappe.get_doc(
@@ -746,7 +829,8 @@ class ManufacturingWorkOrder(Document):
 				"stock_entry_type": "Repair Unpack",
 				"purpose": "Repack",
 				"company": self.company,
-				"inventory_type": "Customer Goods",
+				# The unpacked materials are booked as Regular Stock (target rows below).
+				"inventory_type": "Regular Stock",
 				"auto_created": 1,
 				"branch": self.branch,
 				# Header MWO/PMO/operation are required by the MOP-Log + reservation
@@ -759,17 +843,19 @@ class ManufacturingWorkOrder(Document):
 		)
 		# Source row: consume the FG serial under its ACTUAL inventory type so the
 		# outward ledger entry nets against real stock (inventory_type is a
-		# ledger-enforced Inventory Dimension). Gross weight is the full design gross
-		# so the disassembly is mass-balanced against the resolved components.
+		# ledger-enforced Inventory Dimension). Gross weight is the full gross of the
+		# serial's BOM so the disassembly is mass-balanced against the resolved components.
+		# The item consumed is the SERIAL's item, which differs from the work order's
+		# item when the repair changes the design.
 		se.append(
 			"items",
 			{
-				"item_code": self.item_code,
+				"item_code": serial_item,
 				"qty": self.qty,
 				"inventory_type": source_inventory_type,
 				"customer": source_customer,
 				"serial_no": self.serial_no,
-				"department": self.department,
+				"department": source_department,
 				"manufacturer": self.manufacturer,
 				"use_serial_batch_fields": 1,
 				"s_warehouse": source_wh,
@@ -782,7 +868,7 @@ class ManufacturingWorkOrder(Document):
 			item_code = comp["item_code"]
 			qty = flt((self.qty * comp["qty"]) / design_qty, 3)
 
-			# Only batch-tracked items get a (Customer Goods) child batch; setting a
+			# Only batch-tracked items get a (Regular Stock) child batch; setting a
 			# batch on a non-batch item would fail SE validation at submit.
 			has_batch, batch_number_series = frappe.db.get_value(
 				"Item", item_code, ["has_batch_no", "batch_number_series"]
@@ -795,45 +881,174 @@ class ManufacturingWorkOrder(Document):
 					batch_doc.batch_id = make_autoname(
 						batch_number_series, doc=batch_doc
 					)
-				batch_doc.custom_inventory_type = "Customer Goods"
-				batch_doc.custom_customer = customer
-				# Unpacked raw material is the customer's repair stock -- tag the voucher type
-				# so it is correctly identified as Customer Repair downstream (the SE-level
-				# customer_voucher_type cannot be used here: it would trip
-				# inventory_utils.validate_customer_voucher's "Customer Repair" branch, which
-				# forbids batch-tracked rows).
+				# Unpacked raw material is booked as Regular Stock: no customer on the
+				# batch, matching the Regular Stock target row it is received on.
+				batch_doc.custom_inventory_type = "Regular Stock"
+				# Still marked as repair material. SNC settlement skips "Customer Repair"
+				# batches (snc._row_needs_settlement); without the mark a customer-gold
+				# repair would settle this metal as borrowed (None != the order's
+				# customer). Batch validation only rewrites the voucher type on a batch
+				# that has a customer, so the mark survives on this one.
 				batch_doc.custom_customer_voucher_type = "Customer Repair"
 				batch_doc.flags.ignore_permissions = True
 				batch_doc.save()
 				batch_no = batch_doc.name
 
-			rate = 0
-			if row_dict.get(item_code) and row_dict[item_code].get("avg_basic_rate"):
-				rate = row_dict[item_code].get("avg_basic_rate")
+			row = {
+				"item_code": item_code,
+				"qty": qty,
+				"inventory_type": "Regular Stock",
+				"customer": None,
+				"t_warehouse": target_wh,
+				"department": self.department,
+				"use_serial_batch_fields": 1,
+				"set_basic_rate_manually": 1,
+				"basic_rate": flt(component_rates.get(item_code)),
+				"batch_no": batch_no,
+				# All unpacked materials belong to THIS repair MWO's operation so
+				# they surface in its MOP (MOP Log is keyed by the row's operation).
+				"custom_manufacturing_work_order": self.name,
+				"manufacturing_operation": self.manufacturing_operation,
+			}
+			# Stones carry the BOM's piece count; without it the row keeps the
+			# field's default of 1 and the MOP shows 1 pc for a 35-stone group.
+			if flt(comp.get("pcs")):
+				row["pcs"] = cint(round(flt(self.qty) * flt(comp["pcs"]) / design_qty))
+			se.append("items", row)
 
-			se.append(
-				"items",
-				{
-					"item_code": item_code,
-					"qty": qty,
-					"inventory_type": "Customer Goods",
-					"customer": customer,
-					"t_warehouse": target_wh,
-					"department": self.department,
-					"use_serial_batch_fields": 1,
-					"set_basic_rate_manually": 1,
-					"basic_rate": rate,
-					"batch_no": batch_no,
-					# All unpacked materials belong to THIS repair MWO's operation so
-					# they surface in its MOP (MOP Log is keyed by the row's operation).
-					"custom_manufacturing_work_order": self.name,
-					"manufacturing_operation": self.manufacturing_operation,
-				},
-			)
-
+		# First save lets ERPNext value the serial being consumed; the components are then
+		# re-rated so what comes back adds up to exactly that value (nothing booked to
+		# the Difference Account, nothing left at a 0 rate).
 		se.save()
+		self._rate_unpacked_components(se)
+		se.save()
+		_link_batches_to_rows(se)
 		se.submit()
 		return se.name
+
+	def _resolve_unpack_target_warehouse(self):
+		"""Where the unpacked material goes: the work order's own warehouse, the same
+		rule Material Transfer (WORK ORDER) uses. A Not Started operation takes the
+		department's Manufacturing warehouse; one that is WIP with an employee takes
+		that employee's Manufacturing warehouse.
+		"""
+		mop = (
+			frappe.db.get_value(
+				"Manufacturing Operation",
+				self.manufacturing_operation,
+				["status", "employee", "department"],
+				as_dict=True,
+			)
+			if self.manufacturing_operation
+			else None
+		) or frappe._dict()
+		department = mop.get("department") or self.department
+
+		if mop.get("status") == "WIP" and mop.get("employee"):
+			warehouse = frappe.db.get_value(
+				"Warehouse",
+				{
+					"employee": mop.employee,
+					"warehouse_type": "Manufacturing",
+					"disabled": 0,
+				},
+				"name",
+			)
+			if not warehouse:
+				frappe.throw(
+					_("Manufacturing warehouse not found for employee {0}").format(
+						mop.employee
+					)
+				)
+			return warehouse
+
+		warehouse = frappe.db.get_value(
+			"Warehouse",
+			{
+				"department": department,
+				"warehouse_type": "Manufacturing",
+				"disabled": 0,
+			},
+			"name",
+		)
+		if not warehouse:
+			frappe.throw(
+				_("Manufacturing warehouse not found for department {0}").format(
+					department
+				)
+			)
+		return warehouse
+
+	def _unpack_component_rates(self, item_codes):
+		"""Per-unit rate of each component, as it was when this piece was made.
+
+		The serial's own creation entry is the record of what each component cost, so its
+		consumed rows give the rates (qty-weighted per item). Items it does not cover fall
+		back to the Item's last purchase rate. Only the proportions matter:
+		_rate_unpacked_components scales the set to the value of the serial.
+		"""
+		rates = {}
+		entry = frappe.db.sql(
+			"""
+			SELECT bundle.voucher_no
+			FROM `tabSerial and Batch Entry` entry
+			JOIN `tabSerial and Batch Bundle` bundle ON bundle.name = entry.parent
+			WHERE entry.serial_no = %s
+				AND bundle.voucher_type = 'Stock Entry'
+				AND bundle.type_of_transaction = 'Inward'
+				AND bundle.docstatus = 1
+				AND bundle.is_cancelled = 0
+			ORDER BY bundle.creation ASC
+			LIMIT 1
+			""",
+			(self.serial_no,),
+		)
+		if entry:
+			totals = {}
+			for row in frappe.db.get_all(
+				"Stock Entry Detail",
+				{"parent": entry[0][0], "s_warehouse": ["is", "set"]},
+				["item_code", "qty", "basic_rate"],
+			):
+				qty, amount = totals.get(row.item_code, (0.0, 0.0))
+				totals[row.item_code] = (
+					qty + flt(row.qty),
+					amount + flt(row.qty) * flt(row.basic_rate),
+				)
+			rates = {
+				item: amount / qty for item, (qty, amount) in totals.items() if qty
+			}
+
+		for item_code in item_codes:
+			if not flt(rates.get(item_code)):
+				rates[item_code] = flt(
+					frappe.db.get_value("Item", item_code, "last_purchase_rate")
+				)
+		return rates
+
+	def _rate_unpacked_components(self, se):
+		"""Scale the component rates so they add up to the value of the serial consumed.
+
+		``se`` has been saved once, so its source row carries the value ERPNext took for the
+		serial. The last component takes the rounding remainder so the two sides match to the
+		paisa.
+		"""
+		source_value = sum(
+			flt(row.basic_rate) * flt(row.qty) for row in se.items if row.s_warehouse
+		)
+		targets = [row for row in se.items if row.t_warehouse]
+		booked = sum(flt(row.basic_rate) * flt(row.qty) for row in targets)
+		if not (targets and source_value > 0 and booked > 0):
+			return
+
+		factor = source_value / booked
+		running = 0.0
+		for row in targets[:-1]:
+			row.basic_rate = flt(flt(row.basic_rate) * factor, 6)
+			running += flt(flt(row.basic_rate) * flt(row.qty), 2)
+		last = targets[-1]
+		if flt(last.qty):
+			last.basic_rate = flt((source_value - running) / flt(last.qty), 6)
 
 	def validate_photoshop_images(self):
 		"""Block FG submission when the Design Code Item is flagged 'Is Photoshop
@@ -967,6 +1182,8 @@ def get_unpack_eligibility(mwo):
 		reason = _("Not a Repair work order.")
 	elif doc.docstatus != 1:
 		reason = _("Work order is not submitted.")
+	elif doc.is_finding_mwo:
+		reason = _("Finding work order; unpack from the main work order.")
 	elif not doc.serial_no:
 		reason = _("No repair Serial No is set on this work order.")
 	elif existing:
@@ -982,16 +1199,39 @@ def get_unpack_eligibility(mwo):
 	}
 
 
-def _resolve_unpack_inventory(serial_no, pmo):
+def _link_batches_to_rows(se):
+	"""Tie each batch the unpack minted to the Stock Entry row that receives it.
+
+	The batches are created before the entry exists, so they never got a reference to it.
+	The Batch Rate is stamped from the creating row
+	(``batch/doc_events/utils.update_inventory_dimentions``, found through
+	``reference_doctype`` + ``custom_voucher_detail_no``) when ERPNext re-saves the batch on
+	submit -- and ERPNext fills ``reference_doctype`` only after that re-save. Without the
+	link every unpacked batch kept a Batch Rate of 0.
+	"""
+	for row in se.items:
+		if row.get("t_warehouse") and row.get("batch_no") and row.get("name"):
+			frappe.db.set_value(
+				"Batch",
+				row.batch_no,
+				{
+					"reference_doctype": "Stock Entry",
+					"reference_name": se.name,
+					"custom_voucher_detail_no": row.name,
+				},
+				update_modified=False,
+			)
+
+
+def _resolve_unpack_inventory(serial_no):
 	"""Inventory context for the unpack SE.
 
 	`inventory_type` is a ledger-enforced Inventory Dimension, so the SOURCE row
 	must consume the serial under its ACTUAL inventory type (else the outward SLE
 	goes negative for the wrong dimension). The unpacked TARGET rows are booked as
-	Customer Goods per spec.
+	Regular Stock and need no owner.
 
-	Returns (source_inventory_type, source_customer, customer) where `customer` is
-	the owner assigned to the Customer-Goods target rows.
+	Returns (source_inventory_type, source_customer).
 	"""
 	source_inventory_type = "Regular Stock"
 	source_customer = None
@@ -1009,10 +1249,7 @@ def _resolve_unpack_inventory(serial_no, pmo):
 			if source_inventory_type == "Customer Goods":
 				source_customer = batch_info.custom_customer
 
-	customer = source_customer or frappe.db.get_value(
-		"Parent Manufacturing Order", pmo, "customer"
-	)
-	return source_inventory_type, source_customer, customer
+	return source_inventory_type, source_customer
 
 
 def create_manufacturing_operation(doc):
@@ -1057,6 +1294,13 @@ def create_manufacturing_operation(doc):
 		) or ["", ""]
 		# New Status
 		status = "Finished"
+
+	if doc.is_without_so and doc.department != department:
+		# A Without-SO order starts in its plan's department, where the default operation
+		# does not belong; the Employee IR issue picks the operation, as after a Department
+		# IR receive.
+		department = doc.department
+		operation = None
 
 	if doc.split_from:
 		department = doc.department
@@ -1189,9 +1433,62 @@ def create_manufacturing_operation(doc):
 # "Manufacturing Plan & Management  - KGJPL".
 SPLIT_ALLOWED_DEPARTMENT = "Manufacturing Plan & Management"
 
+# The parent's runtime state, which a split child must not inherit. get_mapped_doc
+# copies every same-named field that is not no_copy, so each child started as a draft
+# that read "Not Started", carried the parent's start time and pointed at the PARENT's
+# current operation -- which anything reading the pointer then took for the child's.
+# The child's own submit sets the operation, the start time and the status (on_submit,
+# create_manufacturing_operation). tree_number and has_split_mwo are the parent's too:
+# a child joins a casting tree through its own Casting issue, and the split flag marks
+# the parent once its children exist. manufacturing_operation and start_datetime are
+# also no_copy; they are named here as well so the split does not depend on the site's
+# DocField metadata having been migrated.
+SPLIT_CHILD_FIELD_NO_MAP = (
+	"manufacturing_operation",
+	"start_datetime",
+	"status",
+	"tree_number",
+	"has_split_mwo",
+)
+
+_CANCEL_SPLIT_BLOCKERS_METHOD = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.cancel_split_blocking_stock_entries"
+
 
 def validate_split_eligibility(docname):
-	"""A work order may be split only while it is still in planning with no material on it.
+	"""A work order may be split only while it is still in planning with no material on it."""
+	_validate_split_basics(docname)
+
+	blocking = _split_blocking_stock(docname)
+	if blocking.entries:
+		# Every entry, in the order they have to go: each step moved the previous one's
+		# stock on, so naming just one sent operators to the first entry -- the one
+		# ERPNext refuses to cancel until all the later ones are gone.
+		frappe.throw(
+			_(
+				"Material Request {0} has already moved stock. Cancel these Stock Entries, latest first, before splitting Work Order {1}: {2}"
+			).format(
+				", ".join(
+					get_link_to_form("Material Request", mr)
+					for mr in blocking.material_requests
+				),
+				docname,
+				", ".join(
+					get_link_to_form("Stock Entry", se) for se in blocking.entries
+				),
+			),
+			# The Split button asks first (get_split_blocking_stock_entries); this reaches a
+			# direct call or a browser still on the old form script, and does the same.
+			primary_action={
+				"label": _("Cancel Stock Entries"),
+				"server_action": _CANCEL_SPLIT_BLOCKERS_METHOD,
+				"args": {"docname": docname},
+				"hide_on_success": True,
+			},
+		)
+
+
+def _validate_split_basics(docname):
+	"""Every reason a split is refused other than stock its Material Requests moved.
 
 	The weight is checked on the current Manufacturing Operation as well as on the MWO
 	header: the header gross_wt is only ever written for FG work orders (sync_mwo_weights),
@@ -1204,10 +1501,12 @@ def validate_split_eligibility(docname):
 		docname,
 		[
 			"docstatus",
+			"status",
 			"has_split_mwo",
 			"department",
 			"gross_wt",
 			"manufacturing_operation",
+			"manufacturing_order",
 		],
 		as_dict=True,
 	)
@@ -1216,6 +1515,23 @@ def validate_split_eligibility(docname):
 			_("Work Order {0} must be submitted before it can be split.").format(
 				docname
 			)
+		)
+
+	# A Close / Hold request waits for the work orders to come back, not for new ones.
+	if state := pmo_request_state(mwo.get("manufacturing_order")):
+		frappe.throw(
+			request_message(mwo.manufacturing_order, state)
+			+ " "
+			+ _(
+				"Work Order {0} cannot be split until the request is done or withdrawn."
+			).format(docname)
+		)
+
+	# Held or closed with its PMO: the split would close it and start new work orders under
+	# a PMO that takes none. (A split parent is Closed too, but has_split_mwo says so below.)
+	if mwo.status == "Hold" or (mwo.status == "Closed" and not cint(mwo.has_split_mwo)):
+		frappe.throw(
+			_("Work Order {0} is {1} and cannot be split.").format(docname, mwo.status)
 		)
 
 	# A split parent keeps its department and zero weight, and its pending operations are
@@ -1266,30 +1582,52 @@ def validate_split_eligibility(docname):
 			)
 		)
 
-	# The split cancels these Material Requests by writing docstatus directly, which does
-	# not reverse their Stock Entries -- any stock they already moved would be left in the
-	# reserve/department warehouse against a cancelled MR and a closed work order.
-	# Ownership is read from the Stock Entry rows, not the MR's custom_*_se links: those
-	# links are copied between MRs (copy_doc, desk Duplicate) and can point at another
-	# MR's entry.
+
+def _split_blocking_stock(docname):
+	"""The Material Requests that moved stock, and every entry to cancel, latest first.
+
+	The split cancels these Material Requests by writing docstatus directly, which does
+	not reverse their Stock Entries -- any stock they already moved would be left in the
+	reserve/department warehouse against a cancelled MR and a closed work order.
+	Ownership is read from the Stock Entry rows, not the MR's custom_*_se links: those
+	links are copied between MRs (copy_doc, desk Duplicate) and can point at another
+	MR's entry.
+	"""
 	material_requests = _get_split_material_requests(docname)
-	if material_requests:
-		moved = frappe.get_all(
+	moved = (
+		frappe.get_all(
 			"Stock Entry Detail",
 			filters={"material_request": ["in", material_requests], "docstatus": 1},
 			fields=["material_request", "parent"],
-			limit=1,
 		)
-		if moved:
-			frappe.throw(
-				_(
-					"Material Request {0} has already moved stock through Stock Entry {1}. Reverse that stock before splitting Work Order {2}."
-				).format(
-					get_link_to_form("Material Request", moved[0].material_request),
-					get_link_to_form("Stock Entry", moved[0].parent),
-					docname,
-				)
-			)
+		if material_requests
+		else []
+	)
+	return frappe._dict(
+		material_requests=sorted({row.material_request for row in moved}),
+		entries=_entries_in_cancel_order({row.parent for row in moved})
+		if moved
+		else [],
+	)
+
+
+def _entries_in_cancel_order(entries):
+	"""The submitted ``entries`` plus their End Transit receipts, latest first.
+
+	A department transfer's receipt carries no material_request on its rows, yet it moved
+	the same stock on and has to be cancelled before the transfer itself.
+	"""
+	receipts = frappe.get_all(
+		"Stock Entry",
+		filters={"outgoing_stock_entry": ["in", sorted(entries)], "docstatus": 1},
+		pluck="name",
+	)
+	return frappe.get_all(
+		"Stock Entry",
+		filters={"name": ["in", sorted({*entries, *receipts})]},
+		order_by="posting_date desc, posting_time desc, creation desc",
+		pluck="name",
+	)
 
 
 def _get_split_material_requests(docname):
@@ -1318,6 +1656,229 @@ def _get_split_material_requests(docname):
 	return frappe.get_all("Material Request", filters=filters, pluck="name")
 
 
+def _stopped_requests(material_requests):
+	"""ERPNext refuses to cancel an entry whose Material Request is Stopped."""
+	if not material_requests:
+		return []
+	return frappe.get_all(
+		"Material Request",
+		filters={"name": ["in", material_requests], "status": "Stopped"},
+		pluck="name",
+	)
+
+
+@frappe.whitelist()
+def get_split_blocking_stock_entries(docname):
+	"""What the Split button has to clear first, for its confirmation dialog.
+
+	Every other reason a split is refused is raised here exactly as on the split itself,
+	so the operator is never offered to cancel stock for a work order that cannot be split.
+	"""
+	frappe.has_permission("Manufacturing Work Order", "read", docname, throw=True)
+	_validate_split_basics(docname)
+	blocking = _split_blocking_stock(docname)
+	details = (
+		{
+			row.name: row
+			for row in frappe.get_all(
+				"Stock Entry",
+				filters={"name": ["in", blocking.entries]},
+				fields=["name", "stock_entry_type", "posting_date"],
+			)
+		}
+		if blocking.entries
+		else {}
+	)
+	return {
+		"material_requests": blocking.material_requests,
+		"stopped": _stopped_requests(blocking.material_requests),
+		"entries": [details[se] for se in blocking.entries if se in details],
+	}
+
+
+@frappe.whitelist()
+def cancel_split_blocking_stock_entries(docname):
+	"""Queue the cancellation of every Stock Entry that blocks splitting ``docname``.
+
+	Only the work order comes from the caller; its entries are worked out again here, so
+	the request cannot name stock that is not this work order's. A cancel takes the better
+	part of a minute on a busy diamond item, so a chain of them would outlast the web
+	request: they run in a background job, latest first.
+	"""
+	frappe.has_permission("Manufacturing Work Order", "read", docname, throw=True)
+	blocking = _check_split_cancel(docname)
+	if not blocking.entries:
+		frappe.msgprint(
+			_("Nothing to cancel. Work Order {0} can be split now.").format(docname)
+		)
+		return
+
+	job_id = _split_cancel_job_id(docname)
+	if is_job_enqueued(job_id):
+		frappe.throw(
+			_(
+				"The Stock Entries blocking Work Order {0} are already being cancelled. Reload in a minute."
+			).format(docname)
+		)
+	frappe.enqueue(
+		_cancel_split_blocking_stock_entries,
+		queue="long",
+		timeout=4500,
+		job_id=job_id,
+		deduplicate=True,
+		enqueue_after_commit=True,
+		docname=docname,
+		requested_by=frappe.session.user,
+		# What this click agreed to re-open. A request stopped after it is refused by the
+		# job, not re-opened.
+		reopen=blocking.stopped,
+	)
+	message = _(
+		"Cancelling {0} Stock Entries in the background, latest first: {1}."
+	).format(len(blocking.entries), ", ".join(blocking.entries))
+	if blocking.stopped:
+		message += " " + _("Material Request {0} will be re-opened first.").format(
+			", ".join(blocking.stopped)
+		)
+	message += " " + _(
+		"You will be notified when it is done; then split Work Order {0} again."
+	).format(docname)
+	frappe.msgprint(message, title=_("Cancellation Queued"), indicator="blue")
+
+
+def _check_split_cancel(docname, confirmed_reopen=None):
+	"""Everything a split cancellation must pass before it changes anything.
+
+	Run on the click and again when the job starts, which can be long after it: by then
+	the work order may have left planning, its stock or its requests' status may have
+	moved, or the requester's rights may have changed. ``confirmed_reopen`` is what the
+	click agreed to re-open (the job passes it); a request stopped since is refused, never
+	re-opened silently.
+	"""
+	_validate_split_basics(docname)
+	blocking = _split_blocking_stock(docname)
+	if not blocking.entries:
+		# Nothing to cancel, so nothing to re-open either.
+		blocking.stopped = []
+		return blocking
+	blocking.stopped = _stopped_requests(blocking.material_requests)
+
+	if confirmed_reopen is not None:
+		unconfirmed = sorted(set(blocking.stopped) - set(confirmed_reopen))
+		if unconfirmed:
+			frappe.throw(
+				_(
+					"Material Request {0} was stopped after the cancellation was confirmed."
+				).format(", ".join(unconfirmed))
+			)
+
+	# All of it before the first change, so a missing right cannot surface half-way through
+	# the chain. Frappe's cancel needs both write and cancel.
+	for se in blocking.entries:
+		for ptype in ("write", "cancel"):
+			frappe.has_permission("Stock Entry", ptype, se, throw=True)
+	for mr in blocking.stopped:
+		frappe.has_permission("Material Request", "write", mr, throw=True)
+	# The doc-event hook ignores its document; it throws the standard EOD message.
+	validate_not_eod_sync_locked(None)
+	return blocking
+
+
+def _split_cancel_job_id(docname):
+	return f"split_cancel_se::{docname}"
+
+
+def _cancel_split_blocking_stock_entries(docname, requested_by, reopen=None):
+	"""The queued half of cancel_split_blocking_stock_entries."""
+	# Frappe re-runs a job that hit 1205/1213 without its user -- as Administrator, which
+	# would skip the permission checks every cancel makes.
+	frappe.set_user(requested_by)
+	reopened, cancelled, current = [], [], docname
+	try:
+		blocking = _check_split_cancel(docname, confirmed_reopen=reopen or [])
+		# ERPNext refuses to cancel an entry against a Stopped request, and the split copies
+		# the request's status into the new work orders' requests: re-open it either way.
+		for mr in blocking.stopped:
+			current = mr
+			request = frappe.get_doc("Material Request", mr)
+			# update_status is ERPNext's controller method -- the write check lives in its
+			# whitelisted wrapper -- so it is made here, at the moment of the change.
+			request.check_permission("write")
+			request.update_status("Submitted")
+			frappe.db.commit()
+			reopened.append(mr)
+		for se in blocking.entries:
+			current = se
+			entry = frappe.get_doc("Stock Entry", se)
+			if entry.docstatus != 1:
+				continue
+			entry.cancel()
+			# One entry per transaction: each cancel leaves a valid ledger on its own, no Bin
+			# lock is held across the chain, and a failure keeps what is already done.
+			frappe.db.commit()
+			cancelled.append(se)
+	except Exception as e:
+		frappe.db.rollback()
+		frappe.log_error(
+			title=_("Cancelling Stock Entries for split of {0} failed").format(docname),
+			reference_doctype="Manufacturing Work Order",
+			reference_name=docname,
+		)
+		# ERPNext's stock messages carry markup and hard line breaks; one line reads better
+		# on the timeline and in the bell.
+		reason = " ".join(strip_html(str(e)).split()).rstrip(".")
+		if not (reopened or cancelled):
+			message = _("Nothing was changed: {0}.").format(reason)
+		else:
+			message = _("Stopped at {0}: {1}.").format(current, reason)
+			if reopened:
+				message += " " + _("Already re-opened: {0}.").format(
+					", ".join(reopened)
+				)
+			if cancelled:
+				message += " " + _("Already cancelled: {0}.").format(
+					", ".join(cancelled)
+				)
+		message += " " + _(
+			"Clear that, then click Cancel Stock Entries again to carry on."
+		)
+		_report_split_cancel(docname, requested_by, message, ok=False)
+		return
+
+	_report_split_cancel(
+		docname,
+		requested_by,
+		_("Cancelled {0}. Work Order {1} can be split now.").format(
+			", ".join(cancelled) or _("nothing, it was already done"), docname
+		),
+		ok=True,
+	)
+
+
+def _report_split_cancel(docname, user, message, ok):
+	"""How the job ended: on the work order's timeline, in the bell and, if live, a popup."""
+	frappe.get_doc("Manufacturing Work Order", docname).add_comment("Comment", message)
+	enqueue_create_notification(
+		frappe.db.get_value("User", user, "email") or user,
+		{
+			"type": "Alert",
+			"document_type": "Manufacturing Work Order",
+			"document_name": docname,
+			"subject": message,
+		},
+	)
+	frappe.publish_realtime(
+		"msgprint",
+		{
+			"message": message,
+			"title": _("Split Work Order"),
+			"indicator": "green" if ok else "red",
+		},
+		user=user,
+		after_commit=True,
+	)
+
+
 @frappe.whitelist()
 def create_split_work_order(docname, company, manufacturer, count=1):
 	validate_split_eligibility(docname)
@@ -1343,17 +1904,20 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 			f"Following operation should be closed before splitting work order: {', '.join(open_operations)}"
 		)
 	for i in range(0, cint(count)):
-		mop = get_mapped_doc(
+		child = get_mapped_doc(
 			"Manufacturing Work Order",
 			docname,
 			{
 				"Manufacturing Work Order": {
 					"doctype": "Manufacturing Work Order",
 					"field_map": {"name": "split_from"},
+					"field_no_map": list(SPLIT_CHILD_FIELD_NO_MAP),
 				}
 			},
 		)
-		mop.save()
+		# Not submitted yet: on_submit stamps "Not Started" and the start time.
+		child.status = "Draft"
+		child.save()
 	pending_operations = frappe.get_all(
 		"Manufacturing Operation",
 		# Revert leftovers of cancelled IRs stay as they are: marked Finished they would show up

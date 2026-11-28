@@ -58,6 +58,7 @@ jobs:
 
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_serial_customer_stamp
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_rate
@@ -67,6 +68,8 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sample_goods_guard
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_row_ownership
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry_warehouse_filters
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_receipt
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_serial_bom_weights
@@ -92,7 +95,34 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_stage
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_reservation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_diamond_substitution
+          # Customer-owned diamond / gemstone ownership: the per-material rule on the
+          # Material Requests a PMO raises, and the Stock Entry guard that was dead from
+          # 0040324c until it was restored. Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_pmo_customer_goods_material_requests
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry_customer_ownership_guard
+          # Supplier pure metal weight limit (Stock Entry + Employee IR subcontract Issue). Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_metal_limit
+          # Stock Reconciliation: Item Group summary, +/- difference, pure weight, pending-transit
+          # submit block, multi-item Get Items. Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reconciliation_enhancements
+          # Customer Gold traceability (receipt -> descendants replay) and its report. Pure-logic;
+          # the report module's one integration class skips unless the site is the disposable one.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_trace
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_traceability_report
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_return_rules
+          # Customer Gold GL narration: settlement JE one line per receipt, receipt / return remarks,
+          # Connections links and the backfill. Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_narration
+          # Settle on a customer-goods-return Material Request: batch scope. Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_cg_settle_batch_scope
+          # Customer Goods flow at 3 decimals: field precisions, rounding, message format. Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_cg_three_decimals
           # NOT registered here on purpose: tests.test_customer_gold_integration. It requires the
           # disposable site's masters (company, warehouses, Gold Rates, accounts) and exercises the
           # Nominal valuation policy, which must never run against a shared CI site. It runs with:
           #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_integration
+          # Same for the receipt-linked return and settlement-allocation suites:
+          #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_return_integration
+          #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_allocation_integration
+          # And MCON00333's conversion accounting (value, GL, liability, precision) on real Metal Conversions:
+          #   bench --site cg-integration.test run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_metal_conversion_accounting

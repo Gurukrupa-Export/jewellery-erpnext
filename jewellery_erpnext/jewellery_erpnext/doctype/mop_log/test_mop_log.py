@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.types.frappedict import _dict as FrappeDict
+from frappe.utils import random_string
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
@@ -16,6 +17,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.test_m
 	create_pmo,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	_FOREIGN_STAMP_FLAG,
+	FOREIGN_STAMP_LOG_TITLE,
 	_get_mop_logs_for_employee_ir_issue,
 	create_mop_log_for_department_ir,
 	create_mop_log_for_employee_ir_receive,
@@ -24,7 +27,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	drop_pre_refining_rows,
 	get_current_mop_balance_rows,
 	get_mop_opening_balances,
+	get_mop_transfer_pcs_rows,
 	get_mwo_balance_rows,
+	get_operation_owners,
 	resolve_employee_ir_issue_voucher_for_receive,
 )
 
@@ -112,6 +117,29 @@ class TestCurrentMOPBalanceRows(IntegrationTestCase):
 		)
 
 
+def _owners_dispatcher(mop_log_rows, owners):
+	"""``frappe.db.get_all`` side effect: MOP Log rows, plus the operation-owner lookup.
+
+	Answers the "Manufacturing Operation" query from ``owners`` (operation -> work order) and
+	only for the names it was asked about, the way the real primary-key lookup would; an
+	operation missing from ``owners`` models one that no longer exists.
+	"""
+
+	def _get_all(doctype, *args, **kwargs):
+		if doctype == "MOP Log":
+			return list(mop_log_rows)
+		if doctype == "Manufacturing Operation":
+			wanted = set((kwargs.get("filters") or {}).get("name", ["in", []])[1])
+			return [
+				FrappeDict({"name": mop, "manufacturing_work_order": mwo})
+				for mop, mwo in owners.items()
+				if mop in wanted
+			]
+		return []
+
+	return _get_all
+
+
 class TestMwoBalanceRows(IntegrationTestCase):
 	"""``get_mwo_balance_rows`` — the work-order-scoped balance reader.
 
@@ -119,7 +147,10 @@ class TestMwoBalanceRows(IntegrationTestCase):
 	(see ``get_mop_opening_balances``); it used to be an MWO-wide running sum,
 	which folded residue stranded on one operation into the next operation's
 	opening balance. This reader deliberately spans the work order for callers
-	that want the whole MWO's picture rather than one operation's.
+	that want the whole MWO's picture rather than one operation's -- but only the
+	work order's OWN operations: rows are selected by stamp and then kept only when
+	their operation belongs to the work order, because the stamp is a label the
+	writers copied and a mis-paired Employee IR row once put a sibling's metal under it.
 	"""
 
 	@classmethod
@@ -168,15 +199,125 @@ class TestMwoBalanceRows(IntegrationTestCase):
 				qty_after_transaction_batch_based=0.770,
 			),
 		]
+		# Both operations belong to the work order -- the owner lookup must say so.
+		owners = {"MOP-NEW": "MWO-TEST-001", "MOP-OLD": "MWO-TEST-001"}
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
-			return_value=rows,
+			side_effect=_owners_dispatcher(rows, owners),
 		):
 			out = get_mwo_balance_rows("MWO-TEST-001")
 
 		self.assertEqual(len(out), 1)
 		self.assertEqual(out[0].name, "LOG-CARRY-FORWARD")
 		self.assertEqual(out[0].qty_after_transaction_batch_based, 0.770)
+
+	def test_row_on_another_work_orders_operation_is_not_counted(self):
+		"""The incident shape: a sibling's operation carries rows stamped with THIS work order.
+
+		The foreign row is the latest, so without the ownership filter it would both be
+		counted (offering the sibling's metal here) and hide this work order's own, older
+		row. The filter runs before the latest-per-key pick, so neither happens.
+		"""
+		rows = [
+			_sample_log(
+				name="LOG-FOREIGN",
+				creation="2026-04-17 10:05:00",
+				item_code="M-A",
+				batch_no="B1",
+				manufacturing_operation="MOP-SIBLING",
+				manufacturing_work_order="MWO-TEST-001",
+				qty_after_transaction_batch_based=16.0,
+			),
+			_sample_log(
+				name="LOG-OWN",
+				creation="2026-04-17 10:00:00",
+				item_code="M-A",
+				batch_no="B1",
+				manufacturing_operation="MOP-OWN",
+				manufacturing_work_order="MWO-TEST-001",
+				qty_after_transaction_batch_based=0.0,
+			),
+		]
+		owners = {"MOP-OWN": "MWO-TEST-001", "MOP-SIBLING": "MWO-TEST-002"}
+		with patch(
+			f"{MOP_LOG}.frappe.db.get_all", side_effect=_owners_dispatcher(rows, owners)
+		):
+			out = get_mwo_balance_rows("MWO-TEST-001")
+
+		self.assertEqual([r.name for r in out], ["LOG-OWN"])
+		self.assertEqual(out[0].qty_after_transaction_batch_based, 0.0)
+
+	def test_row_on_a_deleted_operation_is_not_counted(self):
+		"""An operation that no longer exists belongs to no work order (the purge orphans)."""
+		rows = [
+			_sample_log(
+				name="LOG-ORPHAN",
+				creation="2026-04-17 10:05:00",
+				item_code="M-A",
+				batch_no="B1",
+				manufacturing_operation="MOP-GONE",
+				qty_after_transaction_batch_based=3.0,
+			),
+			_sample_log(
+				name="LOG-OWN",
+				creation="2026-04-17 10:00:00",
+				item_code="M-A",
+				batch_no="B1",
+				manufacturing_operation="MOP-OWN",
+				qty_after_transaction_batch_based=1.0,
+			),
+		]
+		with patch(
+			f"{MOP_LOG}.frappe.db.get_all",
+			side_effect=_owners_dispatcher(rows, {"MOP-OWN": "MWO-TEST-001"}),
+		):
+			out = get_mwo_balance_rows("MWO-TEST-001")
+
+		self.assertEqual([r.name for r in out], ["LOG-OWN"])
+
+	def test_row_without_an_operation_is_kept(self):
+		"""Nothing to judge it by (none exist on live data): the stamp alone decides, as before."""
+		rows = [_sample_log(name="LOG-NO-OP", creation="2026-04-17 10:00:00")]
+		with patch(
+			f"{MOP_LOG}.frappe.db.get_all", side_effect=_owners_dispatcher(rows, {})
+		) as mock_get_all:
+			out = get_mwo_balance_rows("MWO-TEST-001")
+
+		self.assertEqual([r.name for r in out], ["LOG-NO-OP"])
+		# No operation named, so no owner lookup either.
+		self.assertEqual([c.args[0] for c in mock_get_all.call_args_list], ["MOP Log"])
+
+	def test_owners_are_read_once_for_the_distinct_operations(self):
+		rows = [
+			_sample_log(
+				name=f"LOG-{i}",
+				creation=f"2026-04-17 10:0{i}:00",
+				item_code=f"M-{i}",
+				manufacturing_operation=mop,
+			)
+			for i, mop in enumerate(["MOP-A", "MOP-B", "MOP-A"])
+		]
+		owners = {"MOP-A": "MWO-TEST-001", "MOP-B": "MWO-TEST-001"}
+		with patch(
+			f"{MOP_LOG}.frappe.db.get_all", side_effect=_owners_dispatcher(rows, owners)
+		) as mock_get_all:
+			out = get_mwo_balance_rows("MWO-TEST-001")
+
+		self.assertEqual(len(out), 3)
+		owner_calls = [
+			c
+			for c in mock_get_all.call_args_list
+			if c.args[0] == "Manufacturing Operation"
+		]
+		self.assertEqual(len(owner_calls), 1)
+		self.assertEqual(
+			owner_calls[0].kwargs["filters"], {"name": ["in", ["MOP-A", "MOP-B"]]}
+		)
+		# The MOP Log query itself is unchanged: still scoped by the stamp alone.
+		mop_log_call = mock_get_all.call_args_list[0]
+		self.assertEqual(mop_log_call.args[0], "MOP Log")
+		self.assertNotIn("manufacturing_operation", mop_log_call.kwargs["filters"])
+		self.assertIn("manufacturing_operation", mop_log_call.kwargs["fields"])
 
 	def test_narrows_by_item_codes_when_keys_given(self):
 		with patch(
@@ -199,6 +340,77 @@ class TestMwoBalanceRows(IntegrationTestCase):
 				get_mwo_balance_rows("MWO-TEST-001", keys={(None, None)}), []
 			)
 		mock_get_all.assert_not_called()
+
+
+class TestOperationOwnersLookup(IntegrationTestCase):
+	"""``get_operation_owners`` -- the single owner lookup behind every ownership check here."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_no_operations_means_no_query(self):
+		with patch(f"{MOP_LOG}.frappe.db.get_all") as mock_get_all:
+			self.assertEqual(get_operation_owners([None, "", "  "]), {})
+		mock_get_all.assert_not_called()
+
+	def test_keyed_by_the_callers_spelling(self):
+		"""MariaDB matches names case-insensitively, so the answer may come back in another case."""
+		with patch(
+			f"{MOP_LOG}.frappe.db.get_all",
+			return_value=[FrappeDict(name="MOP-ABC", manufacturing_work_order="MWO-1")],
+		):
+			self.assertEqual(get_operation_owners(["mop-abc"]), {"mop-abc": "MWO-1"})
+
+	def test_rows_that_were_not_asked_for_are_ignored(self):
+		"""A patched ``frappe.db.get_all`` answering every doctype from one list must not
+		invent an owner -- nor must an operation that has no work order."""
+		with patch(
+			f"{MOP_LOG}.frappe.db.get_all",
+			return_value=[
+				FrappeDict(name="SRE-1", manufacturing_work_order="MWO-1"),
+				FrappeDict(name="MOP-X", manufacturing_work_order=None),
+				("MOP-X", "MWO-1"),
+			],
+		):
+			self.assertEqual(get_operation_owners(["MOP-X"]), {})
+
+
+class TestMopTransferPcsRowsOwnership(IntegrationTestCase):
+	"""``get_mop_transfer_pcs_rows`` keeps only transfers that landed on the work order's own
+	operations: a transfer on a sibling's operation is the sibling's per-line PCS breakdown."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_transfer_on_another_work_orders_operation_is_left_out(self):
+		rows = [
+			FrappeDict(
+				name="T-OWN",
+				item_code="D-A",
+				batch_no="BD1",
+				qty_change=0.2,
+				pcs_change=8,
+				manufacturing_operation="MOP-OWN",
+			),
+			FrappeDict(
+				name="T-FOREIGN",
+				item_code="D-A",
+				batch_no="BD1",
+				qty_change=0.6,
+				pcs_change=24,
+				manufacturing_operation="MOP-SIBLING",
+			),
+		]
+		owners = {"MOP-OWN": "MWO-TEST-001", "MOP-SIBLING": "MWO-TEST-002"}
+		with patch(
+			f"{MOP_LOG}.frappe.db.get_all", side_effect=_owners_dispatcher(rows, owners)
+		):
+			out = get_mop_transfer_pcs_rows("MWO-TEST-001")
+
+		self.assertEqual([r["name"] for r in out[("D-A", "BD1")]], ["T-OWN"])
+		self.assertEqual(out[("D-A", "BD1")][0]["pcs_change"], 8)
 
 
 class TestCurrentMopBalanceRowsUnchanged(IntegrationTestCase):
@@ -789,6 +1001,137 @@ def create_test_manufacturing_operation():
 	return mo
 
 
+EOD_LOCK = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.is_eod_sync_locked"
+
+
+class TestMOPLogStampFollowsOperation(IntegrationTestCase):
+	"""``MOPLog.validate`` stamps the work order that OWNS the row's operation.
+
+	Real rows, real reads: the operations are written with ``db_insert`` (no hooks, no
+	work-order chain needed) and the owner comes from the real primary-key lookup. Every
+	writer copies the stamp from somewhere -- a Stock Entry header, an IR row, a source row --
+	so the one place that can make it right for all of them is ``validate``.
+	"""
+
+	SAVEPOINT = "mop_log_stamp_test"
+
+	@classmethod
+	def setUpClass(cls):
+		# Like the rest of this module: the base setUpClass would build erpnext test records
+		# for every Link target of MOP Log and then COMMIT whatever earlier classes left open.
+		# These tests need neither; each one runs inside its own savepoint (setUp).
+		pass
+
+	def setUp(self):
+		super().setUp()
+		frappe.db.savepoint(self.SAVEPOINT)
+		self.addCleanup(frappe.db.rollback, save_point=self.SAVEPOINT)
+		frappe.flags.pop(_FOREIGN_STAMP_FLAG, None)
+		self.addCleanup(frappe.flags.pop, _FOREIGN_STAMP_FLAG, None)
+		# MOP Log is an EOD-locked doctype; a leaked lock from another module must not
+		# turn the insert below into an "EOD Sync In Progress" failure.
+		eod_lock = patch(EOD_LOCK, return_value=False)
+		eod_lock.start()
+		self.addCleanup(eod_lock.stop)
+		# Error Log is MyISAM and outlives the rollback: never write the note for real.
+		log_error = patch(f"{MOP_LOG}.frappe.log_error")
+		self.log_error = log_error.start()
+		self.addCleanup(log_error.stop)
+		self.prefix = f"TMLS-{random_string(6).lower()}"
+
+	def _operation(self, suffix, mwo):
+		name = f"{self.prefix}-MOP-{suffix}"
+		frappe.get_doc(
+			{
+				"doctype": "Manufacturing Operation",
+				"name": name,
+				"manufacturing_work_order": mwo,
+				"status": "WIP",
+			}
+		).db_insert()
+		return name
+
+	def _log(self, mop, stamp, item_code="X-STAMP-TEST", voucher_no="VOUCHER-1"):
+		log = frappe.new_doc("MOP Log")
+		log.item_code = item_code
+		log.manufacturing_operation = mop
+		log.manufacturing_work_order = stamp
+		log.voucher_type = "Stock Entry"
+		log.voucher_no = f"{self.prefix}-{voucher_no}"
+		log.qty_change = 1.0
+		log.qty_after_transaction_batch_based = 1.0
+		return log
+
+	def test_blank_stamp_is_filled_from_the_operation(self):
+		"""``X-`` is no weight family, so validate returns early -- after the stamp is set."""
+		mop = self._operation("A", f"{self.prefix}-MWO-A")
+		log = self._log(mop, None)
+		log.validate()
+		self.assertEqual(log.manufacturing_work_order, f"{self.prefix}-MWO-A")
+		self.log_error.assert_not_called()
+
+	def test_foreign_stamp_is_replaced_and_noted_once_per_voucher(self):
+		owner = f"{self.prefix}-MWO-OWNER"
+		sibling = f"{self.prefix}-MWO-SIBLING"
+		mop = self._operation("A", owner)
+
+		first, second = self._log(mop, sibling), self._log(mop, sibling)
+		first.validate()
+		second.validate()
+		self.assertEqual(first.manufacturing_work_order, owner)
+		self.assertEqual(second.manufacturing_work_order, owner)
+		self.assertEqual(self.log_error.call_count, 1)
+		kwargs = self.log_error.call_args.kwargs
+		self.assertEqual(kwargs["title"], FOREIGN_STAMP_LOG_TITLE)
+		self.assertIn(sibling, kwargs["message"])
+		self.assertIn(owner, kwargs["message"])
+		self.assertEqual(kwargs["reference_doctype"], "Stock Entry")
+
+		# A different voucher is a different mismatch: noted again.
+		other = self._log(mop, sibling, voucher_no="VOUCHER-2")
+		other.validate()
+		self.assertEqual(other.manufacturing_work_order, owner)
+		self.assertEqual(self.log_error.call_count, 2)
+
+	def test_matching_stamp_is_left_alone(self):
+		owner = f"{self.prefix}-MWO-A"
+		log = self._log(self._operation("A", owner), owner)
+		log.validate()
+		self.assertEqual(log.manufacturing_work_order, owner)
+		self.log_error.assert_not_called()
+
+	def test_case_only_difference_is_normalised_without_a_note(self):
+		owner = f"{self.prefix}-MWO-A"
+		log = self._log(self._operation("A", owner), owner.upper())
+		log.validate()
+		self.assertEqual(log.manufacturing_work_order, owner)
+		self.log_error.assert_not_called()
+
+	def test_row_on_a_missing_operation_keeps_its_stamp(self):
+		"""Nothing to derive from (the purge orphans): the row stays exactly as written."""
+		log = self._log(f"{self.prefix}-MOP-GONE", f"{self.prefix}-MWO-A")
+		log.validate()
+		self.assertEqual(log.manufacturing_work_order, f"{self.prefix}-MWO-A")
+		self.log_error.assert_not_called()
+
+	def test_insert_stores_the_owner_and_still_recomputes_the_header(self):
+		"""Through the real save path: hooks, the canonical MOP row lock and the header
+		recompute all still run, and the row lands under the operation's owner."""
+		owner = f"{self.prefix}-MWO-OWNER"
+		mop = self._operation("A", owner)
+		log = self._log(mop, f"{self.prefix}-MWO-SIBLING", item_code="M-STAMP-TEST")
+		log.qty_after_transaction_batch_based = 2.5
+		log.insert(ignore_links=True)
+
+		self.assertEqual(
+			frappe.db.get_value("MOP Log", log.name, "manufacturing_work_order"), owner
+		)
+		self.assertEqual(
+			frappe.db.get_value("Manufacturing Operation", mop, "net_wt"), 2.5
+		)
+		self.assertEqual(self.log_error.call_count, 1)
+
+
 MOP_LOG = "jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log"
 MFG_OP = (
 	"jewellery_erpnext.jewellery_erpnext.doctype."
@@ -1046,6 +1389,109 @@ class TestNewMopBaselineWrite(IntegrationTestCase):
 		created = self._run(0.01)
 		self.assertEqual(created.qty_after_transaction_batch_based, 3.23)
 		self.assertEqual(created.qty_change, -0.01)
+
+
+class TestNewMopBaselineStampsItsOwnWorkOrder(IntegrationTestCase):
+	"""``update_new_mop_wtg`` stamps the NEW operation's own work order, never the source row's.
+
+	The carry-forward used to copy ``log.manufacturing_work_order``. Behind a receive row that
+	paired an operation with a sibling's work order, the source rows carried the sibling's
+	stamp, and copying it filed the successor's opening balance under the sibling too -- one
+	more hop of the wrong label down the chain. The new operation is a copy of the source
+	operation, so its own ``manufacturing_work_order`` is the owner of both.
+	"""
+
+	ITEM = "M-G-22KT-91.75-Y"
+	BATCH = "BATCH-A"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, *, source_stamp, loss_key_mwo=None, loss_qty=0.0):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			update_new_mop_wtg,
+		)
+
+		new_mop = FrappeDict(
+			{
+				"name": "MOP-NEW",
+				"previous_mop": "MOP-SRC",
+				"gross_wt": 0,
+				"manufacturing_work_order": "MWO-OWNER",
+			}
+		)
+		eir = FrappeDict({"name": "EIR-1", "doctype": "Employee IR"})
+		# The receive row itself is consistent: it names the operation's real owner.
+		eir_row = FrappeDict(
+			{
+				"name": "eir-row-1",
+				"manufacturing_operation": "MOP-SRC",
+				"manufacturing_work_order": "MWO-OWNER",
+			}
+		)
+		baseline = _sample_log(
+			name="L-BASE",
+			creation="2026-08-24 10:00:00",
+			item_code=self.ITEM,
+			batch_no=self.BATCH,
+			qty_after_transaction=3.24,
+			qty_after_transaction_item_based=3.24,
+			qty_after_transaction_batch_based=3.24,
+			pcs_after_transaction=0,
+			pcs_after_transaction_item_based=0,
+			pcs_after_transaction_batch_based=0,
+			manufacturing_operation="MOP-SRC",
+			manufacturing_work_order=source_stamp,
+			row_name="src-row",
+			from_warehouse="WH-A",
+			to_warehouse="WH-B",
+		)
+		loss_map = {}
+		if loss_key_mwo:
+			loss_map[("MOP-SRC", loss_key_mwo, self.ITEM, self.BATCH)] = {
+				"loss_qty": loss_qty,
+				"loss_pcs": 0,
+			}
+
+		created = MagicMock()
+		with (
+			patch(f"{MFG_OP}.get_last_mop_index", return_value=None),
+			patch(f"{MFG_OP}.get_employee_ir_loss_map", return_value=loss_map),
+			patch(f"{MFG_OP}.get_current_mop_balance_rows", return_value=[baseline]),
+			patch(f"{MFG_OP}._float_tolerance", return_value=0.001),
+			patch(f"{MFG_OP}.frappe.new_doc", return_value=created),
+		):
+			update_new_mop_wtg(
+				new_mop,
+				employee_ir_doc=eir,
+				employee_ir_operation_row=eir_row,
+				from_warehouse="WH-Emp",
+				to_warehouse="WH-Dept",
+			)
+		created.save.assert_called_once()
+		return created
+
+	def test_sibling_stamp_on_the_source_row_is_not_carried_forward(self):
+		created = self._run(source_stamp="MWO-SIBLING")
+		self.assertEqual(created.manufacturing_operation, "MOP-NEW")
+		self.assertEqual(created.manufacturing_work_order, "MWO-OWNER")
+
+	def test_consistent_source_row_reads_the_same(self):
+		created = self._run(source_stamp="MWO-OWNER")
+		self.assertEqual(created.manufacturing_work_order, "MWO-OWNER")
+		self.assertEqual(created.qty_after_transaction_batch_based, 3.24)
+
+	def test_loss_still_matches_the_receive_rows_own_labels(self):
+		"""The loss map is keyed on the Employee IR row (operation, work order), not on the
+		source row's stamp -- so a foreign stamp neither drops the loss nor survives it."""
+		created = self._run(
+			source_stamp="MWO-SIBLING", loss_key_mwo="MWO-OWNER", loss_qty=0.01
+		)
+		self.assertEqual(created.qty_after_transaction_batch_based, 3.23)
+		self.assertEqual(created.qty_change, -0.01)
+		self.assertEqual(created.voucher_no, "EIR-1")
+		self.assertEqual(created.manufacturing_work_order, "MWO-OWNER")
 
 
 class TestNewMopBaselineFamilyTotals(IntegrationTestCase):

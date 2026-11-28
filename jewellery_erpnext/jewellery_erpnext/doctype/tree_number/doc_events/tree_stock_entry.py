@@ -54,7 +54,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import escape_html, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
 	capped_auto_batch_nos,
@@ -63,9 +63,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority 
 	allocate_in_order,
 	batch_priority_map,
 	batch_sort_key,
-	describe_customer_spill,
-	is_customer_rank,
-	loss_rank,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
@@ -491,7 +488,9 @@ def _tree_issued_tiers(owed_batches):
 	return tiers
 
 
-def _tree_fallback_batches(se, tree, item_code, msl_wh, offered, limit):
+def _tree_fallback_batches(
+	se, tree, item_code, msl_wh, offered, limit, restrict_to=None
+):
 	"""``[(batch_no, qty)]`` of SAME-OWNERSHIP-TIER metal at ``msl_wh`` standing in for the tree's
 	own, already-consumed batches.
 
@@ -519,6 +518,9 @@ def _tree_fallback_batches(se, tree, item_code, msl_wh, offered, limit):
 	``limit`` is the caller's UNMET need — bounded by the ledger's ``pending_qty`` at the
 	``receive_material`` guard — never the netted owed. See ``_tree_netted_owed`` on why that number
 	must not be disbursed against.
+
+	``restrict_to`` narrows the tiers further (never widens them): the Employee IR finding repack
+	passes the tree's Regular Stock tiers so a mixed tree's fallback cannot reach its customer metal.
 	"""
 	eps = _pending_eps()
 	prec = _se_precision()
@@ -527,6 +529,8 @@ def _tree_fallback_batches(se, tree, item_code, msl_wh, offered, limit):
 		return []
 
 	tiers = _tree_issued_tiers(_tree_netted_owed(tree, item_code, msl_wh))
+	if restrict_to is not None:
+		tiers &= set(restrict_to)
 	if not tiers:
 		return []
 
@@ -701,37 +705,96 @@ def _allocate_tree_legs(se, tree, item_code, msl_wh, recv, loss):
 	return recv_alloc, loss_alloc, ranks
 
 
-def _warn_tree_customer_loss(customer_loss, prec):
-	"""ONE orange warning when a tree write-off lands on customer-owned metal.
+def _tree_issued_batches(tree, item_code, msl_wh):
+	"""Distinct batches this tree's own Stock Entries ever moved INTO ``msl_wh``.
 
-	Mirrors the Employee IR spill warning: the loss pass only reaches a customer
-	batch once the company's are exhausted, which is allowed but must be visible.
-	Never throws -- the single hard stop is the no-wastage check at the call site.
+	Unlike ``_tree_netted_owed`` this ignores what has since been drawn back out, so it still
+	says which ownership the tree holds after every one of its batches has been consumed.
 	"""
-	if not customer_loss:
-		return
-	merged = {}
-	for row in customer_loss:
-		key = (row["customer"], row["item_code"], row["batch_no"])
-		merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), prec)
-	total = flt(sum(merged.values()), prec)
-	lines = describe_customer_spill(
-		[
-			{"customer": c, "item_code": i, "batch_no": b, "qty": q}
-			for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
-		],
-		precision=prec,
+	rows = frappe.db.sql(
+		"""
+		SELECT DISTINCT sed.batch_no
+		FROM `tabStock Entry Detail` sed
+		JOIN `tabStock Entry` se ON se.name = sed.parent
+		WHERE se.custom_tree_number = %(tree)s
+		  AND se.docstatus = 1
+		  AND sed.item_code = %(item_code)s
+		  AND sed.t_warehouse = %(msl)s
+		  AND IFNULL(sed.batch_no, '') != ''
+		""",
+		{"tree": tree.name, "item_code": item_code, "msl": msl_wh},
+		as_dict=True,
 	)
-	frappe.msgprint(
-		_(
-			"Company metal on this tree could not absorb the whole loss, so {0} g was "
-			"written off against customer-owned material:"
-		).format(frappe.bold(total))
-		+ "<br><br>"
-		+ "<br>".join(lines),
-		title=_("Customer Material Absorbed Loss"),
-		indicator="orange",
+	return [r.batch_no for r in rows]
+
+
+def _warehouse_batch_balances(item_code, warehouse):
+	"""``[{batch_no, qty}]`` -- every batch's ledger balance of ``item_code`` at ``warehouse``.
+
+	Same ``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``, read for the whole
+	warehouse at once and not bounded by posting time. Unfiltered: zero and negative balances come
+	back too, and each caller drops what it does not show.
+	"""
+	return frappe.db.sql(
+		"""
+		SELECT sbe.batch_no, SUM(sbe.qty) AS qty
+		FROM `tabSerial and Batch Entry` sbe
+		WHERE sbe.docstatus = 1
+		  AND sbe.item_code = %(item_code)s
+		  AND sbe.warehouse = %(warehouse)s
+		  AND sbe.type_of_transaction IN ('Inward', 'Outward')
+		  AND sbe.voucher_type != 'Pick List'
+		  AND IFNULL(sbe.batch_no, '') != ''
+		GROUP BY sbe.batch_no
+		""",
+		{"item_code": item_code, "warehouse": warehouse},
+		as_dict=True,
 	)
+
+
+def _stock_outside_pool(tree, item_code, msl_wh, own_batches, prec):
+	"""Metal at ``msl_wh`` that the allocation did NOT offer, split by ownership.
+
+	Returns ``(other_owner, same_owner)`` -- each ``[(batch_no, qty, owner label)]`` -- or ``None``
+	when the tree's own ownership tier cannot be read from its issue entries, so the caller says
+	nothing rather than claiming a difference it never checked.
+
+	Only used to explain a shortfall: Stock Balance shows the whole warehouse, so an operator sees
+	plenty of stock and cannot tell that it belongs to another owner. ``same_owner`` is normally
+	empty -- the fallback already offers every same-tier batch -- but the ledger read here is not
+	bounded by posting time the way the allocation's is, so it is reported rather than hidden, and
+	the message never claims the tree's metal is gone while the ledger still shows some. Same
+	``Serial and Batch Entry`` source as ``get_authoritative_batch_qty``.
+	"""
+	tiers = _tree_issued_tiers(
+		{b: 1 for b in _tree_issued_batches(tree, item_code, msl_wh)}
+	)
+	if not tiers:
+		return None
+
+	eps = _pending_eps()
+	own = set(own_batches)
+	rows = [
+		r
+		for r in _warehouse_batch_balances(item_code, msl_wh)
+		if flt(r.qty, prec) > eps and r.batch_no not in own
+	]
+	if not rows:
+		return [], []
+
+	ranks = batch_priority_map([r.batch_no for r in rows])
+	other_owner, same_owner = [], []
+	for r in rows:
+		meta = ranks.get(r.batch_no)
+		inv, cust = normalize_ownership(
+			meta.inventory_type if meta else None,
+			meta.customer if meta else None,
+			batch_no=r.batch_no,
+			item_code=item_code,
+		)
+		entry = (r.batch_no, flt(r.qty, prec), f"{inv} / {cust}" if cust else inv)
+		(same_owner if (inv, cust) in tiers else other_owner).append(entry)
+	return other_owner, same_owner
 
 
 def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
@@ -739,24 +802,67 @@ def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
 
 	The tree's own issued batches are drawn first, and substitutes are confined to the same
 	``(inventory_type, customer)`` (``_tree_fallback_batches``). Reaching here means the warehouse
-	holds no metal this tree is entitled to at all — returning anything else would cross an
+	holds no more metal this tree is entitled to -- returning anything else would cross an
 	ownership boundary, which is the defect this whole restriction exists to prevent.
+
+	The message says how much IS available and lists the metal it could not use, because the
+	warehouse total on Stock Balance is larger than what this tree may take and the old wording
+	("already been consumed") read as if the stock were simply gone.
 	"""
-	frappe.throw(
-		_(
-			"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. The batches this tree "
-			"issued have already been consumed there, and no remaining batch at that warehouse "
-			"shares this tree's ownership, so none may stand in for them. Available to this "
-			"tree: {5}."
-		).format(
-			tree.name,
-			item_code,
-			flt(need, prec),
-			msl_wh,
-			flt(shortfall, prec),
-			", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing"),
-		),
-		title=_("Tree Material Not Available"),
+	available = flt(sum(flt(q) for _b, q in pool), prec)
+	outside = _stock_outside_pool(tree, item_code, msl_wh, [b for b, _q in pool], prec)
+
+	def _listing(entries):
+		return escape_html(", ".join(f"{b}: {q} ({owner})" for b, q, owner in entries))
+
+	msg = _(
+		"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. Only {5} of metal this "
+		"tree is entitled to is available there ({6})."
+	).format(
+		tree.name,
+		item_code,
+		flt(need, prec),
+		msl_wh,
+		flt(shortfall, prec),
+		available,
+		escape_html(", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing")),
+	)
+	if outside is not None:
+		other_owner, same_owner = outside
+		if other_owner:
+			msg += "<br><br>" + _(
+				"The warehouse also holds metal under a different ownership, which cannot be used "
+				"for this tree: {0}."
+			).format(_listing(other_owner))
+		if same_owner:
+			msg += "<br><br>" + _(
+				"The warehouse ledger also shows metal of this tree's ownership that could not be "
+				"allocated at this posting time: {0}. Check these batches before retrying."
+			).format(_listing(same_owner))
+		if not other_owner and not same_owner:
+			msg += "<br><br>" + _(
+				"No further metal of this tree's ownership is left in this warehouse."
+			)
+
+	msg += "<br><br>" + _batch_wise_section(tree, item_code, msl_wh, pool)
+	frappe.throw(msg, title=_("Tree Material Not Available"))
+
+
+def _batch_wise_section(tree, item_code, msl_wh, pool):
+	"""The Tree Number form's Batch-wise Balance table, with "usable" taken from the allocation.
+
+	The lines above say what this tree could not get. The table puts it next to what the tree moved
+	per batch and what the warehouse holds against every open tree there, which is what shows
+	whether the metal is under another owner or simply missing from the warehouse.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
+		tree_batch_balance,
+	)
+
+	return tree_batch_balance.render_html(
+		tree_batch_balance.batch_balance(
+			tree, item_code, msl_wh, usable={b: q for b, q in pool}
+		)
 	)
 
 
@@ -870,6 +976,41 @@ def issue_material(tree, item_code, qty, source_warehouse=None):
 	return se.name
 
 
+def _tree_loss_allowed(tree):
+	"""Grams of loss the tree's operation allows on a Tree Number (0 = no limit)."""
+	if not tree.get("operation"):
+		return 0.0
+	return flt(
+		frappe.db.get_value(
+			"Department Operation", tree.operation, "allow_loss_on_tree_number"
+		)
+	)
+
+
+def _validate_tree_loss_allowed(tree, plan, eps):
+	"""Refuse a loss that takes the tree past its operation's "Allow loss on Tree number".
+
+	The cap (grams) is Department Operation.allow_loss_on_tree_number and covers the whole
+	tree: the loss already booked on every material row plus the loss in this call. Blank or
+	0 means the operation sets no limit. Submit Tree's write-off of the leftover pending goes
+	through receive_material, so it is held to the same cap.
+	"""
+	allowed = _tree_loss_allowed(tree)
+	if allowed <= 0:
+		return
+
+	booked = sum(flt(md.loss_qty) for md in tree.material_details)
+	new_loss = sum(flt(p["loss"]) for p in plan)
+	if booked + new_loss - allowed > eps:
+		frappe.throw(
+			_(
+				"Tree {0}: loss of {1} g with {2} g already booked exceeds the {3} g allowed on a "
+				"Tree Number for operation {4}."
+			).format(tree.name, new_loss, booked, allowed, tree.operation),
+			title=_("Loss Above Allowed On Tree Number"),
+		)
+
+
 def receive_material(tree, rows):
 	"""Receive / book loss for a tree (`rows` = [{item_code, receive_qty, loss_qty}]).
 
@@ -922,6 +1063,8 @@ def receive_material(tree, rows):
 
 	if not plan:
 		frappe.throw(_("Enter a Receive Qty or Loss Qty on at least one item."))
+
+	_validate_tree_loss_allowed(tree, plan, eps)
 
 	msl_wh = tree.get("msl_warehouse") or _resolve_msl_warehouse(tree)
 	has_recv = any(flt(p["recv"], prec) > 0 for p in plan)
@@ -978,7 +1121,6 @@ def receive_material(tree, rows):
 	# batch qty twice — but each leg is ordered for its OWN rule: the customer's
 	# metal is handed back first, the company's is written off first. Every row
 	# carries its batch's ownership (inventory_type / customer) across with it.
-	customer_loss = []
 	for p in plan:
 		rem_recv = flt(p["recv"], prec)
 		rem_loss = flt(p["loss"], prec)
@@ -1027,15 +1169,6 @@ def receive_material(tree, rows):
 				batch_no=batch_no,
 				item_code=p["item"],
 			)
-			if is_customer_rank(loss_rank(inv)):
-				customer_loss.append(
-					{
-						"customer": cust,
-						"item_code": p["item"],
-						"batch_no": batch_no,
-						"qty": qty,
-					}
-				)
 			_append_repack_loss_pair(
 				se_loss,
 				p["item"],
@@ -1047,8 +1180,6 @@ def receive_material(tree, rows):
 				inventory_type=inv,
 				customer=cust,
 			)
-
-	_warn_tree_customer_loss(customer_loss, prec)
 
 	# Post the transfer FIRST so both legs' consumption lands in a stable order (all Bins stay
 	# locked across both submits). The FIFO helper is a structural no-op now that every source row

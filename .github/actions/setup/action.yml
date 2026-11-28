@@ -26,15 +26,16 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/uv
-        key: ${{ runner.os }}-uv-${{ hashFiles('install.sh') }}
-        restore-keys: |
-          ${{ runner.os }}-uv-
+        key: ${{ runner.os }}-uv-v2-${{ hashFiles('install.sh') }}
 
     - name: Install System Dependencies
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y redis-server mariadb-client redis-tools wkhtmltopdf build-essential libffi-dev libssl-dev
+        sudo apt-get install -y redis-server mariadb-client redis-tools libmariadb-dev pkg-config build-essential libffi-dev libssl-dev
+
+        wget -q -O /tmp/wkhtmltox.deb https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.jammy_amd64.deb
+        sudo apt-get install -y /tmp/wkhtmltox.deb
 
     - name: Make Install Script Executable
       shell: bash

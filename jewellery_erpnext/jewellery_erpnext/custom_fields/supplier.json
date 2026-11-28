@@ -69,6 +69,17 @@
    "options": "Supplier Allowed Item Group"
   },
   {
+   "description": "Maximum pure metal, in grams (qty x purity % / 100, all metal and finding items of every touch), this supplier may hold across all of its linked warehouses. Transfers that would exceed it are refused. Leave 0 for no limit.",
+   "dt": "Supplier",
+   "fieldname": "custom_metal_weight_limit",
+   "fieldtype": "Float",
+   "insert_after": "custom_allowed_item_group",
+   "label": "Metal Weight Limit (Pure Weight)",
+   "module": "Jewellery Erpnext",
+   "non_negative": 1,
+   "precision": "3"
+  },
+  {
    "dt": "Supplier",
    "fieldname": "section_break_hnpah",
    "fieldtype": "Section Break",

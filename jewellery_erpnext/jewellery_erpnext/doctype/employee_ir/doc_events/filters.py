@@ -1,6 +1,9 @@
 import frappe
 from frappe.query_builder.functions import IfNull
 
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
+	get_blocked_finding_batches,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.material_loss_gate import (
 	get_blocked_loss_variants,
 )
@@ -40,6 +43,20 @@ def get_batch_details(doctype, txt, searchfield, start, page_len, filters):
 		.offset(start)
 	)
 	data = query.run()
+
+	# Drop customer-supplied finding batches, so the operator never picks a batch
+	# that submit would only refuse (customer_finding_loss_gate). Prevention, not
+	# enforcement -- that gate remains the authority, and it is applied to the page
+	# of candidates the query already returned rather than pushed into SQL, so the
+	# provenance resolution stays a bounded primary-key lookup.
+	candidates = [
+		{"item_code": filters.get("item_code"), "batch_no": row[0]}
+		for row in data
+		if row and row[0]
+	]
+	blocked = get_blocked_finding_batches(candidates)
+	if blocked:
+		data = [row for row in data if not row or row[0] not in blocked]
 	return data
 
 

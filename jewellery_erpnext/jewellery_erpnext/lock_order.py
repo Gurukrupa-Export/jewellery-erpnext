@@ -8,8 +8,65 @@ Canonical order (acquire in this sequence inside every multi-doctype write):
 
     Parent control row  ->  tabSeries  ->  tabBin  ->  Batch / SBB
         ->  Stock Reservation Entry  ->  Stock Ledger Entry
-        ->  MOP Log  ->  Manufacturing Operation
-        ->  stamping counter (terminal)
+        ->  MOP Log  ->  Manufacturing Operation  ->  Manufacturing Work Order
+        ->  stamping counter / Employee IR draft re-check (terminal)
+
+Manufacturing Operation comes before Manufacturing Work Order because that is the order the
+hottest existing path already uses: a Stock Entry's MOP Log bridge locks the operation
+(``MOPLog.validate``) and ``stamp_snc_requirement`` then writes the work order.
+
+RULE D -- the work-order lifecycle block (:func:`lock_manufacturing_operations` then
+:func:`lock_work_orders`, see ``doc_events/current_operation_guard.py``) is taken by Employee IR
+and Department IR saves, submits and cancels, before the document is named or its own rows are
+locked. Every attempt starts with ``current_operation_guard.begin_attempt`` -- the first
+statement of the controller's ``check_if_latest`` (an existing document) or ``before_insert`` (a
+new one): a save or submit during the EOD sync or an open stock-reconciliation window is refused
+there by plain reads, before any lock below. A NEW document takes the block in ``before_insert``,
+i.e. before ``set_new_name`` locks the shared naming-series row, so no request ever waits on a
+busy work order while holding that row. A save or submit of an EXISTING document takes it in its
+controller's ``check_if_latest``, before Frappe loads the document's own rows FOR UPDATE. An
+Employee IR Receive SUBMIT takes its Tree / Series / Bin pre-locks there first
+(``employee_ir.take_receive_prelocks``) and the block right after them, so the Stock Entry order
+Tree -> Series -> Bin -> MOP -> MWO holds; only when they were not taken early (warn mode) does
+``on_submit_receive`` take both, in the same order. Cancels still lock their own rows
+(``check_if_latest``) and their trees before the block.
+
+RULE E -- the block is two-phase: every operation row first, then every work-order row, each
+set sorted, taken once. A Department IR save adds its row operations' PREVIOUS operations to the
+operation phase, because ``update_previous_mop_data`` writes them afterwards. An interactive
+attempt waits for the whole block (both phases, and a re-entrant second pass) within ONE budget
+(``current_operation_lock_wait``, 15 s): each statement waits for what is left of it, and once it
+is spent the remaining rows are taken NOWAIT; background jobs keep the server's
+``innodb_lock_wait_timeout`` per statement. While holding the block, never WAIT on another
+document's rows: only non-waiting locking reads (``NOWAIT`` / ``SKIP LOCKED``: the terminal
+Employee IR draft re-check and the confirmation of what the transaction's older snapshot reported)
+are allowed.
+
+Writes that follow the block must lock only the rows they change. A ``set_value`` / ``UPDATE`` with
+a filter no index serves scans the whole table and, under REPEATABLE READ, keeps a next-key lock on
+every row and gap it read until the transaction ends -- every other writer of that table waits, and
+one that already holds a row there closes a deadlock cycle with the block. The cancels write
+``tabMOP Log`` (by voucher), ``tabDepartment IR Operation`` / ``tabStock Entry Detail`` (by
+operation) and ``tabEmployee IR`` / ``tabEmployee IR Operation`` (casting-tree stamps), none of
+them indexed for those filters on production: they read the matching names with a plain read and
+write by primary key (:func:`update_by_primary_key`).
+
+Residual edges, by design (each resolves as an InnoDB 1213: one side rolls back and is retried):
+
+* an Employee IR Receive's metal-injection / loss Stock Entries lock source Bins resolved only at
+  that point (each Stock Entry's ``prelock_bins``), i.e. after the block; so does the
+  Process Loss / injection cancel of an Employee Receive cancel (``prelock_bins_on_cancel``);
+* Refining Entry and the work-order split write the work order before its operations;
+* the terminal draft re-check is the last statement of ``on_update`` / ``on_submit``, but Frappe
+  still runs ``save_version`` / ``on_change`` / the Server Scripts after it in the same
+  transaction, holding the re-check's share / gap locks for those milliseconds;
+* ``preallocate_series`` / ``lock_bins`` (the Receive pre-locks) are plain ``FOR UPDATE`` and wait
+  the server default, outside the block's budget;
+* a casting Employee Issue cancel cancels its tree's Stock Entries (``cancel_tree_stock_entries``,
+  ``prelock_bins_on_cancel``) after the block;
+* a REST ``PUT`` / ``PATCH`` of a saved Employee / Department IR loads the document
+  ``for_update`` (its own parent and child rows) before ``check_if_latest`` runs the pre-locks and
+  the block; a concurrent new document of the same work order can then deadlock with it.
 
 Two rules every custom on_submit / hook must follow:
 
@@ -45,12 +102,21 @@ of a cascade would make every concurrent SNC submit queue on it for the cascade'
 duration -- exactly the hot-row pathology ``patches/shard_stock_entry_naming_by_type.py``
 was written to escape. Minting late holds it for milliseconds instead.
 
+RULE F (C-01) -- pin only the naming counters a cascade will mint. A cascade that
+pre-locks Stock Entry counters before its Bins passes the Stock Entry types it can still
+mint to :func:`preallocate_stock_entry_counters`; that list must be a SUPERSET of what it
+mints. A counter it did not plan for may be taken after the Bins only with NOWAIT
+(:func:`guard_unplanned_stock_entry_counter`, the Stock Entry ``before_naming`` hook), so it
+is granted at once or refused at once and can never queue behind, or close a cycle with, a
+transaction that wants this one's Bins.
+
 These helpers are deliberately tiny and side-effect-free except for the row locks
 they take (which release on the enclosing transaction's COMMIT/ROLLBACK, exactly
 like every other Frappe row lock).
 """
 
 import frappe
+from frappe import _
 
 # Sentinel used so a missing/None warehouse or batch sorts deterministically
 # (before any real value) instead of raising on ``None < str``.
@@ -145,6 +211,156 @@ def lock_bins_for_rows(rows, *warehouse_attrs):
 		for attr in warehouse_attrs:
 			pairs.append((item_code, get(attr)))
 	return lock_bins(pairs)
+
+
+MANUFACTURING_OPERATION_LOCK_FIELDS = (
+	"name",
+	"manufacturing_work_order",
+	"company",
+	"department",
+	"status",
+	"department_ir_status",
+	"operation",
+	"employee",
+	"subcontractor",
+	"for_subcontracting",
+	"department_issue_id",
+	"department_receive_id",
+	"employee_ir",
+	"previous_mop",
+	# compared with the transaction's snapshot after the wait: a row changed meanwhile means the
+	# snapshot the side effects read from is older than the decision (see the guard's
+	# _refuse_if_snapshot_older)
+	"modified",
+	# the material on the operation: a PMO Close needs it to be 0
+	"gross_wt",
+)
+
+WORK_ORDER_LOCK_FIELDS = (
+	"name",
+	"docstatus",
+	"status",
+	"company",
+	"manufacturing_operation",
+	"department",
+	"gross_wt",
+)
+
+# What a PMO Hold / Open / Close decides from and writes: the request's place in its
+# workflow, and whether its transfer-from-reserve job is still running.
+MATERIAL_REQUEST_LOCK_FIELDS = (
+	"name",
+	"docstatus",
+	"workflow_state",
+	"custom_transfer_se_state",
+)
+
+
+def _lock_wait_clause(wait):
+	"""SQL suffix for a locking read: ``None`` = server default, ``0`` = NOWAIT, ``n`` = WAIT n."""
+	if wait is None:
+		return ""
+	wait = int(wait)
+	return " NOWAIT" if wait <= 0 else f" WAIT {wait}"
+
+
+def _lock_rows_by_name(table, fields, names, wait):
+	"""Lock each named row of ``table`` with a primary-key ``SELECT ... FOR UPDATE``, one
+	statement per row in sorted order, and return ``{name: row}`` from those locking reads.
+
+	Primary-key equality on an existing row takes a record lock only (no gap lock). The rows
+	returned ARE the locking reads, so they show the latest committed values even when the
+	transaction's REPEATABLE READ snapshot is older -- callers must decide from these rows,
+	never from a plain re-read. Missing names are simply absent from the result.
+
+	``wait``: ``None`` (the server default), seconds (``0`` = NOWAIT), or a callable returning one
+	of those for EACH statement -- how several statements share one deadline (the guard's lock
+	budget, RULE E).
+
+	A failed statement (lock wait timeout, NOWAIT conflict, deadlock) is re-raised with the name
+	it was waiting for in ``exc.lock_row_name``, so the caller can say WHICH row is busy.
+	"""
+	columns = ", ".join(f"`{f}`" for f in fields)
+	locked = {}
+	for name in sorted({n for n in names if n}):
+		suffix = _lock_wait_clause(wait() if callable(wait) else wait)
+		try:
+			rows = frappe.db.sql(
+				f"SELECT {columns} FROM `{table}` WHERE name = %s FOR UPDATE{suffix}",
+				(name,),
+				as_dict=True,
+			)
+		except Exception as exc:
+			try:
+				exc.lock_row_name = name
+			except Exception:
+				pass  # no instance __dict__: the caller then names every candidate instead
+			raise
+		if rows:
+			locked[name] = rows[0]
+	return locked
+
+
+def update_by_primary_key(
+	doctype, filters, fieldname, value=None, *, update_modified=True
+):
+	"""``frappe.db.set_value(doctype, filters, fieldname, value)`` that locks only the rows it
+	changes. Returns the names it updated (sorted).
+
+	``set_value`` with a filter dict is ONE ``UPDATE ... WHERE <filters>``. When no index serves
+	those filters, InnoDB scans the whole table and -- under REPEATABLE READ -- keeps a next-key
+	lock on every row and gap it read until the transaction ends (RULE E: writes after the block).
+	Here the matching names come from a plain (consistent, lock-free) read and the UPDATE goes by
+	primary key, with the filters applied again so a row that stopped matching is left alone.
+
+	A plain read does not see rows committed after this transaction's snapshot. Safe for a
+	voucher's own rows (all written by its own submit, and the cancel holds the voucher). For the
+	link clears before ``delete_doc`` (rows of cancelled or discarded documents naming the deleted
+	operation) a row that became cancelled after the snapshot is missed here, and ``delete_doc``'s
+	link check -- reading the same snapshot -- then refuses the delete with a LinkExistsError and
+	the whole cancel rolls back: nothing is deleted while still linked; the user retries.
+	"""
+	names = sorted(
+		set(
+			frappe.db.get_values(
+				doctype, filters, "name", pluck=True, order_by="name asc"
+			)
+		)
+	)
+	if names:
+		frappe.db.set_value(
+			doctype,
+			{**filters, "name": ("in", names)},
+			fieldname,
+			value,
+			update_modified=update_modified,
+		)
+	return names
+
+
+def lock_manufacturing_operations(names, *, wait=None):
+	"""Lock Manufacturing Operation rows (RULE D/E phase one) and return their fresh state."""
+	return _lock_rows_by_name(
+		"tabManufacturing Operation", MANUFACTURING_OPERATION_LOCK_FIELDS, names, wait
+	)
+
+
+def lock_work_orders(names, *, wait=None):
+	"""Lock Manufacturing Work Order rows (RULE D/E phase two) and return their fresh state."""
+	return _lock_rows_by_name(
+		"tabManufacturing Work Order", WORK_ORDER_LOCK_FIELDS, names, wait
+	)
+
+
+def lock_material_requests(names, *, wait=None, fields=MATERIAL_REQUEST_LOCK_FIELDS):
+	"""Lock Material Request rows and return their fresh state.
+
+	A request's own transitions hold its row before ``tabBin`` and the operation / work order
+	(its controller's check_if_latest), so it comes before them in a block that takes both.
+	``fields`` must name real columns: ``workflow_state`` exists only where the Material
+	Request workflow does.
+	"""
+	return _lock_rows_by_name("tabMaterial Request", fields, names, wait)
 
 
 def lock_items(item_codes):
@@ -401,6 +617,142 @@ def preallocate_series_for_docs(*docs):
 	for name in sorted(dnr_names):
 		frappe.db.get_value("Document Naming Rule", name, "counter", for_update=True)
 	preallocate_series(series_prefixes)
+
+
+# ---------------------------------------------------------------------------
+# RULE F (C-01): planned Stock Entry naming counters
+# ---------------------------------------------------------------------------
+# frappe.flags key: {(parent doctype, parent name): {(company, stock_entry_type), ...}}. Lives
+# exactly as long as the counter locks it describes -- cleared on the enclosing COMMIT or
+# ROLLBACK (a savepoint rollback keeps both the locks and the plan).
+PLANNED_COUNTERS_FLAG = "planned_stock_entry_counters"
+
+# The header link each planning cascade sets on the Stock Entries it mints, before insert.
+_PLAN_PARENT_LINKS = (
+	("employee_ir", "Employee IR"),
+	("custom_serial_number_creator", "Serial Number Creator"),
+	("product_certification", "Product Certification"),
+)
+
+
+class NamingCounterBusy(frappe.ValidationError):
+	"""An unplanned naming counter was busy, so the submit stopped instead of waiting."""
+
+
+def record_stock_entry_plan(parent, company, stock_entry_types):
+	"""Remember which ``(company, stock_entry_type)`` counters ``parent``'s cascade pinned.
+
+	An empty plan is recorded too: it means "this cascade mints no Stock Entry", so any that
+	does appear is guarded. A parent without a doctype and name (an unsaved document) records
+	nothing and its Stock Entries are not guarded -- the behaviour before RULE F.
+	"""
+	doctype = parent.get("doctype") if parent is not None else None
+	name = parent.get("name") if parent is not None else None
+	if not doctype or not name:
+		return
+	key = (doctype, name)
+	plans = frappe.flags.get(PLANNED_COUNTERS_FLAG)
+	if plans is None:
+		plans = frappe.flags[PLANNED_COUNTERS_FLAG] = {}
+	plans[key] = {(company, t) for t in stock_entry_types}
+
+	def _forget():
+		current = frappe.flags.get(PLANNED_COUNTERS_FLAG)
+		if current:
+			current.pop(key, None)
+
+	# commit() clears the after_rollback queue and rollback() the after_commit one, so the
+	# plan needs a callback in both.
+	frappe.db.after_commit.add(_forget)
+	frappe.db.after_rollback.add(_forget)
+
+
+def preallocate_stock_entry_counters(company, stock_entry_types, *, plan_for=None):
+	"""Pin ONLY the naming counters of the Stock Entry types this cascade can still mint.
+
+	``stock_entry_types`` must be a SUPERSET of every Stock Entry type the cascade inserts
+	after its Bin locks (RULE F). An empty list takes no lock at all. Otherwise the locking is
+	:func:`preallocate_series_for_docs` over :func:`series_stubs`, unchanged: Document Naming
+	Rule rows sorted by name, then ``tabSeries`` rows sorted by prefix, all before any Bin.
+
+	``plan_for`` is the parent document whose Stock Entries carry its link (see
+	``_PLAN_PARENT_LINKS``). The plan is recorded for it so the Stock Entry ``before_naming``
+	guard can take any type outside it with NOWAIT.
+
+	Returns the sorted, de-duplicated types that were planned.
+	"""
+	types = tuple(sorted({t for t in (stock_entry_types or ()) if t}))
+	if types:
+		preallocate_series_for_docs(*series_stubs(company, *types))
+	if plan_for is not None:
+		record_stock_entry_plan(plan_for, company, types)
+	return types
+
+
+def lock_stock_entry_counter_nowait(doc):
+	"""Take the naming counter ``doc`` is about to increment with ``FOR UPDATE NOWAIT``.
+
+	Granted at once (also when this transaction already holds the row) or refused at once,
+	so a late acquisition can never queue (1205) or close a cycle (1213). The counter is
+	resolved from ``doc`` itself, the way ``set_new_name`` will resolve it: its Document
+	Naming Rule when one matches, otherwise its naming-series ``tabSeries`` row.
+
+	Returns ``(kind, key)`` for the row taken, or ``None`` when ``doc`` names off no counter.
+	"""
+	rule = document_naming_rule_for_doc(doc)
+	if rule:
+		kind, key = "rule", rule
+		sql = "SELECT `counter` FROM `tabDocument Naming Rule` WHERE name = %s FOR UPDATE NOWAIT"
+	else:
+		kind, key = "series", series_prefix_for_doc(doc)
+		if not key:
+			return None
+		sql = "SELECT `current` FROM `tabSeries` WHERE name = %s FOR UPDATE NOWAIT"
+	try:
+		frappe.db.sql(sql, (key,))
+	except (frappe.QueryTimeoutError, frappe.QueryDeadlockError):
+		frappe.throw(
+			_(
+				"{0} numbering is in use by another submission. Nothing was posted; "
+				"please submit again."
+			).format(doc.get("stock_entry_type") or doc.doctype),
+			NamingCounterBusy,
+			title=_("Numbering busy"),
+		)
+	return kind, key
+
+
+def guard_unplanned_stock_entry_counter(doc, method=None):
+	"""Stock Entry ``before_naming`` hook (RULE F): the first step of frappe's ``set_new_name``.
+
+	Inert unless the Stock Entry belongs to a cascade that recorded a plan with
+	:func:`preallocate_stock_entry_counters` in this transaction. For such a Stock Entry whose
+	``(company, stock_entry_type)`` was not planned, the counter is taken NOWAIT before frappe
+	takes it the waiting way, and the plan grows so a second entry of the type passes freely.
+	"""
+	plans = frappe.flags.get(PLANNED_COUNTERS_FLAG)
+	if not plans or doc.get("amended_from"):
+		return
+
+	plan = parent = None
+	for field, parent_doctype in _PLAN_PARENT_LINKS:
+		parent_name = doc.get(field)
+		if parent_name and (parent_doctype, parent_name) in plans:
+			parent = (parent_doctype, parent_name)
+			plan = plans[parent]
+			break
+	if plan is None:
+		return
+
+	counter = (doc.get("company"), doc.get("stock_entry_type"))
+	if counter in plan:
+		return
+	taken = lock_stock_entry_counter_nowait(doc)
+	plan.add(counter)
+	frappe.logger("jewellery_erpnext.lock_order").warning(
+		"C-01: unplanned Stock Entry counter %s for %s %s (type %r, company %r); taken NOWAIT"
+		% (taken, parent[0], parent[1], counter[1], counter[0])
+	)
 
 
 def prelock_stamping_series():

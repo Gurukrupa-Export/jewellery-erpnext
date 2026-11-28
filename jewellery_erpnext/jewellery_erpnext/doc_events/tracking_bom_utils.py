@@ -2,27 +2,72 @@ import frappe
 from frappe.utils import flt
 
 
+def keep_po_rate(doc, row):
+	"""True when the row's Purchase Order rate must survive the Tracking BOM rate.
+
+	An Outwork quotation row pulled from a Purchase Order (``custom_po_details``) carries the
+	rate agreed on that order. The customer supplies the materials, so the Tracking BOM total
+	holds only making/handling charges and is 0 when those are not set up -- it would wipe the
+	Purchase Order rate. Other sales types and rows without a Purchase Order are unaffected.
+
+	Used on the Quotation and on the Sales Order mapped from it (``custom_po_details`` is copied
+	across); the Quotation keeps the sales type in ``custom_sales_type``, the Sales Order in
+	``sales_type``.
+	"""
+	sales_type = (
+		doc.get("sales_type")
+		if doc.doctype == "Sales Order"
+		else doc.get("custom_sales_type")
+	)
+	return sales_type == "Outwork" and bool(row.get("custom_po_details"))
+
+
 def set_tracking_bom_rate_in_quotation(self):
 	"""
 	Fetch Tracking BOM Rates and replace the quotation item rate with Tracking BOM rate.
 	Works like set_bom_rate_in_quotation but reads from Tracking Bom instead of BOM.
 	"""
+	field_list = [
+		"gold_rate_with_gst",
+		"gold_bom_amount",
+		"making_charge",
+		"finding_bom_amount",
+		"diamond_bom_amount",
+		"gemstone_bom_amount",
+		"other_bom_amount",
+		"total_bom_amount",
+		"hallmarking_amount",
+	]
+	# One query for every row's Tracking BOM instead of a get_value per row.
+	tracking_bom_names = list(
+		{
+			row.get("custom_tracking_bom")
+			for row in self.items
+			if row.get("custom_tracking_bom")
+		}
+	)
+	tb_data_map = (
+		{
+			d.name: d
+			for d in frappe.get_all(
+				"Tracking Bom",
+				filters={"name": ["in", tracking_bom_names]},
+				fields=["name", *field_list],
+			)
+		}
+		if tracking_bom_names
+		else {}
+	)
+
 	for row in self.items:
 		if row.get("custom_tracking_bom"):
-			field_list = [
-				"gold_rate_with_gst",
-				"gold_bom_amount",
-				"making_charge",
-				"finding_bom_amount",
-				"diamond_bom_amount",
-				"gemstone_bom_amount",
-				"other_bom_amount",
-				"total_bom_amount",
-				"hallmarking_amount",
-			]
-			tb_data = frappe.db.get_value(
-				"Tracking Bom", row.custom_tracking_bom, field_list, as_dict=1
-			)
+			tb_data = tb_data_map.get(row.custom_tracking_bom)
+			if tb_data is None:
+				# Not returned by the bulk query (missing, or matched only by the database's
+				# case-insensitive collation): look it up exactly as before.
+				tb_data = frappe.db.get_value(
+					"Tracking Bom", row.custom_tracking_bom, field_list, as_dict=1
+				)
 			if not tb_data:
 				continue
 
@@ -38,6 +83,9 @@ def set_tracking_bom_rate_in_quotation(self):
 			row.diamond_amount = tb_data.diamond_bom_amount
 			row.gemstone_amount = tb_data.gemstone_bom_amount
 			row.custom_hallmarking_amount = tb_data.hallmarking_amount
+
+			if keep_po_rate(self, row):
+				continue
 
 			row.rate = flt(
 				row.metal_amount

@@ -1957,7 +1957,9 @@ def create_test_data():
 
 		stock = frappe.get_single("Stock Settings")
 		stock.stock_uom = "Nos"
-		stock.enable_serial_and_batch_no_for_item = 1
+		# enable_serial_and_batch_no_for_item is NOT set here: it has to be on before
+		# the first batch-tracked Item is created, which happens ~400 lines above this
+		# block. setup_data() owns it now -- see the note there.
 		stock.do_not_update_serial_batch_on_creation_of_auto_bundle = 0
 		stock.over_delivery_receipt_allowance = 5
 		stock.mr_qty_allowance = 10
@@ -3035,6 +3037,18 @@ def create_test_data():
 
 			_ensure_supplier_allowed_item_group_field()
 
+			from jewellery_erpnext.patches.add_supplier_metal_weight_limit import (
+				execute as _ensure_supplier_metal_weight_limit_field,
+			)
+
+			_ensure_supplier_metal_weight_limit_field()
+
+			from jewellery_erpnext.patches.add_stock_reconciliation_summary_fields import (
+				execute as _ensure_stock_reconciliation_summary_fields,
+			)
+
+			_ensure_stock_reconciliation_summary_fields()
+
 			from jewellery_erpnext.patches.add_mr_is_free_item_field import (
 				execute as _ensure_mr_is_free_item_field,
 			)
@@ -3077,6 +3091,24 @@ def create_test_data():
 
 			_seed_stock_entry_types()
 
+			from jewellery_erpnext.patches.add_metal_conversion_chain_sc import (
+				execute as _add_metal_conversion_chain_sc,
+			)
+
+			_add_metal_conversion_chain_sc()
+
+			from jewellery_erpnext.patches.add_process_control_fields import (
+				execute as _add_process_control_fields,
+			)
+
+			_add_process_control_fields()
+
+			from jewellery_erpnext.patches.add_metal_conversion_workflow import (
+				execute as _add_metal_conversion_workflow,
+			)
+
+			_add_metal_conversion_workflow()
+
 			from jewellery_erpnext.patches.add_stock_entry_type_allowed_roles import (
 				execute as _ensure_stock_entry_type_allowed_roles_field,
 			)
@@ -3117,6 +3149,12 @@ def create_test_data():
 
 			po_refining_entry_field()
 
+			from jewellery_erpnext.patches.add_refinery_flow_fields import (
+				execute as refinery_flow_fields,
+			)
+
+			refinery_flow_fields()
+
 			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures, so — like
 			# the other custom-field patches above — it must be provisioned here for
 			# test_site, else create_manufacturing_entry's set_value raises
@@ -3145,6 +3183,14 @@ def create_test_data():
 			)
 
 			_ensure_design_type_fields()
+
+			# Purchase Order Item.custom_serial_id_bom is patch-only for the same reason;
+			# make_subcontracting_order and make_quotation carry a repair's serial BOM on it.
+			from jewellery_erpnext.patches.add_purchase_order_item_serial_id_bom_field import (
+				execute as _ensure_purchase_order_item_serial_id_bom_field,
+			)
+
+			_ensure_purchase_order_item_serial_id_bom_field()
 
 			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
 			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
@@ -3252,6 +3298,43 @@ def create_test_data():
 
 			_ensure_mr_diamond_substitution_fields()
 
+			# Sales Order Item ownership-split amounts (custom_company_owned_amount /
+			# custom_customer_supplied_amount). Declared only in the inert
+			# custom_fields/sales_order_item.json, so provision them here for test_site too,
+			# else _update_bom_totals silently drops every value it writes.
+			from jewellery_erpnext.patches.add_sales_order_item_ownership_amount_fields import (
+				execute as _ensure_so_item_ownership_amount_fields,
+			)
+
+			_ensure_so_item_ownership_amount_fields()
+
+			# Stock Entry.ref_customer / Batch.custom_ref_customer (customer-batch-only
+			# Hybrid findings). Patch-only like the fields above, so provision them here
+			# for test_site too, else batch_rename / hybrid_findings read a missing column.
+			from jewellery_erpnext.patches.add_ref_customer_fields import (
+				execute as _ensure_ref_customer_fields,
+			)
+
+			_ensure_ref_customer_fields()
+
+			# Batch.custom_worker_cost / custom_total_cost (Finding Manufacturing - Without
+			# SO). Patch-only like the fields above, so provision them here for test_site too,
+			# else apply_worker_cost_to_batch writes a missing column.
+			from jewellery_erpnext.patches.add_batch_worker_cost_fields import (
+				execute as _ensure_batch_worker_cost_fields,
+			)
+
+			_ensure_batch_worker_cost_fields()
+
+			# The "GK Manufacturing Plan (Get Item Table)" Server Script comes from the
+			# git_action_v16 fixtures enabled, and would refuse every Finding Manufacturing -
+			# Without SO plan; its check now lives in ManufacturingPlan.before_insert.
+			from jewellery_erpnext.patches.disable_mp_get_item_table_server_script import (
+				execute as _disable_mp_get_item_table_script,
+			)
+
+			_disable_mp_get_item_table_script()
+
 			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
 			# fixtures either — same reasoning as the other custom-field patches above:
 			# it must be provisioned here for test_site, else get_or_create_zero_tax_template
@@ -3308,6 +3391,32 @@ def create_test_data():
 
 
 def setup_data():
+	# Activate serial/batch BEFORE anything creates an Item.
+	#
+	# erpnext a6fbb0c7 ("fix: respect serial / batch activation in stock settings and
+	# item", 2026-09-29, version-16) made Item.validate throw "Cannot enable Has Batch
+	# No as Activate Serial / Batch No for Item is disabled in Stock Settings" whenever
+	# has_batch_no is set while the Stock Settings flag is off. The flag ships default
+	# 0, and install.sh tracks `version-16` unpinned, so CI picked the change up the
+	# moment it landed.
+	#
+	# create_test_data() calls setup_data() first and create_users_data() after, and
+	# create_users_data creates batch-tracked Items (the first at line ~1541) roughly
+	# 400 lines BEFORE it configured Stock Settings. Every one of them threw. Setting
+	# the flag here is what makes the ordering correct for good: nothing in setup_data
+	# creates an Item, so this always runs first.
+	#
+	# Delegated to the patch so there is ONE implementation, per the app convention: the
+	# patch reaches existing sites, this call reaches fresh / CI ones (install-app marks
+	# patches complete without running them). The assignment that used to sit in
+	# create_users_data's Stock Settings block is gone. Note the sibling patch calls in
+	# create_users_data cannot be used here -- they run ~1500 lines after the first Item.
+	from jewellery_erpnext.patches.enable_serial_and_batch_no_for_item import (
+		execute as _enable_serial_and_batch_no_for_item,
+	)
+
+	_enable_serial_and_batch_no_for_item()
+
 	if not frappe.db.exists("Stock Entry Type", "Process Loss"):
 		frappe.get_doc(
 			{

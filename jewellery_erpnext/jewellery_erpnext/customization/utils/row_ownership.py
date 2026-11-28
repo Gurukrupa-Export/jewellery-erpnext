@@ -37,8 +37,12 @@ Three rules, all load-bearing:
 
 import frappe
 from frappe import _
+from frappe.utils import cint
 
-CUSTOMER_INVENTORY_TYPES = ("Customer Goods", "Customer Stock")
+#: The only customer-owned Inventory Type that exists on the real sites. "Customer Stock" is a
+#: test-site fixture, so nothing may WRITE it -- readers still accept both.
+CUSTOMER_GOODS_INVENTORY_TYPE = "Customer Goods"
+CUSTOMER_INVENTORY_TYPES = (CUSTOMER_GOODS_INVENTORY_TYPE, "Customer Stock")
 DEFAULT_INVENTORY_TYPE = "Regular Stock"
 PROCESS_LOSS_SE_TYPE = "Process Loss"
 REPACK_SE_TYPE = "Repack"
@@ -48,6 +52,77 @@ METAL_CONVERSION_SE_TYPE = "Repack-Metal Conversion"
 # batch's ownership can only come from the consumed one. Both are guarded by
 # ``validate_loss_ownership_carried``.
 OWNERSHIP_CARRYING_SE_TYPES = (PROCESS_LOSS_SE_TYPE, REPACK_SE_TYPE)
+
+# The Item variant letter a Stock Entry row carries (``Item.variant_of``, mirrored onto the row as
+# ``custom_variant_of``) -> the Parent Manufacturing Order checkbox that says the customer supplied
+# that kind of material. Metal and findings are both gold, so both read ``is_customer_gold``.
+#
+# ONE COPY, THREE READERS. This map was written out by hand in ``se_utils.validate_inventory_dimention``
+# and again in ``se_utils.get_fifo_batches``, and the Material Request builder in
+# ``parent_manufacturing_order.create_material_requests`` needed a third. Three copies of one policy
+# is how the enforcement and the allocator drift apart, so they all come here. ``_ITEM_TYPE_PREFIX``
+# on the PMO maps its own item-type buckets onto these same letters.
+VARIANT_CUSTOMER_FLAG = {
+	"M": "is_customer_gold",
+	"F": "is_customer_gold",
+	"D": "is_customer_diamond",
+	"G": "is_customer_gemstone",
+	"O": "is_customer_material",
+}
+
+#: Variant letters whose owner is never substituted, in either direction. The order's own
+#: checkbox decides: customer diamond / gemstone ticked -> only that customer's Customer Goods,
+#: not ticked -> only company Regular Stock. The manufacturer's "Allow Regular Goods Instead Of
+#: Customer Goods" and the staged warn-only rollout both stop at these two. Metal, findings and
+#: other material keep the manufacturer's allowance.
+STRICT_CUSTOMER_GOODS_VARIANTS = ("D", "G")
+
+
+def pmo_requires_customer_goods(pmo_data, variant_of):
+	"""True when a row of this variant letter may draw ONLY the order customer's own goods.
+
+	:func:`pmo_expects_customer_goods` narrowed to :data:`STRICT_CUSTOMER_GOODS_VARIANTS`: where
+	that one says "the customer supplied this", this one says "and nothing else will do".
+	"""
+	return variant_of in STRICT_CUSTOMER_GOODS_VARIANTS and pmo_expects_customer_goods(
+		pmo_data, variant_of
+	)
+
+
+def pmo_requires_company_stock(pmo_data, variant_of):
+	"""True when a row of this variant letter may draw ONLY company (Regular Stock) batches.
+
+	The other half of :func:`pmo_requires_customer_goods`: a diamond or gemstone row on an order
+	that does NOT say the customer supplied it. ``pmo_data`` must be a real order -- a row that
+	names none is not judged, so an ordinary transfer of a customer's stones still finds them.
+	"""
+	return (
+		bool(pmo_data)
+		and variant_of in STRICT_CUSTOMER_GOODS_VARIANTS
+		and not pmo_expects_customer_goods(pmo_data, variant_of)
+	)
+
+
+def pmo_expects_customer_goods(pmo_data, variant_of):
+	"""True when this order's flags make a row of this variant letter the CUSTOMER's material.
+
+	Capability, never possession: a True here says the order was placed on the customer's own
+	stones or metal, not that any particular batch is theirs. What a row actually draws is still
+	decided by the batch (:func:`resolve_batch_ownership`), which is why ``get_fifo_batches``
+	re-stamps each allocation from the batch it took rather than trusting this answer.
+
+	``pmo_data`` is whatever ``frappe.db.get_value("Parent Manufacturing Order", ..., as_dict=1)``
+	returned, so None (the PMO does not exist) is a legitimate input and answers False rather than
+	raising -- a Stock Entry pointing at a deleted order must not 500 the save.
+	"""
+	if not pmo_data or not variant_of:
+		return False
+
+	flag = VARIANT_CUSTOMER_FLAG.get(variant_of)
+	if not flag:
+		return False
+
+	return bool(cint(pmo_data.get(flag)))
 
 
 def _get(row, fieldname):
@@ -84,15 +159,21 @@ def normalize_ownership(inventory_type, customer, batch_no=None, item_code=None)
 	return inventory_type, customer
 
 
-def resolve_batch_ownership(row):
+def resolve_batch_ownership(row, batch=None):
 	"""Resolve ``(inventory_type, customer)`` for a row from its SOURCE batch.
 
 	The batch wins (rule 1); anything already on the row is only a fallback for
 	fields the batch does not carry.
+
+	``batch`` is the row's Batch record when the caller already holds it -- a validator
+	looking at every row of a document reads them all in one ``bulk_map`` rather than
+	one ``get_value`` per row. Pass ``{}`` for "this batch has no ownership of its own";
+	leaving it None means "not read yet, fetch it". Either way the precedence rule lives
+	here and only here, so a bulk caller cannot drift from a single-row one.
 	"""
 	batch_no = _get(row, "batch_no")
-	batch_inv = {}
-	if batch_no:
+	batch_inv = batch or {}
+	if batch is None and batch_no:
 		batch_inv = (
 			frappe.db.get_value(
 				"Batch",

@@ -14,7 +14,11 @@ Consumers:
   * ``recalculate_msl_tracking`` — materializes the rows into the
     ``Warehouse.custom_msl_tracking`` child table (button + auto after an
     Employee Loss Entry).
+  * ``queue_msl_tracking_refresh`` — the same recompute, run by a deduplicated
+    short job after the caller's transaction commits (Employee IR).
 """
+
+import functools
 
 import frappe
 from frappe import _
@@ -85,6 +89,36 @@ def _tracking_eps(precision=None):
 	return (10 ** -int(precision or _tracking_precision())) / 2
 
 
+def _movement_sums(prefix="", condition=None):
+	"""The Issue / Loss / Receive ``SUM(CASE ...)`` select items over ``sle`` LEFT JOIN ``se``.
+
+	The one place an SLE is classified: inward is an Issue, outward on a Process Loss Stock
+	Entry is a Loss, every other outward is a Receive. ``condition`` (SQL over ``sle``) narrows
+	all three sums, and ``prefix`` names the columns ``{prefix}issue_qty`` etc.
+	"""
+	loss_types = ", ".join(frappe.db.escape(t) for t in LOSS_STOCK_ENTRY_TYPES)
+	when = f"{condition} AND " if condition else ""
+	return f"""
+			SUM(CASE WHEN {when}sle.actual_qty > 0 THEN sle.actual_qty ELSE 0 END) AS {prefix}issue_qty,
+			SUM(CASE WHEN {when}sle.actual_qty < 0
+					 AND se.stock_entry_type IN ({loss_types})
+					 THEN -sle.actual_qty ELSE 0 END) AS {prefix}loss_qty,
+			SUM(CASE WHEN {when}sle.actual_qty < 0
+					 AND (se.stock_entry_type IS NULL OR se.stock_entry_type NOT IN ({loss_types}))
+					 THEN -sle.actual_qty ELSE 0 END) AS {prefix}receive_qty"""
+
+
+def _tracking_figures(issue, receive, loss, prec):
+	"""Issue / Receive / Loss rounded to ``prec``, and Pending = Issue - Receive - Loss on them."""
+	issue, receive, loss = flt(issue, prec), flt(receive, prec), flt(loss, prec)
+	return {
+		"issue_qty": issue,
+		"receive_qty": receive,
+		"loss_qty": loss,
+		"pending_qty": flt(issue - receive - loss, prec),
+	}
+
+
 def get_warehouse_item_tracking(filters=None, group_by_month=False):
 	"""Return per (employee warehouse x item) Issue/Receive/Loss/Pending rows.
 
@@ -120,7 +154,6 @@ def get_warehouse_item_tracking(filters=None, group_by_month=False):
 		conditions.append("sle.posting_date <= %(to_date)s")
 
 	where = " AND ".join(conditions)
-	loss_types = ", ".join(frappe.db.escape(t) for t in LOSS_STOCK_ENTRY_TYPES)
 	month_select = f"{MONTH_START_EXPR} AS month_start," if group_by_month else ""
 	month_group = f", {MONTH_START_EXPR}" if group_by_month else ""
 
@@ -132,14 +165,7 @@ def get_warehouse_item_tracking(filters=None, group_by_month=False):
 			emp.employee_name AS employee_name,
 			emp.department AS department,
 			{month_select}
-			sle.item_code AS item_code,
-			SUM(CASE WHEN sle.actual_qty > 0 THEN sle.actual_qty ELSE 0 END) AS issue_qty,
-			SUM(CASE WHEN sle.actual_qty < 0
-					 AND se.stock_entry_type IN ({loss_types})
-					 THEN -sle.actual_qty ELSE 0 END) AS loss_qty,
-			SUM(CASE WHEN sle.actual_qty < 0
-					 AND (se.stock_entry_type IS NULL OR se.stock_entry_type NOT IN ({loss_types}))
-					 THEN -sle.actual_qty ELSE 0 END) AS receive_qty
+			sle.item_code AS item_code,{_movement_sums()}
 		FROM `tabStock Ledger Entry` sle
 		INNER JOIN `tabWarehouse` wh ON wh.name = sle.warehouse
 		LEFT JOIN `tabEmployee` emp ON emp.name = wh.employee
@@ -156,10 +182,11 @@ def get_warehouse_item_tracking(filters=None, group_by_month=False):
 
 	prec = _tracking_precision()
 	for r in rows:
-		r["issue_qty"] = flt(r.get("issue_qty"), prec)
-		r["receive_qty"] = flt(r.get("receive_qty"), prec)
-		r["loss_qty"] = flt(r.get("loss_qty"), prec)
-		r["pending_qty"] = flt(r["issue_qty"] - r["receive_qty"] - r["loss_qty"], prec)
+		r.update(
+			_tracking_figures(
+				r.get("issue_qty"), r.get("receive_qty"), r.get("loss_qty"), prec
+			)
+		)
 
 	return rows
 
@@ -306,6 +333,58 @@ def validate_no_prior_period_pending(warehouse, posting_date=None):
 	frappe.throw(msg, title=_("Prior-Month Pending"))
 
 
+def _msl_tracking_views(warehouse, month_start):
+	"""``(month_rows, cumulative_rows)`` for ``recalculate_msl_tracking`` from ONE ledger scan.
+
+	The same two views as ``get_warehouse_item_tracking({"warehouse": warehouse, "from_date":
+	month_start})`` and ``get_warehouse_item_tracking({"warehouse": warehouse})``, which each scan
+	the warehouse's whole Stock Ledger (no index leads with ``warehouse``). The month figures are
+	the same three sums restricted to ``posting_date >= month_start``, and each view keeps an item
+	only when one of ITS three raw sums is non-zero -- the HAVING of the two queries, applied
+	before rounding exactly as SQL applied it. The report and the month-start gate keep using
+	``get_warehouse_item_tracking``; both build their sums with ``_movement_sums`` and their
+	figures with ``_tracking_figures``, so the two cannot classify or round differently.
+	"""
+	month_sums = _movement_sums(
+		prefix="month_", condition="sle.posting_date >= %(from_date)s"
+	)
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			sle.item_code AS item_code,{_movement_sums()},{month_sums}
+		FROM `tabStock Ledger Entry` sle
+		INNER JOIN `tabWarehouse` wh ON wh.name = sle.warehouse
+		LEFT JOIN `tabStock Entry` se
+			ON sle.voucher_type = 'Stock Entry' AND se.name = sle.voucher_no
+		WHERE sle.is_cancelled = 0 AND wh.employee IS NOT NULL AND sle.warehouse = %(warehouse)s
+		GROUP BY sle.warehouse, sle.item_code
+		""",
+		{"warehouse": warehouse, "from_date": month_start},
+		as_dict=True,
+	)
+
+	prec = _tracking_precision()
+
+	def view(row, prefix):
+		issue = row.get(f"{prefix}issue_qty")
+		receive = row.get(f"{prefix}receive_qty")
+		loss = row.get(f"{prefix}loss_qty")
+		if not (issue or receive or loss):
+			return None
+		return {
+			"item_code": row["item_code"],
+			**_tracking_figures(issue, receive, loss, prec),
+		}
+
+	month_rows, cumulative_rows = [], []
+	for row in rows:
+		if (month := view(row, "month_")) is not None:
+			month_rows.append(month)
+		if (cumulative := view(row, "")) is not None:
+			cumulative_rows.append(cumulative)
+	return month_rows, cumulative_rows
+
+
 @frappe.whitelist()
 def recalculate_msl_tracking(warehouse):
 	"""Recompute and materialize the ``custom_msl_tracking`` child table on an
@@ -337,15 +416,9 @@ def recalculate_msl_tracking(warehouse):
 	# negative for metal issued in June and returned in July.
 	prec = _tracking_precision()
 	month_start = get_first_day(getdate(today()))
-	month_rows = {
-		r["item_code"]: r
-		for r in get_warehouse_item_tracking(
-			{"warehouse": warehouse, "from_date": month_start}
-		)
-	}
-	cumulative = {
-		r["item_code"]: r for r in get_warehouse_item_tracking({"warehouse": warehouse})
-	}
+	month_view, cumulative_view = _msl_tracking_views(warehouse, month_start)
+	month_rows = {r["item_code"]: r for r in month_view}
+	cumulative = {r["item_code"]: r for r in cumulative_view}
 
 	doc = frappe.get_doc("Warehouse", warehouse)
 	doc.set("custom_msl_tracking", [])
@@ -376,3 +449,79 @@ def recalculate_msl_tracking(warehouse):
 	doc.flags.ignore_version = True
 	doc.save(ignore_permissions=True)
 	return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Refresh after commit (Employee IR)
+# ---------------------------------------------------------------------------
+
+MSL_REFRESH_JOB = "jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking.refresh_msl_tracking_job"
+MSL_REFRESH_JOB_ID = "msl::{0}"
+#: Set after every committed movement; cleared by the refresh job at the start of each pass.
+MSL_REFRESH_DIRTY_KEY = "je:msl_tracking_dirty:{0}"
+MSL_REFRESH_DIRTY_TTL = 6 * 60 * 60
+MSL_REFRESH_MAX_PASSES = 3
+
+
+def queue_msl_tracking_refresh(warehouse):
+	"""Refresh ``warehouse``'s ``custom_msl_tracking`` AFTER the current transaction commits.
+
+	Registers one after-commit callback and nothing else: no Redis round-trip, no Warehouse
+	row lock and no child-table rewrite inside the caller's transaction (an Employee IR
+	holds the shared Stock Entry naming rows and Bins there). ``frappe.db.rollback()``
+	clears after-commit callbacks, so a rolled-back submit/cancel schedules nothing."""
+	if warehouse:
+		frappe.db.after_commit.add(functools.partial(_enqueue_msl_refresh, warehouse))
+
+
+def _enqueue_msl_refresh(warehouse):
+	"""After-commit callback. It must never raise: frappe runs these inside
+	``frappe.db.commit()``, so an exception would fail the request or job AFTER the business
+	commit and skip every callback queued behind it.
+
+	Deduplication is decided here, after the commit. A QUEUED refresh will read the ledger
+	after this commit; a STARTED one sees the dirty flag and runs another pass."""
+	try:
+		frappe.cache.set_value(
+			MSL_REFRESH_DIRTY_KEY.format(warehouse),
+			1,
+			expires_in_sec=MSL_REFRESH_DIRTY_TTL,
+		)
+		frappe.enqueue(
+			MSL_REFRESH_JOB,
+			queue="short",
+			timeout=300,
+			job_id=MSL_REFRESH_JOB_ID.format(warehouse),
+			deduplicate=True,
+			warehouse=warehouse,
+		)
+	except Exception:
+		frappe.log_error(
+			title="MSL tracking refresh could not be queued",
+			message=frappe.get_traceback(),
+		)
+
+
+def refresh_msl_tracking_job(warehouse):
+	"""Background refresh of the derived MSL cache (not whitelisted).
+
+	Nothing is swallowed here: a residual 1205/1213 is retried by ``run_with_retry`` (the
+	job's transaction holds nothing else), and any final error reaches ``execute_job``, which
+	rolls back, writes an Error Log and marks the RQ job failed.
+
+	Each pass clears the dirty flag and then starts a fresh transaction, so its ledger
+	snapshot includes every movement whose flag it cleared (the job's first transaction is
+	opened when the worker connects and can already hold an older snapshot). The job runs
+	another pass only if a movement committed while it was working."""
+	from jewellery_erpnext.jewellery_erpnext.bounded_retry import run_with_retry
+
+	key = MSL_REFRESH_DIRTY_KEY.format(warehouse)
+	for _pass in range(MSL_REFRESH_MAX_PASSES):  # not `_`: this module imports frappe._
+		# delete_value also drops this process's local copy, so the get_value below
+		# reads Redis.
+		frappe.cache.delete_value(key)
+		frappe.db.commit()
+		run_with_retry(recalculate_msl_tracking, warehouse)
+		frappe.db.commit()
+		if not frappe.cache.get_value(key):
+			return

@@ -82,6 +82,9 @@ OTHER_CUSTOMER = "CG-TEST-CUSTOMER-B"
 SE_TYPE = "CG Test Customer Goods Received"
 REPACK_SE_TYPE = "CG Test Repack"
 RETURN_SE_TYPE = "CG Test Customer Gold Return"
+#: A plain Material Issue that is NOT the configured return type -- metal leaving custody for
+#: the shop floor, which must not be read as a customer return.
+FLOOR_ISSUE_SE_TYPE = "CG Test Floor Issue"
 TRANSFER_SE_TYPE = "CG Test Transfer"
 MANUFACTURE_SE_TYPE = "CG Test Manufacture"
 #: Must be named exactly "Process Loss" — the dispatcher keys on the type, mirroring
@@ -125,6 +128,15 @@ FLIP_ITEM = "CG-TEST-GOLD-75.0-FLIP"
 
 #: An ordinary Material Receipt type -- NOT the configured Customer Gold receipt type.
 PLAIN_RECEIPT_SE_TYPE = "CG Test Plain Receipt"
+
+
+def _by_account(je, field):
+	"""{account: total of ``field``}. A settlement JE carries one liability line per receipt row,
+	so a dict built line by line would keep only the last line's amount."""
+	totals = {}
+	for r in je.accounts:
+		totals[r.account] = flt(totals.get(r.account, 0.0)) + flt(r.get(field))
+	return totals
 
 
 @contextmanager
@@ -596,6 +608,12 @@ class _CustomerGoldIntegrationCase(IntegrationTestCase):
 		if not frappe.db.exists("Stock Entry Type", RETURN_SE_TYPE):
 			doc = frappe.new_doc("Stock Entry Type")
 			doc.name = RETURN_SE_TYPE
+			doc.purpose = "Material Issue"
+			doc.insert(ignore_permissions=True)
+
+		if not frappe.db.exists("Stock Entry Type", FLOOR_ISSUE_SE_TYPE):
+			doc = frappe.new_doc("Stock Entry Type")
+			doc.name = FLOOR_ISSUE_SE_TYPE
 			doc.purpose = "Material Issue"
 			doc.insert(ignore_permissions=True)
 
@@ -2923,8 +2941,8 @@ class TestLiabilitySettlement(TestFulfilmentLedger):
 		je = frappe.get_doc("Journal Entry", entries[0])
 		self.assertEqual(je.docstatus, 1)
 
-		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
-		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		debits = _by_account(je, "debit_in_account_currency")
+		credits = _by_account(je, "credit_in_account_currency")
 
 		self.assertAlmostEqual(
 			debits.get(self.liability_account, 0.0),
@@ -3242,8 +3260,13 @@ class TestRawGoldReturn(TestFulfilmentLedger):
 		# 6 g leaves custody for a job, through an ordinary issue that is NOT the customer-gold
 		# return path — so no custody event is written for it. That is the whole point: the
 		# ledger will still say the customer owns 10 g.
+		#
+		# A plain Material Issue, NOT the configured return type. This fixture used to borrow
+		# RETURN_SE_TYPE, which only worked because a desk entry of that type was silently not
+		# treated as a return -- the defect the receipt-linked return hooks close. Any entry of
+		# the return type is now a real, receipt-linked return with its own custody event.
 		issue = frappe.new_doc("Stock Entry")
-		issue.stock_entry_type = RETURN_SE_TYPE
+		issue.stock_entry_type = FLOOR_ISSUE_SE_TYPE
 		issue.purpose = "Material Issue"
 		issue.company = COMPANY
 		issue.posting_date = self.posting_date
@@ -5683,8 +5706,8 @@ class TestManufacturedPieceSettles(TestProductionEvents):
 
 		je = frappe.get_doc("Journal Entry", entries[0])
 		self.assertEqual(je.docstatus, 1)
-		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
-		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		debits = _by_account(je, "debit_in_account_currency")
+		credits = _by_account(je, "credit_in_account_currency")
 		self.assertAlmostEqual(
 			debits.get(self.liability_account, 0.0),
 			42988.98,
@@ -6014,8 +6037,8 @@ class TestConvertedPieceSettlesTheSourceValue(TestManufacturedPieceSettles):
 
 		je = frappe.get_doc("Journal Entry", entries[0])
 		self.assertEqual(je.docstatus, 1)
-		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
-		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		debits = _by_account(je, "debit_in_account_currency")
+		credits = _by_account(je, "credit_in_account_currency")
 
 		self.assertAlmostEqual(
 			debits.get(self.liability_account, 0.0),
@@ -6294,8 +6317,8 @@ class TestNosPieceSettlesItsCustomerGold(TestProductionEvents):
 			len(entries), 1, msg=f"expected one settlement JE, got {entries}"
 		)
 		je = frappe.get_doc("Journal Entry", entries[0])
-		debits = {r.account: flt(r.debit_in_account_currency) for r in je.accounts}
-		credits = {r.account: flt(r.credit_in_account_currency) for r in je.accounts}
+		debits = _by_account(je, "debit_in_account_currency")
+		credits = _by_account(je, "credit_in_account_currency")
 		self.assertAlmostEqual(
 			debits.get(self.liability_account, 0.0), self.EXPECTED_VALUE, places=2
 		)
@@ -6318,6 +6341,146 @@ class TestNosPieceSettlesItsCustomerGold(TestProductionEvents):
 			cgf.get_customer_gold_fine_position(COMPANY, CUSTOMER),
 			after_receipt - self.EXPECTED_FINE,
 			places=3,
+		)
+
+
+class TestSerialOnlyPieceSettlesItsCustomerGold(TestNosPieceSettlesItsCustomerGold):
+	"""PR #1438 -- the same Nos piece, but serial-only (``has_batch_no`` 0), on real documents.
+
+	Such a piece has no batch, so before the fix the Manufacture failed in
+	``create_child_batches`` ("The selected item cannot have Batch") and, where it got through,
+	its delivery wrote no custody event at all. Every inherited test now runs on a piece whose
+	owner and composition can only come from its serial: ``_serial_owner`` and
+	``resolve_serial_components`` against real ledger rows, not mocks.
+	"""
+
+	PIECE = "CG-TEST-PIECE-SERIAL"
+
+	@classmethod
+	def _ensure_piece(cls):
+		if not frappe.db.exists("UOM", "Nos"):
+			frappe.get_doc(
+				{"doctype": "UOM", "uom_name": "Nos", "must_be_whole_number": 1}
+			).insert(ignore_permissions=True)
+		if frappe.db.exists("Item", cls.PIECE):
+			return
+		item = frappe.new_doc("Item")
+		item.item_code = cls.PIECE
+		item.item_name = "CG Test Serial Earring"
+		item.item_group = cls.item_group
+		item.stock_uom = "Nos"
+		item.is_stock_item = 1
+		item.has_batch_no = 0
+		item.has_serial_no = 1
+		item.serial_no_series = "CGTSER-.#####"
+		item.gst_hsn_code = cls.PIECE_HSN
+		item.custom_inventory_type_can_be_customer_goods = 1
+		item.insert(ignore_permissions=True)
+
+	def _make_piece(self, batch):
+		se = super()._make_piece(batch)
+		self._serial = frappe.db.get_value(
+			"Serial No", {"reference_name": se.name, "item_code": self.PIECE}, "name"
+		)
+		return se
+
+	def _deliver_piece(self, batch_no, is_return_of=None):
+		"""Deliver the piece by its serial; ``batch_no`` is ignored -- it has none."""
+		if not frappe.db.exists("Sales Type", SALES_TYPE):
+			frappe.get_doc(
+				{"doctype": "Sales Type", "type": SALES_TYPE, "tax_rate": 0}
+			).insert(ignore_permissions=True)
+		if not frappe.db.exists("Customer Payment Terms", {"customer": CUSTOMER}):
+			frappe.get_doc(
+				{"doctype": "Customer Payment Terms", "customer": CUSTOMER}
+			).insert(ignore_permissions=True)
+
+		so = frappe.new_doc("Sales Order")
+		so.company = COMPANY
+		so.customer = CUSTOMER
+		so.sales_type = SALES_TYPE
+		so.transaction_date = self.posting_date
+		so.delivery_date = self.posting_date
+		so.append(
+			"items",
+			{
+				"item_code": self.PIECE,
+				"qty": 1,
+				"rate": 0,
+				"delivery_date": self.posting_date,
+				"warehouse": self.warehouse,
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+			},
+		)
+		so.flags.ignore_mandatory = True
+		so.save()
+		so.submit()
+
+		dn = frappe.new_doc("Delivery Note")
+		dn.company = COMPANY
+		dn.customer = CUSTOMER
+		dn.posting_date = self.posting_date
+		dn.set_posting_time = 1
+		dn.append(
+			"items",
+			{
+				"item_code": self.PIECE,
+				"qty": 1,
+				"rate": 0,
+				"warehouse": self.warehouse,
+				"serial_no": self._serial,
+				"use_serial_batch_fields": 1,
+				# A serial-only piece has no batch to carry its ownership onto the row, and
+				# erpnext's dimension check rejects the move unless the row states it.
+				"inventory_type": "Customer Goods",
+				"customer": CUSTOMER,
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+				"against_sales_order": so.name,
+				"so_detail": so.items[0].name,
+			},
+		)
+		dn.flags.ignore_mandatory = True
+		dn.save()
+		dn.submit()
+		return dn
+
+	def _piece_delivered(self):
+		batch = self._stocked_batch(qty=10)
+		se = self._make_piece(batch)
+		fg = [r for r in se.items if r.get("is_finished_item")][0]
+		self.assertTrue(self._serial, msg="the Manufacture created no serial")
+		return se, fg, self._deliver_piece(None)
+
+	def test_the_manufacture_gives_the_piece_a_serial_and_no_batch(self):
+		batch = self._stocked_batch(qty=10)
+		se = self._make_piece(batch)
+		fg = [r for r in se.items if r.get("is_finished_item")][0]
+		self.assertFalse(fg.batch_no, msg="a serial-only piece was given a batch")
+		self.assertTrue(self._serial)
+
+	def test_the_delivery_event_names_the_serial_and_no_batch(self):
+		_se, _fg, dn = self._piece_delivered()
+		(event,) = self._events(dn.name, "Delivery")
+		self.assertEqual(event.serial_no, self._serial)
+		self.assertFalse(event.batch_no)
+		self.assertEqual(event.customer, CUSTOMER)
+
+	def test_a_return_restores_what_the_delivery_released(self):
+		from erpnext.stock.doctype.delivery_note.delivery_note import make_sales_return
+
+		_se, _fg, dn = self._piece_delivered()
+		ret = make_sales_return(dn.name)
+		ret.items[0].qty = -1
+		ret.flags.ignore_mandatory = True
+		ret.save()
+		ret.submit()
+		(event,) = self._events(ret.name, "Delivery Return")
+		self.assertAlmostEqual(
+			flt(event.cg_carrying_value_delta), self.EXPECTED_VALUE, places=2
 		)
 
 

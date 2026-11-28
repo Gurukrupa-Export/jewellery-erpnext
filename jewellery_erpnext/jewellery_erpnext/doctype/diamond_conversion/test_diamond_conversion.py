@@ -9,9 +9,11 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.diamond_conversion_
 from jewellery_erpnext.jewellery_erpnext.doctype.diamond_conversion.diamond_conversion import (
 	SIEVE_TO_SIEVE,
 	_parse_sieve_bounds,
+	set_table_totals,
 	validate_purity,
 	validate_sieve_size_band,
 	validate_source_batches,
+	validate_source_equals_target,
 )
 
 # Every test below patches ``frappe.db.get_all`` rather than ``frappe.get_all``.
@@ -65,6 +67,50 @@ class DiamondConversionUnitTestCase(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+
+def _totals_doc(source, target, **fields):
+	"""A conversion with source and target rows of the given qtys (precision 3)."""
+	doc = frappe._dict(
+		sc_source_table=[frappe._dict(qty=qty) for qty in source],
+		sc_target_table=[frappe._dict(qty=qty) for qty in target],
+		**fields,
+	)
+	doc.precision = lambda fieldname: 3
+	return doc
+
+
+class TestDiamondConversionTotals(DiamondConversionUnitTestCase):
+	"""Source and Target totals come from the saved rows, and must be equal."""
+
+	def _check(self, doc):
+		set_table_totals(doc)
+		validate_source_equals_target(doc)
+
+	def test_deleted_target_row_is_not_counted(self):
+		"""The report: 0.010 + 0.005 + 0.005 with the third row deleted is 0.015, not 0.020,
+		even though the form still stored 0.020."""
+		doc = _totals_doc([0.020], [0.010, 0.005], sum_target_table=0.020)
+		with self.assertRaisesRegex(frappe.ValidationError, "must be equal"):
+			self._check(doc)
+		self.assertEqual(doc.sum_target_table, 0.015)
+
+	def test_stale_totals_are_recomputed(self):
+		doc = _totals_doc(
+			[0.012, 0.008],
+			[0.010, 0.005, 0.005],
+			sum_source_table=1,
+			sum_target_table=9,
+		)
+		self._check(doc)
+		self.assertEqual((doc.sum_source_table, doc.sum_target_table), (0.02, 0.02))
+
+	def test_float_noise_is_not_a_mismatch(self):
+		self._check(_totals_doc([0.1, 0.2], [0.3]))
+
+	def test_more_target_than_source_is_refused(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "must be equal"):
+			self._check(_totals_doc([0.009], [0.020]))
 
 
 class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):
@@ -155,6 +201,205 @@ class TestDiamondConversionSieveBand(DiamondConversionUnitTestCase):
 		validate_sieve_size_band(doc)
 
 		mock_get_all.assert_not_called()
+
+	# -- the zero series -----------------------------------------------------------------
+	#
+	# "+00-0", "+000-00", "+0000-000" ... are names, not measurements. They all have UP/DOWN
+	# unset AND all parse to (0.0, 0.0), so the numeric band rule cannot apply to them at all.
+
+	@patch("frappe.db.get_all")
+	def test_zero_series_to_zero_series_passes(self, mock_get_all):
+		"""The reported case: D-NT-RO-4-+0000-000 -> D-NT-RO-4-+000-00, both UP/DOWN 0/0."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+0000-000")],
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+0000-000": "+0000-000", "D-NT-RO-4-+000-00": "+000-00"},
+			[_attribute_value("+0000-000"), _attribute_value("+000-00")],
+		)
+
+		validate_sieve_size_band(doc)
+
+	@patch("frappe.db.get_all")
+	def test_zero_series_to_itself_throws(self, mock_get_all):
+		"""Any zero size may become any other, so self-conversion is all that is left to reject."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+000-00": "+000-00"}, [_attribute_value("+000-00")]
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("nothing to convert", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_two_items_sharing_one_zero_size_pass(self, mock_get_all):
+		"""Different items, same zero size -- a grade change, which validate_purity governs."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+			[_row(idx=1, item_code="D-NT-RO-5-+000-00")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+000-00": "+000-00", "D-NT-RO-5-+000-00": "+000-00"},
+			[_attribute_value("+000-00")],
+		)
+
+		validate_sieve_size_band(doc)
+
+	@patch("frappe.db.get_all")
+	def test_banded_zero_series_band_is_enforced(self, mock_get_all):
+		"""The band on a zero size is READ, not skipped: +1-1.5's 1.5 overflows +00-0's UP of 1."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+00-0")],
+			[_row(idx=1, item_code="D-NT-RO-4-+1-1.5")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+00-0": "+00-0", "D-NT-RO-4-+1-1.5": "+1-1.5"},
+			[
+				_attribute_value("+00-0", height=1.0, weight=0.0),
+				_attribute_value("+1-1.5", height=2.5, weight=1.0),
+			],
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("outside the allowed band", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_unbanded_zero_to_numeric_throws(self, mock_get_all):
+		"""An unbanded zero may only pair with another zero-series name.
+
+		Review finding P1493-F1. The target's DOWN of 0 would constrain nothing, so the pair
+		would otherwise save -- wider than the "allow any zero item" rule this exemption is for.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-ZERO")], [_row(idx=1, item_code="D-NUM")]
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-ZERO": "+0000-000", "D-NUM": "+0-1"},
+			[
+				_attribute_value("+0000-000"),
+				_attribute_value("+0-1", height=1.5, weight=0.0),
+			],
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("zero-series sieve size", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_numeric_to_unbanded_zero_throws(self, mock_get_all):
+		"""The reverse direction of P1493-F1."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NUM")], [_row(idx=1, item_code="D-ZERO")]
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NUM": "+0-1", "D-ZERO": "+0000-000"},
+			[
+				_attribute_value("+0-1", height=1.5, weight=0.0),
+				_attribute_value("+0000-000"),
+			],
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("zero-series sieve size", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_banded_zero_to_numeric_still_passes(self, mock_get_all):
+		"""A BANDED zero is an ordinary size -- P1493-F1 must not catch it.
+
+		+00-0 (0..1) -> +0-1 (0..1.5) saves on the PR base too; pinning it here stops the
+		"skip every zero" regression from coming back.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+00-0")],
+			[_row(idx=1, item_code="D-NT-RO-4-+0-1")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+00-0": "+00-0", "D-NT-RO-4-+0-1": "+0-1"},
+			[
+				_attribute_value("+00-0", height=1.0, weight=0.0),
+				_attribute_value("+0-1", height=1.5, weight=0.0),
+			],
+		)
+
+		validate_sieve_size_band(doc)
+
+	@patch("frappe.db.get_all")
+	def test_numeric_same_item_throws(self, mock_get_all):
+		"""Review finding P1493-F2: converting an item into itself is a no-op at any size.
+
+		+8-8.5's value 8..8.5 sits inside its own band 7.5..9, so both band checks passed and
+		nothing else caught it.
+		"""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NUM")], [_row(idx=1, item_code="D-NUM")]
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NUM": "+8-8.5"}, [_attribute_value("+8-8.5", height=9.0, weight=7.5)]
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("nothing to convert", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_non_zero_value_without_a_band_still_throws(self, mock_get_all):
+		"""The exemption is for zero-series names only -- an ordinary size still needs UP/DOWN."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NUM-A")], [_row(idx=1, item_code="D-NUM-B")]
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NUM-A": "+3-3.5", "D-NUM-B": "+7-7.5"},
+			[
+				_attribute_value("+3-3.5"),  # no band
+				_attribute_value("+7-7.5", height=9.0, weight=7.5),
+			],
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("UP/DOWN", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_zero_series_still_requires_its_attribute_value(self, mock_get_all):
+		"""The exemption skips the BAND assertions only -- the other guards still run."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-NT-RO-4-+00-0")],
+			[_row(idx=1, item_code="D-NT-RO-4-+000-00")],
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-NT-RO-4-+00-0": "+00-0", "D-NT-RO-4-+000-00": "+000-00"},
+			[_attribute_value("+000-00")],  # "+00-0" has no record
+		)
+
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("does not exist", str(caught.exception))
+
+	@patch("frappe.db.get_all")
+	def test_plus_zero_dash_two_is_not_zero_series(self, mock_get_all):
+		"""Guards ZERO_SIEVE_PATTERN against over-matching: "+0-2"'s "2" keeps it numeric."""
+		doc = self._doc(
+			[_row(idx=1, item_code="D-RANGEISH")], [_row(idx=1, item_code="D-NUM")]
+		)
+		mock_get_all.side_effect = self._side_effect(
+			{"D-RANGEISH": "+0-2", "D-NUM": "+3-3.5"},
+			[
+				_attribute_value("+0-2", height=2.5, weight=0.0),
+				_attribute_value("+3-3.5", height=4.0, weight=2.5),
+			],
+		)
+
+		# Numeric path: target 3..3.5 overflows the source band 0..2.5 -> the ordinary band throw.
+		with self.assertRaises(frappe.ValidationError) as caught:
+			validate_sieve_size_band(doc)
+		self.assertIn("outside the allowed band", str(caught.exception))
 
 	# -- band rejections -----------------------------------------------------------------
 
@@ -506,7 +751,14 @@ class TestDiamondConversionSourceBatches(DiamondConversionUnitTestCase):
 class TestDiamondConversionBatchProvenance(DiamondConversionUnitTestCase):
 	"""``get_diamond_conversion_target_batches`` -- the two-hop Batch -> SE -> conversion walk."""
 
-	def _side_effect(self, batches, details, stock_entries):
+	def _side_effect(self, batches, details, stock_entries, barring=None):
+		"""``barring`` -- conversions whose type bars their output; defaults to all of them.
+
+		The helper's fourth query filters Diamond Conversion by ``conversion_type``, so the stub
+		honours the filter it is handed rather than returning everything: that is what makes the
+		"produced by a Range conversion" cases meaningful.
+		"""
+
 		def get_all(doctype, *args, **kwargs):
 			if doctype == "Batch":
 				return [frappe._dict(row) for row in batches]
@@ -514,6 +766,14 @@ class TestDiamondConversionBatchProvenance(DiamondConversionUnitTestCase):
 				return [frappe._dict(row) for row in details]
 			if doctype == "Stock Entry":
 				return [frappe._dict(row) for row in stock_entries]
+			if doctype == "Diamond Conversion":
+				asked = kwargs.get("filters", {}).get("name", [None, []])[1]
+				allowed = (
+					{se["custom_diamond_conversion"] for se in stock_entries}
+					if barring is None
+					else set(barring)
+				)
+				return [name for name in asked if name in allowed]
 			return frappe.get_all(doctype, *args, **kwargs)
 
 		return get_all
@@ -564,6 +824,54 @@ class TestDiamondConversionBatchProvenance(DiamondConversionUnitTestCase):
 
 		self.assertEqual(
 			get_diamond_conversion_target_batches(["BATCH-A"]), {"BATCH-A": "DCON00086"}
+		)
+
+	@patch("frappe.db.get_all")
+	def test_output_of_a_range_to_size_conversion_is_not_barred(self, mock_get_all):
+		"""A "Sieve Size Range to Sieve Size" output is the normal feed for a re-sieve.
+
+		Live case: KG2F095-DNTROX7G00G05-2S1T6, produced by DCON00075 (a Range -> Size
+		conversion), must stay selectable. Barring it hid 80 of 87 conversion-produced batches
+		from both the picker and the FIFO auto-pick.
+		"""
+		mock_get_all.side_effect = self._side_effect(
+			[
+				{
+					"name": "KG2F095-DNTROX7G00G05-2S1T6",
+					"reference_doctype": "Stock Entry",
+					"reference_name": "MAT-STE-18828",
+					"custom_voucher_detail_no": "5v204nvrku",
+				}
+			],
+			[{"name": "5v204nvrku", "parent": "MAT-STE-18828"}],
+			[{"name": "MAT-STE-18828", "custom_diamond_conversion": "DCON00075"}],
+			barring=[],  # DCON00075 is Range -> Size, so it does not bar its output
+		)
+
+		self.assertEqual(
+			get_diamond_conversion_target_batches(["KG2F095-DNTROX7G00G05-2S1T6"]), {}
+		)
+
+	@patch("frappe.db.get_all")
+	def test_output_of_a_size_to_size_conversion_is_barred(self, mock_get_all):
+		"""Only a re-sieve's own output is barred from being re-sieved again."""
+		mock_get_all.side_effect = self._side_effect(
+			[
+				{
+					"name": "BATCH-A",
+					"reference_doctype": "Stock Entry",
+					"reference_name": "STE-1",
+					"custom_voucher_detail_no": None,
+				}
+			],
+			[],
+			[{"name": "STE-1", "custom_diamond_conversion": "DCON-RESIEVE"}],
+			barring=["DCON-RESIEVE"],
+		)
+
+		self.assertEqual(
+			get_diamond_conversion_target_batches(["BATCH-A"]),
+			{"BATCH-A": "DCON-RESIEVE"},
 		)
 
 	@patch("frappe.db.get_all")

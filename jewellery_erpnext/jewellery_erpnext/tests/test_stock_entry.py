@@ -3,8 +3,8 @@
 
 """Tests for the Stock Entry lifecycle doc-event hooks and the CustomStockEntry override.
 
-Pure-logic: every DB access is patched, docs are SimpleNamespace fakes. Covers the
-wired, previously-untested hook entry-points:
+Pure-logic (one exception, named below): every DB access is patched, docs are
+SimpleNamespace fakes. Covers the wired, previously-untested hook entry-points:
 
 * doc_events/stock_entry.py: before_validate orchestration, validate_ir, validate_mop_is_current,
   validate_material_request_warehouses, validate_main_slip_warehouse,
@@ -15,18 +15,27 @@ wired, previously-untested hook entry-points:
 * se_utils / inventory_utils guards invoked by that chain
 * customer_subcontracting.batch_rename.create_parent_batches (SE before_submit)
 
+Work order <-> operation link integrity (doc_events/mwo_mop_link.py): the
+validate_mwo_mop_consistency hook and the creates_mwo_reservation gate it shares with
+onsubmit, set_manufacturing_refs' pointer guard, and the Employee IR injection entries
+(main_slip_inject) booked to the operation's owner. TestMwoMopLinkAgainstRealRows is the
+one DB-backed class: real rows written with db_insert, nothing saved through a controller.
+
 Already covered elsewhere (see plan): validate_pcs, get_fifo_batches, validate_items,
 sync_mop_log_for_stock_entry, stock_reservation_entry_for_mwo, set_basic_rate,
 validate_sample_goods_not_consumed, create_child_batches, create_subcontracting_log.
 """
 
+from contextlib import ExitStack
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
+from frappe.utils import cstr
 
+from jewellery_erpnext import hooks as app_hooks
 from jewellery_erpnext.customer_subcontracting import batch_rename
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings import (
 	subcontracting_settings as cg_settings,
@@ -40,7 +49,12 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events im
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events import (
 	se_utils,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events import mwo_mop_link
 from jewellery_erpnext.jewellery_erpnext.doc_events import stock_entry as se_events
+from jewellery_erpnext.jewellery_erpnext.doc_events.mwo_mop_link import MWOMOPLinkError
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+	main_slip_inject as msi,
+)
 
 from . import customer_gold_purity_fixtures as cg_purity
 
@@ -1299,8 +1313,12 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 				return {n: frappe._dict(dept_map.get(n, {})) for n in names}
 			return {n: frappe._dict(batch_map.get(n, {})) for n in names}
 
-		def _fifo(se, row, consumed):
-			fifo_calls.append((row, dict(consumed)))
+		def _fifo(se, row, consumed, item_map=None):
+			# ``item_map`` is the prefetched Item map update_batches hands over so the
+			# allocator can resolve ``variant_of`` without the fetched custom_variant_of,
+			# which is still empty in before_validate. Recorded so the assertion below can
+			# pin that it is actually passed.
+			fifo_calls.append((row, dict(consumed), item_map))
 			return list(fifo_result or [])
 
 		def _get_all(doctype, *args, **kwargs):
@@ -1360,8 +1378,16 @@ class TestCustomStockEntryUpdateBatches(_StockEntryTestCase):
 			[row1, row2], item_map, batch_map=batch_map
 		)
 		self.assertEqual(len(fifo_calls), 1)
-		fifo_row, consumed_at_call = fifo_calls[0]
+		fifo_row, consumed_at_call, item_map_at_call = fifo_calls[0]
 		self.assertEqual(fifo_row.item_code, item)
+		# The allocator needs the Item map to resolve this row's ``variant_of``: the fetched
+		# ``custom_variant_of`` is still empty in before_validate, and without the letter the
+		# Customer Goods lane never applies.
+		self.assertEqual(
+			(item_map_at_call.get(item) or {}).get("variant_of"),
+			"M",
+			msg="update_batches must hand the prefetched Item map to get_fifo_batches",
+		)
 		# row1's consumption is visible to row2's FIFO allocation -> B-1 cannot double-book
 		self.assertEqual(consumed_at_call, {("WH-1", "B-1"): 5.0})
 		self.assertEqual(len(appended), 1)
@@ -1596,6 +1622,10 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 			cse_mod, "in_configured_timeslot", return_value=True
 		), patch.object(
 			cse_mod,
+			"normalize_add_to_transit",
+			side_effect=_record("normalize_add_to_transit"),
+		), patch.object(
+			cse_mod,
 			"set_manufacturing_refs",
 			side_effect=_record("set_manufacturing_refs"),
 		), patch.object(
@@ -1621,6 +1651,9 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 		self.assertEqual(
 			calls,
 			[
+				# Clears Add to Transit on receipt legs and flagged one-shot moves before
+				# StockEntry.validate rejects it for a non-Transit target.
+				"normalize_add_to_transit",
 				# Must stay ahead of set_employee, which reads
 				# self.manufacturing_operation to resolve to_employee.
 				"set_manufacturing_refs",
@@ -1635,6 +1668,203 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 		)
 
 
+# ------------------------------------------------------- normalize_add_to_transit
+class TestNormalizeAddToTransit(_StockEntryTestCase):
+	"""ERPNext v16.36.0 rejects Add to Transit into a non-Transit warehouse, and the
+	flag is fetched back from a transit Stock Entry Type whenever it is 0 -- so the
+	before_validate hook is where entries that are not in transit get it cleared."""
+
+	def _run(self, se, stock_entries=None, non_transit=()):
+		"""Run the helper with only ``Stock Entry`` reads answered from ``stock_entries``.
+
+		Every other ``frappe.db.get_value`` call falls through to the real one, so meta
+		loading is untouched. ``non_transit`` names the entries with a row that landed
+		outside a Transit warehouse. Returns the list of Stock Entry names that were read.
+		"""
+		stock_entries = stock_entries or {}
+		real_get_value = frappe.db.get_value
+		reads = []
+
+		def _get_value(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype != "Stock Entry":
+				return real_get_value(doctype, filters, fieldname, *args, **kwargs)
+			reads.append(filters)
+			row = stock_entries.get(filters)
+			if row is None:
+				return None
+			if isinstance(fieldname, (list, tuple)):
+				return frappe._dict({f: row.get(f) for f in fieldname})
+			return row.get(fieldname)
+
+		with patch.object(
+			cse_mod.frappe.db, "get_value", side_effect=_get_value
+		), patch.object(
+			cse_mod,
+			"has_non_transit_target",
+			side_effect=lambda name: name in non_transit,
+		):
+			cse_mod.normalize_add_to_transit(se)
+		return reads
+
+	def _run_expecting_throw(self, se, stock_entries=None, non_transit=()):
+		with patch.object(cse_mod.frappe, "throw", side_effect=RuntimeError) as throw:
+			with self.assertRaises(RuntimeError):
+				self._run(se, stock_entries, non_transit)
+		return throw.call_args[0][0]
+
+	# --- receipt legs ----------------------------------------------------
+
+	def test_receipt_leg_is_not_in_transit(self):
+		"""End Transit keeps the DEPARTMENT/CGT type, whose 1 the fetch writes back."""
+		se = _Doc(
+			purpose="Material Transfer", add_to_transit=1, outgoing_stock_entry="SE-OUT"
+		)
+		self._run(se, {"SE-OUT": {"add_to_transit": 1, "outgoing_stock_entry": None}})
+		self.assertEqual(se.add_to_transit, 0)
+
+	def test_receipt_of_a_receipt_throws(self):
+		msg = self._run_expecting_throw(
+			_Doc(
+				purpose="Material Transfer",
+				add_to_transit=1,
+				outgoing_stock_entry="SE-IN",
+			),
+			{"SE-IN": {"add_to_transit": 1, "outgoing_stock_entry": "SE-OUT"}},
+		)
+		self.assertIn("SE-IN", msg)
+		self.assertIn("cannot be received", msg)
+
+	def test_receipt_of_a_direct_transfer_throws(self):
+		msg = self._run_expecting_throw(
+			_Doc(
+				purpose="Material Transfer",
+				add_to_transit=1,
+				outgoing_stock_entry="SE-DIRECT",
+			),
+			{"SE-DIRECT": {"add_to_transit": 0, "outgoing_stock_entry": None}},
+		)
+		self.assertIn("SE-DIRECT", msg)
+
+	def test_receipt_of_a_flagged_entry_that_never_reached_transit_throws(self):
+		"""Older reserve entries carry add_to_transit = 1 but moved stock into Reserve/RM
+		warehouses; the flag alone does not make them receivable."""
+		msg = self._run_expecting_throw(
+			_Doc(
+				purpose="Material Transfer",
+				add_to_transit=1,
+				outgoing_stock_entry="SE-RESERVE",
+			),
+			{"SE-RESERVE": {"add_to_transit": 1, "outgoing_stock_entry": None}},
+			non_transit={"SE-RESERVE"},
+		)
+		self.assertIn("SE-RESERVE", msg)
+
+	def test_customer_goods_issue_is_not_checked_as_a_transit_receipt(self):
+		"""Customer Goods Received > Issue links the Received entry the same way; a
+		Material Issue never ends a transit, so its source is not held to that rule."""
+		se = _Doc(
+			purpose="Material Issue",
+			add_to_transit=1,
+			outgoing_stock_entry="SE-CG-RECEIVED",
+		)
+		reads = self._run(se)
+		self.assertEqual(se.add_to_transit, 0)
+		self.assertEqual(reads, [])
+
+	def test_receipt_of_a_missing_entry_throws(self):
+		msg = self._run_expecting_throw(
+			_Doc(
+				purpose="Material Transfer",
+				add_to_transit=1,
+				outgoing_stock_entry="SE-GONE",
+			)
+		)
+		self.assertIn("SE-GONE", msg)
+
+	# --- sending legs ----------------------------------------------------
+
+	def test_flagged_one_shot_move_is_not_in_transit(self):
+		se = _Doc(add_to_transit=1, flags=frappe._dict(no_transit=True))
+		reads = self._run(se)
+		self.assertEqual(se.add_to_transit, 0)
+		self.assertEqual(reads, [])
+
+	def test_real_transit_leg_keeps_add_to_transit(self):
+		"""MR > Material Transfer (In Transit) and manual DEPARTMENT entries go to a
+		Transit warehouse and must stay in transit."""
+		se = _Doc(add_to_transit=1, flags=frappe._dict())
+		reads = self._run(se)
+		self.assertEqual(se.add_to_transit, 1)
+		self.assertEqual(reads, [])
+
+	def test_doc_without_flags_is_left_alone(self):
+		se = _Doc(add_to_transit=1)
+		self._run(se)
+		self.assertEqual(se.add_to_transit, 1)
+
+	# --- amendments ------------------------------------------------------
+
+	def test_amendment_of_a_one_shot_move_stays_out_of_transit(self):
+		"""Amending keeps the stored 0, which the fetch then turns back into 1."""
+		se = _Doc(
+			add_to_transit=1,
+			amended_from="SE-DEPT-1",
+			stock_entry_type="Material Transfer (DEPARTMENT)",
+		)
+		self._run(
+			se,
+			{
+				"SE-DEPT-1": {
+					"add_to_transit": 0,
+					"stock_entry_type": "Material Transfer (DEPARTMENT)",
+				}
+			},
+		)
+		self.assertEqual(se.add_to_transit, 0)
+
+	def test_amendment_of_a_transit_leg_stays_in_transit(self):
+		se = _Doc(
+			add_to_transit=1,
+			amended_from="SE-OUT-1",
+			stock_entry_type="Material Transfer (DEPARTMENT)",
+		)
+		self._run(
+			se,
+			{
+				"SE-OUT-1": {
+					"add_to_transit": 1,
+					"stock_entry_type": "Material Transfer (DEPARTMENT)",
+				}
+			},
+		)
+		self.assertEqual(se.add_to_transit, 1)
+
+	def test_amendment_into_another_type_follows_the_new_type(self):
+		"""Changing the type on an amendment is a new decision; the original's 0 does
+		not carry over."""
+		se = _Doc(
+			add_to_transit=1,
+			amended_from="SE-DIRECT-1",
+			stock_entry_type="Material Transfer (DEPARTMENT)",
+		)
+		self._run(
+			se,
+			{
+				"SE-DIRECT-1": {
+					"add_to_transit": 0,
+					"stock_entry_type": "Material Transfer to Department",
+				}
+			},
+		)
+		self.assertEqual(se.add_to_transit, 1)
+
+	def test_amendment_already_at_zero_reads_nothing(self):
+		se = _Doc(add_to_transit=0, amended_from="SE-DEPT-1")
+		reads = self._run(se)
+		self.assertEqual(se.add_to_transit, 0)
+		self.assertEqual(reads, [])
+
+
 # --------------------------------------------------------- set_manufacturing_refs
 class TestSetManufacturingRefs(_StockEntryTestCase):
 	"""Server-side backstop for the browser fill on stock_entry.js.
@@ -1644,11 +1874,23 @@ class TestSetManufacturingRefs(_StockEntryTestCase):
 	fields unwritten. This guard re-derives them from the MWO on save.
 	"""
 
-	# as_dict=True yields a frappe._dict; the guard uses attribute access.
-	MWO = frappe._dict(manufacturing_order="PMO-1", manufacturing_operation="MOP-1")
+	# as_dict=True yields a frappe._dict; the guard uses attribute access. A submitted work
+	# order whose pointer is one of its own operations -- the only pointer that is copied.
+	MWO = frappe._dict(
+		manufacturing_order="PMO-1", manufacturing_operation="MOP-1", docstatus=1
+	)
 
-	def _run(self, se, mwo=None):
-		with patch.object(cse_mod.frappe.db, "get_value", return_value=mwo) as gv:
+	def _run(self, se, mwo=None, pointer_owner="MWO-1"):
+		"""``get_value`` answers both reads: the work order, and its pointer's owner (``owner_of``)."""
+
+		def _get_value(doctype, name, *args, **kwargs):
+			if doctype == "Manufacturing Work Order":
+				return mwo
+			if doctype == "Manufacturing Operation":
+				return pointer_owner
+			raise AssertionError(doctype)
+
+		with patch.object(cse_mod.frappe.db, "get_value", side_effect=_get_value) as gv:
 			cse_mod.set_manufacturing_refs(se)
 		return gv
 
@@ -1723,6 +1965,59 @@ class TestSetManufacturingRefs(_StockEntryTestCase):
 		)
 		self.assertEqual(se.manufacturing_order, "PMO-1")
 		self.assertIsNone(se.manufacturing_operation)
+
+	def test_draft_mwo_pointer_is_not_copied(self):
+		"""A draft split child carries its PARENT's pointer (the field was copied by the split).
+		Only on_submit stamps a work order's own pointer, so a draft's is never trusted."""
+		se = _Doc(
+			manufacturing_work_order="MWO-1-CHILD",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		gv = self._run(
+			se,
+			frappe._dict(
+				manufacturing_order="PMO-1",
+				manufacturing_operation="MOP-OF-PARENT",
+				docstatus=0,
+			),
+		)
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+		self.assertIsNone(se.manufacturing_operation)
+		# Rejected on docstatus alone -- no owner lookup.
+		self.assertEqual(gv.call_count, 1)
+
+	def test_pointer_to_a_sibling_operation_is_not_copied(self):
+		"""A submitted work order left pointing at a sibling's operation (a receive whose row
+		paired the two wrongly moved the wrong pointer): copying it would book this entry to the
+		sibling's operation, which validate_mwo_mop_consistency then refuses."""
+		se = _Doc(
+			manufacturing_work_order="MWO-1",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		self._run(se, self.MWO, pointer_owner="MWO-SIBLING")
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+		self.assertIsNone(se.manufacturing_operation)
+
+	def test_pointer_to_a_missing_operation_is_not_copied(self):
+		se = _Doc(
+			manufacturing_work_order="MWO-1",
+			manufacturing_order="PMO-1",
+			manufacturing_operation=None,
+		)
+		self._run(se, self.MWO, pointer_owner=None)
+		self.assertIsNone(se.manufacturing_operation)
+
+	def test_owner_match_is_case_insensitive(self):
+		"""Names compare the way MariaDB does."""
+		se = _Doc(
+			manufacturing_work_order="mwo-1",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		self._run(se, self.MWO, pointer_owner="MWO-1")
+		self.assertEqual(se.manufacturing_operation, "MOP-1")
 
 
 # ------------------------------------------------------------------- se_utils guards
@@ -2787,8 +3082,92 @@ class TestConsumeStockReservationEntry(_StockEntryTestCase):
 		sre.db_set.assert_called_once_with("delivered_qty", 5.0, update_modified=True)
 
 
+def _department_receipt_stub(reads, stock_entries=None, mr_item_warehouse=None):
+	"""A keyed ``frappe.db.get_value`` for the End Transit mappers.
+
+	Answers the Material Request lookup of a Transfer to Department (stamped
+	``custom_department_transfer_se`` = SE-DEPT-1, destination WH-DEST), plus the
+	optional Stock Entry / Material Request Item reads; everything else falls through.
+	"""
+	real_get_value = frappe.db.get_value
+	stock_entries = stock_entries or {}
+
+	def _get_value(doctype, filters=None, fieldname="name", *args, **kwargs):
+		if doctype == "Material Request":
+			reads.append(filters)
+			if filters == {
+				"custom_department_transfer_se": "SE-DEPT-1",
+				"docstatus": 1,
+			}:
+				return "WH-DEST"
+			return None
+		if doctype == "Stock Entry" and filters in stock_entries:
+			return stock_entries[filters]
+		if doctype == "Material Request Item" and mr_item_warehouse:
+			return mr_item_warehouse
+		return real_get_value(doctype, filters, fieldname, *args, **kwargs)
+
+	return _get_value
+
+
+class _RemainingTransitQtyCases:
+	"""Shared by both End Transit mappers (``_run`` comes from the test class).
+
+	Each receipt maps only what the source row has not handed over yet, in the row's own
+	UOM: ERPNext keeps ``transferred_qty`` in stock UOM, so the remainder is
+	``(transfer_qty - transferred_qty) / conversion_factor``, and a fully received row is
+	not mapped at all. Mapping the original ``qty`` again made a second End Transit exceed
+	the source.
+	"""
+
+	def _row_rules(self):
+		source = _Doc(stock_entry_type="Material Transfer", name="SE-OUT-1")
+		target = _Doc(stock_entry_type="Material Transfer")
+		target.set_missing_values = MagicMock()
+		_, kwargs = self._run(source, target)
+		detail = kwargs["map_dict"]["Stock Entry Detail"]
+		return detail["postprocess"], detail["condition"]
+
+	def _receive(self, **row):
+		update_item, _ = self._row_rules()
+		source_row = _Row(
+			item_code="ITM-1",
+			t_warehouse="WH-TRANSIT",
+			material_request=None,
+			material_request_item=None,
+			**row,
+		)
+		target_row = _Row()
+		source_parent = _Doc(
+			stock_entry_type="Material Transfer",
+			name="SE-OUT-1",
+			custom_material_request_reference=None,
+		)
+		update_item(source_row, target_row, source_parent)
+		return target_row
+
+	def test_second_receipt_maps_only_the_remaining_qty(self):
+		"""10 sent, 4 already received: the next End Transit carries 6."""
+		target_row = self._receive(
+			qty=10, transfer_qty=10, transferred_qty=4, conversion_factor=1
+		)
+		self.assertEqual(target_row.qty, 6)
+
+	def test_remaining_qty_is_converted_back_to_the_row_uom(self):
+		"""5 boxes of 2 = 10 in stock UOM, 4 received: 6 left, which is 3 boxes."""
+		target_row = self._receive(
+			qty=5, transfer_qty=10, transferred_qty=4, conversion_factor=2
+		)
+		self.assertEqual(target_row.qty, 3)
+
+	def test_fully_received_rows_are_not_mapped_again(self):
+		_, condition = self._row_rules()
+		self.assertFalse(condition(_Row(transfer_qty=10, transferred_qty=10)))
+		self.assertTrue(condition(_Row(transfer_qty=10, transferred_qty=4)))
+
+
 # -------------------------------------------------------- make_stock_in_entry
-class TestMakeStockInEntry(_StockEntryTestCase):
+class TestMakeStockInEntry(_RemainingTransitQtyCases, _StockEntryTestCase):
 	def _run(self, source, target):
 		return _run_mapped(se_events.make_stock_in_entry, source, target)
 
@@ -2827,7 +3206,13 @@ class TestMakeStockInEntry(_StockEntryTestCase):
 		update_item = kwargs["map_dict"]["Stock Entry Detail"]["postprocess"]
 
 		source_parent = _Doc(custom_material_request_reference="MR-1")
-		source_row = _Row(item_code="ITM-1", t_warehouse="WH-SRC", qty=5)
+		source_row = _Row(
+			item_code="ITM-1",
+			t_warehouse="WH-SRC",
+			qty=5,
+			transfer_qty=5,
+			conversion_factor=1,
+		)
 		target_row = _Row()
 		mr_doc = _Doc(items=[_Row(item_code="ITM-1", warehouse="WH-MR")])
 
@@ -2838,9 +3223,93 @@ class TestMakeStockInEntry(_StockEntryTestCase):
 		self.assertEqual(target_row.s_warehouse, "WH-SRC")
 		self.assertEqual(target_row.qty, 5)
 
+	def test_department_transfer_is_received_into_its_destination(self):
+		"""make_department_transfer_stock_entry sends through the destination's transit
+		warehouse and carries no custom_material_request_reference; the request stamped
+		with it names where End Transit lands the material. Looked up once, not per row."""
+		source = _Doc(
+			stock_entry_type="Material Transfer (DEPARTMENT)", name="SE-DEPT-1"
+		)
+		target = _Doc(stock_entry_type="Material Transfer (DEPARTMENT)")
+		target.set_missing_values = MagicMock()
+		_, kwargs = self._run(source, target)
+		update_item = kwargs["map_dict"]["Stock Entry Detail"]["postprocess"]
+
+		source_parent = _Doc(
+			stock_entry_type="Material Transfer (DEPARTMENT)",
+			name="SE-DEPT-1",
+			custom_material_request_reference=None,
+		)
+		source_rows = [
+			_Row(
+				item_code="ITM-1",
+				t_warehouse="WH-TRANSIT",
+				qty=5,
+				transfer_qty=5,
+				conversion_factor=1,
+			),
+			_Row(
+				item_code="ITM-2",
+				t_warehouse="WH-TRANSIT",
+				qty=2,
+				transfer_qty=2,
+				conversion_factor=1,
+			),
+		]
+		target_rows = [_Row(), _Row()]
+		reads = []
+
+		with patch.object(
+			se_events.frappe.db,
+			"get_value",
+			side_effect=_department_receipt_stub(reads),
+		):
+			for source_row, target_row in zip(source_rows, target_rows):
+				update_item(source_row, target_row, source_parent)
+
+		self.assertEqual([r.t_warehouse for r in target_rows], ["WH-DEST", "WH-DEST"])
+		self.assertEqual([r.s_warehouse for r in target_rows], ["WH-TRANSIT"] * 2)
+		self.assertEqual(len(reads), 1)
+
+	def test_other_transit_types_are_not_looked_up(self):
+		source = _Doc(stock_entry_type="Customer Goods Transfer", name="SE-CGT-1")
+		target = _Doc(stock_entry_type="Customer Goods Transfer")
+		target.set_missing_values = MagicMock()
+		_, kwargs = self._run(source, target)
+		update_item = kwargs["map_dict"]["Stock Entry Detail"]["postprocess"]
+
+		source_parent = _Doc(
+			stock_entry_type="Customer Goods Transfer",
+			name="SE-CGT-1",
+			custom_material_request_reference=None,
+		)
+		target_row = _Row()
+		reads = []
+		with patch.object(
+			se_events.frappe.db,
+			"get_value",
+			side_effect=_department_receipt_stub(reads),
+		):
+			update_item(
+				_Row(
+					item_code="ITM-1",
+					t_warehouse="WH-T",
+					qty=1,
+					transfer_qty=1,
+					conversion_factor=1,
+				),
+				target_row,
+				source_parent,
+			)
+
+		self.assertEqual(target_row.t_warehouse, "")
+		self.assertEqual(reads, [])
+
 
 # ---------------------------------------- make_stock_in_entry_on_transit_entry
-class TestMakeStockInEntryOnTransitEntry(_StockEntryTestCase):
+class TestMakeStockInEntryOnTransitEntry(
+	_RemainingTransitQtyCases, _StockEntryTestCase
+):
 	def _run(self, source, target):
 		return _run_mapped(
 			se_events.make_stock_in_entry_on_transit_entry, source, target
@@ -2867,7 +3336,9 @@ class TestMakeStockInEntryOnTransitEntry(_StockEntryTestCase):
 			material_request="MR-1",
 			t_warehouse="WH-SRC",
 			qty=10,
+			transfer_qty=10,
 			transferred_qty=2,
+			conversion_factor=1,
 		)
 		target_row = _Row()
 
@@ -2879,6 +3350,46 @@ class TestMakeStockInEntryOnTransitEntry(_StockEntryTestCase):
 		self.assertEqual(target_row.t_warehouse, "WH-MR")
 		self.assertEqual(target_row.s_warehouse, "WH-SRC")
 		self.assertEqual(target_row.qty, 8)
+
+	def test_department_transfer_is_received_into_its_destination(self):
+		"""Its rows' Material Request Item warehouse is the request's old set_warehouse;
+		the receipt belongs in custom_destination_warehouse instead."""
+		source = _Doc(stock_entry_type="Material Transfer (DEPARTMENT)")
+		target = _Doc()
+		target.set_missing_values = MagicMock()
+		_, kwargs = self._run(source, target)
+		update_item = kwargs["map_dict"]["Stock Entry Detail"]["postprocess"]
+
+		source_parent = _Doc(
+			stock_entry_type="Material Transfer (DEPARTMENT)", name="SE-DEPT-1"
+		)
+		source_row = _Row(
+			material_request_item="MRI-1",
+			material_request="MR-1",
+			t_warehouse="WH-TRANSIT",
+			qty=3,
+			transfer_qty=3,
+			transferred_qty=0,
+			conversion_factor=1,
+		)
+		target_row = _Row()
+		reads = []
+
+		with patch.object(
+			se_events.frappe.db,
+			"get_value",
+			side_effect=_department_receipt_stub(
+				reads,
+				stock_entries={"SE-1": 1},
+				mr_item_warehouse="WH-OLD-SET",
+			),
+		):
+			update_item(source_row, target_row, source_parent)
+
+		self.assertEqual(target_row.t_warehouse, "WH-DEST")
+		self.assertEqual(target_row.s_warehouse, "WH-TRANSIT")
+		self.assertEqual(target_row.qty, 3)
+		self.assertEqual(len(reads), 1)
 
 
 # ------------------------------------------------------------- make_mr_on_return
@@ -3712,3 +4223,616 @@ class TestCreateParentBatchesPurchaseReceiptLeg(TestCreateParentBatches):
 		doc = self._pr()
 		doc.items[0].customer = None
 		self.assertEqual(self._run(doc), [])
+
+
+# ------------------------------------------- work order <-> operation link integrity
+# Synthetic names only. MWO-A and MWO-B are sibling work orders of one PMO (the split halves of
+# one piece); MWO-C belongs to another PMO. Each owns the operations named after it.
+_OWNERS = {
+	"MOP-A1": "MWO-A",
+	"MOP-A2": "MWO-A",
+	"MOP-B1": "MWO-B",
+	"MOP-C1": "MWO-C",
+}
+_MT_WO = "Material Transfer (WORK ORDER)"
+
+
+def _fake_mop_owners(owners=_OWNERS):
+	"""A ``mop_owners`` stand-in that matches names the way MariaDB does (trimmed, any case)."""
+
+	def _lookup(mops):
+		wanted = {cstr(m).strip().casefold() for m in mops or () if cstr(m).strip()}
+		return {mop: owner for mop, owner in owners.items() if mop.casefold() in wanted}
+
+	return _lookup
+
+
+def _link_entry(stock_entry_type=_MT_WO, mwo="MWO-A", mop="MOP-A1", rows=()):
+	"""A Stock Entry fake for the link rules: header refs plus ``(operation, row work order)`` rows."""
+	return _Doc(
+		doctype="Stock Entry",
+		stock_entry_type=stock_entry_type,
+		manufacturing_work_order=mwo,
+		manufacturing_operation=mop,
+		items=[
+			_Row(
+				idx=idx,
+				manufacturing_operation=row_mop,
+				custom_manufacturing_work_order=row_mwo,
+			)
+			for idx, (row_mop, row_mwo) in enumerate(rows, 1)
+		],
+	)
+
+
+class TestValidateMwoMopConsistency(_StockEntryTestCase):
+	"""Every operation on a Stock Entry belongs to the work order the entry books it to.
+
+	``mop_owners`` and the reservation gate are stubbed, so these pin the rules themselves;
+	``TestMwoMopLinkAgainstRealRows`` runs the same hook against real rows.
+	"""
+
+	def _run(self, se, reserves=False, owners=_OWNERS):
+		with (
+			patch.object(
+				se_events, "mop_owners", side_effect=_fake_mop_owners(owners)
+			) as lookup,
+			patch.object(
+				se_events, "creates_mwo_reservation", return_value=reserves
+			) as gate,
+			patch.object(mwo_mop_link, "enforcing", return_value=True),
+		):
+			se_events.validate_mwo_mop_consistency(se, method=None)
+		return lookup, gate
+
+	def _refused(self, se, reserves=False):
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			self._run(se, reserves=reserves)
+		return str(cm.exception)
+
+	def test_registered_as_a_stock_entry_validate_hook(self):
+		"""``validate``, not ``before_validate``: the header operation is filled by
+		set_manufacturing_refs and the rows rebuilt by update_batches in before_validate."""
+		path = "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_mwo_mop_consistency"
+		events = app_hooks.doc_events["Stock Entry"]
+		self.assertIn(path, events["validate"])
+		self.assertNotIn(path, events["before_validate"])
+
+	def test_consistent_entry_passes_with_one_query(self):
+		se = _link_entry(rows=[("MOP-A1", "MWO-A"), ("MOP-A2", None)])
+		lookup, _gate = self._run(se, reserves=True)
+		lookup.assert_called_once()
+		self.assertEqual(set(lookup.call_args[0][0]), {"MOP-A1", "MOP-A2"})
+
+	def test_stale_header_operation_of_another_work_order_is_refused(self):
+		"""A manual entry that kept the header operation of an adjacent work order: the header
+		pairs work order A with an operation of C while every row is A's own."""
+		message = self._refused(
+			_link_entry(mwo="MWO-A", mop="MOP-C1", rows=[("MOP-A1", None)])
+		)
+		for name in ("MOP-C1", "MWO-C", "MWO-A"):
+			self.assertIn(name, message)
+
+	def test_row_operation_of_a_sibling_is_refused(self):
+		"""The injection-entry regression: a row stamped with work order A carries B's operation."""
+		message = self._refused(
+			_link_entry(rows=[("MOP-A1", "MWO-A"), ("MOP-B1", "MWO-A")])
+		)
+		self.assertIn(mwo_mop_link.row_problem(2, "MOP-B1", "MWO-B", "MWO-A"), message)
+
+	def test_row_without_its_own_work_order_is_checked_against_the_header(self):
+		message = self._refused(_link_entry(rows=[("MOP-B1", None)]))
+		self.assertIn(mwo_mop_link.row_problem(1, "MOP-B1", "MWO-B", "MWO-A"), message)
+
+	def test_reserving_entry_refuses_a_row_of_another_work_order(self):
+		"""The row agrees with its own work order, but the entry reserves every row under the
+		header's -- a reservation Make Receive Entry would later hand to the wrong work order."""
+		se = _link_entry(rows=[("MOP-A1", None), ("MOP-B1", "MWO-B")])
+		message = self._refused(se, reserves=True)
+		self.assertIn(mwo_mop_link.row_problem(2, "MOP-B1", "MWO-B", "MWO-A"), message)
+		self.assertIn("reserves its stock", message)
+
+	def test_same_rows_pass_when_the_entry_does_not_reserve(self):
+		"""Without a reservation the header does not key the rows: each keeps its own work order."""
+		self._run(
+			_link_entry(rows=[("MOP-A1", None), ("MOP-B1", "MWO-B")]), reserves=False
+		)
+
+	def test_department_transfer_with_rows_of_many_work_orders_passes(self):
+		"""The EOD consolidated transfer: no header work order, every row stamped with its own."""
+		se = _link_entry(
+			stock_entry_type="Material Transfer to Department",
+			mwo=None,
+			mop=None,
+			rows=[("MOP-A1", "MWO-A"), ("MOP-B1", "MWO-B"), ("MOP-C1", "MWO-C")],
+		)
+		self._run(se)
+
+	def test_non_reserving_type_with_only_a_header_work_order_passes(self):
+		"""A Manufacture entry carries its work order on the header only; rows fall back to it."""
+		se = _link_entry(
+			stock_entry_type="Manufacture", rows=[("MOP-A1", None), ("MOP-A2", "")]
+		)
+		self._run(se)
+
+	def test_process_loss_with_rows_of_many_work_orders_passes(self):
+		"""One Process Loss entry books every loss row of a receive; its header work order is only
+		the first row's. Rows are compared with their own work order, never with the header, and the
+		reservation rule is not even consulted."""
+		se = _link_entry(
+			stock_entry_type="Process Loss",
+			rows=[
+				("MOP-A1", "MWO-A"),
+				("MOP-A1", "MWO-A"),
+				("MOP-B1", "MWO-B"),
+				("MOP-B1", "MWO-B"),
+				("MOP-C1", None),
+			],
+		)
+		_lookup, gate = self._run(se, reserves=True)
+		gate.assert_not_called()
+
+	def test_process_loss_row_still_matches_its_own_work_order(self):
+		message = self._refused(
+			_link_entry(stock_entry_type="Process Loss", rows=[("MOP-B1", "MWO-A")])
+		)
+		self.assertIn(mwo_mop_link.row_problem(1, "MOP-B1", "MWO-B", "MWO-A"), message)
+
+	def test_missing_operation_is_refused_only_on_a_reserving_entry(self):
+		"""Stock Entry Detail.manufacturing_operation is Small Text on production, so nothing else
+		checks the name. Only a reserving entry depends on it, so only there is it refused."""
+		se = _link_entry(rows=[("MOP-GONE", "MWO-A")])
+		self._run(se, reserves=False)
+		message = self._refused(se, reserves=True)
+		self.assertIn(mwo_mop_link.no_owner_problem("MOP-GONE", False, idx=1), message)
+
+	def test_operation_without_a_work_order_is_named_as_such_on_a_reserving_entry(self):
+		"""An operation that exists but was saved without a work order is not a wrong name: the
+		message says so, instead of claiming it does not exist."""
+		owners = {**_OWNERS, "MOP-BARE": None}
+		se = _link_entry(rows=[("MOP-A1", None), ("MOP-BARE", "MWO-A")])
+		self._run(se, reserves=False, owners=owners)
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			self._run(se, reserves=True, owners=owners)
+		message = str(cm.exception)
+		self.assertIn(mwo_mop_link.no_owner_problem("MOP-BARE", True, idx=2), message)
+		self.assertNotIn("does not exist", message)
+
+	def test_names_match_case_insensitively(self):
+		se = _link_entry(mwo="mwo-a", mop="mop-a1 ", rows=[(" mop-a2", "Mwo-A")])
+		self._run(se, reserves=True)
+
+	def test_entry_without_operations_runs_no_query(self):
+		se = _link_entry(
+			stock_entry_type="Material Receipt",
+			mwo=None,
+			mop=None,
+			rows=[(None, None), ("", None)],
+		)
+		lookup, gate = self._run(se)
+		lookup.assert_not_called()
+		gate.assert_not_called()
+
+	def test_header_work_order_alone_runs_no_query(self):
+		lookup, _gate = self._run(_link_entry(mop=None, rows=[(None, None)]))
+		lookup.assert_not_called()
+
+	def test_warn_mode_logs_and_lets_the_entry_through(self):
+		"""``"mwo_mop_link_guard": "warn"`` in site_config: an Error Log and an orange message."""
+		se = _link_entry(rows=[("MOP-B1", "MWO-A")])
+		with (
+			patch.dict(frappe.local.conf, {mwo_mop_link.GUARD_KEY: "warn"}),
+			patch.object(se_events, "mop_owners", side_effect=_fake_mop_owners()),
+			patch.object(se_events, "creates_mwo_reservation", return_value=False),
+			patch.object(mwo_mop_link.frappe, "log_error") as log_error,
+			patch.object(mwo_mop_link.frappe, "msgprint") as msgprint,
+		):
+			se_events.validate_mwo_mop_consistency(se)
+		log_error.assert_called_once()
+		self.assertEqual(log_error.call_args.kwargs["reference_doctype"], "Stock Entry")
+		self.assertIn(
+			mwo_mop_link.row_problem(1, "MOP-B1", "MWO-B", "MWO-A"),
+			log_error.call_args.kwargs["message"],
+		)
+		msgprint.assert_called_once()
+
+	def test_current_operation_guard_warn_relaxes_this_check_too(self):
+		"""kggk_uat: one switch relaxes every work-order / operation check, so the
+		current-operation guard's ``warn`` lets a mismatched entry through as well."""
+		se = _link_entry(rows=[("MOP-B1", "MWO-A")])
+		with (
+			patch.dict(
+				frappe.local.conf,
+				{
+					mwo_mop_link.GUARD_KEY: None,
+					mwo_mop_link.CURRENT_OPERATION_GUARD_KEY: "warn",
+				},
+			),
+			patch.object(se_events, "mop_owners", side_effect=_fake_mop_owners()),
+			patch.object(se_events, "creates_mwo_reservation", return_value=False),
+			patch.object(mwo_mop_link.frappe, "log_error") as log_error,
+			patch.object(mwo_mop_link.frappe, "msgprint"),
+		):
+			se_events.validate_mwo_mop_consistency(se)
+		log_error.assert_called_once()
+
+
+class TestCreatesMwoReservation(_StockEntryTestCase):
+	"""The one gate onsubmit and validate_mwo_mop_consistency share."""
+
+	def _run(self, se, configured=(), pc=None):
+		with (
+			patch.object(se_events.frappe.db, "get_value", return_value=pc),
+			patch.object(
+				se_events.frappe.db, "get_all", return_value=list(configured)
+			) as get_all,
+		):
+			return se_events.creates_mwo_reservation(se), get_all
+
+	def test_configured_type_reserves(self):
+		se = _Doc(stock_entry_type=_MT_WO, product_certification=None)
+		self.assertTrue(self._run(se, configured=[_MT_WO])[0])
+
+	def test_unconfigured_type_does_not(self):
+		se = _Doc(stock_entry_type="Process Loss", product_certification=None)
+		self.assertFalse(self._run(se, configured=[_MT_WO])[0])
+
+	def test_repack_reserves_only_with_both_manufacturing_refs(self):
+		def repack(mwo):
+			return _Doc(
+				stock_entry_type="Repack",
+				product_certification=None,
+				manufacturing_order="PMO-1",
+				manufacturing_work_order=mwo,
+			)
+
+		self.assertFalse(self._run(repack(None), configured=["Repack"])[0])
+		self.assertTrue(self._run(repack("MWO-A"), configured=["Repack"])[0])
+
+	def test_certification_receive_never_reserves(self):
+		se = _Doc(stock_entry_type=_MT_WO, product_certification="PC-1")
+		reserves, get_all = self._run(
+			se,
+			configured=[_MT_WO],
+			pc=frappe._dict(type="Receive", service_type="XRF Services"),
+		)
+		self.assertFalse(reserves)
+		get_all.assert_not_called()
+
+
+class TestInjectionEntriesFollowTheOperationOwner(_StockEntryTestCase):
+	"""Employee IR injection entries are booked to the work order that OWNS the row's operation.
+
+	The builders used to copy ``row.manufacturing_work_order`` onto the header, its PMO and every
+	row; a row pairing an operation with a sibling's work order therefore produced an entry -- and on
+	submit a reservation and MOP Log stamps -- keyed to the sibling.
+	"""
+
+	PMO_OF = {"MWO-A": "PMO-1", "MWO-B": "PMO-1", "MWO-C": "PMO-2"}
+
+	@staticmethod
+	def _eir(**extra):
+		return frappe._dict(
+			name="EIR-TEST-1",
+			doctype="Employee IR",
+			company="Test Co",
+			department="Test Dept",
+			subcontracting="No",
+			subcontractor=None,
+			employee="EMP-TEST-1",
+			flags=frappe._dict(),
+			**extra,
+		)
+
+	@staticmethod
+	def _row(mop="MOP-A1", mwo="MWO-A", **extra):
+		return frappe._dict(
+			name="eir-row-1",
+			idx=2,
+			manufacturing_operation=mop,
+			manufacturing_work_order=mwo,
+			tree_number=None,
+			**extra,
+		)
+
+	def _patched(self, stack, owner, enforce=True):
+		self.entries = []
+
+		def _new_doc(doctype):
+			se = MagicMock()
+			se.items = []
+			se.append.side_effect = lambda _table, payload: se.items.append(payload)
+			self.entries.append(se)
+			return se
+
+		def _cached(doctype, name, field=None, *args, **kwargs):
+			# The PMO of the work order the header is stamped with; anything else (the
+			# tree_number provenance read) has no value here.
+			if doctype == "Manufacturing Work Order" and field == "manufacturing_order":
+				return self.PMO_OF.get(name)
+			return None
+
+		lookup = stack.enter_context(patch.object(msi, "owner_of", return_value=owner))
+		stack.enter_context(patch.object(msi.frappe, "new_doc", side_effect=_new_doc))
+		stack.enter_context(
+			patch.object(msi.frappe, "get_cached_value", side_effect=_cached)
+		)
+		stack.enter_context(
+			patch.object(mwo_mop_link, "enforcing", return_value=enforce)
+		)
+		return lookup
+
+	@staticmethod
+	def _transfer(eir, row):
+		msi._build_material_transfer_from_segments(
+			eir, row, [{"item_code": "M-ALLOY", "qty": 1.0}], "WH-MSL", "WH-DEPT"
+		)
+
+	@staticmethod
+	def _repack(eir, row):
+		msi._build_repack_from_purity_segments(
+			eir,
+			row,
+			[
+				{
+					"source_item": "M-PURE",
+					"target_item": "M-ALLOY",
+					"consume_qty": 0.9,
+					"produce_qty": 1.0,
+				}
+			],
+			"WH-MSL",
+			"WH-DEPT",
+		)
+
+	def test_consistent_row_books_its_own_work_order(self):
+		with ExitStack() as stack:
+			self._patched(stack, owner="MWO-A")
+			self._transfer(self._eir(), self._row())
+		[se] = self.entries
+		self.assertEqual(se.manufacturing_work_order, "MWO-A")
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+		self.assertEqual(se.manufacturing_operation, "MOP-A1")
+		self.assertEqual(se.items[0]["custom_manufacturing_work_order"], "MWO-A")
+		self.assertEqual(se.items[0]["manufacturing_operation"], "MOP-A1")
+
+	def test_row_paired_with_a_sibling_work_order_is_refused(self):
+		"""Refused before any entry is built: nothing is left half-stamped."""
+		with ExitStack() as stack, self.assertRaises(MWOMOPLinkError) as cm:
+			self._patched(stack, owner="MWO-B")
+			self._transfer(self._eir(), self._row(mop="MOP-B1", mwo="MWO-A"))
+		self.assertIn(
+			mwo_mop_link.row_problem(2, "MOP-B1", "MWO-B", "MWO-A"), str(cm.exception)
+		)
+		self.assertEqual(self.entries, [])
+
+	def test_warn_mode_books_the_owner_and_logs_once_per_row(self):
+		"""Two entries for one row (a transfer and a purity repack): both carry the owner and the
+		owner's PMO on the header and on every operation row, from ONE lookup and ONE log."""
+		eir = self._eir()
+		row = self._row(mop="MOP-C1", mwo="MWO-A")
+		with ExitStack() as stack:
+			lookup = self._patched(stack, owner="MWO-C", enforce=False)
+			log_error = stack.enter_context(
+				patch.object(mwo_mop_link.frappe, "log_error")
+			)
+			stack.enter_context(patch.object(mwo_mop_link.frappe, "msgprint"))
+			self._transfer(eir, row)
+			self._repack(eir, row)
+
+		transfer, repack = self.entries
+		for se in (transfer, repack):
+			self.assertEqual(se.manufacturing_work_order, "MWO-C")
+			self.assertEqual(se.manufacturing_order, "PMO-2")
+		self.assertEqual(transfer.items[0]["custom_manufacturing_work_order"], "MWO-C")
+		consume, produce = repack.items
+		self.assertNotIn("custom_manufacturing_work_order", consume)
+		self.assertEqual(produce["custom_manufacturing_work_order"], "MWO-C")
+		lookup.assert_called_once_with("MOP-C1")
+		log_error.assert_called_once()
+		self.assertEqual(log_error.call_args.kwargs["reference_name"], "EIR-TEST-1")
+
+	def test_unresolvable_operation_keeps_the_row_work_order(self):
+		with ExitStack() as stack:
+			self._patched(stack, owner=None)
+			self._transfer(self._eir(), self._row(mop="MOP-GONE"))
+		[se] = self.entries
+		self.assertEqual(se.manufacturing_work_order, "MWO-A")
+		self.assertEqual(se.items[0]["custom_manufacturing_work_order"], "MWO-A")
+
+	def test_injected_metal_is_resolved_from_the_owner(self):
+		"""The metal item comes from the work order's attributes: the owner's, on both paths."""
+		row = self._row(mop="MOP-C1", mwo="MWO-A", gross_wt=1.0, received_gross_wt=1.5)
+		for main_slip in ("MS-TEST-1", None):
+			eir = self._eir(is_raw_material=1, main_slip=main_slip)
+			with ExitStack() as stack:
+				self._patched(stack, owner="MWO-C", enforce=False)
+				stack.enter_context(patch.object(mwo_mop_link.frappe, "log_error"))
+				stack.enter_context(patch.object(mwo_mop_link.frappe, "msgprint"))
+				stack.enter_context(
+					patch.object(
+						msi, "_resolve_department_warehouse", return_value="WH"
+					)
+				)
+				stack.enter_context(
+					patch.object(msi, "_existing_injection_se", return_value=False)
+				)
+				stack.enter_context(
+					patch.object(
+						msi, "_existing_injection_se_types", return_value=set()
+					)
+				)
+				stack.enter_context(
+					patch.object(msi, "_inject_via_main_slip_batches", return_value=[])
+				)
+				stack.enter_context(
+					patch.object(msi, "_transfer_extra_rows_only", return_value=[])
+				)
+				resolve_items = stack.enter_context(
+					patch.object(msi, "_resolve_inject_metal_items", return_value=[])
+				)
+				resolve_segments = stack.enter_context(
+					patch.object(
+						msi, "_resolve_fallback_inject_segments", return_value=[]
+					)
+				)
+				msi.inject_extra_metal_for_eir_receive(eir, row)
+			if main_slip:
+				resolve_items.assert_called_once_with("MWO-C", 0.5)
+			else:
+				resolve_segments.assert_called_once_with(eir, "MWO-C", 0.5, "WH")
+
+
+class TestMwoMopLinkAgainstRealRows(IntegrationTestCase):
+	"""The link rules against REAL Manufacturing Work Order / Operation rows.
+
+	The classes above stub ``mop_owners`` / ``owner_of``; these run the real queries. Rows are
+	written with ``db_insert`` (no hooks, no masters) under a per-test prefix, and nothing is saved
+	through a controller: the hook runs on an unsaved Stock Entry. ``frappe.db.commit`` is stubbed so
+	the harness rollback, plus the explicit delete, leaves nothing behind on a shared site.
+	"""
+
+	def setUp(self):
+		super().setUp()
+		self.created = []
+		for patcher in (
+			patch.object(frappe.db, "commit", lambda *a, **k: None),
+			# Inventory workflow: the MOP Settings tests run first and can leave a real EOD lock
+			# behind; nothing here saves a guarded document, but nothing may trip over it either.
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.is_eod_sync_locked",
+				return_value=False,
+			),
+			patch.object(mwo_mop_link, "enforcing", return_value=True),
+		):
+			patcher.start()
+			self.addCleanup(patcher.stop)
+		self.addCleanup(self._delete_created)
+
+		self.prefix = f"_TEST-MWOMOP-{frappe.generate_hash(length=6).upper()}"
+		self.pmo = f"{self.prefix}-PMO"
+		# Two sibling work orders of one piece, each submitted and pointing at its own operation.
+		self.mwo_a, self.mop_a = f"{self.prefix}-MWO-A", f"{self.prefix}-MOP-A"
+		self.mwo_b, self.mop_b = f"{self.prefix}-MWO-B", f"{self.prefix}-MOP-B"
+		self._work_order(self.mwo_a, pointer=self.mop_a)
+		self._work_order(self.mwo_b, pointer=self.mop_b)
+		self._operation(self.mop_a, self.mwo_a)
+		self._operation(self.mop_b, self.mwo_b)
+
+	def _insert(self, doctype, values):
+		frappe.get_doc({"doctype": doctype, **values}).db_insert()
+		self.created.append((doctype, values["name"]))
+
+	def _work_order(self, name, pointer=None, docstatus=1):
+		self._insert(
+			"Manufacturing Work Order",
+			{
+				"name": name,
+				"docstatus": docstatus,
+				"status": "Not Started" if docstatus == 1 else "Draft",
+				"manufacturing_order": self.pmo,
+				"manufacturing_operation": pointer,
+				"qty": 1,
+			},
+		)
+
+	def _operation(self, name, mwo):
+		self._insert(
+			"Manufacturing Operation",
+			{
+				"name": name,
+				"manufacturing_work_order": mwo,
+				"status": "Not Started",
+				"type": "Manufacturing Work Order",
+				"qty": 1,
+			},
+		)
+
+	def _delete_created(self):
+		for doctype, name in reversed(self.created):
+			frappe.db.delete(doctype, {"name": name})
+
+	def _entry(self, stock_entry_type=_MT_WO, mwo=None, mop=None, rows=()):
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = stock_entry_type
+		se.manufacturing_work_order = mwo
+		se.manufacturing_operation = mop
+		for row_mop, row_mwo in rows:
+			se.append(
+				"items",
+				{
+					"item_code": f"{self.prefix}-ITEM",
+					"qty": 1,
+					"manufacturing_operation": row_mop,
+					"custom_manufacturing_work_order": row_mwo,
+				},
+			)
+		return se
+
+	def _validate(self, se, reserves=False):
+		with patch.object(se_events, "creates_mwo_reservation", return_value=reserves):
+			se_events.validate_mwo_mop_consistency(se)
+
+	def test_consistent_entry_passes(self):
+		se = self._entry(
+			mwo=self.mwo_a,
+			mop=self.mop_a,
+			rows=[(self.mop_a, self.mwo_a), (self.mop_a, None)],
+		)
+		self._validate(se, reserves=True)
+
+	def test_header_operation_of_a_sibling_is_refused(self):
+		se = self._entry(
+			mwo=self.mwo_a, mop=self.mop_b, rows=[(self.mop_a, self.mwo_a)]
+		)
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			self._validate(se)
+		self.assertIn(self.mop_b, str(cm.exception))
+		self.assertIn(self.mwo_b, str(cm.exception))
+
+	def test_reserving_entry_refuses_a_sibling_row_and_a_missing_operation(self):
+		missing = f"{self.prefix}-MOP-GONE"
+		se = self._entry(
+			mwo=self.mwo_a,
+			mop=self.mop_a,
+			rows=[(self.mop_a, None), (self.mop_b, self.mwo_b), (missing, self.mwo_a)],
+		)
+		with self.assertRaises(MWOMOPLinkError) as cm:
+			self._validate(se, reserves=True)
+		message = str(cm.exception)
+		self.assertIn(
+			mwo_mop_link.row_problem(2, self.mop_b, self.mwo_b, self.mwo_a), message
+		)
+		self.assertIn(missing, message)
+
+	def test_process_loss_rows_of_both_siblings_pass(self):
+		se = self._entry(
+			stock_entry_type="Process Loss",
+			mwo=self.mwo_a,
+			mop=self.mop_a,
+			rows=[
+				(self.mop_a, self.mwo_a),
+				(self.mop_b, self.mwo_b),
+				(self.mop_b, None),
+			],
+		)
+		se_events.validate_mwo_mop_consistency(se)
+
+	def test_set_manufacturing_refs_copies_only_an_own_submitted_pointer(self):
+		stale = f"{self.prefix}-MWO-STALE"  # submitted, left pointing at a sibling's operation
+		child = f"{self.prefix}-MWO-A-CHILD"  # draft split child, still on its parent's pointer
+		self._work_order(stale, pointer=self.mop_b)
+		self._work_order(child, pointer=self.mop_a, docstatus=0)
+
+		def refs(mwo):
+			se = _Doc(
+				manufacturing_work_order=mwo,
+				manufacturing_order=None,
+				manufacturing_operation=None,
+			)
+			cse_mod.set_manufacturing_refs(se)
+			return se.manufacturing_order, se.manufacturing_operation
+
+		self.assertEqual(refs(self.mwo_a), (self.pmo, self.mop_a))
+		self.assertEqual(refs(stale), (self.pmo, None))
+		self.assertEqual(refs(child), (self.pmo, None))

@@ -35,6 +35,47 @@ def _linked_sales_order(self):
 	return None
 
 
+def _cached_get_value(cache, doctype, filters, fieldname=None, **kwargs):
+	"""``frappe.db.get_value`` memoised in ``cache`` for the duration of one save.
+
+	Only used for masters a Sales Invoice save never writes (Customer, Item, E Invoice Item),
+	so a repeated lookup returns exactly what a fresh query would. ``cache=None`` queries
+	every time, as before.
+	"""
+	if cache is None:
+		return frappe.db.get_value(doctype, filters, fieldname, **kwargs)
+	key = (
+		"get_value",
+		doctype,
+		repr(filters),
+		repr(fieldname),
+		repr(sorted(kwargs.items())),
+	)
+	if key not in cache:
+		cache[key] = frappe.db.get_value(doctype, filters, fieldname, **kwargs)
+	return cache[key]
+
+
+def _cached_get_doc(cache, doctype, name):
+	"""``frappe.get_doc`` memoised in ``cache`` for one save; for documents only read here."""
+	if cache is None:
+		return frappe.get_doc(doctype, name)
+	key = ("get_doc", doctype, name)
+	if key not in cache:
+		cache[key] = frappe.get_doc(doctype, name)
+	return cache[key]
+
+
+def _cached_run(cache, query):
+	"""Run a query-builder query, memoised by its SQL for one save (read-only masters)."""
+	if cache is None:
+		return query.run(as_dict=True)
+	key = ("run", str(query))
+	if key not in cache:
+		cache[key] = query.run(as_dict=True)
+	return cache[key]
+
+
 def before_validate(self, method):
 	if self.is_return:
 		for row in self.get("invoice_item") or []:
@@ -45,14 +86,10 @@ def before_validate(self, method):
 			if flt(row.base_amount) > 0:
 				row.base_amount = -1 * flt(row.base_amount)
 		return
-	if self.sales_type == "Hybrid":
-		has_real_items = any(
-			row.item_code != "Subcontracting Charges" for row in self.items
-		)
-		if has_real_items:
-			self.items = [
-				row for row in self.items if row.item_code != "Subcontracting Charges"
-			]
+	# A Hybrid invoice keeps the "Subcontracting Charges" row it was mapped with (from the
+	# Sales Order or the Delivery Note). on_submit() only builds the separate outwork
+	# invoice when that row is missing, so stripping it here used to split every Hybrid
+	# invoice in two.
 	if self.sales_type != "Certification":
 		sales_order = _linked_sales_order(self)
 		if sales_order and _so_gold_rate_changed(self.gold_rate, sales_order):
@@ -450,13 +487,15 @@ def on_submit(self, method):
 			{"status": "Active", "warehouse": "Product Allocation FG - KGJPL"},
 		)
 		return
-	if self.sales_type == "Hybrid":
+	# An invoice that already carries its "Subcontracting Charges" row needs no separate
+	# outwork invoice, but must still reach the hallmarking / certification block below.
+	if self.sales_type == "Hybrid" and not any(
+		row.item_code == "Subcontracting Charges" for row in self.items
+	):
 		# _template = SALES_TYPE_ITEM_TAX_TEMPLATE["Outwork"].get(self.company)
 
 		total_making_charge = 0
 		for row in self.items:
-			if row.item_code == "Subcontracting Charges":
-				return
 			# frappe.msgprint(f"Row: {row.idx}, Item: {row.item_code}, BOM: {row.bom}")
 			bom_doc = frappe.get_doc("BOM", row.bom)
 			total_making_charge += bom_doc.making_charge
@@ -706,11 +745,50 @@ def set_gst_details(self):
 				"cost_center": t.cost_center,
 			},
 		)
+	# A Hybrid invoice keeps its "Subcontracting Charges" row next to the real rows. That row
+	# is the customer-supplied (job-work) part, so it takes the Outwork (5%) template while
+	# the real rows keep the Outright (3%) one chosen above.
+	outwork_template = outwork_rates = None
+	if self.sales_type == "Hybrid" and template_key == "Outright":
+		outwork_template = item_template_map["Outwork"].get(self.company)
+		if outwork_template:
+			outwork_rates = {"cgst": 0.0, "sgst": 0.0, "igst": 0.0}
+			for r in frappe.get_all(
+				"Item Tax Template Detail",
+				filters={"parent": outwork_template},
+				fields=["tax_type", "tax_rate"],
+			):
+				tax_type = r.tax_type or ""
+				# The 5% template also lists "... Refund" / RCM lines with negative rates.
+				if (
+					"Output" not in tax_type
+					or "RCM" in tax_type
+					or "Refund" in tax_type
+				):
+					continue
+				for key in ("CGST", "SGST", "IGST"):
+					if key in tax_type:
+						outwork_rates[key.lower()] = flt(r.tax_rate)
+
 	for item in self.items:
 		if not item.item_code:
 			continue
 
-		item.item_tax_template = item_tax_template
+		row_template, row_cgst, row_sgst, row_igst = (
+			item_tax_template,
+			cgst_rate,
+			sgst_rate,
+			igst_rate,
+		)
+		if outwork_rates and item.item_code == "Subcontracting Charges":
+			row_template = outwork_template
+			row_cgst, row_sgst, row_igst = (
+				outwork_rates["cgst"],
+				outwork_rates["sgst"],
+				outwork_rates["igst"],
+			)
+
+		item.item_tax_template = row_template
 		item.gst_treatment = "Taxable"
 		item.cgst_rate = 0.0
 		item.sgst_rate = 0.0
@@ -719,15 +797,21 @@ def set_gst_details(self):
 		item.sgst_amount = 0.0
 		item.igst_amount = 0.0
 
-		taxable_value = self.total
+		# A Hybrid invoice has several rows at different rates, so each row's GST amount
+		# is taken on that row's own value, not on the invoice total.
+		taxable_value = (
+			flt(item.get("net_amount")) or flt(item.get("amount"))
+			if self.sales_type == "Hybrid"
+			else self.total
+		)
 		if self.tax_category == "In-State":
-			item.cgst_rate = cgst_rate
-			item.sgst_rate = sgst_rate
-			item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
-			item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
+			item.cgst_rate = row_cgst
+			item.sgst_rate = row_sgst
+			item.cgst_amount = flt(taxable_value * row_cgst / 100, 2)
+			item.sgst_amount = flt(taxable_value * row_sgst / 100, 2)
 		else:
-			item.igst_rate = igst_rate
-			item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
+			item.igst_rate = row_igst
+			item.igst_amount = flt(taxable_value * row_igst / 100, 2)
 
 
 @frappe.whitelist()
@@ -1039,6 +1123,9 @@ def update_si_data(self):
 		"Customer", self.customer, "custom_separate_hallmarking_invoice"
 	)
 	allowed_item_types = get_allowed_item_types(self.customer, self.sales_type)
+	# Read-only lookups repeated for every row (E Invoice Items, Customer, Item, Sales Order,
+	# Making Charge Price) are memoised here for this one pass.
+	cache = {}
 	for row in self.items:
 		if row.bom and not self.item_same_as_above:
 			exchange_rate = 1
@@ -1049,14 +1136,35 @@ def update_si_data(self):
 				)
 			gold_rate_changed = True
 			update_bom_details(
-				self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed
+				self,
+				row,
+				bom_doc,
+				is_branch_customer,
+				invoice_data,
+				gold_rate_changed,
+				cache=cache,
 			)
 			if bom_doc.hallmarking_amount:
-				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item",
-					{"is_for_hallmarking": 1},
-					["name", "hsn_code", "uom"],
-				)
+				# Pick the hallmarking item allowed by the customer's Payment
+				# Terms, else update_einvoice_items drops it (allowed_item_types).
+				custom_item = hsn_code = uom = None
+				if allowed_item_types:
+					custom_item, hsn_code, uom = _cached_get_value(
+						cache,
+						"E Invoice Item",
+						{
+							"is_for_hallmarking": 1,
+							"name": ["in", list(allowed_item_types)],
+						},
+						["name", "hsn_code", "uom"],
+					) or (None, None, None)
+				if not custom_item:
+					custom_item, hsn_code, uom = _cached_get_value(
+						cache,
+						"E Invoice Item",
+						{"is_for_hallmarking": 1},
+						["name", "hsn_code", "uom"],
+					) or (None, None, None)
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
 					invoice_data[custom_item]["amount"] += bom_doc.hallmarking_amount
@@ -1076,7 +1184,8 @@ def update_si_data(self):
 					}
 
 			if bom_doc.certification_amount and not separate_hallmarking_invoice:
-				custom_item, hsn_code, uom = frappe.db.get_value(
+				custom_item, hsn_code, uom = _cached_get_value(
+					cache,
 					"E Invoice Item",
 					{"is_for_certification": 1},
 					["name", "hsn_code", "uom"],
@@ -1100,11 +1209,14 @@ def update_si_data(self):
 					}
 
 			update_einvoice_items(
-				self, invoice_data, payment_terms_data, allowed_item_types
+				self, invoice_data, payment_terms_data, allowed_item_types, cache=cache
 			)
 			if row.get("custom_freight_amount"):
-				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item", {"is_for_freight": 1}, ["name", "hsn_code", "uom"]
+				custom_item, hsn_code, uom = _cached_get_value(
+					cache,
+					"E Invoice Item",
+					{"is_for_freight": 1},
+					["name", "hsn_code", "uom"],
 				)
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
@@ -1197,37 +1309,122 @@ def update_si_data(self):
 					3,
 				)
 				row.amount = row.qty * row.rate
+	_add_hybrid_outwork_einvoice_line(self, payment_terms_data, cache)
 	return payment_terms_data
 
 
-def update_einvoice_items(self, invoice_data, payment_terms_data, allowed_item_types):
+def _add_hybrid_outwork_einvoice_line(self, payment_terms_data, cache=None):
+	"""Hybrid: the labour e-invoice line for the "Subcontracting Charges" row.
+
+	update_bom_details() leaves the making / labour line out of a Hybrid invoice on purpose
+	(the job-work value lives on the "Subcontracting Charges" row), and on_submit() used to
+	add it on the separate outwork invoice. That invoice is no longer split off, so the
+	line is added here, to the same invoice that carries the row.
+	"""
+	if self.sales_type != "Hybrid" or self.get("item_same_as_above"):
+		return
+	outwork_rows = [
+		row for row in self.items if row.item_code == "Subcontracting Charges"
+	]
+	outwork_amount = sum(flt(row.amount) for row in outwork_rows)
+	if not outwork_amount:
+		return
+	# A return mirrors the invoice: same line, negative qty and amount.
+	sign = -1 if self.is_return else 1
+	outwork_amount = sign * abs(outwork_amount)
+	metal_touch = next(
+		(
+			_cached_get_value(cache, "BOM", row.bom, "metal_touch")
+			for row in self.items
+			if row.item_code != "Subcontracting Charges" and row.bom
+		),
+		None,
+	)
+	if not metal_touch:
+		return
+	custom_item, hsn_code, uom = _cached_get_value(
+		cache,
+		"E Invoice Item",
+		{"is_for_labour": 1, "metal_purity": metal_touch},
+		["name", "hsn_code", "uom"],
+	) or (None, None, None)
+	if not custom_item or any(
+		line.item_code == custom_item for line in self.get("invoice_item") or []
+	):
+		return
+	self.append(
+		"invoice_item",
+		{
+			"item_code": custom_item,
+			"item_name": custom_item,
+			"uom": uom or "Nos",
+			"gst_hsn_code": hsn_code,
+			"conversion_factor": 1,
+			"qty": sign,
+			"rate": abs(outwork_amount),
+			"base_rate": abs(outwork_amount),
+			"amount": outwork_amount,
+			"base_amount": outwork_amount,
+			"income_account": outwork_rows[0].income_account,
+			"cost_center": outwork_rows[0].cost_center,
+		},
+	)
+	payment_terms_data[custom_item] = payment_terms_data.get(custom_item, 0) + abs(
+		outwork_amount
+	)
+
+
+_EINVOICE_ITEM_FLAG_FIELDS = [
+	"is_for_diamond",
+	"is_for_metal",
+	"is_for_finding",
+	"is_for_gemstone",
+	"is_for_making",
+	"is_for_finding_making",
+	"is_for_hallmarking",
+	"is_for_labour",
+	"is_for_repair",
+	"is_for_certification",
+]
+
+
+def _get_einvoice_item_flags(item_names, cache=None):
+	"""The sort flags of ``item_names``. With a per-save ``cache`` only names not fetched yet
+	are queried (update_einvoice_items runs once per row with a growing name list)."""
+	if cache is None:
+		return frappe.get_all(
+			"E Invoice Item",
+			filters={"name": ["in", item_names]},
+			fields=["name", *_EINVOICE_ITEM_FLAG_FIELDS],
+		)
+	known = cache.setdefault("einvoice_item_flags", {})
+	missing = [name for name in item_names if name not in known]
+	if missing:
+		for name in missing:
+			known[name] = None
+		for row in frappe.get_all(
+			"E Invoice Item",
+			filters={"name": ["in", missing]},
+			fields=["name", *_EINVOICE_ITEM_FLAG_FIELDS],
+		):
+			known[row.name] = row
+	return [known[name] for name in dict.fromkeys(item_names) if known.get(name)]
+
+
+def update_einvoice_items(
+	self, invoice_data, payment_terms_data, allowed_item_types, cache=None
+):
 	if not self.get("invoice_item"):
 		self.invoice_item = []
 	else:
 		self.set("invoice_item", [])
-	precision = frappe.db.get_value(
-		"Customer", self.customer, "custom_precision_variable"
+	precision = _cached_get_value(
+		cache, "Customer", self.customer, "custom_precision_variable"
 	)
 
 	if invoice_data:
 		item_names = list(invoice_data.keys())
-		item_flags = frappe.get_all(
-			"E Invoice Item",
-			filters={"name": ["in", item_names]},
-			fields=[
-				"name",
-				"is_for_diamond",
-				"is_for_metal",
-				"is_for_finding",
-				"is_for_gemstone",
-				"is_for_making",
-				"is_for_finding_making",
-				"is_for_hallmarking",
-				"is_for_labour",
-				"is_for_repair",
-				"is_for_certification",
-			],
-		)
+		item_flags = _get_einvoice_item_flags(item_names, cache)
 
 		sort_weights = {}
 		for item in item_flags:
@@ -1292,17 +1489,23 @@ def update_einvoice_items(self, invoice_data, payment_terms_data, allowed_item_t
 
 
 def update_bom_details(
-	self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed=True
+	self,
+	row,
+	bom_doc,
+	is_branch_customer,
+	invoice_data,
+	gold_rate_changed=True,
+	cache=None,
 ):
 	bom_doc.customer = self.customer
-	precision = frappe.db.get_value(
-		"Customer", self.customer, "custom_precision_variable"
+	precision = _cached_get_value(
+		cache, "Customer", self.customer, "custom_precision_variable"
 	)
 	# so_doc = frappe.get_doc("Sales Order", row.sales_order)
 	so_item_map = {}
 
 	if not self.is_return and row.sales_order:
-		so_doc = frappe.get_doc("Sales Order", row.sales_order)
+		so_doc = _cached_get_doc(cache, "Sales Order", row.sales_order)
 		for item in so_doc.custom_invoice_item:
 			so_item_map[item.item_code] = item
 
@@ -1346,8 +1549,9 @@ def update_bom_details(
 			}
 
 	for i in bom_doc.metal_detail:
-		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-		einvoice_item, hsn_code, uom = frappe.db.get_value(
+		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst, cache=cache)
+		einvoice_item, hsn_code, uom = _cached_get_value(
+			cache,
 			"E Invoice Item",
 			{
 				"is_for_metal": 1,
@@ -1366,7 +1570,8 @@ def update_bom_details(
 			else "is_for_making"
 		)
 
-		making_item, making_hsn, making_uom = frappe.db.get_value(
+		making_item, making_hsn, making_uom = _cached_get_value(
+			cache,
 			"E Invoice Item",
 			{
 				filter_value: 1,
@@ -1390,7 +1595,10 @@ def update_bom_details(
 				uom=uom,
 			)
 
-		if making_item and not is_branch_customer and self.sales_type != "Hybrid":
+		# Only a Branch Sales invoice drops making; a customer that also has
+		# Outright must still be billed making, as on the Sales Order.
+		skip_making = is_branch_customer and self.sales_type == "Branch Sales"
+		if making_item and not skip_making and self.sales_type != "Hybrid":
 			is_metal_per_pc = (  # noqa: F841 - consumed by the metal_making_qty line commented out below
 				flt(i.making_rate) > 0
 				and abs(flt(i.making_amount) - flt(i.making_rate)) < 0.01
@@ -1411,11 +1619,12 @@ def update_bom_details(
 			self.is_customer_metal = True
 
 	for i in bom_doc.finding_detail:
-		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
+		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst, cache=cache)
 		einvoice_item = hsn_code = uom = None
 
 		# ---------------- Finding amount: category-specific match ----------------
-		result = frappe.db.get_value(
+		result = _cached_get_value(
+			cache,
 			"E Invoice Item",
 			{
 				"is_for_finding": 1,
@@ -1432,7 +1641,8 @@ def update_bom_details(
 			# (finding_category is unset) — not just any record sharing
 			# metal_type/metal_purity, which could accidentally be a
 			# different category's record.
-			result = frappe.db.get_value(
+			result = _cached_get_value(
+				cache,
 				"E Invoice Item",
 				{
 					"is_for_metal": 1,
@@ -1457,7 +1667,8 @@ def update_bom_details(
 		making_item = making_hsn = making_uom = None
 
 		# ---------------- Making charge: category-specific match ----------------
-		result = frappe.db.get_value(
+		result = _cached_get_value(
+			cache,
 			"E Invoice Item",
 			{
 				filter_value: 1,
@@ -1480,7 +1691,8 @@ def update_bom_details(
 				if (i.is_customer_item or self.sales_type == "Hybrid")
 				else "is_for_making"
 			)
-			result = frappe.db.get_value(
+			result = _cached_get_value(
+				cache,
 				"E Invoice Item",
 				{
 					fallback_filter_value: 1,
@@ -1522,7 +1734,8 @@ def update_bom_details(
 
 	for i in bom_doc.diamond_detail:
 		einvoice_item = hsn_code = uom = None
-		result = frappe.db.get_value(
+		result = _cached_get_value(
+			cache,
 			"E Invoice Item",
 			{"is_for_diamond": 1, "diamond_type": i.diamond_type},
 			["name", "hsn_code", "uom"],
@@ -1603,7 +1816,8 @@ def update_bom_details(
 		if i.is_customer_item:
 			self.is_customer_diamond = True
 	for i in bom_doc.gemstone_detail:
-		einvoice_item, hsn_code, uom = frappe.db.get_value(
+		einvoice_item, hsn_code, uom = _cached_get_value(
+			cache,
 			"E Invoice Item",
 			{"is_for_gemstone": 1},
 			["name", "hsn_code", "uom"],
@@ -1653,7 +1867,9 @@ def update_bom_details(
 			self.is_customer_gemstone = True
 
 	bom_doc.gold_rate_with_gst = self.gold_rate_with_gst
-	customer_group = frappe.db.get_value("Customer", self.customer, "customer_group")
+	customer_group = _cached_get_value(
+		cache, "Customer", self.customer, "customer_group"
+	)
 	if not (
 		self.company == "KG GK Jewellers Private Limited"
 		or customer_group == "Internal"
@@ -1663,17 +1879,22 @@ def update_bom_details(
 		update_totals("BOM", bom_doc.name)
 
 
-def update_making_charges(row, bom_doc, bom_row, gold_rate):
+def update_making_charges(row, bom_doc, bom_row, gold_rate, cache=None):
+	"""``cache`` (optional, per save) memoises the Item / Customer / Making Charge Price
+	reads, which are the same for every BOM row of an item; without it every value is
+	queried as before."""
 	bom_doc.set_additional_rate = False
 
-	item_details = frappe.db.get_value(
-		"Item", row.item_code, ["item_subcategory", "setting_type"], as_dict=True
+	item_details = _cached_get_value(
+		cache, "Item", row.item_code, ["item_subcategory", "setting_type"], as_dict=True
 	)
 
 	sub_category = (item_details.get("item_subcategory") or "").strip()
 	setting_type = item_details.get("setting_type")
 
-	customer_group = frappe.db.get_value("Customer", bom_doc.customer, "customer_group")
+	customer_group = _cached_get_value(
+		cache, "Customer", bom_doc.customer, "customer_group"
+	)
 
 	override_internal = (
 		bom_doc.company == "KG GK Jewellers Private Limited"
@@ -1727,7 +1948,7 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 
 		query = query.limit(1)
 		# frappe.msgprint(f"yt{query}")
-		making_charge_details = query.run(as_dict=True)
+		making_charge_details = _cached_run(cache, query)
 
 		# ---------------- FALLBACK FOR FINDING ----------------
 		if not making_charge_details and bom_row.parentfield != "metal_detail":
@@ -1763,7 +1984,7 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 				.limit(1)
 			)
 
-			making_charge_details = query.run(as_dict=True)
+			making_charge_details = _cached_run(cache, query)
 			if len(making_charge_details) > 0:
 				making_charges = making_charge_details[0]
 				rate_per_gm = flt(making_charges.get("rate_per_gm") or 0)
@@ -1823,8 +2044,8 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 				not bom_doc.set_additional_rate
 				and bom_row.parentfield == "metal_detail"
 			):
-				if frappe.db.get_value(
-					"Customer", bom_doc.customer, "compute_making_charges_on"
+				if _cached_get_value(
+					cache, "Customer", bom_doc.customer, "compute_making_charges_on"
 				) == "Diamond Inclusive" and flt(bom_row.metal_purity) == flt(
 					bom_doc.metal_purity
 				):

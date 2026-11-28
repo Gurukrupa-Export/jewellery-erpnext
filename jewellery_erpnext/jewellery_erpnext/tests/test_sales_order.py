@@ -4,7 +4,7 @@ import frappe
 from erpnext.selling.doctype.quotation.quotation import make_sales_order
 from frappe.model.workflow import apply_workflow
 from frappe.tests import IntegrationTestCase
-from frappe.utils import add_days
+from frappe.utils import add_days, flt
 from gke_customization.gke_order_forms.doctype.order.order import make_quotation_batch
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
@@ -17,6 +17,9 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.sales_order import (
 )
 from jewellery_erpnext.jewellery_erpnext.tests.test_quotation import (
 	create_order,
+)
+from jewellery_erpnext.patches.add_sales_order_item_ownership_amount_fields import (
+	execute as provision_ownership_amount_fields,
 )
 from jewellery_erpnext.patches.add_sales_order_precision_fields import (
 	execute as provision_precision_fields,
@@ -192,6 +195,65 @@ class TestSalesOrder(IntegrationTestCase):
 
 
 _SO_MODULE = "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order"
+
+
+class TestSalesOrderItemOwnershipAmountFields(IntegrationTestCase):
+	FIELDS = ("custom_company_owned_amount", "custom_customer_supplied_amount")
+
+	def test_patch_provisions_ownership_amount_fields(self):
+		# Idempotent: a no-op once the fields already exist.
+		provision_ownership_amount_fields()
+		provision_ownership_amount_fields()
+
+		meta = frappe.get_meta("Sales Order Item")
+		for fieldname in self.FIELDS:
+			df = meta.get_field(fieldname)
+			self.assertIsNotNone(
+				df,
+				f"Sales Order Item.{fieldname} is missing -- _update_bom_totals would "
+				"silently drop the ownership split on every Sales Order save",
+			)
+			self.assertEqual(df.fieldtype, "Currency")
+			self.assertTrue(
+				frappe.db.has_column("Sales Order Item", fieldname),
+				f"Sales Order Item.{fieldname} column is missing on the DB",
+			)
+		self.assertEqual(
+			meta.get_field("custom_company_owned_amount").insert_after,
+			"base_price_list_rate",
+		)
+		self.assertEqual(
+			meta.get_field("custom_customer_supplied_amount").insert_after,
+			"custom_company_owned_amount",
+		)
+
+	def test_ownership_split_survives_save_and_reload(self):
+		# The only thing the patch changes is persistence: before it, the values
+		# assigned by _update_bom_totals were dropped on write. Prove a row round-trips.
+		provision_ownership_amount_fields()
+
+		row = frappe.new_doc("Sales Order Item")
+		row.update(
+			{
+				"parent": "_TEST-SO-OWNERSHIP-SPLIT",
+				"parenttype": "Sales Order",
+				"parentfield": "items",
+				"idx": 1,
+				"item_code": "_TEST-OWNERSHIP-SPLIT",
+				"qty": 1,
+				"custom_company_owned_amount": 1234.56,
+				"custom_customer_supplied_amount": 78.9,
+			}
+		)
+		row.db_insert()
+		try:
+			stored = frappe.db.get_value(
+				"Sales Order Item", row.name, list(self.FIELDS), as_dict=True
+			)
+			self.assertEqual(flt(stored.custom_company_owned_amount), 1234.56)
+			self.assertEqual(flt(stored.custom_customer_supplied_amount), 78.9)
+		finally:
+			frappe.db.delete("Sales Order Item", {"name": row.name})
 
 
 class TestSalesOrderPrecisionFields(IntegrationTestCase):

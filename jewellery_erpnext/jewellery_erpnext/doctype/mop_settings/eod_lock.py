@@ -38,7 +38,11 @@ _LOCK_MSG = (
 def is_eod_sync_locked():
 	"""Return True when EOD sync is running and the lock window is still active.
 
-	Uses a direct DB read (not cached doc) so the latest committed state is always seen.
+	Uses a direct DB read (not cached doc), but a plain one: under REPEATABLE READ it sees the
+	state as of the calling transaction's snapshot, so a transaction already running when
+	``set_eod_sync_running`` commits can still pass it (an advisory gate, not a lock). The
+	Employee IR / Department IR guard calls it before taking any lock
+	(``current_operation_guard.refuse_if_movement_blocked``), so a refused attempt waits on nothing.
 	Returns False if the lock window has expired even when eod_sync_running is still 1
 	(a crashed worker won't permanently lock the system).
 	"""

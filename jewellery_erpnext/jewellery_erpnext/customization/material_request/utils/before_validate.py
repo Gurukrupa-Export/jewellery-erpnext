@@ -1,3 +1,5 @@
+import json
+
 import frappe
 from frappe import _
 from frappe.utils import cint, flt
@@ -110,39 +112,77 @@ def get_variant_warehouse_map(manufacturer):
 	}
 
 
-def set_reservation_warehouse(self):
-	"""Default ``set_warehouse`` from the Manufacturer's reservation table.
-
-	Only for ``Manufacture`` requests, and only when ``set_warehouse`` is still blank -- an MR
-	routed by hand (RM Procurement, Waxing RM, ...) is never overwritten. The desk form
-	re-derives on item/manufacturer/type change; this is the server-side net that also covers
-	programmatic creation.
-	"""
-	if self.material_request_type != "Manufacture" or self.set_warehouse:
-		return
+def get_reservation_target(self):
+	"""The warehouse the Manufacturer's reservation table routes this request to, or None."""
+	if self.material_request_type != "Manufacture":
+		return None
 
 	manufacturer = self.custom_manufacturer or frappe.defaults.get_user_default(
 		"manufacturer"
 	)
 	warehouse_map = get_variant_warehouse_map(manufacturer)
 	if not warehouse_map:
-		return
+		return None
+
+	# A row with an Alternative Item is routed by the alternative's variant: the dummy
+	# gemstone item has none of its own.
+	alternatives = {
+		row.custom_alternative_item
+		for row in self.items
+		if getattr(row, "custom_alternative_item", None)
+	}
+	alternative_variant = (
+		dict(
+			frappe.db.get_all(
+				"Item",
+				{"name": ["in", list(alternatives)]},
+				["name", "variant_of"],
+				as_list=True,
+			)
+		)
+		if alternatives
+		else {}
+	)
 
 	# Every row must resolve to the same warehouse. A row whose variant is unmapped (or blank,
 	# as on the dummy gemstone item) contributes None, which fails this check -- deliberately,
 	# so a partially-mappable request is left alone rather than half-routed.
-	targets = {warehouse_map.get(row.custom_variant_of) for row in self.items}
+	targets = {
+		warehouse_map.get(
+			alternative_variant.get(row.custom_alternative_item)
+			if getattr(row, "custom_alternative_item", None)
+			else row.custom_variant_of
+		)
+		for row in self.items
+	}
 	if len(targets) != 1:
-		return
+		return None
 
 	target = targets.pop()
 	if not target:
-		return
+		return None
 
 	# Manufacturer.company is informational -- nothing filters or validates it, and the live
 	# data already disagrees in places -- so a mismatched custom_manufacturer would otherwise
 	# write another company's warehouse onto the rows.
 	if frappe.get_cached_value("Warehouse", target, "company") != self.company:
+		return None
+
+	return target
+
+
+def set_reservation_warehouse(self):
+	"""Default ``set_warehouse`` from the Manufacturer's reservation table.
+
+	Only for ``Manufacture`` requests, and only when ``set_warehouse`` is still blank -- an MR
+	routed by hand (RM Procurement, Waxing RM, ...) is never overwritten. The desk form
+	calls this when an Alternative Item is picked; it also covers programmatic creation.
+	"""
+	if self.material_request_type != "Manufacture" or self.set_warehouse:
+		return
+
+	target = get_reservation_target(self)
+	if not target:
 		return
 
 	# Only claim the header when the rows agree with it, otherwise ERPNext's
@@ -155,6 +195,50 @@ def set_reservation_warehouse(self):
 	for row in self.items:
 		if not row.warehouse:
 			row.warehouse = target
+
+
+def validate_alternative_item_warehouse(self):
+	"""Once a row has an Alternative Item, ``set_warehouse`` must be the reservation warehouse
+	of that item's variant, except for System Manager. Only a *change* of the warehouse is checked, so a request saved
+	earlier with some other warehouse is not suddenly refused on its next save."""
+	if self.material_request_type != "Manufacture":
+		return
+
+	# ``getattr`` throughout: the tests drive this path with mock documents that carry no
+	# ``items`` or ``is_new``.
+	rows = getattr(self, "items", None) or []
+	if not any(getattr(row, "custom_alternative_item", None) for row in rows):
+		return
+
+	if self.is_new():
+		return
+
+	before = self.get_doc_before_save()
+	if not before or (before.set_warehouse or None) == (self.set_warehouse or None):
+		return
+
+	# The form leaves the field editable for System Manager, so they may override it.
+	if "System Manager" in frappe.get_roles():
+		return
+
+	target = get_reservation_target(self)
+	if target and self.set_warehouse != target:
+		frappe.throw(
+			_(
+				"Set Warehouse {0} does not match the Alternative Item. It must be {1}."
+			).format(frappe.bold(self.set_warehouse), frappe.bold(target))
+		)
+
+
+@frappe.whitelist()
+def get_reservation_warehouse(doc):
+	"""The warehouse the reservation table gives this unsaved request, for the desk form's
+	Alternative Item trigger. Unlike ``set_reservation_warehouse`` it replaces a warehouse
+	already there: picking the alternative is what decides the routing."""
+	frappe.has_permission("Material Request", "read", throw=True)
+	doc = json.loads(doc) if isinstance(doc, str) else doc
+	doc = frappe.get_doc({**doc, "doctype": "Material Request"})
+	return get_reservation_target(doc)
 
 
 def validate_warehouse(self):

@@ -20,6 +20,16 @@ _RESERVATION_TYPES_FOR_EIR = frozenset(
 
 
 class MOPSettings(Document):
+	def _validate_links(self):
+		# The EOD job points eod_sync_last_error_log at its last failure's Error Log, and Log
+		# Settings purges Error Logs after a few days (14 on kggk-prod) while the pointer stays.
+		# Frappe checks every Link before validate, so a purged log blocked every save of these
+		# settings ("Could not find Last EOD Error Log").
+		error_log = self.get("eod_sync_last_error_log")
+		if error_log and not frappe.db.exists("Error Log", error_log):
+			self.eod_sync_last_error_log = None
+		return super()._validate_links()
+
 	def validate(self):
 		self._validate_reservation_types()
 		self._validate_eod_sync_time_permission()

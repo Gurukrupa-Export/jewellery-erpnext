@@ -120,6 +120,25 @@ class TreeNumber(Document):
 				).format(self.name)
 			)
 
+		# The casting work behind the tree has to be done before the tree is locked.
+		unfinished = frappe.get_all(
+			"Manufacturing Operation",
+			filters={"tree_number": self.name, "status": ["!=", "Finished"]},
+			fields=["name", "status"],
+			order_by="name asc",
+		)
+		if unfinished:
+			frappe.throw(
+				_(
+					"Tree {0} cannot be submitted until its Manufacturing Operation(s) are "
+					"Finished: {1}."
+				).format(
+					self.name,
+					", ".join(f"{op.name} ({op.status})" for op in unfinished),
+				),
+				title=_("Manufacturing Operation Not Finished"),
+			)
+
 		eps = tree_balance.pending_eps()
 
 		# Re-derive pending from the quantities before judging it. The stored column cannot be
@@ -204,6 +223,23 @@ class TreeNumber(Document):
 		self.status = tree_balance.tree_status(self)
 		self.save(ignore_permissions=True)
 		return cancelled
+
+
+@frappe.whitelist()
+def get_batch_balance(tree_number):
+	"""HTML for the form's Batch-wise Balance section. Read-only; see ``tree_batch_balance``.
+
+	Takes the name and reads the saved tree rather than running as a doc method: a doc method is
+	sent the form's copy and refuses it once someone else has saved the tree, which would turn a
+	view into an error.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_batch_balance import (
+		render_tree,
+	)
+
+	tree = frappe.get_doc("Tree Number", tree_number)
+	tree.check_permission("read")
+	return render_tree(tree)
 
 
 @frappe.whitelist()

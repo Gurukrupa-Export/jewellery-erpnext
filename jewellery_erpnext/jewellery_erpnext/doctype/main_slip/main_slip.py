@@ -330,6 +330,19 @@ class MainSlip(Document):
 					"Below mentioned Manufacturing Operations are not finished yet.<br> {0}"
 				).format(",".join(not_finished_mop))
 			)
+		# Each loss row mints a metal-loss Repack and then a Material Transfer to
+		# Department, each after the previous entry's Bins. Take both counters once, here,
+		# before any Bin; with per-type naming the second one would otherwise be taken while
+		# Bins are held.
+		if self.loss_details:
+			from jewellery_erpnext.jewellery_erpnext.lock_order import (
+				preallocate_series_for_docs,
+				series_stubs,
+			)
+
+			preallocate_series_for_docs(
+				*series_stubs(self.company, "Repack", "Material Transfer to Department")
+			)
 		frappe.db.MAX_WRITES_PER_TRANSACTION *= 16
 		for row in self.loss_details:
 			create_loss_stock_entries(
@@ -851,8 +864,16 @@ def ensure_loss_item_stockable(item_code):
 	return item_code
 
 
-def get_item_loss_item(company, item, variant_of="M", loss_type=None):
-	if loss_type:
+def get_item_loss_item(
+	company, item, variant_of="M", loss_type=None, loss_variant=None
+):
+	if loss_variant:
+		# The caller already resolved the loss template under its own scope (Employee IR
+		# reads it from its Manufacturer's Variant Loss Table). Use it as given: the lookup
+		# below matches on variant + loss type alone, so once a second manufacturer maps the
+		# same pair to another template it can return that sibling's template instead.
+		variant_name = loss_variant
+	elif loss_type:
 		variant_name = frappe.db.get_value(
 			"Variant Loss Table",
 			{"variant": variant_of, "loss_type": loss_type},

@@ -56,8 +56,9 @@ an operator for an admin's change they had no part in.
 ``validate_loss_gates_left_nothing_to_book`` covers the remaining case: the gates
 emptied the automatic table and nothing was booked by hand, so the operator gets a
 message naming the cause instead of the generic "no loss details found". It spans
-BOTH gates — the blanket flags here and ``finding_loss_gate``'s per-category table
-— because on an operation that configures both, either can be the half that
+ALL THREE gates — the blanket flags here, ``finding_loss_gate``'s per-category
+table and ``customer_finding_loss_gate``'s customer-supplied batches — because on
+an operation that configures more than one, any of them can be the half that
 removed the last eligible row, and naming only one blames the wrong setting.
 
 Neither gate throws from ``book_metal_loss`` any more. The per-category gate used
@@ -201,12 +202,17 @@ def validate_loss_rows_against_material_gate(doc):
 def validate_loss_gates_left_nothing_to_book(doc):
 	"""Explain an automatic loss table the loss gates emptied.
 
-	Covers BOTH gates — the blanket ``dont_allow_loss_*`` flags and the older
-	per-finding-category ``finding_loss_booking`` table. Either can empty the
-	automatic pool, and on an operation that configures both, either can be the
-	half that emptied it. Reporting only one would blame the wrong setting: the
-	per-category message used to fire alone even when a ticked blanket flag was
-	what removed the last eligible row.
+	Covers ALL THREE gates — the blanket ``dont_allow_loss_*`` flags, the older
+	per-finding-category ``finding_loss_booking`` table, and
+	``customer_finding_loss_gate``'s customer-supplied finding batches. Any of them
+	can empty the automatic pool, and on an operation where more than one applies,
+	any can be the one that emptied it. Reporting only one would blame the wrong
+	setting: the per-category message used to fire alone even when a ticked blanket
+	flag was what removed the last eligible row.
+
+	The third gate is the only one that also refuses the MANUAL table, so where it
+	is the sole cause this throws a different message — one that does not send the
+	operator to a grid that would refuse them too.
 
 	When the pool comes out empty and nothing was hand-booked either,
 	``validate_loss_tables_required`` would raise its generic "no loss details
@@ -245,10 +251,16 @@ def validate_loss_gates_left_nothing_to_book(doc):
 	operation = getattr(doc, "operation", None)
 	blocked_variants = get_blocked_loss_variants(operation)
 	booking_map = get_loss_booking_map(operation)
-	if not blocked_variants and not booking_map:
-		return
 
-	# One re-read of the balance, only ever on the failure path.
+	# One re-read of the balance, only ever on the failure path. batch_no is needed
+	# because the third gate blocks a BATCH, not an item: the same finding may be
+	# eligible on one batch and refused on another.
+	#
+	# Unlike the other two, the customer-supplied-finding gate has no cheap "is it
+	# configured" probe -- only the batches themselves say whether it bites -- so the
+	# early return that used to sit above this query now sits below it. That costs one
+	# extra read on a path that is already about to throw, and nothing on the normal
+	# path, which returned as soon as either loss table was found populated.
 	balance = frappe.get_all(
 		"MOP Log",
 		filters={
@@ -256,16 +268,29 @@ def validate_loss_gates_left_nothing_to_book(doc):
 			"manufacturing_operation": ["in", sorted({p[1] for p in pairs})],
 			"is_cancelled": 0,
 		},
-		fields=["item_code"],
+		fields=["item_code", "batch_no"],
 	)
 	# Mirror book_metal_loss's own eligibility filter: only M/F item codes ever
 	# enter the automatic pool, so only those can have been blocked out of it.
-	eligible = {
-		r["item_code"]
-		for r in balance
-		if r["item_code"] and r["item_code"][0] in ("M", "F")
-	}
-	if not eligible:
+	eligible_rows = [
+		r for r in balance if r["item_code"] and r["item_code"][0] in ("M", "F")
+	]
+	if not eligible_rows:
+		return
+	eligible = {r["item_code"] for r in eligible_rows}
+
+	# Local import, kept deliberately: this whole function only ever runs on the failure
+	# path, so the sibling gate is loaded when a document is already about to be refused
+	# rather than on every import of this module. (It is no longer a cycle -- the gate
+	# stopped importing get_variant_of_map from here -- but there is still nothing to
+	# gain from hoisting it.)
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.customer_finding_loss_gate import (
+		get_blocked_finding_batches,
+		is_customer_goods_finding_blocked,
+	)
+
+	blocked_batches = get_blocked_finding_batches(eligible_rows)
+	if not blocked_variants and not booking_map and not blocked_batches:
 		return
 
 	variant_map = get_variant_of_map(sorted(eligible)) if blocked_variants else {}
@@ -273,7 +298,9 @@ def validate_loss_gates_left_nothing_to_book(doc):
 
 	variant_hits = set()
 	category_hits = set()
-	for item_code in eligible:
+	customer_finding_hits = set()
+	for row in eligible_rows:
+		item_code = row["item_code"]
 		variant = variant_map.get(item_code)
 		if variant in blocked_variants:
 			variant_hits.add(variant)
@@ -281,7 +308,10 @@ def validate_loss_gates_left_nothing_to_book(doc):
 		if is_loss_booking_blocked(item_code, booking_map, category_map):
 			category_hits.add(category_map.get(item_code))
 			continue
-		# Something eligible survived both gates, so they are not the reason the
+		if is_customer_goods_finding_blocked(row.get("batch_no"), blocked_batches):
+			customer_finding_hits.add(item_code)
+			continue
+		# Something eligible survived every gate, so they are not the reason the
 		# table is empty.
 		return
 
@@ -302,6 +332,37 @@ def validate_loss_gates_left_nothing_to_book(doc):
 				if len(named_categories) == 1
 				else _("finding categories {0} have Loss Booking turned off")
 			).format(", ".join(named_categories))
+		)
+	named_findings = sorted(customer_finding_hits)
+	if named_findings:
+		causes.append(
+			(
+				_("finding {0} sits on a customer-supplied batch")
+				if len(named_findings) == 1
+				else _("findings {0} sit on customer-supplied batches")
+			).format(", ".join(named_findings))
+		)
+
+	# Hand-booking is the remedy the other two gates leave open, but the
+	# customer-supplied-finding gate refuses the manual table as well
+	# (validate_customer_goods_finding_loss_rows). Pointing the operator at a grid
+	# that will throw would be the same dishonesty this whole function exists to fix,
+	# so where that gate is the ONLY cause the message names the one real remedy.
+	if named_findings and not variant_hits and not category_hits:
+		frappe.throw(
+			_(
+				"Manufacturing Work Order {0}: {1} g of loss is unbooked. On operation "
+				"<b>{2}</b>, {3}, and customer-supplied findings may not carry loss at "
+				"all — neither automatically nor by hand. Receive the full issued weight "
+				"for those findings, or book the {1} g against company-owned material in "
+				"{4}."
+			).format(
+				", ".join(sorted({p[0] for p in pairs if p[0]})),
+				baseline,
+				doc.operation,
+				_(" and ").join(causes),
+				MANUAL_TABLE_LABEL,
+			)
 		)
 
 	frappe.throw(

@@ -61,6 +61,7 @@ import frappe
 from frappe.query_builder.functions import Max, Sum
 from frappe.utils import flt
 
+from jewellery_erpnext.customer_subcontracting.cg_format import fmt3
 from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
 	VALUATION_NOMINAL,
 	get_customer_gold_valuation_policy,
@@ -186,6 +187,36 @@ def _recorded_components(batch_no):
 		return []
 
 
+def _is_customer_receipt_batch(batch_no):
+	"""Whether a Customer Gold receipt put metal into ``batch_no`` -- where the gold ENTERED.
+
+	True for an effective Receipt event only (no Reversal undid it), the test
+	``customer_gold_allocations.effective_receipt_events`` applies everywhere else, so a
+	cancelled receipt does not leave its batch looking like a root.
+
+	Fails CLOSED to ``False`` on a site whose ledger schema has not caught up, the direction
+	``_recorded_components`` takes and for the same reason: this is asked on the path of every
+	Manufacture and Repack submit.
+	"""
+	if not batch_no:
+		return False
+
+	# Deferred: customer_gold_allocations imports customer_gold_fulfilment at module level, and
+	# fulfilment reaches back into this module.
+	from jewellery_erpnext.customer_subcontracting.customer_gold_allocations import (
+		effective_receipt_events,
+	)
+
+	try:
+		return bool(effective_receipt_events({"batch_no": batch_no}))
+	except (
+		frappe.DoesNotExistError,
+		frappe.db.TableMissingError,
+		frappe.db.InvalidColumnName,
+	):
+		return False
+
+
 def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 	"""What ``drawn_qty`` taken out of ``batch_no`` is actually made of.
 
@@ -215,6 +246,11 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 		# coarser answer that terminates beats a precise one that does not.
 		return [_atomic_component(batch_no, drawn_qty)]
 
+	# A draw made DIRECTLY on a customer's receipt batch takes the gold as it was received, not
+	# as a later conversion-back left its component table. See the note on the nested case below.
+	if _is_customer_receipt_batch(batch_no):
+		return [_atomic_component(batch_no, drawn_qty)]
+
 	components = _recorded_components(batch_no)
 	if not components:
 		return [_atomic_component(batch_no, drawn_qty)]
@@ -242,6 +278,13 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 		# component's owner is decided once, at mixing, and is immutable history) in the exact
 		# direction that matters: a customer's metal reverts to company stock as soon as the
 		# source batch is re-tagged or consumed. The unit suite caught this.
+		#
+		# A customer's RECEIPT batch is the one source that is never followed, whatever rows it
+		# carries. Settle converts metal back INTO the receipt batch, and the table is REPLACED on
+		# every such production, so its rows describe the last top-up and not what the batch held
+		# when this component drew on it. Following them split a draw by that mix: 1.835 g of a
+		# 5.000 g receipt came out as 1.545 g customer and 0.290 g company alloy, and the delivery
+		# released the smaller figure. The row that names the receipt batch is already the leaf.
 		source_batch = component.get("source_batch")
 		deeper = []
 		if (
@@ -249,6 +292,7 @@ def resolve_components(batch_no, drawn_qty, depth=0, seen=None):
 			and source_batch not in seen
 			and depth + 1 < MAX_DEPTH
 			and _recorded_components(source_batch)
+			and not _is_customer_receipt_batch(source_batch)
 		):
 			deeper = resolve_components(
 				source_batch, share, depth + 1, seen | {batch_no}
@@ -320,6 +364,140 @@ def produced_qty(batch_no):
 	).run()
 
 	return flt(rows[0][1] if rows and rows[0][1] else 0.0, QTY_PRECISION)
+
+
+#: What can make a serialised piece out of consumed stock. A Material Receipt consumes nothing,
+#: so unlike ``PRODUCING_PURPOSES`` it has no composition to read back.
+SERIAL_PRODUCING_PURPOSES = ("Manufacture", "Repack")
+
+
+def serial_production(serial_no):
+	"""What produced ``serial_no``: a dict of the entry, its finished row, and this piece's share.
+
+	``None`` when the serial was not created by a submitted Manufacture or Repack. The entry is
+	read from ``Serial No.reference_name`` -- ERPNext stamps the creating voucher there -- so
+	this is a primary-key lookup, not a scan of the serial's ledger. Every later read goes
+	through an indexed column (Stock Entry Detail ``parent``, Serial and Batch Bundle
+	``voucher_detail_no``).
+
+	``share`` is this piece's row's part of everything the entry finished. An entry with one
+	finished row -- every SNC Manufacture -- gives 1.0; with several, the consumed stock is
+	split between them by quantity instead of being attributed whole to each.
+	"""
+	if not serial_no:
+		return None
+
+	ref = frappe.db.get_value(
+		"Serial No", serial_no, ["reference_doctype", "reference_name"], as_dict=True
+	)
+	if not ref or ref.reference_doctype != "Stock Entry" or not ref.reference_name:
+		return None
+
+	entry = frappe.db.get_value(
+		"Stock Entry", ref.reference_name, ["docstatus", "purpose"], as_dict=True
+	)
+	if (
+		not entry
+		or entry.docstatus != 1
+		or entry.purpose not in SERIAL_PRODUCING_PURPOSES
+	):
+		return None
+
+	rows = frappe.get_all(
+		"Stock Entry Detail",
+		filters={"parent": ref.reference_name},
+		fields=[
+			"name",
+			"s_warehouse",
+			"t_warehouse",
+			"is_finished_item",
+			"transfer_qty",
+		],
+	)
+	finished = [r for r in rows if r.is_finished_item]
+	if not finished:
+		return None
+
+	row = finished[0] if len(finished) == 1 else _finished_row_of(serial_no, finished)
+	if not row:
+		return None
+
+	total = sum(flt(r.transfer_qty) for r in finished)
+	return frappe._dict(
+		voucher_no=ref.reference_name,
+		finished_row=row.name,
+		produced=flt(row.transfer_qty, QTY_PRECISION),
+		share=flt(row.transfer_qty) / total if len(finished) > 1 and total > 0 else 1.0,
+		consumed_rows=[r.name for r in rows if r.s_warehouse],
+	)
+
+
+def _finished_row_of(serial_no, finished):
+	"""Which of several finished rows put ``serial_no`` into stock."""
+	sbe = frappe.qb.DocType("Serial and Batch Entry")
+	sbb = frappe.qb.DocType("Serial and Batch Bundle")
+	hit = (
+		frappe.qb.from_(sbb)
+		.join(sbe)
+		.on(sbe.parent == sbb.name)
+		.select(sbb.voucher_detail_no)
+		.where(
+			sbb.voucher_detail_no.isin([r.name for r in finished])
+			& (sbb.type_of_transaction == "Inward")
+			& (sbb.is_cancelled == 0)
+			& (sbe.serial_no == serial_no)
+		)
+		.limit(1)
+	).run()
+	if not hit:
+		return None
+	return next((r for r in finished if r.name == hit[0][0]), None)
+
+
+def resolve_serial_components(serial_no):
+	"""What a SERIAL-ONLY piece is made of: ``(components, pieces produced)``.
+
+	A batch-tracked piece has its composition written onto its batch at production
+	(``record_batch_components``, from the producing entry's outward batch entries). An item
+	with no batch tracking has nowhere to store it, so it is rebuilt here from the same
+	inputs the batch path would have recorded: every batch the producing entry consumed,
+	resolved transitively and merged -- scaled to this row's share when the entry finished
+	more than one row. The denominator is the quantity of the finished row, the same "pieces
+	produced" ``attribution_basis`` uses for a piece counted in Nos.
+
+	``([], 0.0)`` when the serial was not produced from consumed stock.
+	"""
+	production = serial_production(serial_no)
+	if not production or not production.consumed_rows:
+		return [], 0.0
+
+	components = []
+	for batch_no, qty in _consumed_batches(production.consumed_rows):
+		components.extend(
+			resolve_components(batch_no, abs(flt(qty)) * production.share)
+		)
+
+	return merge_components(components), production.produced
+
+
+def _consumed_batches(row_names):
+	"""``[(batch_no, qty)]`` the given Stock Entry Detail rows drew, from their outward bundles."""
+	sbe = frappe.qb.DocType("Serial and Batch Entry")
+	sbb = frappe.qb.DocType("Serial and Batch Bundle")
+	return (
+		frappe.qb.from_(sbb)
+		.join(sbe)
+		.on(sbe.parent == sbb.name)
+		.select(sbe.batch_no, sbe.qty)
+		.where(
+			sbb.voucher_detail_no.isin(row_names)
+			& (sbb.type_of_transaction == "Outward")
+			& (sbb.is_cancelled == 0)
+			& (sbb.docstatus == 1)
+			& sbe.batch_no.isnotnull()
+			& (sbe.batch_no != "")
+		)
+	).run()
 
 
 def _shares_one_unit(batch_no, components):
@@ -504,7 +682,7 @@ def _validated_rows(components, voucher_type, nominal):
 				frappe._(
 					"Cannot record batch components: component quantity for source batch {0} "
 					"is negative ({1})."
-				).format(row.get("source_batch") or "unknown", row.get("qty")),
+				).format(row.get("source_batch") or "unknown", fmt3(row.get("qty"))),
 				title=frappe._("Invalid Component Quantity"),
 			)
 
