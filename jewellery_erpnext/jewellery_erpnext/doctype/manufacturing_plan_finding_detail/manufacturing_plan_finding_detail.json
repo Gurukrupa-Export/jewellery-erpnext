@@ -1,0 +1,121 @@
+{
+ "actions": [],
+ "creation": "2026-10-12 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "finding_category",
+  "finding_type",
+  "setting_type",
+  "metal_type",
+  "column_break_mpfd",
+  "metal_touch",
+  "metal_purity",
+  "metal_colour",
+  "finding_size",
+  "qty",
+  "item_code"
+ ],
+ "fields": [
+  {
+   "fieldname": "finding_category",
+   "fieldtype": "Link",
+   "label": "Finding Category",
+   "options": "Attribute Value",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "finding_type",
+   "fieldtype": "Link",
+   "label": "Finding Sub Category",
+   "options": "Attribute Value",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "setting_type",
+   "fieldtype": "Link",
+   "label": "Setting Type",
+   "options": "Attribute Value",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "column_break_mpfd",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "label": "Metal Purity",
+   "options": "Attribute Value",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "label": "Metal Colour",
+   "options": "Attribute Value",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "finding_size",
+   "fieldtype": "Link",
+   "label": "Finding Size",
+   "options": "Attribute Value",
+   "in_list_view": 1,
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Qty",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
+   "description": "Finding variant resolved from the attributes when the plan is saved.",
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-12 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Manufacturing Plan Finding Detail",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -190,10 +190,9 @@ def validate_fg_serial_rows(self):
 	not FG -- and every row with no serial at all -- is left completely alone, so this
 	cannot disturb the non-FG serialised flows or the Settle path.
 
-	Throws rather than silently coercing ``qty``: ``qty`` is in
-	``GUARDED_MR_ITEM_FIELDS``, so a quiet correction on a post-Draft save would read as
-	a user edit to ``guard_non_system_manager_field_edits`` and be rejected there with a
-	far more confusing message.
+	Throws rather than silently coercing ``qty``: a quiet correction would change a field the
+	user is not allowed to edit after Draft (``guard_non_system_manager_field_edits`` locks
+	every Material Request Item field), and the request would carry a quantity nobody chose.
 
 	``getattr`` throughout, mirroring that guard: the tests drive this path with
 	``SimpleNamespace``-style mocks that carry no ``.get()``.

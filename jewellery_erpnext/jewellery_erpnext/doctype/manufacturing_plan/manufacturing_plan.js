@@ -2,7 +2,24 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("Manufacturing Plan", {
+	onload(frm) {
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_allowed_manufacture_orders",
+			callback: function (r) {
+				frm.allowed_manufacture_orders = r.message || [];
+				apply_manufacture_order_options(frm);
+			},
+		});
+		// A draft, Duplicate or route option can open a plan already in Without-SO mode.
+		if (
+			frm.doc.docstatus === 0 &&
+			frm.doc.select_manufacture_order === "Finding Manufacturing - Without SO"
+		) {
+			set_user_department(frm);
+		}
+	},
 	refresh(frm) {
+		apply_manufacture_order_options(frm);
 		if (frm.doc.docstatus == 1) frm.trigger("show_progress");
 		if (frm.doc.docstatus == 1) {
 			frm.add_custom_button(__("Create CAD MWO"), function () {
@@ -15,7 +32,9 @@ frappe.ui.form.on("Manufacturing Plan", {
 						let item_codes = r.message || [];
 						if (!item_codes.length) {
 							frappe.msgprint(
-								__("All items in this Manufacturing Plan already have a CAD Manufacturing Work Order.")
+								__(
+									"All items in this Manufacturing Plan already have a CAD Manufacturing Work Order."
+								)
 							);
 							return;
 						}
@@ -36,6 +55,15 @@ frappe.ui.form.on("Manufacturing Plan", {
 	setup(frm) {
 		var parent_fields = [["diamond_quality", "Diamond Quality"]];
 		set_item_attribute_filters_on_fields_in_child_doctype(frm, parent_fields);
+		set_finding_detail_filters(frm);
+	},
+	select_manufacture_order(frm) {
+		// Department belongs to the Without-SO mode only, and defaults to the user's Employee department.
+		if (frm.doc.select_manufacture_order !== "Finding Manufacturing - Without SO") {
+			if (frm.doc.department) frm.set_value("department", null);
+			return;
+		}
+		set_user_department(frm);
 	},
 	get_sales_order(frm) {
 		map_current_doc({
@@ -121,6 +149,44 @@ frappe.ui.form.on("Manufacturing Plan", {
 		frm.dashboard.add_progress(__("Status"), bars, message);
 	},
 });
+
+// Offer only the modes the user's roles allow (Manufacturing Setting > Manufacture Order Roles),
+// keeping the plan's current mode so a draft raised by someone else still shows it.
+function apply_manufacture_order_options(frm) {
+	if (!frm.allowed_manufacture_orders) return;
+	const options = ["", ...frm.allowed_manufacture_orders];
+	const current = frm.doc.select_manufacture_order;
+	if (current && !options.includes(current)) options.push(current);
+	frm.set_df_property("select_manufacture_order", "options", options.join("\n"));
+	// Set on every refresh: the form clears its intro message each time it renders.
+	if (frm.is_new() && !frm.allowed_manufacture_orders.length) {
+		// The roles are read from the user's manufacturer's Manufacturing Setting, so without a
+		// Default Manufacturer no option opens whatever the roles say.
+		frm.set_intro(
+			frappe.defaults.get_user_default("manufacturer")
+				? __(
+						"No Select Manufacture Order option is open to your roles. Ask a System Manager to set its roles in Manufacturing Setting."
+				  )
+				: __(
+						"Set a Default Manufacturer (avatar menu → Session Defaults) to choose Select Manufacture Order."
+				  ),
+			"orange"
+		);
+	}
+}
+
+function set_user_department(frm) {
+	// A user with an Employee department gets it filled in and locked; a user without one picks
+	// it. A saved department is kept either way.
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_user_department",
+		callback: function (r) {
+			if (frm.doc.select_manufacture_order !== "Finding Manufacturing - Without SO") return;
+			frm.set_df_property("department", "read_only", r.message ? 1 : 0);
+			if (r.message && !frm.doc.department) frm.set_value("department", r.message);
+		},
+	});
+}
 
 function show_cad_item_select_dialog(frm, item_codes) {
 	let rows_html = item_codes
@@ -218,7 +284,6 @@ function show_cad_reason_dialog(frm, item_codes) {
 		__("Submit")
 	);
 }
-
 
 var map_current_doc = function (opts) {
 	function _map(frm) {
@@ -343,6 +408,39 @@ var map_current_doc = function (opts) {
 		_map();
 	}
 };
+
+// Finding Details columns that are attributes of the F template. Each one's dropdown only
+// offers values that exist on an F item together with the row's other picks.
+const FINDING_ATTRIBUTE_FIELDS = [
+	"finding_category",
+	"finding_type",
+	"metal_type",
+	"metal_touch",
+	"metal_purity",
+	"metal_colour",
+	"finding_size",
+];
+
+function set_finding_detail_filters(frm) {
+	FINDING_ATTRIBUTE_FIELDS.forEach((fieldname) => {
+		frm.set_query(fieldname, "finding_details", (doc, cdt, cdn) => {
+			const row = locals[cdt][cdn];
+			const selected = {};
+			FINDING_ATTRIBUTE_FIELDS.forEach((other) => {
+				if (other !== fieldname && row[other]) selected[other] = row[other];
+			});
+			return {
+				query: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.finding_attribute_query",
+				filters: { fieldname, selected },
+			};
+		});
+	});
+	// Not an F attribute, so it is not narrowed by the row.
+	frm.set_query("setting_type", "finding_details", () => ({
+		query: "jewellery_erpnext.query.item_attribute_query",
+		filters: { item_attribute: "Setting Type" },
+	}));
+}
 
 function set_item_attribute_filters_on_fields_in_child_doctype(frm, fields) {
 	fields.map(function (field) {

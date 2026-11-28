@@ -1,6 +1,7 @@
 frappe.ui.form.on("Material Request", {
 	refresh(frm) {
 		patch_barcode_scanner_for_serial_no_rows(frm);
+		lock_items_after_draft(frm);
 		frm.trigger("get_items_from_customer_goods");
 		frm.trigger("manufacturing_operation_query");
 		if (frm.doc.material_request_type === "Material Transfer") {
@@ -77,7 +78,10 @@ frappe.ui.form.on("Material Request", {
 		const doc = frm.doc;
 		if (
 			doc.docstatus !== 1 ||
-			doc.workflow_state !== "Material Transferred" ||
+			// "Material Transfer In Progress" is where "Transfer Material" now lands; the job
+			// moves the request to "Material Transferred" once the entry is submitted. Requests
+			// that reached "Material Transferred" before that state existed can still be waiting.
+			!["Material Transfer In Progress", "Material Transferred"].includes(doc.workflow_state) ||
 			!doc.custom_reserve_se ||
 			doc.custom_transfer_se
 		) {
@@ -92,7 +96,9 @@ frappe.ui.form.on("Material Request", {
 							strip_html(doc.custom_transfer_se_error || "") || __("no error recorded")
 						),
 				  ])
-				: __("Material Transfer From Reserve is still being created. Reload in a minute."),
+				: __(
+						"Material Transfer From Reserve is being created in the background. The status changes to Material Transferred once it is done."
+				  ),
 			failed ? "red" : "orange"
 		);
 
@@ -536,6 +542,22 @@ frappe.ui.form.on("Material Request Item", {
 
 // {variant: target_warehouse} from Manufacturer.custom_reservation_table, cached per
 // manufacturer on the form so re-deriving on every row edit costs at most one round-trip.
+// Once a request has left Draft only System Manager may change its items: the whole table
+// goes read-only (no edits, no Add Row / Delete), and so does the header scanner, which adds
+// rows. The server enforces the same rule in guard_non_system_manager_field_edits; this only
+// keeps the form from offering edits that save would refuse.
+function lock_items_after_draft(frm) {
+	const locked =
+		!!frm.doc.workflow_state &&
+		frm.doc.workflow_state !== "Draft" &&
+		!frappe.user.has_role("System Manager");
+
+	frm.set_df_property("items", "read_only", locked ? 1 : 0);
+	if (frm.fields_dict.scan_barcode) {
+		frm.set_df_property("scan_barcode", "read_only", locked ? 1 : 0);
+	}
+}
+
 function get_reservation_warehouses(frm, manufacturer) {
 	frm.__reservation_warehouses = frm.__reservation_warehouses || {};
 	if (frm.__reservation_warehouses[manufacturer]) {

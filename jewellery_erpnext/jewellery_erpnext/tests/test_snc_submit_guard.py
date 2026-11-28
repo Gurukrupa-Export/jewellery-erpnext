@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Nirali and contributors
 # See license.txt
 
+import re
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1376,3 +1377,202 @@ class TestSncHardening(IntegrationTestCase):
 		self.assertIn("same metal type and colour", finding)
 		self.assertIn("Regular Stock", metal)
 		self.assertNotIn("same metal type and colour", metal)
+
+
+def _like(value, pattern):
+	"""MariaDB LIKE on a case-insensitive collation: % = any run, _ = any one character."""
+	regex = "".join(
+		".*" if ch == "%" else "." if ch == "_" else re.escape(ch) for ch in pattern
+	)
+	return re.fullmatch(regex, value, flags=re.IGNORECASE | re.DOTALL) is not None
+
+
+class _FakeItemTable:
+	"""A tiny tabItem answering frappe.get_all("Item", filters, pluck="name") in Item's
+	default order (creation desc), for dict filters (the old query) and list filters."""
+
+	def __init__(self, rows):
+		self.rows = rows  # (name, disabled, creation)
+		self.calls = []
+
+	def _conditions(self, filters):
+		if isinstance(filters, dict):
+			for field, value in filters.items():
+				if isinstance(value, list):
+					yield field, value[0], value[1]
+				else:
+					yield field, "=", value
+		else:
+			for field, op, value in filters:
+				yield field, op, value
+
+	def get_all(self, doctype, filters=None, pluck=None, **kwargs):
+		assert doctype == "Item" and pluck == "name" and not kwargs, (doctype, kwargs)
+		self.calls.append(filters)
+		conditions = list(self._conditions(filters or {}))
+		out = []
+		for name, disabled, creation in sorted(
+			self.rows, key=lambda r: r[2], reverse=True
+		):
+			row = {"name": name, "disabled": disabled}
+			ok = True
+			for field, op, value in conditions:
+				if op == "=":
+					ok = row[field] == value
+				elif op == "like":
+					ok = _like(str(row[field]), value)
+				else:
+					raise AssertionError(op)
+				if not ok:
+					break
+			if ok:
+				out.append(name)
+		return out
+
+
+def _original_gold_items_for_purity(purity, required_item_code):
+	"""snc._get_gold_items_for_purity as it was before the prefix filter, verbatim."""
+	colour = (required_item_code or "").split("-")[-1]
+	filters = {"disabled": 0}
+	if colour:
+		filters["name"] = ["like", "%-{0}".format(colour)]
+
+	items = snc.frappe.get_all("Item", filters=filters, pluck="name")
+	return [
+		item
+		for item in items
+		if item.startswith("M-G-") and snc._get_purity_label(item) == purity
+	]
+
+
+_EDGE_ITEMS = [
+	("M-G-24KT-99.9-Y", 0, 1),
+	("M-G-24KT-99.5-Y", 0, 9),  # newer: must come first
+	("M-G-24KT-99.0-Y", 1, 5),  # disabled
+	("m-g-24kt-99.9-y", 0, 2),  # lower case: LIKE matches, the exact check does not
+	("M-G-24KT-Y", 0, 3),  # no purity segment between label and colour
+	("M-G-24KTX-99-Y", 0, 4),  # prefix-alike label
+	("M-G-22KT-91.75-Y", 0, 6),
+	("M-G-22KT-91.75-W", 0, 7),
+	("M-G-20KT-83.5-Y", 0, 8),
+	("M-G-18KT-75.0-P_K", 0, 10),  # "_" in the colour
+	("M-G-18KT-75.0-PXK", 0, 11),
+	("M-G-18KT-75.0-YX", 0, 12),
+	("M-S-24KT-99.9-Y", 0, 13),  # silver
+	("F-G-24KT-99.9-Y-BA", 0, 14),  # finding
+	("XM-G-24KT-99.9-Y", 0, 15),
+	("RING-001-Y", 0, 16),  # finished good of the same colour
+	("M-G-", 0, 17),
+]
+
+
+def _clear_item_lookup_cache():
+	"""A test is one long request, so drop what @frappe.request_cache kept for these two."""
+	cache = getattr(snc.frappe.local, "request_cache", None)
+	if cache is None:
+		return
+	for fn in (snc._gold_items_for, snc._get_item_purity):
+		cache.pop(getattr(fn, "__wrapped__", fn), None)
+
+
+class TestGoldItemCandidateLookup(IntegrationTestCase):
+	"""_get_gold_items_for_purity returns exactly what it did before the prefix filter, and
+	the two Item-master reads are cached per request (frappe.request_cache)."""
+
+	REQUIRED = [
+		"M-G-22KT-91.75-Y",
+		"M-G-18KT-75.0-y",
+		"M-G-22KT-91.75-W",
+		"M-G-24KT-99.9-P_K",
+		"M-G-22KT-91.75-YX",
+		"NOCOLOUR",
+		"",
+		None,
+	]
+
+	def setUp(self):
+		super().setUp()
+		_clear_item_lookup_cache()
+
+	def tearDown(self):
+		_clear_item_lookup_cache()
+		super().tearDown()
+
+	def test_same_candidates_and_order_as_before(self):
+		table = _FakeItemTable(_EDGE_ITEMS)
+		with patch.object(snc.frappe, "get_all", side_effect=table.get_all):
+			for purity in (*snc.PURITY_PRIORITY, "24KTX", "", None):
+				for required in self.REQUIRED:
+					with self.subTest(purity=purity, required=required):
+						self.assertEqual(
+							snc._get_gold_items_for_purity(purity, required),
+							_original_gold_items_for_purity(purity, required),
+						)
+
+	def test_newest_first_and_exact_match(self):
+		table = _FakeItemTable(_EDGE_ITEMS)
+		with patch.object(snc.frappe, "get_all", side_effect=table.get_all):
+			self.assertEqual(
+				snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-Y"),
+				["M-G-24KT-99.5-Y", "M-G-24KT-Y", "M-G-24KT-99.9-Y"],
+			)
+
+	def test_query_reads_only_the_purity_prefix(self):
+		table = _FakeItemTable(_EDGE_ITEMS)
+		with patch.object(snc.frappe, "get_all", side_effect=table.get_all):
+			snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-Y")
+			snc._get_gold_items_for_purity("18KT", "")
+		self.assertEqual(
+			table.calls,
+			[
+				[
+					["disabled", "=", 0],
+					["name", "like", "M-G-24KT%"],
+					["name", "like", "%-Y"],
+				],
+				[["disabled", "=", 0], ["name", "like", "M-G-18KT%"]],
+			],
+		)
+
+	def test_candidates_read_once_per_purity_and_colour_per_request(self):
+		with patch.object(
+			snc,
+			"_query_gold_items_for_purity",
+			side_effect=lambda purity, colour: [f"M-G-{purity}-X-{colour}"],
+		) as query:
+			first = snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-Y")
+			first.append("MUTATED")
+			again = snc._get_gold_items_for_purity("24KT", "M-G-18KT-75.0-Y")
+			other_colour = snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-W")
+			other_purity = snc._get_gold_items_for_purity("20KT", "M-G-22KT-91.75-Y")
+			# A new request reads again.
+			_clear_item_lookup_cache()
+			snc._get_gold_items_for_purity("24KT", "M-G-22KT-91.75-Y")
+		# Same (purity, colour) -> one query, and a caller's change never leaks back.
+		self.assertEqual(again, ["M-G-24KT-X-Y"])
+		self.assertEqual(other_colour, ["M-G-24KT-X-W"])
+		self.assertEqual(other_purity, ["M-G-20KT-X-Y"])
+		self.assertEqual(
+			[c.args for c in query.call_args_list],
+			[("24KT", "Y"), ("24KT", "W"), ("20KT", "Y"), ("24KT", "Y")],
+		)
+
+	def test_item_purity_read_once_per_item_per_request(self):
+		real_get_value = snc.frappe.db.get_value
+		reads = []
+
+		def get_value(doctype, filters=None, *args, **kwargs):
+			if doctype == "Item Variant Attribute":
+				reads.append(filters["parent"])
+				return "91.75"
+			return real_get_value(doctype, filters, *args, **kwargs)
+
+		with patch.object(snc.frappe.db, "get_value", side_effect=get_value):
+			values = [snc._get_item_purity("M-G-22KT-91.75-Y") for _ in range(4)]
+			snc._get_item_purity("M-G-24KT-99.9-Y")
+			_clear_item_lookup_cache()
+			snc._get_item_purity("M-G-22KT-91.75-Y")
+		self.assertEqual(values, [91.75] * 4)
+		self.assertEqual(
+			reads, ["M-G-22KT-91.75-Y", "M-G-24KT-99.9-Y", "M-G-22KT-91.75-Y"]
+		)

@@ -117,13 +117,15 @@ def update_parent_batch_id(self):
 						else batch_list
 					)
 
+					# Kept current on every append: a batch appearing in two outward entries
+					# would otherwise pass a stale snapshot twice and be double-weighted in
+					# the rate blend. Built once and added to, not rebuilt from the child
+					# table per source -- that was quadratic in the source count, and a
+					# refining consolidation Repack consumes hundreds of batches.
+					existing_entries = {
+						entry.batch_no for entry in batch_doc.custom_origin_entries
+					}
 					for batch in sources:
-						# Recomputed per append: a batch appearing in two outward entries
-						# would otherwise pass a stale snapshot twice and be
-						# double-weighted in the rate blend.
-						existing_entries = {
-							entry.batch_no for entry in batch_doc.custom_origin_entries
-						}
 						if batch.name not in existing_entries:
 							batch_doc.append(
 								"custom_origin_entries",
@@ -133,6 +135,7 @@ def update_parent_batch_id(self):
 									"rate": batch.rate,
 								},
 							)
+							existing_entries.add(batch.name)
 					batch_doc.flags.is_update_origin_entries = True
 					batch_doc.flags.current_stock_entry_type = stock_entry_type
 					batch_doc.save()

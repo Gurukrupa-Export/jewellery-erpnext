@@ -59,6 +59,7 @@ jobs:
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Subcontracting Settings"
 
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_eod_repair_guards
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_serial_customer_stamp
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
@@ -78,5 +79,9 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_company_material_ownership
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_pmo_customer_goods_material_requests
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry_customer_ownership_guard
+          # Supplier pure metal weight limit (Stock Entry + Employee IR subcontract Issue). Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_metal_limit
           # Settle on a customer-goods-return Material Request: batch scope. Pure-logic.
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_cg_settle_batch_scope
+          # Stock Reconciliation multi-item Get Items and Main Slip employee warehouses. Pure-logic.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reconciliation_get_items
