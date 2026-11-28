@@ -107,6 +107,11 @@ class DepartmentIR(Document):
 			refuse_department_ir_while_requested,
 		)
 
+		# Receive-only field, hidden (not cleared) by the form when a draft is switched to Issue;
+		# left set, it blocks the real Receive of that Issue as a duplicate.
+		if self.type != "Receive":
+			self.receive_against = None
+
 		block_closed_mwo_operations(self, "department_ir_operation")
 		# A PMO with a Close / Hold request: its work orders go only to the request department.
 		refuse_department_ir_while_requested(self, "department_ir_operation")
