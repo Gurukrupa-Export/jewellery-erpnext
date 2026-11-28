@@ -553,3 +553,97 @@ def refuse_refinery_mwo(mwo, action):
 			),
 			title=_("Refinery Work Order"),
 		)
+
+
+def refuse_refinery_rows(doc, table, action):
+	"""Throw when a row of ``doc.<table>`` belongs to a Refinery Work Order."""
+	if doc.docstatus == 2:
+		return
+	pairs = _row_mwos(doc, table)
+	refinery = refinery_mwos(m for _r, m in pairs)
+	bad = [
+		_("Row {0}: {1}").format(r.idx, frappe.bold(m)) for r, m in pairs if m in refinery
+	]
+	if bad:
+		frappe.throw(
+			"<br>".join(bad)
+			+ "<br>"
+			+ _("Refinery Work Orders cannot be used for {0}.").format(action),
+			title=_("Refinery Work Order"),
+		)
+
+
+def validate_refinery_process_transfer(doc, table="operations"):
+	"""A Refinery Work Order moves between processes only inside its refinery department."""
+	if doc.docstatus == 2:
+		return
+	pairs = _row_mwos(doc, table)
+	refinery = refinery_mwos(m for _r, m in pairs)
+	bad = [
+		_("Row {0}: {1}").format(r.idx, frappe.bold(m))
+		for r, m in pairs
+		if m in refinery
+		and (
+			not get_refinery_department(refinery[m][1])
+			or doc.get("department") != get_refinery_department(refinery[m][1])
+		)
+	]
+	if bad:
+		frappe.throw(
+			"<br>".join(bad)
+			+ "<br>"
+			+ _(
+				"Refinery Work Orders move by Process Transfer only within the refinery department."
+			),
+			title=_("Refinery Work Order"),
+		)
+
+
+# Stock Entry header fields that hand material to a person or a supplier.
+_HOLDER_FIELDS = (
+	"employee",
+	"to_employee",
+	"main_slip",
+	"to_main_slip",
+	"subcontractor",
+	"to_subcontractor",
+)
+
+
+def validate_refinery_stock_entry(doc, method=None):
+	"""Stock Entry validate hook: whatever made the entry (Employee IR, Main Slip, a manual
+	WORK ORDER or Department transfer), a Refinery Work Order's material never goes to an
+	employee, a main slip or a subcontractor, and never leaves its refinery department."""
+	if doc.docstatus == 2 or not frappe.get_meta("Manufacturing Work Order").has_field(
+		REFINERY_FLAG
+	):
+		return
+	names = [doc.get("manufacturing_work_order")]
+	names += [m for _r, m in _row_mwos(doc, "items")]
+	refinery = refinery_mwos(names)
+	if not refinery:
+		return
+
+	holders = [doc.meta.get_label(f) for f in _HOLDER_FIELDS if doc.get(f)]
+	if holders:
+		frappe.throw(
+			_(
+				"{0}: a Refinery Work Order's material cannot be given to an employee, main slip "
+				"or subcontractor ({1})."
+			).format(", ".join(frappe.bold(m) for m in refinery), ", ".join(holders)),
+			title=_("Refinery Work Order"),
+		)
+
+	departments = {doc.get("department"), doc.get("to_department")} - {None, ""}
+	if not departments:
+		return
+	for mwo, (_dept, manufacturer) in refinery.items():
+		refinery_dept = get_refinery_department(manufacturer)
+		if not refinery_dept or departments != {refinery_dept}:
+			frappe.throw(
+				_(
+					"{0} is a Refinery Work Order: its material moves only within the refinery "
+					"department {1}."
+				).format(frappe.bold(mwo), frappe.bold(refinery_dept or _("(not set)"))),
+				title=_("Refinery Work Order"),
+			)

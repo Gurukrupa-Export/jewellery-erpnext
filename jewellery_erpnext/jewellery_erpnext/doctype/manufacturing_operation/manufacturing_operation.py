@@ -591,6 +591,12 @@ class ManufacturingOperation(Document):
 
 	@frappe.whitelist()
 	def create_fg(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+			refuse_refinery_mwo,
+		)
+
+		# A Refinery Work Order carries refinery material, never a finished good.
+		refuse_refinery_mwo(self.manufacturing_work_order, _("Finished Goods"))
 		se_name, _fg_serial = create_manufacturing_entry(self)
 		pmo = frappe.db.get_value(
 			"Manufacturing Work Order",

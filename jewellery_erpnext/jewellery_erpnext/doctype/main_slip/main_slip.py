@@ -30,6 +30,13 @@ class MainSlip(Document):
 			self.color_abbr = None
 
 	def validate(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+			refuse_refinery_rows,
+		)
+
+		# A Main Slip is an employee's or subcontractor's; a Refinery Work Order never goes to one.
+		refuse_refinery_rows(self, "main_slip_operation", _("Main Slip"))
+
 		dynamic_field = "subcontractor"
 		dynamic_value = self.subcontractor
 		if not self.for_subcontracting:

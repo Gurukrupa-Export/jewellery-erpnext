@@ -1,5 +1,6 @@
 """PMO Refinery Work Order: creation rules, material transfer rows, and its exclusion from the
-regular flows (tagging roll-up, Serial Number submit, Employee IR, Department IR).
+regular flows (tagging roll-up, Serial Number submit, Employee IR, Department IR, Stock Entry,
+Process Transfer, Main Slip).
 
 DB-free: every lookup the code makes is patched, so these run without fixtures.
 """
@@ -340,3 +341,97 @@ class TestRefineryMwoLeftOutOfRegularFlow(IntegrationTestCase):
 		buckets = bucket_rows_by_pmo(rows, mwo_map)
 		self.assertEqual(list(buckets), ["PMO-1"])
 		self.assertEqual(buckets["PMO-1"].mops, ["MOP-1"])
+
+
+def _stock_entry(**fields):
+	doc = _ir("Stock Entry", items=[], **fields)
+	doc.meta = MagicMock()
+	doc.meta.get_label.side_effect = lambda f: f.replace("_", " ").title()
+	return doc
+
+
+class TestRefineryMwoOtherFlows(IntegrationTestCase):
+	"""The remaining transfer paths: Stock Entry, Process Transfer, Main Slip."""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _se_check(self, doc, refinery, refinery_dept=CENTRAL):
+		with (
+			patch.object(frappe, "get_meta", return_value=_meta_with_flag()),
+			patch(f"{MODULE}.refinery_mwos", return_value=refinery),
+			patch(f"{MODULE}.get_refinery_department", return_value=refinery_dept),
+			patch(f"{MODULE}._row_mwos", return_value=[]),
+		):
+			refinery_mwo.validate_refinery_stock_entry(doc)
+
+	def test_stock_entry_to_employee_is_refused(self):
+		doc = _stock_entry(manufacturing_work_order="MWO-REF", to_employee="EMP-1")
+		with self.assertRaisesRegex(frappe.ValidationError, "To Employee"):
+			self._se_check(doc, {"MWO-REF": (CENTRAL, "MFR")})
+
+	def test_stock_entry_to_main_slip_or_subcontractor_is_refused(self):
+		for field in ("to_main_slip", "subcontractor"):
+			doc = _stock_entry(manufacturing_work_order="MWO-REF", **{field: "X"})
+			with self.assertRaises(frappe.ValidationError):
+				self._se_check(doc, {"MWO-REF": (CENTRAL, "MFR")})
+
+	def test_stock_entry_to_another_department_is_refused(self):
+		doc = _stock_entry(
+			manufacturing_work_order="MWO-REF", department=CENTRAL, to_department="Tagging - T"
+		)
+		with self.assertRaisesRegex(frappe.ValidationError, "within the refinery department"):
+			self._se_check(doc, {"MWO-REF": (CENTRAL, "MFR")})
+
+	def test_stock_entry_inside_refinery_department_passes(self):
+		doc = _stock_entry(
+			manufacturing_work_order="MWO-REF", department=CENTRAL, to_department=CENTRAL
+		)
+		self._se_check(doc, {"MWO-REF": (CENTRAL, "MFR")})
+
+	def test_stock_entry_without_departments_passes(self):
+		# The refinery transfer itself and refining entries carry no header department.
+		self._se_check(_stock_entry(manufacturing_work_order="MWO-REF"), {"MWO-REF": (CENTRAL, "MFR")})
+
+	def test_regular_stock_entry_is_untouched(self):
+		doc = _stock_entry(manufacturing_work_order="MWO-REG", to_employee="EMP-1")
+		self._se_check(doc, {})
+
+	def test_stock_entry_check_is_inert_before_migrate(self):
+		meta = MagicMock()
+		meta.has_field.return_value = False
+		doc = _stock_entry(manufacturing_work_order="MWO-REF", to_employee="EMP-1")
+		with (
+			patch.object(frappe, "get_meta", return_value=meta),
+			patch(f"{MODULE}.refinery_mwos") as lookup,
+		):
+			refinery_mwo.validate_refinery_stock_entry(doc)
+		lookup.assert_not_called()
+
+	def _pt_check(self, department, refinery_dept=CENTRAL):
+		doc = _ir("Process Transfer", department=department, operations=[_row(1, "MWO-REF")])
+		with (
+			patch(f"{MODULE}.refinery_mwos", return_value={"MWO-REF": (CENTRAL, "MFR")}),
+			patch(f"{MODULE}.get_refinery_department", return_value=refinery_dept),
+		):
+			refinery_mwo.validate_refinery_process_transfer(doc, "operations")
+
+	def test_process_transfer_inside_refinery_department_passes(self):
+		self._pt_check(CENTRAL)
+
+	def test_process_transfer_in_another_department_is_refused(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "Process Transfer"):
+			self._pt_check("Casting - T")
+		with self.assertRaises(frappe.ValidationError):
+			self._pt_check(CENTRAL, refinery_dept=None)
+
+	def test_main_slip_row_of_refinery_work_order_is_refused(self):
+		doc = _ir(
+			"Main Slip", main_slip_operation=[_row(1, "MWO-REG"), _row(2, "MWO-REF")]
+		)
+		with (
+			patch(f"{MODULE}.refinery_mwos", return_value={"MWO-REF": (CENTRAL, "MFR")}),
+			self.assertRaisesRegex(frappe.ValidationError, "Row 2"),
+		):
+			refinery_mwo.refuse_refinery_rows(doc, "main_slip_operation", "Main Slip")

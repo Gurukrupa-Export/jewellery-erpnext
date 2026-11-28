@@ -29,6 +29,13 @@ from frappe.utils import (
 
 class SwapMetal(Document):
 	def validate(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+			refuse_refinery_mwo,
+		)
+
+		# Swap Metal is an employee's; a Refinery Work Order is never issued to one.
+		if self.docstatus != 2:
+			refuse_refinery_mwo(self.get("work_order"), _("Swap Metal"))
 		self.set_source_and_remain_table()
 		self.set_sum()
 		# self.target_qty_calculation()

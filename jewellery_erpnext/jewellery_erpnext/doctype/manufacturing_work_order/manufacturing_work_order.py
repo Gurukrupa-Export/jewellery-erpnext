@@ -371,6 +371,7 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_repair_un_pack_stock_entry(self):
+		refuse_refinery_mwo(self.name, _("Repair Unpack"))
 		# bom_weight = frappe.db.get_value("BOM", self.master_bom, "gross_weight")
 
 		# pmo_weight = frappe.db.get_value(
@@ -729,6 +730,7 @@ class ManufacturingWorkOrder(Document):
 		Serial No button). This is a Customer-Goods sibling of
 		create_repair_un_pack_stock_entry (which stays for the legacy flow).
 		"""
+		refuse_refinery_mwo(self.name, _("Serial Unpack"))
 		pmo_type = frappe.db.get_value(
 			"Parent Manufacturing Order", self.manufacturing_order, "type"
 		)
@@ -1095,6 +1097,7 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_mfg_entry(self):
+		refuse_refinery_mwo(self.name, _("Manufacturing Entry"))
 		create_se_entry(self)
 
 

@@ -100,7 +100,12 @@ class ProcessTransfer(Document):
 	# -- validation ----------------------------------------------------------------------------
 
 	def validate(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo import (
+			validate_refinery_process_transfer,
+		)
+
 		self.validate_department()
+		validate_refinery_process_transfer(self, "operations")
 		self.validate_processes()
 		submitting = cint(self.docstatus) == 1
 		if submitting and not is_pilot_enabled():

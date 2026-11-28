@@ -332,6 +332,9 @@ doc_events = {
 			# sees the header operation set_manufacturing_refs fills in before_validate and the rows
 			# update_batches rebuilds. See doc_events/mwo_mop_link.py.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_mwo_mop_consistency",
+			# A Refinery Work Order's material never goes to an employee, main slip or
+			# subcontractor, nor out of its refinery department, whichever flow made the entry.
+			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.refinery_mwo.validate_refinery_stock_entry",
 			# A WORK ORDER transfer row may put material in a worker's warehouse only for an operation
 			# issued to that worker. At `validate`, after the operation/work-order pairing above, so it
 			# judges the rows update_batches rebuilt and validate_warehouse filled, and again at submit.
