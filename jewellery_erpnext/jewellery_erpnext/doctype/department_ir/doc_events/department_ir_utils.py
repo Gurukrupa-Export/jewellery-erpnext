@@ -76,6 +76,7 @@ def valid_reparing_or_next_operation(self, mwo_list):
 		if existing := frappe.db.exists(
 			"Department IR",
 			{
+				"type": "Receive",
 				"receive_against": self.receive_against,
 				"name": ["!=", self.name],
 				"docstatus": ["!=", 2],
