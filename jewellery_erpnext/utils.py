@@ -885,3 +885,42 @@ def get_serial_bom(serial_no):
 		"BOM", {"tag_no": serial_no, "bom_type": "Finish Goods", "docstatus": 1}
 	)
 
+
+
+def get_repair_order_design_bom(order_form_type, order_form_id):
+	"""Return the Repair Order's design BOM, or None when this row is not a repair.
+
+	A repair carries three DIFFERENT BOM identities and they must never be collapsed
+	into one another:
+
+	* ``serial_id_bom``      -- the historical BOM the incoming finished serial was
+	                            originally built against. Evidence of what the piece
+	                            *is* today.
+	* design BOM (this one)  -- ``Repair Order.bom``. The composition the repair is
+	                            manufactured against, and the one Unpack Serial No
+	                            disassembles the finished serial into. Lands on
+	                            ``master_bom``.
+	* ``custom_tracking_bom``-- the Tracking Bom driving the jewellery manufacturing
+	                            flow (it is what fans the PMO out into MWOs).
+
+	Returns None rather than throwing so creation-time callers (Manufacturing Plan ->
+	PMO) can fall back to the row's own BOM for repairs raised without a Repair Order
+	link. The unpack path uses it only to refresh ``master_bom`` and never requires it:
+	what is unpacked is the serial's own BOM.
+	"""
+	if order_form_type != "Repair Order" or not order_form_id:
+		return None
+	return frappe.db.get_value("Repair Order", order_form_id, "bom")
+
+
+def is_purchase_order_repair(sales_order_item):
+	"""True when the Sales Order Item was raised from a customer's Purchase Order.
+
+	Such a repair carries its own two BOMs down from that PO: the Copy BOM it is manufactured on
+	(PMO / MWO ``master_bom``) and the serial's own BOM (``serial_id_bom``) that Unpack Serial No
+	books. It has no Repair Order on this site.
+	"""
+	return bool(
+		sales_order_item
+		and frappe.db.get_value("Sales Order Item", sales_order_item, "custom_po_details")
+	)

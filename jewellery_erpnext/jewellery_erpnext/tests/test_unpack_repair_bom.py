@@ -1,6 +1,6 @@
 """
-Pure-logic unit tests for the repair-unpack BOM resolver
-(ManufacturingWorkOrder._resolve_repair_order_bom).
+Pure-logic unit tests for Unpack Serial No
+(ManufacturingWorkOrder.create_unpack_serial_no_stock_entry and its helpers).
 
 Run with:
   bench --site <site> run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.tests.test_unpack_repair_bom
@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
 	ManufacturingWorkOrder,
@@ -21,94 +22,50 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufa
 MOD = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order"
 
 
-def _resolve(pmo_value, ro_bom, requested_fields=None):
-	"""Call _resolve_repair_order_bom with frappe.db.get_value mocked.
+def _pinned_rounding():
+	"""Pin the rounding method for the duration of an unpack.
 
-	pmo_value: what get_value returns for the PMO row -- (order_form_type, order_form_id) or None.
-	ro_bom   : what get_value returns for the Repair Order's BOM field (the design BOM).
-	requested_fields: optional list the caller can inspect to assert WHICH Repair Order field
-	    was read (guards against regressing to new_bom).
+	Each target row's qty is ``flt(..., 3)``, and a precision makes flt call rounded() ->
+	frappe.get_system_settings("rounding_method"). A process that has not loaded System
+	Settings yet -- CI boots every module in a fresh one -- resolves it through
+	frappe.client_cache -> frappe.get_doc, which _unpack has replaced with new_se, and
+	frappe.db, which is a MagicMock there. The lookup raises, flt swallows it and returns
+	0.0, so every unpacked qty is 0 and the rates are never scaled. A dev session whose
+	cache is already warm hides all of it.
+
+	"Banker's Rounding" is what the production site uses; no value in this suite sits on a
+	tie, so every valid method gives the same answers.
 	"""
+	return patch.object(frappe, "get_system_settings", return_value="Banker's Rounding")
 
-	def gv(dt, name, fieldname):
-		if dt == "Parent Manufacturing Order":
-			return pmo_value
-		if dt == "Repair Order":
-			if requested_fields is not None:
-				requested_fields.append(fieldname)
-			return ro_bom
-		return None
 
+def _sync(link, ro_bom):
+	"""Run _sync_repair_order_master_bom; return the master_bom writes it made."""
 	mock_db = MagicMock()
-	mock_db.get_value.side_effect = gv
-	fake_self = SimpleNamespace(manufacturing_order="PMO-1")
+	mock_db.get_value.side_effect = lambda dt, name, fieldname: (
+		"RO-1" if dt == "Parent Manufacturing Order" else ro_bom
+	)
+	writes = []
+	fake = SimpleNamespace(manufacturing_order="PMO-1")
+	fake._has_repair_order_link = lambda: link
+	fake.db_set = lambda field, value: writes.append(("MWO", field, value))
 	with patch(f"{MOD}.frappe.db", mock_db):
-		return ManufacturingWorkOrder._resolve_repair_order_bom(fake_self)
+		ManufacturingWorkOrder._sync_repair_order_master_bom(fake)
+	return [c.args for c in mock_db.set_value.call_args_list] + writes
 
 
-class TestResolveRepairOrderBom(IntegrationTestCase):
-	def test_returns_new_bom_for_repair_order(self):
-		bom, pmo = _resolve(("Repair Order", "RO-1"), "BOM-X")
-		self.assertEqual(bom, "BOM-X")
-		self.assertEqual(pmo, "PMO-1")
+class TestSyncRepairOrderMasterBom(IntegrationTestCase):
+	def test_writes_the_design_bom_when_there_is_a_repair_order(self):
+		self.assertEqual(
+			_sync(True, "BOM-X"),
+			[("Parent Manufacturing Order", "PMO-1", "master_bom", "BOM-X"), ("MWO", "master_bom", "BOM-X")],
+		)
 
-	def test_reads_the_design_bom_field_not_new_bom(self):
-		"""new_bom is only ever written when required_design == 'No', so a Manual/CAD
-		repair never has one. Requiring it blocked the unpack outright -- the resolver
-		must read the design ``bom`` link instead."""
-		asked = []
-		_resolve(("Repair Order", "RO-1"), "BOM-X", requested_fields=asked)
-		self.assertEqual(asked, ["bom"])
+	def test_no_repair_order_is_not_an_error_and_writes_nothing(self):
+		self.assertEqual(_sync(False, "BOM-X"), [])
 
-	def test_resolves_when_repair_order_has_no_new_bom(self):
-		# The Manual-design case: new_bom absent is irrelevant, only `bom` is consulted.
-		bom, _ = _resolve(("Repair Order", "ORD/RO/00021-2"), "BOM-EA02216-001-001")
-		self.assertEqual(bom, "BOM-EA02216-001-001")
-
-	def test_throws_when_order_form_is_not_repair_order(self):
-		# order_form_type is "Order", not "Repair Order".
-		with self.assertRaises(frappe.ValidationError):
-			_resolve(("Order", "ORD-1"), "BOM-X")
-
-	def test_throws_when_no_order_form_id(self):
-		with self.assertRaises(frappe.ValidationError):
-			_resolve(("Repair Order", None), "BOM-X")
-
-	def test_throws_when_pmo_missing(self):
-		# get_value returns None (PMO row not found) -> (None, None) -> not a Repair Order.
-		with self.assertRaises(frappe.ValidationError):
-			_resolve(None, "BOM-X")
-
-	def test_throws_when_repair_order_has_no_bom(self):
-		with self.assertRaises(frappe.ValidationError):
-			_resolve(("Repair Order", "RO-1"), None)
-
-
-def _check_dept(sn_dept, mwo_dept):
-	"""Run _assert_serial_in_department with Warehouse.department mocked to sn_dept."""
-	mock_db = MagicMock()
-	mock_db.get_value.return_value = sn_dept
-	fake_self = SimpleNamespace(department=mwo_dept, serial_no="SN1")
-	with patch(f"{MOD}.frappe.db", mock_db):
-		ManufacturingWorkOrder._assert_serial_in_department(fake_self, "WH-1")
-
-
-class TestAssertSerialInDepartment(IntegrationTestCase):
-	def test_matching_department_ok(self):
-		_check_dept("Dept A", "Dept A")  # no throw
-
-	def test_mismatched_department_throws(self):
-		with self.assertRaises(frappe.ValidationError):
-			_check_dept("Dept A", "Dept B")
-
-	def test_empty_string_and_none_are_equal(self):
-		# "" (warehouse) and None (MWO) normalize together -> allowed.
-		_check_dept("", None)
-		_check_dept(None, None)
-
-	def test_serial_wh_without_department_but_mwo_has_throws(self):
-		with self.assertRaises(frappe.ValidationError):
-			_check_dept(None, "Dept A")
+	def test_a_repair_order_without_a_bom_is_not_an_error_and_writes_nothing(self):
+		self.assertEqual(_sync(True, None), [])
 
 
 def _check_bookable(item_tracking):
@@ -188,15 +145,27 @@ def _unpack(
 	qty=1,
 	has_batch=False,
 	inventory=("Regular Stock", None),
+	repair_order_link=True,
+	serial_id_bom=None,
+	serial_item="EA02144-006",
+	serial_department="Dept",
 ):
 	"""Run create_unpack_serial_no_stock_entry with every read mocked.
+
+	By default the work order belongs to a Repair Order repair (its design BOM is written to
+	master_bom); ``repair_order_link=False`` makes it one without. ``serial_department`` is the
+	department of the warehouse holding the serial.
 
 	``mop`` is the work order's current operation (status/employee/department);
 	``warehouses`` maps ("department"|"employee", name) to the Manufacturing warehouse.
 	Returns (se, components_bom, master_bom_writes).
 	"""
 	seen = {}
-	mop = {"status": "Not Started", "employee": None, "department": "Dept"} if mop is None else mop
+	mop = (
+		{"status": "Not Started", "employee": None, "department": "Dept"}
+		if mop is None
+		else mop
+	)
 	if warehouses is None:
 		warehouses = {("department", "Dept"): "MFG-WH - X"}
 	fake = SimpleNamespace(
@@ -207,25 +176,30 @@ def _unpack(
 		item_code="EA02144-006",
 		qty=qty,
 		docstatus=1,
+		is_finding_mwo=0,
 		department="Dept",
 		company="C",
 		branch="B",
 		manufacturer="M",
+		serial_id_bom=serial_id_bom,
 	)
+	fake._has_repair_order_link = lambda: repair_order_link
 	fake.find_existing_unpack_entry = lambda: None
-	fake._assert_serial_matches_item = lambda: None
-	fake._assert_serial_in_department = lambda wh: None
+	fake._assert_serial_matches_bom = lambda bom: serial_item
+	fake._assert_serial_matches_repair_order = lambda: None
 	fake._assert_components_bookable = lambda *a, **k: None
-	fake._resolve_repair_order_bom = lambda: ("BOM-DESIGN", "PMO-1")
+	fake._sync_repair_order_master_bom = (
+		lambda: ManufacturingWorkOrder._sync_repair_order_master_bom(fake)
+	)
 	fake._resolve_serial_bom = lambda: ManufacturingWorkOrder._resolve_serial_bom(fake)
 	fake._resolve_unpack_target_warehouse = (
 		lambda: ManufacturingWorkOrder._resolve_unpack_target_warehouse(fake)
 	)
-	fake._unpack_component_rates = lambda items: ManufacturingWorkOrder._unpack_component_rates(
-		fake, items
+	fake._unpack_component_rates = (
+		lambda items: ManufacturingWorkOrder._unpack_component_rates(fake, items)
 	)
-	fake._rate_unpacked_components = lambda se: ManufacturingWorkOrder._rate_unpacked_components(
-		fake, se
+	fake._rate_unpacked_components = (
+		lambda se: ManufacturingWorkOrder._rate_unpacked_components(fake, se)
 	)
 	fake.db_set = lambda *a, **k: None
 
@@ -242,6 +216,8 @@ def _unpack(
 	def gv(doctype, name=None, fieldname=None, *a, **k):
 		if doctype == "Parent Manufacturing Order":
 			return "Repair"
+		if doctype == "Repair Order":
+			return "BOM-DESIGN"
 		if doctype == "Manufacturing Operation":
 			return frappe._dict(mop)
 		if doctype == "Serial No":
@@ -251,6 +227,8 @@ def _unpack(
 				return last_purchase_rate
 			return (1, None) if has_batch else (0, None)
 		if doctype == "Warehouse":
+			if isinstance(name, str):
+				return serial_department
 			for key in ("department", "employee"):
 				if name.get(key) is not None:
 					return warehouses.get((key, name[key]))
@@ -287,19 +265,19 @@ def _unpack(
 
 	with (
 		patch(f"{MOD}.frappe.db", mock_db),
-		# flt(x, precision) reads the rounding method through frappe.db; with the db mocked
-		# that depends on whatever the settings cache held, so pin it.
-		patch(f"{MOD}.frappe.get_system_settings", return_value=None),
 		patch(f"{MOD}.frappe.get_doc", side_effect=new_se),
 		patch(f"{MOD}.frappe.new_doc", side_effect=new_doc),
 		patch(f"{MOD}._resolve_unpack_inventory", return_value=inventory),
+		_pinned_rounding(),
 	):
+		# Fail here, naming the cause, rather than as a misleading 0.0 != 2.0 below.
+		assert (
+			flt(1.0, 3) == 1.0
+		), "flt is not rounding under _unpack's mocks (see _pinned_rounding)"
 		ManufacturingWorkOrder.create_unpack_serial_no_stock_entry(fake)
 
 	master_writes = [
-		c.args
-		for c in mock_db.set_value.call_args_list
-		if c.args[2] == "master_bom"
+		c.args for c in mock_db.set_value.call_args_list if c.args[2] == "master_bom"
 	]
 	created[0].batches = batches
 	return created[0], seen.get("bom"), master_writes
@@ -318,6 +296,32 @@ class TestUnpackUsesTheSerialsOwnBom(IntegrationTestCase):
 	def test_the_design_bom_is_still_persisted_as_master_bom(self):
 		# master_bom drives repair pricing/quotation; only the unpacked components changed.
 		_se, _bom, writes = _unpack()
+		self.assertEqual(
+			writes,
+			[("Parent Manufacturing Order", "PMO-1", "master_bom", "BOM-DESIGN")],
+		)
+
+	def test_a_repair_without_a_repair_order_unpacks_its_serial_id_bom(self):
+		# No Repair Order is needed: the serial and its Serial No BOM decide everything, and
+		# master_bom is left as it is.
+		se, components_bom, writes = _unpack(
+			serial_bom="BOM-OF-SERIAL", repair_order_link=False, serial_id_bom="BOM-ON-MWO"
+		)
+		self.assertEqual(components_bom, "BOM-ON-MWO")
+		self.assertEqual(writes, [])
+		self.assertTrue(se.submitted)
+
+	def test_without_serial_id_bom_the_serials_own_bom_is_used(self):
+		_se, components_bom, writes = _unpack(
+			serial_bom="BOM-OF-SERIAL", repair_order_link=False
+		)
+		self.assertEqual(components_bom, "BOM-OF-SERIAL")
+		self.assertEqual(writes, [])
+
+	def test_a_repair_order_repair_also_unpacks_the_serial_id_bom(self):
+		# The Repair Order's design BOM still goes to master_bom, but it is not unpacked.
+		_se, components_bom, writes = _unpack(serial_bom="BOM-SERIAL", serial_id_bom="BOM-ON-MWO")
+		self.assertEqual(components_bom, "BOM-ON-MWO")
 		self.assertEqual(
 			writes, [("Parent Manufacturing Order", "PMO-1", "master_bom", "BOM-DESIGN")]
 		)
@@ -338,8 +342,35 @@ class TestUnpackUsesTheSerialsOwnBom(IntegrationTestCase):
 		mock_db.get_value.side_effect = gv
 		fake = SimpleNamespace(serial_no="SN-1")
 		with patch(f"{MOD}.frappe.db", mock_db):
-			self.assertEqual(ManufacturingWorkOrder._resolve_serial_bom(fake), "BOM-SERIAL")
+			self.assertEqual(
+				ManufacturingWorkOrder._resolve_serial_bom(fake), "BOM-SERIAL"
+			)
 		self.assertEqual(asked, [("Serial No", "SN-1", "custom_bom_no")])
+
+	def test_resolve_serial_bom_prefers_the_work_orders_serial_id_bom(self):
+		mock_db = MagicMock()
+		fake = SimpleNamespace(serial_no="SN-1", serial_id_bom="BOM-ON-MWO")
+		with patch(f"{MOD}.frappe.db", mock_db):
+			self.assertEqual(
+				ManufacturingWorkOrder._resolve_serial_bom(fake), "BOM-ON-MWO"
+			)
+		mock_db.get_value.assert_not_called()
+
+	def test_the_serial_leaves_from_its_own_department_not_the_work_orders(self):
+		# The serial sits in another department's warehouse: that is no longer refused, and
+		# the source row carries the serial's department.
+		se, _bom, _w = _unpack(serial_department="Product Allocation - X")
+		source = [r for r in se.items if r.get("s_warehouse")]
+		self.assertEqual([r.department for r in source], ["Product Allocation - X"])
+		self.assertEqual({r.department for r in _targets(se)}, {"Dept"})
+
+	def test_the_consumed_item_is_the_serials_item_not_the_work_orders(self):
+		"""Attribute-change repair: the MWO makes EA02144-006 but the piece in hand is
+		an EA02144-001 serial. The source row must consume the serial's own item."""
+		se, _bom, _w = _unpack(serial_item="EA02144-001")
+		source = [r for r in se.items if r.get("s_warehouse")]
+		self.assertEqual([r.item_code for r in source], ["EA02144-001"])
+		self.assertEqual([r.serial_no for r in source], ["SN-1"])
 
 
 class TestUnpackWarehouses(IntegrationTestCase):
@@ -440,7 +471,9 @@ class TestUnpackPieceCounts(IntegrationTestCase):
 				{"item_code": "DIA-B", "qty": 0.676, "pcs": 20},
 			]
 		)
-		self.assertEqual({r.item_code: r.pcs for r in _targets(se)}, {"DIA-A": 35, "DIA-B": 20})
+		self.assertEqual(
+			{r.item_code: r.pcs for r in _targets(se)}, {"DIA-A": 35, "DIA-B": 20}
+		)
 
 	def test_pieces_scale_with_the_work_order_quantity(self):
 		# The BOM describes ONE piece; the entry books qty * BOM, like the carats.
@@ -451,7 +484,9 @@ class TestUnpackPieceCounts(IntegrationTestCase):
 		self.assertEqual(_targets(se)[0].qty, 2.0)
 
 	def test_a_row_without_pieces_keeps_the_fields_default(self):
-		se, _bom, _w = _unpack(components=[{"item_code": "METAL", "qty": 6.0, "pcs": 0}])
+		se, _bom, _w = _unpack(
+			components=[{"item_code": "METAL", "qty": 6.0, "pcs": 0}]
+		)
 		self.assertNotIn("pcs", _targets(se)[0])
 
 
