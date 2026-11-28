@@ -2063,6 +2063,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		"gross_weight",
 		"making_charge",
 		"total_bom_amount",
+		# Charges of the copied BOM's sale (repairs copy the sold piece's BOM); a sale
+		# re-derives them from the buyer's Customer Certification Price.
+		"certification_amount",
+		"hallmarking_amount",
 	]:
 		if hasattr(new_bom, field):
 			setattr(new_bom, field, 0)
