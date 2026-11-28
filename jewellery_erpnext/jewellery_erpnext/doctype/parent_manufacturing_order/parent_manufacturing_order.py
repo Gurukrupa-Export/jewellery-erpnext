@@ -1910,6 +1910,43 @@ def hold_mop(self):
 				"Manufacturing Operation", i["name"], "status", "Finished"
 			)
 
+def _create_cad_mwo_on_remote_site(to_site, fg_doc):
+	import requests
+	from urllib.parse import urlparse
+
+	# Accept a pasted desk URL (e.g. http://host:8001/app/manufacturing-work-order)
+	parsed = urlparse(to_site if "://" in to_site else f"http://{to_site}")
+	to_site = f"{parsed.scheme}://{parsed.netloc}"
+
+	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
+	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	url = f"{to_site}/api/method/gke_customization.gke_order_forms.doc_events.manufacturing_work_order.create_cad_mwo"
+	payload = fg_doc.as_dict(convert_dates_to_str=True)
+	try:
+		response = requests.post(
+			url,
+			headers={"Authorization": f"token {api_key}:{api_secret}"},
+			json={"data": payload},
+			timeout=30,
+		)
+		response.raise_for_status()
+		result = response.json().get("message") or {}
+	except requests.exceptions.RequestException as e:
+		frappe.throw(
+			f"Failed to create CAD/CAM Manufacturing Work Order on {to_site}: {e}<br>"
+			f"{_remote_error_message(getattr(e, 'response', None))}"
+		)
+
+	if result.get("already_exists"):
+		frappe.msgprint(
+			f"Manufacturing Work Order for CAD/CAM Department is <b>already</b> created on {to_site}: <b>{result.get('name')}</b>"
+		)
+	else:
+		frappe.msgprint(
+			f"Manufacturing Work Order <b>{result.get('name')}</b> for CAD/CAM Department is created on {to_site}."
+		)
+	return result
+
 
 @frappe.whitelist()
 def create_mwo(pmo, doc, reason=None):
@@ -1939,6 +1976,7 @@ def create_mwo(pmo, doc, reason=None):
 		{"manufacturer": doc.manufacturer},
 		"default_cad_department",
 	)
+	# frappe.throw(f"{doc.manufacturer}")
 	fg_doc.metal_touch = doc.metal_touch
 	fg_doc.metal_type = doc.metal_type
 	fg_doc.metal_purity = doc.metal_purity
@@ -1947,9 +1985,12 @@ def create_mwo(pmo, doc, reason=None):
 	fg_doc.auto_created = 1
 	if reason:
 		fg_doc.reason = reason
+	mwo_to_site = frappe.db.get_single_value("Data Migration in KGGK", "mwo_to_site")
+	if mwo_to_site:
+		return _create_cad_mwo_on_remote_site(mwo_to_site, fg_doc)
+
 	fg_doc.save()
 	frappe.msgprint("Manufacturing Work Order for CAD/CAM Department is created.")
-
 
 def can_create_pmo_material_request(user=None):
 	"""True when ``user`` may use Create Material Request on a PMO: Administrator, System
