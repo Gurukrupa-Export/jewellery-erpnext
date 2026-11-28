@@ -165,7 +165,27 @@ def sync_quotation_tax_rate_with_item(self):
 			tax.rate = flt(template_rates[tax.account_head], tax.precision("rate"))
 
 
+def seed_repair_copy_bom(self):
+	"""Use the Repair Order's New BOM as the Copy BOM of a repair row.
+
+	A repair carries two BOMs: ``custom_serial_id_bom`` (the serial's own BOM, unpacked) and
+	``custom_new_bom`` (the BOM the repair is manufactured on). Copy BOM is what the Sales
+	Order, Manufacturing Plan and the Purchase Order to the job worker run on, so it must be
+	the New BOM -- not the item master BOM the later writers would otherwise look up. A Repair
+	Order without a New BOM (Manual / CAD design) keeps that lookup.
+	"""
+	for row in self.items:
+		if (
+			row.get("order_form_type") == "Repair Order"
+			and row.get("custom_new_bom")
+			and not row.get("copy_bom")
+		):
+			row.copy_bom = row.custom_new_bom
+
+
 def validate(self, method):
+	# First, so every copy_bom writer below (and the enqueued BOM job) sees it.
+	seed_repair_copy_bom(self)
 	validate_gold_rate_with_gst(self)
 	sync_quotation_tax_rate_with_item(self)
 	self.calculate_taxes_and_totals()

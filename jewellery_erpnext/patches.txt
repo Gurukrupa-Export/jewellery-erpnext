@@ -120,3 +120,4 @@ jewellery_erpnext.patches.add_mr_hold_closed_workflow_states
 jewellery_erpnext.patches.create_pmo_close_open_workflow #2026-10-19 PMO Close/Open workflow, System Manager only
 jewellery_erpnext.patches.set_cad_cam_receive_details_type #2026-11-10 flag RPT Digital File Generation (CAD) / RPT Support Generation (CAM) and backfill Manufacturing Operation
 jewellery_erpnext.patches.set_do_not_explode_on_old_bom_items #2026-11-23 tick Do Not Explode on existing Template BOM rows
+jewellery_erpnext.patches.add_purchase_order_item_serial_id_bom_field #2026-11-20 Serial Id BOM on Purchase Order Item (repair BOM carry-forward)
