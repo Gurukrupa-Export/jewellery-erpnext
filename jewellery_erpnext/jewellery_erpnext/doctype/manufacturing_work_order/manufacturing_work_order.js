@@ -53,10 +53,10 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				frm.trigger("split_work_order");
 			});
 		}
-		// Single unpack button, Repair work orders only: unpacks the repaired serial
-		// into the linked Repair Order's BOM raw materials as Customer Goods. PMO type
-		// is not on the form, so resolve it before adding the button.
-		if (frm.doc.docstatus == 1 && frm.doc.serial_no) {
+		// Single unpack button, Repair work orders only (never a finding work order): unpacks
+		// the repaired serial into its own BOM's raw materials. PMO type is not on the form,
+		// so resolve it before adding the button.
+		if (frm.doc.docstatus == 1 && frm.doc.serial_no && !frm.doc.is_finding_mwo) {
 			frappe.db
 				.get_value("Parent Manufacturing Order", frm.doc.manufacturing_order, "type")
 				.then((r) => {
