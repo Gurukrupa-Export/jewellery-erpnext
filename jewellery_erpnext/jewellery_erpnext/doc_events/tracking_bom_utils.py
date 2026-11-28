@@ -2,6 +2,26 @@ import frappe
 from frappe.utils import flt
 
 
+def keep_po_rate(doc, row):
+	"""True when the row's Purchase Order rate must survive the Tracking BOM rate.
+
+	An Outwork quotation row pulled from a Purchase Order (``custom_po_details``) carries the
+	rate agreed on that order. The customer supplies the materials, so the Tracking BOM total
+	holds only making/handling charges and is 0 when those are not set up -- it would wipe the
+	Purchase Order rate. Other sales types and rows without a Purchase Order are unaffected.
+
+	Used on the Quotation and on the Sales Order mapped from it (``custom_po_details`` is copied
+	across); the Quotation keeps the sales type in ``custom_sales_type``, the Sales Order in
+	``sales_type``.
+	"""
+	sales_type = (
+		doc.get("sales_type")
+		if doc.doctype == "Sales Order"
+		else doc.get("custom_sales_type")
+	)
+	return sales_type == "Outwork" and bool(row.get("custom_po_details"))
+
+
 def set_tracking_bom_rate_in_quotation(self):
 	"""
 	Fetch Tracking BOM Rates and replace the quotation item rate with Tracking BOM rate.
@@ -63,6 +83,9 @@ def set_tracking_bom_rate_in_quotation(self):
 			row.diamond_amount = tb_data.diamond_bom_amount
 			row.gemstone_amount = tb_data.gemstone_bom_amount
 			row.custom_hallmarking_amount = tb_data.hallmarking_amount
+
+			if keep_po_rate(self, row):
+				continue
 
 			row.rate = flt(
 				row.metal_amount

@@ -16,29 +16,25 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	update_serial_details,
 )
 
-KGGK_SOURCE_FIELDS = (
-	"custom_kggk_source_doctype",
-	"custom_kggk_source_site",
-	"custom_kggk_source_name",
-)
 
+def set_do_not_explode(self):
+	"""Tick Do Not Explode on every row of a new Template BOM.
 
-def clear_inherited_kggk_source(self):
-	"""Source DocType/Site/Name describe where a Template BOM was replicated from.
-
-	``frappe.copy_doc`` copies ``no_copy`` fields, so every BOM cloned from a Template (FG,
-	Manufacturing Process, ...) inherited them. A Source Site on a non-Template BOM is always
-	such an inherited value. Product Return Order BOMs carry a Source DocType/Name but no site,
-	and ``BOM Before Validate`` relies on that to link ``Product Return Order.new_bom``, so
-	they are left alone.
+	Quotation, Sales Order, Manufacturing Process and Finish Goods BOMs are copied from the
+	Template, and the copy keeps the flag, so ticking the Template is enough. Only on first
+	save: rows added to a saved draft, and BOMs saved before this, are left as they are.
+	Phantom rows are skipped because ERPNext keeps the flag off for them.
 	"""
-	if self.bom_type != "Template" and self.get("custom_kggk_source_site"):
-		for fieldname in KGGK_SOURCE_FIELDS:
-			self.set(fieldname, None)
+	if self.bom_type != "Template" or not self.is_new():
+		return
+
+	for row in self.get("items"):
+		if not row.get("is_phantom_item"):
+			row.do_not_explode = 1
 
 
 def before_validate(self, method):
-	clear_inherited_kggk_source(self)
+	set_do_not_explode(self)
 	validate_rating(self)
 	validate_weight(self)
 	if self.bom_type == "Quotation" or self.docstatus == 1:
@@ -683,28 +679,29 @@ def set_specifications_for_modified_bom(self, fields_list):
 
 @frappe.whitelist()
 def check_diamond_sieve_size_tolerance_value_exist(filters):
-    if isinstance(filters, str):
-        filters = frappe.parse_json(filters)
+	if isinstance(filters, str):
+		filters = frappe.parse_json(filters)
 
-    result = frappe.get_all(
-        "Attribute Value Diamond Sieve Size",
-        filters=filters,
-        fields=[
-            "name",
-            "parent",
-            "diamond_shape",
-            "diamond_quality",
-            "from_weight",
-            "to_weight",
-            "for_universal_value",
-        ],
-    )
+	result = frappe.get_all(
+		"Attribute Value Diamond Sieve Size",
+		filters=filters,
+		fields=[
+			"name",
+			"parent",
+			"diamond_shape",
+			"diamond_quality",
+			"from_weight",
+			"to_weight",
+			"for_universal_value",
+		],
+	)
 
-    return {
-        "site": frappe.local.site,
-        "filters_received": filters,
-        "result": result,
-    }
+	return {
+		"site": frappe.local.site,
+		"filters_received": filters,
+		"result": result,
+	}
+
 
 @frappe.whitelist()
 def get_weight_in_cts_from_attribute_value(filters):

@@ -851,8 +851,15 @@ def ensure_loss_item_stockable(item_code):
 	return item_code
 
 
-def get_item_loss_item(company, item, variant_of="M", loss_type=None):
-	if loss_type:
+def get_item_loss_item(
+	company, item, variant_of="M", loss_type=None, loss_variant=None
+):
+	"""``loss_variant`` is a mapping the caller has already resolved (e.g. scoped to one
+	Manufacturer). The unscoped Variant Loss Table lookup below returns whichever
+	manufacturer's row it meets first, so a caller that knows the manufacturer must pass it."""
+	if loss_variant:
+		variant_name = loss_variant
+	elif loss_type:
 		variant_name = frappe.db.get_value(
 			"Variant Loss Table",
 			{"variant": variant_of, "loss_type": loss_type},
